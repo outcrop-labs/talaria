@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import DitherLayer from './DitherLayer.svelte'
+  import { useField } from '@/lib/field-registry.svelte'
   import type { DitherSource } from '@/lib/dither'
   import GeneratingBars from './GeneratingBars.svelte'
   import WaitingMark from './WaitingMark.svelte'
@@ -47,15 +47,18 @@
   //
   // Under reduced motion the engine stops driving waves and the field settles,
   // which leaves the block textured and still rather than blank.
-  const sources: DitherSource[] = [
-    { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.18 },
-    { id: 'drift-a', kind: 'wave', axis: 'x', wavelength: 150, speed: 26, strength: 0.4 },
-    { id: 'drift-b', kind: 'wave', axis: 'x', wavelength: 64, speed: -14, strength: 0.22 },
+  let el = $state<HTMLElement | null>(null)
+
+  const SOURCES: DitherSource[] = [
+    { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.18, gain: 0.4 },
+    { id: 'drift-a', kind: 'wave', axis: 'x', wavelength: 150, speed: 26, strength: 0.4, gain: 0.4 },
+    { id: 'drift-b', kind: 'wave', axis: 'x', wavelength: 64, speed: -14, strength: 0.22, gain: 0.4 },
   ]
+
+  useField(() => el, () => SOURCES)
 </script>
 
-<div class={cn('relative overflow-hidden rounded-lg border border-line p-4', className)}>
-  <DitherLayer {sources} alphaFloor={0.03} maxAlpha={0.32} />
+<div bind:this={el} class={cn('relative overflow-hidden rounded-lg border border-line p-4', className)}>
   {#if label}
     <div class="relative flex items-center gap-2 font-sans text-sm text-muted">
       <WaitingMark {site} class="text-accent" />

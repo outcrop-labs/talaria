@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte'
+  import { untrack, type Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { onReducedMotion } from '@/lib/motion'
   import { onThemeChange } from '@/lib/theme'
@@ -22,8 +22,23 @@
   let {
     class: className,
     children,
+    ambient,
     ...opts
-  }: FieldGLOptions & { class?: string; children: Snippet } = $props()
+  }: FieldGLOptions & {
+    class?: string
+    children: Snippet
+    /**
+     * A field on the SURFACE'S OWN BOX — the rail's texture, a pane's vignette.
+     *
+     * Here rather than via `useField` because a surface's own ambient field
+     * cannot register with itself: `useField` reads context, and the component
+     * that renders a FieldSurface sits ABOVE it, where that context does not
+     * exist yet. Passing the sources in is the honest way to say "this belongs
+     * to the surface", and it saves every such caller inventing a child
+     * component whose only job is to be inside.
+     */
+    ambient?: DitherSource[]
+  } = $props()
 
   let host = $state<HTMLDivElement | null>(null)
   let canvas = $state<HTMLCanvasElement | null>(null)
@@ -59,17 +74,48 @@
    * costs ONE listener for the whole surface and one more entry in a uniform
    * array, and the call site changes from a class to an attribute.
    */
-  let hovered = $state<HTMLElement | null>(null)
-  let pinned = $state<HTMLElement[]>([])
+  // DELIBERATELY NOT `$state`, and this is load-bearing rather than a
+  // micro-optimisation. Both are read by `collect()`, which the setup effect
+  // calls — so as reactive state they made that effect depend on themselves:
+  // `rescan()` assigned `pinned`, the effect re-ran, built ANOTHER WebGL
+  // context, rescanned, and round again. It stopped only when the browser
+  // refused the 17th context, at which point the surface caught the failure
+  // and disabled itself. Every page with a field spent 16 contexts on mount
+  // and then rendered nothing at all.
+  //
+  // Nothing here needs to be reactive: every mutation below is already
+  // followed by an explicit `setFields(collect())`, which is the redraw.
+  let hovered: HTMLElement | null = null
+  let pinned: HTMLElement[] = []
 
   const FILL: DitherSource[] = [{ id: 'fill', kind: 'uniform', strength: 0.5, tone: 'neutral' }]
 
-  /** Each entry's box, in SURFACE coordinates, with its sources. */
+  /**
+   * Each entry's box, in SURFACE coordinates, with its sources.
+   *
+   * UNTRACKED IN FULL, and this is not defensive — it is what stops the
+   * surface from tearing itself down. `collect()` calls `sources()` on every
+   * registered control, and those closures read the controls' own state (a
+   * button's `hot`). Called from inside the setup effect, that made the effect
+   * depend on the hover state of every control on the page: hovering one
+   * button destroyed the renderer and built a new one instead of drawing a
+   * frame, so the field never appeared at all.
+   *
+   * This is a PULL — a snapshot of what everyone wants drawn, right now.
+   * Nothing about it should ever create a subscription; redraws are pushed
+   * explicitly by `invalidate()`.
+   */
   function collect(): Field[] {
+    return untrack(() => collectNow())
+  }
+
+  function collectNow(): Field[] {
     const h = host
     if (!h) return []
     const base = h.getBoundingClientRect()
     const out: Field[] = []
+    // The surface's own field first, so everything else composites over it.
+    if (ambient?.length) out.push({ x: 0, y: 0, w: base.width, h: base.height, sources: ambient })
     // Delegated fills first, so a row's own registered field (a halo, say)
     // composites on top of its fill rather than replacing it.
     for (const el of new Set([...pinned, hovered].filter(Boolean) as HTMLElement[])) {
@@ -89,6 +135,16 @@
     return out
   }
 
+  // `collect()` is untracked by design, so a change to the surface's own field
+  // has to be pushed the same way a control's is. Compared by value: callers
+  // rebuild the array on every state change and only a real change should cost
+  // a redraw.
+  const ambientKey = $derived(JSON.stringify(ambient ?? null))
+  $effect(() => {
+    void ambientKey
+    renderer?.setFields(collect())
+  })
+
   const readTones = () => {
     const style = getComputedStyle(document.documentElement)
     const VAR = {
@@ -106,9 +162,14 @@
     const h = host
     if (!c || !h || !fieldGLSupported()) return
 
+    // Untracked: renderer options are construction-time, and `opts` is a rest
+    // props object rebuilt on every render — tracking it would tear the
+    // context down and stand a new one up for an unrelated prop change.
+    const initial = untrack(() => ({ ...opts }))
+
     let r: FieldRenderer
     try {
-      r = new FieldRenderer(c, opts)
+      r = new FieldRenderer(c, initial)
     } catch (err) {
       // A surface with no field is a complete UI, so this must not take the
       // page down — but it must not be silent either. A swallowed shader error
@@ -172,7 +233,7 @@
     // Reduced motion stops the clump morph and leaves the texture exactly as
     // organic — it is the MOVEMENT that is unwelcome, not the grain, and
     // flattening the field would remove information rather than motion.
-    const offMotion = onReducedMotion((reduced) => r.setOptions({ drift: reduced ? 0 : (opts.drift ?? 0.08) }))
+    const offMotion = onReducedMotion((reduced) => r.setOptions({ drift: reduced ? 0 : (initial.drift ?? 0.08) }))
 
     // NOTHING VISIBLE, NOTHING DRAWN. The field animates continuously once
     // anything is on it, so a surface scrolled out of view or in a background

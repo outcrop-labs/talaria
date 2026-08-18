@@ -15,7 +15,15 @@
 import { getContext, setContext } from 'svelte'
 import type { DitherSource, DitherTone } from './dither'
 
-const KEY = Symbol('dither-field-surface')
+// `Symbol.for`, not `Symbol()`. A bare symbol is unique per MODULE INSTANCE,
+// and dev tooling routinely produces more than one of those: Vite serves a
+// hot-updated module under a new URL, so a component compiled before the
+// update and one compiled after hold different symbols — `setContext` and
+// `getContext` then silently disagree and every field on the page vanishes
+// with no error to follow. The global symbol registry keys on the string, so
+// all instances agree. Production has one instance and does not care; this is
+// purely so a dev-only failure cannot masquerade as a broken feature.
+const KEY = Symbol.for('talaria.dither-field-surface')
 
 export interface FieldEntry {
   /** The control the field belongs to. Its box is read fresh each draw. */

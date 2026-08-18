@@ -98,6 +98,20 @@ export const rectEffect = defineEffect<{
   pack: (p) => ({ a: [p.spread, p.radius ?? 0, p.inner ?? 1, p.rim ?? 10], b: [p.falloff ?? 2, 0, 0, 0] }),
 })
 
+/**
+ * HOW FAR A FIELD REACHES AROUND A CONTROL — one band width, everywhere.
+ *
+ * This was once proportional to the control, and proportional is exactly what
+ * made it inconsistent: a tab wore a 6px band and a button a 20px one, so the
+ * same treatment read as two different ideas depending on what it edged. A
+ * border does not get thicker because its box is bigger, and this is a border.
+ *
+ * 12px is four dot rows at the house 2px pitch — enough for the density to
+ * fall across a gradient rather than stopping after one rank, and short enough
+ * that neighbouring controls do not run their fields together.
+ */
+export const FIELD_BAND = 12
+
 /** Density at one edge of the box, falling off inward — vignettes, corridors. */
 export const edgeEffect = defineEffect<{ side: 'top' | 'bottom' | 'left' | 'right'; depth: number }>({
   kind: 'edge',

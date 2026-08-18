@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
-  import DitherLayer from './DitherLayer.svelte'
+  import { useField } from '@/lib/field-registry.svelte'
   import type { DitherSource } from '@/lib/dither'
 
   // The one empty/zero state. Centered mark + short line + optional single
@@ -43,6 +43,8 @@
 
   const wantsVignette = $derived(vignette ?? variant === 'full')
 
+  let el = $state<HTMLElement | null>(null)
+
   // A VIGNETTE AND NOTHING ELSE — four edges inward, no travelling source.
   //
   // The centre stays clear on purpose: density belongs at the boundary, where
@@ -52,14 +54,24 @@
   // A drifting crest was tried here for the movement and it was wrong: a wave
   // is a SHAPE, so it necessarily paints bands across the middle of the pane,
   // and bands in an empty pane read as content. The vignette has to stay a
-  // vignette. Motion comes from `shimmer` instead (below), which is per-cell
-  // and has no shape at all.
-  const sources: DitherSource[] = [
-    { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.28 },
-    { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.28 },
-    { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.2 },
-    { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.2 },
+  // vignette.
+  //
+  // THE MOVEMENT IS THE CLUMP MORPH NOW, not the old per-cell `shimmer`. The
+  // surface morphs its clump field continuously at 0.08Hz, which is shapeless
+  // in exactly the way shimmer was and costs nothing extra here — the vignette
+  // breathes because the whole field does. Reduced motion stops it and leaves
+  // the texture, which is the right half to keep.
+  const SOURCES: DitherSource[] = [
+    { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.28, gain: 0.45 },
+    { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.28, gain: 0.45 },
+    { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.2, gain: 0.45 },
+    { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.2, gain: 0.45 },
   ]
+
+  useField(
+    () => el,
+    (): DitherSource[] => (wantsVignette ? SOURCES : []),
+  )
 </script>
 
 <!-- Spec §2: empty-state copy is reading voice — sans, never the mono chrome
@@ -75,6 +87,7 @@
        as a textured card floating inside an untextured one. The words are
        still inset by exactly as much as before; it is the field that grew. -->
   <div
+    bind:this={el}
     class={cn(
       // `h-full` is `height: 100%`, which resolves against the parent ONLY if
       // the parent has a definite height — otherwise it computes to `auto` and
@@ -89,15 +102,6 @@
       className,
     )}
   >
-    <!-- `shimmer` is the movement: a small per-cell threshold jitter re-rolled
-         a few times a second. It has no direction and no shape, so it cannot
-         band — and the engine only applies it where density is already between
-         0.03 and 0.97, which is exactly the vignette's gradient and never the
-         clear centre. The field breathes at its edges and the middle stays
-         still. Off entirely under reduced motion. -->
-    {#if wantsVignette}
-      <DitherLayer {sources} organic={0.55} shimmer={0.1} alphaFloor={0.04} maxAlpha={0.38} />
-    {/if}
     <div
       class={cn(
         'relative max-w-xs',

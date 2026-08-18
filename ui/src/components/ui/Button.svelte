@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
-  import { spreadFor } from './DitherLayer.svelte'
   import { useField } from '@/lib/field-registry.svelte'
+  import { FIELD_BAND } from '@/lib/field-effects'
   import { buttonClasses, type ButtonSize, type ButtonVariant } from './button'
   import type { DitherSource, DitherTone } from '@/lib/dither'
 
@@ -79,7 +79,7 @@
               w: 0,
               h: 0,
               radius,
-              spread: spreadFor(0),
+              spread: FIELD_BAND,
               strength: 0.95,
               inner: 0,
               rim: 0,

@@ -1,6 +1,6 @@
 <script lang="ts" module>
   import type { SessionUser } from '@/lib/session'
-  import DitherLayer from '@/components/ui/DitherLayer.svelte'
+  import FieldSurface from '@/components/ui/FieldSurface.svelte'
   import DitherPool from '@/components/ui/DitherPool.svelte'
   import type { DitherSource } from '@/lib/dither'
 
@@ -112,10 +112,16 @@
   let inside = $state(false)
   const ambient = $derived.by((): DitherSource[] => {
     const a = inside ? { chrome: 0.2, grain: 0.05, foot: 0.09 } : { chrome: 0.14, grain: 0.035, foot: 0.06 }
+    // `gain` is what keeps this a whisper. It used to be a low `maxAlpha` on
+    // the rail's own canvas; on a shared surface the alpha ramp belongs to the
+    // surface, so the quietness has to travel with the sources. Lowering
+    // `strength` instead would thin the dot population and turn the rail's
+    // material into scattered specks — see the note on `gain` in lib/dither.ts.
+    const GAIN = 0.16
     return [
-      { id: 'chrome', kind: 'edge', side: 'top', depth: 64, strength: a.chrome },
-      { id: 'grain', kind: 'uniform', strength: a.grain },
-      { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot },
+      { id: 'chrome', kind: 'edge', side: 'top', depth: 64, strength: a.chrome, gain: GAIN },
+      { id: 'grain', kind: 'uniform', strength: a.grain, gain: GAIN },
+      { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot, gain: GAIN },
     ]
   })
 
@@ -148,9 +154,14 @@
   onmouseenter={() => (inside = true)}
   onmouseleave={() => (inside = false)}
 >
-<DitherLayer sources={ambient} shimmer={inside ? 0.12 : 0} organic={0.5} alphaFloor={0.04} maxAlpha={0.14} />
-<!-- The halo rides the active item, and glides when the selection moves. It
-     re-measures on collapse too, so it follows the rail's own 200ms width
+<!-- THE RAIL OWNS A SURFACE, for two independent reasons. It sits outside the
+     shell's FieldSurface (which wraps only the content region), so there is no
+     surface above it to register with; and it paints an opaque `bg-sidebar`,
+     which would hide a field drawn on a canvas behind it in any case. A field
+     has to be drawn above the background of whatever it decorates. -->
+<FieldSurface class="h-full" ambient={ambient}>
+<!-- The halo rides the active item, and moves when the selection moves. It
+     re-finds on collapse too, so it follows the rail's own 200ms width
      animation instead of teleporting to the icon tile. -->
 <DitherPool key={`${route.pathname}:${nav.collapsed}`} selector="[data-status='active']" falloff={3} />
 {#if nav.collapsed}
@@ -331,4 +342,5 @@
     {@render modals()}
   </div>
 {/if}
+</FieldSurface>
 </CollapsePane>

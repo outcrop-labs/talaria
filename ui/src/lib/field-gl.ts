@@ -96,7 +96,7 @@ uniform float u_maxAlpha;
 uniform vec3  u_tones[5];
 
 uniform vec4 u_box[${MAX_SOURCES}];
-uniform vec4 u_p0[${MAX_SOURCES}];   // kind, strength, tone, unused
+uniform vec4 u_p0[${MAX_SOURCES}];   // kind, strength, tone index, gain   // kind, strength, tone, unused
 uniform vec4 u_p1[${MAX_SOURCES}];   // effect slot a
 uniform vec4 u_p2[${MAX_SOURCES}];   // effect slot b
 
@@ -126,6 +126,7 @@ void main() {
   float miss = 1.0;
   vec3 rgb = vec3(0.0);
   float wsum = 0.0;
+  float gsum = 0.0;
   for (int i = 0; i < ${MAX_SOURCES}; i++) {
     if (i >= u_count) break;
     vec4 box = u_box[i];
@@ -133,6 +134,12 @@ void main() {
     if (v <= 0.0) continue;
     miss *= 1.0 - clamp(v, 0.0, 1.0);
     rgb += u_tones[int(u_p0[i].z)] * v;
+    // Gain is averaged the same way the tone is — weighted by how much each
+    // source contributes here. Where a quiet ambient field and a loud halo
+    // overlap, the pixel takes the weight of whichever is actually doing the
+    // work there, so a halo crossing a rail does not get dragged down to the
+    // rail's alpha, nor the rail lifted to the halo's.
+    gsum += v * u_p0[i].w;
     wsum += v;
   }
   if (wsum == 0.0) discard;
@@ -177,7 +184,10 @@ void main() {
   float off = (u_pitch - u_dot) * 0.5;
   if (any(lessThan(inCell, vec2(off))) || any(greaterThan(inCell, vec2(off + u_dot)))) discard;
 
-  outColor = vec4(rgb / wsum, u_alphaFloor + (u_maxAlpha - u_alphaFloor) * clamp(d, 0.0, 1.0));
+  // The floor is scaled too: a field at gain 0.15 whose faintest dots still
+  // painted at the full floor would be mostly floor, which is the flat grey
+  // wash the gain exists to avoid.
+  outColor = vec4(rgb / wsum, (u_alphaFloor + (u_maxAlpha - u_alphaFloor) * clamp(d, 0.0, 1.0)) * (gsum / wsum));
 }`
 }
 
@@ -352,6 +362,13 @@ export class FieldRenderer {
   destroy(): void {
     this.destroyed = true
     cancelAnimationFrame(this.raf)
+    // RELEASE THE CONTEXT, don't just stop drawing it. A browser allows a
+    // fixed number of live WebGL contexts (16 in Chrome) and drops the oldest
+    // when a new one exceeds it — so a surface that is torn down and rebuilt
+    // without this quietly spends the page's budget until some unrelated
+    // canvas elsewhere goes blank. Dropping the reference is not enough: the
+    // context is released on GC, at a time nobody controls.
+    this.gl.getExtension('WEBGL_lose_context')?.loseContext()
   }
 
   private schedule(): void {
@@ -399,6 +416,7 @@ export class FieldRenderer {
         p0[o] = idx
         p0[o + 1] = src.strength
         p0[o + 2] = Math.max(0, TONE_ORDER.indexOf(src.tone ?? 'neutral'))
+        p0[o + 3] = src.gain ?? 1
         const packed = def.pack(src as never)
         p1.set(packed.a, o)
         if (packed.b) p2.set(packed.b, o)
