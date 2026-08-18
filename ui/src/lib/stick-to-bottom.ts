@@ -90,7 +90,24 @@ export function bottomStick(): BottomStick {
     follow() {
       // Assigning past the maximum is clamped by the browser, so this lands at
       // the end without needing to compute where the end is.
-      if (el && !held) el.scrollTop = el.scrollHeight
+      if (!el || held) return
+      const node = el
+      node.scrollTop = node.scrollHeight
+      // AND AGAIN NEXT FRAME, because `scrollHeight` is only as current as the
+      // DOM. A streamed reply renders through markdown, and a code block, an
+      // image or a table settles its own layout in a later update — so the
+      // height read here can still be the one from before the delta landed, and
+      // the view ends up a line short of the newest text. Every delta, that
+      // reads as the transcript creeping upward while the answer writes itself
+      // below the fold.
+      //
+      // Re-reading next frame costs one clamped assignment and fixes it for
+      // every caller, which is why it is here and not at four call sites.
+      // `held` is re-checked: a reader who scrolled away in between wins.
+      if (typeof requestAnimationFrame !== 'function') return
+      requestAnimationFrame(() => {
+        if (el === node && !held) node.scrollTop = node.scrollHeight
+      })
     },
     jump() {
       held = false

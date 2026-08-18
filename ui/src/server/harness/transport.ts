@@ -898,18 +898,34 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
  *  price the turn (see `LedgerAttribution.tier`). `persona.ts` resolves the same
  *  ids for capability keys, and does it from the database. */
 export async function pickTransport(model: string): Promise<Transport> {
-  if ((await gatewayModels()).some((m) => m.id === model)) return gatewayTransport
+  return (await transportKind(model)) === 'fleet' ? fleetTransport : gatewayTransport
+}
+
+/** The same choice, for the STREAMING pair.
+ *
+ *  It resolves the kind through the one function below rather than repeating the
+ *  gateway/fleet/tier lookup, because two copies of "which side is this model
+ *  on" is how a blocking call and a streaming call of the SAME model end up on
+ *  different transports — and that failure looks like the stream being broken
+ *  rather than like a routing bug. */
+export async function pickStreamingTransport(model: string): Promise<StreamingTransport> {
+  return (await transportKind(model)) === 'fleet' ? fleetStream : gatewayStream
+}
+
+/** Which side of the house a model lives on. The rule, stated once. */
+async function transportKind(model: string): Promise<'gateway' | 'fleet'> {
+  if ((await gatewayModels()).some((m) => m.id === model)) return 'gateway'
   // An empty fleet simply matches nothing here — there is no longer a "did the
   // manifest answer at all" flag to consult, because an unrendered manifest and
   // a fleet with no agents are the same fact.
   const fleet = await listAgents()
-  if (fleet.some((a) => a.id === model)) return fleetTransport
+  if (fleet.some((a) => a.id === model)) return 'fleet'
   const cut = model.lastIndexOf('-')
-  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return fleetTransport
+  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return 'fleet'
   // Neither: let the gateway say so. `completeViaGateway` throws a precise
   // "model X is not on the gateway", which is a better failure than a
   // persona stream that looks like an answer.
-  return gatewayTransport
+  return 'gateway'
 }
 
 export const defaultTransport: Transport = async (req) => (await pickTransport(req.model))(req)

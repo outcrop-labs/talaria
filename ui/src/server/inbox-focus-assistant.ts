@@ -20,7 +20,8 @@
 //   the ten-second deadline. `runHarness` has no timeout of its own, and an
 //   Inbox turn that hangs is a spinner the owner watches until they give up. It
 //   travels as `ctx.signal`, which the fleet transport hands to `proxyChat`.
-import { runHarness } from './harness/run'
+import { runHarness, runHarnessStreamed } from './harness/run'
+import { pickStreamingTransport } from './harness/transport'
 import {
   allowedFocusActionIds,
   inboxBriefHarness,
@@ -32,11 +33,31 @@ import {
 import { validBrief, validateCommandObject } from './inbox-focus-policy'
 import type { AssistantBrief } from './inbox-focus-types'
 
+/** The cap on a turn NOBODY IS WATCHING: the one-line brief on a queue card,
+ *  and the structured command validation behind an action. Both are drawn
+ *  alongside other content, both have an honest fallback, and a card that is
+ *  ten seconds late is worse than a card that says it could not be written. */
 const DEADLINE_MS = 10_000
 
-function deadlineSignal(parent?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+/** The cap on a turn SOMEBODY IS WAITING FOR — a question they typed into the
+ *  assistant panel.
+ *
+ *  Nine times the brief's, and the asymmetry is the entire point. This deadline
+ *  used to be the same 10s, which is shorter than the model takes to answer
+ *  anything real: a comparable question on this workspace's own assistant
+ *  measures ~23 seconds. So every conversational reply aborted before it
+ *  finished and the panel said "your assistant is temporarily unavailable" —
+ *  reported, accurately, as the agents not replying. The assistant was never
+ *  unavailable; it was interrupted.
+ *
+ *  A person who has asked a question will wait. What they will not forgive is
+ *  being told nobody is home, and — now that the reply actually streams — the
+ *  wait is visible as words arriving rather than as a blank panel. */
+const REPLY_DEADLINE_MS = 90_000
+
+function deadlineSignal(parent?: AbortSignal, ms = DEADLINE_MS): { signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new DOMException('Inbox assistant timed out', 'TimeoutError')), DEADLINE_MS)
+  const timeout = setTimeout(() => controller.abort(new DOMException('Inbox assistant timed out', 'TimeoutError')), ms)
   const abortFromParent = () => controller.abort(parent?.reason)
   parent?.addEventListener('abort', abortFromParent, { once: true })
   return {
@@ -147,6 +168,88 @@ async function replyTurn(
     const result = await runHarness(inboxReplyHarness, { messages }, { caller, model, signal: deadline.signal })
     parentSignal?.throwIfAborted()
     return result.value ? result.value.slice(0, max) || null : null
+  } finally {
+    deadline.dispose()
+  }
+}
+
+/** The same conversational reply, STREAMED — deltas as the model writes them.
+ *
+ *  WHY THIS EXISTS. `requestText` blocks on the whole turn and its caller then
+ *  fed the finished string through `chunkText` to fake a stream. From the
+ *  panel's side that is not streaming at all: the status line sits there for the
+ *  entire turn with nothing under it, and then the whole answer lands at once in
+ *  a burst. On a model that takes twenty seconds it reads exactly like the
+ *  assistant not replying, which is what it was reported as.
+ *
+ *  AN ASYNC GENERATOR, because its caller is one. `runHarnessStreamed` pushes
+ *  deltas at a callback, and the bridge below turns that into something a
+ *  `for await` can pull: deltas queue up, the consumer wakes on each one, and
+ *  the RETURN value is the run's own guarded text — not the concatenated
+ *  deltas, so a guarded or repaired reply is what gets persisted.
+ *
+ *  The transport is resolved with `pickStreamingTransport`, which shares its
+ *  rule with the blocking `pickTransport`; a fleet persona and an org gateway
+ *  model both stream, and neither caller has to know which it got. */
+export async function* streamReply(
+  model: string,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  caller: string,
+  max = 20_000,
+  parentSignal?: AbortSignal,
+): AsyncGenerator<string, string | null, void> {
+  const deadline = deadlineSignal(parentSignal, REPLY_DEADLINE_MS)
+  const stream = await pickStreamingTransport(model)
+
+  const queue: string[] = []
+  let wake: (() => void) | null = null
+  let settled = false
+  let value: string | null = null
+  let failure: unknown = null
+  const nudge = (): void => {
+    const w = wake
+    wake = null
+    w?.()
+  }
+
+  const run = runHarnessStreamed(
+    inboxReplyHarness,
+    { messages },
+    { caller, model, signal: deadline.signal },
+    {
+      stream,
+      onDelta: (delta) => {
+        queue.push(delta)
+        nudge()
+      },
+    },
+  )
+    .then((result) => {
+      value = result.value ? result.value.slice(0, max) || null : null
+    })
+    .catch((e: unknown) => {
+      failure = e
+    })
+    .finally(() => {
+      settled = true
+      nudge()
+    })
+
+  try {
+    for (;;) {
+      while (queue.length > 0) yield queue.shift()!
+      if (settled) break
+      // One waiter at a time: the generator is pulled by a single consumer, and
+      // `nudge` clears the slot before resolving so a delta arriving between the
+      // check and the await cannot be missed.
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
+    }
+    await run
+    if (failure) throw failure
+    parentSignal?.throwIfAborted()
+    return value
   } finally {
     deadline.dispose()
   }
