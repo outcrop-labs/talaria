@@ -1172,8 +1172,65 @@ for (const rule of CENSUS) {
   // construction, and an unparseable clause is treated as a violation — the
   // safe direction to be wrong in, since the cost is a question rather than a
   // database pool in the browser bundle.
+  // THE OTHER DIRECTION, and by the asymmetry above it is the one that matters
+  // more: four shapes reached `@/server/` without the word `from` in an import
+  // clause, so none of them matched, and every one of them pulls the SAME
+  // module graph. A side-effect import evaluates it; a dynamic import puts it
+  // in a lazy chunk that fails when called rather than at load; a re-export
+  // hands it to whoever imports the browser module next, which is worse than
+  // keeping it, because the pool arrives somewhere that never named `@/server/`
+  // at all. `type` guards on the re-export because `export type { … } from` is
+  // erased exactly like the import spelling.
+  const SIDE_EFFECT_FROM_SERVER = /\bimport\s*['"]@\/server\/[^'"]+['"]/g
+  // The dynamic form is matched only in its two RUNTIME spellings, `await
+  // import(…)` and `import(…).then(`, and that is a deliberate under-reach.
+  // `import('@/server/x').SomeType` is a TYPE-position import expression — it
+  // is erased, `lib/inbox-focus.svelte.ts:96` already writes one, and a regex
+  // cannot tell it from a call by its prefix. Matching every `import(` would
+  // have failed that correct line, which is the one outcome this block is
+  // built to avoid: a rule that fires on correct code leaves both responses
+  // (contort it, or widen the rule) worse than having no rule.
+  // The runtime spellings of a dynamic import, and ONLY those.
+  //
+  // Matching every `import(` fires on correct code: `lib/inbox-focus.svelte.ts`
+  // writes `import('@/server/inbox-focus').InboxTimelineEntry` in TYPE
+  // position, which is erased, and no regex can tell that from a call by its
+  // prefix alone — the same shape of limit as "every binding is type-prefixed"
+  // being a property of a list rather than of a string.
+  //
+  // So each alternative below is a context that is RUNTIME BY GRAMMAR, where a
+  // type can never appear:
+  //   await import(…)          an expression, awaited
+  //   import(…).then(          an expression, chained
+  //   return import(…)         `return` takes a value
+  //   void import(…)           `void` takes a value
+  //   const|let|var x = import(…)   a value binding; a type alias says `type`
+  //
+  // That leaves a KNOWING under-reach — `() => import('@/server/x')` is not
+  // here, because `=>` appears in type position too (`type F = () => import(…).T`)
+  // and including it would fire on correct code again. An exotic runtime
+  // spelling can still slip through. That is the deliberate trade: this rule
+  // catches what people actually write, and the alternative — matching every
+  // `import(` and declaring the one legitimate line a census exception — puts
+  // friction on correct code to buy coverage of a form nobody writes.
+  const DYNAMIC_FROM_SERVER = new RegExp(
+    [
+      /\bawait\s+import\s*\(\s*['"]@\/server\/[^'"]+['"]/,
+      /\bimport\s*\(\s*['"]@\/server\/[^'"]+['"]\s*\)\s*\.\s*then\b/,
+      /\breturn\s+import\s*\(\s*['"]@\/server\/[^'"]+['"]/,
+      /\bvoid\s+import\s*\(\s*['"]@\/server\/[^'"]+['"]/,
+      /\b(?:const|let|var)\s+[\w{}[\],\s]+=\s*import\s*\(\s*['"]@\/server\/[^'"]+['"]/,
+    ]
+      .map((r) => r.source)
+      .join('|'),
+    'g',
+  )
+  const REEXPORT_FROM_SERVER = /\bexport\s+(?!type\b)(?:(?!\bexport\b)[^;])*?\sfrom\s*['"]@\/server\/[^'"]+['"]/g
+
+  // Braced form only, and now for `export { … } from` too — a re-export can be
+  // inline-type-only in exactly the same way an import can.
   const typeOnlyClause = (text) => {
-    const brace = /^import\s*\{([^}]*)\}\s*from\b/.exec(text)
+    const brace = /^(?:import|export)\s*\{([^}]*)\}\s*from\b/.exec(text)
     if (!brace) return false
     const bindings = brace[1]
       .split(',')
@@ -1186,9 +1243,11 @@ for (const rule of CENSUS) {
   for (const [path, src] of sources) {
     if (!BROWSER.some((dir) => path.startsWith(dir))) continue
     if (path.endsWith('.test.ts')) continue
-    for (const hit of matches(src, IMPORT_FROM_SERVER)) {
-      if (typeOnlyClause(hit.text)) continue
-      found.push({ path, ...hit })
+    for (const re of [IMPORT_FROM_SERVER, REEXPORT_FROM_SERVER, SIDE_EFFECT_FROM_SERVER, DYNAMIC_FROM_SERVER]) {
+      for (const hit of matches(src, re)) {
+        if (typeOnlyClause(hit.text)) continue
+        found.push({ path, ...hit })
+      }
     }
   }
   if (found.length) {
