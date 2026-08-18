@@ -1148,11 +1148,48 @@ for (const rule of CENSUS) {
   // because the offending `import` and its `from` are the same statement with
   // no `import` keyword between them.
   const IMPORT_FROM_SERVER = /\bimport\s+(?!type\b)(?:(?!\bimport\b)[^;])*?\sfrom\s*['"]@\/server\/[^'"]+['"]/g
+  // `ui/src/lib/` joined this list once the pattern above could tell a type
+  // import from a value one. It is browser code by default — `cn`, the motion
+  // and theme signals, the query wrappers — and it was the one obvious hole:
+  // a value import there ships the database pool into the client bundle just
+  // as surely as one in a component, and nothing was watching. Under the OLD
+  // pattern adding it would have failed two correct files immediately
+  // (`inbox-focus.svelte.ts`, `session.ts`, both type-only server imports
+  // sitting behind another import), which is why the narrowing had to land
+  // first. `ui/src/routes/api/` is deliberately NOT here: those ARE the server.
+  const BROWSER = ['ui/src/components/', 'ui/src/routes/app/', 'ui/src/lib/']
+  // THE LAST FALSE POSITIVE, and it is older than either edit to the pattern
+  // above: `import { type A } from '@/server/x'` — inline `type` on every
+  // binding, no `import type` prefix — is erased at compile time exactly like
+  // the prefixed spelling, and matches anyway. Nothing in the tree writes it
+  // that way today, which is precisely why it is worth closing now: it bites
+  // the next person to write one, and what it hands them is the contort-or-
+  // widen dilemma this whole block exists to avoid.
+  //
+  // A regex cannot express "every binding is type-prefixed" (it is a property
+  // of a list), so the decision is made on the matched text instead. Only the
+  // braced form can be type-only; a default or namespace import is a value by
+  // construction, and an unparseable clause is treated as a violation — the
+  // safe direction to be wrong in, since the cost is a question rather than a
+  // database pool in the browser bundle.
+  const typeOnlyClause = (text) => {
+    const brace = /^import\s*\{([^}]*)\}\s*from\b/.exec(text)
+    if (!brace) return false
+    const bindings = brace[1]
+      .split(',')
+      .map((b) => b.trim())
+      .filter(Boolean)
+    return bindings.length > 0 && bindings.every((b) => /^type\s+\S/.test(b))
+  }
+
   const found = []
   for (const [path, src] of sources) {
-    if (!path.startsWith('ui/src/components/') && !path.startsWith('ui/src/routes/app/')) continue
+    if (!BROWSER.some((dir) => path.startsWith(dir))) continue
     if (path.endsWith('.test.ts')) continue
-    for (const hit of matches(src, IMPORT_FROM_SERVER)) found.push({ path, ...hit })
+    for (const hit of matches(src, IMPORT_FROM_SERVER)) {
+      if (typeOnlyClause(hit.text)) continue
+      found.push({ path, ...hit })
+    }
   }
   if (found.length) {
     failures.push({
