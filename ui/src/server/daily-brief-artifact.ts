@@ -101,7 +101,7 @@ export function renderBrief(entries: BriefEntry[], row: Pick<MirrorRow, 'briefDa
   }
 
   if (updates.length > 0) {
-    out.push('## How the day moved', '')
+    out.push('## Timeline', '')
     // Oldest first here, unlike the surface. A shared document is read
     // top-to-bottom as a narrative; the live view leads with the newest because
     // its reader is checking what they missed.

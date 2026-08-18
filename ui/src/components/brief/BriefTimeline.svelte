@@ -6,7 +6,7 @@
   import { clockLabel, type BriefView } from './daily-brief.svelte'
 
   /**
-   * How the day moved — the append log, made visible.
+   * The timeline — the append log, made visible.
    *
    * THIS IS THE HALF THE OLD INBOX COULD NOT HAVE. A queue reorders itself
    * under the reader and therefore cannot answer "what changed since I looked";

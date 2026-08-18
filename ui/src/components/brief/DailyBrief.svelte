@@ -15,7 +15,10 @@
   import BriefLineRow from './BriefLine.svelte'
   import BriefSkeleton from './BriefSkeleton.svelte'
   import BriefTimeline from './BriefTimeline.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import HomeTabs from '@/routes/app/home/HomeTabs.svelte'
+  import { greeting } from '@/routes/app/home/home'
+  import { useSession } from '@/lib/session'
   import {
     isBriefAbsent,
     SECTION_HINT,
@@ -62,6 +65,7 @@
   const query = useBrief()
   const actions = useBriefActions()
   useBriefLive()
+  const session = useSession()
 
   type Aside = 'timeline' | 'chat' | 'mail' | 'agenda'
   let aside = $state<Aside | null>(null)
@@ -79,8 +83,15 @@
 </script>
 
 <div class="flex h-full min-h-0">
-  <div class="min-w-0 flex-1 overflow-y-auto px-4 pb-16 pt-8 sm:px-8 sm:pt-12">
-    <main use:staggerIn class="mx-auto w-full max-w-[800px]">
+  <div class="min-w-0 flex-1 overflow-y-auto p-8 pb-16">
+    <main use:staggerIn class="mx-auto w-full max-w-[var(--page-width)]">
+      <!-- The SAME greeting ConsoleHome renders, deliberately identical.
+           Inbox is a Home tab, and it was the only one opening straight onto
+           its tab strip — so every move between it and a sibling slid the
+           whole page up or down by the height of a header nobody had noticed
+           was missing. Matching it is what makes the strip hold still. -->
+      <ViewHeader class="mb-6" title={greeting(session.data?.name ?? session.data?.email)} />
+
       <!-- Home's tab strip. It lived in `FocusInbox` for the same reason it
            lives here: `ConsoleHome` never renders for this tab, so without it
            the surface most people land on has no way out of itself. -->
@@ -136,7 +147,7 @@
                 }}
               >
                 <Activity size={13} />
-                {day.unseenCount > 0 ? `${day.unseenCount} new since you looked` : 'How today moved'}
+                {day.unseenCount > 0 ? `${day.unseenCount} new since you looked` : 'Timeline'}
               </Button>
               <Button
                 size="sm"
@@ -151,9 +162,14 @@
               {#if day.artifactId}
                 <!-- The mirror. Offered rather than pushed: the document on
                      screen is the brief, and this is where you go to share or
-                     export it. -->
+                     export it.
+                     "Files", not "artifact": that view is called Files in the
+                     nav (lib/nav.ts), and naming the same destination twice is
+                     how a person ends up looking for a section that isn't
+                     there. `artifact` is the word the schema uses, not the word
+                     on the screen. -->
                 <Button size="sm" variant="ghost" onclick={() => void navigate('/artifacts', { search: { a: day.artifactId! } })}>
-                  <ExternalLink size={13} /> Open as artifact
+                  <ExternalLink size={13} /> Open in Files
                 </Button>
               {/if}
             </div>
@@ -217,7 +233,7 @@
     >
       <header class="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3">
         <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          {aside === 'timeline' ? 'How today moved' : `Ask ${day.agent.name ?? 'your assistant'}`}
+          {aside === 'timeline' ? 'Timeline' : `Ask ${day.agent.name ?? 'your assistant'}`}
         </span>
         <span class="ml-auto"></span>
         <IconButton size="sm" title="Close" onclick={() => (aside = null)}>
