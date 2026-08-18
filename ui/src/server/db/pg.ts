@@ -1730,6 +1730,92 @@ const MIGRATIONS: string[] = [
   `create unique index if not exists runs_approval_key_idx
      on runs (approval_key) where approval_key is not null`,
 
+  // ── THE DAILY BRIEF: one document per person per day, WRITTEN ONCE AND ONLY
+  //    EVER APPENDED TO ─────────────────────────────────────────────────────
+  //
+  // The brief opens two hours before the workday (server/daily-brief.ts) and
+  // then follows the day: a ticket moves, an approval lands, a DM arrives, and
+  // the brief LEARNS about it. What it must never do is rewrite itself. A
+  // person who read their brief at 08:00 and comes back at 14:00 has to be
+  // able to find the thing they read — and to see what changed under it —
+  // which a regenerated document cannot offer at any level of prompt care,
+  // because the earlier text no longer exists.
+  //
+  // So immutability is SCHEMA, not discipline. `daily_brief_entries` rows are
+  // insert-only: nothing in server/daily-brief.ts issues an UPDATE against
+  // them, and the one mutable column in the whole feature is the parent row's
+  // `read_seq` (how far the reader got), which is about the reader and not
+  // about the content. An item that resolves does not get edited or deleted;
+  // a NEW row is appended with `supersedes` pointing at the row it retires,
+  // and the view is a fold over the log in `seq` order.
+  //
+  // That is also what makes the surface honest under failure. A sweep that
+  // half-completes leaves a shorter log, never a corrupted document, and the
+  // next sweep appends what it missed — because the diff is computed against
+  // the FOLD, not against a snapshot the sweep is trusted to have written.
+  `create table if not exists daily_briefs (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     -- The LOCAL calendar date, resolved in 'zone' at open time. A date rather
+     -- than a timestamp because "which brief" is a question about the reader's
+     -- day, and the unique constraint below is what makes a double-firing
+     -- scheduler tick a no-op instead of a second brief.
+     brief_date date not null,
+     zone text not null default 'UTC',
+     -- The assistant that wrote it, captured at open time. Recorded rather
+     -- than joined because the owner may re-point or rename their assistant
+     -- later, and a brief is a document with an author, not a live view.
+     agent_model text,
+     agent_name text,
+     -- The mirrored artifact (share, export, public link). DERIVED from the
+     -- log and rewritten on every append, so it can be deleted or fail to
+     -- write without the brief losing anything.
+     artifact_id uuid references artifacts(id) on delete set null,
+     -- The append cursor. Held here so a concurrent sweep cannot mint two
+     -- entries at the same seq (the unique index below is the enforcement).
+     last_seq integer not null default 0,
+     -- How far the reader has read, and the ONLY column here that a normal day
+     -- updates. New-since-you-looked is a property of the reader.
+     read_seq integer not null default 0,
+     last_swept_at timestamptz,
+     created_at timestamptz not null default now(),
+     unique (user_id, brief_date)
+   )`,
+  `create index if not exists daily_briefs_user_idx on daily_briefs(user_id, brief_date desc)`,
+  `create table if not exists daily_brief_entries (
+     id uuid primary key default gen_random_uuid(),
+     brief_id uuid not null references daily_briefs(id) on delete cascade,
+     seq integer not null,
+     -- 'lede'     the assistant's opening read on the day (seq 1)
+     -- 'item'     something that needs the owner, as it first appeared
+     -- 'change'   the same source, materially different — supersedes the last
+     -- 'resolved' the source stopped needing them — supersedes the last
+     -- 'note'     the assistant narrating a batch of changes
+     kind text not null,
+     section text not null default 'action',
+     -- inbox-focus's keyOf(sourceType, sourceId). The identity the fold
+     -- groups on and the diff compares against; null for narrative entries.
+     source_key text,
+     source_type text,
+     source_id text,
+     source_href text,
+     -- inbox-focus's sourceFingerprint. The whole change detector: same key
+     -- + same fingerprint means nothing happened and nothing is appended.
+     fingerprint text,
+     supersedes uuid references daily_brief_entries(id) on delete set null,
+     priority text,
+     status_label text,
+     badge jsonb,
+     title text not null default '',
+     body text not null default '',
+     evidence jsonb not null default '[]'::jsonb,
+     created_at timestamptz not null default now()
+   )`,
+  // The fold's only query, and the guard that makes `last_seq` a real cursor
+  // rather than a hint: two sweeps racing to append cannot both win a seq.
+  `create unique index if not exists daily_brief_entries_seq_idx on daily_brief_entries(brief_id, seq)`,
+  `create index if not exists daily_brief_entries_key_idx on daily_brief_entries(brief_id, source_key)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

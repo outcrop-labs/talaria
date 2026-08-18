@@ -152,6 +152,28 @@ export const BAYER = [
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
 
+/**
+ * Where a canvas sits on the PAGE-WIDE dot lattice.
+ *
+ * Both fields in this app — the ambient/bloom engine here and the skeleton
+ * field in `skeleton-static.ts` — key their grid to the document rather than to
+ * their own canvas, so two fields sitting near each other are windows onto one
+ * material instead of two patterns up to a pitch out of phase. This is the
+ * arithmetic they share.
+ *
+ * `frac` is how far into a cell the canvas starts (subtract it when placing
+ * dots); `cell` is the index of that cell on the page (add it before hashing
+ * or reading the Bayer matrix).
+ *
+ * Captured when geometry is measured, NOT per frame: page coordinates move
+ * whenever a scroll container does, and a field re-keyed every scroll frame
+ * would crawl.
+ */
+export function latticeOrigin(pageCoord: number, pitch: number): { frac: number; cell: number } {
+  const frac = ((pageCoord % pitch) + pitch) % pitch
+  return { frac, cell: Math.round((pageCoord - frac) / pitch) }
+}
+
 /** Deterministic 2D+time hash → [0,1) for the shimmer jitter (and for the
  *  skeleton field's per-cell noise — see BAYER above). */
 export function hash01(x: number, y: number, t: number): number {
@@ -296,6 +318,11 @@ export class DitherEngine {
   private ghostSeq = 0
   private wCss = 0
   private hCss = 0
+  // Position on the page-wide lattice — see `latticeOrigin`.
+  private fx = 0
+  private fy = 0
+  private ox = 0
+  private oy = 0
   private raf = 0
   private reduced = false
   private lastShimmerBucket = -1
@@ -321,6 +348,17 @@ export class DitherEngine {
     if (wCss <= 0 || hCss <= 0) return
     this.wCss = wCss
     this.hCss = hCss
+
+    // Re-key to the page lattice. Read from the canvas itself so a bled layer
+    // (whose canvas extends past its container) lands correctly without the
+    // caller having to subtract the bleed a second time.
+    const rect = this.canvas.getBoundingClientRect()
+    const gx = latticeOrigin(rect.left + window.scrollX, this.opts.pitch)
+    const gy = latticeOrigin(rect.top + window.scrollY, this.opts.pitch)
+    this.fx = gx.frac
+    this.fy = gy.frac
+    this.ox = gx.cell
+    this.oy = gy.cell
     this.canvas.width = Math.round(wCss * dpr)
     this.canvas.height = Math.round(hCss * dpr)
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -450,16 +488,23 @@ export class DitherEngine {
     }
     if (active.length === 0) return
 
-    const cols = Math.ceil(wCss / pitch)
-    const rows = Math.ceil(hCss / pitch)
+    // `+ frac` because the grid starts up to one pitch before this canvas —
+    // without it the last column/row on the far edge would be dropped.
+    const cols = Math.ceil((wCss + this.fx) / pitch)
+    const rows = Math.ceil((hCss + this.fy) / pitch)
     const size = cover ? pitch : dot
     const off = cover ? 0 : (pitch - dot) / 2
     const bucket = Math.floor(now / 160)
 
     for (let cy = 0; cy < rows; cy++) {
-      const y = cy * pitch + pitch / 2
+      const y = cy * pitch - this.fy + pitch / 2
+      // Page cell indices: the matrix and the noise are read from these, so the
+      // pattern is continuous across every field on the page. The FIELD is
+      // still sampled in local coordinates, because sources are local.
+      const gy = this.oy + cy
       for (let cx = 0; cx < cols; cx++) {
-        const x = cx * pitch + pitch / 2
+        const x = cx * pitch - this.fx + pitch / 2
+        const gx = this.ox + cx
 
         // Screen-accumulate density; colour is the tone mix weighted by each
         // source's contribution, so an accent halo tints only where it lives.
@@ -484,17 +529,17 @@ export class DitherEngine {
         if (organic > 0) {
           // Two octaves — 4-cell blocks give the clusters, per-cell breaks
           // their edges. Seeds are constants: the clumps never move.
-          const clump = 0.6 * hash01(cx >> 2, cy >> 2, 7) + 0.4 * hash01(cx, cy, 13)
+          const clump = 0.6 * hash01(gx >> 2, gy >> 2, 7) + 0.4 * hash01(gx, gy, 13)
           density *= 1 + organic * (clump * 1.8 - 0.9)
         }
         if (shimmer > 0 && !this.reduced && density > 0.03 && density < 0.97) {
-          density += (hash01(cx, cy, bucket) - 0.5) * shimmer
+          density += (hash01(gx, gy, bucket) - 0.5) * shimmer
         }
-        if (density <= (BAYER[(cy & 7) * 8 + (cx & 7)]! + 0.5) / 64) continue
+        if (density <= (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64) continue
 
         const alpha = cover ? 1 : alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
         ctx.fillStyle = `rgba(${Math.round(r / wsum)},${Math.round(g / wsum)},${Math.round(b / wsum)},${alpha})`
-        ctx.fillRect(cx * pitch + off, cy * pitch + off, size, size)
+        ctx.fillRect(cx * pitch - this.fx + off, cy * pitch - this.fy + off, size, size)
       }
     }
   }

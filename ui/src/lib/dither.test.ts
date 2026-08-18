@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { evalSource, type DitherSource } from './dither'
+import { evalSource, latticeOrigin, type DitherSource } from './dither'
 
 // The field math, which is the half of the engine that carries intent and the
 // half that degrades silently — a wrong exponent still paints a field, just
@@ -128,4 +128,46 @@ test('strength scales every kind, so a source can be tweened to nothing', () => 
     { id: 'f', kind: 'wave', axis: 'x', wavelength: 50, speed: 10, strength: 0 },
   ]
   for (const s of kinds) assert.equal(at(s, 5, 5), 0, `${s.kind} ignored strength 0`)
+})
+
+// ── the page-wide lattice ───────────────────────────────────────────────────
+// Both canvas fields in the app key their grid to the document rather than to
+// their own canvas, so a bloom and a skeleton sitting near each other are
+// windows onto ONE material instead of two patterns up to a pitch out of
+// phase. This is the arithmetic they share, so it is the arithmetic that has
+// to agree.
+
+test('a canvas flush with the lattice has no offset', () => {
+  assert.deepEqual(latticeOrigin(0, 4), { frac: 0, cell: 0 })
+  assert.deepEqual(latticeOrigin(16, 4), { frac: 0, cell: 4 })
+})
+
+test('a canvas mid-cell reports how far in it starts', () => {
+  // 18px into a 4px pitch: two whole cells past cell 4, starting 2px in.
+  assert.deepEqual(latticeOrigin(18, 4), { frac: 2, cell: 4 })
+  assert.deepEqual(latticeOrigin(19, 4), { frac: 3, cell: 4 })
+})
+
+test('negative page coordinates stay on the same lattice', () => {
+  // A bled canvas can start left of the viewport origin. A plain `%` would
+  // return a negative remainder here and shift the dots off the grid.
+  assert.deepEqual(latticeOrigin(-2, 4), { frac: 2, cell: -1 })
+  assert.deepEqual(latticeOrigin(-4, 4), { frac: 0, cell: -1 })
+  assert.deepEqual(latticeOrigin(-5, 4), { frac: 3, cell: -2 })
+})
+
+test('frac is always inside one pitch, and cell*pitch+frac reconstructs the input', () => {
+  for (const px of [-9.5, -4, -0.25, 0, 1, 3.75, 12, 18.2, 101]) {
+    const { frac, cell } = latticeOrigin(px, 4)
+    assert.ok(frac >= 0 && frac < 4, `frac out of range for ${px}: ${frac}`)
+    assert.ok(Math.abs(cell * 4 + frac - px) < 1e-9, `does not reconstruct ${px}`)
+  }
+})
+
+test('two canvases a whole number of cells apart share a phase', () => {
+  // The property that makes the two fields one material.
+  const a = latticeOrigin(100, 4)
+  const b = latticeOrigin(140, 4)
+  assert.equal(a.frac, b.frac)
+  assert.equal(b.cell - a.cell, 10)
 })

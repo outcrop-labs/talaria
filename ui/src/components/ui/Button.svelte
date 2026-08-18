@@ -13,13 +13,21 @@
     /**
      * A dither bloom on approach — Mercury's matte substitute for glow.
      *
-     * ON BY DEFAULT FOR `primary` ONLY, and that is a cost decision as much as
-     * a taste one. Every bloom is a canvas plus a handful of observers; the app
-     * has 241 buttons, and giving all of them one would be hundreds of
-     * observers for an effect that belongs on the action you actually want
-     * someone to take. 100 are primary and no file holds more than four, so
-     * the gold call-to-action gets reach and a toolbar full of ghosts stays
-     * cheap. Pass it explicitly either way to override.
+     * ON BY DEFAULT FOR `primary` ONLY. Partly taste — the bloom means "this is
+     * the thing to press", and a surface where everything reaches for you says
+     * nothing. Partly cost: each bloom is its own canvas and its own rAF loop.
+     *
+     * The observers are NOT part of that cost any more. They were once — a
+     * MutationObserver and a media listener per instance — but the skeleton
+     * field needed the same two signals, so they became ref-counted shared
+     * subscriptions (`onThemeChange`, `onReducedMotion`) and the whole page now
+     * pays for one of each however many fields are mounted. What remains
+     * per-instance is the canvas and its loop, and the engine parks that loop
+     * as soon as a field is static, so an un-hovered bloom costs one paint.
+     *
+     * Which leaves the taste argument carrying most of the weight, and it is
+     * enough: 100 of 241 buttons are primary and no file holds more than four.
+     * Pass it explicitly either way to override.
      */
     bloom?: boolean
   }
