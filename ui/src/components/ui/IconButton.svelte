@@ -66,10 +66,9 @@
             ...rect,
             radius,
             spread,
-            strength: 0.5,
+            strength: 0.95,
             inner: 0,
             rim: 0,
-            falloff: 3,
             tone: danger ? 'danger' : 'neutral',
           },
         ]
@@ -120,7 +119,7 @@
   <!-- `inline-flex` shrink-wraps the tile, and the canvas spills past it via
        `bleed`, so the halo costs no layout. -->
   <span bind:this={wrap} class="relative inline-flex shrink-0">
-    <DitherLayer {sources} bleed={BLEED} organic={0.35} />
+    <DitherLayer {sources} bleed={BLEED} organic={0.15} />
     {@render control()}
   </span>
 {:else}

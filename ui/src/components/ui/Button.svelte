@@ -97,10 +97,9 @@
             ...rect,
             radius,
             spread,
-            strength: 0.5,
+            strength: 0.95,
             inner: 0,
             rim: 0,
-            falloff: 3,
             tone: TONES[variant] ?? 'neutral',
           },
         ]
@@ -111,7 +110,7 @@
 <!-- The one button. Reuse everywhere — do not re-style buttons inline. -->
 {#if wantsBloom}
   <span bind:this={wrap} class={`relative inline-flex ${split.outer}`}>
-    <DitherLayer {sources} bleed={BLEED} organic={0.35} />
+    <DitherLayer {sources} bleed={BLEED} organic={0.15} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
          the bloom's — both run. -->

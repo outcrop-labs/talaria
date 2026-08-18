@@ -23,7 +23,7 @@
     selector = '[aria-pressed="true"],[aria-current="true"],[aria-selected="true"]',
     tone = 'accent',
     spread,
-    strength = 0.55,
+    strength = 0.95,
     pad = 2,
     falloff,
   }: {
@@ -84,4 +84,4 @@
 </script>
 
 <span bind:this={anchor} class="contents"></span>
-<DitherLayer {sources} {bleed} organic={0.35} />
+<DitherLayer {sources} {bleed} organic={0.15} />

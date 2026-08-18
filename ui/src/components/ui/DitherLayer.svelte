@@ -20,12 +20,17 @@
    * weather system.
    */
   export function spreadFor(shortSide: number): number {
-    // A RIM, not a halo. 0.32 of the short side put a 12px field around a 36px
-    // button — a third of the control again on every side, so neighbouring
-    // buttons in a toolbar merged into one cloud and the treatment read as
-    // bigger than the thing it was decorating. The eye wants an edge that
-    // softens, not a second control made of dots.
-    return Math.max(3, Math.min(7, Math.round(shortSide * 0.16)))
+    // A BAND AROUND THE BORDER, which is what this is for — not a cloud and
+    // not a whisper. 0.32 of the short side put 12px around a 44px button, so
+    // neighbouring controls merged into one field. Dropping to 0.16 with a
+    // steep falloff overcorrected the other way: 28 dots reaching 2px, which
+    // reads as scattered specks rather than as an edge.
+    //
+    // The reach is short AND the density is high (strength ~0.95 at the
+    // boundary), so the dots hug the border and fade out across a few px.
+    // Density is what makes it read as a band; distance is what made it read
+    // as a cloud.
+    return Math.max(4, Math.min(9, Math.round(shortSide * 0.18)))
   }
 
   /** The bleed a field needs so nothing is clipped: the widest reach in the
