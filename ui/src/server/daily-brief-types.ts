@@ -152,4 +152,6 @@ export interface BriefAbsent {
 
 export type BriefResponse = BriefView | BriefAbsent
 
-export const isBriefAbsent = (value: BriefResponse): value is BriefAbsent => 'absent' in value
+// Re-exported, not defined: the one definition lives in `@/lib/brief-absent`
+// so the browser can reach it without importing a value from `@/server/`.
+export { isBriefAbsent } from '@/lib/brief-absent'

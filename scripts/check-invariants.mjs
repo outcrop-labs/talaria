@@ -827,6 +827,73 @@ for (const [ruleId, name] of [
   }
 }
 
+// A BACKTICK INSIDE A SQL COMMENT IN pg.ts, which has now broken the tree twice
+// in one day — the same shape, the same file, found both times by a bystander.
+//
+// `MIGRATIONS` is an array of BACKTICK template literals holding SQL. A `--`
+// comment inside one of those strings is still inside the string, so quoting an
+// identifier the way the surrounding TypeScript does terminates the literal
+// early. What you get is not an error at the offending line: the rest of the
+// array becomes a string, the file stops parsing, and ~51 test files fail to
+// import with errors pointing nowhere near the edit. That is a genuinely
+// expensive twenty minutes for anyone who did not write the comment.
+//
+// It reads the file RAW rather than from `sources`, because that map is
+// comment-stripped and this bug lives entirely in a comment.
+//
+// This is not a style rule. Single quotes read identically in a SQL comment and
+// cannot end the string.
+{
+  const PG = 'ui/src/server/db/pg.ts'
+  const raw = readFileSync(join(ROOT, PG), 'utf8')
+  const start = raw.indexOf('const MIGRATIONS: string[] = [')
+  if (start === -1) {
+    failures.push({
+      id: 'pg-migrations-array-missing',
+      what: `the MIGRATIONS array was not found in ${PG}; the backtick check below is now inert`,
+      fix: ['If the array moved or was renamed, update this check in scripts/check-invariants.mjs.'],
+      found: [],
+    })
+  } else {
+    const body = raw.slice(start, raw.indexOf('\n]', start))
+    const offenders = []
+    let inside = false
+    body.split('\n').forEach((line, i) => {
+      const trimmed = line.trim()
+      if (inside && trimmed.startsWith('--') && line.includes('`')) {
+        offenders.push({ line: i + 1, text: trimmed.slice(0, 100) })
+      }
+      // Odd number of backticks on a line flips whether we are inside a literal.
+      if ((line.match(/`/g) ?? []).length % 2 === 1) inside = !inside
+    })
+    if (inside) {
+      failures.push({
+        id: 'pg-migrations-unterminated-literal',
+        what: `${PG}'s MIGRATIONS array has an unterminated template literal — the file will not parse`,
+        fix: [
+          'A backtick inside a sql `--` comment ended the string early. Find it and use single',
+          'quotes instead. Nothing else in the repo will typecheck until this is fixed, and the',
+          'errors it reports will point at unrelated files.',
+        ],
+        found: [],
+      })
+    }
+    if (offenders.length) {
+      failures.push({
+        id: 'backtick-in-pg-sql-comment',
+        what: 'a backtick quoting an identifier inside a sql comment in the MIGRATIONS array',
+        fix: [
+          'Use single quotes. The array is delimited by backticks, so inside it a backtick ends',
+          "the string — the file stops parsing and ~51 test files fail to import with errors",
+          'nowhere near the edit. This has broken the tree twice; the comment reads the same',
+          'either way.',
+        ],
+        found: offenders.map((o) => ({ path: PG, line: o.line, text: o.text })),
+      })
+    }
+  }
+}
+
 // Census: exact counts per named file, forbidden anywhere else.
 for (const rule of CENSUS) {
   const found = []
@@ -1069,7 +1136,18 @@ for (const rule of CENSUS) {
 // Tests are exempt: they run in node and importing the real module is how a
 // copy is held to its original.
 {
-  const IMPORT_FROM_SERVER = /\bimport\s+(?!type\b)[^;]*?\sfrom\s*['"]@\/server\/[^'"]+['"]/g
+  // `(?!\bimport\b)` and not a bare `[^;]*?`: this codebase does not use
+  // semicolons, so the original could start at one import statement and run all
+  // the way to a LATER one's `from '@/server/…'`. The first browser module to
+  // carry a legitimate `import type … from '@/server/…'` behind any other
+  // import was reported as a value import — a false positive that invites
+  // exactly the two responses this file's own footer warns against (contorting
+  // correct code, or widening the pattern until it passes).
+  //
+  // This narrows rather than widens: a real value import is still matched,
+  // because the offending `import` and its `from` are the same statement with
+  // no `import` keyword between them.
+  const IMPORT_FROM_SERVER = /\bimport\s+(?!type\b)(?:(?!\bimport\b)[^;])*?\sfrom\s*['"]@\/server\/[^'"]+['"]/g
   const found = []
   for (const [path, src] of sources) {
     if (!path.startsWith('ui/src/components/') && !path.startsWith('ui/src/routes/app/')) continue

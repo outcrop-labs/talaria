@@ -12,11 +12,12 @@
 // scrolling the timeline to the top), never on load.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
-import { isBriefAbsent, type BriefResponse, type BriefView } from '@/server/daily-brief-types'
+import type { BriefResponse, BriefView } from '@/server/daily-brief-types'
 
-export { isBriefAbsent }
 export type { BriefResponse, BriefView }
 export type * from '@/server/daily-brief-types'
+
+export { isBriefAbsent } from '@/lib/brief-absent'
 
 export const BRIEF_KEY = ['daily-brief'] as const
 
