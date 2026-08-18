@@ -56,3 +56,41 @@ export function applyTheme(theme: ThemeId): void {
   root.style.setProperty('color-scheme', mode)
   if (typeof window !== 'undefined') window.localStorage.setItem(STORAGE_KEY, theme)
 }
+
+/**
+ * Subscribe to theme FLIPS, with one observer for the whole page.
+ *
+ * A canvas cannot inherit a CSS variable the way DOM paint does, so anything
+ * that resolves `--theme-*` into pixels has to be told when they change and
+ * repaint — otherwise dark-theme dots sit on a paper-white surface until some
+ * later frame happens to run. `applyTheme` writes both the attribute and the
+ * mode class, and this watches both.
+ *
+ * Ref-counted, because the subscribers are canvas fields: skeletons exist only
+ * while a query is in flight, and a button's bloom only while it is mounted.
+ * One observer beats one per field — the app has hundreds of buttons.
+ */
+export function onThemeChange(cb: () => void): () => void {
+  if (typeof document === 'undefined') return () => {}
+
+  themeSubs.add(cb)
+  if (!themeObserver) {
+    themeObserver = new MutationObserver(() => {
+      for (const sub of themeSubs) sub()
+    })
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'class'],
+    })
+  }
+  return () => {
+    themeSubs.delete(cb)
+    if (themeSubs.size === 0 && themeObserver) {
+      themeObserver.disconnect()
+      themeObserver = null
+    }
+  }
+}
+
+const themeSubs = new Set<() => void>()
+let themeObserver: MutationObserver | null = null

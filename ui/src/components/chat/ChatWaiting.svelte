@@ -34,19 +34,32 @@
     class?: string
   } = $props()
 
-  // Quiet on purpose: the bubble is a container for the mark, not a message.
-  // The mark is the moving thing and has to stay the brightest part of this.
-  const field = ditherSurface({ always: () => true, density: 0.5, weight: 0.3 })
+  // THE DITHER IS THE BUBBLE. There is no border and no fill behind it — the
+  // field's own centre-weighted falloff is the entire form, dense in the
+  // middle and dissolving before the edge, so the shape is something the
+  // texture describes rather than something drawn around it.
+  //
+  // Denser than a control's field for that reason: a hover fill only has to
+  // suggest a surface that already has a border and a tile, where this has to
+  // BE the surface. Still short of the mark's own weight, because the mark is
+  // the moving thing and has to stay the brightest part of this.
+  const field = ditherSurface({ always: () => true, density: 0.72, weight: 0.5 })
 </script>
 
-<!-- `rounded-bl-sm` is the tail — the one corner a chat bubble does not round,
-     which is enough to read as speech without drawing a pointer. -->
+<!-- A FIXED WIDTH, because the mark inside is not one. The rotation deals from
+     thirty states across two families — braille fields run two to six cells
+     wide and a dot grid is a square box — so a bubble that hugged its content
+     would change size every generation, which is a loader drawing attention to
+     the wrong thing. 80px clears the widest (six mono cells at 14px, about
+     50px) with room either side, and everything narrower centres in it.
+
+     The corners are uniform: the dither reads the element's radius to shape
+     itself, and a single radius is all it reads — so a one-cornered tail would
+     be drawn by the border that is no longer there and ignored by the field
+     that replaced it. -->
 <span
   {@attach field}
-  class={cn(
-    'inline-flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-line px-2.5 py-1.5',
-    className,
-  )}
+  class={cn('inline-flex w-20 items-center justify-center rounded-2xl py-1.5', className)}
 >
   <WaitingMark site={{ key: `chat/turn:${id}`, role, slot: 'inline' }} class="text-accent" />
 </span>

@@ -24,11 +24,11 @@
     <div class="divide-y divide-line border-y border-line">
       {#each [0, 1, 2, 3] as i (i)}
         <div class="grid min-h-11 grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-3 py-2">
-          <Skeleton class="h-2.5 w-8 rounded" delay={i * 0.12} />
+          <Skeleton class="h-2.5 w-8 rounded" />
           <div class="flex h-5 items-center">
-            <Skeleton class={`h-3 rounded-full ${rowW[i % rowW.length]}`} delay={i * 0.12} />
+            <Skeleton class={`h-3 rounded-full ${rowW[i % rowW.length]}`} />
           </div>
-          <Skeleton class="h-2.5 w-12 rounded" delay={i * 0.12 + 0.08} />
+          <Skeleton class="h-2.5 w-12 rounded" />
         </div>
       {/each}
     </div>

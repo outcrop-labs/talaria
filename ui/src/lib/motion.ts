@@ -22,8 +22,99 @@ import {
   type TransitionConfig,
 } from 'svelte/transition'
 
-function reducedMotion(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
+
+/** The query every wrapper below degrades on. Exported for code that has to
+ *  ASK rather than be wrapped — the canvas fields animate outside Svelte's
+ *  transition system, so they cannot go through `fade`/`fly`. */
+export function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia(REDUCED_MOTION).matches
+}
+
+/**
+ * Subscribe to reduced-motion CHANGES, with one listener for the whole page.
+ *
+ * `cb` fires immediately with the current value, so a subscriber never has to
+ * read the preference and register a listener as two separate steps (which is
+ * how the two canvas fields each ended up with their own matchMedia).
+ *
+ * Ref-counted: the listener exists only while something is subscribed, which
+ * for a canvas field means only while one is mounted.
+ */
+export function onReducedMotion(cb: (reduced: boolean) => void): () => void {
+  cb(prefersReducedMotion())
+  if (typeof window === 'undefined') return () => {}
+
+  motionSubs.add(cb)
+  if (!motionMq) {
+    motionMq = window.matchMedia(REDUCED_MOTION)
+    motionMq.addEventListener('change', fanOutMotion)
+  }
+  return () => {
+    motionSubs.delete(cb)
+    if (motionSubs.size === 0 && motionMq) {
+      motionMq.removeEventListener('change', fanOutMotion)
+      motionMq = null
+    }
+  }
+}
+
+/* ── The page clock ────────────────────────────────────────────────────────
+ * ONE requestAnimationFrame loop for every looping indicator on the page.
+ *
+ * Lives here rather than in the subsystem that first needed it: the waiting
+ * marks and the skeleton static both drive canvas/DOM animation outside
+ * Svelte's transition system, and a general primitive's engine should not
+ * import from a feature folder to get its clock. This is the same reasoning
+ * that put `onReducedMotion` above it.
+ *
+ * A busy view can have a chat turn, several tool rows, a background monitor and
+ * a screen of skeletons running at once; independent rAF loops would each wake
+ * the compositor on their own schedule and turn a cheap update into a
+ * measurable cost. Subscribers that want a slower cadence (the skeleton field
+ * buckets to 8Hz) do it on top of this rather than beside it.
+ *
+ * Every subscriber shares a single origin, so things that start at different
+ * moments still beat in phase. Two indicators visibly drifting against each
+ * other reads as two unrelated things breaking; in phase it reads as one
+ * system working.
+ *
+ * rAF is already suspended in a background tab, so there is no visibility
+ * guard here — one would be belt-and-braces over a guarantee the platform
+ * makes.
+ */
+type ClockSubscriber = (elapsedMs: number) => void
+
+const clockSubs = new Set<ClockSubscriber>()
+let clockHandle = 0
+let clockOrigin = 0
+
+function clockFrame(now: number): void {
+  if (clockOrigin === 0) clockOrigin = now
+  const elapsed = now - clockOrigin
+  for (const fn of clockSubs) fn(elapsed)
+  clockHandle = requestAnimationFrame(clockFrame)
+}
+
+/** Subscribe to the shared frame loop. Returns an unsubscribe. */
+export function subscribeToClock(fn: ClockSubscriber): () => void {
+  clockSubs.add(fn)
+  if (clockHandle === 0) clockHandle = requestAnimationFrame(clockFrame)
+  return () => {
+    clockSubs.delete(fn)
+    if (clockSubs.size === 0) {
+      cancelAnimationFrame(clockHandle)
+      clockHandle = 0
+      clockOrigin = 0
+    }
+  }
+}
+
+const motionSubs = new Set<(reduced: boolean) => void>()
+let motionMq: MediaQueryList | null = null
+const fanOutMotion = (): void => {
+  const reduced = prefersReducedMotion()
+  for (const cb of motionSubs) cb(reduced)
 }
 
 /** Reduced motion degrades to a quick fade rather than nothing: an element
@@ -37,22 +128,22 @@ export function fade(node: Element, params?: FadeParams): TransitionConfig {
 }
 
 export function fly(node: Element, params?: FlyParams): TransitionConfig {
-  return reducedMotion() ? degrade(node, params) : svFly(node, params)
+  return prefersReducedMotion() ? degrade(node, params) : svFly(node, params)
 }
 
 export function scale(node: Element, params?: ScaleParams): TransitionConfig {
-  return reducedMotion() ? degrade(node, params) : svScale(node, params)
+  return prefersReducedMotion() ? degrade(node, params) : svScale(node, params)
 }
 
 export function slide(node: Element, params?: SlideParams): TransitionConfig {
-  return reducedMotion() ? degrade(node, params) : svSlide(node, params)
+  return prefersReducedMotion() ? degrade(node, params) : svSlide(node, params)
 }
 
 /** Keyed-list reorder animation (`animate:flip`), reduced-motion-aware like
  *  the transitions above. Under reduced motion items jump — position change
  *  is information, and a fade can't carry it, so instant is the honest form. */
 export function flip(node: HTMLElement, positions: { from: DOMRect; to: DOMRect }, params?: FlipParams): AnimationConfig {
-  return reducedMotion() ? { duration: 0 } : svFlip(node, positions, params)
+  return prefersReducedMotion() ? { duration: 0 } : svFlip(node, positions, params)
 }
 
 // ── Round 2: perceptible, elegant ────────────────────────────────────────────
@@ -68,7 +159,7 @@ export function pop(
   node: Element,
   params?: { duration?: number; delay?: number; y?: number; start?: number },
 ): TransitionConfig {
-  if (reducedMotion()) return degrade(node, params)
+  if (prefersReducedMotion()) return degrade(node, params)
   const { duration = 300, delay, y = 12, start = 0.94 } = params ?? {}
   return {
     duration,
@@ -94,7 +185,7 @@ export function autoHeight(node: HTMLElement, opts?: { duration?: number }) {
       last = next
       return
     }
-    if (!reducedMotion()) {
+    if (!prefersReducedMotion()) {
       anim?.cancel()
       const prevOverflow = node.style.overflow
       node.style.overflow = 'hidden'
@@ -136,7 +227,7 @@ export function staggerIn(
   node: HTMLElement,
   opts?: { step?: number; duration?: number; y?: number; maxSteps?: number; itemStep?: number; maxItems?: number },
 ) {
-  if (reducedMotion()) return
+  if (prefersReducedMotion()) return
   const { step = 50, duration = 320, y = 10, maxSteps = 8, itemStep = 30, maxItems = 12 } = opts ?? {}
   const rise = (el: Element, delay: number) =>
     el.animate(
@@ -175,7 +266,7 @@ export function listStagger(
   node: HTMLElement,
   opts?: { step?: number; duration?: number; y?: number; maxItems?: number },
 ) {
-  if (reducedMotion()) return
+  if (prefersReducedMotion()) return
   const { step = 30, duration = 280, y = 6, maxItems = 12 } = opts ?? {}
   Array.from(node.children).forEach((el, i) => {
     if (el.hasAttribute('data-no-stagger')) return
@@ -201,7 +292,7 @@ export function listStagger(
  *  Reduced motion falls back to a quick fade (the fallback leg). */
 export function markCrossfade(duration = 200) {
   return svCrossfade({
-    duration: () => (reducedMotion() ? 0 : duration),
+    duration: () => (prefersReducedMotion() ? 0 : duration),
     easing: quintOut,
     fallback: (node) => svFade(node, { duration: 100 }),
   })

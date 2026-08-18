@@ -11,7 +11,7 @@
   <div class="space-y-3">
     {#each widths as w, i (i)}
       <div style:width={w}>
-        <Skeleton class={i === 0 ? 'h-4 w-full rounded-full' : 'h-2.5 w-full rounded-full'} delay={i * 0.12} />
+        <Skeleton class={i === 0 ? 'h-4 w-full rounded-full' : 'h-2.5 w-full rounded-full'} />
       </div>
     {/each}
   </div>

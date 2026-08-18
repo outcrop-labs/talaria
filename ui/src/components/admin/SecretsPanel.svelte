@@ -86,8 +86,8 @@
       <Skeleton class="h-16 w-full rounded-md" />
       {#each Array.from({ length: 5 }) as _, i (i)}
         <div class="space-y-1.5 py-1">
-          <Skeleton class="h-3 w-48 rounded-full" delay={i * 0.1} />
-          <Skeleton class="h-2.5 w-72 rounded-full" delay={i * 0.1 + 0.05} />
+          <Skeleton class="h-3 w-48 rounded-full" />
+          <Skeleton class="h-2.5 w-72 rounded-full" />
         </div>
       {/each}
     </div>

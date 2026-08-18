@@ -105,7 +105,7 @@
                 <!-- Publisher-declared credentials drive the form; a server
                      without declarations falls back to one auth header. -->
                 {#each s.requiredHeaders.length ? s.requiredHeaders : [{ name: 'Authorization', description: null, isSecret: true, placeholder: 'Bearer …' }] as h (h.name)}
-                  <div class="flex items-end gap-2">
+                  <div class="flex max-w-xl items-end gap-2">
                     <span class="w-40 shrink-0 truncate pb-2 font-mono text-[11px] text-muted" title={h.name}>
                       {h.name}
                     </span>

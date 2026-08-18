@@ -54,16 +54,17 @@
        there is no visible list for the skeletons to materialize into. -->
   <Panel aria-hidden="true">
     <div class="flex min-h-6 items-center gap-2">
-      <Skeleton class="h-3 w-3 rounded" />
+      <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
+      <div class="h-3 w-3 rounded bg-line"></div>
       <Skeleton class="h-2.5 w-24 rounded-full" />
     </div>
     <div class="mt-2 space-y-1">
       {#each [0, 1] as i (i)}
         <div class="rounded-md border border-line bg-raised px-3 py-2.5">
           <div class="flex h-5 items-center gap-2">
-            <Skeleton class="h-1.5 w-1.5 shrink-0 rounded-full" delay={i * 0.15} />
-            <Skeleton class={`h-3 rounded-full ${i ? 'w-2/5' : 'w-3/5'}`} delay={i * 0.15} />
-            <span class="ml-auto"><Skeleton class="h-2.5 w-10 rounded-full" delay={i * 0.15 + 0.1} /></span>
+            <div class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></div>
+            <Skeleton class={`h-3 rounded-full ${i ? 'w-2/5' : 'w-3/5'}`} />
+            <span class="ml-auto"><Skeleton class="h-2.5 w-10 rounded-full" /></span>
           </div>
         </div>
       {/each}

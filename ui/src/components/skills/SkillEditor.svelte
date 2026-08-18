@@ -104,8 +104,8 @@
     {:else}
       <div class="space-y-3">
         <Skeleton class="h-2.5 w-2/3 rounded-full" />
-        <Skeleton class="h-2.5 w-full rounded-full" delay={0.12} />
-        <Skeleton class="h-2.5 w-3/4 rounded-full" delay={0.24} />
+        <Skeleton class="h-2.5 w-full rounded-full" />
+        <Skeleton class="h-2.5 w-3/4 rounded-full" />
       </div>
     {/if}
   </Modal>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
   import { Sparkles } from '@lucide/svelte'
+  import Generating from '@/components/ui/Generating.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -92,7 +93,11 @@
         <Markdown children={data.summary} />
       </div>
     {:else}
-      <SkeletonRows rows={3} />
+      <!-- The briefing is WRITTEN, not fetched — the query polls every 2.5s
+           while `generating`, and the header says "updating" right above this.
+           So the placeholder is bar rows shaped like the coming prose, not a
+           fetch skeleton. Bare, because the Panel is already the surface. -->
+      <Generating lines={3} class="border-none p-0" />
     {/if}
     {#if thread.length > 0}
       <div class="mt-4 space-y-3 border-t border-line pt-4">
@@ -105,7 +110,9 @@
             </div>
           {:else}
             <div class="text-sm">
-              {#if m.content}<Markdown children={m.content} />{:else}<SkeletonRows rows={1} />{/if}
+              <!-- An assistant turn with no tokens yet: model output on its way
+                   in over the stream, not a fetch. -->
+              {#if m.content}<Markdown children={m.content} />{:else}<Generating lines={1} class="border-none p-0" />{/if}
             </div>
           {/if}
         {/each}

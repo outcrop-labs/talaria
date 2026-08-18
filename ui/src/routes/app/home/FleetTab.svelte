@@ -32,8 +32,8 @@
       <div class="grid grid-cols-2 gap-4">
         {#each [0, 1] as i (i)}
           <Panel>
-            <Skeleton class="mb-3 h-2.5 w-14 rounded-full" delay={i * 0.1} />
-            <Skeleton class="h-5 w-16 rounded-full" delay={i * 0.1 + 0.08} />
+            <Skeleton class="mb-3 h-2.5 w-14 rounded-full" />
+            <Skeleton class="h-5 w-16 rounded-full" />
           </Panel>
         {/each}
       </div>

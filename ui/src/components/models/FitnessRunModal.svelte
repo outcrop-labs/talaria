@@ -200,7 +200,7 @@
         <p class="font-sans text-xs text-muted">Pick at least one tier.</p>
       {:else if estimateQuery.isPending}
         <Skeleton class="h-3 w-64 rounded-full" />
-        <Skeleton class="mt-2 h-2.5 w-40 rounded-full" delay={0.1} />
+        <Skeleton class="mt-2 h-2.5 w-40 rounded-full" />
       {:else if !estimate}
         <p class="font-sans text-xs text-danger">Could not price this run. Nothing has started.</p>
       {:else}

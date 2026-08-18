@@ -71,7 +71,7 @@
       <Skeleton class="h-11 w-full" />
       <div class="mt-4 flex items-center justify-between gap-2">
         <Skeleton class="h-4 w-32" />
-        <Skeleton class="h-8 w-16" delay={0.12} />
+        <Skeleton class="h-8 w-16" />
       </div>
     </div>
   {:else}

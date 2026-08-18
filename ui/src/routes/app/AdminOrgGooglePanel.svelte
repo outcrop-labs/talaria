@@ -66,9 +66,9 @@
       <Skeleton class="h-9 w-9 shrink-0" />
       <div class="min-w-0 flex-1 space-y-1.5">
         <Skeleton class="h-3 w-36 rounded-full" />
-        <Skeleton class="h-2.5 w-52 rounded-full" delay={0.12} />
+        <Skeleton class="h-2.5 w-52 rounded-full" />
       </div>
-      <Skeleton class="h-7 w-24 shrink-0" delay={0.24} />
+      <Skeleton class="h-7 w-24 shrink-0" />
     </div>
   {:else if !data}
     <!-- Without this branch a failed status read fell through to the row

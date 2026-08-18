@@ -56,7 +56,7 @@
       <div class="space-y-3.5">
         {#each skeletonWidths as w, i (i)}
           <div style:width={w}>
-            <Skeleton class="h-3.5 w-full rounded-full" delay={i * 0.08} />
+            <Skeleton class="h-3.5 w-full rounded-full" />
           </div>
         {/each}
       </div>

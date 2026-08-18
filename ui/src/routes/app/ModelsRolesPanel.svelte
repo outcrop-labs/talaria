@@ -87,10 +87,10 @@
         {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
           <div class="flex items-center gap-3">
             <div class="min-w-0 flex-1 space-y-1.5">
-              <Skeleton class="h-3 w-40 rounded-full" delay={i * 0.1} />
-              <Skeleton class="h-2.5 w-64 rounded-full" delay={i * 0.1 + 0.06} />
+              <Skeleton class="h-3 w-40 rounded-full" />
+              <Skeleton class="h-2.5 w-64 rounded-full" />
             </div>
-            <Skeleton class="h-8 w-56 shrink-0" delay={i * 0.1} />
+            <Skeleton class="h-8 w-56 shrink-0" />
           </div>
         {/each}
       </div>

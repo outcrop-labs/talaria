@@ -61,8 +61,8 @@
       <!-- Picker-shaped shimmer while the fleet loads (button stays disabled). -->
       <Skeleton class="h-7 w-7 shrink-0 rounded-full" />
       <span class="min-w-0 flex-1 space-y-1.5 text-left">
-        <Skeleton class="h-2.5 w-24 rounded-full" delay={0.12} />
-        <Skeleton class="h-2 w-16 rounded-full" delay={0.24} />
+        <Skeleton class="h-2.5 w-24 rounded-full" />
+        <Skeleton class="h-2 w-16 rounded-full" />
       </span>
     {:else}
       <Avatar name={current?.label} />
