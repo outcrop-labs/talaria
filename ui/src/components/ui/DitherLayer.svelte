@@ -26,11 +26,13 @@
     // steep falloff overcorrected the other way: 28 dots reaching 2px, which
     // reads as scattered specks rather than as an edge.
     //
-    // The reach is short AND the density is high (strength ~0.95 at the
-    // boundary), so the dots hug the border and fade out across a few px.
-    // Density is what makes it read as a band; distance is what made it read
-    // as a cloud.
-    return Math.max(4, Math.min(9, Math.round(shortSide * 0.18)))
+    // The band is WIDE and DENSE at the boundary and tapers out — density
+    // falls with distance AND so does opacity (see `alphaFloor` on the
+    // callers), so the outer dots approach nothing instead of stopping at a
+    // visible floor. Reach alone was never the problem; a wide field of
+    // uniformly-lit sparse dots is the cloud. A wide field that fades is a
+    // glow that Mercury is allowed to have.
+    return Math.max(8, Math.min(18, Math.round(shortSide * 0.30)))
   }
 
   /** The bleed a field needs so nothing is clipped: the widest reach in the

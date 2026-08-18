@@ -117,9 +117,25 @@
          skeleton static) keep the coarser pitch — they have room for it, and
          finer dots over a whole pane is a lot of fill for no more information.
 
-         A 2px lattice is a subdivision of the 4px one, so this stays in phase
-         with every other field on the page rather than starting a second grid. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0.15} pitch={2} dot={1} />
+         The 2px lattice keeps a FIXED relationship to the 4px one the large
+         fields use, so neither drifts against the other and there is no moiré.
+         Not literal nesting, though: cell BOUNDARIES nest (page multiples of 2
+         contain page multiples of 4) but the DOTS do not. Both engines place a
+         dot at `cx*pitch - frac + (pitch-dot)/2`, so a 4/2 dot centres on an
+         even page coordinate and a 2/1 dot on an odd one — they interleave by
+         half the fine pitch and never coincide. Fixed everywhere, which is the
+         property page-anchoring was for; "subdivision" would invite someone to
+         expect dots to land on dots.
+
+         `alphaFloor` near zero is what makes the band TAPER. The engine lights
+         a dot at `alphaFloor + (maxAlpha - alphaFloor) * density`, so the
+         default floor of 0.18 lit even the sparsest outermost dot at a
+         perfectly visible level — the field thinned out with distance but
+         never dimmed, which is what made a wide band read as a cloud with an
+         edge. At 0.02 the outer dots approach nothing while `maxAlpha` 0.85
+         keeps the boundary strong: dense and bright against the border,
+         dissolving as it leaves. -->
+    <DitherLayer {sources} bleed={BLEED} organic={0.15} pitch={2} dot={1} alphaFloor={0.02} maxAlpha={0.85} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
          the bloom's — both run. -->
