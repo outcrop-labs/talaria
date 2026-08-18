@@ -62,7 +62,7 @@
     <!-- Stat pills shimmer instead of rendering "v—/—" and reflowing. -->
     <div class="flex flex-wrap items-center gap-x-6 gap-y-1">
       {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
-        <Skeleton class="h-3 w-24 rounded-full" delay={i * 0.12} />
+        <Skeleton class="h-3 w-24 rounded-full" />
       {/each}
     </div>
   {:else if !data}
@@ -122,6 +122,7 @@
     {#if busy}
       <div class="mt-3">
         <Generating
+          site="admin/key-rotate"
           label="Rotating the data key: re-encrypting provider keys, agent secrets, and OAuth tokens in one pass"
           lines={2}
         />

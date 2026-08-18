@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -145,7 +145,7 @@
           Cancel
         </Button>
         <Button size="sm" onclick={() => void federate()} disabled={busy || !dir.trim()}>
-          {#if busy}<GeneratingBars bars={3} variant="weave" step={0.15} />{/if}
+          {#if busy}<WaitingMark site="fleet/federate" size={12} />{/if}
           {busy ? 'Federating' : 'Federate'}
         </Button>
       </div>

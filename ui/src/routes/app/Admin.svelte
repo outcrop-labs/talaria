@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
@@ -91,8 +92,8 @@
 {#if me && me.role !== 'admin'}
   <EmptyState icon="⛨" title="Admins only" hint="Ask an admin if you need access here." />
 {:else}
-  <div class="h-full overflow-y-auto p-8">
-    <div class="mx-auto max-w-4xl space-y-6">
+  <PageSurface>
+    <div class="space-y-6">
       <h1 class="text-2xl font-semibold tracking-tight text-fg">Admin</h1>
 
       <!-- One concern per tab; every panel keeps its own component. -->
@@ -265,5 +266,5 @@
       </div>
       {/key}
     </div>
-  </div>
+  </PageSurface>
 {/if}

@@ -126,7 +126,7 @@
       {:else}
         <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {#if draft}
-            <div class="mx-auto max-w-2xl font-sans text-sm leading-relaxed">
+            <div class="mx-auto max-w-[var(--read-width)] font-sans text-sm leading-relaxed">
               <Markdown children={draft} />
             </div>
           {:else}

@@ -108,7 +108,7 @@
     </div>
     {#if syncErr}<div class="border-b border-line-subtle px-4 py-1.5 text-xs" style:color="var(--theme-danger)">{syncErr}</div>{/if}
     <div class="relative min-h-0 flex-1 overflow-y-auto">
-      {#if syncing}<GeneratingOverlay label="Rewriting the plan document from the conversation" />{/if}
+      {#if syncing}<GeneratingOverlay site="chat/doc-resync" label="Rewriting the plan document from the conversation" />{/if}
       {#key `${id}:${syncNonce}`}
         <RichEditor
           bind:this={editorRef}

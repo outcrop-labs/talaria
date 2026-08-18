@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { useSession } from '@/lib/session'
   import type { AgentDef } from '@/lib/fleet-defs'
   import AgentIconBtn from './AgentIconBtn.svelte'
@@ -22,7 +22,7 @@
 </script>
 
 {#if controls.pending}
-  <GeneratingBars bars={3} variant="weave" step={0.15} class="text-muted" />
+  <WaitingMark site="fleet/agent-controls" size={12} class="text-muted" />
 {:else if !d.enabled}
   <!-- Retired agents: re-hire (re-enable + start), duplicate as a template, or
        delete forever (admin) — the only truly destructive lifecycle action. -->

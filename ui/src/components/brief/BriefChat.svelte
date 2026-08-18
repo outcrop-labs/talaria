@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { bottomStick } from '@/lib/stick-to-bottom'
   import Button from '@/components/ui/Button.svelte'
   import { CornerDownLeft, Sparkles, X } from '@lucide/svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -45,6 +46,10 @@
   let replying = $state(false)
   let loading = $state(false)
   let scroller = $state<HTMLDivElement | null>(null)
+  // Was an unconditional scrollTo on every token, which yanked anyone who
+  // scrolled up mid-reply straight back down. Same rule as the other chats now.
+  const stick = bottomStick()
+  $effect(() => stick.attach(scroller))
 
   // Which thread is on screen. Tracked separately from `focus` so a reply
   // streaming into the ledger thread cannot be appended to Dana's because the
@@ -81,6 +86,7 @@
     if (!text || replying || !brief.agent.configured) return
     const history = [...thread]
     draft = ''
+    stick.jump() // your own message is always worth showing you
     thread = [...thread, { role: 'user', content: text }, { role: 'assistant', content: '' }]
     replying = true
     // The focus is NOT cleared on send any more. It used to be, on the reasoning
@@ -103,7 +109,7 @@
         const last = next[next.length - 1]!
         next[next.length - 1] = { ...last, content: last.content + ev.text }
         thread = next
-        scroller?.scrollTo({ top: scroller.scrollHeight })
+        stick.follow()
       }
     } catch {
       // The server's own message is not surfaced here on purpose — a gateway
@@ -112,7 +118,7 @@
       thread = [...thread.slice(0, -1), { role: 'assistant', content: '_Could not reach your assistant — try again._' }]
     } finally {
       replying = false
-      scroller?.scrollTo({ top: scroller.scrollHeight })
+      stick.follow()
     }
   }
 </script>

@@ -106,7 +106,10 @@
     {/if}
 
     {#if data?.canMint}
-      <div class="flex items-center gap-2">
+      <!-- A lone field + button stretched to the full page width reads as
+           broken. The page FRAME is what stays consistent between views; a
+           field inside it is sized by what it holds. -->
+      <div class="flex max-w-md items-center gap-2">
         <Input
           size="sm"
           bind:value={name}

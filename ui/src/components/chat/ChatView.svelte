@@ -7,6 +7,7 @@
   import KeyHint from '@/components/ui/KeyHint.svelte'
   import { type Mentionable } from '@/components/chat/mentions.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
+  import { bottomStick } from '@/lib/stick-to-bottom'
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
   import AttachButton from '@/components/chat/AttachButton.svelte'
@@ -35,7 +36,6 @@
     onCreated,
     kind = 'chat',
     templateId,
-    fill = false,
     mentionables = [],
     onTurnComplete,
   }: {
@@ -62,7 +62,6 @@
     templateId?: string | null
     /** Fill the parent pane instead of centering on the chat width token —
      *  the plan surface's side-by-side split owns its own geometry. */
-    fill?: boolean
     /** Composer @mention options (e.g. the plan surface offers teammates). */
     mentionables?: Mentionable[]
     /** Fires each time an agent turn lands complete, whether this client
@@ -73,6 +72,8 @@
 
   let messages = $state<DisplayMessage[]>([])
   let composerEmpty = $state(true)
+  /** Measured height of the floating composer — what the transcript reserves. */
+  let composerH = $state(0)
   let attachments = $state<Attachment[]>([])
   let tier = $state('') // '' = the agent's main model
   let streaming = $state(false)
@@ -86,23 +87,26 @@
   let abortCtrl: AbortController | null = null
   let convId: string | null = null
   let scrollEl = $state<HTMLDivElement | null>(null)
-  let prevCount = 0
   let composer = $state<ChatComposerHandle | null>(null)
 
   // Follow the stream WITHOUT smooth-scrolling: token flushes fire this every
   // few ms, and overlapping smooth animations rubber-band (the "bounce").
-  // Instant jumps, and only while pinned near the bottom — scrolling up to
-  // read history is never yanked away. A fresh load always lands at the end.
+  // Follow the newest turn unless the reader scrolled away (lib/stick-to-bottom
+  // — and see its header for the pin bug all three surfaces used to share).
+  const stick = bottomStick()
+  $effect(() => stick.attach(scrollEl))
   $effect(() => {
-    // Snapshot to track every message field, not just the array shape — token
-    // flushes mutate the last message in place and must keep the pin.
+    // Snapshot to track every message FIELD, not just the array shape — token
+    // flushes mutate the last message in place and still have to follow.
     void $state.snapshot(messages)
-    const el = scrollEl
-    if (!el) return
-    const loaded = prevCount === 0 && messages.length > 0
-    prevCount = messages.length
-    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 120
-    if (loaded || pinned) el.scrollTop = el.scrollHeight
+    stick.follow()
+  })
+  // A different conversation opens at its own newest message, whatever the
+  // reader happened to be doing in the last one.
+  $effect(() => {
+    void conversationId
+    void newChatSignal
+    stick.jump()
   })
   $effect(() => () => abortCtrl?.abort())
 
@@ -188,6 +192,8 @@
 
   const send = async (text: string) => {
     if (!text && attachments.length === 0) return
+    // You always see what you just said, even if you were reading history.
+    stick.jump()
     const atts = attachments
     error = null
     attachments = []
@@ -283,27 +289,43 @@
     ])
 </script>
 
-<div class={fill ? 'flex h-full w-full flex-col' : 'mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col'}>
-  <div bind:this={scrollEl} class="flex-1 space-y-5 overflow-y-auto px-6 py-6">
+<!-- The transcript owns the whole surface and the composer FLOATS over it.
+     The reading measure did not go away — it moved inward, from this root onto
+     the message column, which is the difference between "the chat is a 900px
+     card sitting in the middle of the stage" and "the chat is the stage, and
+     its text is set to a readable measure". The zero state and the scrollbar
+     now reach the edges; the words still don't.
+
+     `--chat-composer` is the measured height of the float, reserved at the
+     bottom of the scroll so the last message never parks behind it. Measured,
+     not a constant: the composer grows with the draft. -->
+<div class="relative flex h-full w-full flex-col" style:--chat-composer="{composerH}px">
+  <div
+    bind:this={scrollEl}
+    class="flex-1 overflow-y-auto"
+  >
     {#if loadingConversation}
       <!-- Conversation-shaped shimmer while the thread's history loads —
           flattened message rows (avatar square + name + body), never the
           "Talk to X" hero. -->
-      <div aria-hidden="true" class="space-y-5">
+      <div aria-hidden="true" class="mx-auto w-full max-w-[var(--converse-width)] space-y-5 px-6 py-6">
         {#each Array.from({ length: 5 }) as _, i (i)}
           <div class="flex gap-2.5">
-            <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded" delay={i * 0.12} />
+            <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded" />
             <div class="min-w-0 flex-1 space-y-2 pt-1">
-              <Skeleton class="h-2.5 w-24 rounded-full" delay={i * 0.12} />
+              <Skeleton class="h-2.5 w-24 rounded-full" />
               <div style:width={['62%', '84%', '48%', '90%', '70%'][i]}>
-                <Skeleton class="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
+                <Skeleton class="h-2.5 w-full rounded-full" />
               </div>
             </div>
           </div>
         {/each}
       </div>
     {:else if messages.length === 0}
-      <div class="grid h-full place-items-center text-center">
+      <!-- Outside the measure on purpose: this centres in the whole surface,
+           where before it centred inside a 900px column that was itself
+           centred — off-centre twice over on a wide stage. -->
+      <div class="grid h-full place-items-center px-6 py-6 text-center">
         <div>
           <div class="mb-1 font-sans text-lg font-semibold text-fg">
             {kind === 'plan' ? `Plan with ${agentLabel}` : `Talk to ${agentLabel}`}
@@ -316,6 +338,15 @@
         </div>
       </div>
     {:else}
+      <!-- The clearance is on the MESSAGE LIST, not on this scroll box. On the
+           box it applied to every branch — so the transcript stopped short of
+           the composer instead of running under it, and the zero state was
+           held off the bottom of its own void. Only content that can be read
+           needs to clear the float; the surface behind it should not. -->
+      <div
+        class="mx-auto w-full max-w-[var(--converse-width)] space-y-5 px-6 py-6"
+        style:padding-bottom="calc(var(--chat-composer, 0px) + 0.5rem)"
+      >
       {#each messages as m, i (i)}
         {#if m.role === 'user'}
           <!-- Flattened user turn (spec §10) — the author name keeps the
@@ -331,17 +362,36 @@
           />
         {/if}
       {/each}
+      </div>
     {/if}
     {#if error}
-      <div transition:slide={{ duration: 150 }} class="text-center text-sm" style:color="var(--theme-danger)">{error}</div>
+      <div class="mx-auto w-full max-w-[var(--converse-width)] px-6 pb-6">
+        <div transition:slide={{ duration: 150 }} class="text-center text-sm" style:color="var(--theme-danger)">{error}</div>
+      </div>
     {/if}
   </div>
 
-  <div class="relative px-6 pb-6">
+  <!-- pointer-events-none on the gutter, auto on the panel: the float spans
+       the surface so the panel can centre in it, and without that split the
+       transparent margin either side would swallow clicks on the transcript. -->
+  <!-- The gutter goes INSIDE the measure, not outside it. With `px-6` on this
+       outer element the panel centred at the full 900px (598→1498) while the
+       message rows sat inside their own `px-6` (622→1474) — so the composer
+       overhung the conversation by 24px a side. Same wrapper shape as the
+       message list now, so the two columns line up by construction.
+       The band is OPAQUE. The float's gutter was transparent, so the transcript
+       scrolled visibly through the strip below the composer panel — text
+       peeking out under it, which is what read as broken. `bg-surface` is the
+       ground the stage already paints (#090a09), so the composer sits on the
+       page rather than on a patch. A gradient scrim would fade the clip more
+       softly, but this design system has no gradients anywhere and the matte
+       rule is the house style. -->
+  <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6">
+    <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
     <!-- The composer panel (spec §7): #141312 body, strong 1px border,
         radius 8, 8px padding/gap, matte float shadow. -->
     <div
-      class="flex flex-col gap-2 rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]"
+      class="pointer-events-auto flex flex-col gap-2 rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]"
       ondragover={(e) => {
         if (e.dataTransfer?.types.includes('Files')) e.preventDefault()
       }}
@@ -396,6 +446,7 @@
           />
         {/snippet}
       </ChatComposer>
+      </div>
     </div>
   </div>
   <ContextMenu {menu} />

@@ -4,8 +4,7 @@
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
-  import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
-  import GeneratingHelix from '@/components/ui/GeneratingHelix.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { fade } from '@/lib/motion'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import type { DisplayMessage } from './chat-view'
@@ -81,11 +80,12 @@
         local transition would be suppressed by the ancestor block toggling. -->
     <GuardCaveat findings={live ? null : message.guard} />
 
-    <!-- Spec §9 state mapping: submitting (awaiting the first token) rides
-        the fast gold SIGNAL WEAVE; once reasoning/tools stream but prose
-        hasn't landed, the CONTEXT HELIX loops on the standard budget. -->
-    {#if empty && live}<GeneratingDots class="py-1" />{/if}
-    {#if !empty && !message.content && live}<GeneratingHelix class="py-1" />{/if}
+    <!-- Spec §9 state mapping. Which mark each of these draws is dealt per
+        session by lib/waiting; the ROLE is fixed here — submitting while the
+        first token is outstanding, reasoning once tools stream but no prose
+        has landed — and the role is what sets the tempo. -->
+    {#if empty && live}<WaitingMark site="chat/first-token" class="py-1 text-accent" />{/if}
+    {#if !empty && !message.content && live}<WaitingMark site="chat/reasoning" class="py-1 text-accent" />{/if}
     {#if message.content && live}<span class="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle"></span>{/if}
     {#if !live && message.status === 'streaming'}
       <div class="font-mono text-[11px] text-muted">· saved (was in progress)</div>

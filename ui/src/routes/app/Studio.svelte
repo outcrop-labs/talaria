@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus, Lock } from '@lucide/svelte'
@@ -140,17 +141,15 @@
 </script>
 
 {#if isLoading}
-  <div class="h-full overflow-y-auto p-8">
-    <div class="mx-auto max-w-6xl">
-      <SkeletonRows rows={8} avatar />
-    </div>
-  </div>
+  <PageSurface>
+    <SkeletonRows rows={8} avatar />
+  </PageSurface>
 {:else}
-  <div class="h-full overflow-y-auto p-8">
+  <PageSurface>
     <!-- Page content entrance AND post-skeleton reveal in one: this branch
          mounts when the library lands, so title → failures → rail+world grid
          rise in sequence (ANIMATIONS.md). Never on the skeleton branch. -->
-    <div use:staggerIn class="mx-auto max-w-6xl">
+    <div use:staggerIn>
       <ViewHeader
         class="mb-6"
         title="Studio"
@@ -419,5 +418,5 @@
         }}
       />
     {/if}
-  </div>
+  </PageSurface>
 {/if}

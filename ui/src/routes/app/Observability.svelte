@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { navigate, route } from '@/router'
   import Tabs from '@/components/ui/Tabs.svelte'
@@ -20,11 +21,11 @@
   }
 </script>
 
-<div class="h-full overflow-y-auto p-8">
+<PageSurface>
   <!-- Page content entrance: title → tab strip → panel region rise in sequence
        (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
        stays unstaggered inside — one level only. -->
-  <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+  <div use:staggerIn class="space-y-6">
     <ViewHeader title="Observability" />
     <Tabs items={OBS_TABS} value={tab} onChange={setTab} />
     <!-- Tab-pane grammar: rise in on switch, no exit; no AutoHeight. On MOUNT
@@ -43,4 +44,4 @@
       </div>
     {/key}
   </div>
-</div>
+</PageSurface>

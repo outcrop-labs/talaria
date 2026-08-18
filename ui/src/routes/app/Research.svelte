@@ -73,6 +73,8 @@
     else void navigate('/research')
   }
   let question = $state('')
+  /** Measured composer height — what the content below reserves. */
+  let composerH = $state(0)
   const mayRun = useHasPerm('research.run')
   let mode = $state<ResearchMode>('brief')
   const sticky = useStickyAgent('research', () => agents)
@@ -204,31 +206,41 @@
   </Rail>
 
   <Stage header={stageHeader}>
-    <div class="flex h-full min-h-0 flex-col">
-      <!-- Research cannot run without a provider; the surface still opens
-           and past runs still read. -->
+    <!-- The ask FLOATS over the content so the report and the zero state both
+         own the whole stage. Its measured height rides down as
+         `--research-composer`; the report column and the discussion's own chat
+         input each reserve that much. Measured, not a constant — the textarea
+         auto-grows. -->
+    <div class="relative flex h-full min-h-0 flex-col" style:--research-composer="{composerH}px">
+      <!-- Research cannot run without a provider; the surface still opens and
+           past runs still read. Renders nothing once a provider exists. -->
       <NoModelBump class="m-4 shrink-0" />
-      <div class="min-h-0 flex-1 overflow-y-auto">
+      <!-- flex-col so RunView's `flex min-h-0 flex-1` root fills it and its two
+           columns scroll independently. -->
+      <div class="flex min-h-0 flex-1 flex-col">
         {#if selectedId}
           <RunView runId={selectedId} />
         {:else}
-          <div class="grid h-full place-items-center">
-            <EmptyState
-              icon="◎"
-              title="Research"
-              hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
-            />
-          </div>
+          <!-- Edge to edge: no centring wrapper. EmptyState's `full` variant
+               centres its own words and paints its vignette to its bounds. -->
+          <EmptyState
+            class="flex-1"
+            icon="◎"
+            title="Research"
+            hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
+          />
         {/if}
       </div>
 
-      <!-- The ask lives where every other conversation input lives — the
-           bottom of the stage. Depth and acting agent ride along as
-           composer pills, tier-picker style. -->
-      <div class="px-6 pb-6 pt-2">
+      <!-- pointer-events-none gutter, auto panel: the float spans the stage so
+           the panel can centre in it, and without that split the transparent
+           margin would swallow clicks on the report behind it. Opaque ground,
+           or the report shows through beneath the panel. -->
+      <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6 pt-2">
+        <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
         <!-- §7 composer anatomy: panel body, STRONG hairline, radius 8,
              p-2, matte float shadow — with the prompt in a ground inset. -->
-        <div class="mx-auto w-full max-w-[var(--chat-content-max-width)] rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
+        <div class="pointer-events-auto rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
           <div class="flex items-end gap-2">
             <div class="relative min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1">
               <Textarea
@@ -272,6 +284,7 @@
             {/if}
           </div>
           {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
+        </div>
         </div>
       </div>
     </div>

@@ -12,9 +12,12 @@
   //     <Stage header={stageHeader}>the main area</Stage>
   //   </RailSurface>
   //
-  //   (Centered "page" surfaces — Agents, Models, Admin, and the rest — keep the
-  //   `h-full overflow-y-auto p-8` + `mx-auto max-w-5xl` shape; PageTitle
-  //   standardizes their heading row.)
+  //   <PageSurface>            centred "page" surfaces — Agents, Models,
+  //     sections go here        Admin, Settings, Home and the rest
+  //   </PageSurface>
+  //
+  //   PageSurface is a COMPONENT now, not a described shape. It used to be this
+  //   comment, and ten views hand-rolled it into four different widths.
   //
   // Rail rows share RailRow; surface headers share StageHeader (the one-line
   // bar Comms channels already had). Contextual actions are IconButtons.

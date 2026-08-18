@@ -191,7 +191,6 @@
                 {onCreated}
                 kind="plan"
                 templateId={templateId || null}
-                fill
                 {mentionables}
                 onTurnComplete={() => (turnSignal += 1)}
               />
@@ -224,13 +223,13 @@
            for, so nothing pops or re-layouts when agents land. -->
       <div aria-hidden="true" class="flex h-full min-h-0">
         <div class="min-w-0 flex-1 overflow-hidden p-6">
-          <div class="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-col gap-4">
+          <div class="mx-auto flex w-full max-w-[var(--converse-width)] flex-col gap-4">
             <!-- Chat flattens onto the panel (spec §10) — the stand-in
                  blocks wear the same radius-8 panels the messages will. -->
             <Skeleton class="h-14 w-3/5 self-end rounded-lg" />
-            <Skeleton class="h-24 w-4/5 rounded-lg" delay={0.12} />
-            <Skeleton class="h-12 w-1/2 self-end rounded-lg" delay={0.24} />
-            <Skeleton class="h-20 w-3/4 rounded-lg" delay={0.36} />
+            <Skeleton class="h-24 w-4/5 rounded-lg" />
+            <Skeleton class="h-12 w-1/2 self-end rounded-lg" />
+            <Skeleton class="h-20 w-3/4 rounded-lg" />
           </div>
         </div>
         <div class="hidden min-w-0 basis-[44%] border-l border-line-subtle lg:flex">

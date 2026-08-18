@@ -42,7 +42,7 @@
   <div in:fly|global={PANEL} class="w-full max-w-sm">
     <Panel class="p-8">
       <div class="mb-6 flex flex-col items-center gap-2 text-center">
-        <Brand showTag class="flex-col" />
+        <Brand showTag size={40} class="flex-col" />
       </div>
 
       <p class="mb-6 text-center text-sm text-muted">Sign in to command your fleet.</p>
@@ -67,12 +67,12 @@
           <Skeleton class="h-11 w-full" />
           <div class="flex items-center gap-3 py-1">
             <Skeleton class="h-px flex-1" />
-            <Skeleton class="h-2.5 w-6 rounded-full" delay={0.12} />
+            <Skeleton class="h-2.5 w-6 rounded-full" />
             <Skeleton class="h-px flex-1" />
           </div>
-          <Skeleton class="h-11 w-full" delay={0.12} />
-          <Skeleton class="h-11 w-full" delay={0.24} />
-          <Skeleton class="h-11 w-full" delay={0.36} />
+          <Skeleton class="h-11 w-full" />
+          <Skeleton class="h-11 w-full" />
+          <Skeleton class="h-11 w-full" />
         </div>
       {:else if providersQuery.isError}
         <QueryError

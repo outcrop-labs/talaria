@@ -11,12 +11,48 @@ primitives — reach for the primitive, not a hand-rolled recreation.
    `border-r`) + `<Stage header={<StageHeader …>}>`. The rail header and stage
    header are both `h-12`, so the top line runs straight across the app.
    Never put a rail on the right; never invent a new width.
-2. **Page surface** (Inbox, Agents, Models, Cost, …): `h-full overflow-y-auto
-   p-8` → `mx-auto max-w-5xl space-y-6` (Inbox may use 6xl for its two-zone
-   layout). Title row: `<h1 className="mercury-text text-2xl font-semibold">`.
+2. **Page surface** (Home, Agents, Models, MCP, Observability, Studio,
+   Templates, Apps, Admin, Settings): `<PageSurface>` — it owns the scroll box,
+   the `p-8` gutter and the centred column. Put section rhythm (`space-y-6`) and
+   `use:staggerIn` on your own child inside it. Title row: `<ViewHeader>`.
 
-Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
-`StageHeader`, `RailSection`, `RailRow`, `CountPill`).
+Components: `components/app/` — `PageSurface`, `RailSurface`, `Rail`, `Stage`,
+`StageHeader`, `RailSection`, `RailRow`, `CountPill`.
+
+### One width scale, four names
+
+Every centred column in the app is one of three tokens (`styles.css`). They are
+tokens, not Tailwind classes at the call site, because that is where this broke
+before: page surfaces alone had drifted to `max-w-2xl` / `4xl` / `5xl` / `6xl`,
+`Models` changed width between its own TABS, and the `AppLayout` skeleton was
+wider than most of the content it stood in for — so a cold load settled narrower
+and every tab change slid sideways.
+
+| Token | Width | Used by |
+|---|---|---|
+| `--page-width` | 1152px | every centred page surface, via `PageSurface` |
+| `--converse-width` | 900px | Chat, Plan, Research transcripts |
+| `--read-width` | 46rem | long-form prose: KB docs, artifact bodies, shares |
+
+There was briefly a fourth, `--focus-width`, for the Home inbox column. It was
+drift wearing a design's clothes: the inbox is a Home TAB, so holding it at
+800px slid the page 352px every time you moved between it and a sibling tab.
+**A narrower measure has to be earned by the content, not by the surface's
+mood** — the brief's one prose block carries its own `62ch` and wanted nothing
+from the frame.
+
+- **`PageSurface` has no `width` prop, deliberately.** An escape hatch would be
+  taken within a week by whichever table felt cramped, and one view opting out is
+  the drift coming back. A surface that needs more room scrolls its wide child
+  (`overflow-x-auto`) instead of widening the page under everything else.
+- **A skeleton must be the width of the content that replaces it.** Otherwise the
+  skeleton→content swap is itself a width shift, which is the one jump every
+  cold load pays.
+- **Frames are what must not move; measures may differ.** The three narrow
+  tokens exist because their content is read rather than scanned — forcing prose
+  to 1152px is ~145 characters a line. Inside a page surface, a field or a prose
+  column is sized by what it holds (`max-w-md` on a lone input + button row);
+  that is not drift, because the panel edges still line up view to view.
 
 ## Pick-one-and-edit-it — use `LibraryPane`
 

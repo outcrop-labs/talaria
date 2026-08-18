@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import Button from '@/components/ui/Button.svelte'
@@ -62,14 +63,11 @@
 {#if session.data && !isAdmin}
   <EmptyState icon="▤" title="Admins only" />
 {:else}
-  <div class="h-full overflow-y-auto p-8">
+  <PageSurface>
     <!-- Page content entrance: header row → tab strip → pane rise in sequence
          (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
          stays unstaggered inside — one level only. -->
-    <!-- The fitness matrix is 20-odd columns wide. It scrolls inside its own
-         box either way, but at 4xl almost every column is off-screen and the
-         "at a glance" the page exists for stops working. -->
-    <div use:staggerIn class="mx-auto space-y-6 {tab === 'fitness' ? 'max-w-6xl' : 'max-w-4xl'}">
+    <div use:staggerIn class="space-y-6">
       <ViewHeader title="Models">
         {#snippet actions()}
           {#if tab === 'models'}
@@ -93,7 +91,7 @@
         {#if endpointsQuery.isPending}
           <div class="space-y-3">
             <SkeletonCard />
-            <SkeletonCard delay={0.15} />
+            <SkeletonCard />
           </div>
         {:else if !endpointsQuery.data}
           <!-- The registry read failed. "No model backends yet — Add a
@@ -130,5 +128,5 @@
       {#if adding}<ModelsAddProviderModal open={adding} onClose={() => (adding = false)} onAdded={(id) => (manageId = id)} />{/if}
       {#if managing}<ModelsEndpointModal ep={managing} onClose={() => (manageId = null)} />{/if}
     </div>
-  </div>
+  </PageSurface>
 {/if}

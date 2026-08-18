@@ -1,6 +1,7 @@
 <script lang="ts">
   import { MessageSquareText, X } from '@lucide/svelte'
   import MessageRow from './MessageRow.svelte'
+  import { bottomStick } from '@/lib/stick-to-bottom'
   import ChannelComposer from './ChannelComposer.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -32,19 +33,22 @@
   const threadQuery = useThreadMessages(() => channelId, () => rootId)
   const messages = $derived(threadQuery.data ?? [])
   let scrollEl = $state<HTMLDivElement | null>(null)
-  let prevCount = 0
 
+  const stick = bottomStick()
+  $effect(() => stick.attach(scrollEl))
   $effect(() => {
     void messages
-    const el = scrollEl
-    if (!el) return
-    const loaded = prevCount === 0 && messages.length > 0
-    prevCount = messages.length
-    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 120
-    if (loaded || pinned) el.scrollTop = el.scrollHeight
+    stick.follow()
+  })
+  // ChannelView swaps rootId without remounting, so opening a second thread
+  // would otherwise inherit the first one's hold.
+  $effect(() => {
+    void rootId
+    stick.jump()
   })
 
   const send = async (text: string, atts: Attachment[]) => {
+    stick.jump()
     const { attachmentIds, refs } = splitAttachments(atts)
     await sendChannelMessage(channelId, text, attachmentIds, refs, rootId)
   }

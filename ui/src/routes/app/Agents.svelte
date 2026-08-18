@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { Import, LayoutGrid, List, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -117,11 +118,11 @@
 {#snippet gridIcon()}<LayoutGrid size={14} />{/snippet}
 {#snippet listIcon()}<List size={14} />{/snippet}
 
-<div class="h-full overflow-y-auto p-8">
+<PageSurface>
   <!-- Page content entrance: toolbar row, then the roster region, rise in
        sequence (ANIMATIONS.md). The roster region is ONE child at this level;
        the tile cascade lives on the loaded branch's own stagger below. -->
-  <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+  <div use:staggerIn class="space-y-6">
     <ViewHeader title="Agents">
       {#snippet status()}
         {#if t}
@@ -272,4 +273,4 @@
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
     {/if}
   </div>
-</div>
+</PageSurface>

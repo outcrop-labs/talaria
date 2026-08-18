@@ -139,6 +139,7 @@
 
   {#if busy === 'apply'}
     <Generating
+      site="fleet/agent-apply"
       label={`Applying to ${def.displayName}: new container rolling up beside the old one, health check, then traffic cuts over`}
       lines={2}
     />

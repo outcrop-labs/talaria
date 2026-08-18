@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { createRawSnippet, type Snippet } from 'svelte'
   import { searchParams } from 'sv-router'
@@ -101,11 +102,11 @@
 {#if session && session.role !== 'admin'}
   <EmptyState icon="▣" title="Admins only" />
 {:else}
-  <div class="h-full overflow-y-auto p-8">
+  <PageSurface>
     <!-- Page content entrance: header row → tab strip → list+detail pane rise
          in sequence (ANIMATIONS.md). The keyed pane keeps its own fly on kind
          switch and stays unstaggered inside — one level only. -->
-    <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+    <div use:staggerIn class="space-y-6">
       <ViewHeader
         title="Templates"
         info="The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform."
@@ -164,5 +165,5 @@
       {/key}
     </div>
     <ContextMenu {menu} />
-  </div>
+  </PageSurface>
 {/if}

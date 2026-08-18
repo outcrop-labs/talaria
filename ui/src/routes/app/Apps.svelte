@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { fly, staggerIn } from '@/lib/motion'
@@ -16,11 +17,11 @@
   let tab = $state<'installed' | 'discover'>('installed')
 </script>
 
-<div class="h-full overflow-y-auto p-8">
+<PageSurface>
   <!-- Page content entrance: title → blurb → tab strip → pane rise in sequence
        (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
        stays unstaggered inside — one level only. -->
-  <div use:staggerIn class="mx-auto w-full max-w-4xl">
+  <div use:staggerIn>
     <ViewHeader
       class="mb-6"
       title="Apps"
@@ -51,4 +52,4 @@
       </div>
     {/key}
   </div>
-</div>
+</PageSurface>

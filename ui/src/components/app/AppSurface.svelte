@@ -51,7 +51,7 @@
 
 {#snippet surfaceSkeleton()}
   <div class="p-8">
-    <div class="mx-auto max-w-5xl space-y-6">
+    <div class="mx-auto w-full max-w-[var(--page-width)] space-y-6">
       <Skeleton class="h-6 w-56 rounded-full" />
       <div class="rounded-lg border border-line bg-panel p-6">
         <SkeletonRows rows={6} />

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
   import { useField } from '@/lib/field-registry.svelte'
+  import FieldBackdrop from './FieldBackdrop.svelte'
   import type { DitherSource } from '@/lib/dither'
   import GeneratingBars from './GeneratingBars.svelte'
   import WaitingMark from './WaitingMark.svelte'
@@ -59,6 +60,7 @@
 </script>
 
 <div bind:this={el} class={cn('relative overflow-hidden rounded-lg border border-line p-4', className)}>
+  <FieldBackdrop {el} />
   {#if label}
     <div class="relative flex items-center gap-2 font-sans text-sm text-muted">
       <WaitingMark {site} class="text-accent" />

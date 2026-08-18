@@ -1,6 +1,7 @@
 <script lang="ts">
   import Markdown from '@/components/ui/Markdown.svelte'
   import { useField } from '@/lib/field-registry.svelte'
+  import FieldBackdrop from '@/components/ui/FieldBackdrop.svelte'
   import type { DitherSource } from '@/lib/dither'
   import { dateLabel, clockLabel, type BriefView } from './daily-brief.svelte'
 
@@ -37,6 +38,8 @@
 </script>
 
 <header bind:this={el} class="relative overflow-hidden rounded-lg border border-line bg-surface px-7 py-7">
+  <FieldBackdrop {el} />
+
   <div class="relative">
     <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <h2 class="font-sans text-[22px] font-semibold leading-tight text-fg">

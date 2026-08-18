@@ -285,7 +285,7 @@
       {:else if artifact.kind === 'file'}
         <div class="min-w-0 flex-1 overflow-y-auto p-8">
           {#if artifact.storageRef}
-            <div class="mx-auto max-w-2xl">
+            <div class="mx-auto max-w-[var(--read-width)]">
               {#if artifact.contentType?.startsWith('image/')}
                 <img src={`/api/uploads/${artifact.storageRef}`} alt={artifact.title} class="mb-4 max-h-[60vh] rounded-lg border border-line" />
               {:else}

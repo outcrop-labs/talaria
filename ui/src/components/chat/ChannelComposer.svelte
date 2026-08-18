@@ -47,7 +47,7 @@
   }
 </script>
 
-<div class="relative px-6 pb-6">
+<div class="pointer-events-auto relative px-6 pb-6">
   <!-- The composer panel (spec §7): #141312 body, strong 1px border,
       radius 8, 8px padding/gap, matte float shadow. -->
   <div

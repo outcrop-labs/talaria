@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Panel from '@/components/ui/Panel.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -107,20 +107,20 @@
     <Skeleton class="mb-4 h-4 w-20 rounded-full" />
     <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
       <Skeleton class="h-3 w-32 rounded-full" />
-      <Skeleton class="h-3 w-36 rounded-full" delay={0.12} />
-      <Skeleton class="h-3 w-32 rounded-full" delay={0.24} />
+      <Skeleton class="h-3 w-36 rounded-full" />
+      <Skeleton class="h-3 w-32 rounded-full" />
     </div>
     <div class="grid gap-2 sm:grid-cols-2">
       {#each Array.from({ length: 6 }) as _, i (i)}
         <div>
-          <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" delay={i * 0.08} />
-          <Skeleton class="h-9 w-full" delay={i * 0.08} />
+          <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" />
+          <Skeleton class="h-9 w-full" />
         </div>
       {/each}
     </div>
     <div class="mt-3 flex items-center gap-2">
       <Skeleton class="h-7 w-16" />
-      <Skeleton class="h-7 w-32" delay={0.12} />
+      <Skeleton class="h-7 w-32" />
     </div>
   {:else}
     {@const cfg = form}
@@ -136,10 +136,10 @@
       <span><span class="font-mono text-fg">{d.stats.internal}</span> in the built-in bucket</span>
       <span><span class="font-mono text-fg">{d.stats.s3}</span> in external storage</span>
       {#if migrating}
-        <span class="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> moving <span class="font-mono">{d.migrate!.moved}/{d.migrate!.total}</span></span>
+        <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-migrate" size={11} /> moving <span class="font-mono">{d.migrate!.moved}/{d.migrate!.total}</span></span>
       {/if}
       {#if syncing}
-        <span class="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> syncing <span class="font-mono">{d.sync!.moved}/{d.sync!.total}</span> to replica</span>
+        <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-sync" size={11} /> syncing <span class="font-mono">{d.sync!.moved}/{d.sync!.total}</span> to replica</span>
       {/if}
       {#if !migrating && d.migrate?.failed}<span class="text-danger">{d.migrate.failed} failed to move</span>{/if}
       {#if !syncing && d.sync?.failed}<span class="text-danger">{d.sync.failed} failed to sync</span>{/if}
