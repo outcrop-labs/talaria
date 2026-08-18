@@ -6,6 +6,28 @@
     h: number
   }
 
+  /**
+   * How far a halo should reach around a control THIS size.
+   *
+   * A fixed reach cannot work across the app: 22px around a 36px button is
+   * most of the button again, and the fields of neighbouring controls in a
+   * toolbar merge into one cloud — while the same 22px around a 200px card is
+   * a hairline. The halo has to be a FRACTION of what it surrounds.
+   *
+   * Keyed to the short side, because that is what the eye reads as the
+   * control's size: a wide, short button is short. Clamped at both ends so a
+   * tiny chip still gets something visible and a large surface does not get a
+   * weather system.
+   */
+  export function spreadFor(shortSide: number): number {
+    // A RIM, not a halo. 0.32 of the short side put a 12px field around a 36px
+    // button — a third of the control again on every side, so neighbouring
+    // buttons in a toolbar merged into one cloud and the treatment read as
+    // bigger than the thing it was decorating. The eye wants an edge that
+    // softens, not a second control made of dots.
+    return Math.max(3, Math.min(7, Math.round(shortSide * 0.16)))
+  }
+
   /** The bleed a field needs so nothing is clipped: the widest reach in the
    *  sources, plus a margin for the dot grid itself.
    *

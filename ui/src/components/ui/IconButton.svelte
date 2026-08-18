@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
   import { cn } from '@/lib/cn'
-  import DitherLayer, { bleedFor, rectIn, type RectShape } from './DitherLayer.svelte'
+  import DitherLayer, { bleedFor, rectIn, spreadFor, type RectShape } from './DitherLayer.svelte'
   import type { DitherSource } from '@/lib/dither'
   import { focusRing } from './control'
 
@@ -42,10 +42,12 @@
   let rect = $state<RectShape | null>(null)
   let radius = $state(0)
 
-  // Tighter than Button's: an icon tile is 28-32px square, and the same 22px
-  // reach a wide label wears would swamp it.
-  const SPREAD = 14
-  const BLEED = bleedFor([SPREAD])
+  /** Proportional to the measured control — see `spreadFor`. */
+  const spread = $derived(rect ? spreadFor(Math.min(rect.w, rect.h)) : 0)
+
+  // Same rule as Button — the reach is a fraction of the tile, so a 28px
+  // square gets a rim rather than a halo twice its own size.
+  const BLEED = bleedFor([spreadFor(9999)])
   const PAD = 1
 
   const arm = () => {
@@ -63,10 +65,11 @@
             kind: 'rect',
             ...rect,
             radius,
-            spread: SPREAD,
-            strength: 0.6,
+            spread,
+            strength: 0.5,
             inner: 0,
             rim: 0,
+            falloff: 3,
             tone: danger ? 'danger' : 'neutral',
           },
         ]

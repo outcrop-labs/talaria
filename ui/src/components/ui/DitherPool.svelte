@@ -1,5 +1,5 @@
 <script lang="ts">
-  import DitherLayer, { bleedFor, rectIn, type RectShape } from './DitherLayer.svelte'
+  import DitherLayer, { bleedFor, rectIn, spreadFor, type RectShape } from './DitherLayer.svelte'
   import type { DitherSource, DitherTone } from '@/lib/dither'
 
   /**
@@ -22,7 +22,7 @@
     key,
     selector = '[aria-pressed="true"],[aria-current="true"],[aria-selected="true"]',
     tone = 'accent',
-    spread = 14,
+    spread,
     strength = 0.55,
     pad = 2,
     falloff,
@@ -30,9 +30,10 @@
     key: unknown
     selector?: string
     tone?: DitherTone
-    /** How far the halo reaches past the cell. Keep it in proportion to the
-     *  control: a segmented cell is ~16px tall, and a 26px reach on that is a
-     *  cloud with a control somewhere inside it rather than a halo around one. */
+    /** Override the reach. Leave unset: it is derived from the measured cell
+     *  by `spreadFor`, which keeps it a fraction of the control — a segmented
+     *  cell is ~16px tall, and a fixed 26px reach on that is a cloud with a
+     *  control somewhere inside it. */
     spread?: number
     strength?: number
     pad?: number
@@ -42,12 +43,16 @@
   } = $props()
 
   // Derived, never passed: a bleed smaller than the spread slices the halo
-  // square at the canvas edge, which is a box, not a glow.
-  const bleed = $derived(bleedFor([spread]))
+  // square at the canvas edge, which is a box, not a glow. Sized for the
+  // ceiling, since the canvas exists before the cell has been measured.
+  const bleed = bleedFor([spreadFor(9999)])
 
   let anchor = $state<HTMLSpanElement | null>(null)
   let rect = $state<RectShape | null>(null)
   let radius = $state(0)
+
+  /** Proportional to the measured control — see `spreadFor`. */
+  const reach = $derived(spread ?? (rect ? spreadFor(Math.min(rect.w, rect.h)) : 0))
 
   // Measured after the DOM has settled on the new selection, and again just
   // past the mark's own 200ms crossfade — the engine tweens between the two
@@ -74,7 +79,7 @@
   // already draws its own raised fill, and dots behind a mono uppercase label
   // at 10px destroy it.
   const sources = $derived<DitherSource[]>(
-    rect ? [{ id: 'pool', kind: 'rect', ...rect, radius, spread, strength, inner: 0, rim: 0, falloff, tone }] : [],
+    rect ? [{ id: 'pool', kind: 'rect', ...rect, radius, spread: reach, strength, inner: 0, rim: 0, falloff, tone }] : [],
   )
 </script>
 

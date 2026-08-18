@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
-  import DitherLayer, { bleedFor, rectIn, type RectShape } from './DitherLayer.svelte'
+  import DitherLayer, { bleedFor, rectIn, spreadFor, type RectShape } from './DitherLayer.svelte'
   import { buttonClasses, splitLayoutClasses, type ButtonSize, type ButtonVariant } from './button'
   import type { DitherSource, DitherTone } from '@/lib/dither'
 
@@ -60,12 +60,16 @@
   let rect = $state<RectShape | null>(null)
   let radius = $state(0)
 
-  /** The halo lives outside the control, so the canvas has to reach past it —
-   *  `bleed` spills without the wrapper taking any space (see DitherLayer).
-   *  Derived from the spread: a smaller bleed cuts the halo off square. */
-  const SPREAD = 22
-  const BLEED = bleedFor([SPREAD])
+  /** Proportional to the measured control — see `spreadFor`. */
+  const spread = $derived(rect ? spreadFor(Math.min(rect.w, rect.h)) : 0)
+
+  /** The canvas is sized for the LARGEST halo this button could want, because
+   *  it is created once and the reach is only known after measuring. A button
+   *  is never taller than the md size, so the ceiling of `spreadFor` bounds it. */
+  const BLEED = bleedFor([spreadFor(9999)])
   const PAD = 1
+  /** Proportional to the control: a fixed reach makes a small button wear a
+   *  cloud and lets neighbours in a toolbar merge into one. */
 
   // Measured on APPROACH, not on mount: the page reflows constantly and a rect
   // cached at mount is wrong by the time anyone hovers it.
@@ -92,10 +96,11 @@
             kind: 'rect',
             ...rect,
             radius,
-            spread: SPREAD,
-            strength: 0.7,
+            spread,
+            strength: 0.5,
             inner: 0,
             rim: 0,
+            falloff: 3,
             tone: TONES[variant] ?? 'neutral',
           },
         ]
