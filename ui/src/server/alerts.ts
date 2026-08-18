@@ -19,6 +19,7 @@ import { fleetBrainHealth } from './brain-health'
 import { ragHealth } from './retrieval/backfill'
 import { retrievalUpgradeStatus } from './retrieval/migrate'
 import { MCP_PORT } from './mcp-service'
+import { lastFleetPreflight } from './fleet-preflight'
 import { notificationMailStats } from './notifications'
 import { schedulerStatus, unhealthyJobs } from './scheduler'
 
@@ -63,9 +64,10 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     where managed and enabled order by slug
   `) as unknown as Array<{ slug: string; department: string; displayName: string }>
   // Everything independent, at once — the wall-clock is max(probe), not sum.
-  const [states, manifestCount, mcpUp, rag, upgrade, brains, cost, stuck] = await Promise.all([
+  const [states, manifestCount, preflight, mcpUp, rag, upgrade, brains, cost, stuck] = await Promise.all([
     managed.length ? containerStatus(managed.map((m) => m.department)).catch(() => null) : Promise.resolve(null),
     listAgents().then((a) => a.length).catch(() => 0),
+    lastFleetPreflight().catch(() => null),
     fetch(`http://127.0.0.1:${MCP_PORT()}/mcp`, { method: 'POST', signal: AbortSignal.timeout(2_500) })
       .then((r) => r.status === 401 || r.ok)
       .catch(() => false),
@@ -120,6 +122,22 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
       severity: 'critical',
       title: 'Gateway plane unreachable',
       detail: 'No rendered fleet manifest — Talaria has no agent url or key to reach, so chat and channel replies will fail. Render the fleet from /agents.',
+      href: '/agents',
+    })
+  }
+
+  // ── Can an agent actually REACH us? ───────────────────────────────────────
+  // The probe below asks from the fleet network; every other check on this page
+  // asks from here. That difference is the whole point: the toolkit check under
+  // this one passed all day, from 127.0.0.1, while not one agent could call a
+  // tool — reachability is a property of a PATH, and the app is standing on the
+  // wrong end of it. Null means the probe has never run, which is not a failure
+  // and is not reported as one.
+  if (preflight && !preflight.ok) {
+    alerts.push({
+      severity: 'critical',
+      title: 'Agents cannot reach Talaria',
+      detail: preflight.detail,
       href: '/agents',
     })
   }
