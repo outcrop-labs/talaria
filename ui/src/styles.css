@@ -597,11 +597,17 @@ kbd,
 @utility dither-bloom {
   position: relative;
   isolation: isolate;
+  /* The control's own radius, so the outset band can match its curve. Most
+     controls here are `rounded-md`; a call site with a different radius sets
+     this alongside it. */
+  --dither-radius: 6px;
+  --dither-offset: 3px;
+  --dither-band: 4px;
 
   /* TWO SHAPES, BECAUSE HOVER AND SELECTED ARE NOT THE SAME STATEMENT.
      `::before` is the interior fill — a surface arriving under the pointer.
-     `::after` is the accent band — the mark of the one that is chosen, and
-     the only place in this treatment that carries the accent colour. */
+     `::after` is the accent band OUTSIDE the control — the mark of the one
+     that is chosen, and the only place here that carries the accent colour. */
   &::before {
     content: '';
     position: absolute;
@@ -625,11 +631,11 @@ kbd,
   &::after {
     content: '';
     position: absolute;
-    inset: 0;
+    inset: calc(var(--dither-offset) * -1);
     z-index: -1;
-    border-radius: inherit;
+    border-radius: calc(var(--dither-radius) + var(--dither-offset));
     pointer-events: none;
-    border: 4px solid var(--theme-accent);
+    border: var(--dither-band) solid var(--theme-accent);
     -webkit-mask-image: var(--dither-tile);
     mask-image: var(--dither-tile);
     -webkit-mask-size: 64px 64px;
@@ -641,7 +647,7 @@ kbd,
   &:hover::before,
   &:focus-visible::before {
     opacity: 1;
-    animation: dither-breathe 14s ease-in-out infinite;
+    animation: dither-breathe-fill 13s ease-in-out infinite;
   }
 
   &[data-status='active']::before,
@@ -651,11 +657,11 @@ kbd,
   &[aria-selected='true']::before,
   &[aria-pressed='true']::before {
     opacity: 1;
-    animation: dither-breathe 14s ease-in-out infinite;
+    animation: dither-breathe-fill 13s ease-in-out infinite;
   }
 
-  /* The outline arrives just after the fill, which is what makes the selected
-     state read as materialising rather than switching. */
+  /* The band arrives just behind the fill, which is what makes selecting read
+     as materialising rather than switching. */
   &[data-status='active']::after,
   &[data-active='true']::after,
   &[aria-current='true']::after,
@@ -663,7 +669,7 @@ kbd,
   &[aria-selected='true']::after,
   &[aria-pressed='true']::after {
     opacity: 1;
-    animation: dither-edge 9s ease-in-out infinite;
+    animation: dither-breathe-edge 9s ease-in-out infinite;
   }
 
   /* Neighbours never breathe in unison — without this a list pulses as one. */
@@ -685,38 +691,32 @@ kbd,
 /* The name 126 call sites already use for the HOVER case. Identical: selection
    differs by gaining a solid tile beneath, not by losing the texture. */
 /* ── The movement ────────────────────────────────────────────────────────────
-   THE SHAPE HOLDS STILL. ONLY ITS FRINGE BREATHES.
+   IT HAS TO BE OPACITY. NOTHING ELSE VARIES CONTINUOUSLY HERE.
 
-   Four attempts bracket this. Sliding the tile scrolls the pattern across the
-   control. Cross-fading two copies blinks between two stamps. A third mask
-   layer lost the tile and left a smooth blob. And animating the density
-   envelope's POSITION — which is what "morph it like the canvas did" naively
-   becomes — walks the dense part of the field off the control, so a highlight
-   reads as a cloud drifting past a button.
+   Five attempts bracket this, and the last one is the useful lesson. Sliding
+   the tile scrolls the pattern across the control. Cross-fading two copies
+   blinks between two stamps. A third mask layer lost the tile and left a
+   blob. Animating the density envelope's POSITION walks the field off the
+   control. And animating the mask's SIZE — or the band's width — flickers,
+   which is what it must do: a mask over a lattice of single pixels has no
+   in-between state to pass through. Every dot it touches is either inside the
+   mask or outside it, so a smoothly changing mask produces dots snapping on
+   and off one at a time. It reads as a fault, not as life.
 
-   The canvas got away with a wandering field because it covered a whole pane,
-   where there is room for weather. A 30px row is not a pane. The shape has to
-   stay where it is; the life comes from how far it reaches. Both layers
-   breathe about their own centre, a few percent, out of phase with each other
-   — the fill's soft edge creeps in and out, the outline's band thickens and
-   thins, and dots at either fringe wink in and out as the threshold crosses
-   them. Nothing translates, so nothing comes loose from its control. */
-@keyframes dither-breathe {
-  0%, 100% {
-    -webkit-mask-size: 64px 64px, 108% 100%, 100% 116%;
-    mask-size: 64px 64px, 108% 100%, 100% 116%;
-  }
-  50% {
-    -webkit-mask-size: 64px 64px, 96% 100%, 100% 98%;
-    mask-size: 64px 64px, 96% 100%, 100% 98%;
-  }
+   The canvas could morph a density field because it recomputed alpha per dot
+   every frame. CSS has exactly one continuous channel over a masked layer,
+   and it is opacity. So the movement lives there: a few percent, over a long
+   cycle, with the fill and the band on different periods so their sum never
+   settles into an obvious beat. It is not the canvas's weather, and it should
+   not pretend to be — it is a slow breath under a static texture. */
+@keyframes dither-breathe-fill {
+  0%, 100% { opacity: 0.88; }
+  50% { opacity: 1; }
 }
 
-/* The band's OUTER edge is pinned to the control; its inner edge moves, so
-   the outline never changes size — only its weight. */
-@keyframes dither-edge {
-  0%, 100% { border-width: 3px; }
-  50% { border-width: 5px; }
+@keyframes dither-breathe-edge {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
 }
 
 @utility dither-fill {
@@ -746,7 +746,7 @@ kbd,
   &:hover::before,
   &:focus-visible::before {
     opacity: 1;
-    animation: dither-breathe 14s ease-in-out infinite;
+    animation: dither-breathe-fill 13s ease-in-out infinite;
   }
 
   @media (prefers-reduced-motion: reduce) {
