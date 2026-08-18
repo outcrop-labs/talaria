@@ -1825,6 +1825,71 @@ const MIGRATIONS: string[] = [
   `alter table daily_brief_entries add column if not exists batch uuid`,
   `create index if not exists daily_brief_entries_batch_idx on daily_brief_entries(brief_id, batch)`,
 
+  // ── DELEGATED REPLIES: the assistant answering a chat for its owner ───────
+  //
+  // READING A MESSAGE IS NOT ANSWERING IT, which is the whole reason this
+  // exists. The brief's first version resolved a conversation line when the
+  // unread count reached zero — so glancing at Priya's question told the
+  // document it had been handled, and the one thing the surface is for ("who is
+  // still waiting on me") was the thing it got wrong. A conversation is open
+  // until somebody REPLIES, and that is derived from the message log rather
+  // than from a read cursor.
+  //
+  // Once a line can stay open on "read, not answered", the obvious next thing
+  // is for the assistant to be allowed to close it. That is a delegation from
+  // the OWNER to their own assistant — not an admin-granted `Perm`, which
+  // describes what a person may do — so it lives here, scoped to one person's
+  // conversations and revocable per thread.
+  //
+  // A GRANT WITH NO `channel_id` IS THE STANDING ONE (every DM); a row with one
+  // covers that thread alone. `revoked_at` rather than a delete: who was allowed
+  // to speak for someone, and when that stopped, is exactly the history you want
+  // when a reply turns out to have been wrong.
+  `create table if not exists assistant_reply_grants (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     channel_id uuid references channels(id) on delete cascade,
+     granted_at timestamptz not null default now(),
+     revoked_at timestamptz
+   )`,
+  // Two partial indexes, not one constraint, because a NULL `channel_id` is the
+  // standing grant and Postgres treats NULLs as distinct in a unique index —
+  // so the standing grant needs its own predicate or a person could accumulate
+  // five of them and revoking one would look like it did nothing.
+  `create unique index if not exists assistant_reply_grants_thread_idx
+     on assistant_reply_grants(user_id, channel_id) where channel_id is not null and revoked_at is null`,
+  `create unique index if not exists assistant_reply_grants_standing_idx
+     on assistant_reply_grants(user_id) where channel_id is null and revoked_at is null`,
+
+  // A reply the assistant WROTE but has not been allowed to send.
+  //
+  // `in_reply_to_seq` is what makes a draft honest over time: it names the
+  // message the reply answers, so a draft written against "can I start outreach?"
+  // is visibly stale once the person has sent two more messages. Approving a
+  // stale draft would post an answer to a question that has moved on, and
+  // without this column there is no way to know that happened.
+  `create table if not exists assistant_reply_drafts (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     channel_id uuid not null references channels(id) on delete cascade,
+     in_reply_to_seq integer not null,
+     agent_model text,
+     content text not null,
+     -- pending | sent | rejected. A draft overtaken by a new message is not a
+     -- fourth status: staleness is DERIVED by comparing 'in_reply_to_seq' to the
+     -- channel, so it cannot drift out of date the way a stored flag would.
+     status text not null default 'pending',
+     -- Set when the assistant sent it under a standing grant rather than an
+     -- approval, so "who let this happen" is answerable from the row itself.
+     delegated boolean not null default false,
+     message_id uuid references channel_messages(id) on delete set null,
+     created_at timestamptz not null default now(),
+     decided_at timestamptz,
+     decided_by uuid references users(id) on delete set null
+   )`,
+  `create index if not exists assistant_reply_drafts_open_idx
+     on assistant_reply_drafts(user_id, channel_id) where status = 'pending'`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
