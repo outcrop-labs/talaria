@@ -12,21 +12,21 @@
     /**
      * A dither bloom on approach — Mercury's matte substitute for glow.
      *
-     * ON BY DEFAULT FOR `primary` ONLY. Partly taste — the bloom means "this is
-     * the thing to press", and a surface where everything reaches for you says
-     * nothing. Partly cost: each bloom is its own canvas and its own rAF loop.
+     * ON BY DEFAULT FOR EVERY VARIANT THAT HAS A FRAME. It was primary-only at
+     * first, on a cost argument that stopped being true the same afternoon:
+     * the per-instance MutationObserver and media listener became shared
+     * ref-counted subscriptions when the skeleton field needed the same two
+     * signals, so the page pays for one of each however many fields exist.
+     * What is left per instance is a canvas and an rAF loop the engine parks
+     * the moment the field is static — an un-hovered button costs one paint.
      *
-     * The observers are NOT part of that cost any more. They were once — a
-     * MutationObserver and a media listener per instance — but the skeleton
-     * field needed the same two signals, so they became ref-counted shared
-     * subscriptions (`onThemeChange`, `onReducedMotion`) and the whole page now
-     * pays for one of each however many fields are mounted. What remains
-     * per-instance is the canvas and its loop, and the engine parks that loop
-     * as soon as a field is static, so an un-hovered bloom costs one paint.
+     * With the cost gone, primary-only was just an inconsistency: a person
+     * reaching for Cancel got nothing back while Deploy bloomed, which reads
+     * as the treatment being broken rather than as emphasis.
      *
-     * Which leaves the taste argument carrying most of the weight, and it is
-     * enough: 100 of 241 buttons are primary and no file holds more than four.
-     * Pass it explicitly either way to override.
+     * `link` is the exception and always will be: it is prose with no frame,
+     * so there is no boundary for a halo to hug — a field around a word in a
+     * sentence is a smudge.
      */
     bloom?: boolean
   }
@@ -43,6 +43,8 @@
     ...rest
   }: Props = $props()
 
+  // The field carries the control's own meaning. A destructive action reaching
+  // for you in gold would be the wrong promise.
   const TONES: Partial<Record<ButtonVariant, DitherTone>> = {
     primary: 'accent',
     'accent-soft': 'accent',
@@ -52,7 +54,7 @@
 
   // A disabled control must not reach for the pointer — the bloom reads as an
   // invitation, and a dimmed button that still blooms is telling two stories.
-  const wantsBloom = $derived((bloom ?? variant === 'primary') && !disabled)
+  const wantsBloom = $derived((bloom ?? variant !== 'link') && !disabled)
 
   let wrap = $state<HTMLSpanElement | null>(null)
   let rect = $state<RectShape | null>(null)
