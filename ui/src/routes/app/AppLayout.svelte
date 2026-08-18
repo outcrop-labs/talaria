@@ -196,9 +196,13 @@
            confused colleague days later. Renders nothing for members, and
            nothing at all when there is nothing to say. -->
       <UnreadableSecretsBanner />
-      <!-- vt-view: the View Transitions API animates ONLY this region on nav
-           clicks (styles.css) — the rail, drawer and strip stay planted. -->
-      <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
+      <!-- This region used to carry `vt-view` and be animated by the View
+           Transitions API on nav clicks. Removed: the transition paints a
+           static snapshot while the incoming view is still loading its data,
+           so the live DOM appeared in one jump when the animation ended. See
+           the note in styles.css. Content entrance is animated by Materialize
+           and listStagger instead, which fire when the data actually lands. -->
+      <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
         {@render children()}
       </div>
     </InboxFocusShell>

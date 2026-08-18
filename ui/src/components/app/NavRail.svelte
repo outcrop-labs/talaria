@@ -125,7 +125,6 @@
           <RailTooltip label={item.label}>
             <a
               href={item.to}
-              data-view-transition
               data-status={statusFor(item)}
               aria-label={item.label}
               class={cn(
@@ -218,7 +217,6 @@
               <li>
                 <a
                   href={item.to}
-                  data-view-transition
                   data-status={statusFor(item)}
                   class={cn(
                     'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',

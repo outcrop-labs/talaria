@@ -521,55 +521,34 @@ kbd,
   user-select: text;
 }
 
-/* ── View transitions (spec §9, round 2) ─────────────────────────────────────
-   Nav-rail links carry `data-view-transition`, so sv-router wraps those
-   navigations in document.startViewTransition(). Only the content region
-   (.vt-view, stamped in AppLayout) participates: the old view fades down-and-
-   out fast, the new one rises in on the house quint curve. The root snapshot
-   is pinned to `animation: none` so the rail/strip never flicker. Browsers
-   without the API, and people who ask for reduced motion, get an instant swap. */
-.vt-view {
-  view-transition-name: talaria-view;
-}
+/* ── View transitions (spec §9) — REMOVED ────────────────────────────────────
+   REMOVED, and this is the note explaining why, so it does not come back.
 
-/* THE FULL-SCREEN FLASH, and why it is a blend mode rather than an animation.
-   The UA stylesheet sets `mix-blend-mode: plus-lighter` on EVERY view-transition
-   snapshot. That is deliberate — it is what makes the default cross-fade
-   perceptually even — but it assumes the thing every default does: that the two
-   opacities always sum to 1. Break that assumption and the snapshots stop
-   cross-fading and start ADDING, which reads as the screen flashing bright.
+   Nav-rail links used to carry `data-view-transition`, which makes sv-router
+   wrap the navigation in `document.startViewTransition()`, and this block
+   animated the content region across the swap. It flashed hard on every click.
 
-   This file broke it twice. `animation: none` below pins BOTH root snapshots at
-   opacity 1, so the rail, strip and backdrop were composited on top of
-   themselves for the length of every navigation — on the light theme, surface
-   plus surface is white. And the view pair's 180ms-out against 320ms-in sums
-   well over 1 through the middle of the transition, washing the content out
-   with it.
+   THE MECHANISM, which is not fixable by tuning the animation. A view
+   transition stops painting the live DOM and paints two STATIC SNAPSHOTS
+   instead — the old view and the new one — for as long as the animation runs.
+   That was 320ms here. Every view in this app is still arriving during those
+   320ms: TanStack queries resolve and swap skeletons for content, and several
+   views navigate a SECOND time on arrival (Comms restores your last channel,
+   Knowledge its space, Artifacts its folder, BoardsIndex its first board).
 
-   So: normal blending wherever the opacities are ours rather than the UA's.
-   The new snapshot paints above the old, so an opaque `new` covers `old` on its
-   own and the rail still never flickers, which is what `animation: none` was
-   reaching for. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation: none;
-  mix-blend-mode: normal;
-}
-@media (prefers-reduced-motion: no-preference) {
-  ::view-transition-old(talaria-view),
-  ::view-transition-new(talaria-view) {
-    mix-blend-mode: normal;
-  }
-  ::view-transition-old(talaria-view) {
-    animation: 180ms ease-out both talaria-vt-out;
-  }
-  ::view-transition-new(talaria-view) {
-    animation: 320ms cubic-bezier(0.22, 1, 0.36, 1) both talaria-vt-in;
-  }
-}
-@keyframes talaria-vt-out {
-  to { opacity: 0; }
-}
-@keyframes talaria-vt-in {
-  from { opacity: 0; transform: translateY(8px); }
-}
+   None of that reaches the screen, because the screen is showing a photograph.
+   The DOM changes behind the snapshot, and when the transition ends the live
+   DOM is revealed all at once — showing something different from the image
+   that was just animating. That discontinuity is the flash, and it lands at the
+   END of every navigation.
+
+   A shorter duration only narrows the window; it does not close it, because
+   nothing about the animation knows when the content finished arriving. Motion
+   that must wait on data has to be driven BY the data, which is exactly what
+   this app already does: `Materialize` cross-fades skeleton into content in
+   place when the query resolves, and `listStagger` cascades the items in. That
+   machinery animates the arrival correctly because it fires when the arrival
+   actually happens.
+
+   If a cross-view transition is ever wanted again, it needs the swap to be
+   deferred until the incoming view has its data — not a timer racing it. */

@@ -62,7 +62,6 @@
 
       <a
         href={p('/settings')}
-        data-view-transition
         onclick={() => (open = false)}
         class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] hover:bg-hover"
       >
@@ -72,7 +71,6 @@
       {#if user.role === 'admin'}
         <a
           href={p('/admin')}
-          data-view-transition
           onclick={() => (open = false)}
           class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] hover:bg-hover"
         >
