@@ -441,8 +441,10 @@
             />
             <DropdownMenu items={newMenu}>
               {#snippet trigger(_open: boolean)}
-                <Button size="sm">
-                  <Plus size={13} class="mr-1" /> New
+                <!-- The `+` opens the menu of kinds, which is what says what is
+                     being made; "New" beside it only repeats the glyph. -->
+                <Button size="sm" title="New file" aria-label="New file">
+                  <Plus size={13} />
                 </Button>
               {/snippet}
             </DropdownMenu>

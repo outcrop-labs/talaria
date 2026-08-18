@@ -15,6 +15,7 @@
   // them as one list of names would be lying about what it just did.
   import { onDestroy } from 'svelte'
   import Button from '@/components/ui/Button.svelte'
+  import SecretEntriesEditor, { emptySecretEntry, type SecretEntry } from '@/components/ui/SecretEntriesEditor.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -25,7 +26,7 @@
   import { useSession } from '@/lib/session'
   import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { Check, ChevronRight, Copy, Eye, EyeOff, Folder, FolderPlus, KeyRound, MoreHorizontal, Plus, Search, Share2, X } from '@lucide/svelte'
+  import { Check, ChevronRight, Copy, Eye, EyeOff, Folder, FolderPlus, KeyRound, MoreHorizontal, Plus, Search, Share2 } from '@lucide/svelte'
   import SecretShareModal from './SecretShareModal.svelte'
 
   const query = useWorkingSecrets()
@@ -201,13 +202,13 @@
   let title = $state('')
   let note = $state('')
   let hosts = $state('')
-  let entries = $state<Array<{ key: string; label: string; value: string }>>([{ key: '', label: '', value: '' }])
+  let entries = $state<SecretEntry[]>([emptySecretEntry()])
 
   const reset = () => {
     title = ''
     note = ''
     hosts = ''
-    entries = [{ key: '', label: '', value: '' }]
+    entries = [emptySecretEntry()]
   }
 
   const save = async () => {
@@ -492,21 +493,7 @@
             <input bind:value={note} placeholder="For the checkout rewrite — rotate after launch" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
           </label>
 
-          <p class="mt-3 font-mono text-[10px] text-ink-dim">entries</p>
-          {#each entries as e, i (i)}
-            <div class="mt-1 grid gap-1 sm:grid-cols-[1fr_1fr_2fr_auto]">
-              <input bind:value={e.key} placeholder="secret_key" class="rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg" />
-              <input bind:value={e.label} placeholder="Secret key" class="rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
-              <input bind:value={e.value} type="password" autocomplete="off" placeholder="value" class="rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg" />
-              <Button size="sm" variant="ghost" disabled={entries.length === 1} onclick={() => (entries = entries.filter((_, n) => n !== i))} title="Remove">
-                <X size={13} aria-hidden="true" />
-              </Button>
-            </div>
-          {/each}
-          <Button size="sm" variant="ghost" class="mt-1" onclick={() => (entries = [...entries, { key: '', label: '', value: '' }])}>
-            <Plus size={13} aria-hidden="true" />
-            Another entry
-          </Button>
+          <SecretEntriesEditor bind:entries valuePlaceholder="value" />
 
           <label class="mt-3 block font-sans text-xs text-muted">
             Spendable at (optional) — hosts, space or comma separated

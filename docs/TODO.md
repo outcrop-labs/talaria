@@ -104,6 +104,31 @@ engineering-facing tracker.
     textual uploads contribute contents to prompts in chat + channel paths.
 
 ## High-value, ready to pick up
+- **UI streamlining audit (2026-08-17) — what is left after the first pass.**
+  Four patterns were swept; these are the findings NOT acted on, with the
+  reason, so nobody re-derives the survey:
+  - **`?? []` straight off a query — 42 sites.** The empty-vs-broken doctrine
+    (`listQuery`) is not applied everywhere. NOT a blanket defect: Comms, for
+    one, deliberately keeps four separate reads and gives each rail section its
+    own `RailFailure`. Each site needs the judgment "would this surface print a
+    confident zero over a 500?", which is per-site work, not a sweep.
+  - **Hand-rolled fetching in components** — `RefPicker.svelte` and
+    `ArtifactsDriveImportModal.svelte` still load with `$state` + `$effect` and
+    their own loading/error strings, the pattern the role library was moved off
+    of. Both are small and both are pickers rather than views, so the win is
+    consistency rather than a bug.
+  - **Labeled create buttons left deliberately.** `SublistFooter`'s "New board"
+    sits beside "Manage teams" in a nav menu — a menu row is not a toolbar, and
+    a lone `+` next to a labeled sibling is worse than both being labeled.
+    `AgendaPanel`'s "New event" is a text link, not an icon button.
+    `ArtifactSheetView`'s "Row"/"Column" are two different actions in one place
+    and MUST stay labeled. `Mcp`'s "Browse marketplace" is a destination, not a
+    create.
+  - **Raw `<input class=…>` instead of the `Input` primitive** in both secrets
+    panels (the fields around the entries editor). Primitive-first says these
+    should be `<Input>`; they are wrapped in `<label>` so they are at least
+    correctly associated, which is why they do not appear in the 56 a11y label
+    warnings. Cosmetic, contained, easy.
 - **Studio onto the Rail archetype** — the last of the five list+detail
   implementations. Templates, the agent role library and the Teams dialog now
   share `components/ui/LibraryPane.svelte`; Studio is deliberately NOT on it,

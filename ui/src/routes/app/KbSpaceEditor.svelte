@@ -144,8 +144,11 @@
       <Button variant="ghost" size="sm" class="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onclick={() => (fullscreen = !fullscreen)}>
         {#if fullscreen}<Minimize2 size={14} />{:else}<Maximize2 size={14} />{/if}
       </Button>
-      <Button variant="outline" size="sm" class="shrink-0" onclick={onNewDoc}>
-        <Plus size={13} class="mr-1" /> New
+      <!-- A `+` in a doc tree's toolbar makes a doc; "New" beside it only
+           repeats the glyph. The name survives as the tooltip, where it is
+           the only context a screen reader gets. -->
+      <Button variant="outline" size="sm" class="shrink-0" title="New doc" aria-label="New doc" onclick={onNewDoc}>
+        <Plus size={13} />
       </Button>
       <KbSettingsMenu
         items={[
