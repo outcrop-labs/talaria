@@ -18,7 +18,7 @@
   // tab, and retyping is a better outcome than leaving it there.
   import { KeyRound } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { popPanel, tileBase } from '@/components/chat/chat-chrome'
   import { pop, POPOVER } from '@/lib/motion'
 
@@ -103,7 +103,7 @@
     class={tileBase}
   >
     {#if busy}
-      <GeneratingBars bars={3} variant="weave" step={0.15} />
+      <WaitingMark site="chat/relay" size={12} />
     {:else}
       <KeyRound size={14} aria-hidden="true" />
     {/if}
@@ -158,7 +158,7 @@
           type="button"
           disabled={busy || !label.trim() || !value}
           onclick={() => void mint()}
-          class="rounded-md border border-line-strong px-2.5 py-1 font-sans text-xs text-fg transition-colors hover:bg-hover disabled:opacity-40"
+          class="rounded-md border border-line-strong px-2.5 py-1 font-sans text-xs text-fg transition-colors dither-fill disabled:opacity-40"
         >
           Hand it over
         </button>

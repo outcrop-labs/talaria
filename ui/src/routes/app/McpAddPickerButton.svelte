@@ -55,7 +55,7 @@
     }}
     class={cn(
       'grid h-6 w-6 place-items-center rounded-md transition-colors',
-      open ? 'bg-raised text-accent' : 'text-muted hover:bg-hover hover:text-accent',
+      open ? 'bg-raised text-accent' : 'text-muted dither-fill hover:text-accent',
     )}
   >
     <Plus size={14} />

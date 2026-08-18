@@ -1,6 +1,7 @@
 <script lang="ts">
   import { MessageSquareText, X } from '@lucide/svelte'
   import MessageRow from './MessageRow.svelte'
+  import { bottomStick } from '@/lib/stick-to-bottom'
   import ChannelComposer from './ChannelComposer.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -32,19 +33,22 @@
   const threadQuery = useThreadMessages(() => channelId, () => rootId)
   const messages = $derived(threadQuery.data ?? [])
   let scrollEl = $state<HTMLDivElement | null>(null)
-  let prevCount = 0
 
+  const stick = bottomStick()
+  $effect(() => stick.attach(scrollEl))
   $effect(() => {
     void messages
-    const el = scrollEl
-    if (!el) return
-    const loaded = prevCount === 0 && messages.length > 0
-    prevCount = messages.length
-    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 120
-    if (loaded || pinned) el.scrollTop = el.scrollHeight
+    stick.follow()
+  })
+  // ChannelView swaps rootId without remounting, so opening a second thread
+  // would otherwise inherit the first one's hold.
+  $effect(() => {
+    void rootId
+    stick.jump()
   })
 
   const send = async (text: string, atts: Attachment[]) => {
+    stick.jump()
     const { attachmentIds, refs } = splitAttachments(atts)
     await sendChannelMessage(channelId, text, attachmentIds, refs, rootId)
   }
@@ -64,7 +68,7 @@
     <button
       type="button"
       onclick={onClose}
-      class="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+      class="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
       title="Close thread"
     >
       <X size={14} />
@@ -90,10 +94,10 @@
       <div aria-hidden="true" class="space-y-4">
         {#each Array.from({ length: 3 }) as _, i (i)}
           <div class="flex gap-2.5">
-            <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded" delay={i * 0.12} />
+            <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded" />
             <div class="min-w-0 flex-1 space-y-2 pt-1">
-              <Skeleton class="h-2.5 w-20 rounded-full" delay={i * 0.12} />
-              <Skeleton class="h-2.5 w-4/5 rounded-full" delay={i * 0.12 + 0.06} />
+              <Skeleton class="h-2.5 w-20 rounded-full" />
+              <Skeleton class="h-2.5 w-4/5 rounded-full" />
             </div>
           </div>
         {/each}

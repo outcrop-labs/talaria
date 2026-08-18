@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Panel from '@/components/ui/Panel.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -78,9 +78,9 @@
       {/if}
       <span class="ml-auto font-mono text-[10px] tracking-[0.05em] text-muted">
         {#if rebuilding}
-          <span class="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> {rag.reindex.phase === 'backfilling' ? 'refilling from sources' : 'rebuilding collections'}</span>
+          <span class="flex items-center gap-1.5"><WaitingMark site="admin/retrieval-reindex" size={11} /> {rag.reindex.phase === 'backfilling' ? 'refilling from sources' : 'rebuilding collections'}</span>
         {:else if rag.backfill.state === 'running'}
-          <span class="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> backfilling</span>
+          <span class="flex items-center gap-1.5"><WaitingMark site="admin/retrieval-backfill" size={11} /> backfilling</span>
         {:else if rag.reindex.state === 'error'}
           <span class="text-danger">rebuild failed: {rag.reindex.error}</span>
         {:else if rag.backfill.state === 'done' && rag.backfill.counts}
@@ -129,7 +129,7 @@
       errorVariant="compact"
     >
       {#snippet skeleton()}
-        {#each [0, 1, 2] as i (i)}<SkeletonCard delay={i * 0.15} />{/each}
+        {#each [0, 1, 2] as i (i)}<SkeletonCard />{/each}
       {/snippet}
       {#snippet children(collections)}
         <div class="space-y-3" use:listStagger>
@@ -152,8 +152,8 @@
     <div class="mt-5 border-t border-line-subtle pt-4">
       <Skeleton class="mb-3 h-3 w-24 rounded-full" />
       <div class="flex flex-wrap items-center gap-2">
-        <Skeleton class="h-8 w-52" delay={0.12} />
-        <Skeleton class="h-8 w-64" delay={0.24} />
+        <Skeleton class="h-8 w-52" />
+        <Skeleton class="h-8 w-64" />
       </div>
     </div>
   {/if}

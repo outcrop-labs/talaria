@@ -29,7 +29,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import Radio from '@/components/ui/Radio.svelte'
-  import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { cn } from '@/lib/cn'
@@ -288,7 +288,7 @@
                 </Button>
                 {#if drafting}
                   <span class="flex items-center gap-1.5 text-xs text-muted">
-                    Muse is drafting <GeneratingDots />
+                    Muse is drafting <WaitingMark site="workflows/muse-draft" size={12} class="text-accent" />
                   </span>
                 {/if}
                 {#if museError}<span class="text-xs text-danger">{museError}</span>{/if}

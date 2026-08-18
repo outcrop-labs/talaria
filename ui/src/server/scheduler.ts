@@ -101,6 +101,9 @@ export type JobName =
   | 'notification-mail'
   // server/runs/reclaim.ts — the sweep that re-enters a run whose driver died.
   | 'run-reclaim'
+  // server/daily-brief.ts — opens each person's brief before their workday and
+  // follows it for the rest of the day.
+  | 'daily-brief'
 
 const REQUIRED_JOBS: JobName[] = [
   'comms-decay',
@@ -127,6 +130,13 @@ const REQUIRED_JOBS: JobName[] = [
   // rag-backfill, work-session), so the module has an importer and this is a
   // real alarm rather than a trained-out one.
   'run-reclaim',
+  // server/daily-brief.ts. REQUIRED for the reason every name on this list is:
+  // its failure mode is silence, and here the silence is the product. A
+  // deployment missing this job serves the brief surface perfectly and simply
+  // never opens one — every person sees "your brief hasn't been written yet",
+  // forever, which is indistinguishable from a quiet morning until someone
+  // notices it is the third quiet morning in a row.
+  'daily-brief',
 ]
 
 export interface JobSpec {

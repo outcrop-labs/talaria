@@ -9,7 +9,7 @@
   import { SquareTerminal } from '@lucide/svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import CapabilityTags from './CapabilityTags.svelte'
   import FitnessCases from './FitnessCases.svelte'
   import FitnessObserved from './FitnessObserved.svelte'
@@ -209,7 +209,7 @@
            checkpoints every case as it lands, and an admin watching it should not
            have to be on the right tab to see it move. -->
       <div class="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-line-subtle bg-raised/40 px-2.5 py-1.5">
-        <GeneratingBars bars={3} variant="breathe" step={0.2} />
+        <WaitingMark site="models/fitness-detail" size={11} />
         <span class="font-mono text-[10px] tracking-[0.05em] text-muted uppercase">
           {live.phase === 'scoring' ? 'scoring' : (live.phase ?? 'running')}
           {#if live.total > 0}· {live.done}/{live.total} fixtures{/if}

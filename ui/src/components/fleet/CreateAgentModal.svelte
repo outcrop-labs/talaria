@@ -3,7 +3,7 @@
   import { Sparkles } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Generating from '@/components/ui/Generating.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
@@ -185,7 +185,7 @@
         />
       </div>
       {#if generating}
-        <Generating label="Designing the agent: identity, soul, and starter skills" lines={3} />
+        <Generating site="fleet/agent-design" label="Designing the agent: identity, soul, and starter skills" lines={3} />
       {/if}
       {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
       <div class="flex items-center gap-3 border-t border-line pt-4">
@@ -197,7 +197,7 @@
           Cancel
         </Button>
         <Button onclick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
-          {#if generating}<GeneratingBars bars={3} variant="weave" step={0.15} />{/if}
+          {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
           {generating ? 'Designing' : 'Design agent'}
         </Button>
       </div>
@@ -314,6 +314,7 @@
       </label>
       {#if busy}
         <Generating
+          site="fleet/agent-hire"
           label={start
             ? `Hiring ${displayName || slug}: rendering the config, starting the container, waiting for health`
             : `Creating ${displayName || slug}`}

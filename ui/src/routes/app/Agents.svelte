@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { Import, LayoutGrid, List, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -81,16 +82,17 @@
 {#snippet tileSkeleton(i: number)}
   <div aria-hidden="true" class="flex flex-col gap-3 rounded-lg border border-line bg-panel p-6">
     <div class="flex items-center gap-2.5">
-      <Skeleton class="h-9 w-9 shrink-0 rounded-full" delay={i * 0.1} />
+      <Skeleton class="h-9 w-9 shrink-0 rounded-full" />
       <div class="min-w-0 flex-1 space-y-1.5">
-        <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} delay={i * 0.1} />
-        <Skeleton class={`h-2.5 rounded-full ${roleW[i % roleW.length]}`} delay={i * 0.1 + 0.1} />
+        <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
+        <Skeleton class={`h-2.5 rounded-full ${roleW[i % roleW.length]}`} />
       </div>
-      <Skeleton class="h-2 w-2 shrink-0 rounded-full" delay={i * 0.1} />
+      <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
+      <div class="h-2 w-2 shrink-0 rounded-full bg-line"></div>
     </div>
     <div class="flex justify-end gap-1">
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.1 + 0.15} />
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.1 + 0.2} />
+      <Skeleton class="h-7 w-7 rounded-md" />
+      <Skeleton class="h-7 w-7 rounded-md" />
     </div>
   </div>
 {/snippet}
@@ -98,13 +100,13 @@
 <!-- One list row's silhouette (see AgentListRow: dot + avatar + name/role + controls). -->
 {#snippet rowSkeleton(i: number)}
   <div aria-hidden="true" class="flex items-center gap-3 px-4 py-3">
-    <Skeleton class="h-2 w-2 shrink-0 rounded-full" delay={i * 0.1} />
-    <Skeleton class="h-7 w-7 shrink-0 rounded-full" delay={i * 0.1} />
-    <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} delay={i * 0.1} />
-    <Skeleton class={`h-2.5 rounded-full ${roleW[(i + 1) % roleW.length]}`} delay={i * 0.1 + 0.1} />
+    <div class="h-2 w-2 shrink-0 rounded-full bg-line"></div>
+    <Skeleton class="h-7 w-7 shrink-0 rounded-full" />
+    <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
+    <Skeleton class={`h-2.5 rounded-full ${roleW[(i + 1) % roleW.length]}`} />
     <span class="ml-auto flex shrink-0 items-center gap-1">
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.1 + 0.15} />
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.1 + 0.2} />
+      <Skeleton class="h-7 w-7 rounded-md" />
+      <Skeleton class="h-7 w-7 rounded-md" />
     </span>
   </div>
 {/snippet}
@@ -116,11 +118,11 @@
 {#snippet gridIcon()}<LayoutGrid size={14} />{/snippet}
 {#snippet listIcon()}<List size={14} />{/snippet}
 
-<div class="h-full overflow-y-auto p-8">
+<PageSurface>
   <!-- Page content entrance: toolbar row, then the roster region, rise in
        sequence (ANIMATIONS.md). The roster region is ONE child at this level;
        the tile cascade lives on the loaded branch's own stagger below. -->
-  <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+  <div use:staggerIn class="space-y-6">
     <ViewHeader title="Agents">
       {#snippet status()}
         {#if t}
@@ -223,7 +225,9 @@
           >
             {#snippet skeleton()}{@render itemSkeleton(0)}{/snippet}
             {#snippet idle()}
-              <Panel>
+              <!-- p-0: the zero state brings its own padding and its vignette fills this
+         box, so panel padding would be a band it cannot reach. -->
+      <Panel class="p-0">
                 <EmptyState
                   title="Roster not available to you"
                   hint="Agent definitions are served to accounts that manage the fleet — ask an admin for access."
@@ -269,4 +273,4 @@
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
     {/if}
   </div>
-</div>
+</PageSurface>

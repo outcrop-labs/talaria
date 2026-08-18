@@ -65,7 +65,7 @@
     oncontextmenu={(e) => onDocMenu(e, doc)}
     class={cn(
       'group relative flex items-center gap-1 rounded-md py-1 pr-1 text-xs transition-colors',
-      activeId === doc.id ? 'bg-card text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+      activeId === doc.id ? 'bg-card text-fg' : 'text-muted dither-fill hover:text-fg',
       pos === 'inside' && 'ring-1 ring-accent/60',
     )}
     style:padding-left="{depth * 12 + 4}px"

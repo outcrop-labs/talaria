@@ -52,7 +52,7 @@
       </div>
       <div>
         <div class="mb-1 text-[11px] text-muted">Plan documents</div>
-        <Skeleton class="h-9 w-full" delay={0.12} />
+        <Skeleton class="h-9 w-full" />
       </div>
     </div>
   {:else if isAdmin}

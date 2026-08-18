@@ -114,7 +114,7 @@
     onclick={action}
     class={cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
-      active ? 'bg-raised text-accent' : 'text-muted hover:bg-hover hover:text-fg',
+      active ? 'bg-raised text-accent' : 'text-muted dither-fill hover:text-fg',
       focusGold,
     )}
   >
@@ -133,7 +133,7 @@
       action()
     }}
     class={cn(
-      'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg',
+      'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg',
       focusGold,
     )}
   >

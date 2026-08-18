@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { MoreHorizontal, RefreshCw } from '@lucide/svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -146,19 +146,16 @@
 
   <!-- ── Tools strip ── -->
   <div class="mt-3 flex flex-wrap items-center gap-1.5">
-    <button
-      type="button"
-      onclick={() => {
+    <Button variant="outline" size="xs" class="gap-1.5 rounded py-0.5 text-muted hover:text-fg" onclick={() => {
         refreshing = true
         void patch({ refreshTools: true }).finally(() => (refreshing = false))
       }}
-      class="flex items-center gap-1.5 rounded border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
-      title="Ask the server for its tool catalog"
-    >
-      {#if refreshing}<GeneratingBars bars={3} variant="scan" />{:else}<RefreshCw size={11} />{/if}
+      
+      title="Ask the server for its tool catalog">
+      {#if refreshing}<WaitingMark site="mcp/server-refresh" size={11} />{:else}<RefreshCw size={11} />{/if}
       {s.tools.length ? `${s.tools.length} tools` : 'Discover tools'}
       {#if s.toolsRefreshedAt}<span class="normal-case text-ink-dim">· {relativeTime(s.toolsRefreshedAt)}</span>{/if}
-    </button>
+    </Button>
     {#each s.tools.slice(0, 6) as t (t.name)}
       <span title={t.description} class="rounded border border-line-subtle px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
         {t.name}

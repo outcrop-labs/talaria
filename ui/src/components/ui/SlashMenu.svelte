@@ -68,7 +68,7 @@
           e.preventDefault()
           command(item)
         }}
-        class={cn('flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors', i === active ? 'bg-hover' : 'hover:bg-hover')}
+        class={cn('flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors', i === active ? 'bg-hover' : 'dither-fill')}
       >
         <span class={cn('grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line bg-raised', i === active ? 'text-accent' : 'text-muted')}>
           <Icon size={15} />

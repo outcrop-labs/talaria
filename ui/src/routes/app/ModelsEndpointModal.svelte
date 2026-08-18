@@ -146,11 +146,11 @@
       {#if ep.models.length > 0}
         <div class="mb-2 divide-y divide-line">
           {#each ep.models as m (m)}
-            <div class="flex items-center gap-2 py-1.5 text-sm transition-colors hover:bg-hover">
+            <div class="flex items-center gap-2 py-1.5 text-sm transition-colors dither-fill">
               <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m}</span>
-              <button type="button" onclick={() => removeModel(m)} class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
+              <Button variant="ghost" size="xs" class="shrink-0 hover:text-danger" onclick={() => removeModel(m)}>
                 Remove
-              </button>
+              </Button>
             </div>
           {/each}
         </div>
@@ -191,7 +191,7 @@
     {#if ep.class === 'cloud'}<ModelsPrivacyRow {ep} {run} />{/if}
 
     {#if cascading}
-      <Generating label="Removing across the fleet: new agent versions, re-render, rolling the affected agents" lines={2} />
+      <Generating site="models/endpoint-remove" label="Removing across the fleet: new agent versions, re-render, rolling the affected agents" lines={2} />
     {/if}
     {#if err}<div class="text-xs text-danger">{err}</div>{/if}
 

@@ -53,8 +53,8 @@
         <Skeleton class="h-9 w-full max-w-xs" />
       </div>
       <div>
-        <Skeleton class="mb-1.5 h-2.5 w-40 rounded-full" delay={0.12} />
-        <Skeleton class="h-14 w-full" delay={0.12} />
+        <Skeleton class="mb-1.5 h-2.5 w-40 rounded-full" />
+        <Skeleton class="h-14 w-full" />
       </div>
     </div>
   {:else if !data}

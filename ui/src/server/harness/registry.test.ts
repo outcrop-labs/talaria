@@ -32,6 +32,10 @@ describe('the registry', () => {
       'inbox-reply',
       'briefer:brief',
       'briefer:chat',
+      'briefer:daily-open',
+      'briefer:daily-delta',
+      'briefer:daily-chat',
+      'briefer:reply',
       'work-session',
       'hermes:knowledge',
       'hermes:documents',
@@ -263,6 +267,10 @@ describe('the PLATFORM_AGENTS cross-check', () => {
       'inbox-reply',
       'briefer:brief',
       'briefer:chat',
+      'briefer:daily-open',
+      'briefer:daily-delta',
+      'briefer:daily-chat',
+      'briefer:reply',
       'work-session',
       // The Hermes family: its model is the AGENT IN THE CONVERSATION, so there
       // is nothing for an admin to assign and no role to fall back to — the

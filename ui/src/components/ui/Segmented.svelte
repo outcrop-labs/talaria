@@ -27,7 +27,7 @@
   const [sendMark, receiveMark] = markCrossfade()
 </script>
 
-<div class={cn('inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
+<div class={cn('relative inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
   {#each options as o (o.id)}
     <button
       type="button"
@@ -38,6 +38,7 @@
         'relative rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
         size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
+        'dither-fill',
         value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
@@ -46,7 +47,8 @@
           aria-hidden="true"
           in:receiveMark={{ key: 'mark' }}
           out:sendMark={{ key: 'mark' }}
-          class="absolute inset-0 rounded bg-raised"
+          data-dither-band="0"
+          class="dither-mark absolute inset-0 rounded bg-raised"
         ></span>
       {/if}
       <span class="relative">

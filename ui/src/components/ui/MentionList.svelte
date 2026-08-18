@@ -61,7 +61,7 @@
           e.preventDefault()
           command(item)
         }}
-        class={cn('flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left transition-colors', i === active ? 'bg-hover' : 'hover:bg-hover')}
+        class={cn('flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left transition-colors', i === active ? 'bg-hover' : 'dither-fill')}
       >
         <span class="truncate font-sans text-[13px] text-fg">{item.label}</span>
         {#if item.sub}

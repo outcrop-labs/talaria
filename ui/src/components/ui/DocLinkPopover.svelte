@@ -94,7 +94,7 @@
           type="button"
           onmousedown={(e) => e.preventDefault()}
           onclick={() => onPick(d)}
-          class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg"
+          class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[13px] text-muted transition-colors dither-fill hover:text-fg"
         >
           <span>{d.icon ?? '📄'}</span>
           <span class="min-w-0 flex-1 truncate">{d.title}</span>

@@ -31,7 +31,7 @@
   <div class="flex items-center gap-1.5">
     <div class="flex -space-x-1.5">
       <Skeleton class="h-6 w-6 rounded-full ring-2 ring-surface" />
-      <Skeleton class="h-6 w-6 rounded-full ring-2 ring-surface" delay={0.12} />
+      <Skeleton class="h-6 w-6 rounded-full ring-2 ring-surface" />
     </div>
   </div>
 {:else}

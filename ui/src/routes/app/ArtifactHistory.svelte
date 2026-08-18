@@ -65,7 +65,7 @@
           type="button"
           disabled={restoring !== null}
           onclick={() => void restore(r)}
-          class="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover disabled:opacity-60"
+          class="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors dither-fill disabled:opacity-60"
           title="Restore this version"
         >
           <div class="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>

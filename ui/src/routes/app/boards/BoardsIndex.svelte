@@ -4,7 +4,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import { useBoards } from '@/lib/boards.svelte'
-  import BoardColumnsSkeleton from './BoardColumnsSkeleton.svelte'
+  import BoardSkeleton from './BoardSkeleton.svelte'
 
   const query = useBoards()
   const firstId = $derived(query.data?.[0]?.id)
@@ -26,7 +26,7 @@
 <!-- "No boards yet" is now reachable ONLY from a 200 that really carried an
      empty list. A failed /api/boards renders as a failure, with a retry. -->
 <QueryState {query} errorTitle="Could not load your boards">
-  {#snippet skeleton()}<BoardColumnsSkeleton />{/snippet}
+  {#snippet skeleton()}<BoardSkeleton />{/snippet}
   {#snippet empty()}
     <EmptyState
       icon="⧉"
@@ -36,6 +36,6 @@
   {/snippet}
   {#snippet children(_boards)}
     <!-- Non-empty: the redirect above is already in flight — hold the shape. -->
-    <BoardColumnsSkeleton />
+    <BoardSkeleton />
   {/snippet}
 </QueryState>

@@ -78,7 +78,7 @@
   <div class="flex -space-x-2">
     {#if membersLoading}
       {#each [0, 1] as i (i)}
-        <Skeleton class="h-7 w-7 rounded-full ring-2 ring-[color:var(--theme-panel)]" delay={i * 0.12} />
+        <Skeleton class="h-7 w-7 rounded-full ring-2 ring-[color:var(--theme-panel)]" />
       {/each}
     {/if}
     {#each members.slice(0, 5) as m (m.userId)}
@@ -95,7 +95,7 @@
     <button
       type="button"
       onclick={onSettings}
-      class="grid h-8 w-8 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+      class="grid h-8 w-8 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
       title="Board settings"
       aria-label="Board settings"
     >

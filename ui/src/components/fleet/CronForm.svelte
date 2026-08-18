@@ -3,7 +3,7 @@
   import { Sparkles } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Generating from '@/components/ui/Generating.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
@@ -77,7 +77,7 @@
     </Button>
   </div>
   {#if draftErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{draftErr}</p>{/if}
-  {#if drafting}<Generating label="Designing the job: name, schedule, and the prompt it runs" lines={2} />{/if}
+  {#if drafting}<Generating site="fleet/cron-design" label="Designing the job: name, schedule, and the prompt it runs" lines={2} />{/if}
 
   <div class="grid gap-4 sm:grid-cols-2">
     <div>
@@ -114,7 +114,7 @@
           }
         })}
     >
-      {#if busy}<GeneratingBars bars={3} variant="weave" step={0.15} />{/if}
+      {#if busy}<WaitingMark site="fleet/cron-save" size={12} />{/if}
       {busy ? 'Creating' : 'Create job'}
     </Button>
   </div>

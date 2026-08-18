@@ -291,8 +291,8 @@
 {#snippet railRowSkeleton(i: number, avatar: boolean)}
   <div aria-hidden="true" class="rounded-md px-2 py-1.5">
     <div class="flex h-5 items-center gap-1.5">
-      <Skeleton class={avatar ? 'h-5 w-5 shrink-0 rounded-full' : 'h-3 w-3 shrink-0 rounded'} delay={i * 0.12} />
-      <Skeleton class={`h-3 rounded-full ${railW[i % railW.length]}`} delay={i * 0.12 + 0.06} />
+      <Skeleton class={avatar ? 'h-5 w-5 shrink-0 rounded-full' : 'h-3 w-3 shrink-0 rounded'} />
+      <Skeleton class={`h-3 rounded-full ${railW[i % railW.length]}`} />
     </div>
   </div>
 {/snippet}
@@ -541,7 +541,7 @@
                holds its shape instead of the pickers popping in. -->
           {#if !detail && detailQuery.isLoading && selected.kind !== 'dm'}
             <Skeleton class="h-6 w-20 rounded-full" />
-            <Skeleton class="h-6 w-20 rounded-full" delay={0.12} />
+            <Skeleton class="h-6 w-20 rounded-full" />
           {/if}
           {#if detail && selected.kind !== 'dm'}
             {@const channelId = selected.id}
@@ -591,7 +591,7 @@
           {/if}
         </header>
         <div class="relative min-h-0 flex-1">
-          {#if concluding}<GeneratingOverlay label="Concluding: summarizing what was decided, then archiving" />{/if}
+          {#if concluding}<GeneratingOverlay site="comms/conclude" label="Concluding: summarizing what was decided, then archiving" />{/if}
           <!-- ChannelView fetches its own channel detail (svelte-query
                dedupes with the header's call) so the message pane renders
                independently of this fetch. -->

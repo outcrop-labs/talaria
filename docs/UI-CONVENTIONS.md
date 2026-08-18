@@ -11,12 +11,48 @@ primitives — reach for the primitive, not a hand-rolled recreation.
    `border-r`) + `<Stage header={<StageHeader …>}>`. The rail header and stage
    header are both `h-12`, so the top line runs straight across the app.
    Never put a rail on the right; never invent a new width.
-2. **Page surface** (Inbox, Agents, Models, Cost, …): `h-full overflow-y-auto
-   p-8` → `mx-auto max-w-5xl space-y-6` (Inbox may use 6xl for its two-zone
-   layout). Title row: `<h1 className="mercury-text text-2xl font-semibold">`.
+2. **Page surface** (Home, Agents, Models, MCP, Observability, Studio,
+   Templates, Apps, Admin, Settings): `<PageSurface>` — it owns the scroll box,
+   the `p-8` gutter and the centred column. Put section rhythm (`space-y-6`) and
+   `use:staggerIn` on your own child inside it. Title row: `<ViewHeader>`.
 
-Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
-`StageHeader`, `RailSection`, `RailRow`, `CountPill`).
+Components: `components/app/` — `PageSurface`, `RailSurface`, `Rail`, `Stage`,
+`StageHeader`, `RailSection`, `RailRow`, `CountPill`.
+
+### One width scale, four names
+
+Every centred column in the app is one of three tokens (`styles.css`). They are
+tokens, not Tailwind classes at the call site, because that is where this broke
+before: page surfaces alone had drifted to `max-w-2xl` / `4xl` / `5xl` / `6xl`,
+`Models` changed width between its own TABS, and the `AppLayout` skeleton was
+wider than most of the content it stood in for — so a cold load settled narrower
+and every tab change slid sideways.
+
+| Token | Width | Used by |
+|---|---|---|
+| `--page-width` | 1152px | every centred page surface, via `PageSurface` |
+| `--converse-width` | 900px | Chat, Plan, Research transcripts |
+| `--read-width` | 46rem | long-form prose: KB docs, artifact bodies, shares |
+
+There was briefly a fourth, `--focus-width`, for the Home inbox column. It was
+drift wearing a design's clothes: the inbox is a Home TAB, so holding it at
+800px slid the page 352px every time you moved between it and a sibling tab.
+**A narrower measure has to be earned by the content, not by the surface's
+mood** — the brief's one prose block carries its own `62ch` and wanted nothing
+from the frame.
+
+- **`PageSurface` has no `width` prop, deliberately.** An escape hatch would be
+  taken within a week by whichever table felt cramped, and one view opting out is
+  the drift coming back. A surface that needs more room scrolls its wide child
+  (`overflow-x-auto`) instead of widening the page under everything else.
+- **A skeleton must be the width of the content that replaces it.** Otherwise the
+  skeleton→content swap is itself a width shift, which is the one jump every
+  cold load pays.
+- **Frames are what must not move; measures may differ.** The three narrow
+  tokens exist because their content is read rather than scanned — forcing prose
+  to 1152px is ~145 characters a line. Inside a page surface, a field or a prose
+  column is sized by what it holds (`max-w-md` on a lone input + button row);
+  that is not drift, because the panel edges still line up view to view.
 
 ## Pick-one-and-edit-it — use `LibraryPane`
 
@@ -177,6 +213,29 @@ Two deliberate registers — don't mix them:
   border-line-subtle p-3` (pick 3; stop drifting to 2/4/5).
 - `<EmptyState>` for every zero state. The inline "no X yet" div is banned.
 
+## Zero states own their container
+
+`EmptyState variant="full"` is the rendering for a pane that resolved EMPTY, and
+it fills that pane edge to edge — the dithered vignette is part of it, and a
+vignette that stops short of the container's edge reads as a textured card
+floating inside an untextured one.
+
+Two things follow, and both have bitten:
+
+- **Do not wrap it in padding.** The component carries its own inner padding, so
+  a `<Panel>` (which is `p-6` by default) or a padded `<div>` around it is a
+  band of container the treatment cannot reach. Use `<Panel class="p-0">`.
+- **`h-full` is not enough on its own.** It is `height: 100%`, which resolves
+  against the parent only if the parent has a DEFINITE height; otherwise it
+  computes to `auto` and the zero state collapses to the height of its own three
+  lines. `full` carries a `min-h-48` floor for exactly that case, so it reads as
+  a region it owns wherever it lands. If a container does have a height, it
+  still fills it.
+
+`compact` and `inline` are the other answers: `compact` for a zero state inside
+a list or panel that is not the whole surface, `inline` for a single quiet line.
+Neither draws a vignette, so neither has this constraint.
+
 ## Layers — a surface must differ from what it sits on
 
 Mercury's fills are a hierarchy, and they are what tell a reader that one
@@ -253,12 +312,66 @@ rule is only about a fill matching its container.
 ## Loading
 
 - Never render a blank pane or a "Loading" string while a query is in flight —
-  use `Skeleton` / `SkeletonRows` / `SkeletonCard` (`ui/skeleton.tsx`), shaped
-  like the content they stand in for so the swap doesn't jump.
+  use `Skeleton` / `SkeletonRows` / `SkeletonCard`
+  (`ui/src/components/ui/Skeleton.svelte`), shaped like the content they stand
+  in for so the swap doesn't jump.
+- The material is SIGNAL STATIC: a dithered dot field on the house Bayer grid,
+  noise re-rolled at 8Hz around a steady mean — an instrument that has not
+  acquired its signal yet. `lib/skeleton-static.ts` owns it; a skeleton is a
+  transparent box that gets masked out of one page-wide field, so neighbouring
+  blocks are windows onto the same material and NOT independent effects.
+- Static has no direction and no phase, so there is no `delay` and no stagger
+  on a skeleton — sweeps and fills imply a completion a fetch cannot promise.
+  Size and shape are the only things a call site chooses (`h-*`, `w-*`, and a
+  border radius, where `rounded-full` reads as a capsule or a circle).
+- A skeleton stands in for content whose SHAPE is unknown until it arrives.
+  Row rails — the leading status dot every row has, in the same place at the
+  same size whatever the data turns out to be — are not that: rendering one as
+  static claims an uncertainty that does not exist. Give those a flat
+  `bg-line` element instead. Not `StatusDot` either, which would imply a status
+  nothing yet knows.
+- Below that, the material has a FLOOR at roughly 16px. A skeleton is a
+  statistical field — around half its cells light — so a box covering only a
+  handful of cells lights a handful of dots, and sometimes none. Below the
+  floor the field eases toward solid rather than thinning out, so it stays
+  visible and stops flickering. The floor is counted in CELLS and so moves with
+  the grid pitch; it is rescaled alongside it to hold the same physical size.
+  Above the floor, judge by whether the shape is genuinely unknown.
 - `Generating` is for MODEL output being written; `Skeleton` is for FETCHES.
-  Same shimmer language, different meaning — don't mix them.
+  Adjacent languages, different meaning — don't mix them.
 - Empty states (`EmptyState`) only render once the query has RESOLVED empty;
   loading must never flash "No X yet".
+
+### Three languages, three questions
+
+| Question | Family | Material |
+|---|---|---|
+| Has the FETCH resolved? | `Skeleton` / `SkeletonRows` / `SkeletonCard` | signal static |
+| What SHAPE is the output? | `Generating` / `GeneratingOverlay` | bar rows sized like the coming text |
+| Is the agent still WORKING? | `Waiting` / `WaitingMark` | one of thirty dot-field marks |
+
+- The activity MARK is `WaitingMark`, never a hand-rolled spinner and no longer
+  `GeneratingDots`. A call site names a SITE (`site="chat/first-token"`) and
+  nothing else: which of the thirty states it draws, and how fast, are decided
+  by the rotation in `ui/src/lib/waiting/`.
+- Every site is a row in `lib/waiting/sites.ts` with a `role` and a `slot`.
+  **Role** is what the wait means (`submitting` / `reasoning` / `tool` /
+  `background`) and sets the tempo against spec §9's rungs. **Slot** is where it
+  physically sits (`button` / `inline` / `status`) and is what keeps a 5×5 grid
+  out of a 28px button. A `site` with no row is a type error — that is
+  deliberate, because an undecided mark is an undecided meaning.
+- The set is dealt, not hashed. One seed per browsing session (sessionStorage)
+  shuffles the catalogue and deals it across every site, so a session shows
+  ~30 distinct marks and the same spot keeps the same mark for as long as you
+  are looking at it. Adding a site does not re-deal the ones before it.
+- Review overrides: `?waiting=<slug>` pins every site to one state,
+  `?waiting-seed=<n>` replays a specific hand. Both are read once at boot.
+- Use `<Waiting site label>` rather than `<WaitingMark>` unless the surrounding
+  row already says what is happening in words. The mark is `aria-hidden` and the
+  LABEL is the live region — a screen reader must never be handed a run of
+  braille codepoints.
+- Marks never blank. Every state holds a floor, because an indicator that empties
+  even for two frames reads as *finished*.
 
 ## Editors
 

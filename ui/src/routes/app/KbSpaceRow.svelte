@@ -43,7 +43,7 @@
   />
 {:else}
   <div
-    class={cn('group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors', active ? 'bg-card text-fg' : 'text-muted hover:bg-hover hover:text-fg')}
+    class={cn('group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors', active ? 'bg-card text-fg' : 'text-muted dither-fill hover:text-fg')}
     oncontextmenu={onContextMenu}
     role="presentation"
   >

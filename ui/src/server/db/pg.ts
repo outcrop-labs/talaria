@@ -1730,6 +1730,207 @@ const MIGRATIONS: string[] = [
   `create unique index if not exists runs_approval_key_idx
      on runs (approval_key) where approval_key is not null`,
 
+  // ── THE DAILY BRIEF: one document per person per day, WRITTEN ONCE AND ONLY
+  //    EVER APPENDED TO ─────────────────────────────────────────────────────
+  //
+  // The brief opens two hours before the workday (server/daily-brief.ts) and
+  // then follows the day: a ticket moves, an approval lands, a DM arrives, and
+  // the brief LEARNS about it. What it must never do is rewrite itself. A
+  // person who read their brief at 08:00 and comes back at 14:00 has to be
+  // able to find the thing they read — and to see what changed under it —
+  // which a regenerated document cannot offer at any level of prompt care,
+  // because the earlier text no longer exists.
+  //
+  // So immutability is SCHEMA, not discipline. `daily_brief_entries` rows are
+  // insert-only: nothing in server/daily-brief.ts issues an UPDATE against
+  // them, and the one mutable column in the whole feature is the parent row's
+  // `read_seq` (how far the reader got), which is about the reader and not
+  // about the content. An item that resolves does not get edited or deleted;
+  // a NEW row is appended with `supersedes` pointing at the row it retires,
+  // and the view is a fold over the log in `seq` order.
+  //
+  // That is also what makes the surface honest under failure. A sweep that
+  // half-completes leaves a shorter log, never a corrupted document, and the
+  // next sweep appends what it missed — because the diff is computed against
+  // the FOLD, not against a snapshot the sweep is trusted to have written.
+  `create table if not exists daily_briefs (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     -- The LOCAL calendar date, resolved in 'zone' at open time. A date rather
+     -- than a timestamp because "which brief" is a question about the reader's
+     -- day, and the unique constraint below is what makes a double-firing
+     -- scheduler tick a no-op instead of a second brief.
+     brief_date date not null,
+     zone text not null default 'UTC',
+     -- The assistant that wrote it, captured at open time. Recorded rather
+     -- than joined because the owner may re-point or rename their assistant
+     -- later, and a brief is a document with an author, not a live view.
+     agent_model text,
+     agent_name text,
+     -- The mirrored artifact (share, export, public link). DERIVED from the
+     -- log and rewritten on every append, so it can be deleted or fail to
+     -- write without the brief losing anything.
+     artifact_id uuid references artifacts(id) on delete set null,
+     -- The append cursor. Held here so a concurrent sweep cannot mint two
+     -- entries at the same seq (the unique index below is the enforcement).
+     last_seq integer not null default 0,
+     -- How far the reader has read, and the ONLY column here that a normal day
+     -- updates. New-since-you-looked is a property of the reader.
+     read_seq integer not null default 0,
+     last_swept_at timestamptz,
+     created_at timestamptz not null default now(),
+     unique (user_id, brief_date)
+   )`,
+  `create index if not exists daily_briefs_user_idx on daily_briefs(user_id, brief_date desc)`,
+  `create table if not exists daily_brief_entries (
+     id uuid primary key default gen_random_uuid(),
+     brief_id uuid not null references daily_briefs(id) on delete cascade,
+     seq integer not null,
+     -- 'lede'     the assistant's opening read on the day (seq 1)
+     -- 'item'     something that needs the owner, as it first appeared
+     -- 'change'   the same source, materially different — supersedes the last
+     -- 'resolved' the source stopped needing them — supersedes the last
+     -- 'note'     the assistant narrating a batch of changes
+     kind text not null,
+     section text not null default 'action',
+     -- inbox-focus's keyOf(sourceType, sourceId). The identity the fold
+     -- groups on and the diff compares against; null for narrative entries.
+     source_key text,
+     source_type text,
+     source_id text,
+     source_href text,
+     -- inbox-focus's sourceFingerprint. The whole change detector: same key
+     -- + same fingerprint means nothing happened and nothing is appended.
+     fingerprint text,
+     supersedes uuid references daily_brief_entries(id) on delete set null,
+     priority text,
+     status_label text,
+     badge jsonb,
+     title text not null default '',
+     body text not null default '',
+     evidence jsonb not null default '[]'::jsonb,
+     created_at timestamptz not null default now()
+   )`,
+  // The fold's only query, and the guard that makes `last_seq` a real cursor
+  // rather than a hint: two sweeps racing to append cannot both win a seq.
+  `create unique index if not exists daily_brief_entries_seq_idx on daily_brief_entries(brief_id, seq)`,
+  `create index if not exists daily_brief_entries_key_idx on daily_brief_entries(brief_id, source_key)`,
+  // WHICH APPEND WROTE THIS ROW. The timeline groups entries into "at 11:04,
+  // three things moved", and the first version of that grouping derived the
+  // batch by truncating `created_at` to the second — which is correct exactly
+  // as long as two appends never land in the same second. They can: a realtime
+  // nudge and a scheduler tick reach `sweepBrief` together, and the whole point
+  // of the timeline is that it is an honest record of when things were learned.
+  // A batch is a fact about the write, so it is stored rather than inferred.
+  `alter table daily_brief_entries add column if not exists batch uuid`,
+  `create index if not exists daily_brief_entries_batch_idx on daily_brief_entries(brief_id, batch)`,
+
+  // ── DELEGATED REPLIES: the assistant answering a chat for its owner ───────
+  //
+  // READING A MESSAGE IS NOT ANSWERING IT, which is the whole reason this
+  // exists. The brief's first version resolved a conversation line when the
+  // unread count reached zero — so glancing at Priya's question told the
+  // document it had been handled, and the one thing the surface is for ("who is
+  // still waiting on me") was the thing it got wrong. A conversation is open
+  // until somebody REPLIES, and that is derived from the message log rather
+  // than from a read cursor.
+  //
+  // Once a line can stay open on "read, not answered", the obvious next thing
+  // is for the assistant to be allowed to close it. That is a delegation from
+  // the OWNER to their own assistant — not an admin-granted `Perm`, which
+  // describes what a person may do — so it lives here, scoped to one person's
+  // conversations and revocable per thread.
+  //
+  // A GRANT WITH NO `channel_id` IS THE STANDING ONE (every DM); a row with one
+  // covers that thread alone. `revoked_at` rather than a delete: who was allowed
+  // to speak for someone, and when that stopped, is exactly the history you want
+  // when a reply turns out to have been wrong.
+  `create table if not exists assistant_reply_grants (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     channel_id uuid references channels(id) on delete cascade,
+     granted_at timestamptz not null default now(),
+     revoked_at timestamptz
+   )`,
+  // Two partial indexes, not one constraint, because a NULL `channel_id` is the
+  // standing grant and Postgres treats NULLs as distinct in a unique index —
+  // so the standing grant needs its own predicate or a person could accumulate
+  // five of them and revoking one would look like it did nothing.
+  `create unique index if not exists assistant_reply_grants_thread_idx
+     on assistant_reply_grants(user_id, channel_id) where channel_id is not null and revoked_at is null`,
+  `create unique index if not exists assistant_reply_grants_standing_idx
+     on assistant_reply_grants(user_id) where channel_id is null and revoked_at is null`,
+
+  // A reply the assistant WROTE but has not been allowed to send.
+  //
+  // `in_reply_to_seq` is what makes a draft honest over time: it names the
+  // message the reply answers, so a draft written against "can I start outreach?"
+  // is visibly stale once the person has sent two more messages. Approving a
+  // stale draft would post an answer to a question that has moved on, and
+  // without this column there is no way to know that happened.
+  `create table if not exists assistant_reply_drafts (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     channel_id uuid not null references channels(id) on delete cascade,
+     in_reply_to_seq integer not null,
+     agent_model text,
+     content text not null,
+     -- pending | sent | rejected. A draft overtaken by a new message is not a
+     -- fourth status: staleness is DERIVED by comparing 'in_reply_to_seq' to the
+     -- channel, so it cannot drift out of date the way a stored flag would.
+     status text not null default 'pending',
+     -- Set when the assistant sent it under a standing grant rather than an
+     -- approval, so "who let this happen" is answerable from the row itself.
+     delegated boolean not null default false,
+     message_id uuid references channel_messages(id) on delete set null,
+     created_at timestamptz not null default now(),
+     decided_at timestamptz,
+     decided_by uuid references users(id) on delete set null
+   )`,
+  `create index if not exists assistant_reply_drafts_open_idx
+     on assistant_reply_drafts(user_id, channel_id) where status = 'pending'`,
+
+  // ── TALKING TO YOUR ASSISTANT ABOUT A LINE, AND KEEPING IT ────────────────
+  //
+  // This started ephemeral on purpose — no row, nothing indexed, on the theory
+  // that a person asks loose half-formed questions about their own day and
+  // would stop if those were minuted. That theory was wrong about the thing
+  // people actually do: they ask, get an answer, click into the ticket, come
+  // back — and an ephemeral thread is gone by the time they return, so the
+  // conversation cannot survive the ONE navigation it exists to prompt.
+  //
+  // So it persists, scoped to the brief and the line it is about. `source_key`
+  // null is the conversation about the whole day; a key ties it to one line, so
+  // a question about the ledger ticket is still there when you come back from
+  // the ledger ticket.
+  //
+  // PER BRIEF, NOT PER LINE FOREVER. `brief_id` is in the key, so tomorrow's
+  // brief starts its conversations clean even where the same ticket appears
+  // again. A brief is a document about one day and its margin notes belong to
+  // that day; carrying them forward would mean today's page opening with an
+  // argument from Tuesday.
+  //
+  // CONSEQUENCE, STATED HERE BECAUSE IT IS EASY TO MISS: the reply harness
+  // (`briefer:daily-chat`) declared no `redact` on the explicit grounds that
+  // nothing was saved. That is no longer true, and it now redacts — a
+  // credential quoted out of a ticket title would otherwise sit in this table
+  // for the life of the brief.
+  `create table if not exists brief_chat_messages (
+     id uuid primary key default gen_random_uuid(),
+     brief_id uuid not null references daily_briefs(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     -- Null = the conversation about the day as a whole.
+     source_key text,
+     seq integer not null,
+     role text not null,
+     content text not null default '',
+     created_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists brief_chat_seq_idx
+     on brief_chat_messages(brief_id, coalesce(source_key, ''), seq)`,
+  `create index if not exists brief_chat_thread_idx
+     on brief_chat_messages(brief_id, source_key, seq)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

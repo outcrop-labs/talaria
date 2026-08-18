@@ -1,7 +1,7 @@
 <script lang="ts">
   import { BookOpen, FolderUp, Gem, ImagePlus, Upload } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { popPanel, popRow, tileBase } from '@/components/chat/chat-chrome'
   import { pop, POPOVER } from '@/lib/motion'
   import RefPicker from './RefPicker.svelte'
@@ -64,7 +64,7 @@
     class={cn(tileBase, 'font-mono text-base leading-none')}
   >
     {#if busy}
-      <GeneratingBars bars={3} variant="weave" step={0.15} />
+      <WaitingMark site="chat/attach" size={12} />
     {:else}
       <span aria-hidden="true">+</span>
     {/if}

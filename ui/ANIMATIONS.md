@@ -47,7 +47,7 @@ never performs — but it must be *felt*.
 | List rows in/out | `in:fade={{ duration: 150 }}` / `out:fade={QUICK}` (or `out:slide` when siblings should close the gap) |
 | Keyed reorder / cross-column move | `animate:flip={LIST}` |
 | Empty/error state swap | `in:fade={{ duration: 150 }}` |
-| Skeleton → content | `<Materialize>` (ui): item-SHAPED skeletons (a snippet mirroring the real item's silhouette — frame, avatar block, line widths) render in the same container/geometry as the list, then fade out in place while the items stagger in over them. Grid-stacked, so no layout jump. Generic `SkeletonRows` stays only for non-list prose regions |
+| Skeleton → content | `<Materialize>` (ui): item-SHAPED skeletons (a snippet mirroring the real item's silhouette — frame, avatar block, line widths) render in the same container/geometry as the list, then fade out in place while the items stagger in over them. Grid-stacked, so no layout jump. Generic `SkeletonRows` stays only for non-list prose regions. The skeletons' own material is SIGNAL STATIC (`lib/skeleton-static.ts`) — one page-wide dither field on a shared 8Hz ticker, with no per-block delay: the cascade belongs to the CONTENT arriving, never to the waiting |
 | Confirmation flash (saved/copied) | `in:fade={{ duration: 150 }}` |
 
 ## The `|global` rule (round 3 — this bug shipped twice)

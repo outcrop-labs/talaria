@@ -66,12 +66,12 @@
       <Materialize loading={home.isLoading} count={6} class="divide-y divide-line">
         {#snippet skeleton(i)}
           <div aria-hidden="true" class="flex items-center gap-3 py-2.5">
-            <Skeleton class="h-3 w-14 shrink-0 rounded" delay={i * 0.1} />
+            <Skeleton class="h-3 w-14 shrink-0 rounded" />
             <div class="flex h-5 min-w-0 flex-1 items-center">
-              <Skeleton class={`h-3.5 rounded-full ${['w-3/5', 'w-2/5', 'w-1/2', 'w-2/3'][i % 4]}`} delay={i * 0.1} />
+              <Skeleton class={`h-3.5 rounded-full ${['w-3/5', 'w-2/5', 'w-1/2', 'w-2/3'][i % 4]}`} />
             </div>
-            <Skeleton class="h-3 w-16 shrink-0 rounded-full" delay={i * 0.1 + 0.08} />
-            <Skeleton class="h-3 w-10 shrink-0 rounded" delay={i * 0.1 + 0.12} />
+            <Skeleton class="h-3 w-16 shrink-0 rounded-full" />
+            <Skeleton class="h-3 w-10 shrink-0 rounded" />
           </div>
         {/snippet}
         {#if !home.data}

@@ -28,7 +28,7 @@
     type="button"
     onclick={() => (open = !open)}
     class={cn(
-      'flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs transition-colors hover:bg-hover hover:text-fg',
+      'flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs transition-colors dither-fill hover:text-fg',
       focusGold,
       open ? 'bg-raised text-fg' : 'text-muted',
     )}

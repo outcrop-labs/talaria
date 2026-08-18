@@ -11,16 +11,16 @@
   <div class="flex items-center gap-2 border-b border-line-subtle px-4 py-2">
     <Skeleton class="h-2.5 w-20 rounded-full" />
     <div class="min-w-0 flex-1">
-      <Skeleton class="h-3 w-1/2 rounded-full" delay={0.12} />
+      <Skeleton class="h-3 w-1/2 rounded-full" />
     </div>
-    <Skeleton class="h-7 w-24 shrink-0" delay={0.24} />
-    <Skeleton class="h-7 w-14 shrink-0" delay={0.36} />
+    <Skeleton class="h-7 w-24 shrink-0" />
+    <Skeleton class="h-7 w-14 shrink-0" />
   </div>
   <div class="min-h-0 flex-1 space-y-3 overflow-hidden p-6">
     <Skeleton class="h-5 w-2/3 rounded-full" />
     {#each widths as w, i (i)}
       <div style:width={w}>
-        <Skeleton class="h-2.5 w-full rounded-full" delay={0.12 * (i + 1)} />
+        <Skeleton class="h-2.5 w-full rounded-full" />
       </div>
     {/each}
   </div>

@@ -46,8 +46,8 @@
          control row so nothing renders unchecked and then flips. -->
     <div class="flex flex-wrap items-center gap-3">
       <Skeleton class="h-4 w-4" />
-      <Skeleton class="h-3 w-52 rounded-full" delay={0.12} />
-      <Skeleton class="h-8 w-64" delay={0.24} />
+      <Skeleton class="h-3 w-52 rounded-full" />
+      <Skeleton class="h-8 w-64" />
     </div>
   {:else if !data}
     <!-- The controls seed from the response, so a failed read renders the

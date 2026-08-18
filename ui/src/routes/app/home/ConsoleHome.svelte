@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
@@ -20,11 +21,11 @@
 
 </script>
 
-<div class="h-full overflow-y-auto p-8">
+<PageSurface>
   <!-- Page content entrance: greeting → tab strip → pane rise in sequence
        (ANIMATIONS.md). The keyed pane below keeps its own fly on tab switch —
        one level of stagger only, so the dense panes themselves stay flat. -->
-  <div use:staggerIn class="mx-auto max-w-6xl space-y-6">
+  <div use:staggerIn class="space-y-6">
     <ViewHeader title={greeting(session.data?.name ?? session.data?.email)} />
 
     <HomeTabs value={tab} />
@@ -48,4 +49,4 @@
       </div>
     {/key}
   </div>
-</div>
+</PageSurface>

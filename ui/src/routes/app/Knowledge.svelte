@@ -246,8 +246,8 @@
         {#snippet skeleton(i)}
           <div aria-hidden="true" class="mb-2 rounded-md px-2 py-1.5">
             <div class="flex h-5 items-center gap-2">
-              <Skeleton class="h-4 w-4 shrink-0 rounded" delay={i * 0.12} />
-              <Skeleton class={`h-3 rounded-full ${['w-28', 'w-20', 'w-36', 'w-24'][i % 4]}`} delay={i * 0.12 + 0.06} />
+              <Skeleton class="h-4 w-4 shrink-0 rounded" />
+              <Skeleton class={`h-3 rounded-full ${['w-28', 'w-20', 'w-36', 'w-24'][i % 4]}`} />
             </div>
           </div>
         {/snippet}

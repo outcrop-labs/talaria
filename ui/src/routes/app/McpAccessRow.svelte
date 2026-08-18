@@ -19,7 +19,7 @@
   } = $props()
 </script>
 
-<div class="group flex items-center gap-3 rounded-md px-1.5 py-1 transition-colors hover:bg-hover">
+<div class="group flex items-center gap-3 rounded-md px-1.5 py-1 transition-colors dither-fill">
   <span class="w-44 shrink-0 truncate">
     <span class={cn('font-sans text-sm', dim ? 'text-muted' : 'text-fg')}>{name}</span>
   </span>

@@ -14,7 +14,9 @@
   }: { label: string; value: string | number | Snippet; sub?: string; class?: string } = $props()
 </script>
 
-<Panel class={cn('p-5', className)}>
+<!-- A stat card is a headline number on a page that has three or four of
+     them; the corridor gives it material without competing with the value. -->
+<Panel field="ambient" class={cn('p-5', className)}>
   <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
   <div class="mt-1.5 font-sans text-2xl font-semibold text-fg">
     {#if typeof value === 'function'}{@render value()}{:else}{value}{/if}

@@ -15,6 +15,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
+  import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
@@ -106,6 +107,17 @@
   // Hydration-safe: server snapshot is "expanded"; the persisted client value
   // swaps in right after hydration (same store NavRail uses, so no jump).
   const nav = useNavCollapsed()
+
+  // EVERY MARKED CONTROL GETS ITS FIELD FROM ONE PLACE. The `dither-*` classes
+  // stay in the markup as the statement of intent — 127 call sites already
+  // make it correctly — and this is what honours them. Doing it here rather
+  // than at each call site is what keeps one rendering rather than two.
+  let shell = $state<HTMLElement | null>(null)
+  $effect(() => {
+    const el = shell
+    if (!el) return
+    return upgradeDitherSurfaces(el)
+  })
 </script>
 
 {#snippet shellSkeleton(content: Snippet | undefined)}
@@ -117,7 +129,7 @@
           <WingMark class="h-5 w-5" />
         </div>
         {#each [0, 1, 2, 3, 4, 5] as i (i)}
-          <Skeleton class="h-9 w-9 rounded-md" delay={i * 0.08} />
+          <Skeleton class="h-9 w-9 rounded-md" />
         {/each}
       </nav>
     {:else}
@@ -127,7 +139,7 @@
         </div>
         {#each [0, 1, 2] as g (g)}
           <div class="space-y-2 px-2">
-            <Skeleton class="h-2 w-14 rounded-full" delay={g * 0.1} />
+            <Skeleton class="h-2 w-14 rounded-full" />
             <SkeletonRows rows={4} />
           </div>
         {/each}
@@ -136,18 +148,18 @@
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <header class="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4">
         <Skeleton class="h-2.5 w-56 rounded-full" />
-        {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" delay={0.15} />{/if}
+        {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" />{/if}
       </header>
       <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
         {#if content}
           {@render content()}
         {:else}
-          <div class="mx-auto max-w-6xl space-y-6">
+          <div class="mx-auto w-full max-w-[var(--page-width)] space-y-6">
             <Skeleton class="h-6 w-64 rounded-full" />
             <div class="grid gap-4 xl:grid-cols-3">
               {#each [0, 1, 2] as i (i)}
                 <div class="rounded-lg border border-line bg-panel p-6">
-                  <Skeleton class="mb-4 h-3 w-24 rounded-full" delay={i * 0.1} />
+                  <Skeleton class="mb-4 h-3 w-24 rounded-full" />
                   <SkeletonRows rows={4} />
                 </div>
               {/each}
@@ -177,7 +189,7 @@
   {@render shellSkeleton(undefined)}
 {:else}
   <MercuryBackdrop />
-  <div class="flex h-screen">
+  <div bind:this={shell} class="flex h-screen">
     <NavRail {user} />
     <!-- THE ASSISTANT DRAWER IS A PEER OF THE NAV RAIL, not of the page body.
          It used to open inside `vt-view`, below the top strip and the banner,

@@ -88,6 +88,16 @@ export { default as KeyHint } from '@/components/ui/KeyHint.svelte'
 export { default as Generating } from '@/components/ui/Generating.svelte'
 export { default as GeneratingDots } from '@/components/ui/GeneratingDots.svelte'
 export { default as GeneratingOverlay } from '@/components/ui/GeneratingOverlay.svelte'
+// The waiting marks: "an agent is working right now", as opposed to Generating
+// ("model output is being written") or Skeleton ("a fetch hasn't resolved").
+// An app can't add rows to the host's site table, so it names its own site
+// inline — `site={{ key: 'my-app/summarise', role: 'reasoning' }}` — and gets a
+// pick hashed off the host session's seed, re-rolling with the rest of the
+// cockpit. `role` is required: an undeclared wait can't be paced.
+export { default as Waiting } from '@/components/ui/Waiting.svelte'
+export { default as WaitingMark } from '@/components/ui/WaitingMark.svelte'
+export type { InlineWaitingSite } from '@/lib/waiting/rotation'
+export type { WaitingRole, WaitingSlot } from '@/lib/waiting/registry'
 export { default as RichEditor } from '@/components/ui/RichEditor.svelte'
 export { type RichEditorHandle } from '@/components/ui/rich-editor'
 export { controlSizes, submitOnEnter, inlineEditKeys, type ControlSize } from '@/components/ui/control'

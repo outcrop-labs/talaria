@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus, Lock } from '@lucide/svelte'
@@ -140,17 +141,15 @@
 </script>
 
 {#if isLoading}
-  <div class="h-full overflow-y-auto p-8">
-    <div class="mx-auto max-w-6xl">
-      <SkeletonRows rows={8} avatar />
-    </div>
-  </div>
+  <PageSurface>
+    <SkeletonRows rows={8} avatar />
+  </PageSurface>
 {:else}
-  <div class="h-full overflow-y-auto p-8">
+  <PageSurface>
     <!-- Page content entrance AND post-skeleton reveal in one: this branch
          mounts when the library lands, so title → failures → rail+world grid
          rise in sequence (ANIMATIONS.md). Never on the skeleton branch. -->
-    <div use:staggerIn class="mx-auto max-w-6xl">
+    <div use:staggerIn>
       <ViewHeader
         class="mb-6"
         title="Studio"
@@ -186,7 +185,7 @@
               onclick={() => select(o.owner)}
               class={cn(
                 'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                selectedKey === o.owner ? 'bg-raised' : 'hover:bg-hover',
+                selectedKey === o.owner ? 'bg-raised' : 'dither-fill',
               )}
             >
               <Avatar name={o.label} class="h-8 w-8 shrink-0 text-xs" />
@@ -204,7 +203,7 @@
             onclick={() => select('shared')}
             class={cn(
               'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-              selectedKey === 'shared' ? 'bg-raised' : 'hover:bg-hover',
+              selectedKey === 'shared' ? 'bg-raised' : 'dither-fill',
             )}
           >
             <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line text-sm text-muted">✦</span>
@@ -300,7 +299,8 @@
                 action={selected.canEdit ? addSkillAction : undefined}
               />
               {#if selected.skills.length === 0 && (selected.owner === 'shared' || sharedSkills.size === 0)}
-                <Panel>
+                <!-- p-0 — the zero state fills this box; see Agents.svelte. -->
+                <Panel class="p-0">
                   <EmptyState
                     icon="✦"
                     title="Nothing yet"
@@ -355,7 +355,7 @@
                       <button
                         type="button"
                         onclick={() => void navigate('/studio', { search: { a: selectedKey, w: w.id } })}
-                        class="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-hover"
+                        class="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors dither-fill"
                       >
                         <span class="min-w-0 flex-1">
                           <span class="block truncate text-sm font-medium text-fg">{w.name}</span>
@@ -418,5 +418,5 @@
         }}
       />
     {/if}
-  </div>
+  </PageSurface>
 {/if}

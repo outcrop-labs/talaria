@@ -16,16 +16,16 @@
   {/if}
   <div class="flex items-center gap-3 border-b border-line-subtle px-6 py-4">
     <Skeleton class="h-7 w-7 shrink-0" />
-    <Skeleton class="h-5 w-64 max-w-[40%] rounded-full" delay={0.08} />
+    <Skeleton class="h-5 w-64 max-w-[40%] rounded-full" />
     <span class="ml-auto flex shrink-0 gap-2">
-      <Skeleton class="h-7 w-20" delay={0.16} />
-      <Skeleton class="h-7 w-28" delay={0.24} />
+      <Skeleton class="h-7 w-20" />
+      <Skeleton class="h-7 w-28" />
     </span>
   </div>
-  <div class="mx-auto w-full max-w-[46rem] flex-1 space-y-3.5 px-6 py-8">
+  <div class="mx-auto w-full max-w-[var(--read-width)] flex-1 space-y-3.5 px-6 py-8">
     {#each PROSE_WIDTHS.slice(0, bars) as w, i (i)}
       <div style:width={w}>
-        <Skeleton class="h-3 w-full rounded-full" delay={i * 0.08} />
+        <Skeleton class="h-3 w-full rounded-full" />
       </div>
     {/each}
   </div>

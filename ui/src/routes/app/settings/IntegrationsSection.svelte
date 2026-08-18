@@ -70,10 +70,10 @@
     <div aria-hidden="true" class="flex items-center gap-3 rounded-md border border-line p-4">
       <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
       <div class="min-w-0 flex-1 space-y-2">
-        <Skeleton class="h-3 w-40 rounded-full" delay={0.12} />
-        <Skeleton class="h-2.5 w-56 rounded-full" delay={0.24} />
+        <Skeleton class="h-3 w-40 rounded-full" />
+        <Skeleton class="h-2.5 w-56 rounded-full" />
       </div>
-      <Skeleton class="h-9 w-24 rounded-lg" delay={0.12} />
+      <Skeleton class="h-9 w-24 rounded-lg" />
     </div>
   {:else if !data}
     <!-- Same reason as the skeleton above: "Not connected" is a claim about

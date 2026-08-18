@@ -81,7 +81,7 @@
 <div class="space-y-6" data-obs-sections>
   <!-- Worst news first: alerts strip -->
   <Panel>
-    <button type="button" onclick={() => onOpen('alerts')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] hover:bg-hover">
+    <button type="button" onclick={() => onOpen('alerts')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] dither-fill">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Alerts</span>
       {#if alertsLoading}
         <Skeleton class="h-3 w-8 rounded-full" />
@@ -158,7 +158,7 @@
   </div>
 
   <Panel>
-    <button type="button" onclick={() => onOpen('audit')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] hover:bg-hover">
+    <button type="button" onclick={() => onOpen('audit')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] dither-fill">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Audit trail</span>
       <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors group-hover:text-accent">Open →</span>
     </button>

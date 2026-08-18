@@ -7,7 +7,7 @@ import {
   touchConversation,
   updateAssistant,
 } from './conversations'
-import { requestGatewayText, requestText } from './inbox-focus-assistant'
+import { streamReply } from './inbox-focus-assistant'
 import {
   findFocusItemForUser,
   focusAssistantFor,
@@ -237,6 +237,8 @@ export async function* runInboxConversationCommand(
   try {
     let content: string
     let result: FocusCommandResponse | undefined
+    /** True once a delta has gone out, so the tail does not re-send the reply. */
+    let streamed = false
     if (item) {
       const command = await runFocusCommand(user, {
         key: item.key,
@@ -267,18 +269,45 @@ export async function* runInboxConversationCommand(
         history,
         allowedActionIds: [],
       })
-      content = responseModel
-        ? await requestGatewayText(responseModel, [{ role: 'user', content: prompt }], `user:${user.email ?? user.id}`, input.signal)
-          ?? 'Your assistant is temporarily unavailable. No tools or mutations were attempted.'
-        : assistant.configured && assistant.model
-        ? await requestText(assistant.model, [{ role: 'user', content: prompt }], 20_000, input.signal)
-          ?? 'Your assistant is temporarily unavailable. No tools or mutations were attempted.'
-        : 'Your personal assistant is not configured yet. You can still use the safe actions in the Focus Queue.'
+      // STREAMED, AND THE CONTENT EVENTS GO OUT AS THEY ARRIVE. This used to
+      // await the whole reply and then hand the finished string to `chunkText`
+      // below, which is not streaming: the status line sat there for the entire
+      // turn with nothing under it, and then the answer landed all at once. On
+      // a model that takes twenty seconds that reads as the assistant not
+      // replying — which is exactly how it was reported.
+      //
+      // `streamed` is set so the tail of this function knows not to chunk a
+      // reply the panel has already been given token by token.
+      const model = responseModel ?? (assistant.configured ? assistant.model : null)
+      if (!model) {
+        content = 'Your personal assistant is not configured yet. You can still use the safe actions in the Focus Queue.'
+      } else {
+        const caller = responseModel ? `user:${user.email ?? user.id}` : `inbox:${model}`
+        const reply = streamReply(model, [{ role: 'user', content: prompt }], caller, 20_000, input.signal)
+        let accumulated = ''
+        for (;;) {
+          const next = await reply.next()
+          if (next.done) {
+            // The generator RETURNS the run's guarded text. Preferred over the
+            // deltas we relayed: a redacted or repaired reply is what should be
+            // persisted, even though the raw one is what was already on screen.
+            content = next.value ?? accumulated
+            break
+          }
+          accumulated += next.value
+          streamed = true
+          yield { type: 'content', text: next.value }
+        }
+        if (!content) content = 'Your assistant is temporarily unavailable. No tools or mutations were attempted.'
+      }
     }
 
     await setMessageMetadata(assistantMessageId, assistantMetadata)
     await updateAssistant(assistantMessageId, { content, reasoning: '', tools: [], status: 'complete' })
-    for (const text of chunkText(content)) yield { type: 'content', text }
+    // The focus-command branch produces a finished proposal message rather than
+    // a stream, so it is still chunked here. A streamed reply is already on
+    // screen and re-sending it would print the answer twice.
+    if (!streamed) for (const text of chunkText(content)) yield { type: 'content', text }
     if (result && !('status' in result) && result.kind === 'proposal') {
       const activity = await timelineEntryForDecision(user, result.decisionId)
       if (activity) yield { type: 'activity', entry: activity }

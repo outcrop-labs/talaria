@@ -142,7 +142,7 @@
     <button
       type="button"
       onclick={() => (open = !open)}
-      class="-ml-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-muted transition-colors hover:bg-hover hover:text-fg"
+      class="-ml-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-muted transition-colors dither-fill hover:text-fg"
       aria-expanded={open}
     >
       <span class={cn('text-[9px] transition-transform duration-150', open && 'rotate-90')}>▶</span>
@@ -164,7 +164,7 @@
             follow = true
             if (pane) pane.scrollTop = pane.scrollHeight
           }}
-          class={cn('rounded px-1.5 py-0.5 transition-colors', follow ? 'text-ink-dim' : 'text-accent hover:bg-hover')}
+          class={cn('rounded px-1.5 py-0.5 transition-colors', follow ? 'text-ink-dim' : 'text-accent dither-fill')}
         >
           {follow ? 'following' : 'jump to end'}
         </button>
@@ -191,7 +191,7 @@
             onclick={() => (openTurns = { ...openTurns, [keyOf(c)]: !turnsOpen })}
             disabled={c.turns.length === 0}
             aria-expanded={turnsOpen}
-            class="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-1 py-0.5 text-left font-mono text-[11px] transition-colors enabled:hover:bg-hover"
+            class="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-1 py-0.5 text-left font-mono text-[11px] transition-colors enabled:dither-fill"
           >
             <span class={cn('text-accent transition-transform duration-150', turnsOpen && 'rotate-90')}>▶</span>
             <span class="text-muted">{c.harness}</span>

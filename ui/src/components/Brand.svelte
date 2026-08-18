@@ -2,19 +2,34 @@
   import { cn } from '@/lib/cn'
   import WingMark from './WingMark.svelte'
 
-  // The Talaria brand — gold "A"-delta mark + spaced-caps wordmark
-  // (Mercury spec §4, exact SVG from the design file).
-  let { class: className, showTag = false }: { class?: string; showTag?: boolean } = $props()
+  // The Talaria brand: the gold "A"-delta mark, on its own.
+  //
+  // The spaced-caps wordmark that used to sit beside it is gone — the mark
+  // carries the brand alone now. The collapsed rail had already been doing
+  // exactly this (NavRail renders a bare WingMark at 64px), so the two states
+  // of the sidebar now show the same thing at the same size instead of the
+  // expanded one growing a word.
+  //
+  // THE NAME SURVIVES FOR SCREEN READERS. WingMark is `aria-hidden` — it is a
+  // decorative path — so deleting the visible text would have left the brand
+  // with no accessible name at all, in five places including the login and
+  // join pages where it is the only thing identifying the product. `sr-only`
+  // keeps that without putting the word back on screen.
+  //
+  // `size` exists because a lockup and a lone mark do not want the same scale:
+  // 20px reads correctly beside a wordmark and in a 24px rail row, and reads as
+  // an afterthought centred in a login panel with nothing next to it.
+  let {
+    class: className,
+    showTag = false,
+    size = 20,
+  }: { class?: string; showTag?: boolean; size?: number } = $props()
 </script>
 
 <div class={cn('flex items-center gap-2.5', className)}>
-  <WingMark class="h-5 w-5" />
-  <div class="leading-tight">
-    <div class="font-sans text-[13px] leading-4 font-semibold tracking-[0.18em] text-fg">
-      TALARIA
-    </div>
-    {#if showTag}
-      <div class="theme-muted text-[11px] tracking-wide">the winged fleet cockpit</div>
-    {/if}
-  </div>
+  <WingMark {size} />
+  <span class="sr-only">Talaria</span>
+  {#if showTag}
+    <div class="theme-muted text-[11px] tracking-wide">the winged fleet cockpit</div>
+  {/if}
 </div>

@@ -3,7 +3,7 @@
   import { p } from '@/router'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import GeneratingHelix from '@/components/ui/GeneratingHelix.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -74,7 +74,11 @@
 
 {#if !run}
   <!-- The shape of the run view to come: meta row, status panel, report panel. -->
-  <div aria-hidden="true" class="mx-auto w-full max-w-[var(--chat-content-max-width)] space-y-4 p-8">
+  <div
+    aria-hidden="true"
+    class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 p-8"
+    style:padding-bottom="calc(var(--research-composer, 0px) + 1rem)"
+  >
     <Skeleton class="h-6 w-64" />
     <ReportSkeleton />
   </div>
@@ -90,7 +94,10 @@
       </div>
 
       {#if conversationId}
-        <div class="min-h-0 flex-1">
+        <!-- ChatView carries its own composer at its bottom; the research ask
+             floats over this column too, so reserve its height or the two
+             inputs overlap. -->
+        <div class="min-h-0 flex-1" style:padding-bottom="var(--research-composer, 0px)">
           <ChatView
             agentModel={run.agentModel}
             {agentLabel}
@@ -99,7 +106,6 @@
             newChatSignal={0}
             onCreated={() => {}}
             kind="research"
-            fill
             {mentionables}
           />
         </div>
@@ -119,7 +125,12 @@
 
     <!-- ── The report ──────────────────────────────────────────────────────── -->
     <div class="min-w-0 flex-1 overflow-y-auto">
-      <div class="mx-auto w-full max-w-[var(--chat-content-max-width)] space-y-4 p-8">
+      <!-- The report scrolls UNDER the floating ask; this is what stops its
+           last line parking behind it. -->
+      <div
+        class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 p-8"
+        style:padding-bottom="calc(var(--research-composer, 0px) + 1rem)"
+      >
         <!-- Run meta line — chrome voice: 11px mono muted (spec §2). -->
         <div class="flex items-center gap-2 font-mono text-[11px] text-muted">
           <Avatar name={run.agentModel} class="h-6 w-6 text-[10px]" />
@@ -138,7 +149,7 @@
 
         {#if run.status === 'queued' || run.status === 'running'}
           <Panel class="flex items-center gap-3">
-            <GeneratingHelix />
+            <WaitingMark site="research/run" size={16} class="text-accent" />
             <div class="min-w-0">
               <div class="text-sm text-fg">{run.status === 'queued' ? 'Queued' : 'Researching'}</div>
               {#if run.phase}<div class="truncate text-xs text-muted">{run.phase}</div>{/if}

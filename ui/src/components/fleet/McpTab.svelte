@@ -4,7 +4,7 @@
   import type { LucideIcon as IconType } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Generating from '@/components/ui/Generating.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -69,7 +69,7 @@
 
 <div class="space-y-3">
   {#if busy}
-    <Generating label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
+    <Generating site="fleet/mcp-apply" label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
   {/if}
   <QueryState
     {query}
@@ -101,7 +101,7 @@
             {/if}
             <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{s.url}</span>
             {#if probe === 'testing'}
-              <GeneratingBars bars={3} variant="scan" class="shrink-0 text-muted" />
+              <WaitingMark site="fleet/mcp-roll" size={12} class="shrink-0 text-muted" />
             {:else if probe}
               {@const P = PROBE_UI[probe.state]}
               <span class="flex shrink-0 items-center gap-1 text-xs" style:color={P.color} title={probe.detail}>
@@ -109,19 +109,15 @@
               </span>
             {/if}
             {#if !s.extras.includes('managed')}
-              <button type="button" onclick={() => void test(s)} class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
+              <Button variant="ghost" size="xs" class="shrink-0 hover:text-accent" onclick={() => void test(s)}>
                 Test
-              </button>
+              </Button>
             {/if}
             {#if isAdmin && !s.extras.includes('built-in') && !s.extras.includes('managed')}
-              <button
-                type="button"
-                disabled={busy}
-                onclick={async () => { if (await confirm({ title: 'Remove skill', message: `Remove "${s.name}"?`, confirmLabel: 'Remove', danger: true })) void edit({ remove: [s.name] }) }}
-                class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger"
-              >
+              <Button variant="ghost" size="xs" class="shrink-0 hover:text-danger" disabled={busy}
+                onclick={async () => { if (await confirm({ title: 'Remove skill', message: `Remove "${s.name}"?`, confirmLabel: 'Remove', danger: true })) void edit({ remove: [s.name] }) }}>
                 Remove
-              </button>
+              </Button>
             {/if}
           </div>
         {/each}

@@ -172,7 +172,7 @@
                         ? 'cursor-default text-muted opacity-50'
                         : kid.danger
                           ? 'text-danger hover:bg-danger/10'
-                          : 'text-fg hover:bg-hover',
+                          : 'text-fg dither-fill',
                     )}
                   >
                     {#if kid.checked !== undefined}

@@ -25,15 +25,21 @@
   const [sendMark, receiveMark] = markCrossfade()
 </script>
 
-<div class={cn('flex items-center gap-1', className)}>
+<div class={cn('relative flex items-center gap-1', className)}>
   {#each items as t (t.id)}
     <button
       type="button"
       onclick={() => onChange(t.id)}
+      data-active={value === t.id}
       class={cn(
+        // The button carries the HOVER field only. The selected treatment
+        // lives on the mark span below, because that is the element that
+        // slides between cells — putting it here made the tile glide while
+        // the texture popped out of one cell and into the next.
         'relative flex h-7 items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
         focusGold,
-        value === t.id ? 'text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+        'dither-fill',
+        value === t.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
       {#if value === t.id}
@@ -41,7 +47,7 @@
           aria-hidden="true"
           in:receiveMark={{ key: 'mark' }}
           out:sendMark={{ key: 'mark' }}
-          class="absolute -inset-px rounded-md border border-line bg-raised"
+          class="dither-mark absolute -inset-px rounded-md border border-line bg-raised"
         ></span>
       {/if}
       <span class="relative">

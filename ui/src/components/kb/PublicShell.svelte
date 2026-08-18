@@ -10,13 +10,13 @@
 
 <div class="min-h-screen bg-surface text-fg">
   <header class="border-b border-line-subtle">
-    <div class="mx-auto flex max-w-[46rem] items-center gap-2 px-6 py-3">
+    <div class="mx-auto flex max-w-[var(--read-width)] items-center gap-2 px-6 py-3">
       <Brand />
       {#if meta}<span class="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{meta}</span>{/if}
     </div>
   </header>
-  <main class="mx-auto max-w-[46rem] px-6 py-12 font-sans text-[0.95rem] leading-[1.7]">{@render children()}</main>
-  <footer class="mx-auto max-w-[46rem] px-6 pb-12 pt-6 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+  <main class="mx-auto max-w-[var(--read-width)] px-6 py-12 font-sans text-[0.95rem] leading-[1.7]">{@render children()}</main>
+  <footer class="mx-auto max-w-[var(--read-width)] px-6 pb-12 pt-6 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
     Shared from a Talaria knowledgebase
   </footer>
 </div>

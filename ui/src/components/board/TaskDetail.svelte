@@ -670,29 +670,23 @@
         {#if canEdit}
           <div class="flex items-center gap-2 p-3 pt-0">
             <!-- Secondary: raised tile + hairline + readout mono (spec §8). -->
-            <button
-              onclick={async () => {
+            <Button variant="outline" size="xs" class="flex-1 gap-1.5 py-1.5" onclick={async () => {
                 await archiveTask(taskId, !t!.archivedAt)
                 refresh()
                 onClose()
-              }}
-              class="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-fg transition-colors hover:bg-hover"
-            >
+              }}>
               {#if t.archivedAt}<ArchiveRestore size={14} />{:else}<Archive size={14} />{/if}
               {t.archivedAt ? 'Restore' : 'Archive'}
-            </button>
+            </Button>
             <!-- Destructive: ORANGE OUTLINE — never an orange fill (spec §8). -->
-            <button
-              onclick={async () => {
+            <Button variant="ghost" size="xs" class="flex-1 gap-1.5 border border-danger py-1.5 text-danger hover:bg-danger/10" onclick={async () => {
                 await deleteTask(taskId)
                 refresh()
                 onClose()
-              }}
-              class="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-danger px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-danger transition-colors hover:bg-danger/10"
-            >
+              }}>
               <Trash2 size={14} />
               Delete
-            </button>
+            </Button>
           </div>
         {/if}
       </aside>

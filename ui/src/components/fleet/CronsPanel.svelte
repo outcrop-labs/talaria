@@ -102,13 +102,14 @@
      meta, then the three action tiles) — same px-3.5 py-3 frame. -->
 {#snippet cronRowSkeleton(i: number)}
   <div aria-hidden="true" class="flex items-center gap-2.5 px-3.5 py-3">
-    <Skeleton class="h-2 w-2 shrink-0 rounded-full" delay={i * 0.12} />
-    <Skeleton class={`h-3 rounded-full ${['w-36', 'w-28', 'w-44'][i % 3]}`} delay={i * 0.12} />
-    <Skeleton class={`h-2.5 rounded-full ${['w-28', 'w-20', 'w-24'][i % 3]}`} delay={i * 0.12 + 0.12} />
+    <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
+    <div class="h-2 w-2 shrink-0 rounded-full bg-line"></div>
+    <Skeleton class={`h-3 rounded-full ${['w-36', 'w-28', 'w-44'][i % 3]}`} />
+    <Skeleton class={`h-2.5 rounded-full ${['w-28', 'w-20', 'w-24'][i % 3]}`} />
     <span class="ml-auto flex shrink-0 items-center gap-1">
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.12} />
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.12 + 0.06} />
-      <Skeleton class="h-7 w-7 rounded-md" delay={i * 0.12 + 0.12} />
+      <Skeleton class="h-7 w-7 rounded-md" />
+      <Skeleton class="h-7 w-7 rounded-md" />
+      <Skeleton class="h-7 w-7 rounded-md" />
     </span>
   </div>
 {/snippet}

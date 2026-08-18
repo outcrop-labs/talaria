@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte'
+  import { bottomStick } from '@/lib/stick-to-bottom'
   import { Bot, ChevronLeft, GripVertical, Paperclip, X } from '@lucide/svelte'
   import { createQuery } from '@tanstack/svelte-query'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
@@ -142,7 +142,6 @@
   let dragWidth = $state<number | null>(null)
   let composer = $state<ChatComposerHandle | null>(null)
   let scroller = $state<HTMLDivElement | null>(null)
-  let pinned = true
   let lastOutput: string | null = null
   let resize: {
     pointerId: number
@@ -350,14 +349,30 @@
     lastOutput = latestOutput
   })
 
+  // THE SHARED FOLLOWER, not a fifth copy. `lib/stick-to-bottom.ts` was
+  // extracted from ChatView, ChannelView and ThreadPanel because all three had
+  // written this by hand and all three shared one bug: they decided whether to
+  // follow by measuring the scroll position AFTER the new content was in the
+  // DOM, so any message taller than the threshold read as "the reader scrolled
+  // up" and the transcript stopped following. It failed harder the longer the
+  // message, which is exactly backwards.
+  //
+  // This panel had the fourth copy of it — `pinned`, set from an `onscroll`
+  // handler, checked in an effect. The handler half was actually right (a scroll
+  // event is the only honest signal that the reader moved), but the follow read
+  // a `scrollHeight` that markdown had not finished rendering into, so a
+  // streamed reply crept upward while the newest text sat below the fold.
+  const stick = bottomStick()
+  $effect(() => stick.attach(scroller))
+
   $effect(() => {
-    // Deps mirror the React effect: entry count and the streaming turn's text.
+    // Deps: entry count and the streaming turn's text. The helper decides
+    // whether to actually move — if the reader has scrolled away to read, it
+    // does nothing.
     void entries.length
     void streaming?.content
     void streaming?.status
-    const node = untrack(() => scroller)
-    if (!pinned || !node) return
-    node.scrollTo({ top: node.scrollHeight, behavior: streaming ? 'auto' : 'smooth' })
+    stick.follow()
   })
 
   async function loadOlder() {
@@ -460,17 +475,13 @@
         <div class="font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">{focusMode ? 'Inbox conversation' : `Assistant · ${surfaceLabel}`}</div>
       </div>
       <span class={cn('h-1.5 w-1.5 rounded-full', busy || conversation.data?.pages[0]?.working ? 'animate-pulse bg-success' : 'bg-line-strong')} aria-hidden="true"></span>
-      <button type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg">
+      <button type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted dither-fill hover:text-fg">
         <ChevronLeft size={14} />
       </button>
     </header>
 
     <div
       bind:this={scroller}
-      onscroll={(event) => {
-        const node = event.currentTarget
-        pinned = node.scrollHeight - node.scrollTop - node.clientHeight < 96
-      }}
       class="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-3"
       aria-live="polite"
     >
@@ -535,7 +546,7 @@
           <button type="button" onclick={toggleActiveDecisionAttachment} class="min-w-0 flex-1 truncate text-left font-sans text-[11px] text-muted">
             {attached ? active.question : 'Decision detached — general conversation'}
           </button>
-          <button type="button" onclick={toggleActiveDecisionAttachment} aria-label={attached ? 'Detach active decision' : 'Attach active decision'} class="grid h-6 w-6 place-items-center rounded text-ink-dim hover:bg-hover hover:text-fg">
+          <button type="button" onclick={toggleActiveDecisionAttachment} aria-label={attached ? 'Detach active decision' : 'Attach active decision'} class="grid h-6 w-6 place-items-center rounded text-ink-dim dither-fill hover:text-fg">
             {#if attached}<X size={12} />{:else}<Paperclip size={12} />{/if}
           </button>
         </div>

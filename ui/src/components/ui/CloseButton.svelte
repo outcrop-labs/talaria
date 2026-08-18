@@ -26,7 +26,7 @@
   class={cn(
     // Ghost icon affordance (spec §8): muted → readout, hover-token fill,
     // radius 6, gold focus ring.
-    'grid place-items-center rounded-md p-1.5 text-muted transition-colors hover:bg-hover hover:text-fg',
+    'grid place-items-center rounded-md p-1.5 text-muted transition-colors dither-fill hover:text-fg',
     focusRing,
     className,
   )}

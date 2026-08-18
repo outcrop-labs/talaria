@@ -56,7 +56,7 @@
         title={`New ${label.toLowerCase().replace(/s$/, '')}`}
         onclick={() => (creating = true)}
         class={cn(
-          'grid h-5 w-5 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg',
+          'grid h-5 w-5 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg',
           focusGold,
         )}
       >

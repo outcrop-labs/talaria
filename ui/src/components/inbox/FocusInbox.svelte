@@ -68,7 +68,7 @@
   <!-- Page content entrance: header then the queue block rise in sequence
        (ANIMATIONS.md). Runs once at mount; the loaded branch below staggers
        again when data replaces the skeleton. -->
-  <main use:staggerIn class="mx-auto w-full max-w-[760px]">
+  <main use:staggerIn class="mx-auto w-full max-w-[var(--page-width)]">
     <!-- Home's tab strip. It lived in ConsoleHome, which never renders for this
          tab, so the surface most people land on had no way out of itself. -->
     <div class="mb-5"><HomeTabs value="inbox" /></div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
@@ -496,7 +497,7 @@
                     onclick={() => onOpen(t.id)}
                     use:warmRoute={{ path: '/boards/:boardId/:taskId', warm: () => prefetchTask(qc, t.id) }}
                     oncontextmenu={(e) => rowMenu(e, t)}
-                    class={cn('group cursor-pointer transition-colors hover:bg-hover', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
+                    class={cn('group cursor-pointer transition-colors dither-fill', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
                   >
                     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                     <td class="pl-2" onclick={(e) => e.stopPropagation()}>
@@ -563,13 +564,13 @@
             {/snippet}
           </DropdownMenu>
           {#if me}
-            <button onclick={() => void bulk({ assignToMe: true })} class="rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg">
+            <Button variant="ghost" size="xs" class="py-1 dither-fill" onclick={() => void bulk({ assignToMe: true })}>
               Assign to me
-            </button>
+            </Button>
           {/if}
-          <button onclick={() => void bulk({ archive: true })} class="rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-danger">
+          <Button variant="ghost" size="xs" class="py-1 dither-fill hover:text-danger" onclick={() => void bulk({ archive: true })}>
             Archive
-          </button>
+          </Button>
           <button onclick={() => (sel = new Set())} title="Clear selection" class="rounded-md px-1.5 py-1 font-mono text-[10px] text-muted transition-colors hover:text-fg">
             ✕
           </button>

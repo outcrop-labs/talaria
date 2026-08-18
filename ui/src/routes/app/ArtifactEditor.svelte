@@ -169,7 +169,7 @@
   <div class={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
       <div class="relative shrink-0">
-        <button type="button" onclick={() => (emojiOpen = !emojiOpen)} class="rounded-md px-1 text-xl leading-none transition-colors hover:bg-hover" title="Set icon">
+        <button type="button" onclick={() => (emojiOpen = !emojiOpen)} class="rounded-md px-1 text-xl leading-none transition-colors dither-fill" title="Set icon">
           {artifact.icon ?? '📄'}
         </button>
         {#if emojiOpen}
@@ -285,7 +285,7 @@
       {:else if artifact.kind === 'file'}
         <div class="min-w-0 flex-1 overflow-y-auto p-8">
           {#if artifact.storageRef}
-            <div class="mx-auto max-w-2xl">
+            <div class="mx-auto max-w-[var(--read-width)]">
               {#if artifact.contentType?.startsWith('image/')}
                 <img src={`/api/uploads/${artifact.storageRef}`} alt={artifact.title} class="mb-4 max-h-[60vh] rounded-lg border border-line" />
               {:else}

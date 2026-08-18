@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { Maximize2, ChevronLeft } from '@lucide/svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
@@ -87,7 +88,7 @@
         onclick={() => (reading = true)}
         title="Expand"
         aria-label="Expand description"
-        class="grid h-6 w-6 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg"
+        class="grid h-6 w-6 place-items-center rounded text-muted transition-colors dither-fill hover:text-fg"
       >
         <Maximize2 size={13} />
       </button>
@@ -108,12 +109,9 @@
       transition:fly={{ x: '100%', duration: 200 }}
     >
       <div class="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
-        <button
-          onclick={() => (reading = false)}
-          class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
-        >
+        <Button variant="ghost" size="xs" class="gap-1 py-1 dither-fill" onclick={() => (reading = false)}>
           <ChevronLeft size={14} /> Back
-        </button>
+        </Button>
         <div class="min-w-0 flex-1 truncate text-center font-sans text-sm font-semibold text-fg">{title}</div>
         <div class="flex w-[4.5rem] justify-end">
           {@render modeToggle()}
@@ -128,7 +126,7 @@
       {:else}
         <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {#if draft}
-            <div class="mx-auto max-w-2xl font-sans text-sm leading-relaxed">
+            <div class="mx-auto max-w-[var(--read-width)] font-sans text-sm leading-relaxed">
               <Markdown children={draft} />
             </div>
           {:else}

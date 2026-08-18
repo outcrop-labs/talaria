@@ -48,14 +48,14 @@
 <div class="grid min-h-screen place-items-center p-6">
   <Panel class="w-full max-w-md p-8 text-center">
     <div class="mb-6 flex justify-center">
-      <Brand />
+      <Brand size={40} />
     </div>
     {#if !token}
       <p class="text-sm text-muted">This join link is missing its token.</p>
     {:else if query.isPending}
       <div class="space-y-3">
         <Skeleton class="mx-auto h-4 w-48 rounded-full" />
-        <Skeleton class="mx-auto h-3 w-64 rounded-full" delay={0.12} />
+        <Skeleton class="mx-auto h-3 w-64 rounded-full" />
       </div>
     {:else if query.isError && query.data === undefined}
       <!-- Nothing is known about the invite here — so claim nothing about

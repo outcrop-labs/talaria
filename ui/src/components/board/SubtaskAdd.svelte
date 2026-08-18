@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
 
   /** Inline add for sub-tasks — quiet trigger, Enter creates, Esc closes. */
@@ -19,13 +20,9 @@
 </script>
 
 {#if !open}
-  <button
-    type="button"
-    onclick={() => (open = true)}
-    class="w-full rounded-md px-1 py-0.5 text-left font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
-  >
+  <Button variant="ghost" size="xs" class="w-full px-1 py-0.5 text-left" onclick={() => (open = true)}>
     + Add sub-task
-  </button>
+  </Button>
 {:else}
   <Input
     autofocus

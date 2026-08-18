@@ -34,10 +34,10 @@
 {/snippet}
 
 <!-- A Stat cell's shape while its query is in flight: label bar + value bar. -->
-{#snippet statSkeleton(delay: number = 0)}
+{#snippet statSkeleton()}
   <div class="space-y-1.5">
-    <Skeleton class="h-2.5 w-20 rounded-full" {delay} />
-    <Skeleton class="h-3.5 w-24 rounded-full" delay={delay + 0.12} />
+    <Skeleton class="h-2.5 w-20 rounded-full" />
+    <Skeleton class="h-3.5 w-24 rounded-full" />
   </div>
 {/snippet}
 
@@ -61,8 +61,8 @@
     {#if fleetQuery.isLoading}
       <!-- The usage cells land late and grow the grid — hold their spots. -->
       {@render statSkeleton()}
-      {@render statSkeleton(0.12)}
-      {@render statSkeleton(0.24)}
+      {@render statSkeleton()}
+      {@render statSkeleton()}
     {:else}
       {#if stat}<Stat label="Conversations" value={String(stat.conversations)} />{/if}
       {#if stat}<Stat label="Messages" value={String(stat.messages)} />{/if}

@@ -308,7 +308,7 @@
       <ul class="space-y-1" use:listStagger>
         {#each childFolders as f (f.id)}
           <li
-            class="flex items-center gap-2 rounded-md border border-line px-3 py-2 transition-colors hover:bg-hover"
+            class="flex items-center gap-2 rounded-md border border-line px-3 py-2 transition-colors dither-fill"
             oncontextmenu={(e) => folderMenu(e, f)}
           >
             <button type="button" onclick={() => (folderId = f.id)} class="flex min-w-0 flex-1 items-center gap-2 text-left">
@@ -330,7 +330,7 @@
                 type="button"
                 title="More"
                 onclick={(e) => folderMenu(e, f)}
-                class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+                class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
               >
                 <MoreHorizontal size={14} aria-hidden="true" />
               </button>
@@ -464,7 +464,7 @@
                 type="button"
                 title="More"
                 onclick={(e) => rowMenu(e, s)}
-                class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+                class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
               >
                 <MoreHorizontal size={14} aria-hidden="true" />
               </button>

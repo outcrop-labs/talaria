@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate, route } from '@/router'
@@ -98,8 +99,8 @@
   }
 </script>
 
-<div class="h-full overflow-y-auto p-8">
-  <div class="mx-auto w-full max-w-2xl">
+<PageSurface>
+  <div>
     <h1 class="mb-4 text-2xl font-semibold tracking-tight text-fg">Settings</h1>
     <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} class="mb-6" />
     {#if appsList.notice}<div class="-mt-4 mb-6"><QueryError {...appsList.notice} /></div>{/if}
@@ -118,8 +119,8 @@
                  avatar/name/email that fills in later reads as a glitch. -->
             <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
             <div class="min-w-0 flex-1 space-y-2">
-              <Skeleton class="h-3 w-36 rounded-full" delay={0.12} />
-              <Skeleton class="h-2.5 w-48 rounded-full" delay={0.24} />
+              <Skeleton class="h-3 w-36 rounded-full" />
+              <Skeleton class="h-2.5 w-48 rounded-full" />
             </div>
           {:else}
             <Avatar src={user?.picture} name={name || user?.email} class="h-10 w-10" />
@@ -131,12 +132,12 @@
         </div>
         <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Display name</label>
         {#if sessionLoading}
-          <div class="flex items-center gap-2">
+          <div class="flex max-w-md items-center gap-2">
             <Skeleton class="h-11 flex-1" />
-            <Skeleton class="h-11 w-20" delay={0.12} />
+            <Skeleton class="h-11 w-20" />
           </div>
         {:else}
-          <div class="flex items-center gap-2">
+          <div class="flex max-w-md items-center gap-2">
             <Input
               bind:value={name}
               onkeydown={(e) => e.key === 'Enter' && void save()}
@@ -163,4 +164,4 @@
     </div>
     {/key}
   </div>
-</div>
+</PageSurface>

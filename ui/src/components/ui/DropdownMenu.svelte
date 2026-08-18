@@ -139,7 +139,7 @@
                     ? 'cursor-default text-muted opacity-50'
                     : item.danger
                       ? 'text-danger hover:bg-danger/10'
-                      : cn('hover:bg-hover', item.checked === false ? 'text-muted' : 'text-fg'),
+                      : cn('dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
                 )}
               >
                 <!-- checked state: leading ✓ slot (kept when unchecked so rows

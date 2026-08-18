@@ -32,6 +32,7 @@
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { isUnder } from '@/lib/route-tabs'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import GroupHeader from './GroupHeader.svelte'
   import SublistFooter from './SublistFooter.svelte'
@@ -121,8 +122,11 @@
     }}
     class={cn(
       // Indented past the group chevron so the nesting reads at a glance.
-      'block truncate rounded-md py-1 pl-[22px] pr-2 text-xs transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
-      activePath === `/boards/${b.id}` ? 'bg-raised font-medium text-fg' : 'text-muted',
+      'block truncate rounded-md py-1 pl-[22px] pr-2 text-xs transition-colors duration-[120ms] dither-fill hover:text-fg',
+      // NESTED COUNTS, because this is the sidebar. Exact equality un-lit the
+      // board the moment you opened a task inside it (`/boards/<id>/<taskId>`),
+      // so the rail went blank on the view you were most deeply inside.
+      isUnder(activePath, `/boards/${b.id}`) ? 'bg-raised font-medium text-fg' : 'text-muted',
       dragging?.id === b.id && 'opacity-40',
     )}
   >
@@ -136,10 +140,10 @@
   <div class="ml-3 mt-0.5 border-l border-line-subtle pl-2">
     <div class="space-y-1.5 px-1.5 py-1">
       <Skeleton class="h-2.5 w-16 rounded-full" />
-      <Skeleton class="ml-3 h-2.5 w-24 rounded-full" delay={0.12} />
-      <Skeleton class="ml-3 h-2.5 w-20 rounded-full" delay={0.24} />
-      <Skeleton class="h-2.5 w-14 rounded-full" delay={0.36} />
-      <Skeleton class="ml-3 h-2.5 w-24 rounded-full" delay={0.48} />
+      <Skeleton class="ml-3 h-2.5 w-24 rounded-full" />
+      <Skeleton class="ml-3 h-2.5 w-20 rounded-full" />
+      <Skeleton class="h-2.5 w-14 rounded-full" />
+      <Skeleton class="ml-3 h-2.5 w-24 rounded-full" />
     </div>
     <SublistFooter {onNew} {onTeams} />
   </div>
@@ -184,7 +188,7 @@
            visible drop target. A collapsed group still shows the board you are
            currently on, so the rail never hides where you are. -->
       {@const open = (groupState[group] ?? true) || dragging !== null}
-      {@const rows = open ? g.boards : g.boards.filter((b) => activePath === `/boards/${b.id}`)}
+      {@const rows = open ? g.boards : g.boards.filter((b) => isUnder(activePath, `/boards/${b.id}`))}
       <div
         role="group"
         ondragover={(e) => {

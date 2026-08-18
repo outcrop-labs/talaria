@@ -1,0 +1,204 @@
+<script lang="ts" module>
+  export interface RectShape {
+    x: number
+    y: number
+    w: number
+    h: number
+  }
+
+  /**
+   * How far a halo should reach around a control THIS size.
+   *
+   * A fixed reach cannot work across the app: 22px around a 36px button is
+   * most of the button again, and the fields of neighbouring controls in a
+   * toolbar merge into one cloud — while the same 22px around a 200px card is
+   * a hairline. The halo has to be a FRACTION of what it surrounds.
+   *
+   * Keyed to the short side, because that is what the eye reads as the
+   * control's size: a wide, short button is short. Clamped at both ends so a
+   * tiny chip still gets something visible and a large surface does not get a
+   * weather system.
+   */
+  export function spreadFor(_shortSide: number): number {
+    // ONE BAND WIDTH, EVERYWHERE. This was proportional to the control, and
+    // proportional is exactly what made it inconsistent: a tab wore a 6px band
+    // and a button a 20px one, so the same treatment read as two different
+    // ideas depending on what it was edging. A border does not get thicker
+    // because its box is bigger, and this is a border.
+    //
+    // 12px is four dot rows at the house 2px pitch — enough for the density to
+    // fall across a gradient rather than stopping after one rank, and short
+    // enough that neighbouring controls do not run their fields together.
+    //
+    // The argument is kept so callers stay unchanged and the decision is
+    // reversible in one place if a surface ever genuinely needs its own.
+    return 12
+  }
+
+
+  /** The bleed a field needs so nothing is clipped: the widest reach in the
+   *  sources, plus a margin for the dot grid itself.
+   *
+   *  Deriving it beats picking a number, because the failure is silent in code
+   *  and loud on screen — a spread larger than the bleed does not fade, it gets
+   *  cut off square, and the control looks like it is wearing a box. */
+  export function bleedFor(spreads: number[]): number {
+    return Math.ceil(Math.max(0, ...spreads)) + 6
+  }
+
+  /** An element's box in its container's coordinate space — what a RectSource
+   *  wants. `pad` grows the rect so the halo starts outside the control's edge. */
+  export function rectIn(container: HTMLElement, el: HTMLElement, pad = 0, bleed = 0): RectShape {
+    const c = container.getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    // MEASURE FROM THE PADDING BOX, not the border box. `getBoundingClientRect`
+    // returns the border box, but an absolutely-positioned child — which the
+    // canvas is — is offset from its containing block's PADDING box. On a
+    // container with a 1px border those differ by exactly that border, and the
+    // whole field lands a pixel off the thing it is supposed to ring.
+    // `clientLeft`/`clientTop` are the border widths.
+    const originX = c.left + container.clientLeft
+    const originY = c.top + container.clientTop
+    return {
+      // `bleed` shifts the origin again: a bled canvas starts `bleed` px above
+      // and left of that. Taking both here means a caller cannot apply one and
+      // forget the other.
+      x: r.left - originX - pad + bleed,
+      y: r.top - originY - pad + bleed,
+      w: r.width + 2 * pad,
+      h: r.height + 2 * pad,
+    }
+  }
+</script>
+
+<script lang="ts">
+  import { untrack } from 'svelte'
+  import { cn } from '@/lib/cn'
+  import { DitherEngine, type DitherEngineOptions, type DitherSource } from '@/lib/dither'
+  import { onReducedMotion } from '@/lib/motion'
+  import { onThemeChange } from '@/lib/theme'
+
+  /**
+   * The Svelte face of the engine: an absolutely-positioned canvas that fills
+   * its nearest `relative` parent and renders whatever field it is handed.
+   *
+   * Drop it FIRST inside the container so the real content paints above it —
+   * the field is decoration and must never intercept a click (pointer-events
+   * are off) or reach a screen reader (aria-hidden).
+   *
+   * Theme changes are watched (via `onThemeChange`) because the canvas cannot
+   * inherit CSS variables the way DOM paint does — a flip would otherwise leave
+   * dark-theme dots on a paper-white surface until the next repaint.
+   */
+  let {
+    sources,
+    immediate,
+    shimmer,
+    bleed = 0,
+    class: className,
+    ...opts
+  }: DitherEngineOptions & {
+    sources: DitherSource[]
+    /** Skip the tween — for fields driven per-frame by the caller (progress). */
+    immediate?: boolean
+    /**
+     * Grow the canvas this many px BEYOND its container on every side.
+     *
+     * A halo has to render outside the control it surrounds, and the obvious
+     * way — padding on a wrapper — moves the control. This keeps the wrapper
+     * shrink-wrapped and lets the canvas spill, so adding a bloom to a button
+     * costs no layout at all.
+     *
+     * Field coordinates are in the GROWN space: the container's own box starts
+     * at (bleed, bleed). `rectIn` takes the bleed and does that for you.
+     *
+     * MUST BE >= the widest `spread` in `sources`, with a little margin. The
+     * canvas is the field's only extent: a halo that reaches further than the
+     * canvas does is not a soft halo that fades out, it is a halo sliced square
+     * at the canvas edge — a hard-edged rectangle floating around the control.
+     * `bleedFor()` computes it from the sources so the two cannot drift apart.
+     *
+     * An ancestor with `overflow-hidden` clips the spill. That degrades to a
+     * cropped halo, never to a broken layout.
+     */
+    bleed?: number
+    class?: string
+  } = $props()
+
+  let canvas = $state<HTMLCanvasElement | null>(null)
+  let engine: DitherEngine | null = null
+
+  $effect(() => {
+    const el = canvas
+    const parent = el?.parentElement
+    if (!el || !parent) return
+
+    // Engine options are construction-time only — callers never change pitch or
+    // cover mode live, and rebuilding the engine would defeat the tweens. Read
+    // untracked so this effect depends on the canvas alone and never restarts.
+    // (Shimmer is the one exception: presence-dependent, so it has a live
+    // setter and its own effect below.)
+    const e = new DitherEngine(el, untrack(() => ({ ...opts, shimmer })))
+    engine = e
+
+    const size = () =>
+      e.setSize(parent.clientWidth + 2 * bleed, parent.clientHeight + 2 * bleed, window.devicePixelRatio || 1)
+    size()
+    const ro = new ResizeObserver(size)
+    ro.observe(parent)
+
+    // Theme flips and the reduced-motion preference are PAGE signals, and both
+    // subscriptions are shared across every canvas field on the page — a bloom
+    // per primary button plus a skeleton per row is a lot of fields, and an
+    // observer each is a cost the effect does not need to pay. `onReducedMotion`
+    // fires immediately, so the engine starts at the right setting.
+    const offTheme = onThemeChange(() => e.refreshColors())
+    const offMotion = onReducedMotion((reduced) => e.setReducedMotion(reduced))
+
+    return () => {
+      ro.disconnect()
+      offTheme()
+      offMotion()
+      e.destroy()
+      engine = null
+    }
+  })
+
+  // Sources are compared by VALUE, not identity — callers rebuild the array on
+  // every state change and only a real field change should reach the engine
+  // (each one starts a tween). Serialising is what makes `sources` safe to
+  // build inline at the call site, which is how every demo below reads.
+  const sourcesKey = $derived(JSON.stringify(sources))
+
+  $effect(() => {
+    void sourcesKey
+    engine?.setSources(sources, { immediate })
+  })
+
+  $effect(() => {
+    engine?.setShimmer(shimmer ?? 0)
+  })
+</script>
+
+<!-- THE CSS SIZE MUST BE SET EXPLICITLY, and this is not belt-and-braces.
+     A <canvas> is a REPLACED element: with `position: absolute` and `width:
+     auto` it takes its INTRINSIC size, which is the `width`/`height`
+     attributes — and those are CSS pixels times the device pixel ratio. On a
+     HiDPI screen a bled layer therefore rendered at double its intended size,
+     anchored top-left by the insets, so the field spilled to roughly four
+     times the area and sat offset down and right of the control it belonged
+     to. At dpr 1 the two happen to be equal, which is why it looked correct in
+     testing and broken on a real display.
+
+     Percentages resolve against the containing block's padding box — the
+     parent — which is the same box `setSize` measures with `clientWidth`, so
+     the CSS box and the backing store describe the same rectangle. The
+     unbled path was never affected: `h-full w-full` was already forcing it. -->
+<canvas
+  bind:this={canvas}
+  aria-hidden="true"
+  style={bleed
+    ? `inset:${-bleed}px; width:calc(100% + ${2 * bleed}px); height:calc(100% + ${2 * bleed}px)`
+    : undefined}
+  class={cn('pointer-events-none absolute', bleed ? '' : 'inset-0 h-full w-full', className)}
+></canvas>

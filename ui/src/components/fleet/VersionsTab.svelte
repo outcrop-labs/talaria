@@ -51,7 +51,7 @@
 <div class="divide-y divide-line">
   {#if busy !== null}
     <div class="pb-2.5">
-      <Generating label={`Reverting to v${busy}, publishing as a new version`} lines={2} />
+      <Generating site="fleet/version-revert" label={`Reverting to v${busy}, publishing as a new version`} lines={2} />
     </div>
   {/if}
   <div class="flex items-center gap-1.5 pb-2.5">
@@ -81,14 +81,14 @@
     {#snippet children(versions)}
       <div use:listStagger>
       {#each versions as v (v.version)}
-        <div class="flex items-center gap-3 py-2.5 text-sm transition-colors hover:bg-hover">
+        <div class="flex items-center gap-3 py-2.5 text-sm transition-colors dither-fill">
           <span class={cn('w-12 shrink-0 font-mono', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
           <span class="min-w-0 flex-1 truncate font-sans text-fg">{v.note ?? '—'}</span>
           <span class="shrink-0 font-mono text-[11px] text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
           {#if isAdmin && v.version !== def.currentVersion}
-            <button type="button" disabled={busy !== null} onclick={() => void revert(v.version)} class="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
+            <Button variant="ghost" size="xs" class="shrink-0 gap-1 hover:text-accent" disabled={busy !== null} onclick={() => void revert(v.version)}>
               <RotateCcw size={12} /> {busy === v.version ? 'reverting' : 'revert'}
-            </button>
+            </Button>
           {/if}
           {#if v.version === def.currentVersion}<span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-success">current</span>{/if}
         </div>

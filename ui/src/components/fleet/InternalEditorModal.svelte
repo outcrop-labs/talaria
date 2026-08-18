@@ -323,7 +323,7 @@
                   class={cn(
                     'group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs',
                     diffing?.rev.id === rev.id && 'bg-raised',
-                    i !== 0 && 'cursor-pointer transition-colors hover:bg-hover',
+                    i !== 0 && 'cursor-pointer transition-colors dither-fill',
                   )}
                   onclick={i === 0 ? undefined : () => void openDiff(rev)}
                   title={i === 0 ? undefined : 'Show changes since this revision'}
@@ -431,7 +431,7 @@
           type="button"
           onclick={onClose}
           title="Back"
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
         >
           <ChevronLeft size={16} />
         </button>

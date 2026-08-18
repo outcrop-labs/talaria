@@ -1,5 +1,9 @@
 <script lang="ts" module>
   import type { SessionUser } from '@/lib/session'
+  import { markCrossfade } from '@/lib/motion'
+  import { ditherSurface } from '@/lib/dither-surface'
+  import DitherLayer from '@/components/ui/DitherLayer.svelte'
+  import type { DitherSource } from '@/lib/dither'
 
   function userInitials(user: SessionUser): string {
     const base = user.name?.trim() || user.email || '?'
@@ -17,6 +21,8 @@
   import TeamsModal from '@/components/board/TeamsModal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
+  import { activeAmong, isUnder } from '@/lib/route-tabs'
+  import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
   import BoardsSublist from './BoardsSublist.svelte'
   import NavIcon from './NavIcon.svelte'
   import RailTooltip from './RailTooltip.svelte'
@@ -44,7 +50,13 @@
   let creating = $state(false)
   let teamsOpen = $state(false)
   const nav = useNavCollapsed()
-  const isInbox = $derived(pathname === '/' || pathname === '/inbox')
+  // Are we ON the Inbox? The full queue loads here and only a count elsewhere.
+  //
+  // The SAME predicate the assistant surface uses, not a fourth spelling of it.
+  // Bare `/home` renders the Inbox as its default tab, so an `isUnder(…,
+  // '/home/inbox')` of its own would have quietly loaded the summary instead of
+  // the queue on the URL the nav rail itself points at.
+  const isInbox = $derived(shouldAttachInboxDecision(pathname, undefined))
   const inboxQueue = useInboxFocus(() => ({ enabled: isInbox }))
   const inboxSummary = useInboxFocusSummary(() => ({ enabled: !isInbox }))
   // `null` = the count could NOT be read, which is a different fact from zero
@@ -89,16 +101,47 @@
     }),
   )
 
-  // Exact for Home and for app WORK items: /x/<slug> is a path prefix of its
-  // sibling /x/<slug>/manage, and fuzzy matching would light both up at once.
-  const exactFor = (item: NavItem) => item.to === '/' || appItems.Manage!.some((m) => m.to.startsWith(item.to + '/'))
+  // THE ACTIVE ITEM IS THE MOST SPECIFIC ONE CONTAINING THE ROUTE, decided
+  // across every section at once by `activeAmong` — so `/boards` stays lit
+  // while you read a task inside it, and an app's Manage surface beats its Work
+  // surface instead of lighting both.
+  //
+  // This replaced `exactFor`, which matched Home and app Work items EXACTLY and
+  // everything else by prefix. That fixed two cases and stated no rule: Home
+  // needed an exemption because it is an ancestor of every route, app Work
+  // needed one because Manage nests under it, and the next nested pair would
+  // have lit both again. Most-specific-wins subsumes all three.
+  const activePath = $derived(activeAmong(pathname, sections.flatMap((sec) => sec.items.map((i) => i.to))))
 
-  // The active match feeding the data-status attribute (was TanStack Link's
-  // activeOptions job — same exact/fuzzy semantics).
-  const statusFor = (item: NavItem): 'active' | undefined =>
-    (exactFor(item) ? pathname === item.to : pathname === item.to || pathname.startsWith(item.to + '/'))
-      ? 'active'
-      : undefined
+  // AMBIENT TEXTURE ON THE RAIL, and the halo under whatever is active.
+  //
+  // A whisper by default and a notch louder while the pointer is over the
+  // panel, so the field surfaces on approach instead of shouting all day. It
+  // is presence, not interaction: nothing here is clickable and nothing about
+  // it reaches assistive tech.
+  //
+  // Subtlety here is TRANSPARENCY, not scarcity. The field keeps a real dot
+  // population and caps its alpha at a ghost of the halo's, which is what lets
+  // it read as the surface having material rather than as dots scattered on
+  // one. Shimmer is presence-gated and is the only motion in the rail.
+  // ONE MARK FOR THE WHOLE RAIL, so the selected tile travels between items
+  // instead of vanishing here and appearing there. The canvas that used to do
+  // this measured the active row and drew at its coordinates, which is why it
+  // lagged a row behind on scroll; an element cannot be wrong about where it
+  // is.
+  const [sendMark, receiveMark] = markCrossfade()
+
+  let inside = $state(false)
+  const ambient = $derived.by((): DitherSource[] => {
+    const a = inside ? { chrome: 0.2, grain: 0.05, foot: 0.09 } : { chrome: 0.14, grain: 0.035, foot: 0.06 }
+    return [
+      { id: 'chrome', kind: 'edge', side: 'top', depth: 64, strength: a.chrome },
+      { id: 'grain', kind: 'uniform', strength: a.grain },
+      { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot },
+    ]
+  })
+
+  const statusFor = (item: NavItem): 'active' | undefined => (item.to === activePath ? 'active' : undefined)
 </script>
 
 {#snippet modals()}
@@ -110,7 +153,21 @@
      to be separate <nav>s, so the flip snapped with no animation possible).
      Inner divs pin each variant's width so content clips during the glide
      instead of squishing. -->
-<CollapsePane tag="nav" collapsed={nav.collapsed} width="w-[208px]" collapsedWidth="w-16" class="h-full shrink-0 border-r border-line bg-sidebar">
+<!-- `relative` anchors the two fields. CollapsePane already clips
+     (`overflow-hidden`, so the width animation does not spill), which means
+     the active halo's bleed is cropped at the rail's edge rather than
+     spilling onto the stage. That is the right side of the trade here: a halo
+     that leaks across the rail's border would read as a rendering fault. -->
+<CollapsePane
+  tag="nav"
+  collapsed={nav.collapsed}
+  width="w-[208px]"
+  collapsedWidth="w-16"
+  class="relative h-full shrink-0 border-r border-line bg-sidebar"
+  onmouseenter={() => (inside = true)}
+  onmouseleave={() => (inside = false)}
+>
+<DitherLayer sources={ambient} shimmer={inside ? 0.12 : 0} organic={0.5} alphaFloor={0.04} maxAlpha={0.14} />
 {#if nav.collapsed}
   <!-- ── Icon rail (64px, spec §5) ───────────────────────────────────────── -->
   <div class="flex h-full w-16 flex-col items-center pb-5 pt-3">
@@ -118,7 +175,12 @@
       <WingMark class="h-5 w-5" />
     </div>
 
-    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
+    <!-- Collapsed tiles get the same room, for the same reason. -->
+    <!-- `px-1` is room for the selected band, not decoration. `overflow-y-auto`
+         makes overflow-x compute to `auto` too, so this box clips horizontally
+         even though it only asked to scroll vertically — and the outset accent
+         band was being sliced off flush at both edges. -->
+    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto p-1">
       {#each sections as section, si (section.title)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
@@ -128,13 +190,13 @@
               data-status={statusFor(item)}
               aria-label={item.label}
               class={cn(
-                'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
+                'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-bloom hover:text-fg',
                 'data-[status=active]:bg-raised data-[status=active]:text-fg',
                 '[&[data-status=active]_svg]:h-[22px] [&[data-status=active]_svg]:w-[22px]',
               )}
             >
               <NavIcon icon={item.icon} />
-              {#if item.to === '/' && showUnread}
+              {#if item.to === '/home' && showUnread}
                 <span
                   title={unreadTitle}
                   class={cn(
@@ -166,7 +228,7 @@
             type="button"
             onclick={() => void appsQuery.refetch()}
             aria-label="App links unavailable — retry"
-            class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms] hover:bg-hover"
+            class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms] dither-fill"
           >
             <TriangleAlert size={16} strokeWidth={1.5} />
           </button>
@@ -177,7 +239,7 @@
           type="button"
           onclick={nav.toggleCollapsed}
           aria-label="Expand navigation"
-          class="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+          class="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
         >
           <ChevronsRight size={16} strokeWidth={1.5} />
         </button>
@@ -206,30 +268,49 @@
     <SidebarAssistant />
     <div class="mt-4 h-px shrink-0 bg-line-subtle"></div>
 
-    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+    <!-- Room for the selected band at both edges — see the note above. -->
+    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-1">
       {#each sections as section (section.title)}
         <div>
           <div class="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             {section.title}
           </div>
-          <ul class="space-y-px">
+          <!-- `space-y-1.5` rather than `space-y-px`: the row treatment blooms
+               OUTWARD — the hover texture fades past the row's edge and the
+               active halo reaches further still — so rows a single pixel apart
+               had their fields touching, which reads as one continuous band
+               instead of a marked row. 6px is the smallest gap at which each
+               row's field resolves as its own. -->
+          <ul class="space-y-1.5">
             {#each section.items as item (item.to)}
               <li>
                 <a
+                  {@attach ditherSurface()}
                   href={item.to}
                   data-status={statusFor(item)}
                   class={cn(
-                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
-                    'data-[status=active]:bg-raised data-[status=active]:font-medium data-[status=active]:text-fg',
+                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:text-fg',
+                    // The selected tile is the MARK below, not a background on
+                    // this row — that is what lets it slide between rows.
+                    'relative data-[status=active]:font-medium data-[status=active]:text-fg',
                     '[&[data-status=active]_.nav-bar]:bg-accent [&[data-status=active]_.nav-ico]:text-fg',
                   )}
                 >
-                  <span class="nav-bar h-3.5 w-[3px] shrink-0 rounded-[2px] bg-transparent" aria-hidden="true"></span>
-                  <span class="nav-ico grid h-4 w-4 shrink-0 place-items-center text-muted">
+                  {#if statusFor(item)}
+                    <span
+                      aria-hidden="true"
+                      in:receiveMark={{ key: 'rail-mark' }}
+                      out:sendMark={{ key: 'rail-mark' }}
+                      class="absolute inset-0 rounded-md bg-raised"
+                      {@attach ditherSurface({ band: 6, always: () => true, selected: () => true })}
+                    ></span>
+                  {/if}
+                  <span class="nav-bar relative h-3.5 w-[3px] shrink-0 rounded-[2px] bg-transparent" aria-hidden="true"></span>
+                  <span class="nav-ico relative grid h-4 w-4 shrink-0 place-items-center text-muted">
                     <NavIcon icon={item.icon} />
                   </span>
-                  <span class="flex-1 truncate">{item.label}</span>
-                  {#if item.to === '/' && showUnread}
+                  <span class="relative flex-1 truncate">{item.label}</span>
+                  {#if item.to === '/home' && showUnread}
                     <!-- Spec §5: nav counts are muted (#8E877E) — not accent.
                          The unreadable case is the one exception: it is not a
                          count, and a muted "!" reads as decoration. -->
@@ -244,7 +325,7 @@
                     </span>
                   {/if}
                 </a>
-                {#if item.to === '/boards' && pathname.startsWith('/boards')}
+                {#if item.to === '/boards' && isUnder(pathname, '/boards')}
                   <BoardsSublist activePath={pathname} onNew={() => (creating = true)} onTeams={() => (teamsOpen = true)} />
                 {/if}
               </li>
@@ -270,7 +351,7 @@
         type="button"
         onclick={nav.toggleCollapsed}
         aria-label="Collapse navigation"
-        class="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+        class="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
       >
         <ChevronsLeft size={13} strokeWidth={1.5} />
       </button>

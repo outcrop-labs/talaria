@@ -64,7 +64,7 @@
     title={`${row.name} · ${row.kindLabel}`}
     class={cn(
       'flex w-full flex-col items-center gap-1.5 rounded-lg px-1 py-2.5 transition-colors',
-      selected ? 'bg-raised' : 'hover:bg-hover',
+      selected ? 'bg-raised' : 'dither-fill',
       active && !selected && 'bg-card',
       dropTarget && 'ring-1 ring-accent/60',
     )}

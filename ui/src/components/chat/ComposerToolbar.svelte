@@ -50,7 +50,7 @@
     }}
     class={cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
-      on ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+      on ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
       focusGold,
     )}
   >

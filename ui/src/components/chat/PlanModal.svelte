@@ -209,7 +209,7 @@
         <div>
           <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Ticket template</label>
           {#if templatesLoading}
-            <Skeleton class="h-9 w-full rounded-xl" delay={0.12} />
+            <Skeleton class="h-9 w-full rounded-xl" />
           {:else}
             <Select bind:value={templateId} size="sm" class="w-full">
               <option value="">Automatic (agent → board default)</option>

@@ -70,7 +70,7 @@
     aria-label="Configure columns"
     class={cn(
       'grid h-6 w-6 place-items-center rounded-md transition-colors',
-      open ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+      open ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
     )}
   >
     <SlidersHorizontal size={13} />
@@ -100,7 +100,7 @@
             drop(c.key)
           }}
           class={cn(
-            'relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 font-sans text-[13px] text-fg transition-colors hover:bg-hover',
+            'relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 font-sans text-[13px] text-fg transition-colors dither-fill',
             dragKey === c.key && 'opacity-40',
           )}
         >

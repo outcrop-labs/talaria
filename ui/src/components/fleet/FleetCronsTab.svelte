@@ -141,7 +141,7 @@
         <div class="flex flex-wrap gap-1.5">
           {#if query.isLoading}
             {#each Array.from({ length: 4 }) as _, i (i)}
-              <Skeleton class="h-6 w-20 rounded" delay={i * 0.12} />
+              <Skeleton class="h-6 w-20 rounded" />
             {/each}
           {/if}
           <!-- Target agents — the one filter-pill primitive (Chip). -->

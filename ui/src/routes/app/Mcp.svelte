@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageSurface from '@/components/app/PageSurface.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -52,31 +53,31 @@
 {#snippet serverSkeleton(i: number)}
   <div aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
     <div class="flex items-center gap-3">
-      <Skeleton class="h-9 w-9 shrink-0 rounded-md" delay={i * 0.15} />
+      <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
       <div class="min-w-0 flex-1 space-y-2">
         <div class="flex items-baseline gap-2">
-          <Skeleton class={`h-3.5 rounded-full ${titleW[i % titleW.length]}`} delay={i * 0.15} />
-          <Skeleton class="h-2.5 w-24 rounded-full" delay={i * 0.15 + 0.1} />
+          <Skeleton class={`h-3.5 rounded-full ${titleW[i % titleW.length]}`} />
+          <Skeleton class="h-2.5 w-24 rounded-full" />
         </div>
-        <Skeleton class={`h-2.5 rounded-full ${descW[i % descW.length]}`} delay={i * 0.15 + 0.1} />
+        <Skeleton class={`h-2.5 rounded-full ${descW[i % descW.length]}`} />
       </div>
-      <Skeleton class="h-5 w-20 shrink-0 rounded" delay={i * 0.15} />
+      <Skeleton class="h-5 w-20 shrink-0 rounded" />
     </div>
     <div class="mt-3 flex items-center gap-1.5">
       {#each pillW as w, j (j)}
-        <Skeleton class={`h-[22px] rounded ${w}`} delay={i * 0.15 + j * 0.06} />
+        <Skeleton class={`h-[22px] rounded ${w}`} />
       {/each}
     </div>
     <div class="mt-4 border-t border-line pt-3">
-      <Skeleton class="h-2.5 w-12 rounded-full" delay={i * 0.15 + 0.2} />
+      <Skeleton class="h-2.5 w-12 rounded-full" />
       <div class="mt-3 space-y-2.5">
         <div class="flex items-center gap-3">
-          <Skeleton class="h-2.5 w-14 rounded-full" delay={i * 0.15 + 0.25} />
-          <Skeleton class="h-3 w-40 rounded-full" delay={i * 0.15 + 0.3} />
+          <Skeleton class="h-2.5 w-14 rounded-full" />
+          <Skeleton class="h-3 w-40 rounded-full" />
         </div>
         <div class="flex items-center gap-3">
-          <Skeleton class="h-2.5 w-14 rounded-full" delay={i * 0.15 + 0.35} />
-          <Skeleton class="h-3 w-32 rounded-full" delay={i * 0.15 + 0.4} />
+          <Skeleton class="h-2.5 w-14 rounded-full" />
+          <Skeleton class="h-3 w-32 rounded-full" />
         </div>
       </div>
     </div>
@@ -92,11 +93,11 @@
   }}
 />
 
-<div class="h-full overflow-y-auto p-8">
+<PageSurface>
   <!-- Page content entrance: header row, then the registry region, rise in
        sequence (ANIMATIONS.md). The registry region rises as one child here;
        the card cascade inside it belongs to Materialize's content branch. -->
-  <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+  <div use:staggerIn class="space-y-6">
     <ViewHeader
       title="MCP"
       info="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it — down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory."
@@ -180,4 +181,4 @@
     {#if adding === 'marketplace'}<McpMarketplaceModal onClose={() => (adding = null)} onCustom={() => (adding = 'custom')} />{/if}
     {#if adding === 'custom'}<McpAddServerModal onClose={() => (adding = null)} />{/if}
   </div>
-</div>
+</PageSurface>

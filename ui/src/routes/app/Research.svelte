@@ -4,7 +4,7 @@
   import { Gauge, Trash2 } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Rail from '@/components/app/Rail.svelte'
   import Stage from '@/components/app/Stage.svelte'
@@ -73,6 +73,8 @@
     else void navigate('/research')
   }
   let question = $state('')
+  /** Measured composer height — what the content below reserves. */
+  let composerH = $state(0)
   const mayRun = useHasPerm('research.run')
   let mode = $state<ResearchMode>('brief')
   const sticky = useStickyAgent('research', () => agents)
@@ -138,12 +140,13 @@
       {#snippet skeleton(i)}
         <div aria-hidden="true" class="rounded-md px-2 py-1.5">
           <div class="flex h-5 items-center gap-2">
-            <Skeleton class="h-1.5 w-1.5 shrink-0 rounded-full" delay={i * 0.12} />
-            <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-11/12', 'w-1/2', 'w-2/3'][i % 5]}`} delay={i * 0.12} />
+            <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
+            <div class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></div>
+            <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-11/12', 'w-1/2', 'w-2/3'][i % 5]}`} />
           </div>
           <div class="mt-0.5 flex h-4 items-center gap-2 pl-3.5">
-            <Skeleton class="h-3 w-12 rounded" delay={i * 0.12 + 0.06} />
-            <Skeleton class="h-2.5 w-16 rounded-full" delay={i * 0.12 + 0.1} />
+            <Skeleton class="h-3 w-12 rounded" />
+            <Skeleton class="h-2.5 w-16 rounded-full" />
           </div>
         </div>
       {/snippet}
@@ -172,7 +175,7 @@
                   : []),
               ])}
             class={cn(
-              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover',
+              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors dither-fill',
               selectedId === r.id ? 'bg-card' : '',
             )}
           >
@@ -203,31 +206,41 @@
   </Rail>
 
   <Stage header={stageHeader}>
-    <div class="flex h-full min-h-0 flex-col">
-      <!-- Research cannot run without a provider; the surface still opens
-           and past runs still read. -->
+    <!-- The ask FLOATS over the content so the report and the zero state both
+         own the whole stage. Its measured height rides down as
+         `--research-composer`; the report column and the discussion's own chat
+         input each reserve that much. Measured, not a constant — the textarea
+         auto-grows. -->
+    <div class="relative flex h-full min-h-0 flex-col" style:--research-composer="{composerH}px">
+      <!-- Research cannot run without a provider; the surface still opens and
+           past runs still read. Renders nothing once a provider exists. -->
       <NoModelBump class="m-4 shrink-0" />
-      <div class="min-h-0 flex-1 overflow-y-auto">
+      <!-- flex-col so RunView's `flex min-h-0 flex-1` root fills it and its two
+           columns scroll independently. -->
+      <div class="flex min-h-0 flex-1 flex-col">
         {#if selectedId}
           <RunView runId={selectedId} />
         {:else}
-          <div class="grid h-full place-items-center p-8">
-            <EmptyState
-              icon="◎"
-              title="Research"
-              hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
-            />
-          </div>
+          <!-- Edge to edge: no centring wrapper. EmptyState's `full` variant
+               centres its own words and paints its vignette to its bounds. -->
+          <EmptyState
+            class="flex-1"
+            icon="◎"
+            title="Research"
+            hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
+          />
         {/if}
       </div>
 
-      <!-- The ask lives where every other conversation input lives — the
-           bottom of the stage. Depth and acting agent ride along as
-           composer pills, tier-picker style. -->
-      <div class="px-6 pb-6 pt-2">
+      <!-- pointer-events-none gutter, auto panel: the float spans the stage so
+           the panel can centre in it, and without that split the transparent
+           margin would swallow clicks on the report behind it. Opaque ground,
+           or the report shows through beneath the panel. -->
+      <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6 pt-2">
+        <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
         <!-- §7 composer anatomy: panel body, STRONG hairline, radius 8,
              p-2, matte float shadow — with the prompt in a ground inset. -->
-        <div class="mx-auto w-full max-w-[var(--chat-content-max-width)] rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
+        <div class="pointer-events-auto rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
           <div class="flex items-end gap-2">
             <div class="relative min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1">
               <Textarea
@@ -267,10 +280,11 @@
               }))}
             />
             {#if starting}
-              <span class="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><GeneratingDots /></span>
+              <span class="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
             {/if}
           </div>
           {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
+        </div>
         </div>
       </div>
     </div>

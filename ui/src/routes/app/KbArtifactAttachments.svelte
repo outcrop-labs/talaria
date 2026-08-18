@@ -26,19 +26,19 @@
 </script>
 
 {#if loading}
-  <div aria-hidden="true" class="mx-auto max-w-[46rem] px-6 pb-10">
+  <div aria-hidden="true" class="mx-auto max-w-[var(--read-width)] px-6 pb-10">
     <div class="border-t border-line-subtle pt-4">
       <div class="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         <Paperclip size={12} /> Attachments
       </div>
       <div class="flex flex-wrap gap-2">
         <Skeleton class="h-7 w-36" />
-        <Skeleton class="h-7 w-28" delay={0.12} />
+        <Skeleton class="h-7 w-28" />
       </div>
     </div>
   </div>
 {:else}
-  <div class="mx-auto max-w-[46rem] px-6 pb-10">
+  <div class="mx-auto max-w-[var(--read-width)] px-6 pb-10">
     <div class="border-t border-line-subtle pt-4">
       <div class="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         <Paperclip size={12} /> Attachments

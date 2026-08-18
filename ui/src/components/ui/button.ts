@@ -1,6 +1,24 @@
 import { cn } from '@/lib/cn'
 import { controlSizes, focusRing, type ControlSize } from './control'
 
+/**
+ * Button sizes: the shared control scale, plus one of its own.
+ *
+ * `xs` is NOT in `ControlSize`, deliberately. That union is the ROW-ALIGNMENT
+ * contract — Button, Input, Select and Combobox all draw their height from it
+ * so controls on one line agree — and an xs button does not belong on a form
+ * row. It is the compact chrome affordance: the 10px mono label in a toolbar,
+ * a tree header, a panel corner.
+ *
+ * It exists because the app had already invented it 58 times. A census of raw
+ * `<button>` elements that re-roll this primitive found 58 of 62 using
+ * `text-[10px]` with `px-2`, against a primitive whose smallest was
+ * `text-[11px] px-3`. People do not hand-roll a shared component for fun; they
+ * do it when it cannot say what they need. This is the missing size, so those
+ * call sites can come home.
+ */
+export type ButtonSize = ControlSize | 'xs'
+
 export type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger' | 'danger-outline' | 'accent-soft' | 'link'
 
 const base = cn(
@@ -43,15 +61,51 @@ const variants: Record<ButtonVariant, string> = {
   ),
 }
 
-const sizes: Record<ControlSize, string> = {
+const sizes: Record<ButtonSize, string> = {
+  // Height set directly rather than from `controlSizes`, because this size is
+  // deliberately not part of that scale.
+  xs: 'h-6 px-2 text-[10px]',
   sm: `${controlSizes.sm} px-3 text-[11px]`,
   md: `${controlSizes.md} px-4 text-[11px]`,
 }
 
 /** Shared button styling — reuse this on <a>/<label> etc. so links match buttons
  *  without duplicating the classes (see the Google sign-in anchor). */
-export function buttonClasses(opts?: { variant?: ButtonVariant; size?: ControlSize; className?: string | null }): string {
+export function buttonClasses(opts?: { variant?: ButtonVariant; size?: ButtonSize; className?: string | null }): string {
   const { variant = 'primary', size = 'md', className } = opts ?? {}
   // Variant AFTER size so `link` can restore the sans prose voice.
   return cn(base, sizes[size], variants[variant], className)
 }
+
+/**
+ * Split a call site's classes into the ones that position the control inside
+ * its PARENT and the ones that style the control itself.
+ *
+ * A bloomed button is wrapped in a span so the halo canvas has something to
+ * anchor to, and that wrapper becomes the flex/grid child. `ml-auto` on the
+ * inner button then aligns nothing, because the button is alone inside a
+ * shrink-wrapped span — the class is still applied, still valid, and silently
+ * does nothing. That is the worst kind of regression: no error, just a control
+ * that stopped sitting where it used to.
+ *
+ * So the layout half moves to the wrapper and the rest stays on the button.
+ * The list is deliberately an ALLOWLIST of properties that only mean anything
+ * relative to a parent — margins, self-alignment, flex-item sizing, order,
+ * width. Padding, colour and typography are the control's own business and
+ * must not move, or the wrapper grows and pushes the button off its baseline.
+ */
+export function splitLayoutClasses(className?: string | null): { outer: string; inner: string } {
+  if (!className) return { outer: '', inner: '' }
+  const outer: string[] = []
+  const inner: string[] = []
+  for (const cls of className.split(/\s+/).filter(Boolean)) {
+    // Strip any variant prefixes (sm:, hover:, dark:) before matching so
+    // `sm:ml-auto` is recognised as the margin it is.
+    const bare = cls.slice(cls.lastIndexOf(':') + 1)
+    ;(LAYOUT_CLASS.test(bare) ? outer : inner).push(cls)
+  }
+  return { outer: outer.join(' '), inner: inner.join(' ') }
+}
+
+const LAYOUT_CLASS =
+  /^-?(m[trblxy]?-|self-|justify-self-|order-|basis-|grow(-|$)|shrink(-|$)|flex-(1|auto|initial|none)$|w-(full|auto|px|\d|\[)|col-span-|row-span-)/

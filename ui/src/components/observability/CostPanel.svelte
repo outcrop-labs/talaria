@@ -68,28 +68,28 @@
         <div aria-hidden="true" class="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {#each [0, 1, 2, 3] as i (i)}
             <div class="rounded-lg border border-line bg-panel p-5">
-              <Skeleton class="h-2.5 w-20 rounded-full" delay={i * 0.1} />
-              <Skeleton class={`mt-2.5 h-6 rounded ${['w-16', 'w-20', 'w-14', 'w-16'][i]}`} delay={i * 0.1 + 0.06} />
-              <Skeleton class="mt-2 h-2.5 w-24 rounded-full" delay={i * 0.1 + 0.12} />
+              <Skeleton class="h-2.5 w-20 rounded-full" />
+              <Skeleton class={`mt-2.5 h-6 rounded ${['w-16', 'w-20', 'w-14', 'w-16'][i]}`} />
+              <Skeleton class="mt-2 h-2.5 w-24 rounded-full" />
             </div>
           {/each}
         </div>
         <div aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
           <div class="mb-4 flex items-center justify-between">
             <Skeleton class="h-3 w-32 rounded-full" />
-            <Skeleton class="h-2.5 w-6 rounded" delay={0.1} />
+            <Skeleton class="h-2.5 w-6 rounded" />
           </div>
           <div class="divide-y divide-line">
             {#each [0, 1, 2, 3, 4] as i (i)}
               <div class="flex items-center gap-3 py-3">
-                <Skeleton class="h-6 w-6 shrink-0 rounded-full" delay={i * 0.1} />
+                <Skeleton class="h-6 w-6 shrink-0 rounded-full" />
                 <span class="min-w-0 flex-1 space-y-1.5">
-                  <Skeleton class={`h-3 rounded-full ${['w-24', 'w-32', 'w-20'][i % 3]}`} delay={i * 0.1} />
-                  <Skeleton class={`h-2.5 rounded-full ${['w-16', 'w-24', 'w-28'][i % 3]}`} delay={i * 0.1 + 0.08} />
+                  <Skeleton class={`h-3 rounded-full ${['w-24', 'w-32', 'w-20'][i % 3]}`} />
+                  <Skeleton class={`h-2.5 rounded-full ${['w-16', 'w-24', 'w-28'][i % 3]}`} />
                 </span>
-                <Skeleton class="h-3 w-14 rounded" delay={i * 0.1} />
-                <Skeleton class="h-3 w-14 rounded" delay={i * 0.1 + 0.05} />
-                <Skeleton class="h-3 w-20 rounded" delay={i * 0.1 + 0.1} />
+                <Skeleton class="h-3 w-14 rounded" />
+                <Skeleton class="h-3 w-14 rounded" />
+                <Skeleton class="h-3 w-20 rounded" />
               </div>
             {/each}
           </div>
@@ -165,7 +165,7 @@
         <ul class="divide-y divide-line">
           {#each perAgent as a (a.agentModel)}
             {@const d = agentLabel(a.agentModel)}
-            <li class="flex items-center gap-3 py-3 transition-colors hover:bg-hover">
+            <li class="flex items-center gap-3 py-3 transition-colors dither-fill">
               <Avatar name={d.label} class="h-6 w-6" />
               <span class="min-w-0 flex-1">
                 <span class="block truncate font-sans text-sm text-fg">{d.label}</span>

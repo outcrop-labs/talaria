@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { confirm } from '@/components/ui/confirm.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
@@ -76,9 +77,9 @@
     {#if col.auto}<span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">auto</span>{/if}
     <span class="ml-auto"></span>
     {#if !col.auto}
-      <button type="button" onclick={() => void del()} class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
+      <Button variant="ghost" size="xs" class="hover:text-danger" onclick={() => void del()}>
         Delete
-      </button>
+      </Button>
     {/if}
   </div>
   {#if col.description}<div class="mt-0.5 text-xs text-muted">{col.description}</div>{/if}
@@ -93,7 +94,7 @@
       {#if !bindingsAll && pickersPending}
         <div class="flex flex-col gap-2 sm:flex-row">
           {#each [0, 1, 2] as i (i)}
-            <Skeleton class="h-8 min-w-0 flex-1" delay={i * 0.12} />
+            <Skeleton class="h-8 min-w-0 flex-1" />
           {/each}
         </div>
       {/if}
