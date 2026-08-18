@@ -104,6 +104,75 @@ engineering-facing tracker.
     textual uploads contribute contents to prompts in chat + channel paths.
 
 ## High-value, ready to pick up
+- **UI streamlining audit (2026-08-17) — what is left after the first pass.**
+  Four patterns were swept; these are the findings NOT acted on, with the
+  reason, so nobody re-derives the survey:
+  - **`?? []` straight off a query — 42 sites.** The empty-vs-broken doctrine
+    (`listQuery`) is not applied everywhere. NOT a blanket defect: Comms, for
+    one, deliberately keeps four separate reads and gives each rail section its
+    own `RailFailure`. Each site needs the judgment "would this surface print a
+    confident zero over a 500?", which is per-site work, not a sweep.
+  - **Hand-rolled fetching in components** — `RefPicker.svelte` and
+    `ArtifactsDriveImportModal.svelte` still load with `$state` + `$effect` and
+    their own loading/error strings, the pattern the role library was moved off
+    of. Both are small and both are pickers rather than views, so the win is
+    consistency rather than a bug.
+  - **Labeled create buttons left deliberately.** `SublistFooter`'s "New board"
+    sits beside "Manage teams" in a nav menu — a menu row is not a toolbar, and
+    a lone `+` next to a labeled sibling is worse than both being labeled.
+    `AgendaPanel`'s "New event" is a text link, not an icon button.
+    `ArtifactSheetView`'s "Row"/"Column" are two different actions in one place
+    and MUST stay labeled. `Mcp`'s "Browse marketplace" is a destination, not a
+    create.
+  - **Raw `<input class=…>` instead of the `Input` primitive** in both secrets
+    panels (the fields around the entries editor). Primitive-first says these
+    should be `<Input>`; they are wrapped in `<label>` so they are at least
+    correctly associated, which is why they do not appear in the 56 a11y label
+    warnings. Cosmetic, contained, easy.
+- **Studio onto the Rail archetype** — the last of the five list+detail
+  implementations. Templates, the agent role library and the Teams dialog now
+  share `components/ui/LibraryPane.svelte`; Studio is deliberately NOT on it,
+  because it is the other archetype: it picks *who you are building for*
+  beside a full authoring workspace, so it wants `Rail`/`RailRow` (which
+  Comms, Knowledge and Artifacts already use) rather than a fixed-height
+  library panel. Not converted in the same pass because it is a 421-line
+  authoring surface whose `data-stagger-items="aside > *, main > *"` contract
+  and page-scroll layout both change with the frame, and that wants a click
+  test. See the archetype table in docs/UI-CONVENTIONS.md.
+- **UI hardening backlog (surveyed 2026-08-17)** — measured, not guessed:
+  `npm run typecheck` reports **0 errors, 125 warnings** across 53 files.
+  Sorted by whether it is a real defect:
+  - **56 × `a11y_label_has_associated_control`** — REAL defect. The label is
+    not tied to its control, so clicking it does not focus the field and a
+    screen reader announces nothing. Densest in `CreateAgentModal` (10),
+    the Admin panels (`AdminOrgGoogleTargets`, `AdminGithubPanel`,
+    `AdminEmailPanel`, 5-6 each), `McpAddServerModal` (5). Fix with a real
+    `for`/`id` pair or by wrapping the control — not by deleting the label.
+  - **~15 interaction a11y** — `a11y_no_static_element_interactions` (9),
+    `a11y_interactive_supports_focus` (3), `a11y_click_events_have_key_events`
+    (3), plus a stray `a11y_no_noninteractive_tabindex`. Click handlers on
+    divs that should be buttons; keyboard users cannot reach them.
+  - **50 × `state_referenced_locally`** — NOT bugs, checked by sampling. It is
+    the intentional pattern: seed local edit state from a prop on a component
+    the caller KEYS, so a new selection remounts fresh
+    (`TemplateDetail.svelte` documents exactly this). Do not "fix" these into
+    `$derived` — that would break editing. The work here is to make them
+    stop reporting (an explicit `svelte-ignore` with the reason on each, or a
+    shared helper) so the warning count means something again. 50 benign
+    warnings are precisely where a real one hides, which is the shape of
+    failure that cost a day in `docs/AGENT-NETWORKING.md`.
+  - **Dense views still owed the tab treatment** — the principle already
+    applied to Agents/MCP/Scheduled tasks, not yet to what is left:
+    `KbDocEditor` (702 lines), `Comms` (625), `SecretsVault` (568),
+    `boards/Board` (540), `Artifacts` (500). Long-scroll views whose options
+    want grouping into tabbed sections with their own routes.
+  - **Visual polish** — spacing, hierarchy, and the empty/loading/error states
+    across the Mercury system. Unscoped; the look-and-feel layer rather than
+    structure or correctness.
+  - NOT debt, recorded so it is not "fixed" by mistake: the `?f=`/`?a=` query
+    params in `Artifacts.svelte` are the deliberate selection-within-place
+    design (`/artifacts/<place>` is the path; folder and open file are
+    selection within it). Routing migration is complete.
 - ✅ **Elevated admin assistants (2026-07-09)** — admins can promote an admin's
   personal assistant to org-wide view/edit: all boards (editor-level, incl.
   governance), all non-DM channels, implicit editor on org-visible KB docs +

@@ -24,7 +24,13 @@
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { useConversations } from '@/lib/conversations.svelte'
-  import { readCommsSelection, restorableSelection, writeCommsSelection } from '@/lib/comms-selection'
+  import {
+    commsSelectionFromPath,
+    isCommsPath,
+    readCommsSelection,
+    restorableSelection,
+    writeCommsSelection,
+  } from '@/lib/comms-selection'
   import {
     addChannelAgent,
     addChannelMember,
@@ -83,12 +89,13 @@
   // The tag is a segment because the two kinds are different things, and a
   // one-segment id would be ambiguous between a channel and an agent model
   // until something resolved it.
-  const sel = $derived.by((): Sel => {
-    const [, , kind, one, two] = route.pathname.split('/')
-    if (kind === 'channel' && one) return { t: 'channel', id: decodeURIComponent(one) }
-    if (kind === 'agent' && one) return { t: 'agent', model: decodeURIComponent(one), conversationId: two ? decodeURIComponent(two) : null }
-    return null
-  })
+  const sel = $derived(commsSelectionFromPath(route.pathname))
+  // AM I STILL IN COMMS? `route.pathname` flips the instant you click a nav rail
+  // item, but this component is not destroyed until afterwards — so for a beat
+  // its effects run while the URL already points somewhere else. Every effect
+  // below that NAVIGATES has to bail on this, or it fights the router. See
+  // `isCommsPath` for the bug this fixes; it read as a dead nav rail.
+  const onComms = $derived(isCommsPath(route.pathname))
   const searchT = $derived(searchParams.get('t') === 'agent' ? ('agent' as const) : undefined)
   const setSel = (next: Sel, opts: { replace?: boolean } = {}) => {
     const replace = opts.replace
@@ -157,6 +164,10 @@
   // reachable, so default to the first agent's fresh thread (§7 composer)
   // instead of the first channel; no agents → channel default as usual.
   $effect(() => {
+    // On the way out this view still runs, and everything below navigates.
+    // Answering "nothing is selected" about a page you are no longer on drags
+    // the user back here; see `onComms`.
+    if (!onComms) return
     if (!sel) {
       const saved = readCommsSelection()
       // Both rosters gate the restore, and only when the saved pick needs them:

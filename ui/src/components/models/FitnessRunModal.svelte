@@ -117,7 +117,7 @@
 
     <div>
       <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Tiers</div>
-      <div class="space-y-2 rounded-xl border border-line-subtle p-3">
+      <div class="space-y-2 rounded-xl border border-line-subtle bg-surface p-3">
         {#each Object.entries(TIER_META) as [id, meta] (id)}
           <div>
             <Checkbox
@@ -195,7 +195,7 @@
     {/if}
 
     <!-- THE PRICE, BEFORE THE BUTTON. -->
-    <div class="rounded-xl border border-line-subtle p-3">
+    <div class="rounded-xl border border-line-subtle bg-surface p-3">
       {#if tiers.length === 0}
         <p class="font-sans text-xs text-muted">Pick at least one tier.</p>
       {:else if estimateQuery.isPending}

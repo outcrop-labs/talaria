@@ -25,14 +25,12 @@
 // SESSION-SCOPED, per tab: "where I was" is true of a sitting, not of a browser
 // profile, and two tabs open on two channels should not fight over one key.
 
+import { isUnder } from './route-tabs'
+import { viewMemory } from './view-memory'
+
 export type CommsSelection =
   | { t: 'channel'; id: string }
   | { t: 'agent'; model: string; conversationId: string | null }
-
-const KEY = 'talaria:comms-selection'
-
-let fallback: CommsSelection | null = null
-let loaded = false
 
 function parse(raw: unknown): CommsSelection | null {
   if (!raw || typeof raw !== 'object') return null
@@ -44,27 +42,18 @@ function parse(raw: unknown): CommsSelection | null {
   return null
 }
 
+// `x` rather than `conversationId` in storage is the existing on-disk shape;
+// keep it, or every open tab's memory is silently discarded on upgrade.
+const memory = viewMemory<CommsSelection>('talaria:comms-selection', parse, (sel) =>
+  sel.t === 'channel' ? { t: 'channel', id: sel.id } : { t: 'agent', model: sel.model, x: sel.conversationId },
+)
+
 export function readCommsSelection(): CommsSelection | null {
-  if (loaded) return fallback
-  loaded = true
-  try {
-    const raw = window.sessionStorage.getItem(KEY)
-    fallback = raw ? parse(JSON.parse(raw)) : null
-  } catch {
-    /* unreadable or malformed: no memory is a correct memory */
-  }
-  return fallback
+  return memory.read()
 }
 
 export function writeCommsSelection(sel: CommsSelection): void {
-  fallback = sel
-  const stored =
-    sel.t === 'channel' ? { t: 'channel', id: sel.id } : { t: 'agent', model: sel.model, x: sel.conversationId }
-  try {
-    window.sessionStorage.setItem(KEY, JSON.stringify(stored))
-  } catch {
-    /* private mode: the in-memory mirror still serves this tab */
-  }
+  memory.write(sel)
 }
 
 /**
@@ -93,8 +82,51 @@ export function restorableSelection(
   return saved
 }
 
+/**
+ * Is this path inside Comms at all?
+ *
+ * THE REASON THIS IS A FUNCTION AND NOT AN INLINE CHECK. `route.pathname` flips
+ * the instant a nav rail item is clicked, while the view that is leaving stays
+ * mounted for a beat afterwards — so its effects run at least once against a URL
+ * that already points elsewhere. Comms' default-selection effect navigates, and
+ * an effect that navigates while answering a question about a page you are no
+ * longer on drags you back to it.
+ *
+ * That was a live bug and it read as a broken nav rail: leaving Comms recomputed
+ * the selection to null, the effect dutifully restored the remembered channel,
+ * and the click was undone. It is a race against unmount, so it did not happen
+ * every time — you clicked the same rail item two or three times before it took.
+ */
+export function isCommsPath(pathname: string): boolean {
+  return isUnder(pathname, '/comms')
+}
+
+/**
+ * The selection encoded in a Comms URL, or null if there isn't one — INCLUDING
+ * when the path is not Comms' at all.
+ *
+ * The path is the selection and it is discriminated, because a bare one-segment
+ * id would be ambiguous between a channel and an agent model until something
+ * resolved it:
+ *
+ *   /comms/channel/<id>
+ *   /comms/agent/<model>[/<thread>]
+ *
+ * The `/comms` base check is load-bearing rather than defensive: without it any
+ * path whose second segment reads `channel` or `agent` parses as a Comms
+ * selection, and the view is still mounted while the URL is someone else's.
+ */
+export function commsSelectionFromPath(pathname: string): CommsSelection | null {
+  if (!isCommsPath(pathname)) return null
+  const [, , kind, one, two] = pathname.split('/')
+  if (kind === 'channel' && one) return { t: 'channel', id: decodeURIComponent(one) }
+  if (kind === 'agent' && one) {
+    return { t: 'agent', model: decodeURIComponent(one), conversationId: two ? decodeURIComponent(two) : null }
+  }
+  return null
+}
+
 /** Tests only: drop the remembered selection and the load latch. */
 export function resetCommsSelection(): void {
-  fallback = null
-  loaded = false
+  memory.reset()
 }

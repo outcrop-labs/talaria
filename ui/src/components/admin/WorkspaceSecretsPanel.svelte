@@ -16,6 +16,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import SecretEntriesEditor, { emptySecretEntry, type SecretEntry } from '@/components/ui/SecretEntriesEditor.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -54,7 +55,7 @@
   let note = $state('')
   let relay = $state(false)
   let hosts = $state('')
-  let entries = $state<Array<{ key: string; label: string; value: string }>>([{ key: '', label: '', value: '' }])
+  let entries = $state<SecretEntry[]>([emptySecretEntry()])
 
   const reset = () => {
     name = ''
@@ -62,7 +63,7 @@
     note = ''
     relay = false
     hosts = ''
-    entries = [{ key: '', label: '', value: '' }]
+    entries = [emptySecretEntry()]
   }
 
   const create = async () => {
@@ -240,35 +241,7 @@
             <input bind:value={note} placeholder="Pushing to the release repo" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
           </label>
 
-          <!-- ONE ENTRY OR MANY, and the form does not ask you to decide first.
-               A doc with one entry IS a single secret. -->
-          <p class="mt-3 font-mono text-[10px] text-ink-dim">entries</p>
-          {#each entries as e, i (i)}
-            <div class="mt-1 grid gap-1 sm:grid-cols-[1fr_1fr_2fr_auto]">
-              <input bind:value={e.key} placeholder="github_pat" class="rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg" />
-              <input bind:value={e.label} placeholder="GitHub token" class="rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
-              <input
-                bind:value={e.value}
-                type="password"
-                autocomplete="off"
-                placeholder="value — stored sealed, never shown again"
-                class="rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
-              />
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={entries.length === 1}
-                onclick={() => (entries = entries.filter((_, n) => n !== i))}
-                title="Remove this entry"
-              >
-                <X size={13} aria-hidden="true" />
-              </Button>
-            </div>
-          {/each}
-          <Button size="sm" variant="ghost" class="mt-1" onclick={() => (entries = [...entries, { key: '', label: '', value: '' }])}>
-            <Plus size={13} aria-hidden="true" />
-            Another entry
-          </Button>
+          <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" />
 
           <label class="mt-3 block font-sans text-xs text-muted">
             Spendable at (optional) — hosts, space or comma separated

@@ -15,6 +15,12 @@
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { navigate } from '@/router'
   import { fade, slide } from '@/lib/motion'
+  import { isUnder } from '@/lib/route-tabs'
+  import {
+    readKnowledgeSelection,
+    restorableKnowledgeSelection,
+    writeKnowledgeSelection,
+  } from '@/lib/knowledge-selection'
   import {
     createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, updateSpace, useDoc, useDocs, useSpaces,
     type KbDocMeta, type KbSpace,
@@ -61,10 +67,13 @@
   const spaceId = $derived(pathSpace || idParam('space') || idParam('s') || null)
   const docId = $derived(pathDoc || idParam('doc') || idParam('d') || null)
   // One navigation per selection change — space + doc move together.
-  const setLoc = (space: string | null, doc: string | null) => {
-    if (space && doc) void navigate('/knowledge/:space/:doc', { params: { space, doc } })
-    else if (space) void navigate('/knowledge/:space', { params: { space } })
-    else void navigate('/knowledge')
+  // `replace` for housekeeping — restoring where you were is not a place you
+  // navigated to, and pushing it would make Back walk your own bookkeeping.
+  const setLoc = (space: string | null, doc: string | null, opts: { replace?: boolean } = {}) => {
+    const { replace } = opts
+    if (space && doc) void navigate('/knowledge/:space/:doc', { params: { space, doc }, replace })
+    else if (space) void navigate('/knowledge/:space', { params: { space }, replace })
+    else void navigate('/knowledge', { replace })
   }
   const setSpaceId = (id: string | null) => setLoc(id, null)
   const setDocId = (id: string | null) => setLoc(spaceId, id)
@@ -83,8 +92,46 @@
   // bug: `?doc=<id>` for a document in the second space rendered the first
   // space's overview and quietly dropped the request.
   const permalinkDoc = useDoc(() => (!pathSpace && docId ? docId : null))
+  // Still on Knowledge? This view outlives the click that leaves it, and the
+  // effect below navigates — without this it reads the NEXT view's pathname as
+  // "Knowledge with no space", canonicalises to the first space, and drags you
+  // back. Same bug the nav rail showed on Comms; see `isUnder`.
+  const onKnowledge = $derived(isUnder(route.pathname, '/knowledge'))
+
+  // WHERE YOU WERE, so leaving and coming back through the nav rail does not
+  // land you on the first space. Only while genuinely here — a leaving view
+  // runs its effects once against the next view's URL, and writing there would
+  // record an empty selection over a good memory.
   $effect(() => {
+    if (onKnowledge && spaceId) writeKnowledgeSelection({ spaceId, docId })
+  })
+
+  // RESTORED ONCE, ON ARRIVAL — latched rather than keyed off a bare URL,
+  // because bare is reachable from inside the view too (deleting the space you
+  // were in navigates to `/knowledge`), and restoring there would undo the
+  // thing the user just did. Arriving IS a mount, so the latch is the honest
+  // test. An explicit link or permalink outranks the memory and just spends it.
+  let restored = false
+  $effect(() => {
+    if (!onKnowledge || restored) return
+    if (pathSpace || docId) {
+      restored = true
+      return
+    }
+    // Validating against a list that has not arrived would discard a good
+    // memory and fall straight through to the first space.
+    if (spacesQuery.isLoading) return
+    restored = true
+    const saved = restorableKnowledgeSelection(readKnowledgeSelection(), { spaceIds: spaces.map((s) => s.id) })
+    if (saved) setLoc(saved.spaceId, saved.docId, { replace: true })
+  })
+
+  $effect(() => {
+    if (!onKnowledge) return
     if (pathSpace) return // already canonical
+    // Let the restore above answer first; otherwise the first-space default
+    // wins the race and there is nothing left for the memory to restore.
+    if (!restored) return
     const home = permalinkDoc.data?.spaceId ?? (docId ? null : spaces[0]?.id)
     if (!home) return
     if (docId) void navigate('/knowledge/:space/:doc', { params: { space: home, doc: docId }, replace: true })

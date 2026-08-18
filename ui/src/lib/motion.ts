@@ -216,7 +216,11 @@ export function markCrossfade(duration = 200) {
 //   list/row reveal   slide (height) or fade, ≤150ms
 //   reorder/move      animate:flip={LIST} on the keyed {#each} items
 //   banners           slide
-//   view changes      data-view-transition on the nav link (CSS in styles.css)
+//   view changes      NOTHING — deliberately. A cross-view transition paints a
+//                     static snapshot while the incoming view is still loading,
+//                     so the live DOM lands in one jump when it ends. The
+//                     content's own entrance (Materialize / staggerIn) is the
+//                     animation; see the note in styles.css.
 // Round-3 tempo: round 2 was mechanically correct and still read as "stupid
 // fast". These are the slowest values that stay calm — entrances you can
 // actually watch, exits that don't make anyone wait.

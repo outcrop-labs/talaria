@@ -5,10 +5,11 @@
   import AgentConfigForm from '@/components/fleet/AgentConfigForm.svelte'
   import CronsPanel from '@/components/fleet/CronsPanel.svelte'
   import McpTab from '@/components/fleet/McpTab.svelte'
-  import MemoryTab from '@/components/fleet/MemoryTab.svelte'
+  import MemoryPanel from '@/components/memory/MemoryPanel.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
   import ReadOnlyConfig from '@/components/fleet/ReadOnlyConfig.svelte'
   import SecretsTab from '@/components/fleet/SecretsTab.svelte'
-  import SkillsTab from '@/components/fleet/SkillsTab.svelte'
+  import SkillsLibrary from '@/components/skills/SkillsLibrary.svelte'
   import SummaryTab from '@/components/fleet/SummaryTab.svelte'
   import VersionsTab from '@/components/fleet/VersionsTab.svelte'
   import type { AgentDef, LlmEndpoint } from '@/lib/fleet-defs'
@@ -66,8 +67,22 @@
               <ReadOnlyConfig {def} />
             {/if}
           {/if}
-          {#if tab === 'skills'}<SkillsTab slug={def.slug} {isAdmin} />{/if}
-          {#if tab === 'memory'}<MemoryTab {def} {isAdmin} />{/if}
+          {#if tab === 'skills'}<SkillsLibrary owner={def.slug} ownerLabel={def.displayName ?? def.model} canEdit={isAdmin} surface="well" class="h-[28rem]" />{/if}
+          {#if tab === 'memory'}
+            {#if def.managed}
+              <MemoryPanel
+                id={def.id}
+                label={def.displayName ?? def.model}
+                canEdit={isAdmin}
+                nested
+                surface="well"
+                note="It lives in the agent's own container."
+                museContext={`The memory of the "${def.slug}" agent (${def.role ?? def.department}).`}
+              />
+            {:else}
+              <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
+            {/if}
+          {/if}
           {#if tab === 'crons'}<CronsPanel agentId={def.id} />{/if}
           {#if tab === 'secrets'}
             {#if isAdmin}<SecretsTab agentId={def.id} agentModel={def.model} agentLabel={def.displayName ?? def.model} />{:else}<div class="text-sm text-muted">Admins only.</div>{/if}

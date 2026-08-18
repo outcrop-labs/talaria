@@ -104,7 +104,7 @@
       {#if !results}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {#each Array.from({ length: 9 }, (_, i) => i) as i (i)}
-            <div class="rounded-lg border border-line-subtle p-4">
+            <div class="rounded-lg border border-line-subtle bg-surface p-4">
               <Skeleton class="h-3.5 w-32 rounded-full" delay={i * 0.08} />
               <Skeleton class="mt-2 h-2.5 w-24 rounded-full" delay={i * 0.08 + 0.06} />
               <Skeleton class="mt-3 h-2.5 w-full rounded-full" delay={i * 0.08 + 0.12} />

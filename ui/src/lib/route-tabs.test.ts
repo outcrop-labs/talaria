@@ -2,7 +2,7 @@
 // hand-rolled versions would give six answers to "what does /models/nonsense
 // do". These pin the one answer — the home tab, always something real.
 import { describe, expect, it } from 'vitest'
-import { pathId, tabFromPath } from './route-tabs'
+import { pathId, tabFromPath, isUnder } from './route-tabs'
 
 const TABS = ['models', 'pricing', 'fitness'] as const
 
@@ -80,5 +80,29 @@ describe('pathId', () => {
     // Deliberately NOT validated as a uuid: an id may name a row that was
     // deleted, and the query that loads it already has a not-found story.
     expect(pathId('/plan/not-a-uuid', '/plan')).toBe('not-a-uuid')
+  })
+})
+
+// ── isUnder: the guard that keeps a leaving view from navigating you back ────
+
+describe('isUnder', () => {
+  it('matches the view itself and everything beneath it', () => {
+    expect(isUnder('/comms', '/comms')).toBe(true)
+    expect(isUnder('/comms/channel/c-1', '/comms')).toBe(true)
+    expect(isUnder('/knowledge/space-1/doc-2', '/knowledge')).toBe(true)
+  })
+
+  it('rejects other views, which is the whole point', () => {
+    // The bug this guard exists for: a view that is leaving still runs its
+    // effects against the NEXT view's pathname, and if those effects navigate,
+    // a wrong answer here drags the user back. It reads as a broken nav rail —
+    // the same item wants two or three clicks before it moves.
+    expect(isUnder('/agents', '/comms')).toBe(false)
+    expect(isUnder('/', '/comms')).toBe(false)
+  })
+
+  it('rejects prefix look-alikes, which a bare startsWith would accept', () => {
+    expect(isUnder('/commsomething', '/comms')).toBe(false)
+    expect(isUnder('/knowledgebase', '/knowledge')).toBe(false)
   })
 })

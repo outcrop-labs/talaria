@@ -111,7 +111,7 @@
             <Users size={11} /> Manage access
           </button>
         </div>
-        <div class="rounded-xl border border-line-subtle p-3">
+        <div class="rounded-xl border border-line-subtle bg-surface p-3">
           <div class="flex items-start gap-2.5">
             <span class="mt-0.5 shrink-0 text-muted">
               {#if access.visibility === 'public'}<Globe size={14} />{:else if access.visibility === 'org'}<Building2 size={14} />{:else}<Lock size={14} />{/if}

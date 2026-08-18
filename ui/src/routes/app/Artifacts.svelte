@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { tabFromPath } from '@/lib/route-tabs'
+  import { isUnder, tabFromPath } from '@/lib/route-tabs'
+  import {
+    readArtifactsSelection,
+    restorableArtifactsSelection,
+    writeArtifactsSelection,
+  } from '@/lib/artifacts-selection'
   import { searchParams } from 'sv-router'
   import { navigate, route } from '@/router'
   import { useQueryClient } from '@tanstack/svelte-query'
@@ -93,6 +98,47 @@
     if (id) searchParams.set('f', id)
     else searchParams.delete('f')
   }
+
+  // Still here? This view outlives the click that leaves it, so both effects
+  // below have to stop answering questions about a page the user has left —
+  // see `isUnder`, and the nav-rail bug it is named for.
+  const onArtifacts = $derived(isUnder(route.pathname, '/artifacts'))
+
+  // WHERE YOU WERE, so leaving and coming back through the nav rail does not
+  // land you at the root of "My files". All three parts travel together: the
+  // right place with the wrong folder is its own kind of lost.
+  $effect(() => {
+    if (onArtifacts) writeArtifactsSelection({ place, folderId, activeId })
+  })
+
+  // RESTORED ONCE, ON ARRIVAL. Latched on mount rather than keyed off a bare
+  // URL, and here that distinction is load-bearing rather than theoretical:
+  // this view's own "My files" navigates to exactly `/artifacts` with nothing
+  // selected, so a URL-shaped test would fire on it and drag the user back into
+  // the folder they had just stepped out of. Arriving IS a mount.
+  let restored = false
+  $effect(() => {
+    if (!onArtifacts || restored) return
+    // An explicit place, folder or file outranks the memory and spends it.
+    if (route.pathname !== '/artifacts' || rawFolder || rawActive) {
+      restored = true
+      return
+    }
+    // Each roster is passed only once loaded; validating against a list that
+    // has not arrived would drop a good part of the memory for no reason.
+    if (foldersQuery.isLoading || artifactsQuery.isLoading) return
+    restored = true
+    const saved = restorableArtifactsSelection(readArtifactsSelection(), {
+      folderIds: foldersQuery.isSuccess ? folders.map((f) => f.id) : null,
+      artifactIds: artifactsQuery.isSuccess ? artifacts.map((a) => a.id) : null,
+    })
+    if (!saved) return
+    const search: Record<string, string> = {}
+    if (saved.folderId) search.f = saved.folderId
+    if (saved.activeId) search.a = saved.activeId
+    if (saved.place === 'my') void navigate('/artifacts', { search, replace: true })
+    else void navigate('/artifacts/:place', { params: { place: saved.place }, search, replace: true })
+  })
 
   let importOpen = $state(false)
   /** The row whose Properties dialog is open (null = closed). */
@@ -395,8 +441,10 @@
             />
             <DropdownMenu items={newMenu}>
               {#snippet trigger(_open: boolean)}
-                <Button size="sm">
-                  <Plus size={13} class="mr-1" /> New
+                <!-- The `+` opens the menu of kinds, which is what says what is
+                     being made; "New" beside it only repeats the glyph. -->
+                <Button size="sm" title="New file" aria-label="New file">
+                  <Plus size={13} />
                 </Button>
               {/snippet}
             </DropdownMenu>
