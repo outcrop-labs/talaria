@@ -115,32 +115,24 @@
 <!-- The one button. Reuse everywhere — do not re-style buttons inline. -->
 {#if wantsBloom}
   <span bind:this={wrap} class={`relative inline-flex ${split.outer}`}>
-    <!-- FINER GRAIN THAN THE DEFAULT, because a band is only a few px wide.
-         At the house 4px pitch an 8px band is two rows of dots, which reads as
-         a dotted outline; at 2px it is four rows of half-size dots and reads as
-         grain hugging the edge. Large fields (the empty-state vignette, the
-         skeleton static) keep the coarser pitch — they have room for it, and
-         finer dots over a whole pane is a lot of fill for no more information.
-
-         The 2px lattice keeps a FIXED relationship to the 4px one the large
-         fields use, so neither drifts against the other and there is no moiré.
-         Not literal nesting, though: cell BOUNDARIES nest (page multiples of 2
-         contain page multiples of 4) but the DOTS do not. Both engines place a
-         dot at `cx*pitch - frac + (pitch-dot)/2`, so a 4/2 dot centres on an
-         even page coordinate and a 2/1 dot on an odd one — they interleave by
-         half the fine pitch and never coincide. Fixed everywhere, which is the
-         property page-anchoring was for; "subdivision" would invite someone to
-         expect dots to land on dots.
+    <!-- `organic={0}` — PURE BAYER, no clumping. The engine can multiply a
+         static clump-noise into the field, which gives large ambient surfaces
+         a hand-made texture; on a band that is only a few px wide it instead
+         makes the taper cluster and thin unevenly, which reads as ragged
+         rather than organic. An even, clump-free gradient is exactly what
+         ordered dithering is for, so here it does that job unassisted.
 
          `alphaFloor` near zero is what makes the band TAPER. The engine lights
          a dot at `alphaFloor + (maxAlpha - alphaFloor) * density`, so the
-         default floor of 0.18 lit even the sparsest outermost dot at a
-         perfectly visible level — the field thinned out with distance but
-         never dimmed, which is what made a wide band read as a cloud with an
-         edge. At 0.02 the outer dots approach nothing while `maxAlpha` 0.85
-         keeps the boundary strong: dense and bright against the border,
-         dissolving as it leaves. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0.15} pitch={2} dot={1} alphaFloor={0.02} maxAlpha={0.85} />
+         stock floor of 0.18 lit even the sparsest outermost dot at a
+         perfectly visible level — the field thinned with distance but never
+         dimmed, which is what made a wide band read as a cloud with an edge.
+         At 0.02 the outer dots approach nothing while `maxAlpha` 0.85 keeps
+         the boundary strong.
+
+         Grain is the engine's own default now (2px pitch, 1px dots) rather
+         than an override here, so every field in the app shares it. -->
+    <DitherLayer {sources} bleed={BLEED} organic={0} alphaFloor={0.02} maxAlpha={0.85} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
          the bloom's — both run. -->

@@ -104,9 +104,22 @@ export type DitherSource =
   | WaveSource
 
 export interface DitherEngineOptions {
-  /** Grid pitch in CSS px. */
+  /** Grid pitch in CSS px. Default 2 — see `dot`. */
   pitch?: number
-  /** Dot size in CSS px (≤ pitch). */
+  /**
+   * Dot size in CSS px (<= pitch). Default 1.
+   *
+   * THE HOUSE GRAIN IS 2/1, not the 4/2 this started at. Finer dots and more
+   * of them read as a material; coarser ones read as a pattern printed on top
+   * of the surface. The difference is most obvious where a field is only a few
+   * px across — an 8px band at pitch 4 is two rows of dots, which is a dotted
+   * outline — but it holds at every size, which is why it is the default
+   * rather than something the small cases opt into.
+   *
+   * Four times the cells per paint is the cost. The engine parks its loop as
+   * soon as a field is static, so that is one paint for an idle field, not a
+   * per-frame bill.
+   */
   dot?: number
   /** Alpha of the sparsest dots. Density scales alpha up toward maxAlpha, so
    *  dense regions read brighter as well as busier — as in the reference. */
@@ -332,8 +345,8 @@ export class DitherEngine {
     this.canvas = canvas
     this.ctx = canvas.getContext('2d')!
     this.opts = {
-      pitch: opts.pitch ?? 4,
-      dot: opts.dot ?? 2,
+      pitch: opts.pitch ?? 2,
+      dot: opts.dot ?? 1,
       alphaFloor: opts.alphaFloor ?? 0.18,
       maxAlpha: opts.maxAlpha ?? 0.55,
       shimmer: opts.shimmer ?? 0,
