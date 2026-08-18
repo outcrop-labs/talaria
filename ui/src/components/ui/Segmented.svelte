@@ -38,7 +38,7 @@
         'relative rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
         size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
-        'dither-bloom',
+        'dither-fill',
         value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
@@ -47,7 +47,7 @@
           aria-hidden="true"
           in:receiveMark={{ key: 'mark' }}
           out:sendMark={{ key: 'mark' }}
-          class="absolute inset-0 rounded bg-raised"
+          class="dither-mark absolute inset-0 rounded bg-raised [--dither-radius:4px]"
         ></span>
       {/if}
       <span class="relative">
