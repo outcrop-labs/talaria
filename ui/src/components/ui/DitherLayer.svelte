@@ -177,9 +177,25 @@
   })
 </script>
 
+<!-- THE CSS SIZE MUST BE SET EXPLICITLY, and this is not belt-and-braces.
+     A <canvas> is a REPLACED element: with `position: absolute` and `width:
+     auto` it takes its INTRINSIC size, which is the `width`/`height`
+     attributes — and those are CSS pixels times the device pixel ratio. On a
+     HiDPI screen a bled layer therefore rendered at double its intended size,
+     anchored top-left by the insets, so the field spilled to roughly four
+     times the area and sat offset down and right of the control it belonged
+     to. At dpr 1 the two happen to be equal, which is why it looked correct in
+     testing and broken on a real display.
+
+     Percentages resolve against the containing block's padding box — the
+     parent — which is the same box `setSize` measures with `clientWidth`, so
+     the CSS box and the backing store describe the same rectangle. The
+     unbled path was never affected: `h-full w-full` was already forcing it. -->
 <canvas
   bind:this={canvas}
   aria-hidden="true"
-  style={bleed ? `inset:${-bleed}px` : undefined}
+  style={bleed
+    ? `inset:${-bleed}px; width:calc(100% + ${2 * bleed}px); height:calc(100% + ${2 * bleed}px)`
+    : undefined}
   class={cn('pointer-events-none absolute', bleed ? '' : 'inset-0 h-full w-full', className)}
 ></canvas>
