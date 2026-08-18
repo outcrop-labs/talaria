@@ -66,8 +66,10 @@ function hash01(x: number, y: number): number {
 const SCATTER = 0.38
 
 export interface DitherSurfaceOptions {
-  /** Interior density at rest, 0..1. */
+  /** Interior density, 0..1 — how many cells the fill lights. */
   density?: number
+  /** Weight of the interior fill against the band, 0..1. */
+  weight?: number
   /** How far the field reaches past the control, in CSS px, for the band. */
   band?: number
   /** Is this control the selected one? Drives the accent band. */
@@ -115,6 +117,7 @@ function paint(
   radius: number,
   tone: Tone,
   density: number,
+  weight: number,
   intensity: number,
   selection: number,
   dpr: number,
@@ -174,7 +177,12 @@ function paint(
       const threshold = ordered + (hash01(x, y) - ordered) * SCATTER - 0.1 * intensity
       const lit = d > threshold
       const k = (0.3 + d * 0.7) * (1 + 0.22 * intensity)
-      const alpha = clamp01(lit ? k : k * OFF_TIER)
+      // THE FILL SITS BEHIND THE BAND, NOT BESIDE IT. The band is the
+      // statement — it is what says "this one" — and an interior at the same
+      // weight competes with it and with the label over it. `weight` holds the
+      // fill back so it reads as the surface having material rather than as a
+      // second mark.
+      const alpha = clamp01((lit ? k : k * OFF_TIER) * (sd >= 0 ? 1 : weight))
       if (alpha <= 0.004) continue
       ctx.fillStyle = `rgba(${colour[0]},${colour[1]},${colour[2]},${alpha})`
       ctx.fillRect(x * CELL * dpr, y * CELL * dpr, dot, dot)
@@ -194,7 +202,8 @@ function paint(
 export function ditherSurface(opts: DitherSurfaceOptions = {}) {
   return (node: HTMLElement): (() => void) => {
     const pad = Math.round((opts.band ?? 0) / CELL)
-    const density = opts.density ?? 0.85
+    const density = opts.density ?? 0.62
+    const weight = opts.weight ?? 0.55
 
     const canvas = document.createElement('canvas')
     canvas.setAttribute('aria-hidden', 'true')
@@ -222,7 +231,8 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
     let raf = 0
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-    const render = () => paint(ctx, cols, rows, pad, radius, tone, density, intensity, selection, dpr)
+    const render = () =>
+      paint(ctx, cols, rows, pad, radius, tone, density, weight, intensity, selection, dpr)
 
     const targets = () => ({
       intensity: hot || opts.always?.() ? 1 : 0,
@@ -272,10 +282,15 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
     node.addEventListener('focusout', leave)
 
     const resize = () => {
-      const r = node.getBoundingClientRect()
+      // `offsetWidth` / `offsetHeight`, NOT `getBoundingClientRect`. The mark
+      // this attaches to is mid-crossfade when it mounts, and a bounding rect
+      // is measured THROUGH that transform — so the first reading is a scaled
+      // fraction of the real size, and since the element's layout size never
+      // actually changes, the ResizeObserver has nothing to correct it with.
+      // The field stayed a small blob in the corner for the rest of its life.
       radius = parseFloat(getComputedStyle(node).borderTopLeftRadius) || 0
-      const c = Math.max(4, Math.round(r.width / CELL) + pad * 2)
-      const w = Math.max(4, Math.round(r.height / CELL) + pad * 2)
+      const c = Math.max(4, Math.round(node.offsetWidth / CELL) + pad * 2)
+      const w = Math.max(4, Math.round(node.offsetHeight / CELL) + pad * 2)
       dpr = window.devicePixelRatio || 1
       if (c === cols && w === rows && canvas.width === cols * CELL * dpr) return
       cols = c
@@ -298,6 +313,15 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
     })
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] })
 
+    // A control can become the selected one with no pointer anywhere near it —
+    // a route change, a keyboard move. Without this the field would sit at its
+    // old target until something happened to touch it.
+    const so = new MutationObserver(settle)
+    so.observe(node, {
+      attributes: true,
+      attributeFilter: ['data-status', 'data-active', 'aria-selected', 'aria-current', 'aria-pressed', 'class'],
+    })
+
     return () => {
       if (raf) cancelAnimationFrame(raf)
       node.removeEventListener('pointerenter', enter)
@@ -306,6 +330,7 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
       node.removeEventListener('focusout', leave)
       ro.disconnect()
       mo.disconnect()
+      so.disconnect()
       canvas.remove()
       node.style.position = prev.position
       node.style.isolation = prev.isolation
@@ -313,9 +338,83 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
   }
 }
 
-/** Nudge a surface whose `selected` / `always` answer has changed. */
-export function refreshDitherSurfaces(root: ParentNode = document): void {
-  root.querySelectorAll('canvas[aria-hidden="true"]').forEach((c) => {
-    ;(c.parentElement as HTMLElement | null)?.dispatchEvent(new Event('pointerenter'))
+/** The markup signals that mean "this control is the chosen one". */
+const SELECTED = [
+  '[data-status="active"]',
+  '[data-active="true"]',
+  '[aria-current="true"]',
+  '[aria-current="page"]',
+  '[aria-selected="true"]',
+  '[aria-pressed="true"]',
+].join(',')
+
+const isSelected = (el: HTMLElement): boolean => el.matches(SELECTED)
+
+/**
+ * UPGRADE EVERY MARKED CONTROL ON THE PAGE, once, from one place.
+ *
+ * The three classes stay in the markup as they always were — they are the
+ * statement of intent, and 127 call sites already make it correctly. What
+ * changed is who honours them: the stylesheet used to paint a masked
+ * pseudo-element, and now this hands each element a painted field instead.
+ * Doing it here rather than at the call sites means the two renderings could
+ * never drift apart, and that switching back is one function rather than a
+ * sweep.
+ *
+ *   dither-fill   a field on approach
+ *   dither-bloom  a field on approach, plus the accent band when selected
+ *   dither-mark   both, permanently — for an element that IS the mark
+ */
+export function upgradeDitherSurfaces(root: HTMLElement): () => void {
+  const attached = new WeakMap<HTMLElement, () => void>()
+
+  const optionsFor = (el: HTMLElement): DitherSurfaceOptions | null => {
+    // `data-dither-band="0"` — the field without the accent outline.
+    //
+    // A switch is not a destination. The band says "this is the one you are
+    // on", which is right for a nav row or a tab and wrong for a segmented
+    // cell or a toggle: those are settings, and outlining one in the accent
+    // gives a preference the weight of a location.
+    const quiet = el.dataset.ditherBand === '0'
+    if (el.classList.contains('dither-mark')) {
+      return quiet ? { always: () => true } : { band: 6, always: () => true, selected: () => true }
+    }
+    if (el.classList.contains('dither-bloom')) {
+      return quiet
+        ? { always: () => isSelected(el) }
+        : { band: 6, always: () => isSelected(el), selected: () => isSelected(el) }
+    }
+    if (el.classList.contains('dither-fill')) return {}
+    return null
+  }
+
+  const scan = () => {
+    for (const el of root.querySelectorAll<HTMLElement>('.dither-fill,.dither-bloom,.dither-mark')) {
+      if (attached.has(el)) continue
+      const opts = optionsFor(el)
+      if (!opts) continue
+      attached.set(el, ditherSurface(opts)(el))
+    }
+  }
+
+  scan()
+  // Only childList: an attribute change on a marked element is the control
+  // reporting a new state, which its own surface already watches. Reacting to
+  // it here would tear the surface down and build it again mid-hover.
+  const mo = new MutationObserver((records) => {
+    if (records.some((r) => r.addedNodes.length > 0)) scan()
+    for (const r of records) {
+      for (const n of r.removedNodes) {
+        if (!(n instanceof HTMLElement)) continue
+        const stop = attached.get(n)
+        if (stop) {
+          stop()
+          attached.delete(n)
+        }
+      }
+    }
   })
+  mo.observe(root, { childList: true, subtree: true })
+
+  return () => mo.disconnect()
 }

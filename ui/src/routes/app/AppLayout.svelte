@@ -15,6 +15,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
+  import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
@@ -106,6 +107,17 @@
   // Hydration-safe: server snapshot is "expanded"; the persisted client value
   // swaps in right after hydration (same store NavRail uses, so no jump).
   const nav = useNavCollapsed()
+
+  // EVERY MARKED CONTROL GETS ITS FIELD FROM ONE PLACE. The `dither-*` classes
+  // stay in the markup as the statement of intent — 127 call sites already
+  // make it correctly — and this is what honours them. Doing it here rather
+  // than at each call site is what keeps one rendering rather than two.
+  let shell = $state<HTMLElement | null>(null)
+  $effect(() => {
+    const el = shell
+    if (!el) return
+    return upgradeDitherSurfaces(el)
+  })
 </script>
 
 {#snippet shellSkeleton(content: Snippet | undefined)}
@@ -177,7 +189,7 @@
   {@render shellSkeleton(undefined)}
 {:else}
   <MercuryBackdrop />
-  <div class="flex h-screen">
+  <div bind:this={shell} class="flex h-screen">
     <NavRail {user} />
     <!-- THE ASSISTANT DRAWER IS A PEER OF THE NAV RAIL, not of the page body.
          It used to open inside `vt-view`, below the top strip and the banner,

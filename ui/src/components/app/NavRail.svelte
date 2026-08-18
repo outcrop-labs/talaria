@@ -180,7 +180,7 @@
          makes overflow-x compute to `auto` too, so this box clips horizontally
          even though it only asked to scroll vertically — and the outset accent
          band was being sliced off flush at both edges. -->
-    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto px-1">
+    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto p-1">
       {#each sections as section, si (section.title)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
@@ -269,7 +269,7 @@
     <div class="mt-4 h-px shrink-0 bg-line-subtle"></div>
 
     <!-- Room for the selected band at both edges — see the note above. -->
-    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1">
+    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-1">
       {#each sections as section (section.title)}
         <div>
           <div class="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">

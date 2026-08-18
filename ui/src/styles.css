@@ -626,355 +626,44 @@ kbd,
   --dither-tile: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2764%27%20height%3D%2764%27%20shape-rendering%3D%27crispEdges%27%3E%3Cpath%20fill%3D%27%23fff%27%20d%3D%27M0%200h1v1h-1zM2%200h1v1h-1zM4%200h1v1h-1zM8%200h1v1h-1zM10%200h1v1h-1zM12%200h1v1h-1zM16%200h1v1h-1zM20%200h1v1h-1zM24%200h1v1h-1zM28%200h1v1h-1zM32%200h1v1h-1zM34%200h1v1h-1zM36%200h1v1h-1zM40%200h1v1h-1zM44%200h1v1h-1zM48%200h1v1h-1zM50%200h1v1h-1zM52%200h1v1h-1zM56%200h1v1h-1zM58%200h1v1h-1zM60%200h1v1h-1zM2%202h1v1h-1zM6%202h1v1h-1zM10%202h1v1h-1zM14%202h1v1h-1zM18%202h1v1h-1zM22%202h1v1h-1zM26%202h1v1h-1zM30%202h1v1h-1zM34%202h1v1h-1zM38%202h1v1h-1zM42%202h1v1h-1zM46%202h1v1h-1zM50%202h1v1h-1zM54%202h1v1h-1zM58%202h1v1h-1zM62%202h1v1h-1zM0%204h1v1h-1zM4%204h1v1h-1zM8%204h1v1h-1zM12%204h1v1h-1zM16%204h1v1h-1zM20%204h1v1h-1zM24%204h1v1h-1zM28%204h1v1h-1zM32%204h1v1h-1zM36%204h1v1h-1zM38%204h1v1h-1zM40%204h1v1h-1zM44%204h1v1h-1zM48%204h1v1h-1zM52%204h1v1h-1zM56%204h1v1h-1zM60%204h1v1h-1zM2%206h1v1h-1zM6%206h1v1h-1zM10%206h1v1h-1zM14%206h1v1h-1zM22%206h1v1h-1zM26%206h1v1h-1zM30%206h1v1h-1zM34%206h1v1h-1zM38%206h1v1h-1zM42%206h1v1h-1zM46%206h1v1h-1zM50%206h1v1h-1zM54%206h1v1h-1zM58%206h1v1h-1zM62%206h1v1h-1zM0%208h1v1h-1zM4%208h1v1h-1zM8%208h1v1h-1zM12%208h1v1h-1zM16%208h1v1h-1zM18%208h1v1h-1zM20%208h1v1h-1zM24%208h1v1h-1zM28%208h1v1h-1zM32%208h1v1h-1zM36%208h1v1h-1zM40%208h1v1h-1zM42%208h1v1h-1zM44%208h1v1h-1zM48%208h1v1h-1zM52%208h1v1h-1zM56%208h1v1h-1zM60%208h1v1h-1zM2%2010h1v1h-1zM6%2010h1v1h-1zM10%2010h1v1h-1zM14%2010h1v1h-1zM18%2010h1v1h-1zM22%2010h1v1h-1zM26%2010h1v1h-1zM30%2010h1v1h-1zM34%2010h1v1h-1zM38%2010h1v1h-1zM42%2010h1v1h-1zM46%2010h1v1h-1zM50%2010h1v1h-1zM58%2010h1v1h-1zM0%2012h1v1h-1zM4%2012h1v1h-1zM8%2012h1v1h-1zM12%2012h1v1h-1zM16%2012h1v1h-1zM20%2012h1v1h-1zM24%2012h1v1h-1zM28%2012h1v1h-1zM32%2012h1v1h-1zM36%2012h1v1h-1zM40%2012h1v1h-1zM44%2012h1v1h-1zM48%2012h1v1h-1zM52%2012h1v1h-1zM56%2012h1v1h-1zM60%2012h1v1h-1zM2%2014h1v1h-1zM6%2014h1v1h-1zM14%2014h1v1h-1zM18%2014h1v1h-1zM22%2014h1v1h-1zM26%2014h1v1h-1zM30%2014h1v1h-1zM38%2014h1v1h-1zM42%2014h1v1h-1zM46%2014h1v1h-1zM62%2014h1v1h-1zM0%2016h1v1h-1zM2%2016h1v1h-1zM4%2016h1v1h-1zM8%2016h1v1h-1zM10%2016h1v1h-1zM12%2016h1v1h-1zM16%2016h1v1h-1zM18%2016h1v1h-1zM20%2016h1v1h-1zM24%2016h1v1h-1zM26%2016h1v1h-1zM28%2016h1v1h-1zM32%2016h1v1h-1zM34%2016h1v1h-1zM36%2016h1v1h-1zM40%2016h1v1h-1zM42%2016h1v1h-1zM44%2016h1v1h-1zM48%2016h1v1h-1zM52%2016h1v1h-1zM56%2016h1v1h-1zM60%2016h1v1h-1zM2%2018h1v1h-1zM6%2018h1v1h-1zM10%2018h1v1h-1zM14%2018h1v1h-1zM18%2018h1v1h-1zM22%2018h1v1h-1zM26%2018h1v1h-1zM30%2018h1v1h-1zM34%2018h1v1h-1zM38%2018h1v1h-1zM42%2018h1v1h-1zM46%2018h1v1h-1zM50%2018h1v1h-1zM54%2018h1v1h-1zM58%2018h1v1h-1zM0%2020h1v1h-1zM4%2020h1v1h-1zM8%2020h1v1h-1zM12%2020h1v1h-1zM16%2020h1v1h-1zM20%2020h1v1h-1zM22%2020h1v1h-1zM24%2020h1v1h-1zM28%2020h1v1h-1zM32%2020h1v1h-1zM36%2020h1v1h-1zM40%2020h1v1h-1zM44%2020h1v1h-1zM48%2020h1v1h-1zM52%2020h1v1h-1zM56%2020h1v1h-1zM60%2020h1v1h-1zM2%2022h1v1h-1zM6%2022h1v1h-1zM10%2022h1v1h-1zM14%2022h1v1h-1zM18%2022h1v1h-1zM22%2022h1v1h-1zM26%2022h1v1h-1zM30%2022h1v1h-1zM34%2022h1v1h-1zM38%2022h1v1h-1zM42%2022h1v1h-1zM46%2022h1v1h-1zM54%2022h1v1h-1zM62%2022h1v1h-1zM0%2024h1v1h-1zM4%2024h1v1h-1zM8%2024h1v1h-1zM12%2024h1v1h-1zM16%2024h1v1h-1zM20%2024h1v1h-1zM24%2024h1v1h-1zM26%2024h1v1h-1zM28%2024h1v1h-1zM32%2024h1v1h-1zM34%2024h1v1h-1zM36%2024h1v1h-1zM40%2024h1v1h-1zM44%2024h1v1h-1zM48%2024h1v1h-1zM52%2024h1v1h-1zM56%2024h1v1h-1zM60%2024h1v1h-1zM2%2026h1v1h-1zM6%2026h1v1h-1zM10%2026h1v1h-1zM14%2026h1v1h-1zM18%2026h1v1h-1zM22%2026h1v1h-1zM26%2026h1v1h-1zM30%2026h1v1h-1zM34%2026h1v1h-1zM38%2026h1v1h-1zM42%2026h1v1h-1zM50%2026h1v1h-1zM54%2026h1v1h-1zM58%2026h1v1h-1zM62%2026h1v1h-1zM0%2028h1v1h-1zM4%2028h1v1h-1zM8%2028h1v1h-1zM12%2028h1v1h-1zM16%2028h1v1h-1zM20%2028h1v1h-1zM24%2028h1v1h-1zM28%2028h1v1h-1zM30%2028h1v1h-1zM32%2028h1v1h-1zM36%2028h1v1h-1zM38%2028h1v1h-1zM40%2028h1v1h-1zM44%2028h1v1h-1zM48%2028h1v1h-1zM52%2028h1v1h-1zM56%2028h1v1h-1zM60%2028h1v1h-1zM62%2028h1v1h-1zM2%2030h1v1h-1zM6%2030h1v1h-1zM10%2030h1v1h-1zM14%2030h1v1h-1zM18%2030h1v1h-1zM22%2030h1v1h-1zM26%2030h1v1h-1zM30%2030h1v1h-1zM34%2030h1v1h-1zM38%2030h1v1h-1zM46%2030h1v1h-1zM54%2030h1v1h-1zM58%2030h1v1h-1zM62%2030h1v1h-1zM0%2032h1v1h-1zM4%2032h1v1h-1zM8%2032h1v1h-1zM10%2032h1v1h-1zM12%2032h1v1h-1zM16%2032h1v1h-1zM20%2032h1v1h-1zM24%2032h1v1h-1zM28%2032h1v1h-1zM32%2032h1v1h-1zM36%2032h1v1h-1zM40%2032h1v1h-1zM42%2032h1v1h-1zM44%2032h1v1h-1zM48%2032h1v1h-1zM50%2032h1v1h-1zM52%2032h1v1h-1zM56%2032h1v1h-1zM58%2032h1v1h-1zM60%2032h1v1h-1zM2%2034h1v1h-1zM6%2034h1v1h-1zM10%2034h1v1h-1zM14%2034h1v1h-1zM18%2034h1v1h-1zM22%2034h1v1h-1zM26%2034h1v1h-1zM30%2034h1v1h-1zM34%2034h1v1h-1zM38%2034h1v1h-1zM42%2034h1v1h-1zM46%2034h1v1h-1zM50%2034h1v1h-1zM54%2034h1v1h-1zM58%2034h1v1h-1zM62%2034h1v1h-1zM0%2036h1v1h-1zM4%2036h1v1h-1zM8%2036h1v1h-1zM12%2036h1v1h-1zM14%2036h1v1h-1zM16%2036h1v1h-1zM20%2036h1v1h-1zM24%2036h1v1h-1zM28%2036h1v1h-1zM32%2036h1v1h-1zM36%2036h1v1h-1zM40%2036h1v1h-1zM44%2036h1v1h-1zM46%2036h1v1h-1zM48%2036h1v1h-1zM52%2036h1v1h-1zM56%2036h1v1h-1zM60%2036h1v1h-1zM2%2038h1v1h-1zM6%2038h1v1h-1zM10%2038h1v1h-1zM14%2038h1v1h-1zM18%2038h1v1h-1zM22%2038h1v1h-1zM26%2038h1v1h-1zM30%2038h1v1h-1zM34%2038h1v1h-1zM38%2038h1v1h-1zM42%2038h1v1h-1zM46%2038h1v1h-1zM50%2038h1v1h-1zM54%2038h1v1h-1zM58%2038h1v1h-1zM62%2038h1v1h-1zM0%2040h1v1h-1zM4%2040h1v1h-1zM8%2040h1v1h-1zM12%2040h1v1h-1zM16%2040h1v1h-1zM20%2040h1v1h-1zM24%2040h1v1h-1zM28%2040h1v1h-1zM32%2040h1v1h-1zM36%2040h1v1h-1zM40%2040h1v1h-1zM42%2040h1v1h-1zM44%2040h1v1h-1zM48%2040h1v1h-1zM52%2040h1v1h-1zM56%2040h1v1h-1zM60%2040h1v1h-1zM2%2042h1v1h-1zM6%2042h1v1h-1zM10%2042h1v1h-1zM14%2042h1v1h-1zM18%2042h1v1h-1zM26%2042h1v1h-1zM30%2042h1v1h-1zM34%2042h1v1h-1zM38%2042h1v1h-1zM42%2042h1v1h-1zM46%2042h1v1h-1zM50%2042h1v1h-1zM58%2042h1v1h-1zM62%2042h1v1h-1zM0%2044h1v1h-1zM4%2044h1v1h-1zM8%2044h1v1h-1zM12%2044h1v1h-1zM14%2044h1v1h-1zM16%2044h1v1h-1zM20%2044h1v1h-1zM24%2044h1v1h-1zM28%2044h1v1h-1zM32%2044h1v1h-1zM36%2044h1v1h-1zM40%2044h1v1h-1zM44%2044h1v1h-1zM46%2044h1v1h-1zM48%2044h1v1h-1zM52%2044h1v1h-1zM56%2044h1v1h-1zM60%2044h1v1h-1zM2%2046h1v1h-1zM6%2046h1v1h-1zM10%2046h1v1h-1zM14%2046h1v1h-1zM22%2046h1v1h-1zM30%2046h1v1h-1zM34%2046h1v1h-1zM38%2046h1v1h-1zM42%2046h1v1h-1zM46%2046h1v1h-1zM54%2046h1v1h-1zM62%2046h1v1h-1zM0%2048h1v1h-1zM4%2048h1v1h-1zM8%2048h1v1h-1zM12%2048h1v1h-1zM16%2048h1v1h-1zM20%2048h1v1h-1zM24%2048h1v1h-1zM26%2048h1v1h-1zM28%2048h1v1h-1zM32%2048h1v1h-1zM34%2048h1v1h-1zM36%2048h1v1h-1zM40%2048h1v1h-1zM42%2048h1v1h-1zM44%2048h1v1h-1zM48%2048h1v1h-1zM50%2048h1v1h-1zM52%2048h1v1h-1zM56%2048h1v1h-1zM60%2048h1v1h-1zM2%2050h1v1h-1zM6%2050h1v1h-1zM10%2050h1v1h-1zM14%2050h1v1h-1zM18%2050h1v1h-1zM26%2050h1v1h-1zM30%2050h1v1h-1zM34%2050h1v1h-1zM38%2050h1v1h-1zM42%2050h1v1h-1zM46%2050h1v1h-1zM50%2050h1v1h-1zM54%2050h1v1h-1zM58%2050h1v1h-1zM62%2050h1v1h-1zM0%2052h1v1h-1zM4%2052h1v1h-1zM8%2052h1v1h-1zM12%2052h1v1h-1zM16%2052h1v1h-1zM20%2052h1v1h-1zM24%2052h1v1h-1zM28%2052h1v1h-1zM32%2052h1v1h-1zM36%2052h1v1h-1zM38%2052h1v1h-1zM40%2052h1v1h-1zM44%2052h1v1h-1zM48%2052h1v1h-1zM52%2052h1v1h-1zM56%2052h1v1h-1zM60%2052h1v1h-1zM6%2054h1v1h-1zM10%2054h1v1h-1zM14%2054h1v1h-1zM22%2054h1v1h-1zM26%2054h1v1h-1zM30%2054h1v1h-1zM34%2054h1v1h-1zM38%2054h1v1h-1zM42%2054h1v1h-1zM46%2054h1v1h-1zM50%2054h1v1h-1zM54%2054h1v1h-1zM58%2054h1v1h-1zM62%2054h1v1h-1zM0%2056h1v1h-1zM4%2056h1v1h-1zM8%2056h1v1h-1zM12%2056h1v1h-1zM16%2056h1v1h-1zM20%2056h1v1h-1zM24%2056h1v1h-1zM28%2056h1v1h-1zM32%2056h1v1h-1zM34%2056h1v1h-1zM36%2056h1v1h-1zM38%2056h1v1h-1zM40%2056h1v1h-1zM44%2056h1v1h-1zM48%2056h1v1h-1zM52%2056h1v1h-1zM56%2056h1v1h-1zM60%2056h1v1h-1zM2%2058h1v1h-1zM6%2058h1v1h-1zM10%2058h1v1h-1zM14%2058h1v1h-1zM18%2058h1v1h-1zM22%2058h1v1h-1zM26%2058h1v1h-1zM30%2058h1v1h-1zM34%2058h1v1h-1zM38%2058h1v1h-1zM42%2058h1v1h-1zM50%2058h1v1h-1zM54%2058h1v1h-1zM58%2058h1v1h-1zM0%2060h1v1h-1zM4%2060h1v1h-1zM8%2060h1v1h-1zM12%2060h1v1h-1zM16%2060h1v1h-1zM20%2060h1v1h-1zM24%2060h1v1h-1zM28%2060h1v1h-1zM32%2060h1v1h-1zM36%2060h1v1h-1zM38%2060h1v1h-1zM40%2060h1v1h-1zM44%2060h1v1h-1zM48%2060h1v1h-1zM52%2060h1v1h-1zM54%2060h1v1h-1zM56%2060h1v1h-1zM60%2060h1v1h-1zM6%2062h1v1h-1zM10%2062h1v1h-1zM14%2062h1v1h-1zM18%2062h1v1h-1zM22%2062h1v1h-1zM30%2062h1v1h-1zM34%2062h1v1h-1zM38%2062h1v1h-1zM46%2062h1v1h-1zM50%2062h1v1h-1zM54%2062h1v1h-1zM62%2062h1v1h-1z%27%2F%3E%3Cpath%20fill%3D%27%23fff%27%20fill-opacity%3D%270.4%27%20d%3D%27M6%200h1v1h-1zM14%200h1v1h-1zM18%200h1v1h-1zM22%200h1v1h-1zM26%200h1v1h-1zM30%200h1v1h-1zM38%200h1v1h-1zM42%200h1v1h-1zM46%200h1v1h-1zM54%200h1v1h-1zM62%200h1v1h-1zM0%202h1v1h-1zM4%202h1v1h-1zM8%202h1v1h-1zM12%202h1v1h-1zM16%202h1v1h-1zM20%202h1v1h-1zM24%202h1v1h-1zM28%202h1v1h-1zM32%202h1v1h-1zM36%202h1v1h-1zM40%202h1v1h-1zM44%202h1v1h-1zM48%202h1v1h-1zM52%202h1v1h-1zM56%202h1v1h-1zM60%202h1v1h-1zM2%204h1v1h-1zM6%204h1v1h-1zM10%204h1v1h-1zM14%204h1v1h-1zM18%204h1v1h-1zM22%204h1v1h-1zM26%204h1v1h-1zM30%204h1v1h-1zM34%204h1v1h-1zM42%204h1v1h-1zM46%204h1v1h-1zM50%204h1v1h-1zM54%204h1v1h-1zM58%204h1v1h-1zM62%204h1v1h-1zM0%206h1v1h-1zM4%206h1v1h-1zM8%206h1v1h-1zM12%206h1v1h-1zM16%206h1v1h-1zM18%206h1v1h-1zM20%206h1v1h-1zM24%206h1v1h-1zM28%206h1v1h-1zM32%206h1v1h-1zM36%206h1v1h-1zM40%206h1v1h-1zM44%206h1v1h-1zM48%206h1v1h-1zM52%206h1v1h-1zM56%206h1v1h-1zM60%206h1v1h-1zM2%208h1v1h-1zM6%208h1v1h-1zM10%208h1v1h-1zM14%208h1v1h-1zM22%208h1v1h-1zM26%208h1v1h-1zM30%208h1v1h-1zM34%208h1v1h-1zM38%208h1v1h-1zM46%208h1v1h-1zM50%208h1v1h-1zM54%208h1v1h-1zM58%208h1v1h-1zM62%208h1v1h-1zM0%2010h1v1h-1zM4%2010h1v1h-1zM8%2010h1v1h-1zM12%2010h1v1h-1zM16%2010h1v1h-1zM20%2010h1v1h-1zM24%2010h1v1h-1zM28%2010h1v1h-1zM32%2010h1v1h-1zM36%2010h1v1h-1zM40%2010h1v1h-1zM44%2010h1v1h-1zM48%2010h1v1h-1zM52%2010h1v1h-1zM54%2010h1v1h-1zM56%2010h1v1h-1zM60%2010h1v1h-1zM62%2010h1v1h-1zM2%2012h1v1h-1zM6%2012h1v1h-1zM10%2012h1v1h-1zM14%2012h1v1h-1zM18%2012h1v1h-1zM22%2012h1v1h-1zM26%2012h1v1h-1zM30%2012h1v1h-1zM34%2012h1v1h-1zM38%2012h1v1h-1zM42%2012h1v1h-1zM46%2012h1v1h-1zM50%2012h1v1h-1zM54%2012h1v1h-1zM58%2012h1v1h-1zM62%2012h1v1h-1zM0%2014h1v1h-1zM4%2014h1v1h-1zM8%2014h1v1h-1zM10%2014h1v1h-1zM12%2014h1v1h-1zM16%2014h1v1h-1zM20%2014h1v1h-1zM24%2014h1v1h-1zM28%2014h1v1h-1zM32%2014h1v1h-1zM34%2014h1v1h-1zM36%2014h1v1h-1zM40%2014h1v1h-1zM44%2014h1v1h-1zM48%2014h1v1h-1zM50%2014h1v1h-1zM52%2014h1v1h-1zM54%2014h1v1h-1zM56%2014h1v1h-1zM58%2014h1v1h-1zM60%2014h1v1h-1zM6%2016h1v1h-1zM14%2016h1v1h-1zM22%2016h1v1h-1zM30%2016h1v1h-1zM38%2016h1v1h-1zM46%2016h1v1h-1zM50%2016h1v1h-1zM54%2016h1v1h-1zM58%2016h1v1h-1zM62%2016h1v1h-1zM0%2018h1v1h-1zM4%2018h1v1h-1zM8%2018h1v1h-1zM12%2018h1v1h-1zM16%2018h1v1h-1zM20%2018h1v1h-1zM24%2018h1v1h-1zM28%2018h1v1h-1zM32%2018h1v1h-1zM36%2018h1v1h-1zM40%2018h1v1h-1zM44%2018h1v1h-1zM48%2018h1v1h-1zM52%2018h1v1h-1zM56%2018h1v1h-1zM60%2018h1v1h-1zM62%2018h1v1h-1zM2%2020h1v1h-1zM6%2020h1v1h-1zM10%2020h1v1h-1zM14%2020h1v1h-1zM18%2020h1v1h-1zM26%2020h1v1h-1zM30%2020h1v1h-1zM34%2020h1v1h-1zM38%2020h1v1h-1zM42%2020h1v1h-1zM46%2020h1v1h-1zM50%2020h1v1h-1zM54%2020h1v1h-1zM58%2020h1v1h-1zM62%2020h1v1h-1zM0%2022h1v1h-1zM4%2022h1v1h-1zM8%2022h1v1h-1zM12%2022h1v1h-1zM16%2022h1v1h-1zM20%2022h1v1h-1zM24%2022h1v1h-1zM28%2022h1v1h-1zM32%2022h1v1h-1zM36%2022h1v1h-1zM40%2022h1v1h-1zM44%2022h1v1h-1zM48%2022h1v1h-1zM50%2022h1v1h-1zM52%2022h1v1h-1zM56%2022h1v1h-1zM58%2022h1v1h-1zM60%2022h1v1h-1zM2%2024h1v1h-1zM6%2024h1v1h-1zM10%2024h1v1h-1zM14%2024h1v1h-1zM18%2024h1v1h-1zM22%2024h1v1h-1zM30%2024h1v1h-1zM38%2024h1v1h-1zM42%2024h1v1h-1zM46%2024h1v1h-1zM50%2024h1v1h-1zM54%2024h1v1h-1zM58%2024h1v1h-1zM62%2024h1v1h-1zM0%2026h1v1h-1zM4%2026h1v1h-1zM8%2026h1v1h-1zM12%2026h1v1h-1zM16%2026h1v1h-1zM20%2026h1v1h-1zM24%2026h1v1h-1zM28%2026h1v1h-1zM32%2026h1v1h-1zM36%2026h1v1h-1zM40%2026h1v1h-1zM44%2026h1v1h-1zM46%2026h1v1h-1zM48%2026h1v1h-1zM52%2026h1v1h-1zM56%2026h1v1h-1zM60%2026h1v1h-1zM2%2028h1v1h-1zM6%2028h1v1h-1zM10%2028h1v1h-1zM14%2028h1v1h-1zM18%2028h1v1h-1zM22%2028h1v1h-1zM26%2028h1v1h-1zM34%2028h1v1h-1zM42%2028h1v1h-1zM46%2028h1v1h-1zM50%2028h1v1h-1zM54%2028h1v1h-1zM58%2028h1v1h-1zM0%2030h1v1h-1zM4%2030h1v1h-1zM8%2030h1v1h-1zM12%2030h1v1h-1zM16%2030h1v1h-1zM20%2030h1v1h-1zM24%2030h1v1h-1zM28%2030h1v1h-1zM32%2030h1v1h-1zM36%2030h1v1h-1zM40%2030h1v1h-1zM42%2030h1v1h-1zM44%2030h1v1h-1zM48%2030h1v1h-1zM50%2030h1v1h-1zM52%2030h1v1h-1zM56%2030h1v1h-1zM60%2030h1v1h-1zM2%2032h1v1h-1zM6%2032h1v1h-1zM14%2032h1v1h-1zM18%2032h1v1h-1zM22%2032h1v1h-1zM26%2032h1v1h-1zM30%2032h1v1h-1zM34%2032h1v1h-1zM38%2032h1v1h-1zM46%2032h1v1h-1zM54%2032h1v1h-1zM62%2032h1v1h-1zM0%2034h1v1h-1zM4%2034h1v1h-1zM8%2034h1v1h-1zM12%2034h1v1h-1zM16%2034h1v1h-1zM20%2034h1v1h-1zM24%2034h1v1h-1zM28%2034h1v1h-1zM32%2034h1v1h-1zM36%2034h1v1h-1zM40%2034h1v1h-1zM44%2034h1v1h-1zM48%2034h1v1h-1zM52%2034h1v1h-1zM56%2034h1v1h-1zM60%2034h1v1h-1zM2%2036h1v1h-1zM6%2036h1v1h-1zM10%2036h1v1h-1zM18%2036h1v1h-1zM22%2036h1v1h-1zM26%2036h1v1h-1zM30%2036h1v1h-1zM34%2036h1v1h-1zM38%2036h1v1h-1zM42%2036h1v1h-1zM50%2036h1v1h-1zM54%2036h1v1h-1zM58%2036h1v1h-1zM62%2036h1v1h-1zM0%2038h1v1h-1zM4%2038h1v1h-1zM8%2038h1v1h-1zM12%2038h1v1h-1zM16%2038h1v1h-1zM20%2038h1v1h-1zM24%2038h1v1h-1zM28%2038h1v1h-1zM32%2038h1v1h-1zM36%2038h1v1h-1zM40%2038h1v1h-1zM44%2038h1v1h-1zM48%2038h1v1h-1zM52%2038h1v1h-1zM56%2038h1v1h-1zM60%2038h1v1h-1zM2%2040h1v1h-1zM6%2040h1v1h-1zM10%2040h1v1h-1zM14%2040h1v1h-1zM18%2040h1v1h-1zM22%2040h1v1h-1zM26%2040h1v1h-1zM30%2040h1v1h-1zM34%2040h1v1h-1zM38%2040h1v1h-1zM46%2040h1v1h-1zM50%2040h1v1h-1zM54%2040h1v1h-1zM58%2040h1v1h-1zM62%2040h1v1h-1zM0%2042h1v1h-1zM4%2042h1v1h-1zM8%2042h1v1h-1zM12%2042h1v1h-1zM16%2042h1v1h-1zM20%2042h1v1h-1zM22%2042h1v1h-1zM24%2042h1v1h-1zM28%2042h1v1h-1zM32%2042h1v1h-1zM36%2042h1v1h-1zM40%2042h1v1h-1zM44%2042h1v1h-1zM48%2042h1v1h-1zM52%2042h1v1h-1zM54%2042h1v1h-1zM56%2042h1v1h-1zM60%2042h1v1h-1zM2%2044h1v1h-1zM6%2044h1v1h-1zM10%2044h1v1h-1zM18%2044h1v1h-1zM22%2044h1v1h-1zM26%2044h1v1h-1zM30%2044h1v1h-1zM34%2044h1v1h-1zM38%2044h1v1h-1zM42%2044h1v1h-1zM50%2044h1v1h-1zM54%2044h1v1h-1zM58%2044h1v1h-1zM62%2044h1v1h-1zM0%2046h1v1h-1zM4%2046h1v1h-1zM8%2046h1v1h-1zM12%2046h1v1h-1zM16%2046h1v1h-1zM18%2046h1v1h-1zM20%2046h1v1h-1zM24%2046h1v1h-1zM26%2046h1v1h-1zM28%2046h1v1h-1zM32%2046h1v1h-1zM36%2046h1v1h-1zM40%2046h1v1h-1zM44%2046h1v1h-1zM48%2046h1v1h-1zM50%2046h1v1h-1zM52%2046h1v1h-1zM56%2046h1v1h-1zM58%2046h1v1h-1zM60%2046h1v1h-1zM2%2048h1v1h-1zM6%2048h1v1h-1zM10%2048h1v1h-1zM14%2048h1v1h-1zM18%2048h1v1h-1zM22%2048h1v1h-1zM30%2048h1v1h-1zM38%2048h1v1h-1zM46%2048h1v1h-1zM54%2048h1v1h-1zM58%2048h1v1h-1zM62%2048h1v1h-1zM0%2050h1v1h-1zM4%2050h1v1h-1zM8%2050h1v1h-1zM12%2050h1v1h-1zM16%2050h1v1h-1zM20%2050h1v1h-1zM22%2050h1v1h-1zM24%2050h1v1h-1zM28%2050h1v1h-1zM32%2050h1v1h-1zM36%2050h1v1h-1zM40%2050h1v1h-1zM44%2050h1v1h-1zM48%2050h1v1h-1zM52%2050h1v1h-1zM56%2050h1v1h-1zM60%2050h1v1h-1zM2%2052h1v1h-1zM6%2052h1v1h-1zM10%2052h1v1h-1zM14%2052h1v1h-1zM18%2052h1v1h-1zM22%2052h1v1h-1zM26%2052h1v1h-1zM30%2052h1v1h-1zM34%2052h1v1h-1zM42%2052h1v1h-1zM46%2052h1v1h-1zM50%2052h1v1h-1zM54%2052h1v1h-1zM58%2052h1v1h-1zM62%2052h1v1h-1zM0%2054h1v1h-1zM2%2054h1v1h-1zM4%2054h1v1h-1zM8%2054h1v1h-1zM12%2054h1v1h-1zM16%2054h1v1h-1zM18%2054h1v1h-1zM20%2054h1v1h-1zM24%2054h1v1h-1zM28%2054h1v1h-1zM32%2054h1v1h-1zM36%2054h1v1h-1zM40%2054h1v1h-1zM44%2054h1v1h-1zM48%2054h1v1h-1zM52%2054h1v1h-1zM56%2054h1v1h-1zM60%2054h1v1h-1zM2%2056h1v1h-1zM6%2056h1v1h-1zM10%2056h1v1h-1zM14%2056h1v1h-1zM18%2056h1v1h-1zM22%2056h1v1h-1zM26%2056h1v1h-1zM30%2056h1v1h-1zM42%2056h1v1h-1zM46%2056h1v1h-1zM50%2056h1v1h-1zM54%2056h1v1h-1zM58%2056h1v1h-1zM62%2056h1v1h-1zM0%2058h1v1h-1zM4%2058h1v1h-1zM8%2058h1v1h-1zM12%2058h1v1h-1zM16%2058h1v1h-1zM20%2058h1v1h-1zM24%2058h1v1h-1zM28%2058h1v1h-1zM32%2058h1v1h-1zM36%2058h1v1h-1zM40%2058h1v1h-1zM44%2058h1v1h-1zM46%2058h1v1h-1zM48%2058h1v1h-1zM52%2058h1v1h-1zM56%2058h1v1h-1zM60%2058h1v1h-1zM62%2058h1v1h-1zM2%2060h1v1h-1zM6%2060h1v1h-1zM10%2060h1v1h-1zM14%2060h1v1h-1zM18%2060h1v1h-1zM22%2060h1v1h-1zM26%2060h1v1h-1zM30%2060h1v1h-1zM34%2060h1v1h-1zM42%2060h1v1h-1zM46%2060h1v1h-1zM50%2060h1v1h-1zM58%2060h1v1h-1zM62%2060h1v1h-1zM0%2062h1v1h-1zM2%2062h1v1h-1zM4%2062h1v1h-1zM8%2062h1v1h-1zM12%2062h1v1h-1zM16%2062h1v1h-1zM20%2062h1v1h-1zM24%2062h1v1h-1zM26%2062h1v1h-1zM28%2062h1v1h-1zM32%2062h1v1h-1zM36%2062h1v1h-1zM40%2062h1v1h-1zM42%2062h1v1h-1zM44%2062h1v1h-1zM48%2062h1v1h-1zM52%2062h1v1h-1zM56%2062h1v1h-1zM58%2062h1v1h-1zM60%2062h1v1h-1z%27%2F%3E%3C%2Fsvg%3E");
 }
 
-/* ── Materialising ───────────────────────────────────────────────────────────
-   THE SAME PROPERTY THAT FLICKERED IS WHAT MAKES A STATE ARRIVE.
+/* ── The dithered state field ────────────────────────────────────────────────
+   THESE CLASSES NO LONGER PAINT ANYTHING. They are the statement of intent —
+   which control wants a field, and whether it can be the selected one — and
+   `lib/dither-surface.ts` reads them and hands each element a canvas.
 
-   A mask over a lattice of single pixels has no in-between state: every dot it
-   touches is either inside or outside, so a moving mask edge makes dots snap
-   on one at a time. Looped slowly that is a fault — it reads as flickering.
-   Swept once over 240ms it is exactly the thing this treatment wanted all
-   along: the field ASSEMBLES, dot by dot, from the middle outward.
+   They used to be a masked pseudo-element, and it got very close. What it
+   could never do is change state without something moving across the lattice:
+   a mask is BINARY at its boundary, so a band growing or a window opening
+   switches whole ranks of dots on at once, and each of those is an event the
+   eye catches. Six animations were tried against that and every one failed the
+   same way. Painting the cells directly removes the boundary — a state change
+   becomes a thousand simultaneous fades — which is the technique dither-kit
+   (MIT) is built on and which no amount of CSS reaches.
 
-   So the fade stays on opacity, which is quick and short, and the mask's soft
-   edge does the materialising underneath it. The band does the same by growing
-   from nothing to its full width, so the outline builds rank by rank instead
-   of switching on. */
+   The classes stayed because 127 call sites already say the right thing. Only
+   who honours them changed, and that is deliberately one file rather than a
+   sweep, so this is reversible.
 
-/* ── The mark ────────────────────────────────────────────────────────────────
-   THE SELECTED TREATMENT, ON THE THING THAT SLIDES.
+     dither-fill   a field on approach
+     dither-bloom  a field on approach, plus the accent band when selected
+     dither-mark   both, permanently — for an element that IS the mark
 
-   Tabs and Segmented already move a mark between cells with a crossfade, and
-   the rail can do the same. Putting the field on THAT element rather than on
-   the button means the whole treatment — tile, texture and accent band —
-   travels together when the selection moves, instead of the tile sliding
-   while the texture pops out here and in over there.
-
-   It also replaces the canvas that used to do this by measuring the active
-   control and drawing a halo at its coordinates. That worked until anything
-   moved: measurements go stale, and the halo was left a row behind on scroll.
-   A mark that IS an element cannot be stale about where it is. */
-@utility dither-mark {
-  position: relative;
-  isolation: isolate;
-  --dither-radius: 6px;
-  --dither-offset: 3px;
-  --dither-band: 4px;
-
-  &::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    border-radius: inherit;
-    pointer-events: none;
-    background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
-    background-image: linear-gradient(
-      115deg,
-      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 0%,
-      var(--theme-border-strong) 50%,
-      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 100%
-    );
-    background-size: 200% 100%;
-    -webkit-mask-image: var(--dither-tile),
-      linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%),
-      linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
-      radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile),
-      linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%),
-      linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
-      radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
-    /* THE CENTRE-OUT MATERIALISE IS IN THE SHAPE, NOT IN AN ANIMATION.
-       Every attempt to animate it failed the same way, and it took four to
-       see that they were one failure: a window that opens has a FRONT, and a
-       front crossing a control is a ripple; a radial that grows has no front
-       but sweeps each rank of dots on in quick succession, which is chop. Mask
-       geometry cannot be animated over a dot lattice elegantly. It never
-       could.
-       So nothing moves. This fourth layer weights the field permanently
-       toward the centre — middle dots at full strength, edge dots faint — and
-       a plain opacity ramp then brings the centre up first and the edges last
-       ON ITS OWN. The emergence is a consequence of the shape, and the only
-       thing animating is opacity, which is continuous by nature and cannot
-       chop. */
-    -webkit-mask-size: var(--dither-pitch) var(--dither-pitch), 108% 100%, 100% 116%, 165% 165%;
-    mask-size: var(--dither-pitch) var(--dither-pitch), 108% 100%, 100% 116%, 165% 165%;
-    -webkit-mask-position: 0 0, center, center, center;
-    mask-position: 0 0, center, center, center;
-    -webkit-mask-composite: source-in, source-in, source-in;
-    mask-composite: intersect, intersect, intersect;
-    /* Eased back on purpose: this sits on a solid tile, so it should read as
-       texture IN that surface rather than as a second surface over it. */
-    opacity: 0.55;
-    animation: dither-drift-light 44s linear infinite;
-  }
-
-  &::after {
-    content: '';
-    position: absolute;
-    inset: calc(var(--dither-offset) * -1);
-    z-index: -1;
-    border-radius: calc(var(--dither-radius) + var(--dither-offset));
-    pointer-events: none;
-    border: var(--dither-band) solid var(--theme-accent);
-    /* The outer rank fades — see the note in `dither-bloom`. */
-    -webkit-mask-image: var(--dither-tile),
-      linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 9%, #000 91%, rgb(0 0 0 / 0) 100%),
-      linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 13%, #000 87%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile),
-      linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 9%, #000 91%, rgb(0 0 0 / 0) 100%),
-      linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 13%, #000 87%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: var(--dither-pitch) var(--dither-pitch), 118% 100%, 100% 126%;
-    mask-size: var(--dither-pitch) var(--dither-pitch), 118% 100%, 100% 126%;
-    -webkit-mask-position: 0 0, center, center;
-    mask-position: 0 0, center, center;
-    -webkit-mask-composite: source-in, source-in;
-    mask-composite: intersect, intersect;
-    animation: dither-edge-in 460ms cubic-bezier(0.4, 0, 0.2, 1) 60ms both;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    &::before,
-    &::after { animation: none; }
-  }
+   THEY MUST NOT SET `position`. These are Tailwind utilities, so they carry
+   the same specificity as `absolute` and win purely by coming later in the
+   sheet — which silently turned an absolutely positioned mark into a relative
+   one, collapsed it to 2x2, and took its background with it. The canvas sets
+   `position` and `isolation` on its host itself, and only when the host has
+   none, so there is nothing for these to declare. */
+@utility dither-fill {
+  --dither-marked: 1;
 }
 
 @utility dither-bloom {
-  position: relative;
-  isolation: isolate;
-  /* The control's own radius, so the outset band can match its curve. Most
-     controls here are `rounded-md`; a call site with a different radius sets
-     this alongside it. */
-  --dither-radius: 6px;
-  --dither-offset: 3px;
-  --dither-band: 4px;
-
-  /* TWO SHAPES, BECAUSE HOVER AND SELECTED ARE NOT THE SAME STATEMENT.
-     `::before` is the interior fill — a surface arriving under the pointer.
-     `::after` is the accent band OUTSIDE the control — the mark of the one
-     that is chosen, and the only place here that carries the accent colour. */
-  &::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    border-radius: inherit;
-    pointer-events: none;
-    background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
-    background-image: linear-gradient(
-      115deg,
-      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 0%,
-      var(--theme-border-strong) 50%,
-      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 100%
-    );
-    background-size: 200% 100%;
-    -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
-      radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
-      radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
-    /* THE CENTRE-OUT MATERIALISE IS IN THE SHAPE, NOT IN AN ANIMATION.
-       Every attempt to animate it failed the same way, and it took four to
-       see that they were one failure: a window that opens has a FRONT, and a
-       front crossing a control is a ripple; a radial that grows has no front
-       but sweeps each rank of dots on in quick succession, which is chop. Mask
-       geometry cannot be animated over a dot lattice elegantly. It never
-       could.
-       So nothing moves. This fourth layer weights the field permanently
-       toward the centre — middle dots at full strength, edge dots faint — and
-       a plain opacity ramp then brings the centre up first and the edges last
-       ON ITS OWN. The emergence is a consequence of the shape, and the only
-       thing animating is opacity, which is continuous by nature and cannot
-       chop. */
-    -webkit-mask-size: var(--dither-pitch) var(--dither-pitch), 108% 100%, 100% 116%, 165% 165%;
-    mask-size: var(--dither-pitch) var(--dither-pitch), 108% 100%, 100% 116%, 165% 165%;
-    -webkit-mask-position: 0 0, center, center, center;
-    mask-position: 0 0, center, center, center;
-    -webkit-mask-composite: source-in, source-in, source-in;
-    mask-composite: intersect, intersect, intersect;
-    opacity: 0;
-    /* THE MASK CARRIES THE REVEAL, SO IT HAS TO OUTLAST THE FADE.
-       Measured off the page: opacity hit 0.99 at 197ms while the mask was
-       still at 93%, so the field was fully lit before it had finished
-       assembling, and the whole thing read as a switch. The fade is now brief
-       and early — it only has to stop the first dots appearing from nothing —
-       and the mask spends half a second spreading the field outward, which is
-       the part that looks like materialising. */
-    /* Long enough to watch the centre arrive before the edges do. */
-    transition: opacity 380ms cubic-bezier(0.33, 0, 0.2, 1);
-    animation: dither-drift-light 44s linear infinite;
-  }
-
-  &::after {
-    content: '';
-    position: absolute;
-    inset: calc(var(--dither-offset) * -1);
-    z-index: -1;
-    border-radius: calc(var(--dither-radius) + var(--dither-offset));
-    pointer-events: none;
-    border: 1px solid color-mix(in oklab, var(--theme-accent) 22%, transparent);
-    /* THE BAND'S OUTER RANK FADES. A border ends flush, which on a dot field
-       reads as a hard dotted rule drawn around the control rather than as a
-       field the control is sitting in. Two fades tight to the box edges dim
-       only the outermost dots, so the outline has somewhere to end. */
-    -webkit-mask-image: var(--dither-tile),
-      linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 9%, #000 91%, rgb(0 0 0 / 0) 100%),
-      linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 13%, #000 87%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile),
-      linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 9%, #000 91%, rgb(0 0 0 / 0) 100%),
-      linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 13%, #000 87%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: var(--dither-pitch) var(--dither-pitch), 118% 100%, 100% 126%;
-    mask-size: var(--dither-pitch) var(--dither-pitch), 118% 100%, 100% 126%;
-    -webkit-mask-position: 0 0, center, center;
-    mask-position: 0 0, center, center;
-    -webkit-mask-composite: source-in, source-in;
-    mask-composite: intersect, intersect;
-    opacity: 0;
-    /* THE BAND GROWS, AND THE POP WAS THE CURVE, NOT THE GROWTH.
-       A border sweeping outward crosses the tile a ROW OF DOTS AT A TIME, and
-       each row is a discrete event. That is unavoidable — but it is only
-       VISIBLE when a row lands at a moment when nothing else is moving, and a
-       decelerating curve arranges exactly that: the last row arrived during
-       the long crawl at the end, in its own silence, so it read as a pop
-       rather than as the last step of a motion.
-       A near-linear curve keeps the edge travelling until it stops, so every
-       row lands mid-movement. Starting at 1px rather than 0 removes one of
-       the two events outright — at a 4px band on a 2px lattice there are only
-       ever two — and the colour travels alongside on the same clock. */
-    transition:
-      opacity 140ms ease 80ms,
-      border-width 420ms cubic-bezier(0.35, 0.15, 0.55, 1) 60ms,
-      border-color 460ms cubic-bezier(0.4, 0, 0.2, 1) 60ms;
-  }
-
-  &:hover::before,
-  &:focus-visible::before {
-    opacity: 1;
-  }
-
-  &[data-status='active']::before,
-  &[data-active='true']::before,
-  &[aria-current='true']::before,
-  &[aria-current='page']::before,
-  &[aria-selected='true']::before,
-  &[aria-pressed='true']::before {
-    opacity: 0.55;
-  }
-
-  /* The band arrives just behind the fill, which is what makes selecting read
-     as materialising rather than switching. */
-  &[data-status='active']::after,
-  &[data-active='true']::after,
-  &[aria-current='true']::after,
-  &[aria-current='page']::after,
-  &[aria-selected='true']::after,
-  &[aria-pressed='true']::after {
-    opacity: 1;
-    border-width: var(--dither-band);
-    border-color: var(--theme-accent);
-  }
-
-
-  @media (prefers-reduced-motion: reduce) {
-    &::before,
-    &::after { animation: none; transition: none; }
-  }
+  --dither-marked: 1;
 }
 
-/* The name 126 call sites already use for the HOVER case. Identical: selection
-   differs by gaining a solid tile beneath, not by losing the texture. */
-
-@keyframes dither-edge-in {
-  from {
-    border-width: 1px;
-    border-color: color-mix(in oklab, var(--theme-accent) 22%, transparent);
-  }
-  to {
-    border-width: var(--dither-band);
-    border-color: var(--theme-accent);
-  }
-}
-
-@media (min-resolution: 2dppx) {
-  :root {
-    --dither-pitch: 32px;
-  }
-}
-
-/* ── The drift ───────────────────────────────────────────────────────────────
-   A WHISPER OF LIFE UNDER THE LATTICE, and no more than that.
-
-   The dots never move: a fixed mask cuts them, and underneath a very shallow
-   gradient of the same colour drifts across. What changes is how lit each dot
-   is, by about a tenth, over most of a minute. Louder than this and it becomes
-   a band you can watch crossing the control — which is what it was, and why
-   the quieter version was the better one to come back to. */
-@keyframes dither-drift-light {
-  from { background-position: 0% 50%; }
-  to { background-position: 100% 50%; }
-}
-
-@utility dither-fill {
-  position: relative;
-  isolation: isolate;
-
-  &::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    border-radius: inherit;
-    pointer-events: none;
-    background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
-    background-image: linear-gradient(
-      115deg,
-      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 0%,
-      var(--theme-border-strong) 50%,
-      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 100%
-    );
-    background-size: 200% 100%;
-    -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
-      radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
-      radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
-    /* THE CENTRE-OUT MATERIALISE IS IN THE SHAPE, NOT IN AN ANIMATION.
-       Every attempt to animate it failed the same way, and it took four to
-       see that they were one failure: a window that opens has a FRONT, and a
-       front crossing a control is a ripple; a radial that grows has no front
-       but sweeps each rank of dots on in quick succession, which is chop. Mask
-       geometry cannot be animated over a dot lattice elegantly. It never
-       could.
-       So nothing moves. This fourth layer weights the field permanently
-       toward the centre — middle dots at full strength, edge dots faint — and
-       a plain opacity ramp then brings the centre up first and the edges last
-       ON ITS OWN. The emergence is a consequence of the shape, and the only
-       thing animating is opacity, which is continuous by nature and cannot
-       chop. */
-    -webkit-mask-size: var(--dither-pitch) var(--dither-pitch), 108% 100%, 100% 116%, 165% 165%;
-    mask-size: var(--dither-pitch) var(--dither-pitch), 108% 100%, 100% 116%, 165% 165%;
-    -webkit-mask-position: 0 0, center, center, center;
-    mask-position: 0 0, center, center, center;
-    -webkit-mask-composite: source-in, source-in, source-in;
-    mask-composite: intersect, intersect, intersect;
-    opacity: 0;
-    /* THE MASK CARRIES THE REVEAL, SO IT HAS TO OUTLAST THE FADE.
-       Measured off the page: opacity hit 0.99 at 197ms while the mask was
-       still at 93%, so the field was fully lit before it had finished
-       assembling, and the whole thing read as a switch. The fade is now brief
-       and early — it only has to stop the first dots appearing from nothing —
-       and the mask spends half a second spreading the field outward, which is
-       the part that looks like materialising. */
-    /* Long enough to watch the centre arrive before the edges do. */
-    transition: opacity 380ms cubic-bezier(0.33, 0, 0.2, 1);
-    animation: dither-drift-light 44s linear infinite;
-  }
-
-  &:hover::before,
-  &:focus-visible::before {
-    opacity: 1;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    &::before { animation: none; transition: none; }
-  }
+@utility dither-mark {
+  --dither-marked: 1;
 }
 
 /* ── View transitions (spec §9) — REMOVED ────────────────────────────────────

@@ -1,8 +1,6 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
-  import DitherLayer, { bleedFor, rectIn, spreadFor, type RectShape } from './DitherLayer.svelte'
-  import { buttonClasses, splitLayoutClasses, type ButtonSize, type ButtonVariant } from './button'
-  import type { DitherSource, DitherTone } from '@/lib/dither'
+  import { buttonClasses, type ButtonSize, type ButtonVariant } from './button'
 
   interface Props extends HTMLButtonAttributes {
     variant?: ButtonVariant
@@ -43,150 +41,36 @@
     ...rest
   }: Props = $props()
 
-  // The field carries the control's own meaning. A destructive action reaching
-  // for you in gold would be the wrong promise.
-  const TONES: Partial<Record<ButtonVariant, DitherTone>> = {
-    primary: 'accent',
-    'accent-soft': 'accent',
-    danger: 'danger',
-    'danger-outline': 'danger',
-  }
-
   // A disabled control must not reach for the pointer — the bloom reads as an
   // invitation, and a dimmed button that still blooms is telling two stories.
   const wantsBloom = $derived((bloom ?? variant !== 'link') && !disabled)
 
-  let wrap = $state<HTMLSpanElement | null>(null)
-  let rect = $state<RectShape | null>(null)
-  let radius = $state(0)
-
-  /** Proportional to the measured control — see `spreadFor`. */
-  const spread = $derived(rect ? spreadFor(Math.min(rect.w, rect.h)) : 0)
-
-  /** The canvas is sized for the LARGEST halo this button could want, because
-   *  it is created once and the reach is only known after measuring. A button
-   *  is never taller than the md size, so the ceiling of `spreadFor` bounds it. */
-  const BLEED = bleedFor([spreadFor(9999)])
-  // ZERO, deliberately. The field is strictly outside (`inner: 0`), so any pad
-  // is a ring of guaranteed emptiness between the border and the first dot —
-  // it reads as the treatment floating off the control. The radius is taken
-  // raw for the same reason: padding the rect would need padding the corner to
-  // match, and both were just pushing the field away.
-  const PAD = 0
-  /** Proportional to the control: a fixed reach makes a small button wear a
-   *  cloud and lets neighbours in a toolbar merge into one. */
-
-  // Measured on APPROACH, not on mount: the page reflows constantly and a rect
-  // cached at mount is wrong by the time anyone hovers it.
-  const arm = () => {
-    if (!wrap || !ref) return
-    rect = rectIn(wrap, ref, PAD, BLEED)
-    radius = parseFloat(getComputedStyle(ref).borderTopLeftRadius) || 0
-  }
-  const disarm = () => (rect = null)
-
-  // `inner: 0, rim: 0` keeps the interior CLEAN. Dots behind the label made the
-  // transparent variants unreadable, so the bloom is strictly outside — and it
-  // takes the button's own radius so the corners stay corners rather than
-  // squaring off under the densest dots.
-  // The wrapper becomes the flex child, so anything positioning the button
-  // inside its parent has to travel with it.
-  const split = $derived(splitLayoutClasses(className as string | null))
-
-  const sources = $derived<DitherSource[]>(
-    rect
-      ? [
-          {
-            id: 'bloom',
-            kind: 'rect',
-            ...rect,
-            radius,
-            spread,
-            strength: 0.95,
-            inner: 0,
-            rim: 0,
-            tone: TONES[variant] ?? 'neutral',
-          },
-        ]
-      : [],
-  )
+  /**
+   * THE FIELD IS PAINTED, NOT MEASURED. It used to be a bled canvas in a
+   * wrapper span, with the button's rect measured into it on approach and a
+   * halo drawn strictly outside — which needed a wrapper, a bleed, a rect and
+   * a re-measure on every hover, and `splitLayoutClasses` to move a call
+   * site's layout classes onto the wrapper so the control still sat where it
+   * was told.
+   *
+   * All of it is gone. The `dither-fill` marker is the whole declaration now:
+   * `lib/dither-surface.ts` hands the button a field and paints it per cell,
+   * the same way the rail, the tabs and every marked row get theirs. No
+   * wrapper, so a call site's classes land on the button again.
+   */
 </script>
 
 <!-- The one button. Reuse everywhere — do not re-style buttons inline. -->
-{#if wantsBloom}
-  <span bind:this={wrap} class={`relative inline-flex ${split.outer}`}>
-    <!-- `organic={0.45}` — and the reason it belongs HERE but not on the CSS
-         fill is the distinction that finally made the two agree.
-
-         Pure Bayer is fine at CONSTANT density: the matrix distributes dots
-         evenly and the eye reads texture. That is what the hover/selection
-         fill is, and it looks right with no noise at all.
-
-         A HALO IS A GRADIENT, and ordered dithering ramped across a gradient
-         is where the matrix shows itself — its thresholds step in ranks, so
-         the field renders as mechanical halftone BANDS, and at mid density as
-         a checkerboard. The clump-noise breaks those ranks up. It is not
-         decoration; it is what stops a gradient looking like a printer.
-
-         So: no noise on the flat fill, noise on the ramped field. One matrix,
-         one grain, and the difference between them is a property of what each
-         is drawing rather than a taste setting.
-
-         `alphaFloor` near zero is what makes the band TAPER. The engine lights
-         a dot at `alphaFloor + (maxAlpha - alphaFloor) * density`, so the
-         stock floor of 0.18 lit even the sparsest outermost dot at a
-         perfectly visible level — the field thinned with distance but never
-         dimmed, which is what made a wide band read as a cloud with an edge.
-         At 0.02 the outer dots approach nothing while `maxAlpha` 0.85 keeps
-         the boundary strong.
-
-         Grain is the engine's own default now (2px pitch, 1px dots) rather
-         than an override here, so every field in the app shares it. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0.45} alphaFloor={0.02} maxAlpha={0.85} />
-    <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
-         call site that wants its own hover behaviour does not silently replace
-         the bloom's — both run.
-
-         `relative` on the control is load-bearing: the field's canvas is
-         absolutely positioned, so it paints ABOVE a static in-flow sibling no
-         matter which comes first in the DOM. Positioning the control puts the
-         two on the same footing, paint order falls back to source order, and
-         the field — first in the markup — sits behind. Without it the band
-         lies over the button's own edges instead of ringing them. -->
-    <button
-      bind:this={ref}
-      {type}
-      {disabled}
-      class={buttonClasses({ variant, size, className: `relative ${split.inner}`.trim() || null })}
-      {...rest}
-      onmouseenter={(e) => {
-        arm()
-        rest.onmouseenter?.(e)
-      }}
-      onmouseleave={(e) => {
-        disarm()
-        rest.onmouseleave?.(e)
-      }}
-      onfocus={(e) => {
-        arm()
-        rest.onfocus?.(e)
-      }}
-      onblur={(e) => {
-        disarm()
-        rest.onblur?.(e)
-      }}
-    >
-      {@render children?.()}
-    </button>
-  </span>
-{:else}
-  <button
-    bind:this={ref}
-    {type}
-    {disabled}
-    class={buttonClasses({ variant, size, className: className as string | null })}
-    {...rest}
-  >
-    {@render children?.()}
-  </button>
-{/if}
+<button
+  bind:this={ref}
+  {type}
+  {disabled}
+  class={buttonClasses({
+    variant,
+    size,
+    className: [wantsBloom ? 'dither-fill' : '', className as string | null].filter(Boolean).join(' '),
+  })}
+  {...rest}
+>
+  {@render children?.()}
+</button>

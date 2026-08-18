@@ -47,7 +47,8 @@
           aria-hidden="true"
           in:receiveMark={{ key: 'mark' }}
           out:sendMark={{ key: 'mark' }}
-          class="dither-mark absolute inset-0 rounded bg-raised [--dither-radius:4px]"
+          data-dither-band="0"
+          class="dither-mark absolute inset-0 rounded bg-raised"
         ></span>
       {/if}
       <span class="relative">
