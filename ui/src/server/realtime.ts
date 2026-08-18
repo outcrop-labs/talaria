@@ -112,6 +112,15 @@ export type UserEvent =
   /** Reserved, and the reason this topic is named for the person: the bell
    *  currently polls because nothing publishes when a notification is written. */
   | { type: 'notification'; notificationId: string }
+  /** Something was appended to the person's daily brief.
+   *
+   *  ID-SHAPED LIKE EVERY OTHER EVENT HERE, and on this topic that is not a
+   *  formality: the brief is the densest private thing in the product — one
+   *  person's approvals, blocked work and unread DMs on a single page — so an
+   *  event carrying so much as a title would make the fan-out a second read
+   *  path with no ACL on it. `seq` is the append cursor, which is all a client
+   *  needs to decide whether the page it is holding is behind. */
+  | { type: 'brief'; briefId: string; seq: number }
 
 /** Publish a run transition to `run:<id>`.
  *
@@ -144,7 +153,9 @@ export function publishUser(userId: string, event: UserEvent): void {
   const wire: UserEvent =
     event.type === 'run'
       ? { type: 'run', runId: event.runId, state: event.state }
-      : { type: 'notification', notificationId: event.notificationId }
+      : event.type === 'brief'
+        ? { type: 'brief', briefId: event.briefId, seq: event.seq }
+        : { type: 'notification', notificationId: event.notificationId }
   void getRedis()
     .publish(`user:${userId}`, JSON.stringify(wire))
     .catch((e: unknown) => console.error(`[realtime] publish user:${userId} failed:`, e))

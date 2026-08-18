@@ -1815,6 +1815,15 @@ const MIGRATIONS: string[] = [
   // rather than a hint: two sweeps racing to append cannot both win a seq.
   `create unique index if not exists daily_brief_entries_seq_idx on daily_brief_entries(brief_id, seq)`,
   `create index if not exists daily_brief_entries_key_idx on daily_brief_entries(brief_id, source_key)`,
+  // WHICH APPEND WROTE THIS ROW. The timeline groups entries into "at 11:04,
+  // three things moved", and the first version of that grouping derived the
+  // batch by truncating `created_at` to the second — which is correct exactly
+  // as long as two appends never land in the same second. They can: a realtime
+  // nudge and a scheduler tick reach `sweepBrief` together, and the whole point
+  // of the timeline is that it is an honest record of when things were learned.
+  // A batch is a fact about the write, so it is stored rather than inferred.
+  `alter table daily_brief_entries add column if not exists batch uuid`,
+  `create index if not exists daily_brief_entries_batch_idx on daily_brief_entries(brief_id, batch)`,
 
 ]
 

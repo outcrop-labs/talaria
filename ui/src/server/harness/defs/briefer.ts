@@ -593,3 +593,373 @@ export const briefingChatHarness = defineHarness<BriefingChatInput, string>({
     },
   ],
 })
+
+// ── 3. The daily brief: the opening read, and the day's deltas ───────────────
+//
+// THE SAME AGENT, A DIFFERENT DOCUMENT. `briefer:brief` above writes a glance
+// that is thrown away and rewritten the moment the attention fingerprint moves.
+// These two write into `daily_brief_entries`, which is APPEND-ONLY: what the
+// lede says at 07:00 is what it says at 18:00, and every delta note is a row
+// that stands forever next to the ones before it.
+//
+// That permanence is the whole reason these are separate harnesses rather than
+// two more scopes on `briefer:brief`. A scope changes the subject; this changes
+// the CONTRACT. A briefing may safely be verbose because the next fingerprint
+// erases it — a lede may not, because nobody will ever rewrite it, and a delta
+// note may not, because ten of them accumulate down one page over a day. Both
+// prompts below are therefore much harder on length than the briefing's, and
+// both are graded on it.
+//
+// THE MODEL IS THE OWNER'S ASSISTANT, for the reason stated at the top of this
+// file and with the same empty chain. A daily brief is a fuller reading of the
+// private attention state the briefing only glances at, so if anything the
+// argument is stronger here.
+
+export interface DailyLedeInput {
+  /** Local calendar date the brief is for (YYYY-MM-DD). */
+  date: string
+  zone: string
+  /** `[section] title — recommendation`, one per item already on the page. */
+  lines: string[]
+}
+
+const LEDE_RULES =
+  'Write the opening paragraph of a daily brief. Rules: 2-3 sentences, no bullets, no heading, no greeting, no sign-off. ' +
+  'Say what today actually amounts to and what to do first. Name the specific thing, not the category. ' +
+  'Where two items are the same problem, say so; where they are not, do not connect them. ' +
+  'Ground every word in the items below — invent nothing, and never invent a link, an id or a time.\n' +
+  UNTRUSTED_INPUT
+
+const ledePrompt = (input: DailyLedeInput): string => {
+  const head = `[Automated daily brief for ${input.date} (${input.zone}) — no human sent this.]\nYou are opening your owner's day, before they start it.\n`
+  if (input.lines.length === 0) {
+    // THE EMPTY MORNING IS A REAL MORNING and it gets a real lede. The failure
+    // this branch exists to prevent is the model treating "nothing waiting" as
+    // an error state and apologising for the brief it was asked to write.
+    return `${head}Nothing is waiting on them. Write ONE short sentence saying the day is clear. No bullets, no preamble.`
+  }
+  return `${head}${LEDE_RULES}\n\n${input.lines.map((l) => `- ${l}`).join('\n')}`
+}
+
+const LEDE_FIXTURE: DailyLedeInput = {
+  date: '2026-08-17',
+  zone: 'UTC',
+  lines: [
+    '[action] Sign off "Vendor webhook signature check"? — Agent work is finished and waiting on a reviewer.',
+    '[action] Unblock "Ledger migration"? — The ticket is blocked and an agent has stopped on it.',
+    '[comms] Reply to Priya? — Read the latest message, then reply or mark the conversation read.',
+    '[schedule] Platform standup',
+  ],
+}
+
+/** Sentences, roughly. Splitting on terminal punctuation is crude and it is
+ *  enough: what is being graded is "did it write a paragraph or an essay", and
+ *  the failure it catches (a nine-sentence lede) is not near the boundary. */
+const sentences = (value: string): string[] =>
+  value
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+export const dailyBriefLedeHarness = defineHarness<DailyLedeInput, string>({
+  id: 'briefer:daily-open',
+  label: 'Daily brief — opening',
+  job: 'Writes the opening read on the owner’s day, once, at the top of a brief that is never rewritten.',
+  requires: ['instruction-following'],
+  floor: {
+    // Nothing refuses, and here that is a stronger statement than usual: the
+    // items are appended to the page by `daily-brief.ts` whether or not a model
+    // was reachable, and `fallbackLede` writes a counted sentence when one was
+    // not. A weaker model costs the owner synthesis, never content.
+    capabilities: [],
+    refuseBelow: false,
+    note: 'A smaller model writes a flatter opening; every item it summarizes is already listed underneath it on the page.',
+  },
+  model: { chain: [] },
+  render: (input): Message[] => [{ role: 'user', content: ledePrompt(input) }],
+  output: { kind: 'text', clean: (raw) => raw.trim() || null },
+  // The caller catches this and falls back to a counted sentence, so a null is
+  // a slightly duller brief rather than a missing one.
+  onFailure: 'null',
+  guard: {
+    // Same reasoning as `briefer:brief`: NOT `zero_tool_claim` (reporting what
+    // happened in the workspace is the job) and NOT `fabricated_outage` (a
+    // blocked ticket and a failed run are real things the brief must name).
+    rules: ['secret_leak', 'pii_leak'],
+    // Redacted for the same reason, and more so: a briefing is replaced within
+    // the hour, whereas a lede written over a ticket title someone pasted a key
+    // into is on that page for the rest of the day and in the mirrored artifact
+    // afterwards.
+    redact: true,
+  },
+  evals: [
+    {
+      name: 'opens the day in a short paragraph, not a list',
+      band: 'easy',
+      input: LEDE_FIXTURE,
+      check: (value) => {
+        // THE FLOOR FIRST. Everything below it is an upper bound — not a list,
+        // not too many sentences — and a fourteen-character non-answer
+        // satisfies all of them. That is the one-sided assertion the eval
+        // sweep's garbage pass exists to catch, and it caught this one.
+        const thin = belowAnswerFloor(value, {
+          minChars: 40,
+          mentions: ['ledger', 'webhook', 'priya', 'standup', 'review', 'block'],
+        })
+        if (thin) return thin
+        if (itemLines(value).length > 0) return 'wrote a bulleted list where an opening paragraph was asked for'
+        const count = sentences(value).length
+        return count <= 4 ? null : `wrote ${count} sentences where 2-3 were asked for`
+      },
+    },
+    {
+      name: 'names the specific blocked work rather than its category',
+      band: 'standard',
+      input: LEDE_FIXTURE,
+      check: (value) => {
+        const v = value.toLowerCase()
+        // The blocked ticket is the one item in the fixture with an agent
+        // stopped behind it, and the prompt says name the specific thing. A
+        // lede that says "you have some tickets" has not read its input.
+        if (!v.includes('ledger')) return 'never named "Ledger migration", the one item with an agent stopped on it'
+        const ref = INVENTED_REF.exec(value)
+        return ref ? `cited "${ref[0]}" — nothing in the input carries a link or an id, so it was invented` : null
+      },
+    },
+    {
+      name: 'a clear morning gets one clear sentence, not an apology',
+      band: 'hard',
+      input: { date: '2026-08-17', zone: 'UTC', lines: [] },
+      check: (value) => {
+        if (!value.trim()) return 'the all-clear lede was empty'
+        const thin = belowAnswerFloor(value, { minChars: 12, mentions: ['clear', 'nothing', 'quiet', 'caught up', 'no ', 'open'] })
+        if (thin) return thin
+        if (itemLines(value).length > 0) return 'wrote a bulleted list for a day with nothing in it'
+        // The specific failure: treating an empty input as a fault of its own
+        // and reporting it as one. Nothing waiting is good news.
+        if (/\b(?:unable|could not|couldn't|no data|error|failed to)\b/i.test(value)) {
+          return 'reported the empty day as a failure rather than as good news'
+        }
+        return value.length <= 240 ? null : `wrote ${value.length} chars where one short sentence was asked for`
+      },
+    },
+  ],
+})
+
+export interface DailyNoteInput {
+  /** `kind: title — body`, one per entry this sweep is about to append. */
+  changes: string[]
+}
+
+const NOTE_RULES =
+  'One sentence. No bullets, no heading, no preamble, no greeting. ' +
+  'Say what just moved, naming the specific things. If several changes are one event, say that. ' +
+  'Do not restate the list — the reader can see it directly underneath your sentence. ' +
+  'Ground every word in the changes below; invent nothing.\n' +
+  UNTRUSTED_INPUT
+
+const notePrompt = (input: DailyNoteInput): string =>
+  '[Automated daily-brief update — no human sent this.]\n' +
+  "Your owner's brief is open in front of them and these changes are being appended to it right now.\n" +
+  `${NOTE_RULES}\n\n${input.changes.map((c) => `- ${c}`).join('\n')}`
+
+const NOTE_FIXTURE: DailyNoteInput = {
+  changes: [
+    'resolved: Sign off "Vendor webhook signature check"?',
+    'item: Reply to Dana? — Read the latest message, then reply or mark the conversation read.',
+  ],
+}
+
+export const dailyBriefNoteHarness = defineHarness<DailyNoteInput, string>({
+  id: 'briefer:daily-delta',
+  label: 'Daily brief — update',
+  job: 'Writes the one-line note that heads each batch of changes appended to an open daily brief.',
+  requires: ['instruction-following'],
+  floor: {
+    // The changes are appended with or without this line — `sweepBrief` treats
+    // a null note as "no note" and writes the rows anyway. The reader loses a
+    // sentence of framing above a list they can read for themselves.
+    capabilities: [],
+    refuseBelow: false,
+    note: 'Without a note the update still appends; the reader sees the changed items with no sentence over them.',
+  },
+  model: { chain: [] },
+  render: (input): Message[] => [{ role: 'user', content: notePrompt(input) }],
+  output: { kind: 'text', clean: (raw) => raw.trim() || null },
+  onFailure: 'null',
+  guard: { rules: ['secret_leak', 'pii_leak'], redact: true },
+  evals: [
+    {
+      name: 'narrates a batch in one sentence without restating it',
+      band: 'standard',
+      input: NOTE_FIXTURE,
+      check: (value) => {
+        // Same floor, same reason as the lede fixture above: "not a list, not
+        // too long" is satisfied by saying nothing at all.
+        const thin = belowAnswerFloor(value, {
+          minChars: 24,
+          mentions: ['webhook', 'signature', 'dana', 'sign off', 'review', 'reply'],
+        })
+        if (thin) return thin
+        if (itemLines(value).length > 0) return 'wrote a bulleted list where one sentence was asked for'
+        const count = sentences(value).length
+        if (count > 2) return `wrote ${count} sentences where one was asked for`
+        return value.length <= 220 ? null : `wrote ${value.length} chars for a one-line note`
+      },
+    },
+    {
+      name: 'a single change gets a single specific line',
+      band: 'easy',
+      input: { changes: ['resolved: Sign off "Vendor webhook signature check"?'] },
+      check: (value) => {
+        if (!value.trim()) return 'the update note was empty'
+        // The one thing that moved has a name, and this is the failure mode
+        // that makes a day's worth of these useless: ten identical lines
+        // reading "one item was updated".
+        if (!/webhook|signature|sign off/i.test(value)) return 'never named the one thing that changed'
+        return sentences(value).length <= 2 ? null : 'wrote a paragraph for a single change'
+      },
+    },
+  ],
+})
+
+export interface DailyChatInput {
+  /** The day's document, folded to markdown — what the owner is looking at. */
+  brief: string
+  /** Only what was APPENDED since the owner last read, when there is any.
+   *
+   *  Separate from `brief` rather than folded into it, because "what changed?"
+   *  is the question this surface exists for and a model asked to find the
+   *  delta inside a full document answers it by re-summarizing the document. */
+  since: string | null
+  /** The one line the owner clicked to ask about, if they clicked one. */
+  focus: string | null
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+  content: string
+}
+
+const dailyChatContext = (input: DailyChatInput): string => {
+  const parts = [
+    '[Ephemeral daily-brief chat — this thread is NOT saved. Keep replies short and direct; use tools only if the question truly needs them.]',
+    "Your owner is reading today's brief, which you wrote for them this morning and have been appending to since. It is never rewritten — every line on it is the line that was written when that thing first needed them.",
+    `The brief as it stands:\n${input.brief || '(empty)'}`,
+  ]
+  // The delta is stated as a fact about the log, not as a summary — the model
+  // may quote from it, and the owner can see the same rows on screen.
+  if (input.since) parts.push(`Appended since they last looked:\n${input.since}`)
+  if (input.focus) parts.push(`They are asking about this line specifically:\n${input.focus}`)
+  return parts.join('\n\n')
+}
+
+export const dailyBriefChatHarness = defineHarness<DailyChatInput, string>({
+  id: 'briefer:daily-chat',
+  label: 'Daily brief chat',
+  job: 'Answers the owner’s questions about the daily brief in front of them, saving nothing.',
+  // Same pair as `briefer:chat`, and for the same reason: this is a READ
+  // surface whose hardest questions ("what's actually blocking that ticket?")
+  // are answered from live data or not at all.
+  requires: ['tools', 'tool-select', 'instruction-following'],
+  floor: {
+    capabilities: [],
+    refuseBelow: false,
+    note: 'Runs on anything the owner’s assistant runs on; a plainer answer from a small model is still an answer.',
+  },
+  // The owner's assistant, unassignable — see the top of this file.
+  model: { chain: [] },
+  render: (input): Message[] => [
+    { role: 'user', content: dailyChatContext(input) },
+    { role: 'assistant', content: 'Got it — I have the brief in front of me.' },
+    ...input.history.slice(-HISTORY_TURNS),
+    { role: 'user', content: input.content },
+  ],
+  output: { kind: 'text', clean: (raw) => raw.trim() || null },
+  onFailure: 'null',
+  guard: {
+    // `zero_tool_claim` for the reason `briefer:chat` gives — the prompt permits
+    // tools, so "I've marked those read for you" is a claim worth catching. No
+    // `redact`: nothing here is persisted, and the owner has already watched the
+    // stream token by token, so a redaction would clean a copy nobody reads and
+    // misreport the run as repaired.
+    rules: ['zero_tool_claim', 'secret_leak', 'pii_leak'],
+  },
+  tools: 'own',
+  dryRun: {
+    tools: ['list_boards', 'get_ticket', 'list_tickets', 'list_channels', 'read_channel', 'search_knowledge', 'list_teammates', 'comment', 'post_to_channel', 'message_user'],
+  },
+  // A person is watching a spinner. Same thirty seconds as the briefing panel.
+  holdMs: 30_000,
+  evals: [
+    {
+      name: 'answers "what changed" from the delta, not by re-reading the brief',
+      band: 'standard',
+      input: {
+        brief: '## Needs you\n- **Unblock "Ledger migration"?** `BLOCKED`\n- **Sign off "Vendor webhook signature check"?** `IN REVIEW`\n\n## Waiting on a reply\n- **Reply to Priya?**',
+        since: '- resolved — Sign off "Vendor webhook signature check"?\n- new — Reply to Dana?',
+        focus: null,
+        history: [],
+        content: 'what changed since this morning?',
+      },
+      check: (value) => {
+        if (!value.trim()) return 'the assistant returned nothing'
+        const v = value.toLowerCase()
+        // The two things in the delta. Naming neither means it answered from
+        // the document instead of the change log, which is this surface's
+        // characteristic failure.
+        if (!/webhook|signature|sign off/.test(v)) return 'never mentioned the review that was signed off — the main thing that changed'
+        if (!v.includes('dana')) return 'never mentioned Dana, the one new item since they last looked'
+        // Ledger is in the brief and did NOT change. Reporting it as a change
+        // is the other half of the same failure.
+        return /\bledger\b/.test(v) && /(changed|moved|updated|new)/.test(v.slice(v.indexOf('ledger')))
+          ? 'reported "Ledger migration" as a change when it was in the brief all along'
+          : null
+      },
+    },
+    {
+      name: 'a quiet stretch is reported as quiet rather than padded',
+      band: 'hard',
+      input: {
+        brief: '## Needs you\n- **Unblock "Ledger migration"?** `BLOCKED`',
+        since: null,
+        focus: null,
+        history: [],
+        content: 'anything new?',
+      },
+      check: (value) => {
+        if (!value.trim()) return 'the assistant returned nothing'
+        // NOT a bare 'no' in the mentions list, and not a ten-character floor.
+        // Both were too loose to mean anything: the sweep's canned garbage
+        // reply is the literal string `{"nope": true}`, which is fourteen
+        // characters and contains "no", so this fixture scored a hopeless model
+        // as having correctly reported a quiet afternoon.
+        const thin = belowAnswerFloor(value, {
+          minChars: 24,
+          mentions: ['nothing', 'no new', 'no change', 'same', 'quiet', 'unchanged', 'still', 'since'],
+        })
+        if (thin) return thin
+        // The failure: inventing movement because it was asked what moved.
+        return /\b(?:just (?:came in|landed|arrived)|new (?:ticket|message|approval))\b/i.test(value)
+          ? 'announced something new when nothing had been appended'
+          : null
+      },
+    },
+    {
+      name: 'stays on the line the owner clicked',
+      band: 'easy',
+      input: {
+        brief: '## Needs you\n- **Unblock "Ledger migration"?** `BLOCKED`\n- **Sign off "Vendor webhook signature check"?** `IN REVIEW`',
+        since: null,
+        focus: '- **Unblock "Ledger migration"?** `BLOCKED` — The ticket is blocked and an agent has stopped on it.',
+        history: [],
+        content: 'why is this stuck?',
+      },
+      check: (value, ctx) => {
+        if (!value.trim()) return 'the assistant returned nothing'
+        const v = value.toLowerCase()
+        if (!v.includes('ledger') && !ctx.calls.some((c) => ['get_ticket', 'list_tickets'].includes(c.tool))) {
+          return 'neither named the ticket it was pointed at nor went and looked it up'
+        }
+        return v.includes('webhook') ? 'answered about the other item on the page instead of the one it was pointed at' : null
+      },
+    },
+  ],
+})
