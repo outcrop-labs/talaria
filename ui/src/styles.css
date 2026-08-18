@@ -531,11 +531,35 @@ kbd,
 .vt-view {
   view-transition-name: talaria-view;
 }
+
+/* THE FULL-SCREEN FLASH, and why it is a blend mode rather than an animation.
+   The UA stylesheet sets `mix-blend-mode: plus-lighter` on EVERY view-transition
+   snapshot. That is deliberate — it is what makes the default cross-fade
+   perceptually even — but it assumes the thing every default does: that the two
+   opacities always sum to 1. Break that assumption and the snapshots stop
+   cross-fading and start ADDING, which reads as the screen flashing bright.
+
+   This file broke it twice. `animation: none` below pins BOTH root snapshots at
+   opacity 1, so the rail, strip and backdrop were composited on top of
+   themselves for the length of every navigation — on the light theme, surface
+   plus surface is white. And the view pair's 180ms-out against 320ms-in sums
+   well over 1 through the middle of the transition, washing the content out
+   with it.
+
+   So: normal blending wherever the opacities are ours rather than the UA's.
+   The new snapshot paints above the old, so an opaque `new` covers `old` on its
+   own and the rail still never flickers, which is what `animation: none` was
+   reaching for. */
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;
+  mix-blend-mode: normal;
 }
 @media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(talaria-view),
+  ::view-transition-new(talaria-view) {
+    mix-blend-mode: normal;
+  }
   ::view-transition-old(talaria-view) {
     animation: 180ms ease-out both talaria-vt-out;
   }
