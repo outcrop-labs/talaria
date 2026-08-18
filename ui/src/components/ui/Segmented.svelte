@@ -1,6 +1,7 @@
 <script lang="ts" generics="T extends string">
   import { cn } from '@/lib/cn'
   import { markCrossfade } from '@/lib/motion'
+  import DitherPool from './DitherPool.svelte'
   import { focusRing } from './control'
   import type { SegmentedOption } from './segmented'
 
@@ -27,7 +28,9 @@
   const [sendMark, receiveMark] = markCrossfade()
 </script>
 
-<div class={cn('inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
+<!-- `relative` so the pool has something to anchor to; it costs no layout. -->
+<div class={cn('relative inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
+  <DitherPool key={value} />
   {#each options as o (o.id)}
     <button
       type="button"

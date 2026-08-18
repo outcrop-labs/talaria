@@ -1,5 +1,6 @@
 <script lang="ts" generics="T extends string">
   import { cn } from '@/lib/cn'
+  import DitherPool from './DitherPool.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { markCrossfade } from '@/lib/motion'
   import type { TabItem } from './tabs'
@@ -25,11 +26,16 @@
   const [sendMark, receiveMark] = markCrossfade()
 </script>
 
-<div class={cn('flex items-center gap-1', className)}>
+<!-- `relative` so the pool has something to anchor to; it costs no layout.
+     Tabs are wider and shorter than a segmented cell, so the field needs the
+     steeper falloff to read as concentric rather than as two long bands. -->
+<div class={cn('relative flex items-center gap-1', className)}>
+  <DitherPool key={value} selector="[data-active='true']" falloff={3} spread={20} />
   {#each items as t (t.id)}
     <button
       type="button"
       onclick={() => onChange(t.id)}
+      data-active={value === t.id}
       class={cn(
         'relative flex h-7 items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
         focusGold,
