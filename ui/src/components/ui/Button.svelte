@@ -110,7 +110,16 @@
 <!-- The one button. Reuse everywhere — do not re-style buttons inline. -->
 {#if wantsBloom}
   <span bind:this={wrap} class={`relative inline-flex ${split.outer}`}>
-    <DitherLayer {sources} bleed={BLEED} organic={0.15} />
+    <!-- FINER GRAIN THAN THE DEFAULT, because a band is only a few px wide.
+         At the house 4px pitch an 8px band is two rows of dots, which reads as
+         a dotted outline; at 2px it is four rows of half-size dots and reads as
+         grain hugging the edge. Large fields (the empty-state vignette, the
+         skeleton static) keep the coarser pitch — they have room for it, and
+         finer dots over a whole pane is a lot of fill for no more information.
+
+         A 2px lattice is a subdivision of the 4px one, so this stays in phase
+         with every other field on the page rather than starting a second grid. -->
+    <DitherLayer {sources} bleed={BLEED} organic={0.15} pitch={2} dot={1} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
          the bloom's — both run. -->

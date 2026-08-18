@@ -84,4 +84,5 @@
 </script>
 
 <span bind:this={anchor} class="contents"></span>
-<DitherLayer {sources} {bleed} organic={0.15} />
+<!-- Finer grain, as on Button — see the note there. -->
+<DitherLayer {sources} {bleed} organic={0.15} pitch={2} dot={1} />
