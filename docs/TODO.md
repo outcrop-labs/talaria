@@ -104,6 +104,40 @@ engineering-facing tracker.
     textual uploads contribute contents to prompts in chat + channel paths.
 
 ## High-value, ready to pick up
+- **UI hardening backlog (surveyed 2026-08-17)** — measured, not guessed:
+  `npm run typecheck` reports **0 errors, 125 warnings** across 53 files.
+  Sorted by whether it is a real defect:
+  - **56 × `a11y_label_has_associated_control`** — REAL defect. The label is
+    not tied to its control, so clicking it does not focus the field and a
+    screen reader announces nothing. Densest in `CreateAgentModal` (10),
+    the Admin panels (`AdminOrgGoogleTargets`, `AdminGithubPanel`,
+    `AdminEmailPanel`, 5-6 each), `McpAddServerModal` (5). Fix with a real
+    `for`/`id` pair or by wrapping the control — not by deleting the label.
+  - **~15 interaction a11y** — `a11y_no_static_element_interactions` (9),
+    `a11y_interactive_supports_focus` (3), `a11y_click_events_have_key_events`
+    (3), plus a stray `a11y_no_noninteractive_tabindex`. Click handlers on
+    divs that should be buttons; keyboard users cannot reach them.
+  - **50 × `state_referenced_locally`** — NOT bugs, checked by sampling. It is
+    the intentional pattern: seed local edit state from a prop on a component
+    the caller KEYS, so a new selection remounts fresh
+    (`TemplateDetail.svelte` documents exactly this). Do not "fix" these into
+    `$derived` — that would break editing. The work here is to make them
+    stop reporting (an explicit `svelte-ignore` with the reason on each, or a
+    shared helper) so the warning count means something again. 50 benign
+    warnings are precisely where a real one hides, which is the shape of
+    failure that cost a day in `docs/AGENT-NETWORKING.md`.
+  - **Dense views still owed the tab treatment** — the principle already
+    applied to Agents/MCP/Scheduled tasks, not yet to what is left:
+    `KbDocEditor` (702 lines), `Comms` (625), `SecretsVault` (568),
+    `boards/Board` (540), `Artifacts` (500). Long-scroll views whose options
+    want grouping into tabbed sections with their own routes.
+  - **Visual polish** — spacing, hierarchy, and the empty/loading/error states
+    across the Mercury system. Unscoped; the look-and-feel layer rather than
+    structure or correctness.
+  - NOT debt, recorded so it is not "fixed" by mistake: the `?f=`/`?a=` query
+    params in `Artifacts.svelte` are the deliberate selection-within-place
+    design (`/artifacts/<place>` is the path; folder and open file are
+    selection within it). Routing migration is complete.
 - ✅ **Elevated admin assistants (2026-07-09)** — admins can promote an admin's
   personal assistant to org-wide view/edit: all boards (editor-level, incl.
   governance), all non-DM channels, implicit editor on org-visible KB docs +

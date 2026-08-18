@@ -25,6 +25,8 @@
 // SESSION-SCOPED, per tab: "where I was" is true of a sitting, not of a browser
 // profile, and two tabs open on two channels should not fight over one key.
 
+import { isUnder } from './route-tabs'
+
 export type CommsSelection =
   | { t: 'channel'; id: string }
   | { t: 'agent'; model: string; conversationId: string | null }
@@ -91,6 +93,50 @@ export function restorableSelection(
     return { t: 'agent', model: saved.model, conversationId: null }
   }
   return saved
+}
+
+/**
+ * Is this path inside Comms at all?
+ *
+ * THE REASON THIS IS A FUNCTION AND NOT AN INLINE CHECK. `route.pathname` flips
+ * the instant a nav rail item is clicked, while the view that is leaving stays
+ * mounted for a beat afterwards — so its effects run at least once against a URL
+ * that already points elsewhere. Comms' default-selection effect navigates, and
+ * an effect that navigates while answering a question about a page you are no
+ * longer on drags you back to it.
+ *
+ * That was a live bug and it read as a broken nav rail: leaving Comms recomputed
+ * the selection to null, the effect dutifully restored the remembered channel,
+ * and the click was undone. It is a race against unmount, so it did not happen
+ * every time — you clicked the same rail item two or three times before it took.
+ */
+export function isCommsPath(pathname: string): boolean {
+  return isUnder(pathname, '/comms')
+}
+
+/**
+ * The selection encoded in a Comms URL, or null if there isn't one — INCLUDING
+ * when the path is not Comms' at all.
+ *
+ * The path is the selection and it is discriminated, because a bare one-segment
+ * id would be ambiguous between a channel and an agent model until something
+ * resolved it:
+ *
+ *   /comms/channel/<id>
+ *   /comms/agent/<model>[/<thread>]
+ *
+ * The `/comms` base check is load-bearing rather than defensive: without it any
+ * path whose second segment reads `channel` or `agent` parses as a Comms
+ * selection, and the view is still mounted while the URL is someone else's.
+ */
+export function commsSelectionFromPath(pathname: string): CommsSelection | null {
+  if (!isCommsPath(pathname)) return null
+  const [, , kind, one, two] = pathname.split('/')
+  if (kind === 'channel' && one) return { t: 'channel', id: decodeURIComponent(one) }
+  if (kind === 'agent' && one) {
+    return { t: 'agent', model: decodeURIComponent(one), conversationId: two ? decodeURIComponent(two) : null }
+  }
+  return null
 }
 
 /** Tests only: drop the remembered selection and the load latch. */

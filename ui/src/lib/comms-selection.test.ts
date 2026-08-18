@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test, vi } from 'vitest'
 import {
+  commsSelectionFromPath,
+  isCommsPath,
   readCommsSelection,
   resetCommsSelection,
   restorableSelection,
@@ -123,4 +125,55 @@ test('the value written is the value Comms derives from its own URL', () => {
   writeCommsSelection(fromUrl)
   resetCommsSelection()
   assert.deepEqual(restorableSelection(readCommsSelection(), rosters()), fromUrl)
+})
+
+// ── the path IS the selection, and only Comms' paths are ────────────────────
+
+test('a Comms path decodes to the selection it encodes', () => {
+  assert.deepEqual(commsSelectionFromPath('/comms/channel/chan-1'), { t: 'channel', id: 'chan-1' })
+  assert.deepEqual(commsSelectionFromPath('/comms/agent/hermes'), {
+    t: 'agent',
+    model: 'hermes',
+    conversationId: null,
+  })
+  assert.deepEqual(commsSelectionFromPath('/comms/agent/hermes/conv-4'), {
+    t: 'agent',
+    model: 'hermes',
+    conversationId: 'conv-4',
+  })
+  // Ids travel through the URL encoded; a channel id with a slash or a space
+  // must come back out as it went in.
+  assert.deepEqual(commsSelectionFromPath('/comms/channel/a%2Fb'), { t: 'channel', id: 'a/b' })
+})
+
+test('bare /comms has no selection, which is what asks for the default', () => {
+  assert.equal(commsSelectionFromPath('/comms'), null)
+  // A kind with no id is not half a selection.
+  assert.equal(commsSelectionFromPath('/comms/channel'), null)
+  assert.equal(commsSelectionFromPath('/comms/agent'), null)
+})
+
+test('THE NAV RAIL BUG: another view\'s path is never a Comms selection', () => {
+  // The regression this guards. Comms stays mounted for a beat after you click
+  // a nav rail item, so its effects run against the NEXT view's pathname. The
+  // default-selection effect navigates, so if it reads "Comms with nothing
+  // selected" there, it restores the remembered channel and drags you back —
+  // undoing the click. It is a race against unmount, so it presented as a rail
+  // that needed two or three clicks before it moved.
+  //
+  // Both halves matter. `isCommsPath` is what the effects bail on...
+  for (const p of ['/agents', '/boards', '/knowledge', '/admin', '/', '/commsomething']) {
+    assert.equal(isCommsPath(p), false, `${p} must not read as Comms`)
+    assert.equal(commsSelectionFromPath(p), null, `${p} must not yield a selection`)
+  }
+  // ...and this is why the base check is not merely defensive: these paths have
+  // a second segment that a naive parse reads as a Comms selection outright.
+  assert.equal(commsSelectionFromPath('/plan/agent/hermes'), null)
+  assert.equal(commsSelectionFromPath('/boards/channel/b-1'), null)
+})
+
+test('every Comms path counts as Comms, prefix matching included', () => {
+  assert.equal(isCommsPath('/comms'), true)
+  assert.equal(isCommsPath('/comms/channel/chan-1'), true)
+  assert.equal(isCommsPath('/comms/agent/hermes/conv-4'), true)
 })

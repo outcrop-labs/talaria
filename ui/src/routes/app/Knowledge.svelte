@@ -15,6 +15,7 @@
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { navigate } from '@/router'
   import { fade, slide } from '@/lib/motion'
+  import { isUnder } from '@/lib/route-tabs'
   import {
     createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, updateSpace, useDoc, useDocs, useSpaces,
     type KbDocMeta, type KbSpace,
@@ -83,7 +84,13 @@
   // bug: `?doc=<id>` for a document in the second space rendered the first
   // space's overview and quietly dropped the request.
   const permalinkDoc = useDoc(() => (!pathSpace && docId ? docId : null))
+  // Still on Knowledge? This view outlives the click that leaves it, and the
+  // effect below navigates — without this it reads the NEXT view's pathname as
+  // "Knowledge with no space", canonicalises to the first space, and drags you
+  // back. Same bug the nav rail showed on Comms; see `isUnder`.
+  const onKnowledge = $derived(isUnder(route.pathname, '/knowledge'))
   $effect(() => {
+    if (!onKnowledge) return
     if (pathSpace) return // already canonical
     const home = permalinkDoc.data?.spaceId ?? (docId ? null : spaces[0]?.id)
     if (!home) return

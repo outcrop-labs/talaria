@@ -13,6 +13,31 @@
 // typo'd or stale link lands on something real rather than an empty frame, and
 // a tab removed in a later release keeps its old URLs working.
 
+/**
+ * Is this path inside `base` — the view itself, or anything under it?
+ *
+ * THE BUG THIS EXISTS FOR, because it presented as a broken nav rail rather
+ * than as anything to do with routing. `route.pathname` flips the instant a nav
+ * rail item is clicked, but the view being left is not destroyed until
+ * afterwards, so for a beat its effects run against a URL that already belongs
+ * to the next view. A view whose default-selection effect NAVIGATES — Comms
+ * restoring your last channel, Knowledge canonicalising to a space — then reads
+ * "I am open with nothing selected", does exactly what it was written to do, and
+ * navigates back. The click is undone.
+ *
+ * It is a race against unmount, so it did not happen every time: the rail felt
+ * dead and the same item wanted two or three clicks before it moved.
+ *
+ * So: any effect that navigates must first ask whether it is still on its own
+ * view, and this is that question. One implementation rather than one per view,
+ * because three hand-written copies of a predicate is how the copies drift —
+ * and `base` matching must include the bare path (`/comms`) as well as the
+ * children (`/comms/...`), which is the half an inlined `startsWith` forgets.
+ */
+export function isUnder(pathname: string, base: string): boolean {
+  return pathname === base || pathname.startsWith(`${base}/`)
+}
+
 /** The tab a path selects, or `fallback` when the segment is missing, unknown,
  *  or deeper than one level.
  *
