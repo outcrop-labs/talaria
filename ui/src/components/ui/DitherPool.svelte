@@ -85,4 +85,4 @@
 
 <span bind:this={anchor} class="contents"></span>
 <!-- Finer grain, as on Button — see the note there. -->
-<DitherLayer {sources} {bleed} organic={0.06} alphaFloor={0.02} maxAlpha={0.85} />
+<DitherLayer {sources} {bleed} organic={0.45} alphaFloor={0.02} maxAlpha={0.85} />

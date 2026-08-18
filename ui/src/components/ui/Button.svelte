@@ -115,21 +115,22 @@
 <!-- The one button. Reuse everywhere — do not re-style buttons inline. -->
 {#if wantsBloom}
   <span bind:this={wrap} class={`relative inline-flex ${split.outer}`}>
-    <!-- `organic={0.06}` — a LOW setting, and both extremes were tried on
-         screen. The engine multiplies a static clump-noise into the density.
-         At 0.5 the band clustered and thinned unevenly, which reads as ragged.
-         At 0 it is pure Bayer, and pure Bayer is mechanical by construction —
-         the matrix puts dots in ranks, which reads as blocky. 0.25 was still
-         on the ragged side once the band tightened, because the same amount of
-         clumping is more visible across fewer dots. 0.06 is enough to break the
-         matrix's rows without the clumps becoming the texture — the CSS fill
-         beside it cannot clump at all, so anything more made the two read as
-         different materials.
+    <!-- `organic={0.45}` — and the reason it belongs HERE but not on the CSS
+         fill is the distinction that finally made the two agree.
 
-         The engine's own note says 0 for precision fields and ~0.6 for ambient
-         chrome. A control band is neither, and where it sits between them
-         depends on how wide the band is — which is why this moved when the
-         reach did.
+         Pure Bayer is fine at CONSTANT density: the matrix distributes dots
+         evenly and the eye reads texture. That is what the hover/selection
+         fill is, and it looks right with no noise at all.
+
+         A HALO IS A GRADIENT, and ordered dithering ramped across a gradient
+         is where the matrix shows itself — its thresholds step in ranks, so
+         the field renders as mechanical halftone BANDS, and at mid density as
+         a checkerboard. The clump-noise breaks those ranks up. It is not
+         decoration; it is what stops a gradient looking like a printer.
+
+         So: no noise on the flat fill, noise on the ramped field. One matrix,
+         one grain, and the difference between them is a property of what each
+         is drawing rather than a taste setting.
 
          `alphaFloor` near zero is what makes the band TAPER. The engine lights
          a dot at `alphaFloor + (maxAlpha - alphaFloor) * density`, so the
@@ -141,7 +142,7 @@
 
          Grain is the engine's own default now (2px pitch, 1px dots) rather
          than an override here, so every field in the app shares it. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0.06} alphaFloor={0.02} maxAlpha={0.85} />
+    <DitherLayer {sources} bleed={BLEED} organic={0.45} alphaFloor={0.02} maxAlpha={0.85} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
          the bloom's — both run.

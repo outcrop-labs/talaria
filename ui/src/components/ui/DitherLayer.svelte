@@ -19,31 +19,22 @@
    * tiny chip still gets something visible and a large surface does not get a
    * weather system.
    */
-  export function spreadFor(shortSide: number): number {
-    // A BAND AROUND THE BORDER, which is what this is for — not a cloud and
-    // not a whisper. 0.32 of the short side put 12px around a 44px button, so
-    // neighbouring controls merged into one field. Dropping to 0.16 with a
-    // steep falloff overcorrected the other way: 28 dots reaching 2px, which
-    // reads as scattered specks rather than as an edge.
+  export function spreadFor(_shortSide: number): number {
+    // ONE BAND WIDTH, EVERYWHERE. This was proportional to the control, and
+    // proportional is exactly what made it inconsistent: a tab wore a 6px band
+    // and a button a 20px one, so the same treatment read as two different
+    // ideas depending on what it was edging. A border does not get thicker
+    // because its box is bigger, and this is a border.
     //
-    // A TIGHT EDGE, because the fill now carries the weight. This started
-    // wide — the halo was the only treatment a control had, so it had to say
-    // everything. Once hover and selection grew their own dithered FILL
-    // (`dither-bloom`, styles.css), the halo stopped being the main event and
-    // a wide one competed with the surface it was supposed to be edging.
+    // 12px is four dot rows at the house 2px pitch — enough for the density to
+    // fall across a gradient rather than stopping after one rank, and short
+    // enough that neighbouring controls do not run their fields together.
     //
-    // It still tapers: density falls with distance and so does opacity (see
-    // `alphaFloor` at the callers), so the outer dots approach nothing rather
-    // than stopping at a visible floor.
-    //
-    // THE FLOOR IS WHAT MAKES SMALL CONTROLS LOOK LIKE THE BIG ONES. A segmented
-    // cell is ~22px tall; at a quarter of that the band is 6px, which on a 2px
-    // lattice is three rows of dots and reads as a dotted BORDER rather than a
-    // field. The proportional rule keeps a big control from wearing a cloud,
-    // but below about 10px there are not enough dot rows left for a gradient to
-    // exist at all — so the clamp, not the ratio, decides at the small end.
-    return Math.max(10, Math.min(20, Math.round(shortSide * 0.40)))
+    // The argument is kept so callers stay unchanged and the decision is
+    // reversible in one place if a surface ever genuinely needs its own.
+    return 12
   }
+
 
   /** The bleed a field needs so nothing is clipped: the widest reach in the
    *  sources, plus a margin for the dot grid itself.
