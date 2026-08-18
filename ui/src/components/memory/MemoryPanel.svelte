@@ -35,6 +35,7 @@
     /** Shown INSTEAD of an error when the owner is simply not running, which is
      *  an explainable state rather than a fault. */
     offline,
+    surface = 'panel',
     class: className,
   }: {
     id: string
@@ -44,6 +45,8 @@
     note?: string
     nested?: boolean
     offline?: { title: string; hint: string } | null
+    /** `well` when this sits inside a modal or a section — see LibraryPane. */
+    surface?: 'panel' | 'well' | 'bare'
     class?: string
   } = $props()
 
@@ -123,6 +126,7 @@
       onCreate={canEdit ? remember : undefined}
       createLabel="Remember something"
       createPlaceholder="One fact the agent should keep"
+      {surface}
       class="h-[26rem]"
     >
       {#snippet empty()}

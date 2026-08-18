@@ -177,6 +177,27 @@ Two deliberate registers — don't mix them:
   border-line-subtle p-3` (pick 3; stop drifting to 2/4/5).
 - `<EmptyState>` for every zero state. The inline "no X yet" div is banned.
 
+## Layers — a surface must differ from what it sits on
+
+Mercury's fills are a hierarchy, and they are what tell a reader that one
+region is *inside* another: ground (`bg-surface`) → panel (`bg-panel`) → raised
+(`bg-raised`) → hover.
+
+**`Modal` is panel-filled, and so is `Panel`.** A `Panel` inside a `Modal`
+therefore paints exactly its container's colour, and the whole region collapses
+to a bare outline with nothing behind it. The same is true of a `Panel` inside a
+page section that is itself panel-filled.
+
+Inside a panel or a modal, a content region is an **inset well**: `rounded-lg
+border border-line bg-surface`. That is already the house form —
+`InternalEditorModal`'s preview, the chat composer, `AgentConfigForm`'s soul
+box. `LibraryPane` takes `surface="well"` for exactly this, and the components
+that wrap it (`SkillsLibrary`, `MemoryPanel`) forward it.
+
+On a page, an unfilled bordered box is fine: the ground behind it already
+differs from the border, and it reads as a grouping rather than a surface. The
+rule is only about a fill matching its container.
+
 ## Color
 
 - Tokens only (`var(--theme-*)`); no hex fallbacks in call sites — the theme

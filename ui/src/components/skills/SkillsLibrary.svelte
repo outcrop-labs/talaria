@@ -31,11 +31,14 @@
     owner,
     ownerLabel,
     canEdit = true,
+    surface = 'panel',
     class: className,
   }: {
     owner: string
     ownerLabel: string
     canEdit?: boolean
+    /** `well` when this sits inside a modal or a section — see LibraryPane. */
+    surface?: 'panel' | 'well' | 'bare'
     class?: string
   } = $props()
 
@@ -90,6 +93,7 @@
   onCreate={canEdit ? create : undefined}
   createLabel="New skill"
   createPlaceholder="new-skill-name"
+  {surface}
   class={className}
 >
   {#snippet row(s: SkillSummary)}

@@ -31,7 +31,9 @@
 
 <Modal {open} {onClose} title="Teams" width="max-w-2xl">
   <!-- The picker/detail shape is LibraryPane, shared with Templates and the
-       agent role library. `bare` because the Modal is already the surface. -->
+       agent role library. An inset WELL, not a panel: the Modal is already
+       panel-filled, so a panel here would match its container exactly and read
+       as a bare outline. -->
   <LibraryPane
     groups={[{ items: teams }]}
     idOf={(t: Team) => t.id}
@@ -41,7 +43,7 @@
     pending={teamsLoading}
     notice={teamsList.notice}
     listWidth="w-60"
-    bare
+    surface="well"
     class="min-h-[24rem]"
     onCreate={create}
     createLabel="New team"

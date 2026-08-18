@@ -67,7 +67,7 @@
               <ReadOnlyConfig {def} />
             {/if}
           {/if}
-          {#if tab === 'skills'}<SkillsLibrary owner={def.slug} ownerLabel={def.displayName ?? def.model} canEdit={isAdmin} class="h-[28rem]" />{/if}
+          {#if tab === 'skills'}<SkillsLibrary owner={def.slug} ownerLabel={def.displayName ?? def.model} canEdit={isAdmin} surface="well" class="h-[28rem]" />{/if}
           {#if tab === 'memory'}
             {#if def.managed}
               <MemoryPanel
@@ -75,6 +75,7 @@
                 label={def.displayName ?? def.model}
                 canEdit={isAdmin}
                 nested
+                surface="well"
                 note="It lives in the agent's own container."
                 museContext={`The memory of the "${def.slug}" agent (${def.role ?? def.department}).`}
               />

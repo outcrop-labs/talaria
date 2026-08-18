@@ -37,9 +37,17 @@
     onRowMenu?: (e: MouseEvent, item: T) => void
     /** Width of the picker column. */
     listWidth?: string
-    /** Drop the Panel chrome — for a pane that is already inside a surface,
-     *  such as a dialog. A panel within a panel is a border inside a border. */
-    bare?: boolean
+    /** WHICH SURFACE THIS SITS ON, which is not decoration — Mercury's layers
+     *  are what tell a reader one region is inside another.
+     *
+     *  `panel` (default) is a panel on the app ground: correct for a page.
+     *  `well` is an INSET WELL on a panel — the same `bg-surface` that
+     *  InternalEditorModal and the chat composer use — and it is what a pane
+     *  inside a modal or a section needs. Leaving such a pane on `panel` paints
+     *  panel on panel: the fill matches its container exactly, so the whole
+     *  surface reads as a bare outline with nothing behind it.
+     *  `bare` has no chrome at all, for a caller supplying its own frame. */
+    surface?: 'panel' | 'well' | 'bare'
     class?: string
     /** ADDING A NEW ONE, which is the pane's job rather than each caller's.
      *
@@ -119,7 +127,7 @@
     notice = null,
     onRowMenu,
     listWidth = 'w-64',
-    bare = false,
+    surface = 'panel',
     class: className,
     onCreate,
     createLabel = 'New',
@@ -137,9 +145,8 @@
   const visible = $derived(groups.filter((g) => g.label || g.items.length || g.empty))
 </script>
 
-<!-- The frame is a snippet so `bare` picks the surface without duplicating the
-     two panes: inside a dialog there is already a surface, and a Panel within a
-     Panel is a border inside a border with the padding twice. -->
+<!-- The frame is a snippet so `surface` picks the chrome without duplicating
+     the two panes. -->
 {#snippet panes()}
   <!-- ── The picker ──────────────────────────────────────────────────────── -->
   <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth)}>
@@ -235,8 +242,12 @@
   </div>
 {/snippet}
 
-{#if bare}
+{#if surface === 'bare'}
   <div class={cn('flex min-h-0 overflow-hidden', className)}>{@render panes()}</div>
+{:else if surface === 'well'}
+  <div class={cn('flex min-h-0 overflow-hidden rounded-lg border border-line bg-surface', className)}>
+    {@render panes()}
+  </div>
 {:else}
   <Panel class={cn('flex min-h-0 overflow-hidden p-0', className)}>{@render panes()}</Panel>
 {/if}
