@@ -30,6 +30,7 @@
  * surface is enough and per-element layering was never actually needed.
  */
 import { BAYER, type DitherSource, type DitherTone } from './dither'
+import { effectDefs, effectIndex, isAnimated } from './field-effects'
 
 /** Tones, in the order the shader indexes them. */
 export const TONE_ORDER: DitherTone[] = ['neutral', 'accent', 'success', 'danger', 'surface']
@@ -53,120 +54,71 @@ export interface Field {
  */
 export const MAX_SOURCES = 24
 
-const KIND_INDEX: Record<DitherSource['kind'], number> = {
-  rect: 0,
-  edge: 1,
-  halo: 2,
-  ramp: 3,
-  uniform: 4,
-  wave: 5,
-}
-
 const VERT = `#version 300 es
 in vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`
 
-// The fragment shader IS the engine. Every branch below has a counterpart in
-// `evalSource` in lib/dither.ts, and the two must keep saying the same thing —
-// the unit tests on that function are the specification for this.
-const FRAG = `#version 300 es
+/**
+ * The fragment shader, ASSEMBLED FROM THE EFFECT REGISTRY.
+ *
+ * Each effect contributes one function and one branch, both generated from its
+ * declaration — so adding an effect cannot leave the shader and the packing
+ * code disagreeing, which is the failure mode this whole rewrite exists to
+ * remove. Everything outside the density switch is the shared material: the
+ * Bayer threshold, the organic clumping, the dot geometry, the tone mix and
+ * the alpha ramp. An effect says HOW MUCH; the surface says what it is made of.
+ */
+function buildFragment(): string {
+  const defs = effectDefs()
+  const fns = defs
+    .map(
+      (d, i) => `float fx_${i}(vec4 box, vec2 local, vec4 a, vec4 b, float t) {${d.glsl}
+}`,
+    )
+    .join('\n')
+  const branches = defs
+    .map((_, i) => `  if (kind == ${i}) return fx_${i}(box, local, a, b, t);`)
+    .join('\n')
+
+  return `#version 300 es
 precision highp float;
 
-uniform vec2  u_res;        // surface size in CSS px
+uniform vec2  u_res;
 uniform float u_dpr;
-uniform float u_time;       // seconds, for wave sources
-uniform float u_pitch;      // grid pitch in CSS px
-uniform float u_dot;        // dot size in CSS px
+uniform float u_time;
+uniform float u_pitch;
+uniform float u_dot;
 uniform int   u_count;
 uniform float u_organic;
 uniform float u_alphaFloor;
 uniform float u_maxAlpha;
 uniform vec3  u_tones[5];
 
-uniform vec4 u_box[${MAX_SOURCES}];   // x, y, w, h        (surface space)
-uniform vec4 u_p0[${MAX_SOURCES}];    // kind, strength, tone, falloff
-uniform vec4 u_p1[${MAX_SOURCES}];    // kind-specific, see below
-uniform vec4 u_p2[${MAX_SOURCES}];    // kind-specific
+uniform vec4 u_box[${MAX_SOURCES}];
+uniform vec4 u_p0[${MAX_SOURCES}];   // kind, strength, tone, unused
+uniform vec4 u_p1[${MAX_SOURCES}];   // effect slot a
+uniform vec4 u_p2[${MAX_SOURCES}];   // effect slot b
 
 out vec4 outColor;
 
 const int BAYER[64] = int[64](${BAYER.join(',')});
 
-float clamp01(float v) { return clamp(v, 0.0, 1.0); }
+${fns}
 
-// The engine's hash01, in float. Not bit-identical to the JS integer version —
-// GLSL has no cheap 32-bit integer mixing — but it serves the same purpose:
-// a stable per-cell value that never moves. The clumps differ in placement
-// from the old canvas engine's, not in character.
+float density(int kind, vec4 box, vec2 local, vec4 a, vec4 b, float t) {
+${branches}
+  return 0.0;
+}
+
+/** Stable per-cell value for the organic clumping. Never moves. */
 float hash01(vec3 p) {
   return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
-}
-
-/** Signed distance to a rounded box: negative inside. */
-float sdRoundBox(vec2 p, vec2 halfSize, float r) {
-  r = min(r, min(halfSize.x, halfSize.y));
-  vec2 q = abs(p) - halfSize + r;
-  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-}
-
-float density(int i, vec2 px) {
-  vec4 box = u_box[i];
-  vec4 p0 = u_p0[i], p1 = u_p1[i], p2 = u_p2[i];
-  int kind = int(p0.x);
-  float strength = p0.y, falloff = p0.w;
-  vec2 local = px - box.xy;          // position within the field's own box
-
-  if (kind == 4) return strength;    // uniform
-
-  if (kind == 1) {                   // edge: side, depth
-    int side = int(p1.x);
-    float depth = p1.y;
-    float d = side == 0 ? local.y
-            : side == 1 ? box.w - local.y
-            : side == 2 ? local.x
-                        : box.z - local.x;
-    return strength * pow(clamp01(1.0 - d / depth), 2.1);
-  }
-
-  if (kind == 0) {                   // rect: spread, radius, inner, rim
-    float spread = p1.x, radius = p1.y, inner = p1.z, rim = p1.w;
-    vec2 halfBox = box.zw * 0.5;
-    float sd = sdRoundBox(local - halfBox, halfBox, radius);
-    if (sd < 0.0) {
-      if (inner >= 1.0) return strength;
-      if (rim <= 0.0) return strength * inner;
-      float k = clamp01(1.0 + sd / rim);
-      return strength * (inner + (1.0 - inner) * k * k);
-    }
-    if (sd >= spread) return 0.0;
-    return strength * pow(1.0 - sd / spread, falloff);
-  }
-
-  if (kind == 2) {                   // halo: cx, cy, radius
-    float d = distance(local, p1.xy);
-    if (d >= p1.z) return 0.0;
-    float f = 1.0 - d / p1.z;
-    return strength * f * f;
-  }
-
-  if (kind == 3) {                   // ramp: axis, from, to, fromLevel/toLevel
-    float c = p1.x < 0.5 ? local.x : local.y;
-    float from = p1.y, to = p1.z;
-    float t = to == from ? 1.0 : clamp01((c - from) / (to - from));
-    return strength * (p2.x + (p2.y - p2.x) * t);
-  }
-
-  // wave: axis, wavelength, speed
-  float c = p1.x < 0.5 ? local.x : local.y;
-  float crest = 0.5 + 0.5 * sin(((c - p1.z * u_time) / p1.y) * 6.2831853);
-  return strength * crest * crest * crest;
 }
 
 void main() {
   vec2 px = gl_FragCoord.xy / u_dpr;
   px.y = u_res.y - px.y;                       // GL is bottom-up; the DOM is not
 
-  // Snap to the grid cell centre, so a dot is a cell and not a smear.
   vec2 cell = floor(px / u_pitch);
   vec2 centre = (cell + 0.5) * u_pitch;
 
@@ -175,40 +127,40 @@ void main() {
   float wsum = 0.0;
   for (int i = 0; i < ${MAX_SOURCES}; i++) {
     if (i >= u_count) break;
-    float v = density(i, centre);
+    vec4 box = u_box[i];
+    float v = u_p0[i].y * density(int(u_p0[i].x), box, centre - box.xy, u_p1[i], u_p2[i], u_time);
     if (v <= 0.0) continue;
-    miss *= 1.0 - clamp01(v);
-    vec3 tone = u_tones[int(u_p0[i].z)];
-    rgb += tone * v;
+    miss *= 1.0 - clamp(v, 0.0, 1.0);
+    rgb += u_tones[int(u_p0[i].z)] * v;
     wsum += v;
   }
   if (wsum == 0.0) discard;
 
   float d = 1.0 - miss;
 
-  // The organic term, as in the engine: two octaves of static clump noise,
-  // one on 4-cell blocks for the clusters and one per cell to break their
-  // edges. Without it an ordered dither renders a ramp as mechanical bands
-  // and a flat field as a checkerboard.
+  // Two octaves of static clump noise: one on 4-cell blocks for the clusters,
+  // one per cell to break their edges. Without it an ordered dither renders a
+  // ramp as mechanical bands and a flat field as a checkerboard.
   if (u_organic > 0.0) {
     float clump = 0.6 * hash01(vec3(floor(cell / 4.0), 7.0))
                 + 0.4 * hash01(vec3(cell, 13.0));
     d *= 1.0 + u_organic * (clump * 1.8 - 0.9);
   }
 
-  ivec2 b = ivec2(mod(cell, 8.0));
-  float threshold = (float(BAYER[b.y * 8 + b.x]) + 0.5) / 64.0;
-  if (d <= threshold) discard;
+  ivec2 bc = ivec2(mod(cell, 8.0));
+  if (d <= (float(BAYER[bc.y * 8 + bc.x]) + 0.5) / 64.0) discard;
 
-  // Dots are drawn as squares of u_dot within the cell, like the engine's
-  // fillRect — anything softer stops reading as a dither.
+  // Square dots, as the 2D engine drew them — anything softer stops reading
+  // as a dither and starts reading as a blur.
   vec2 inCell = px - cell * u_pitch;
   float off = (u_pitch - u_dot) * 0.5;
   if (any(lessThan(inCell, vec2(off))) || any(greaterThan(inCell, vec2(off + u_dot)))) discard;
 
-  float alpha = u_alphaFloor + (u_maxAlpha - u_alphaFloor) * clamp01(d);
-  outColor = vec4(rgb / wsum, alpha);
+  outColor = vec4(rgb / wsum, u_alphaFloor + (u_maxAlpha - u_alphaFloor) * clamp(d, 0.0, 1.0));
 }`
+}
+
+const FRAG = buildFragment()
 
 export interface FieldGLOptions {
   pitch?: number
@@ -358,33 +310,28 @@ export class FieldRenderer {
     const p1 = new Float32Array(MAX_SOURCES * 4)
     const p2 = new Float32Array(MAX_SOURCES * 4)
     let n = 0
-    let hasWave = false
+    let animated = false
 
+    // Packing is driven by the registry: each effect writes its own slots, so
+    // the shader branch and the parameter order cannot disagree. Sources past
+    // the cap are DROPPED rather than wrapping — see MAX_SOURCES.
+    const defs = effectDefs()
     for (const f of this.fields) {
-      for (const s of f.sources) {
+      for (const src of f.sources) {
         if (n >= MAX_SOURCES) break
-        if (s.strength <= 0.002) continue
-        const b = n * 4
-        box[b] = f.x; box[b + 1] = f.y; box[b + 2] = f.w; box[b + 3] = f.h
-        p0[b] = KIND_INDEX[s.kind]
-        p0[b + 1] = s.strength
-        p0[b + 2] = TONE_ORDER.indexOf(s.tone ?? 'neutral')
-        p0[b + 3] = s.kind === 'rect' ? (s.falloff ?? 2) : 2
-        if (s.kind === 'rect') {
-          p1[b] = s.spread; p1[b + 1] = s.radius ?? 0
-          p1[b + 2] = s.inner ?? 1; p1[b + 3] = s.rim ?? 10
-        } else if (s.kind === 'edge') {
-          p1[b] = { top: 0, bottom: 1, left: 2, right: 3 }[s.side]
-          p1[b + 1] = s.depth
-        } else if (s.kind === 'halo') {
-          p1[b] = s.x - f.x; p1[b + 1] = s.y - f.y; p1[b + 2] = s.radius
-        } else if (s.kind === 'ramp') {
-          p1[b] = s.axis === 'x' ? 0 : 1; p1[b + 1] = s.from; p1[b + 2] = s.to
-          p2[b] = s.fromLevel; p2[b + 1] = s.toLevel
-        } else if (s.kind === 'wave') {
-          p1[b] = s.axis === 'x' ? 0 : 1; p1[b + 1] = s.wavelength; p1[b + 2] = s.speed
-          hasWave = true
-        }
+        if (src.strength <= 0.002) continue
+        const idx = effectIndex(src.kind)
+        const def = defs[idx]
+        if (!def) continue
+        const o = n * 4
+        box[o] = f.x; box[o + 1] = f.y; box[o + 2] = f.w; box[o + 3] = f.h
+        p0[o] = idx
+        p0[o + 1] = src.strength
+        p0[o + 2] = Math.max(0, TONE_ORDER.indexOf(src.tone ?? 'neutral'))
+        const packed = def.pack(src as never)
+        p1.set(packed.a, o)
+        if (packed.b) p2.set(packed.b, o)
+        if (isAnimated(src.kind)) animated = true
         n++
       }
     }
@@ -411,7 +358,7 @@ export class FieldRenderer {
 
     // Only a wave needs the next frame. Everything else is static once drawn,
     // so an idle surface costs nothing — the same rule the 2D engine followed.
-    this.animating = hasWave
+    this.animating = animated
     if (this.animating) this.schedule()
   }
 }
