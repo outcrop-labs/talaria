@@ -26,15 +26,11 @@
 // profile, and two tabs open on two channels should not fight over one key.
 
 import { isUnder } from './route-tabs'
+import { viewMemory } from './view-memory'
 
 export type CommsSelection =
   | { t: 'channel'; id: string }
   | { t: 'agent'; model: string; conversationId: string | null }
-
-const KEY = 'talaria:comms-selection'
-
-let fallback: CommsSelection | null = null
-let loaded = false
 
 function parse(raw: unknown): CommsSelection | null {
   if (!raw || typeof raw !== 'object') return null
@@ -46,27 +42,18 @@ function parse(raw: unknown): CommsSelection | null {
   return null
 }
 
+// `x` rather than `conversationId` in storage is the existing on-disk shape;
+// keep it, or every open tab's memory is silently discarded on upgrade.
+const memory = viewMemory<CommsSelection>('talaria:comms-selection', parse, (sel) =>
+  sel.t === 'channel' ? { t: 'channel', id: sel.id } : { t: 'agent', model: sel.model, x: sel.conversationId },
+)
+
 export function readCommsSelection(): CommsSelection | null {
-  if (loaded) return fallback
-  loaded = true
-  try {
-    const raw = window.sessionStorage.getItem(KEY)
-    fallback = raw ? parse(JSON.parse(raw)) : null
-  } catch {
-    /* unreadable or malformed: no memory is a correct memory */
-  }
-  return fallback
+  return memory.read()
 }
 
 export function writeCommsSelection(sel: CommsSelection): void {
-  fallback = sel
-  const stored =
-    sel.t === 'channel' ? { t: 'channel', id: sel.id } : { t: 'agent', model: sel.model, x: sel.conversationId }
-  try {
-    window.sessionStorage.setItem(KEY, JSON.stringify(stored))
-  } catch {
-    /* private mode: the in-memory mirror still serves this tab */
-  }
+  memory.write(sel)
 }
 
 /**
@@ -141,6 +128,5 @@ export function commsSelectionFromPath(pathname: string): CommsSelection | null 
 
 /** Tests only: drop the remembered selection and the load latch. */
 export function resetCommsSelection(): void {
-  fallback = null
-  loaded = false
+  memory.reset()
 }
