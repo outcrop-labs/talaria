@@ -76,10 +76,22 @@ export interface DitherSurfaceOptions {
   selected?: () => boolean
   /** Does the interior fill show at rest (a selected tile) or only on approach? */
   always?: () => boolean
+  /**
+   * Which token the fill is drawn in.
+   *
+   * `surface` is the hairline tone — right where the field is one signal among
+   * several, and deliberately close to what it sits on. `text` is the reading
+   * tone, which has room to move in BOTH themes: on a segmented cell the field
+   * is the entire statement, and the hairline tone could not carry it — it is
+   * only about forty levels from the tile it sits on, so even at full coverage
+   * the cell lifted five.
+   */
+  ink?: 'surface' | 'text'
 }
 
 interface Tone {
   fill: [number, number, number]
+  text: [number, number, number]
   accent: [number, number, number]
 }
 
@@ -96,10 +108,12 @@ function readTone(el: HTMLElement): Tone {
   el.appendChild(probe)
   probe.style.color = s.getPropertyValue('--theme-border-strong') || '#4a4640'
   const fill = parse(getComputedStyle(probe).color)
+  probe.style.color = s.getPropertyValue('--theme-text') || '#e7e2db'
+  const text = parse(getComputedStyle(probe).color)
   probe.style.color = s.getPropertyValue('--theme-accent') || '#c8a45c'
   const accent = parse(getComputedStyle(probe).color)
   probe.remove()
-  return { fill, accent }
+  return { fill, text, accent }
 }
 
 /**
@@ -118,13 +132,14 @@ function paint(
   tone: Tone,
   density: number,
   weight: number,
+  ink: 'surface' | 'text',
   intensity: number,
   selection: number,
   dpr: number,
 ): void {
   ctx.clearRect(0, 0, cols * CELL * dpr, rows * CELL * dpr)
   const dot = Math.max(1, Math.round(dpr))
-  const [fr, fg, fb] = tone.fill
+  const [fr, fg, fb] = ink === 'text' ? tone.text : tone.fill
   const [ar, ag, ab] = tone.accent
 
   // THE CONTROL'S SHAPE, IN CELLS. A canvas is a rectangle and the control is
@@ -204,6 +219,7 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
     const pad = Math.round((opts.band ?? 0) / CELL)
     const density = opts.density ?? 0.62
     const weight = opts.weight ?? 0.55
+    const ink = opts.ink ?? 'surface'
 
     const canvas = document.createElement('canvas')
     canvas.setAttribute('aria-hidden', 'true')
@@ -232,7 +248,7 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
     const render = () =>
-      paint(ctx, cols, rows, pad, radius, tone, density, weight, intensity, selection, dpr)
+      paint(ctx, cols, rows, pad, radius, tone, density, weight, ink, intensity, selection, dpr)
 
     const targets = () => ({
       intensity: hot || opts.always?.() ? 1 : 0,
@@ -376,12 +392,22 @@ export function upgradeDitherSurfaces(root: HTMLElement): () => void {
     // cell or a toggle: those are settings, and outlining one in the accent
     // gives a preference the weight of a location.
     const quiet = el.dataset.ditherBand === '0'
+    // A QUIET FIELD CARRIES THE WHOLE STATEMENT, so it cannot be quiet in the
+    // way a nav row's is. There the fill sits behind a band and a raised tile
+    // and is deliberately held back — it is the third thing saying "this one".
+    // On a segmented cell it is the ONLY thing, with nothing beside it to
+    // carry the meaning, and at the same weight it was barely visible in
+    // either theme. Full weight and a denser field.
+    const QUIET = { density: 0.72, weight: 0.78, ink: 'text' as const }
+
     if (el.classList.contains('dither-mark')) {
-      return quiet ? { always: () => true } : { band: 6, always: () => true, selected: () => true }
+      return quiet
+        ? { ...QUIET, always: () => true }
+        : { band: 6, always: () => true, selected: () => true }
     }
     if (el.classList.contains('dither-bloom')) {
       return quiet
-        ? { always: () => isSelected(el) }
+        ? { ...QUIET, always: () => isSelected(el) }
         : { band: 6, always: () => isSelected(el), selected: () => isSelected(el) }
     }
     if (el.classList.contains('dither-fill')) return {}
