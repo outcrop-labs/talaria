@@ -691,32 +691,29 @@ kbd,
 /* The name 126 call sites already use for the HOVER case. Identical: selection
    differs by gaining a solid tile beneath, not by losing the texture. */
 /* ── The movement ────────────────────────────────────────────────────────────
-   IT HAS TO BE OPACITY. NOTHING ELSE VARIES CONTINUOUSLY HERE.
+   IT BREATHES ON COLOUR, SO THAT OPACITY STAYS FREE FOR THE TRANSITION.
 
-   Five attempts bracket this, and the last one is the useful lesson. Sliding
-   the tile scrolls the pattern across the control. Cross-fading two copies
-   blinks between two stamps. A third mask layer lost the tile and left a
-   blob. Animating the density envelope's POSITION walks the field off the
-   control. And animating the mask's SIZE — or the band's width — flickers,
-   which is what it must do: a mask over a lattice of single pixels has no
-   in-between state to pass through. Every dot it touches is either inside the
-   mask or outside it, so a smoothly changing mask produces dots snapping on
-   and off one at a time. It reads as a fault, not as life.
+   Six attempts bracket this, and the last two are the useful ones. Animating
+   the mask — its size, or the band's width — FLICKERS, and must: a mask over a
+   lattice of single pixels has no in-between state to pass through, so every
+   dot it touches snaps on or off. Moving to opacity fixed that and broke
+   something else, because opacity was already carrying the state change. An
+   animation beats a transition, so the instant a control was hovered its
+   opacity jumped to the first keyframe with nothing to animate through, and
+   every state in the app popped.
 
-   The canvas could morph a density field because it recomputed alpha per dot
-   every frame. CSS has exactly one continuous channel over a masked layer,
-   and it is opacity. So the movement lives there: a few percent, over a long
-   cycle, with the fill and the band on different periods so their sum never
-   settles into an obvious beat. It is not the canvas's weather, and it should
-   not pretend to be — it is a slow breath under a static texture. */
+   Colour is the third continuous channel, and it is free. Each dot fades
+   toward transparent and back without ever leaving the lattice, which is the
+   same thing the canvas did per-dot — and opacity is left to do the one job
+   it was always doing, which is carry the state in and out. */
 @keyframes dither-breathe-fill {
-  0%, 100% { opacity: 0.88; }
-  50% { opacity: 1; }
+  0%, 100% { background-color: var(--theme-border-strong); }
+  50% { background-color: color-mix(in oklab, var(--theme-border-strong) 72%, transparent); }
 }
 
 @keyframes dither-breathe-edge {
-  0%, 100% { opacity: 0.72; }
-  50% { opacity: 1; }
+  0%, 100% { border-color: var(--theme-accent); }
+  50% { border-color: color-mix(in oklab, var(--theme-accent) 58%, transparent); }
 }
 
 @utility dither-fill {

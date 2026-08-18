@@ -19,6 +19,7 @@
   import TeamsModal from '@/components/board/TeamsModal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
+  import { activeAmong, isUnder } from '@/lib/route-tabs'
   import BoardsSublist from './BoardsSublist.svelte'
   import NavIcon from './NavIcon.svelte'
   import RailTooltip from './RailTooltip.svelte'
@@ -91,12 +92,18 @@
     }),
   )
 
-  // Exact for Home and for app WORK items: /x/<slug> is a path prefix of its
-  // sibling /x/<slug>/manage, and fuzzy matching would light both up at once.
-  const exactFor = (item: NavItem) => item.to === '/' || appItems.Manage!.some((m) => m.to.startsWith(item.to + '/'))
+  // THE ACTIVE ITEM IS THE MOST SPECIFIC ONE CONTAINING THE ROUTE, decided
+  // across every section at once by `activeAmong` — so `/boards` stays lit
+  // while you read a task inside it, and an app's Manage surface beats its Work
+  // surface instead of lighting both.
+  //
+  // This replaced `exactFor`, which matched Home and app Work items EXACTLY and
+  // everything else by prefix. That fixed two cases and stated no rule: Home
+  // needed an exemption because it is an ancestor of every route, app Work
+  // needed one because Manage nests under it, and the next nested pair would
+  // have lit both again. Most-specific-wins subsumes all three.
+  const activePath = $derived(activeAmong(pathname, sections.flatMap((sec) => sec.items.map((i) => i.to))))
 
-  // The active match feeding the data-status attribute (was TanStack Link's
-  // activeOptions job — same exact/fuzzy semantics).
   // AMBIENT TEXTURE ON THE RAIL, and the halo under whatever is active.
   //
   // A whisper by default and a notch louder while the pointer is over the
@@ -118,10 +125,7 @@
     ]
   })
 
-  const statusFor = (item: NavItem): 'active' | undefined =>
-    (exactFor(item) ? pathname === item.to : pathname === item.to || pathname.startsWith(item.to + '/'))
-      ? 'active'
-      : undefined
+  const statusFor = (item: NavItem): 'active' | undefined => (item.to === activePath ? 'active' : undefined)
 </script>
 
 {#snippet modals()}
@@ -156,7 +160,11 @@
     </div>
 
     <!-- Collapsed tiles get the same room, for the same reason. -->
-    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto">
+    <!-- `px-1` is room for the selected band, not decoration. `overflow-y-auto`
+         makes overflow-x compute to `auto` too, so this box clips horizontally
+         even though it only asked to scroll vertically — and the outset accent
+         band was being sliced off flush at both edges. -->
+    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto px-1">
       {#each sections as section, si (section.title)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
@@ -244,7 +252,8 @@
     <SidebarAssistant />
     <div class="mt-4 h-px shrink-0 bg-line-subtle"></div>
 
-    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto">
+    <!-- Room for the selected band at both edges — see the note above. -->
+    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-1">
       {#each sections as section (section.title)}
         <div>
           <div class="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
@@ -290,7 +299,7 @@
                     </span>
                   {/if}
                 </a>
-                {#if item.to === '/boards' && pathname.startsWith('/boards')}
+                {#if item.to === '/boards' && isUnder(pathname, '/boards')}
                   <BoardsSublist activePath={pathname} onNew={() => (creating = true)} onTeams={() => (teamsOpen = true)} />
                 {/if}
               </li>
