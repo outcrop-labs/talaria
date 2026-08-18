@@ -46,7 +46,7 @@ failure behavior — it *declares* them, and `runHarness` honors the declaration
 | `server/harness/capability.ts` | What a model can actually do, and who says so. |
 | `server/harness/transport.ts` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
 | `server/harness/registry.ts` | The 23 shipped harnesses, merged builtin < app-shipped < admin-custom. |
-| `server/harness/defs/*.ts` | The definitions themselves — 35 harnesses, 300 eval fixtures. |
+| `server/harness/defs/*.ts` | The definitions themselves — 36 harnesses, 303 eval fixtures. |
 | `server/harness/recorded.ts` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 
 **One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a call to
@@ -245,7 +245,7 @@ Two sharp edges, both locked by `registry.test.ts`:
   bad. That is what put the judge on `zero_tool_claim` and `fabricated_outage` — rules structurally
   wrong for a verdict, which *describes* claimed work rather than doing any — and inflated
   `guard_findings.model`, the per-model confabulation rate the fitness page reads, for whichever
-  model the admin had chosen to judge with. All 35 harnesses name their rules. A harness that
+  model the admin had chosen to judge with. All 36 harnesses name their rules. A harness that
   genuinely wants all of them says so by listing them.
 
 Redaction runs on the raw reply and then **re-applies the whole contract, `verify` included**, so a
@@ -258,7 +258,7 @@ to validate would be the worst of both.
 `{ requires: Capability[]; note: string }`. Set it and `render` is called with `widened: true` only
 when every capability listed is **known-true from a probe** for the resolved model. Both branches
 must be real answers: `widened: false` is the product working, not a degraded mode with an apology in
-it. Twelve of the 35 harnesses widen; the titler deliberately does not, because a wider prompt would
+it. Twelve of the 36 harnesses widen; the titler deliberately does not, because a wider prompt would
 only buy a longer name.
 
 ### `ground`

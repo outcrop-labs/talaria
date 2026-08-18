@@ -4,7 +4,8 @@
   import IconButton from '@/components/ui/IconButton.svelte'
   import { cn } from '@/lib/cn'
   import { navigate } from '@/router'
-  import type { BriefLine } from './daily-brief.svelte'
+  import BriefReply from './BriefReply.svelte'
+  import type { BriefLine, CommsState } from './daily-brief.svelte'
 
   /**
    * One line of the brief, and the reason the surface exists.
@@ -28,11 +29,23 @@
   let {
     line,
     onAsk,
+    comms,
+    onDecideReply,
+    onDelegate,
   }: {
     line: BriefLine
     /** Ask the assistant about this line specifically. */
     onAsk: (line: BriefLine) => void
+    /** Live conversation state, when this line is a conversation. */
+    comms?: CommsState
+    onDecideReply?: (draftId: string, decision: 'approve' | 'reject') => Promise<{ ok: boolean; error?: string }>
+    onDelegate?: (channelId: string, granted: boolean) => void
   } = $props()
+
+  // The reply block renders only on an OPEN conversation. On a resolved one the
+  // question has been answered, and offering to send a reply under it would be
+  // an affordance for something that has already happened.
+  const showReply = $derived(!!comms && !!onDecideReply && !!onDelegate && !line.resolved)
 
   const entry = $derived(line.current)
   const external = $derived(!!entry.sourceHref && /^https?:\/\//.test(entry.sourceHref))
@@ -61,11 +74,11 @@
   }
 </script>
 
+<div class={cn('rounded-lg', line.resolved && 'opacity-55')}>
 <div
   class={cn(
     'group relative flex gap-3 rounded-lg border border-transparent px-3 py-2.5 transition-colors',
     followable && 'hover:border-line hover:bg-raised focus-within:border-line',
-    line.resolved && 'opacity-55',
   )}
 >
   {#if followable && entry.sourceHref}
@@ -133,4 +146,19 @@
       </span>
     {/if}
   </div>
+</div>
+
+  <!-- OUTSIDE the row above, deliberately. The row is one stretched anchor, so
+       a draft rendered inside it would put Send and Discard under a link and
+       every click on them would also navigate away. -->
+  {#if showReply && comms}
+    <div class="pl-6 pr-3">
+      <BriefReply
+        {comms}
+        peer={line.current.title.replace(/ is waiting on you$/, '')}
+        onDecide={onDecideReply!}
+        onDelegate={onDelegate!}
+      />
+    </div>
+  {/if}
 </div>

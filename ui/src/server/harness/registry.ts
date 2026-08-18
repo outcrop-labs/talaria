@@ -69,7 +69,14 @@ import type { ToolPolicy } from './transport'
 import type { PlatformAgentId } from '../platform-agents'
 
 import { blurbWriterHarness } from './defs/blurb-writer'
-import { briefingChatHarness, briefingHarness, dailyBriefChatHarness, dailyBriefLedeHarness, dailyBriefNoteHarness } from './defs/briefer'
+import {
+  assistantReplyHarness,
+  briefingChatHarness,
+  briefingHarness,
+  dailyBriefChatHarness,
+  dailyBriefLedeHarness,
+  dailyBriefNoteHarness,
+} from './defs/briefer'
 import { channelPlanHarness } from './defs/channel-plan'
 import { concluderHarness } from './defs/concluder'
 import { distillerHarness } from './defs/distiller'
@@ -188,6 +195,10 @@ const BUILTINS: RegisteredHarness[] = [
   register(dailyBriefLedeHarness, 'builtin'),
   register(dailyBriefNoteHarness, 'builtin'),
   register(dailyBriefChatHarness, 'builtin'),
+  // The sharpest of the family: this one writes to somebody OTHER than the
+  // owner, in their name. Same unassignable model rule, and the reason is
+  // strongest here.
+  register(assistantReplyHarness, 'builtin'),
   // The agent assigned to the ticket, the channel or the plan — including a
   // TIER of it, which the Plan modal lets a user pick per draft.
   register(workSessionHarness, 'builtin'),

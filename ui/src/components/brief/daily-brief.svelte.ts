@@ -64,7 +64,36 @@ export function useBriefLive(): void {
 
 export function useBriefActions() {
   const qc = useQueryClient()
+  const refresh = (): Promise<unknown> => qc.invalidateQueries({ queryKey: BRIEF_KEY })
   return {
+    /** Send or discard a drafted reply.
+     *
+     *  AWAITED AND ITS ERROR SURFACED, unlike `markRead` below — this is the one
+     *  action on the surface that makes something leave the building, and a 409
+     *  means the thread moved on and the draft would answer the wrong message.
+     *  A person who clicks send has to learn that it did not. */
+    async decideReply(draftId: string, decision: 'approve' | 'reject'): Promise<{ ok: true } | { ok: false; error: string }> {
+      const res = await fetch('/api/brief/reply', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ draftId, decision }),
+      })
+      const payload = (await res.json().catch(() => null)) as { error?: string } | null
+      await refresh()
+      return res.ok ? { ok: true } : { ok: false, error: payload?.error ?? `Failed (${res.status})` }
+    },
+    /** Hand a conversation to the assistant, or take it back. */
+    async setDelegated(channelId: string | null, granted: boolean): Promise<boolean> {
+      const res = await fetch('/api/brief/delegate', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ channelId, granted }),
+      })
+      await refresh()
+      return res.ok
+    },
     invalidate: (): void => void qc.invalidateQueries({ queryKey: BRIEF_KEY }),
     /** Advance the read cursor. Fire-and-forget: the flag it clears is a
      *  nicety, and a failed POST must not interrupt someone reading. */

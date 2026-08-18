@@ -90,6 +90,23 @@ export interface BriefUpdate {
   entries: BriefEntry[]
 }
 
+/** The parts of a conversation line that are LIVE rather than historical.
+ *
+ *  Deliberately not in the log. An entry records what was true when it was
+ *  written — that a draft existed, that a thread was delegated — and those are
+ *  exactly the facts that must not be acted on from history: approving a draft
+ *  the owner discarded an hour ago, or showing a "revoke" control for a grant
+ *  that is already revoked. The log stays append-only; this is read fresh on
+ *  every request and keyed back onto the lines by `sourceKey`. */
+export interface CommsState {
+  sourceKey: string
+  channelId: string
+  /** The assistant may answer here without asking. */
+  delegated: boolean
+  /** A reply waiting for the owner's decision. */
+  draft: { id: string; content: string; stale: boolean } | null
+}
+
 export interface BriefAssistant {
   configured: boolean
   model: string | null
@@ -112,6 +129,8 @@ export interface BriefView {
   sections: Array<{ section: BriefSection; lines: BriefLine[] }>
   /** The day as it accumulated, newest batch first. */
   updates: BriefUpdate[]
+  /** Live conversation state, keyed onto `sections` lines by `sourceKey`. */
+  comms: CommsState[]
   lastSeq: number
   readSeq: number
   /** Appended since the reader last looked. */

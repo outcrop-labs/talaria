@@ -116,6 +116,7 @@ const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; require
       'briefer:daily-open',
       'briefer:daily-delta',
       'briefer:daily-chat',
+      'briefer:reply',
     ],
   },
   {

@@ -177,7 +177,13 @@
                     />
                     <div class="-mx-3">
                       {#each section.lines as line (line.key)}
-                        <BriefLineRow {line} onAsk={ask} />
+                        <BriefLineRow
+                          {line}
+                          onAsk={ask}
+                          comms={day.comms.find((c) => c.sourceKey === line.key)}
+                          onDecideReply={actions.decideReply}
+                          onDelegate={(channelId, granted) => void actions.setDelegated(channelId, granted)}
+                        />
                       {/each}
                     </div>
                   </section>

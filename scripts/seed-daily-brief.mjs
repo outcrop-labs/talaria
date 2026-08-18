@@ -322,6 +322,35 @@ async function seedNotifications(owner) {
 
 async function advanceWorld(step, owner, mates, ids) {
   if (step === 1) {
+    // THE STATE THE OLD SOURCE COULD NOT SEE: Mitchell's DM gets READ and not
+    // answered. Under the unread-based source this made the line vanish and the
+    // brief announced it done; the line must now stay open, saying so.
+    const mitchell = mates.get('mitchell')
+    if (mitchell) {
+      const key = [owner.id, mitchell.id].sort().join(':')
+      const ch = await sql`select id, msg_seq from channels where dm_key = ${key}`
+      if (ch[0]) {
+        await sql`
+          update channel_members set last_read_seq = ${ch[0].msg_seq}
+          where channel_id = ${ch[0].id} and user_id = ${owner.id}
+        `
+      }
+    }
+    // Priya's thread gets ANSWERED, by the owner's own hand.
+    const priya = mates.get('priya')
+    if (priya) {
+      const key = [owner.id, priya.id].sort().join(':')
+      const ch = await sql`select id, msg_seq from channels where dm_key = ${key}`
+      if (ch[0]) {
+        const seq = (ch[0].msg_seq ?? 0) + 1
+        await sql`
+          insert into channel_messages (channel_id, seq, author_type, author, content, status)
+          values (${ch[0].id}, ${seq}, 'user', ${owner.email ?? owner.name ?? 'user'},
+                  'rollback window is 30 minutes — go ahead and cut the branch', 'complete')
+        `
+        await sql`update channels set msg_seq = ${seq}, updated_at = now() where id = ${ch[0].id}`
+      }
+    }
     // The review is signed off, and a new question arrives.
     await sql`update tasks set status = 'done', updated_at = now() where id = ${ids.get('webhook')}`
     const dana = mates.get('dana')
@@ -339,7 +368,22 @@ async function advanceWorld(step, owner, mates, ids) {
     `
     await sql`update channels set msg_seq = ${seq}, updated_at = now() where id = ${channel.id}`
     await sql`update channel_members set last_read_seq = 0 where channel_id = ${channel.id} and user_id = ${owner.id}`
-    return 'signed off the webhook review, and Dana asked a new question'
+    return 'read Mitchell without answering, replied to Priya, signed off the webhook review, and Dana asked a new question'
+  }
+
+  // DELEGATION: the owner hands Dana's thread to their assistant. The next
+  // sweep drafts a reply AND sends it, because a grant exists — where every
+  // other waiting thread only gets a draft parked for approval.
+  const dana = mates.get('dana')
+  if (dana) {
+    const key = [owner.id, dana.id].sort().join(':')
+    const ch = await sql`select id from channels where dm_key = ${key}`
+    if (ch[0]) {
+      await sql`
+        insert into assistant_reply_grants (user_id, channel_id) values (${owner.id}, ${ch[0].id})
+        on conflict do nothing
+      `
+    }
   }
 
   // The blocked ticket moves, and one notification is dealt with.
@@ -350,7 +394,7 @@ async function advanceWorld(step, owner, mates, ids) {
     where id = ${ids.get('ledger')}
   `
   await sql`update notifications set read_at = now() where user_id = ${owner.id} and kind = 'agent-problem'`
-  return 'unblocked the ledger migration (now waiting on review) and cleared the agent alert'
+  return 'handed Dana’s thread to the assistant, unblocked the ledger migration, and cleared the agent alert'
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -430,6 +474,18 @@ async function main() {
     log(`FAILED: the brief reads as absent (${brief.absent}) after being opened — that is a bug, not a fixture problem.`)
     process.exitCode = 1
     return
+  }
+
+  const comms = brief.sections.find((s) => s.section === 'comms')
+  if (comms) {
+    console.log('')
+    log('conversations:')
+    for (const line of comms.lines) {
+      const draft = brief.comms.find((c) => c.sourceKey === line.key)
+      const mark = line.resolved ? '\u2713' : '\u25cf'
+      const extra = draft?.delegated ? ' [assistant handles this]' : draft?.draft ? ' [draft parked]' : ''
+      log(`   ${mark} ${String(line.current.statusLabel ?? '').padEnd(22)} ${line.current.title}${extra}`)
+    }
   }
 
   const lines = brief.sections.reduce((n, s) => n + s.lines.length, 0)

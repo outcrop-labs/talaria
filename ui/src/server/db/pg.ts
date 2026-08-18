@@ -1890,6 +1890,47 @@ const MIGRATIONS: string[] = [
   `create index if not exists assistant_reply_drafts_open_idx
      on assistant_reply_drafts(user_id, channel_id) where status = 'pending'`,
 
+  // ── TALKING TO YOUR ASSISTANT ABOUT A LINE, AND KEEPING IT ────────────────
+  //
+  // This started ephemeral on purpose — no row, nothing indexed, on the theory
+  // that a person asks loose half-formed questions about their own day and
+  // would stop if those were minuted. That theory was wrong about the thing
+  // people actually do: they ask, get an answer, click into the ticket, come
+  // back — and an ephemeral thread is gone by the time they return, so the
+  // conversation cannot survive the ONE navigation it exists to prompt.
+  //
+  // So it persists, scoped to the brief and the line it is about. `source_key`
+  // null is the conversation about the whole day; a key ties it to one line, so
+  // a question about the ledger ticket is still there when you come back from
+  // the ledger ticket.
+  //
+  // PER BRIEF, NOT PER LINE FOREVER. `brief_id` is in the key, so tomorrow's
+  // brief starts its conversations clean even where the same ticket appears
+  // again. A brief is a document about one day and its margin notes belong to
+  // that day; carrying them forward would mean today's page opening with an
+  // argument from Tuesday.
+  //
+  // CONSEQUENCE, STATED HERE BECAUSE IT IS EASY TO MISS: the reply harness
+  // (`briefer:daily-chat`) declared no `redact` on the explicit grounds that
+  // nothing was saved. That is no longer true, and it now redacts — a
+  // credential quoted out of a ticket title would otherwise sit in this table
+  // for the life of the brief.
+  `create table if not exists brief_chat_messages (
+     id uuid primary key default gen_random_uuid(),
+     brief_id uuid not null references daily_briefs(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     -- Null = the conversation about the day as a whole.
+     source_key text,
+     seq integer not null,
+     role text not null,
+     content text not null default '',
+     created_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists brief_chat_seq_idx
+     on brief_chat_messages(brief_id, coalesce(source_key, ''), seq)`,
+  `create index if not exists brief_chat_thread_idx
+     on brief_chat_messages(brief_id, source_key, seq)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

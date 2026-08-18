@@ -1,13 +1,17 @@
 // Talking to your assistant about the brief in front of you.
 //
-// EPHEMERAL, DELIBERATELY, AND FOR A DIFFERENT REASON THAN USUAL. The brief
-// itself is the most permanent thing this feature writes — append-only, never
-// rewritten, mirrored to a shareable artifact. The conversation ABOUT it is the
-// opposite: no conversation row, no messages, nothing indexed or distilled
-// later. Those two decisions are the same decision. A person asks their
-// assistant loose, half-formed questions about their own day ("is the Priya
-// thing actually urgent?"), and the moment those are minuted next to the
-// document they are about, they stop being asked.
+// THIS WAS EPHEMERAL AND IS NOT ANY MORE, and the reason it changed is worth
+// keeping. The original argument was that a person asks loose, half-formed
+// questions about their own day ("is the Priya thing actually urgent?") and
+// would stop if those were minuted next to the document they are about. That
+// may still be true, and it was beside the point: the answers this surface
+// gives END IN A NAVIGATION. You ask why a ticket is stuck, you go and look at
+// the ticket, you come back — and an ephemeral thread is gone by the time you
+// return, having been destroyed by the one action it existed to prompt.
+//
+// So the thread persists, scoped to the brief and to the line it is about
+// (`brief_chat_messages`). Per brief rather than per line forever: a brief is a
+// document about one day, and tomorrow's opens clean.
 //
 // The delta is passed SEPARATELY from the document, which is the one piece of
 // prompt design this file owns. "What changed since I looked" is the question
@@ -31,6 +35,7 @@ export interface BriefChatInput {
 }
 
 interface Loaded {
+  briefId: string
   agentModel: string
   brief: string
   since: string | null
@@ -92,7 +97,51 @@ async function loadContext(user: SessionUser, sourceKey: string | null): Promise
     ? `${focusLine.current.title}${focusLine.current.body ? ` — ${focusLine.current.body}` : ''}${focusLine.resolved ? ' (already resolved)' : ''}`
     : null
 
-  return { agentModel, brief, since, focus }
+  return { briefId: row.id, agentModel, brief, since, focus }
+}
+
+export interface BriefChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+}
+
+/** The saved thread for one line (or for the day, with `sourceKey: null`). */
+export async function briefChatHistory(user: SessionUser, sourceKey: string | null): Promise<BriefChatMessage[]> {
+  const config = await briefConfig()
+  const { date } = briefWindow(config, zoneFor(user.id, config), new Date())
+  const sql = await db()
+  return (await sql`
+    select m.role, m.content, m.created_at as "createdAt"
+    from brief_chat_messages m
+    join daily_briefs b on b.id = m.brief_id
+    where b.user_id = ${user.id} and b.brief_date = ${date}
+      and m.source_key is not distinct from ${sourceKey}
+    order by m.seq asc
+  `) as unknown as BriefChatMessage[]
+}
+
+/** Append one turn. Sequenced per thread with a subquery rather than a counter
+ *  held in this process, so two tabs answering at once cannot collide on a seq —
+ *  the unique index is the backstop that turns any remaining race into a failed
+ *  insert rather than two messages claiming the same position. */
+async function appendTurn(
+  briefId: string,
+  userId: string,
+  sourceKey: string | null,
+  role: 'user' | 'assistant',
+  content: string,
+): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into brief_chat_messages (brief_id, user_id, source_key, seq, role, content)
+    values (
+      ${briefId}, ${userId}, ${sourceKey},
+      coalesce((select max(seq) from brief_chat_messages
+                where brief_id = ${briefId} and source_key is not distinct from ${sourceKey}), 0) + 1,
+      ${role}, ${content}
+    )
+  `
 }
 
 /** Stream the assistant's answer. Same wire arrangement as `briefingChat` in
@@ -123,6 +172,11 @@ export async function briefChat(user: SessionUser, input: BriefChatInput): Promi
     deliver(new Response(wire.readable, { headers: { 'content-type': 'text/event-stream' } }))
   }
 
+  // The question is saved BEFORE the answer is attempted. A turn whose model
+  // fell over still shows the person what they asked when they come back —
+  // otherwise a failed reply erases their own words along with the answer.
+  await appendTurn(loaded.briefId, user.id, input.sourceKey, 'user', input.content)
+
   void runHarnessStreamed(
     dailyBriefChatHarness,
     { brief: loaded.brief, since: loaded.since, focus: loaded.focus, history: input.history, content: input.content },
@@ -135,9 +189,19 @@ export async function briefChat(user: SessionUser, input: BriefChatInput): Promi
       },
     },
   )
-    .then((run) => {
-      if (run.value) handOver()
-      else fail(new Error(run.error ?? 'the assistant produced no reply'))
+    .then(async (run) => {
+      if (run.value) {
+        handOver()
+        // `run.value`, not the accumulated deltas: the runner's value is the
+        // GUARDED copy, and this harness now redacts (it persists). Saving the
+        // raw stream instead would keep a credential in the table that the
+        // guard had already removed from the run.
+        await appendTurn(loaded.briefId, user.id, input.sourceKey, 'assistant', run.value).catch((e: unknown) =>
+          console.error('[brief-chat] could not save the reply:', e),
+        )
+      } else {
+        fail(new Error(run.error ?? 'the assistant produced no reply'))
+      }
     })
     .catch((err: unknown) => fail(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {

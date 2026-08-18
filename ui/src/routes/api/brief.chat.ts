@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { parseBody, requireUser } from '@/server/api-guard'
-import { briefChat } from '@/server/daily-brief-chat'
+import { briefChat, briefChatHistory } from '@/server/daily-brief-chat'
 
 const Body = z.object({
   content: z.string().min(1).max(4_000),
@@ -15,6 +15,15 @@ const Body = z.object({
 })
 
 export const Route = defineApi('/api/brief/chat', {
+  /** The saved thread for one line, so a conversation survives the navigation
+   *  it prompted. `?sourceKey=` omitted is the conversation about the whole day. */
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const raw = new URL(request.url).searchParams.get('sourceKey')
+    const sourceKey = raw && raw.length <= 200 ? raw : null
+    return json({ messages: await briefChatHistory(user, sourceKey) })
+  },
   POST: async ({ request }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user

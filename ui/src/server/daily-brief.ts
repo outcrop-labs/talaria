@@ -38,7 +38,9 @@
 import { randomUUID } from 'node:crypto'
 import { db } from './db/pg'
 import type { SessionUser } from './api-guard'
-import { approvalItems, channelItems, notificationItems, taskItems } from './inbox-focus-sources'
+import { approvalItems, notificationItems, taskItems } from './inbox-focus-sources'
+import { commsLines, type CommsLine } from './daily-brief-comms'
+import { draftReply, releaseDrafts } from './daily-brief-delegation'
 import { dedupeItems, sortItems } from './inbox-focus-policy'
 import type { RawFocusItem } from './inbox-focus-types'
 import { listUpcomingEvents } from './google/calendar'
@@ -52,6 +54,7 @@ import { foldEntries } from './daily-brief-fold'
 import {
   BRIEF_SECTIONS,
   type BriefAssistant,
+  type CommsState,
   type BriefBadge,
   type BriefEntry,
   type BriefEvidence,
@@ -160,6 +163,33 @@ const candidateFrom = (item: RawFocusItem): NewEntry => ({
   evidence: item.evidence,
 })
 
+/** A conversation, as a brief line.
+ *
+ *  Built here rather than in `daily-brief-comms.ts` so that file stays a pure
+ *  read model — it answers "who is waiting", and this decides how that reads on
+ *  the page. The `resolved` kind is the interesting part: this source can say
+ *  "this became answered, and here is who answered it" instead of merely
+ *  vanishing from the live set, which is what lets the line say YOU REPLIED or
+ *  ASSISTANT REPLIED rather than a generic DONE. */
+function commsCandidate(line: CommsLine): NewEntry {
+  const answered = line.answeredBy !== null
+  return {
+    kind: answered ? 'resolved' : 'item',
+    section: 'comms',
+    sourceKey: line.key,
+    sourceType: 'channel',
+    sourceId: line.channelId,
+    sourceHref: `/comms/channel/${line.channelId}`,
+    fingerprint: line.sourceFingerprint,
+    priority: line.priority,
+    statusLabel: line.statusLabel,
+    badge: line.badge,
+    title: answered ? `Replied to ${line.peer}` : `${line.peer} is waiting on you`,
+    body: answered ? '' : line.excerpt,
+    evidence: line.draft && !line.draft.stale ? [{ label: 'Drafted reply', text: line.draft.content }] : [],
+  }
+}
+
 /** Today's calendar, as brief entries.
  *
  *  OPTIONAL AND SAID SO. Most installs have no Google connection and the
@@ -249,7 +279,8 @@ function formatSlot(start: string | null, end: string | null, zone: string): str
 async function snapshot(
   user: SessionUser,
   zone: string,
-): Promise<{ candidates: NewEntry[]; failedTypes: Set<string>; calendar: NewEntry[] | null }> {
+  assistantModel: string | null,
+): Promise<{ candidates: NewEntry[]; failedTypes: Set<string>; calendar: NewEntry[] | null; comms: CommsLine[] }> {
   const failedTypes = new Set<string>()
   const guard = async (type: string, run: () => Promise<RawFocusItem[]>): Promise<RawFocusItem[]> =>
     run().catch((e: unknown) => {
@@ -258,16 +289,37 @@ async function snapshot(
       return []
     })
 
-  const [approvals, tasks, channels, notifications, calendar] = await Promise.all([
+  const [approvals, tasks, comms, notifications, calendar] = await Promise.all([
     guard('approval', () => approvalItems(user)),
     guard('task', () => taskItems(user.id)),
-    guard('channel', () => channelItems(user.id)),
+    // NOT `channelItems`. That selects DMs with UNREAD messages, so opening one
+    // drops it out of the set and the sweep resolves the line — the brief
+    // telling you a question was handled because you glanced at it. See the
+    // header of daily-brief-comms.ts.
+    commsLines(user.id, assistantModel).catch((e: unknown) => {
+      console.error(`[daily-brief] comms source failed for ${user.id}:`, e)
+      failedTypes.add('channel')
+      return [] as CommsLine[]
+    }),
     guard('notification', () => notificationItems(user.id)),
     calendarEntries(user.id, zone).catch(() => null),
   ])
 
-  const items = sortItems(dedupeItems([...approvals, ...tasks, ...channels, ...notifications]))
-  return { candidates: items.map(candidateFrom), failedTypes, calendar }
+  // `dedupeItems` drops a notification that merely points at a ticket or a
+  // channel already in the set. It can no longer see the conversations (they
+  // are their own source now), so the channel hrefs are re-applied here —
+  // without it, "Priya mentioned you" and "Priya is waiting on you" both land
+  // on the page as separate lines about the same nudge.
+  const commsHrefs = comms.map((c) => `/comms/channel/${c.channelId}`)
+  const deduped = dedupeItems([...approvals, ...tasks, ...notifications]).filter(
+    (item) => !(item.sourceType === 'notification' && commsHrefs.some((href) => item.sourceHref.startsWith(href))),
+  )
+  return {
+    candidates: [...sortItems(deduped).map(candidateFrom), ...comms.map(commsCandidate)],
+    failedTypes,
+    calendar,
+    comms,
+  }
 }
 
 // ── The fold ─────────────────────────────────────────────────────────────────
@@ -275,7 +327,7 @@ async function snapshot(
 // `foldEntries` lives in daily-brief-fold.ts — pure, testable, and shared with
 // the artifact mirror.
 
-function view(row: BriefRow, entries: BriefEntry[], agent: BriefAssistant): BriefView {
+function view(row: BriefRow, entries: BriefEntry[], agent: BriefAssistant, comms: CommsState[]): BriefView {
   const { lines, updates } = foldEntries(entries, row.readSeq)
   const lede = entries.find((e) => e.kind === 'lede')
   // Priority first, then the order the log put them in. A resolved line sinks
@@ -304,6 +356,7 @@ function view(row: BriefRow, entries: BriefEntry[], agent: BriefAssistant): Brie
     artifactId: row.artifactId,
     sections,
     updates,
+    comms,
     lastSeq: row.lastSeq,
     readSeq: row.readSeq,
     unseenCount: entries.filter((e) => e.seq > row.readSeq && e.kind !== 'lede').length,
@@ -347,8 +400,25 @@ export async function getBrief(user: SessionUser, at = new Date()): Promise<Brie
   const [row, agent] = await Promise.all([loadRow(user.id, date), briefAssistant(user.id)])
 
   if (row) {
-    const entries = await loadEntries(row.id)
-    return view(row, entries, agent)
+    // Two reads, and the second is not the log. `commsLines` is asked again at
+    // request time because a draft's approvability and a grant's existence are
+    // present-tense facts — the log can only say what was true when it was
+    // written, and acting on that would offer to send a draft the owner already
+    // discarded. A failure here costs the controls, never the document.
+    const [entries, live] = await Promise.all([
+      loadEntries(row.id),
+      commsLines(user.id, row.agentModel).catch((e: unknown) => {
+        console.error(`[daily-brief] live comms state failed for ${user.id}:`, e)
+        return [] as CommsLine[]
+      }),
+    ])
+    const comms: CommsState[] = live.map((line) => ({
+      sourceKey: line.key,
+      channelId: line.channelId,
+      delegated: line.delegated,
+      draft: line.draft && !line.draft.stale ? { id: line.draft.id, content: line.draft.content, stale: false } : line.draft,
+    }))
+    return view(row, entries, agent, comms)
   }
   if (!agent.configured) return { absent: 'no-agent', nextAt: null, agent }
   return { absent: due ? 'none' : 'pending', nextAt: nextBriefAt(config, zone, at).toISOString(), agent }
@@ -445,7 +515,7 @@ export async function openBrief(user: SessionUser, at = new Date()): Promise<{ o
   const briefId = created[0]?.id
   if (!briefId) return { opened: false, briefId: (await loadRow(user.id, date))?.id ?? null }
 
-  const { candidates, calendar } = await snapshot(user, zone)
+  const { candidates, calendar } = await snapshot(user, zone, agent.model)
   const items = [...(calendar ?? []), ...candidates]
 
   // The lede is written BEFORE the items are appended and inserted FIRST, so
@@ -526,7 +596,28 @@ export async function sweepBrief(user: SessionUser, at = new Date()): Promise<Sw
   const row = await loadRow(user.id, date)
   if (!row) return none
 
-  const [entries, { candidates, failedTypes, calendar }] = await Promise.all([loadEntries(row.id), snapshot(user, zone)])
+  const [entries, first] = await Promise.all([loadEntries(row.id), snapshot(user, zone, row.agentModel)])
+
+  // DRAFT FIRST, THEN LOOK AT THE WORLD. Drafting used to run after the diff,
+  // which was wrong in a way only visible with a standing grant: the assistant
+  // SENT a reply during the sweep, and because the snapshot had already been
+  // taken the line still read "1 unread" for another five minutes — the brief
+  // reporting a conversation as waiting that its own assistant had just
+  // answered. Re-reading costs one query on the sweeps where anything was
+  // drafted, and nothing at all on the ones where nothing was.
+  // A grant made since the last sweep can have parked drafts waiting behind it —
+  // see `releaseDrafts`. Released BEFORE drafting, so a thread whose reply has
+  // just gone out is not also drafted for.
+  const released = await releaseDrafts(user.id).catch((e: unknown) => {
+    console.error(`[daily-brief] releasing drafts failed for ${user.id}:`, e)
+    return 0
+  })
+  const freshDrafts = await draftPending(user, row, first.comms).catch((e: unknown) => {
+    console.error(`[daily-brief] drafting replies failed for ${user.id}:`, e)
+    return 0
+  })
+  const drafted = released + freshDrafts
+  const { candidates, failedTypes, calendar } = drafted > 0 ? await snapshot(user, zone, row.agentModel) : first
   const { lines } = foldEntries(entries, row.readSeq)
   const known = new Map(lines.map((l) => [l.key, l]))
   // No `kind` filter: `calendarEntries` returns only items now (the unreadable
@@ -544,6 +635,12 @@ export async function sweepBrief(user: SessionUser, at = new Date()): Promise<Sw
     if (!candidate.sourceKey) continue
     const line = known.get(candidate.sourceKey)
     if (!line) {
+      // A SOURCE-EMITTED RESOLUTION FOR A LINE THAT WAS NEVER HERE IS DROPPED.
+      // The comms source reports answered conversations so a line can close
+      // with WHO answered it rather than a generic DONE — but a thread answered
+      // before the brief ever mentioned it has nothing to close, and appending
+      // it would put "Replied to Sam" on a page that never asked you to.
+      if (candidate.kind === 'resolved') continue
       appends.push(candidate)
       added++
       continue
@@ -551,13 +648,25 @@ export async function sweepBrief(user: SessionUser, at = new Date()): Promise<Sw
     // Unchanged, or back after a resolution. Both are decided by the
     // fingerprint against the LAST entry for the key, which is what makes a
     // thing that resolves and returns append a fresh row rather than nothing.
-    if (line.current.fingerprint === candidate.fingerprint && !line.resolved) continue
+    if (line.current.fingerprint === candidate.fingerprint && line.resolved === (candidate.kind === 'resolved')) continue
+    if (candidate.kind === 'resolved') {
+      if (line.resolved) continue
+      appends.push({ ...candidate, supersedes: line.current.id })
+      resolved++
+      continue
+    }
     appends.push({ ...candidate, kind: 'change', supersedes: line.current.id })
     changed++
   }
 
   for (const line of lines) {
     if (line.resolved || liveKeys.has(line.key)) continue
+    // A conversation NEVER resolves by vanishing. `commsLines` reports answered
+    // threads explicitly (with who answered), so a comms key that is absent
+    // from the live set means the source could not see it — an archived
+    // channel, a failed read — and closing it here would be the original bug
+    // wearing a different hat: a line marked done that nobody answered.
+    if (line.current.sourceType === 'channel') continue
     const type = line.current.sourceType ?? ''
     // Calendar has no failure namespace of its own — a schedule that could not
     // be read comes back as `null`, not as an empty list — so a null calendar
@@ -595,6 +704,61 @@ export async function sweepBrief(user: SessionUser, at = new Date()): Promise<Sw
   await sql`update daily_briefs set last_swept_at = now() where id = ${row.id}`
   return { appended: written.length, added, changed, resolved }
 }
+
+/** Ask the assistant to write replies for the conversations still waiting.
+ *
+ *  WHY DRAFTING NEEDS NO PERMISSION AND SENDING DOES. A draft is a suggestion
+ *  sitting on the owner's own page; nothing has left the building, and they
+ *  read it before anyone else does. That is the same posture
+ *  `google/pending-actions.ts` takes with outbound mail — "reads and drafts are
+ *  free". `draftReply` is what checks for a grant, and it is the only thing
+ *  that can turn a draft into a sent message. */
+async function draftPending(user: SessionUser, row: BriefRow, comms: CommsLine[]): Promise<number> {
+  if (!row.agentModel) return 0
+  // Bounded twice over: only threads where somebody is genuinely waiting, and
+  // only those without a live draft already. Without both, every unanswered DM
+  // would be re-drafted every five minutes — a model call per thread per sweep,
+  // and a page that rewrites itself under the reader.
+  const waiting = comms.filter((c) => c.answeredBy === null && (!c.draft || c.draft.stale))
+  if (waiting.length === 0) return 0
+  const owner = user.name ?? user.email ?? 'your owner'
+  let wrote = 0
+  // Sequential: each is a model call, and a person with twenty unanswered DMs
+  // should not fan twenty concurrent turns at their own assistant.
+  if (waiting.length > DRAFT_LIMIT) {
+    // SAID OUT LOUD. A silent cap reads as "every waiting thread was handled",
+    // which is the class of quiet truncation this whole surface exists to avoid.
+    console.warn(
+      `[daily-brief] ${waiting.length} conversations waiting for ${user.id}; drafting ${DRAFT_LIMIT} this pass, the rest on following sweeps`,
+    )
+  }
+  for (const line of waiting.slice(0, DRAFT_LIMIT)) {
+    const result = await draftReply({
+      userId: user.id,
+      channelId: line.channelId,
+      peer: line.peer,
+      awaitingSeq: line.awaitingSeq,
+      agentModel: row.agentModel,
+      ownerName: owner,
+    }).catch((e: unknown) => {
+      // One thread failing to draft leaves that thread waiting, which the line
+      // already renders honestly. It must not stop the other threads.
+      console.error(`[daily-brief] draft failed for channel ${line.channelId}:`, e)
+      return null
+    })
+    if (result) wrote++
+  }
+  return wrote
+}
+
+/** How many conversations one sweep will draft for.
+ *
+ *  A ceiling rather than a queue, and it is LOGGED when it bites (see
+ *  `sweepBrief`'s caller): a person who comes back from leave with forty
+ *  unanswered DMs should not have their assistant spend forty model calls in
+ *  one tick. The rest are drafted on following sweeps, and every one of them is
+ *  still visible on the page as waiting in the meantime. */
+const DRAFT_LIMIT = 8
 
 async function writeNote(row: BriefRow, appends: NewEntry[]): Promise<NewEntry | null> {
   if (!row.agentModel) return null

@@ -3,6 +3,7 @@
   import { CornerDownLeft, Sparkles, X } from '@lucide/svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Generating from '@/components/ui/Generating.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { parseAgentStream } from '@/lib/sse-parse'
@@ -12,13 +13,18 @@
   /**
    * Talking to your assistant about the brief in front of you.
    *
-   * EPHEMERAL, AND THE THREAD LIVES IN THIS COMPONENT. Nothing is persisted —
-   * no conversation row, no messages, nothing distilled later — for the reason
-   * stated in server/daily-brief-chat.ts: a person asks loose, half-formed
-   * questions about their own day, and the moment those are minuted next to the
-   * document they are about, they stop being asked.
+   * THE THREAD IS SAVED, PER LINE. It began as component state on an
+   * ephemerality argument, and the argument lost to what the surface is for:
+   * the answers here END IN A NAVIGATION — you ask why a ticket is stuck, you
+   * go and look at it, you come back — so a thread held in this component was
+   * destroyed by the one action it existed to prompt. It now loads from
+   * `/api/brief/chat?sourceKey=` and every turn is persisted server-side.
    *
-   * `focus` IS WHY THIS IS NOT THE APP-WIDE ASSISTANT DRAWER. Clicking the ask
+   * ONE THREAD PER LINE, plus one for the day (`focus === null`). Switching
+   * focus swaps threads rather than continuing one, which is why the load is
+   * keyed on the focus rather than done once at mount.
+   *
+   * `focus` IS ALSO WHY THIS IS NOT THE APP-WIDE ASSISTANT DRAWER. Clicking the ask
    * icon on a line sends that line's key with the question, so "why is this
    * stuck?" resolves without the person having to retype which `this` they
    * mean. That is the whole of "chat about the changes easily".
@@ -37,7 +43,34 @@
   let thread = $state<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   let draft = $state('')
   let replying = $state(false)
+  let loading = $state(false)
   let scroller = $state<HTMLDivElement | null>(null)
+
+  // Which thread is on screen. Tracked separately from `focus` so a reply
+  // streaming into the ledger thread cannot be appended to Dana's because the
+  // person clicked away mid-answer.
+  let loadedKey = $state<string | null | undefined>(undefined)
+
+  $effect(() => {
+    const key = focus?.key ?? null
+    if (key === loadedKey || replying) return
+    loadedKey = key
+    thread = []
+    loading = true
+    const url = key ? `/api/brief/chat?sourceKey=${encodeURIComponent(key)}` : '/api/brief/chat'
+    void fetch(url, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? (r.json() as Promise<{ messages: Array<{ role: 'user' | 'assistant'; content: string }> }>) : null))
+      .then((payload) => {
+        // Guard on the key: a load still in flight for a thread the person has
+        // navigated away from must not paint over the one now on screen.
+        if (loadedKey !== key) return
+        thread = payload?.messages ?? []
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (loadedKey === key) loading = false
+      })
+  })
 
   // Suggestions, not a fabricated capability: each one is a question this
   // surface can genuinely answer from what it already holds.
@@ -50,11 +83,12 @@
     draft = ''
     thread = [...thread, { role: 'user', content: text }, { role: 'assistant', content: '' }]
     replying = true
-    // The focus is consumed by the question it was raised for. Leaving it
-    // pinned would silently re-scope every later question in the thread to a
-    // line the person has stopped talking about.
+    // The focus is NOT cleared on send any more. It used to be, on the reasoning
+    // that leaving it pinned would silently re-scope later questions — but now
+    // that the thread is saved per line, the focus IS the thread's identity.
+    // Clearing it would move the next question into the day-level conversation
+    // and strand the answer the person just got.
     const sourceKey = focus?.key ?? null
-    onClearFocus()
     try {
       const res = await fetch('/api/brief/chat', {
         method: 'POST',
@@ -85,7 +119,12 @@
 
 <div class="flex h-full min-h-0 flex-col">
   <div bind:this={scroller} class="min-h-0 flex-1 space-y-4 overflow-y-auto px-1 pb-4">
-    {#if thread.length === 0}
+    {#if loading}
+      <!-- A FETCH, so signal static rather than the generating bars below:
+           these are the person's own saved words being read back, not a model
+           writing new ones. -->
+      <SkeletonRows rows={3} />
+    {:else if thread.length === 0}
       <div class="flex items-start gap-2.5 pt-1">
         <Sparkles size={15} class="mt-0.5 shrink-0 text-accent" />
         <p class="font-sans text-[13px] leading-5 text-muted">
