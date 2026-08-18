@@ -104,6 +104,16 @@ engineering-facing tracker.
     textual uploads contribute contents to prompts in chat + channel paths.
 
 ## High-value, ready to pick up
+- **Studio onto the Rail archetype** — the last of the five list+detail
+  implementations. Templates, the agent role library and the Teams dialog now
+  share `components/ui/LibraryPane.svelte`; Studio is deliberately NOT on it,
+  because it is the other archetype: it picks *who you are building for*
+  beside a full authoring workspace, so it wants `Rail`/`RailRow` (which
+  Comms, Knowledge and Artifacts already use) rather than a fixed-height
+  library panel. Not converted in the same pass because it is a 421-line
+  authoring surface whose `data-stagger-items="aside > *, main > *"` contract
+  and page-scroll layout both change with the frame, and that wants a click
+  test. See the archetype table in docs/UI-CONVENTIONS.md.
 - **UI hardening backlog (surveyed 2026-08-17)** — measured, not guessed:
   `npm run typecheck` reports **0 errors, 125 warnings** across 53 files.
   Sorted by whether it is a real defect:

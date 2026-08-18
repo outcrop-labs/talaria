@@ -7,17 +7,14 @@
   import { navigate, route } from '@/router'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Materialize from '@/components/ui/Materialize.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import LibraryPane from '@/components/ui/LibraryPane.svelte'
+  import { listQuery } from '@/components/ui/query-state'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
-  import { cn } from '@/lib/cn'
   import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { createTemplate, deleteTemplate, useTemplates, type Template, type TemplateKind } from '@/lib/templates'
@@ -35,12 +32,14 @@
   const session = $derived(sessionQuery.data)
   const qc = useQueryClient()
   const templatesQuery = useTemplates()
-  const templates = $derived(templatesQuery.data ?? [])
-  const isLoading = $derived(templatesQuery.isLoading)
-  // One read backs BOTH the list and the per-tab counters, and the `= []`
-  // default turned its failure into a confident "Tickets 0 / Plans 0" —
-  // a count is an assertion, so it must not be printed from a read that failed.
-  const failed = $derived(templatesQuery.isError && templatesQuery.data === undefined)
+  // One read backs BOTH the list and the per-tab counters, and a bare `?? []`
+  // would turn its failure into a confident "Tickets 0 / Plans 0" — a count is
+  // an assertion, so it must not be printed from a read that failed. `failed`
+  // is what keeps the counters honest; LibraryPane renders `notice` itself.
+  const read = listQuery(templatesQuery, { title: 'Could not load templates', variant: 'compact' })
+  const templates = $derived(read.rows)
+  const isLoading = $derived(read.pending)
+  const failed = $derived(read.failed)
   // /templates/plan&t=<id> deep-links a tab + template.
   // THE URL IS THE TAB — /templates and /templates/plan. The SELECTED template
   // stays `?t=`: it is a different axis (which item is open, inside whichever
@@ -119,71 +118,38 @@
 
       <Tabs items={tabItems} value={tab} onChange={setTab} />
 
-      <!-- Tab-pane grammar: the whole list+detail pane rises in on a kind
-           switch (no exit). Safe to key: the new-template input's state and
-           `editorOpen` live above; the detail is already keyed by selection.
-           The sidebar list's own cascade belongs to Materialize's content
-           branch — row-shaped skeletons materialize into the template rows. -->
+      <!-- Tab-pane grammar: the whole library pane rises in on a kind switch
+           (no exit). Safe to key: the new-template input's state and
+           `editorOpen` live above; the detail is already keyed by selection. -->
       {#key tab}
-      <div in:fly={{ y: 6, duration: 200 }} class="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
-        <aside class="space-y-3">
-          <!-- Materialize direct (no QueryState here): this site already keys
-               everything off `isLoading`/`failed`, so error and empty stay in
-               the resolved branch and only the loading swap changes shape. -->
-          <Materialize loading={isLoading} count={5} class="space-y-0.5">
-            {#snippet skeleton(i)}
-              <!-- One sidebar row's silhouette: same rounded-md px-2.5 py-2
-                   frame, name bar at a width that varies by index. -->
-              <div aria-hidden="true" class="rounded-md px-2.5 py-2">
-                <div class="flex h-5 items-center">
-                  <Skeleton class={`h-3 rounded-full ${['w-32', 'w-24', 'w-40', 'w-28', 'w-36'][i % 5]}`} delay={i * 0.12} />
-                </div>
-              </div>
-            {/snippet}
-            {#if failed}
-              <QueryError
-                variant="compact"
-                error={templatesQuery.error}
-                title="Could not load templates"
-                onRetry={() => void templatesQuery.refetch()}
-              />
-            {:else}
-              {#each list as t (t.id)}
-                <button
-                  type="button"
-                  onclick={() => select(t.id)}
-                  oncontextmenu={(e) =>
-                    menu.openMenu(e, [
-                      { label: 'Open', onSelect: () => select(t.id) },
-                      { label: 'Copy link', onSelect: () => copyAppLink(`/templates/${t.kind}?t=${t.id}`) },
-                      'sep',
-                      { label: 'Delete', danger: true, onSelect: () => void remove(t) },
-                    ])}
-                  class={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
-                    selected?.id === t.id ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
-                  )}
-                >
-                  <span class="min-w-0 flex-1 truncate font-sans">{t.name}</span>
-                </button>
-              {/each}
-              {#if list.length === 0}<div class="px-2.5 py-2 text-xs text-muted">None yet.</div>{/if}
-            {/if}
-          </Materialize>
-          <div class="flex items-center gap-1.5 border-t border-line pt-3">
-            <Input size="sm" bind:value={newName} placeholder={`New ${tab} template`} onkeydown={(e) => e.key === 'Enter' && void create()} />
-            <Button size="sm" variant="outline" disabled={!newName.trim()} onclick={() => void create()}>
-              <Plus size={14} />
-            </Button>
-          </div>
-        </aside>
+      <div in:fly={{ y: 6, duration: 200 }} class="h-[calc(100vh-19rem)] min-h-[26rem]">
+        <LibraryPane
+          groups={[{ items: list }]}
+          idOf={(t: Template) => t.id}
+          labelOf={(t: Template) => t.name}
+          selectedId={selected?.id ?? null}
+          onSelect={(t: Template) => select(t.id)}
+          pending={isLoading}
+          notice={read.notice}
+          onRowMenu={(e: MouseEvent, t: Template) =>
+            menu.openMenu(e, [
+              { label: 'Open', onSelect: () => select(t.id) },
+              { label: 'Copy link', onSelect: () => copyAppLink(`/templates/${t.kind}?t=${t.id}`) },
+              'sep',
+              { label: 'Delete', danger: true, onSelect: () => void remove(t) },
+            ])}
+          class="h-full"
+        >
+          {#snippet footer()}
+            <div class="flex items-center gap-1.5">
+              <Input size="sm" bind:value={newName} placeholder={`New ${tab} template`} onkeydown={(e) => e.key === 'Enter' && void create()} />
+              <Button size="sm" variant="outline" disabled={!newName.trim()} onclick={() => void create()}>
+                <Plus size={14} />
+              </Button>
+            </div>
+          {/snippet}
 
-        {#if selected}
-          {#key selected.id}
-            <TemplateDetail template={selected} blurb={meta.blurb} onChanged={refresh} onDelete={() => selected && void remove(selected)} {editorOpen} setEditorOpen={(v) => (editorOpen = v)} />
-          {/key}
-        {:else}
-          <Panel>
+          {#snippet empty()}
             <!-- "Create the first one" is the same zero-claim in prose. -->
             <EmptyState
               icon="▣"
@@ -194,8 +160,18 @@
                   ? 'Pick one on the left, or create a new one.'
                   : 'Create the first one on the left.'}
             />
-          </Panel>
-        {/if}
+          {/snippet}
+
+          {#snippet detail()}
+            {#if selected}
+              {#key selected.id}
+                <div class="min-h-0 flex-1 overflow-y-auto p-6">
+                  <TemplateDetail template={selected} blurb={meta.blurb} onChanged={refresh} onDelete={() => selected && void remove(selected)} {editorOpen} setEditorOpen={(v) => (editorOpen = v)} />
+                </div>
+              {/key}
+            {/if}
+          {/snippet}
+        </LibraryPane>
       </div>
       {/key}
     </div>

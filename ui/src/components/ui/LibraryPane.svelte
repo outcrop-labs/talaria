@@ -1,0 +1,214 @@
+<script lang="ts" module>
+  import type { Snippet } from 'svelte'
+  import type { QueryErrorProps } from '@/components/ui/query-state'
+
+  /** One labelled run of items in the picker. A single group with no `label`
+   *  is a plain flat list — that is the common case, and it must not cost the
+   *  caller a header it did not ask for. */
+  export interface LibraryGroup<T> {
+    label?: string
+    items: T[]
+    /** Shown in place of the rows when this group is empty. Omit to render
+     *  nothing, which is right for a group that is merely one of several. */
+    empty?: string
+  }
+
+  export interface LibraryPaneProps<T> {
+    groups: LibraryGroup<T>[]
+    /** Stable identity for a row — selection, keying and menus all use it. */
+    idOf: (item: T) => string
+    labelOf: (item: T) => string
+    /** CONTROLLED. The caller owns the selection, which is what lets a
+     *  URL-driven view (`?t=`, `/studio?a=`) and a local-state one share this
+     *  component without either bending to the other. */
+    selectedId: string | null
+    onSelect: (item: T) => void
+    /** Title over the picker. Omit for a bare list. */
+    title?: string
+    /** First load, from `listQuery(...).pending`. Draws row-shaped skeletons. */
+    pending?: boolean
+    /** From `listQuery(...).notice` — the failure, already shaped and wired to
+     *  Retry. Rendered INSTEAD of the rows, because an empty list beside an
+     *  error reads as "and also there are none". */
+    notice?: QueryErrorProps | null
+    /** Right-click on a row. The caller owns its own `useContextMenu()` and
+     *  renders `<ContextMenu>` itself — this only forwards the event, so the
+     *  menu implementation stays out of the component. */
+    onRowMenu?: (e: MouseEvent, item: T) => void
+    /** Width of the picker column. */
+    listWidth?: string
+    /** Drop the Panel chrome — for a pane that is already inside a surface,
+     *  such as a dialog. A panel within a panel is a border inside a border. */
+    bare?: boolean
+    class?: string
+    /** Toolbar slot in the picker header — the New button, typically. */
+    action?: Snippet
+    /** Footer under the picker — an inline create field, typically. */
+    footer?: Snippet
+    /** Row body override, for rows that need more than a name. */
+    row?: Snippet<[T, boolean]>
+    /** Trailing per-row control (a delete affordance). Reveals on row hover. */
+    rowAction?: Snippet<[T]>
+    /** The right pane, when something is selected. */
+    detail?: Snippet
+    /** The right pane, when nothing is. */
+    empty?: Snippet
+  }
+</script>
+
+<script lang="ts" generics="T">
+  import Panel from '@/components/ui/Panel.svelte'
+  import QueryError from '@/components/ui/QueryError.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
+
+  // A LIBRARY ON THE LEFT, THE THING YOU PICKED ON THE RIGHT.
+  //
+  // This shape had five independent implementations — Templates, agent Role
+  // templates, Studio, the Teams dialog, and the Rail views — which is five
+  // answers to the same questions: does the list scroll with the page or
+  // inside itself, is a failed read an empty list, does the picker sit in a
+  // Panel or a bare grid, what does "nothing selected" look like. They had
+  // drifted into genuinely different behaviour rather than merely different
+  // markup, and the divergence was invisible until you used two of them in a
+  // row.
+  //
+  // THE PANE OWNS ITS OWN SCROLL, both sides, independently. That is the house
+  // rule for a view whose content outgrows the viewport — the picker must not
+  // push the editor down the page, and neither should grow a second scrollbar
+  // under the shell. Callers give it a height by placing it in a sized
+  // container; it fills what it is given.
+  //
+  // SELECTION IS THE CALLER'S. Templates keeps it in the URL, the Teams dialog
+  // in a local `$state`; a component that insisted on one would have kept the
+  // other on its own copy of this.
+  //
+  // It takes `pending` and `notice` from `listQuery` rather than a raw query,
+  // so "the read failed" arrives already shaped and cannot be quietly dropped
+  // on the way in.
+  let {
+    groups,
+    idOf,
+    labelOf,
+    selectedId,
+    onSelect,
+    title,
+    pending = false,
+    notice = null,
+    onRowMenu,
+    listWidth = 'w-64',
+    bare = false,
+    class: className,
+    action,
+    footer,
+    row,
+    rowAction,
+    detail,
+    empty,
+  }: LibraryPaneProps<T> = $props()
+
+  const total = $derived(groups.reduce((n, g) => n + g.items.length, 0))
+  // A group with no label and no rows contributes nothing; one WITH a label
+  // still announces itself, because "Your organization (none yet)" is
+  // information and a silently missing section is not.
+  const visible = $derived(groups.filter((g) => g.label || g.items.length || g.empty))
+</script>
+
+<!-- The frame is a snippet so `bare` picks the surface without duplicating the
+     two panes: inside a dialog there is already a surface, and a Panel within a
+     Panel is a border inside a border with the padding twice. -->
+{#snippet panes()}
+  <!-- ── The picker ──────────────────────────────────────────────────────── -->
+  <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth)}>
+    {#if title || action}
+      <div class="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line-subtle px-4">
+        {#if title}
+          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{title}</span>
+        {:else}
+          <span></span>
+        {/if}
+        {@render action?.()}
+      </div>
+    {/if}
+
+    <div class="min-h-0 flex-1 overflow-y-auto p-2">
+      {#if pending}
+        <!-- Row-shaped, at the row's own dimensions — a generic bar here would
+             make the list jump when the real rows land. -->
+        <div aria-hidden="true">
+          {#each [0, 1, 2, 3, 4] as i (i)}
+            <div class="px-2 py-1.5">
+              <Skeleton
+                class={`h-3 rounded-full ${['w-32', 'w-24', 'w-40', 'w-28', 'w-36'][i % 5]}`}
+                delay={i * 0.12}
+              />
+            </div>
+          {/each}
+        </div>
+      {:else if notice}
+        <QueryError {...notice} />
+      {:else if total === 0 && visible.length === 0}
+        <p class="px-2 py-3 font-sans text-xs text-muted">None yet.</p>
+      {:else}
+        {#each visible as group, gi (group.label ?? gi)}
+          {#if group.label}
+            <div class="px-2 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              {group.label}
+            </div>
+          {/if}
+          {#if group.items.length === 0}
+            {#if group.empty}<p class="px-2 pb-1 font-sans text-xs text-muted">{group.empty}</p>{/if}
+          {:else}
+            <div use:listStagger>
+              {#each group.items as item (idOf(item))}
+                {@const id = idOf(item)}
+                {@const active = selectedId === id}
+                <div class="group/row flex items-center gap-1">
+                  <button
+                    type="button"
+                    onclick={() => onSelect(item)}
+                    oncontextmenu={onRowMenu ? (e) => onRowMenu(e, item) : undefined}
+                    aria-current={active ? 'true' : undefined}
+                    class={cn(
+                      'min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left font-sans text-[13px] transition-colors',
+                      active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+                    )}
+                  >
+                    {#if row}{@render row(item, active)}{:else}{labelOf(item)}{/if}
+                  </button>
+                  {#if rowAction}
+                    <div class="shrink-0 opacity-0 transition-opacity group-hover/row:opacity-100">
+                      {@render rowAction(item)}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/each}
+      {/if}
+    </div>
+
+    {#if footer}
+      <div class="shrink-0 border-t border-line px-3 py-3">{@render footer()}</div>
+    {/if}
+  </div>
+
+  <!-- ── The detail ──────────────────────────────────────────────────────── -->
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+    {#if selectedId && detail}
+      {@render detail()}
+    {:else}
+      <div class="grid min-h-0 flex-1 place-items-center overflow-y-auto p-8">
+        {@render empty?.()}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+{#if bare}
+  <div class={cn('flex min-h-0 overflow-hidden', className)}>{@render panes()}</div>
+{:else}
+  <Panel class={cn('flex min-h-0 overflow-hidden p-0', className)}>{@render panes()}</Panel>
+{/if}

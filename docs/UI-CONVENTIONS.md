@@ -18,6 +18,44 @@ primitives — reach for the primitive, not a hand-rolled recreation.
 Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
 `StageHeader`, `RailSection`, `RailRow`, `CountPill`).
 
+## Pick-one-and-edit-it — use `LibraryPane`
+
+A picker on the left, the record you picked on the right. This had FIVE
+independent implementations — Templates, the agent role library, Studio, the
+Teams dialog, and the rail views — and they had drifted into different
+*behaviour*, not merely different markup: whether the list scrolls with the page
+or inside itself, whether a failed read renders as an empty list, whether the
+picker sits in a `Panel` or a bare grid, what "nothing selected" says.
+
+`components/ui/LibraryPane.svelte` is the one answer. It owns the two-pane
+frame, independent scroll on both sides, the grouped picker with its section
+headers, row-shaped loading skeletons, the failure notice, and the
+nothing-selected pane. Callers bring data and snippets.
+
+- **Selection is the caller's.** Templates keeps it in the URL, the Teams
+  dialog in a local `$state`. A component that insisted on one would have kept
+  the other on a private copy of this.
+- **Feed it `listQuery`.** It takes `pending` and `notice`, not a raw query, so
+  "the read failed" arrives already shaped and cannot be dropped on the way in.
+- **`bare` inside a dialog.** The Modal is already a surface; a Panel within a
+  Panel is a border inside a border with the padding twice. For the same reason
+  a detail component rendered into the pane must not wrap itself in a `Panel`.
+
+### Which archetype, when
+
+The distinction is what the right-hand side IS, not how the left-hand side looks:
+
+| | Left | Right | Use |
+|---|---|---|---|
+| **Rail surface** | context switcher — *which* thing you are working in | a whole workspace | `<RailSurface>` + `<Rail>` |
+| **Library pane** | a library of records | a form that edits one | `<LibraryPane>` |
+
+Comms, Knowledge and Artifacts are the first. Templates, the agent role library
+and Teams are the second. **Studio is the first and does not use it yet** — it
+picks *who you are building for* beside a full authoring workspace, so it wants
+`Rail`, not `LibraryPane`; forcing it into a library pane would frame a
+page-scroll workspace in a fixed-height panel and break its stagger contract.
+
 ## Controls — fewer, smaller, closer
 
 - **Icon buttons with tooltips** (`<IconButton title="…">`) for every action

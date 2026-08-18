@@ -2,7 +2,6 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
@@ -43,7 +42,10 @@
   }
 </script>
 
-<Panel>
+<!-- No Panel of its own: this renders INSIDE LibraryPane's surface, and a
+     panel within a panel is a border inside a border with the padding twice.
+     The pane owns the frame; this owns the content. -->
+<div>
   <div class="mb-4 flex items-center gap-2">
     <Input size="sm" bind:value={name} onblur={() => name.trim() && name !== template.name && void save({ name: name.trim() })} class="max-w-xs font-sans" />
     <Chip>{template.kind}</Chip>
@@ -97,4 +99,4 @@
       {footerExtra}
     />
   {/if}
-</Panel>
+</div>
