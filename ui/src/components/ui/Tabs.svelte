@@ -32,7 +32,13 @@
       onclick={() => onChange(t.id)}
       data-active={value === t.id}
       class={cn(
+        // The active tile is the BUTTON'S OWN background, not the mark span's.
+        // A pseudo-element sits above its element's background but below any
+        // child box, so while the tile lived on the span it covered the field
+        // completely — the sidebar worked only because its background is on
+        // the element. The span keeps the animated hairline; the fill moved.
         'relative flex h-7 items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+        'data-[active=true]:bg-raised',
         focusGold,
         'dither-bloom',
         value === t.id ? 'text-fg' : 'text-muted hover:text-fg',
@@ -43,7 +49,7 @@
           aria-hidden="true"
           in:receiveMark={{ key: 'mark' }}
           out:sendMark={{ key: 'mark' }}
-          class="absolute -inset-px rounded-md border border-line bg-raised"
+          class="absolute -inset-px rounded-md border border-line"
         ></span>
       {/if}
       <span class="relative">

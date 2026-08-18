@@ -600,9 +600,8 @@ kbd,
 
   /* TWO SHAPES, BECAUSE HOVER AND SELECTED ARE NOT THE SAME STATEMENT.
      `::before` is the interior fill — a surface arriving under the pointer.
-     `::after` is the band hugging the border — the mark of the one that is
-     chosen. Collapsing them onto a single shape is what made hover read as a
-     faint fragment of an outline instead of as a highlight. */
+     `::after` is the accent band — the mark of the one that is chosen, and
+     the only place in this treatment that carries the accent colour. */
   &::before {
     content: '';
     position: absolute;
@@ -611,16 +610,16 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: var(--theme-border-strong);
-    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
-    mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
-    -webkit-mask-size: 64px 64px, 100% 100%;
-    mask-size: 64px 64px, 100% 100%;
-    -webkit-mask-position: 0 0, center;
-    mask-position: 0 0, center;
-    -webkit-mask-composite: source-in;
-    mask-composite: intersect;
+    -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
+    mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
+    -webkit-mask-size: 64px 64px, 108% 100%, 100% 116%;
+    mask-size: 64px 64px, 108% 100%, 100% 116%;
+    -webkit-mask-position: 0 0, center, center;
+    mask-position: 0 0, center, center;
+    -webkit-mask-composite: source-in, source-in;
+    mask-composite: intersect, intersect;
     opacity: 0;
-    transition: opacity 180ms ease;
+    transition: opacity 170ms ease;
   }
 
   &::after {
@@ -630,23 +629,19 @@ kbd,
     z-index: -1;
     border-radius: inherit;
     pointer-events: none;
-    background-color: var(--theme-border-strong);
-    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, rgb(0 0 0 / 0) 52%, #000 84%, rgb(0 0 0 / 0.55) 100%);
-    mask-image: var(--dither-tile), radial-gradient(ellipse at center, rgb(0 0 0 / 0) 52%, #000 84%, rgb(0 0 0 / 0.55) 100%);
-    -webkit-mask-size: 64px 64px, 100% 100%;
-    mask-size: 64px 64px, 100% 100%;
-    -webkit-mask-position: 0 0, center;
-    mask-position: 0 0, center;
-    -webkit-mask-composite: source-in;
-    mask-composite: intersect;
+    border: 4px solid var(--theme-accent);
+    -webkit-mask-image: var(--dither-tile);
+    mask-image: var(--dither-tile);
+    -webkit-mask-size: 64px 64px;
+    mask-size: 64px 64px;
     opacity: 0;
-    transition: opacity 180ms ease;
+    transition: opacity 240ms ease 60ms;
   }
 
-  /* Approach fills the control. */
   &:hover::before,
   &:focus-visible::before {
     opacity: 1;
+    animation: dither-breathe 14s ease-in-out infinite;
   }
 
   &[data-status='active']::before,
@@ -656,9 +651,11 @@ kbd,
   &[aria-selected='true']::before,
   &[aria-pressed='true']::before {
     opacity: 1;
+    animation: dither-breathe 14s ease-in-out infinite;
   }
 
-  /* Chosen adds the band, and the band is the part that lives. */
+  /* The outline arrives just after the fill, which is what makes the selected
+     state read as materialising rather than switching. */
   &[data-status='active']::after,
   &[data-active='true']::after,
   &[aria-current='true']::after,
@@ -666,23 +663,22 @@ kbd,
   &[aria-selected='true']::after,
   &[aria-pressed='true']::after {
     opacity: 1;
-    animation: dither-breathe 13s ease-in-out infinite;
+    animation: dither-edge 9s ease-in-out infinite;
   }
 
   /* Neighbours never breathe in unison — without this a list pulses as one. */
-  &:nth-child(5n + 2)::after { animation-delay: -3s; }
-  &:nth-child(5n + 3)::after { animation-delay: -6s; }
-  &:nth-child(5n + 4)::after { animation-delay: -9s; }
-  &:nth-child(5n + 5)::after { animation-delay: -11s; }
+  &:nth-child(5n + 2)::before { animation-delay: -3s; }
+  &:nth-child(5n + 3)::before { animation-delay: -6s; }
+  &:nth-child(5n + 4)::before { animation-delay: -9s; }
+  &:nth-child(5n + 5)::before { animation-delay: -12s; }
+  &:nth-child(5n + 2)::after { animation-delay: -2s; }
+  &:nth-child(5n + 3)::after { animation-delay: -4s; }
+  &:nth-child(5n + 4)::after { animation-delay: -6s; }
+  &:nth-child(5n + 5)::after { animation-delay: -8s; }
 
-  /* It is the MOVEMENT that is unwelcome under a reduced-motion preference,
-     not the texture — the field holds still at full strength. */
   @media (prefers-reduced-motion: reduce) {
     &::before,
-    &::after {
-      animation: none;
-      transition: none;
-    }
+    &::after { animation: none; transition: none; }
   }
 }
 
@@ -691,30 +687,36 @@ kbd,
 /* ── The movement ────────────────────────────────────────────────────────────
    THE SHAPE HOLDS STILL. ONLY ITS FRINGE BREATHES.
 
-   Four attempts bracket this one, and the last was the instructive failure.
-   Sliding the tile scrolls the pattern across the control. Cross-fading two
-   copies blinks between two stamps. Compositing a third mask layer lost the
-   tile and left a smooth blob. And animating the density envelope's POSITION —
-   which is what "morph it like the canvas did" naively becomes — walks the
-   dense part of the field off the control entirely, so a highlight reads as a
-   cloud drifting past a button.
+   Four attempts bracket this. Sliding the tile scrolls the pattern across the
+   control. Cross-fading two copies blinks between two stamps. A third mask
+   layer lost the tile and left a smooth blob. And animating the density
+   envelope's POSITION — which is what "morph it like the canvas did" naively
+   becomes — walks the dense part of the field off the control, so a highlight
+   reads as a cloud drifting past a button.
 
    The canvas got away with a wandering field because it covered a whole pane,
-   where there is room for weather. A 30px row is not a pane. Here the shape
-   has to stay exactly where it is — a band hugging the border, concentric,
-   the same on every side — and the life has to come from the only thing that
-   can change without moving it: how far the band reaches. Scaling the density
-   layer about its own centre keeps it symmetrical and lets the dots at the
-   fringe wink in and out, which is liveliness without drift. */
+   where there is room for weather. A 30px row is not a pane. The shape has to
+   stay where it is; the life comes from how far it reaches. Both layers
+   breathe about their own centre, a few percent, out of phase with each other
+   — the fill's soft edge creeps in and out, the outline's band thickens and
+   thins, and dots at either fringe wink in and out as the threshold crosses
+   them. Nothing translates, so nothing comes loose from its control. */
 @keyframes dither-breathe {
   0%, 100% {
-    -webkit-mask-size: 64px 64px, 94% 94%;
-    mask-size: 64px 64px, 94% 94%;
+    -webkit-mask-size: 64px 64px, 108% 100%, 100% 116%;
+    mask-size: 64px 64px, 108% 100%, 100% 116%;
   }
   50% {
-    -webkit-mask-size: 64px 64px, 112% 112%;
-    mask-size: 64px 64px, 112% 112%;
+    -webkit-mask-size: 64px 64px, 96% 100%, 100% 98%;
+    mask-size: 64px 64px, 96% 100%, 100% 98%;
   }
+}
+
+/* The band's OUTER edge is pinned to the control; its inner edge moves, so
+   the outline never changes size — only its weight. */
+@keyframes dither-edge {
+  0%, 100% { border-width: 3px; }
+  50% { border-width: 5px; }
 }
 
 @utility dither-fill {
@@ -729,25 +731,26 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: var(--theme-border-strong);
-    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
-    mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
-    -webkit-mask-size: 64px 64px, 100% 100%;
-    mask-size: 64px 64px, 100% 100%;
-    -webkit-mask-position: 0 0, center;
-    mask-position: 0 0, center;
-    -webkit-mask-composite: source-in;
-    mask-composite: intersect;
+    -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
+    mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
+    -webkit-mask-size: 64px 64px, 108% 100%, 100% 116%;
+    mask-size: 64px 64px, 108% 100%, 100% 116%;
+    -webkit-mask-position: 0 0, center, center;
+    mask-position: 0 0, center, center;
+    -webkit-mask-composite: source-in, source-in;
+    mask-composite: intersect, intersect;
     opacity: 0;
-    transition: opacity 180ms ease;
+    transition: opacity 170ms ease;
   }
 
   &:hover::before,
   &:focus-visible::before {
     opacity: 1;
+    animation: dither-breathe 14s ease-in-out infinite;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    &::before { transition: none; }
+    &::before { animation: none; transition: none; }
   }
 }
 
