@@ -43,14 +43,27 @@
 
   const wantsVignette = $derived(vignette ?? variant === 'full')
 
-  // Four edges, inward. The centre stays clear on purpose: density belongs at
-  // the boundary, where it says "this surface is real", and away from the
-  // words, which have to stay the most legible thing in the frame.
+  // Four edges inward, plus one very slow crest drifting across them.
+  //
+  // The centre stays clear on purpose: density belongs at the boundary, where
+  // it says "this surface is real", and away from the words, which have to
+  // stay the most legible thing in the frame.
+  //
+  // The crest is the daily brief hero's motif — a 320px wavelength at 9px/s,
+  // so a band takes the better part of a minute to cross. That is the point:
+  // an empty pane should look inhabited rather than animated, and anything
+  // fast enough to notice competes with the one sentence in the frame. It also
+  // must not read as PROGRESS — nothing is loading here, this is the resolved
+  // answer — which is why it drifts sideways forever instead of sweeping.
+  //
+  // Under reduced motion the engine stops driving waves and the field settles
+  // at its current phase: still textured, just still.
   const sources: DitherSource[] = [
     { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.28 },
     { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.28 },
     { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.2 },
     { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.2 },
+    { id: 'drift', kind: 'wave', axis: 'x', wavelength: 320, speed: 9, strength: 0.22 },
   ]
 </script>
 
@@ -81,7 +94,7 @@
       className,
     )}
   >
-    {#if wantsVignette}<DitherLayer {sources} organic={0.55} />{/if}
+    {#if wantsVignette}<DitherLayer {sources} organic={0.55} alphaFloor={0.04} maxAlpha={0.38} />{/if}
     <div
       class={cn(
         'relative max-w-xs',

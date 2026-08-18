@@ -163,10 +163,7 @@
         <div aria-hidden="true">
           {#each [0, 1, 2, 3, 4] as i (i)}
             <div class="px-2 py-1.5">
-              <Skeleton
-                class={`h-3 rounded-full ${['w-32', 'w-24', 'w-40', 'w-28', 'w-36'][i % 5]}`}
-                delay={i * 0.12}
-              />
+              <Skeleton class={`h-3 rounded-full ${['w-32', 'w-24', 'w-40', 'w-28', 'w-36'][i % 5]}`} />
             </div>
           {/each}
         </div>
@@ -235,7 +232,18 @@
     {#if selectedId && detail}
       {@render detail()}
     {:else}
-      <div class="grid min-h-0 flex-1 place-items-center overflow-y-auto p-8">
+      <!-- FULL BLEED. No padding and no centring here: the nothing-selected
+           pane is a zero state, `EmptyState variant="full"` fills whatever box
+           it is given and centres its own words inside it. Padding here was a
+           band of the detail pane the vignette could not reach, and
+           `place-items-center` shrink-wrapped the zero state to its text so it
+           could not fill even without the padding — the two faults together
+           made it a small textured card adrift in a large empty pane. -->
+      <!-- A one-row grid, so the zero state is STRETCHED to the pane rather
+           than relying on its own `h-full` resolving — `grid-rows-[1fr]` fills
+           whatever height this box has, which a flex column only manages if
+           the child also grows. -->
+      <div class="grid min-h-0 flex-1 grid-rows-[1fr] overflow-y-auto">
         {@render empty?.()}
       </div>
     {/if}
