@@ -32,4 +32,5 @@ import './reclaim'
 // Each kind arrives in its own change and adds its own line here, which is
 // what makes those changes reviewable one subsystem at a time.
 import './defs/reindex'
+import './defs/research'
 import './defs/work-session'

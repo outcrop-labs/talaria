@@ -93,6 +93,6 @@ describe('server/runs/boot.ts', () => {
     // Named explicitly rather than counted, so porting a kind without meaning
     // to shows up here as a failing test rather than as a behaviour change
     // nobody reviewed.
-    expect(runDefinitions().map((d) => d.kind).sort()).toEqual(['rag-backfill', 'rag-reindex', 'work-session'])
+    expect(runDefinitions().map((d) => d.kind).sort()).toEqual(['rag-backfill', 'rag-reindex', 'research', 'work-session'])
   })
 })

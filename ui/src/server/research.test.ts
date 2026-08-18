@@ -1,25 +1,28 @@
-// THE EMPTY REPORT. `researchSynthesisHarness` declares `onFailure: 'throw'`
-// and its own comment says why: "the searches are already paid for and the run's
-// only deliverable is this document". `onFailure` used to be consulted only
-// after a CONTRACT failure — `runHarness` returned, and did not throw, for
-// everything that happened before or during the call (nothing resolved, render
-// threw, the transport died). So a persona gateway answering 502 mid-synthesis
-// arrived at `synthesis.value ?? ''`, and the run saved an artifact containing
-// nothing but the Sources list, marked itself `done`, indexed the empty report
-// into the brain and notified the requester — with the gateway's sentence
-// dropped. 'throw' now means every failure to produce a value, and the mock
-// below honors it, so what this file asserts is the half that is still this
-// pipeline's own: a throw out of the synthesis stage leaves NO artifact and
-// marks the run errored with the gateway's sentence on it.
+// THE ADAPTER, and the sweep that is not there any more.
+//
+// What this file used to assert — that a synthesis stage which never reached
+// the persona leaves no artifact and puts the gateway's sentence on the run —
+// moved with the pipeline to `runs/defs/research.test.ts`, which asserts it
+// against the definition that now owns it. What is left in this module is the
+// half that never belonged to the pipeline: the domain record, the reads a
+// surface makes, and the four statements that start a run.
+//
+// Two of those are regressions worth pinning for good:
+//
+//   THE RUN ROW GOES IN FIRST. It carries the question, the mode and the owner
+//   on its `input`, so it is the record that can be reclaimed; a research row
+//   written first would be a row nobody is driving, and there is no stale sweep
+//   left to notice one.
+//
+//   READING DOES NOT WRITE. `listResearchRuns` and `getResearchRun` both used
+//   to call `sweepStale()`, so opening the research page was what marked a run
+//   that had outlived a deploy FAILED. Both reads are now reads.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { HarnessResult } from '@/server/harness/run'
 
 const queries: Array<{ text: string; values: unknown[] }> = []
-const saved: Array<{ id: string; body: string }> = []
-let synthesis: Partial<HarnessResult<string>> = {}
 
 const RUN = {
-  id: 'run-1',
+  id: 'the-id',
   status: 'queued',
   mode: 'recon',
   question: 'what changed in postgres 17',
@@ -31,7 +34,6 @@ const RUN = {
 const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
   const text = strings.join(' ').replace(/\s+/g, ' ').trim()
   queries.push({ text, values })
-  if (text.includes('insert into research_runs')) return Promise.resolve([RUN])
   return Promise.resolve([])
 }) as unknown as {
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>
@@ -39,142 +41,152 @@ const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
   unsafe: (text: string, values?: unknown[]) => unknown
 }
 sql.json = (v: unknown) => v
-// Two jobs, as in postgres.js: a bare fragment inside a template (the RETURNING
-// column list) and a whole statement (`getResearchRun`'s row read).
-sql.unsafe = (text: string) => (/^\s*select/i.test(text) ? Promise.resolve([RUN]) : text)
+// Two jobs, as in postgres.js: a bare fragment inside a template, and a whole
+// statement (every read in this module goes through `unsafe` because the
+// projection is a shared column list).
+sql.unsafe = (text: string, values?: unknown[]) => {
+  if (!/^\s*select/i.test(text)) return text
+  queries.push({ text: text.replace(/\s+/g, ' ').trim(), values: values ?? [] })
+  return Promise.resolve([RUN])
+}
 
-/** The search stages answer with one usable source; only the SYNTHESIS stage is
- *  the subject, so everything before it succeeds. */
-const runHarness = vi.fn(async (def: { id: string; onFailure: unknown }, _input: unknown, ctx: { deps?: { transport?: unknown } }): Promise<HarnessResult<unknown>> => {
-  const base = { model: 'nomad', step: 'pin' as const, widened: false, repairs: 0, schemaValid: true, answered: true, refused: false, findings: [], raw: 'x', latencyMs: 1, escalate: false }
-  if (def.id === 'research-search') {
-    // The real search transport is what records sources; the adapter passes it
-    // in, so calling it is how a fixture supplies one.
-    await (ctx.deps?.transport as (r: unknown) => Promise<unknown>)?.({ model: 'sonar', messages: [], jsonMode: false, caller: 'r' })
-    return { ...base, value: 'the vendor published a SOC 2 Type II [1]' }
-  }
-  if (def.id === 'research-queries') return { ...base, value: ['what changed'] }
-  const result = { ...base, value: 'a report', ...synthesis } as HarnessResult<unknown>
-  // THE POLICY THE REAL RUNNER APPLIES, reproduced rather than skipped. A mock
-  // that hands back `value: null` for a harness declaring 'throw' is a mock of a
-  // runner that does not exist, and it would let this file go on passing if the
-  // guarantee were removed — which is the exact failure the header describes.
-  if (result.value === null && def.onFailure === 'throw') throw new Error(result.error ?? 'the harness produced no value')
-  return result
+const enqueue = vi.fn(async () => ({ id: 'the-id' }))
+const drive = vi.fn(async () => ({}))
+// Pushes a sentinel into the same log the SQL goes into, so the ORDER of
+// "cancel the run" against "delete the record" is observable — which is the
+// half of `deleteResearchRun` that matters.
+const cancelRun = vi.fn(async () => {
+  queries.push({ text: '-- cancelRun', values: [] })
+  return { ok: true as const, state: 'cancelled' as const }
 })
+const searchModelFor = vi.fn(async (_mode: string): Promise<string | null> => 'sonar')
 
 vi.mock('@/server/db/pg', () => ({ db: async () => sql }))
-// `capabilityKeysFor` is the runner's own key derivation, which `searchStage`
-// now asks so it can pick between the native and the tool-driven search
-// transport. Stubbed to "no keys", which lands the reach check on "nothing has
-// measured this" and therefore on the native path — the behaviour every case in
-// this file was written against.
-vi.mock('@/server/harness/run', () => ({ runHarness, capabilityKeysFor: async () => [] }))
-vi.mock('@/server/gateway', () => ({ describeAgent: (id: string) => ({ label: id }) }))
-vi.mock('@/server/scheduler', () => ({ registerJob: () => {} }))
-vi.mock('@/server/llm-gateway', () => ({
-  gatewayModels: async () => [{ id: 'sonar' }],
-  recordGatewayUsage: async () => {},
-  completeViaGateway: async () => ({ text: '' }),
-  buildUpstream: () => ({}),
-  fetchUpstream: async () =>
-    new Response(
-      JSON.stringify({
-        choices: [{ message: { content: 'the vendor published a SOC 2 Type II [1]' } }],
-        search_results: [{ url: 'https://example.com/a', title: 'A', snippet: 's' }],
-      }),
-      { headers: { 'Content-Type': 'application/json' } },
-    ),
-  // SHAPED LIKE A REAL ENDPOINT, because `searchTransport` now reads
-  // `endpoint.provider` to decide whether the provider's own search can be armed
-  // (see native-search.ts). A bare string passed that check silently as
-  // `undefined` and threw inside the stage.
-  resolveRoute: async () => ({ endpoint: { name: 'e', provider: 'perplexity' }, upstreamModel: 'sonar' }),
-  contractDropsOf: () => [],
+vi.mock('@/server/runs/run', () => ({ enqueue, drive, cancelRun }))
+vi.mock('@/server/runs/defs/research', () => ({
+  RESEARCH_MODES: [{ mode: 'recon', blurb: 'one fast pass' }],
+  searchModelFor: (mode: string) => searchModelFor(mode),
+  researchRun: { kind: 'research' },
 }))
-vi.mock('@/server/model-roles', () => ({ resolveRoleModel: async () => 'sonar' }))
-// `reachFor` asks the platform what IT can supply, and the real answer probes
-// SearXNG over HTTP. This file is about the synthesis stage; it must not depend
-// on a container being up, and it must not pay a network round trip to find out.
-// EVERY EXPORT THE GRAPH USES, not just the ones this file cares about. A
-// partial `vi.mock` is not a partial mock — the missing names fail at import and
-// take the module graph with them, which surfaces here as the pipeline never
-// reaching its terminal write. `defs/research.ts` pulls `callPlatformTool` and
-// `isPlatformServer` for the supplement path.
-vi.mock('@/server/capability-platform', () => ({
-  platformSupply: async () => [],
-  forgetPlatformSupply: () => {},
-  PLATFORM_SERVER: 'talaria',
-  isPlatformServer: (s: string) => s === 'talaria',
-  callPlatformTool: async () => ({ text: '', structured: null }),
-}))
-vi.mock('@/server/notifications', () => ({ addNotification: async () => {} }))
-vi.mock('@/server/retrieval/sources', () => ({ indexActivity: async () => {}, indexPersonal: async () => {} }))
-vi.mock('@/server/titler', () => ({ generateTitle: async () => 'A title' }))
-vi.mock('@/server/kb-perms', () => ({ setEditors: async () => {} }))
-vi.mock('@/server/artifacts', () => ({
-  agentCategoryFolder: async () => 'folder',
-  attachArtifact: async () => {},
-  createArtifact: async () => ({ id: 'art-1' }),
-  saveArtifact: async (id: string, patch: { body: string }) => {
-    saved.push({ id, body: patch.body })
-  },
-}))
+vi.mock('@/server/titler', () => ({ generateTitle: async () => null }))
 
-const { startResearch } = await import('@/server/research')
+const { activeResearchOn, briefableResearch, deleteResearchRun, getResearchRun, listResearchRuns, startResearch } = await import('@/server/research')
 
-/** Wait for the detached pipeline to reach a TERMINAL write, rather than for a
- *  fixed number of ticks.
- *
- *  It used to be `for (i < 20) await Promise.resolve()`, which is a bet that the
- *  pipeline never grows an await — and it did: the search stage now asks whether
- *  this run can reach search natively or through a tool, so it can pick the
- *  matching transport. The count silently ran out, the assertions saw a
- *  half-finished run, and the failure pointed at the synthesis stage rather than
- *  at the clock. Polling for the outcome cannot go stale that way. */
-const TERMINAL = /update research_runs set status = '(?:done|error)', phase = null/
-const settle = async () => {
-  for (let i = 0; i < 200; i++) {
-    // THE PIPELINE'S OWN terminal write, `phase = null` included. Matching a
-    // bare `status = 'error'` also matches the STALE SWEEP, which runs on
-    // startup and fires before the pipeline has done anything at all — so the
-    // wait ended immediately and every assertion read a run that had not
-    // started. The test's own lookup below has always been this specific; the
-    // wait has to be too.
-    if (queries.some((q) => TERMINAL.test(q.text))) break
-    await new Promise((r) => setTimeout(r, 0))
-  }
-  // One more turn so the writes that FOLLOW the terminal one (the artifact save,
-  // the notification) have landed before anything is asserted.
-  await new Promise((r) => setTimeout(r, 0))
-}
-const statusWrite = () => queries.find((q) => q.text.includes("update research_runs set status = 'done'"))
+const writes = () => queries.filter((q) => /^\s*(update|insert|delete)/i.test(q.text))
 
 beforeEach(() => {
   queries.length = 0
-  saved.length = 0
-  synthesis = {}
+  enqueue.mockClear()
+  drive.mockClear()
+  cancelRun.mockClear()
+  searchModelFor.mockResolvedValue('sonar')
 })
 
-describe('the synthesis stage', () => {
-  it('marks the run ERRORED, with the gateway’s sentence, when the persona was never reached', async () => {
-    synthesis = { value: null, answered: false, raw: null, schemaValid: false, error: 'harness "research-synthesis" could not reach "nomad": persona gateway 502' }
-    await startResearch({ question: 'what changed in postgres 17', mode: 'recon', agentModel: 'nomad', ownerUserId: 'user-1', requestedBy: 'user-1' })
-    await settle()
+describe('starting a run', () => {
+  it('writes the RUN first, then the record it is about, under one id', async () => {
+    const run = await startResearch({ question: RUN.question, mode: 'recon', agentModel: 'nomad', ownerUserId: 'user-1', requestedBy: 'user-1' })
+    expect(run.id).toBe('the-id')
 
-    expect(saved).toHaveLength(0)
-    // The pipeline's own terminal write (the stale sweep uses a different one).
-    const write = queries.find((q) => q.text.includes("update research_runs set status = 'error', phase = null"))
-    expect(write).toBeDefined()
-    expect(write?.values.some((v) => String(v).includes('persona gateway 502'))).toBe(true)
-    // And emphatically NOT the other one: an empty report marked done is
-    // unrecoverable — nothing re-runs a run whose status says it finished.
-    expect(statusWrite()).toBeUndefined()
+    expect(enqueue).toHaveBeenCalledTimes(1)
+    const [, input, opts] = enqueue.mock.calls[0] as unknown as [unknown, Record<string, unknown>, Record<string, unknown>]
+    // Everything the pipeline needs to rebuild the domain record after a crash —
+    // `parentRunId` included, because a follow-up that loses it on a reclaim
+    // restarts its citation numbering at [1] and re-aims the parent's prose.
+    expect(input).toEqual({
+      question: RUN.question,
+      mode: 'recon',
+      agentModel: 'nomad',
+      ownerUserId: 'user-1',
+      requestedBy: 'user-1',
+      parentRunId: null,
+    })
+    // RISK 6: a deterministic id, so a retried call collides on the primary key
+    // instead of starting a second run doing the same work.
+    expect(opts.id).toEqual(expect.any(String))
+    expect(opts.subjectType).toBe('research')
+    expect(opts.subjectId).toBe(opts.id)
+    expect(opts.ownerUserId).toBe('user-1')
+    // The drive is this module's, so the record exists before a step can look
+    // for it — the reclaim sweep is what makes it finish either way.
+    expect(opts.start).toBe(false)
+    expect(drive).toHaveBeenCalledWith(opts.id)
+
+    const insert = queries.find((q) => q.text.includes('insert into research_runs'))
+    expect(insert).toBeDefined()
+    expect(insert?.values[0]).toBe(opts.id)
+    // The insert cannot lose a race with the run's own `ensureRow`.
+    expect(insert?.text).toContain('on conflict (id) do nothing')
   })
 
-  it('still saves and finishes a run whose synthesis came back', async () => {
-    await startResearch({ question: 'what changed in postgres 17', mode: 'recon', agentModel: 'nomad', ownerUserId: 'user-1', requestedBy: 'user-1' })
-    await settle()
-    expect(saved[0]?.body).toContain('a report')
+  it('refuses up front when the gateway has no search model, and starts nothing', async () => {
+    searchModelFor.mockResolvedValue(null)
+    await expect(
+      startResearch({ question: RUN.question, mode: 'recon', agentModel: 'nomad', ownerUserId: 'user-1', requestedBy: 'user-1' }),
+    ).rejects.toThrow(/no search-capable model/)
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(writes()).toEqual([])
+  })
+})
+
+describe('reading', () => {
+  it('never writes — the stale sweep is gone from both reads', async () => {
+    await listResearchRuns('user-1')
+    await listResearchRuns(null)
+    await getResearchRun('the-id')
+    await activeResearchOn(RUN.question)
+    expect(writes()).toEqual([])
+    // And in particular, the sentence this whole port exists to delete.
+    expect(queries.some((q) => q.text.includes('went stale'))).toBe(false)
+  })
+
+  it('projects status and phase from the run, not from the record', async () => {
+    await getResearchRun('the-id')
+    const read = queries.find((q) => q.text.includes('from research_runs'))
+    // One authority on whether a run is alive: the `runs` row, joined on the id
+    // both records share. The research row's own columns are the fallback for
+    // rows written before there were runs.
+    expect(read?.text).toContain("left join runs r on r.id = research_runs.id and r.kind = 'research'")
+    expect(read?.text).toContain('when r.state is null then research_runs.status')
+    expect(read?.text).toContain("when r.state in ('running', 'awaiting') then 'running'")
+  })
+
+  it('answers "is this question already being researched" from the run', async () => {
+    await activeResearchOn(RUN.question)
+    const read = queries.find((q) => q.text.includes('left join runs r'))
+    // The raw `status in ('queued','running')` this replaces reads a column
+    // that no longer moves when a DRIVER gives up on a run, so a question could
+    // become unaskable for ever.
+    expect(read?.text).toContain("else r.state in ('queued', 'running', 'awaiting') end")
+  })
+})
+
+describe('deleting a run', () => {
+  it('CANCELS THE RUN FIRST, then deletes the record', async () => {
+    // Deleting alone stopped nothing: the work lives on the `runs` row, and the
+    // driver holding it went on planning, searching and synthesizing a report
+    // for a record that no longer existed. The order matters as much as the
+    // call — the other way round leaves a window where the record is gone and
+    // the run is still `running`, which is exactly what a reclaim sweep picks
+    // up.
+    await deleteResearchRun('the-id')
+    expect(cancelRun).toHaveBeenCalledWith({ runId: 'the-id', reason: expect.stringContaining('deleted') })
+    const order = queries.map((q) => (q.text === '-- cancelRun' ? 'cancel' : /^\s*delete/i.test(q.text) ? 'delete' : 'other'))
+    expect(order.filter((o) => o !== 'other')).toEqual(['cancel', 'delete'])
+  })
+})
+
+describe('the briefing', () => {
+  it('projects from the run rather than filtering the record\u2019s own status', async () => {
+    // briefing.ts used to ask `where status in ('queued','running')` itself. A
+    // run a driver gave up on keeps that column at 'queued' for ever, so the
+    // person got "research queued: ..." in their briefing every morning for a
+    // run that stopped weeks ago.
+    await briefableResearch('user-1')
+    const read = queries.find((q) => q.text.includes('from research_runs'))
+    expect(read?.text).toContain("left join runs r on r.id = research_runs.id and r.kind = 'research'")
+    expect(read?.text).toContain("when r.state in ('running', 'awaiting') then 'running'")
+    // The filter runs over the PROJECTED status, not the stored one.
+    expect(read?.text).toContain("where s.status in ('queued', 'running')")
+    expect(writes()).toEqual([])
   })
 })

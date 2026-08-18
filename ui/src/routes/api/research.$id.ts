@@ -2,9 +2,8 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
-import { getResearchRun, researchRole } from '@/server/research'
+import { deleteResearchRun, getResearchRun, researchRole } from '@/server/research'
 import { assistantOwnerFor } from '@/server/users'
-import { db } from '@/server/db/pg'
 
 // GET → one run + its citation registry (owner / shared member / org runs).
 // DELETE → owner/admin.
@@ -35,10 +34,11 @@ export const Route = defineApi('/api/research/$id', {
     if (result.run.ownerUserId !== user.id && user.role !== 'admin') {
       return json({ error: 'forbidden' }, { status: 403 })
     }
-    // The report artifact survives — deleting a run clears the queue entry,
-    // not the knowledge.
-    const sql = await db()
-    await sql`delete from research_runs where id = ${params.id}`
+    // Cancels the run FIRST, then deletes the record — see the comment on
+    // `deleteResearchRun`. Deleting alone left the driver spending on a report
+    // nobody would ever open. The report artifact survives either way: deleting
+    // a run clears the queue entry, not the knowledge.
+    await deleteResearchRun(params.id)
     return json({ ok: true })
   },
 })
