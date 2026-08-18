@@ -67,6 +67,13 @@ export async function fleetUp(department: string, slot?: Slot): Promise<string> 
   await ensureFleetNetwork()
   const svc = slotService(department, slot ?? (await activeSlot(department)))
   const { stderr } = await run('docker', composeArgs(['up', '-d', svc]), { timeout: 120_000 })
+  // Bringing an agent up is the moment to ask whether it can reach us — from
+  // the fleet network, not from here. Detached: a preflight must never be able
+  // to fail a start, and its whole value is that it writes a verdict somebody
+  // reads later (alerts.ts) rather than that this caller waits for it.
+  void import('./fleet-preflight')
+    .then((m) => m.runFleetPreflight())
+    .catch(() => {})
   return stderr.trim()
 }
 
