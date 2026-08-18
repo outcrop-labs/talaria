@@ -55,3 +55,36 @@ export function buttonClasses(opts?: { variant?: ButtonVariant; size?: ControlSi
   // Variant AFTER size so `link` can restore the sans prose voice.
   return cn(base, sizes[size], variants[variant], className)
 }
+
+/**
+ * Split a call site's classes into the ones that position the control inside
+ * its PARENT and the ones that style the control itself.
+ *
+ * A bloomed button is wrapped in a span so the halo canvas has something to
+ * anchor to, and that wrapper becomes the flex/grid child. `ml-auto` on the
+ * inner button then aligns nothing, because the button is alone inside a
+ * shrink-wrapped span — the class is still applied, still valid, and silently
+ * does nothing. That is the worst kind of regression: no error, just a control
+ * that stopped sitting where it used to.
+ *
+ * So the layout half moves to the wrapper and the rest stays on the button.
+ * The list is deliberately an ALLOWLIST of properties that only mean anything
+ * relative to a parent — margins, self-alignment, flex-item sizing, order,
+ * width. Padding, colour and typography are the control's own business and
+ * must not move, or the wrapper grows and pushes the button off its baseline.
+ */
+export function splitLayoutClasses(className?: string | null): { outer: string; inner: string } {
+  if (!className) return { outer: '', inner: '' }
+  const outer: string[] = []
+  const inner: string[] = []
+  for (const cls of className.split(/\s+/).filter(Boolean)) {
+    // Strip any variant prefixes (sm:, hover:, dark:) before matching so
+    // `sm:ml-auto` is recognised as the margin it is.
+    const bare = cls.slice(cls.lastIndexOf(':') + 1)
+    ;(LAYOUT_CLASS.test(bare) ? outer : inner).push(cls)
+  }
+  return { outer: outer.join(' '), inner: inner.join(' ') }
+}
+
+const LAYOUT_CLASS =
+  /^-?(m[trblxy]?-|self-|justify-self-|order-|basis-|grow(-|$)|shrink(-|$)|flex-(1|auto|initial|none)$|w-(full|auto|px|\d|\[)|col-span-|row-span-)/

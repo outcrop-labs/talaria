@@ -8,10 +8,18 @@
 
   /** An element's box in its container's coordinate space — what a RectSource
    *  wants. `pad` grows the rect so the halo starts outside the control's edge. */
-  export function rectIn(container: HTMLElement, el: HTMLElement, pad = 0): RectShape {
+  export function rectIn(container: HTMLElement, el: HTMLElement, pad = 0, bleed = 0): RectShape {
     const c = container.getBoundingClientRect()
     const r = el.getBoundingClientRect()
-    return { x: r.left - c.left - pad, y: r.top - c.top - pad, w: r.width + 2 * pad, h: r.height + 2 * pad }
+    return {
+      // `bleed` shifts the origin: a bled canvas starts `bleed` px above and
+      // left of the container, so every rect in it moves by the same amount.
+      // Taking it here means a caller cannot forget it in one of two places.
+      x: r.left - c.left - pad + bleed,
+      y: r.top - c.top - pad + bleed,
+      w: r.width + 2 * pad,
+      h: r.height + 2 * pad,
+    }
   }
 </script>
 
@@ -19,6 +27,8 @@
   import { untrack } from 'svelte'
   import { cn } from '@/lib/cn'
   import { DitherEngine, type DitherEngineOptions, type DitherSource } from '@/lib/dither'
+  import { onReducedMotion } from '@/lib/motion'
+  import { onThemeChange } from '@/lib/theme'
 
   /**
    * The Svelte face of the engine: an absolutely-positioned canvas that fills
@@ -28,7 +38,7 @@
    * the field is decoration and must never intercept a click (pointer-events
    * are off) or reach a screen reader (aria-hidden).
    *
-   * Theme changes are observed on <html data-theme> because the canvas cannot
+   * Theme changes are watched (via `onThemeChange`) because the canvas cannot
    * inherit CSS variables the way DOM paint does — a flip would otherwise leave
    * dark-theme dots on a paper-white surface until the next repaint.
    */
@@ -36,12 +46,28 @@
     sources,
     immediate,
     shimmer,
+    bleed = 0,
     class: className,
     ...opts
   }: DitherEngineOptions & {
     sources: DitherSource[]
     /** Skip the tween — for fields driven per-frame by the caller (progress). */
     immediate?: boolean
+    /**
+     * Grow the canvas this many px BEYOND its container on every side.
+     *
+     * A halo has to render outside the control it surrounds, and the obvious
+     * way — padding on a wrapper — moves the control. This keeps the wrapper
+     * shrink-wrapped and lets the canvas spill, so adding a bloom to a button
+     * costs no layout at all.
+     *
+     * Field coordinates are in the GROWN space: the container's own box starts
+     * at (bleed, bleed). `rectIn` takes the bleed and does that for you.
+     *
+     * An ancestor with `overflow-hidden` clips the spill. That degrades to a
+     * cropped halo, never to a broken layout.
+     */
+    bleed?: number
     class?: string
   } = $props()
 
@@ -61,23 +87,24 @@
     const e = new DitherEngine(el, untrack(() => ({ ...opts, shimmer })))
     engine = e
 
-    const size = () => e.setSize(parent.clientWidth, parent.clientHeight, window.devicePixelRatio || 1)
+    const size = () =>
+      e.setSize(parent.clientWidth + 2 * bleed, parent.clientHeight + 2 * bleed, window.devicePixelRatio || 1)
     size()
     const ro = new ResizeObserver(size)
     ro.observe(parent)
 
-    const mo = new MutationObserver(() => e.refreshColors())
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] })
-
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    e.setReducedMotion(mq.matches)
-    const onMq = () => e.setReducedMotion(mq.matches)
-    mq.addEventListener('change', onMq)
+    // Theme flips and the reduced-motion preference are PAGE signals, and both
+    // subscriptions are shared across every canvas field on the page — a bloom
+    // per primary button plus a skeleton per row is a lot of fields, and an
+    // observer each is a cost the effect does not need to pay. `onReducedMotion`
+    // fires immediately, so the engine starts at the right setting.
+    const offTheme = onThemeChange(() => e.refreshColors())
+    const offMotion = onReducedMotion((reduced) => e.setReducedMotion(reduced))
 
     return () => {
       ro.disconnect()
-      mo.disconnect()
-      mq.removeEventListener('change', onMq)
+      offTheme()
+      offMotion()
       e.destroy()
       engine = null
     }
@@ -102,5 +129,6 @@
 <canvas
   bind:this={canvas}
   aria-hidden="true"
-  class={cn('pointer-events-none absolute inset-0 h-full w-full', className)}
+  style={bleed ? `inset:${-bleed}px` : undefined}
+  class={cn('pointer-events-none absolute', bleed ? '' : 'inset-0 h-full w-full', className)}
 ></canvas>
