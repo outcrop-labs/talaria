@@ -589,20 +589,23 @@ kbd,
    weight the solid one did. The token still tracks the theme, so this holds in
    both modes.
 
-   THE DOT PATTERN, and why it is not one repeating dot:
-   · SOFT STOPS — a hard `colour 0.5px, transparent 0.5px` edge lands on exact
-     device pixels and paints square blocks. A dot small enough to be one pixel
-     IS a block. Ramping the stop lets the browser antialias it round.
-   · TWO OFFSET LAYERS — a single repeating dot puts every dot in a straight
-     row and column, which the eye reads as a screen door. Offsetting a second
-     layer diagonally staggers them the way an ordered dither does. */
+   ONE MATERIAL, ONE GRAIN. The pattern is a 2px pitch with 1px dots, which is
+   exactly what `DitherEngine` paints. It was a 3px tile with two staggered
+   dots, and at that size the dots are far enough apart to be read
+   individually — the surface looks DOTTY rather than dithered, and it did not
+   match the canvas halo sitting a few px away from it. The stagger was there
+   to break up a coarse lattice; at 2px the lattice is fine enough not to need
+   it, and dropping it is what lets the two implementations agree.
+
+   SOFT STOPS still matter: a hard `colour 0.5px, transparent 0.5px` edge lands
+   on exact device pixels and paints square blocks — a dot small enough to be
+   one pixel IS a block. Ramping the stop lets the browser antialias it round. */
 @utility dither-bloom {
   background-image:
-    radial-gradient(circle at 25% 25%, var(--theme-border-strong) 0.45px, transparent 0.95px),
-    radial-gradient(circle at 75% 75%, var(--theme-border-strong) 0.45px, transparent 0.95px);
-  background-size: 3px 3px;
-  -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
-  mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
+    radial-gradient(circle at 50% 50%, var(--theme-border-strong) 0.4px, transparent 0.9px);
+  background-size: 2px 2px;
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 70%, rgb(0 0 0 / 0.3) 100%);
+  mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 70%, rgb(0 0 0 / 0.3) 100%);
 }
 
 /* Kept as the name 126 call sites already use for the HOVER case. Identical to
@@ -610,11 +613,10 @@ kbd,
    losing the texture. */
 @utility dither-fill {
   background-image:
-    radial-gradient(circle at 25% 25%, var(--theme-border-strong) 0.45px, transparent 0.95px),
-    radial-gradient(circle at 75% 75%, var(--theme-border-strong) 0.45px, transparent 0.95px);
-  background-size: 3px 3px;
-  -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
-  mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
+    radial-gradient(circle at 50% 50%, var(--theme-border-strong) 0.4px, transparent 0.9px);
+  background-size: 2px 2px;
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 70%, rgb(0 0 0 / 0.3) 100%);
+  mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 70%, rgb(0 0 0 / 0.3) 100%);
 }
 
 /* ── View transitions (spec §9) — REMOVED ────────────────────────────────────

@@ -135,7 +135,7 @@
 
          A 2px lattice is a subdivision of the 4px one, so this stays in phase
          with every other field on the page rather than starting a second grid. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0.12} alphaFloor={0.02} maxAlpha={0.85} />
+    <DitherLayer {sources} bleed={BLEED} organic={0.06} alphaFloor={0.02} maxAlpha={0.85} />
     {@render control()}
   </span>
 {:else}

@@ -34,8 +34,15 @@
     //
     // It still tapers: density falls with distance and so does opacity (see
     // `alphaFloor` at the callers), so the outer dots approach nothing rather
-    // than stopping at a visible floor. Short and fading, not short and hard.
-    return Math.max(6, Math.min(14, Math.round(shortSide * 0.25)))
+    // than stopping at a visible floor.
+    //
+    // THE FLOOR IS WHAT MAKES SMALL CONTROLS LOOK LIKE THE BIG ONES. A segmented
+    // cell is ~22px tall; at a quarter of that the band is 6px, which on a 2px
+    // lattice is three rows of dots and reads as a dotted BORDER rather than a
+    // field. The proportional rule keeps a big control from wearing a cloud,
+    // but below about 10px there are not enough dot rows left for a gradient to
+    // exist at all — so the clamp, not the ratio, decides at the small end.
+    return Math.max(10, Math.min(20, Math.round(shortSide * 0.40)))
   }
 
   /** The bleed a field needs so nothing is clipped: the widest reach in the
