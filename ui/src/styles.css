@@ -726,8 +726,15 @@ kbd,
     background-size: 260% 260%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: 64px 64px, 14% 26%, 26% 14%;
-    mask-size: 64px 64px, 14% 26%, 26% 14%;
+    /* THE RESTING WINDOW IS NOT SMALL, AND THAT IS THE POINT.
+       An even curve in TIME is not an even curve to the eye when the thing
+       being animated grows by area. From 14% x 26% to 108% x 116% the lit
+       region grows about thirty-four fold, so the field appeared to burst
+       outward and then slow — the same bounce the easing was blamed for.
+       Starting nearer the destination cuts that to under four fold, and the
+       spread reads at the same steady rate as the band thickening beside it. */
+    -webkit-mask-size: 64px 64px, 52% 62%, 62% 52%;
+    mask-size: 64px 64px, 52% 62%, 62% 52%;
     -webkit-mask-position: 0 0, center, center;
     mask-position: 0 0, center, center;
     -webkit-mask-composite: source-in, source-in;
@@ -742,8 +749,8 @@ kbd,
        the part that looks like materialising. */
     transition:
       opacity 110ms ease,
-      mask-size 460ms cubic-bezier(0.4, 0, 0.2, 1),
-      -webkit-mask-size 460ms cubic-bezier(0.4, 0, 0.2, 1);
+      mask-size 500ms cubic-bezier(0.4, 0, 0.2, 1),
+      -webkit-mask-size 500ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   &::after {
@@ -881,8 +888,15 @@ kbd,
     background-size: 260% 260%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: 64px 64px, 14% 26%, 26% 14%;
-    mask-size: 64px 64px, 14% 26%, 26% 14%;
+    /* THE RESTING WINDOW IS NOT SMALL, AND THAT IS THE POINT.
+       An even curve in TIME is not an even curve to the eye when the thing
+       being animated grows by area. From 14% x 26% to 108% x 116% the lit
+       region grows about thirty-four fold, so the field appeared to burst
+       outward and then slow — the same bounce the easing was blamed for.
+       Starting nearer the destination cuts that to under four fold, and the
+       spread reads at the same steady rate as the band thickening beside it. */
+    -webkit-mask-size: 64px 64px, 52% 62%, 62% 52%;
+    mask-size: 64px 64px, 52% 62%, 62% 52%;
     -webkit-mask-position: 0 0, center, center;
     mask-position: 0 0, center, center;
     -webkit-mask-composite: source-in, source-in;
@@ -897,8 +911,8 @@ kbd,
        the part that looks like materialising. */
     transition:
       opacity 110ms ease,
-      mask-size 460ms cubic-bezier(0.4, 0, 0.2, 1),
-      -webkit-mask-size 460ms cubic-bezier(0.4, 0, 0.2, 1);
+      mask-size 500ms cubic-bezier(0.4, 0, 0.2, 1),
+      -webkit-mask-size 500ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   &:hover::before,
