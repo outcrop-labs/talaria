@@ -1,0 +1,99 @@
+# Boot one agent from the chassis, for real, and check how it stops.
+#
+# WHY THIS IS A SEPARATE WORKFLOW AND NOT A JOB IN ci.yml. Two reasons, and the
+# second is the load-bearing one:
+#
+#   1. It needs Docker and pulls a ~900MB image, so it runs in minutes rather
+#      than seconds. ci.yml is deliberately a fast tripwire; putting this in it
+#      would make the whole thing slow enough to route around.
+#
+#   2. IT USES `paths:` FILTERS, WHICH ci.yml REFUSES TO USE. That refusal is
+#      correct and is written down there: a REQUIRED status check skipped by a
+#      path filter reports "pending" forever and blocks the merge. The escape is
+#      not to drop the filter — it is to not make this check required. So:
+#
+#      >>> DO NOT ADD THIS TO THE BRANCH PROTECTION REQUIRED-CHECKS LIST. <<<
+#
+#      If you want it required, delete the `paths:` block first, accept that it
+#      runs on every docs-only push, and move it into ci.yml where the timing
+#      tradeoff is visible next to the other jobs.
+#
+# WHAT IT CATCHES, which nothing else in this repo does. `chassis.test.ts` reads
+# the template and asserts its shape — that catches a config we already know is
+# wrong. This starts a container and catches the one we don't:
+#
+#   - init hooks that cannot chown or drop privileges, i.e. `cap_drop: ALL`
+#     without the cap_add block. This shipped once and crash-looped every agent
+#     in the fleet, because no test in this repository had ever started a
+#     container; `docker compose up` returning success means nothing.
+#   - a stop that falls through to SIGKILL, i.e. a missing CAP_KILL. This one is
+#     invisible to every startup check and to any health probe: the agent boots
+#     clean and serves traffic, and only `docker stop` reveals it.
+#
+# Both failure modes were reproduced against this job before it was committed —
+# removing `cap_add` entirely fails it with the init diagnosis, and removing only
+# the `- KILL` line fails it with exit 137 after the stop timeout.
+#
+# The image is public (`nousresearch/hermes-agent:latest`), so this needs no
+# registry credentials. No LLM, key or network egress is needed either: the
+# synthetic agent points at a base_url that never answers, on purpose. See the
+# header of scripts/chassis-boot-smoke.mjs for why that is sufficient.
+name: chassis
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/chassis.template.yml'
+      - 'scripts/chassis-boot-smoke.mjs'
+      - 'ui/src/server/fleet-render.ts'
+      - 'ui/src/server/fleet-docker.ts'
+      - 'scripts/workbench.Dockerfile'
+      - '.github/workflows/chassis.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/chassis.template.yml'
+      - 'scripts/chassis-boot-smoke.mjs'
+      - 'ui/src/server/fleet-render.ts'
+      - 'ui/src/server/fleet-docker.ts'
+      - 'scripts/workbench.Dockerfile'
+      - '.github/workflows/chassis.yml'
+
+concurrency:
+  group: chassis-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: boot + stop one agent
+    runs-on: ubuntu-latest
+    # The image pull dominates. 20 is headroom for a cold runner, not a target:
+    # the test itself waits at most 180s for init and 20s for the stop.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The smoke test parses the chassis with the `yaml` package, resolved from
+      # ui/node_modules via createRequire — hand-rolling a YAML parser to avoid
+      # this install would be its own source of bugs. Nothing else here is used.
+      - name: Install (for the yaml parser)
+        run: npm ci --no-audit --no-fund
+        working-directory: ui
+
+      # Pull explicitly rather than letting `compose up` do it, so a registry
+      # problem reports as a pull failure instead of as a boot timeout.
+      - name: Pull the agent image
+        run: docker pull nousresearch/hermes-agent:latest
+
+      - name: Boot the chassis and stop it
+        run: node scripts/chassis-boot-smoke.mjs
