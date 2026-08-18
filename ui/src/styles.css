@@ -636,13 +636,6 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
-    background-image: linear-gradient(
-      115deg,
-      color-mix(in oklab, var(--theme-border-strong) 82%, transparent) 0%,
-      var(--theme-border-strong) 50%,
-      color-mix(in oklab, var(--theme-border-strong) 82%, transparent) 100%
-    );
-    background-size: 200% 100%;
     -webkit-mask-image: var(--dither-tile),
       linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%),
       linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
@@ -673,7 +666,6 @@ kbd,
     /* Eased back on purpose: this sits on a solid tile, so it should read as
        texture IN that surface rather than as a second surface over it. */
     opacity: 0.55;
-    animation: dither-drift-light 26s linear infinite;
   }
 
   &::after {
@@ -697,7 +689,7 @@ kbd,
     mask-position: 0 0, center, center;
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
-    animation: dither-breathe-edge 9s ease-in-out infinite;
+    animation: dither-edge-in 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms both;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -728,13 +720,6 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
-    background-image: linear-gradient(
-      115deg,
-      color-mix(in oklab, var(--theme-border-strong) 82%, transparent) 0%,
-      var(--theme-border-strong) 50%,
-      color-mix(in oklab, var(--theme-border-strong) 82%, transparent) 100%
-    );
-    background-size: 200% 100%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
       radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
@@ -777,7 +762,7 @@ kbd,
     z-index: -1;
     border-radius: calc(var(--dither-radius) + var(--dither-offset));
     pointer-events: none;
-    border: 0 solid var(--theme-accent);
+    border: 0 solid color-mix(in oklab, var(--theme-accent) 30%, transparent);
     /* THE BAND'S OUTER RANK FADES. A border ends flush, which on a dot field
        reads as a hard dotted rule drawn around the control rather than as a
        field the control is sitting in. Two fades tight to the box edges dim
@@ -795,9 +780,13 @@ kbd,
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
     opacity: 0;
+    /* Dull to full, ONCE. This pulsed between the two on a loop, which reads
+       as a glow rather than as a mark — a selected thing should announce
+       itself and then be still. */
     transition:
       opacity 140ms ease 80ms,
-      border-width 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms;
+      border-width 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms,
+      border-color 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms;
   }
 
   &:hover::before,
@@ -812,7 +801,6 @@ kbd,
   &[aria-selected='true']::before,
   &[aria-pressed='true']::before {
     opacity: 0.55;
-    animation: dither-drift-light 26s linear infinite;
   }
 
   /* The band arrives just behind the fill, which is what makes selecting read
@@ -825,18 +813,9 @@ kbd,
   &[aria-pressed='true']::after {
     opacity: 1;
     border-width: var(--dither-band);
-    animation: dither-breathe-edge 9s ease-in-out infinite;
+    border-color: var(--theme-accent);
   }
 
-  /* Neighbours never breathe in unison — without this a list pulses as one. */
-  &:nth-child(5n + 2)::before { animation-delay: -3s; }
-  &:nth-child(5n + 3)::before { animation-delay: -6s; }
-  &:nth-child(5n + 4)::before { animation-delay: -9s; }
-  &:nth-child(5n + 5)::before { animation-delay: -12s; }
-  &:nth-child(5n + 2)::after { animation-delay: -2s; }
-  &:nth-child(5n + 3)::after { animation-delay: -4s; }
-  &:nth-child(5n + 4)::after { animation-delay: -6s; }
-  &:nth-child(5n + 5)::after { animation-delay: -8s; }
 
   @media (prefers-reduced-motion: reduce) {
     &::before,
@@ -846,34 +825,16 @@ kbd,
 
 /* The name 126 call sites already use for the HOVER case. Identical: selection
    differs by gaining a solid tile beneath, not by losing the texture. */
-/* ── The movement ────────────────────────────────────────────────────────────
-   THE LIGHT MOVES UNDER THE LATTICE. THE LATTICE DOES NOT MOVE.
 
-   Seven attempts bracket this, and each ruled something out. Sliding the tile
-   scrolls the pattern across the control. Cross-fading two copies blinks
-   between two stamps. Animating the mask — its size, or the band's width —
-   FLICKERS, and must: a mask over a lattice of single pixels has no in-between
-   state, so every dot it touches snaps rather than fades. Animating opacity
-   fixed the flicker and ate the transition, because opacity was already
-   carrying the state. Breathing the colour freed the transition and was then
-   invisible, because dimming every dot in step is not something an eye reads
-   as life — it reads as nothing, and at any amplitude where you DO notice it,
-   it reads as a pulse.
-
-   What the canvas actually did was vary WHICH DOTS ARE BRIGHT, across the
-   element and over time. That is reproducible here without moving anything:
-   the dots are cut by a mask that never changes, and underneath them a soft
-   gradient of the same colour drifts. Every dot stays exactly where the grid
-   put it; what changes is how lit each one is, and the bright region wanders.
-   Colour interpolates continuously, so nothing can snap. */
-@keyframes dither-drift-light {
-  from { background-position: 0% 50%; }
-  to { background-position: 100% 50%; }
-}
-
-@keyframes dither-breathe-edge {
-  0%, 100% { border-color: color-mix(in oklab, var(--theme-accent) 42%, transparent); }
-  50% { border-color: var(--theme-accent); }
+@keyframes dither-edge-in {
+  from {
+    border-width: 0;
+    border-color: color-mix(in oklab, var(--theme-accent) 30%, transparent);
+  }
+  to {
+    border-width: var(--dither-band);
+    border-color: var(--theme-accent);
+  }
 }
 
 @utility dither-fill {
@@ -888,13 +849,6 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
-    background-image: linear-gradient(
-      115deg,
-      color-mix(in oklab, var(--theme-border-strong) 82%, transparent) 0%,
-      var(--theme-border-strong) 50%,
-      color-mix(in oklab, var(--theme-border-strong) 82%, transparent) 100%
-    );
-    background-size: 200% 100%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
       radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
