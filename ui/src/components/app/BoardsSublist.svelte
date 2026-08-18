@@ -106,7 +106,7 @@
 </script>
 
 {#snippet boardLink(b: Board)}
-  <a
+  <a data-dither-fill
     href={p('/boards/:boardId', { params: { boardId: b.id } })}
     draggable={b.role === 'owner'}
     oncontextmenu={(e) =>
@@ -121,7 +121,7 @@
     }}
     class={cn(
       // Indented past the group chevron so the nesting reads at a glance.
-      'block truncate rounded-md py-1 pl-[22px] pr-2 text-xs transition-colors duration-[120ms] hover:dither-fill hover:text-fg',
+      'block truncate rounded-md py-1 pl-[22px] pr-2 text-xs transition-colors duration-[120ms] hover:text-fg',
       activePath === `/boards/${b.id}` ? 'bg-raised font-medium text-fg' : 'text-muted',
       dragging?.id === b.id && 'opacity-40',
     )}

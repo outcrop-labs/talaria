@@ -82,7 +82,7 @@
 </script>
 
 {#snippet control()}
-  <button
+  <button data-dither-fill
     bind:this={ref}
     type="button"
     {title}
@@ -96,7 +96,7 @@
       'relative grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
       focusRing,
       size === 'sm' ? 'h-7 w-7' : 'h-8 w-8',
-      active ? 'bg-raised text-fg' : 'text-muted hover:dither-fill',
+      active ? 'bg-raised text-fg' : 'text-muted',
       danger ? 'hover:text-danger' : 'hover:text-fg',
       className,
     )}

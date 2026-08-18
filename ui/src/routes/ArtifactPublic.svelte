@@ -104,7 +104,7 @@
           </thead>
           <tbody>
             {#each sheet.rows as row, ri (ri)}
-              <tr class="transition-colors duration-120 hover:dither-fill">
+              <tr data-dither-fill class="transition-colors duration-120">
                 {#each row as cell, ci (ci)}
                   <td class="border border-line px-3 py-1.5 font-sans text-fg">{cell}</td>
                 {/each}

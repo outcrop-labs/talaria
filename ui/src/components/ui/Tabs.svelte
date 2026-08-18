@@ -32,14 +32,14 @@
 <div class={cn('relative flex items-center gap-1', className)}>
   <DitherPool key={value} selector="[data-active='true']" falloff={3} />
   {#each items as t (t.id)}
-    <button
+    <button data-dither-fill="on"
       type="button"
       onclick={() => onChange(t.id)}
       data-active={value === t.id}
       class={cn(
         'relative flex h-7 items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
         focusGold,
-        value === t.id ? 'text-fg dither-bloom' : 'text-muted hover:dither-fill hover:text-fg',
+        value === t.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
       {#if value === t.id}

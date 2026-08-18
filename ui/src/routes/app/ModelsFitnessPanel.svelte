@@ -212,12 +212,12 @@
                  admin wants to open it — the live console, the failures as they
                  land — and until this it was the one place on the page that
                  named a model and could not be clicked to see it. -->
-            <button
+            <button data-dither-fill
               type="button"
               onclick={() => run.model && select(run.model)}
               title="Open {run.model} — the live console, and failures as they land"
               class={cn(
-                'group/run flex items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:dither-fill hover:text-fg',
+                'group/run flex items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
                 focusGold,
               )}
             >
@@ -269,7 +269,7 @@
                one people actually come here for. It is still one click away,
                just not an accidental one. -->
           {#if Object.keys(data.index).length > 0}
-            <button
+            <button data-dither-fill
               type="button"
               title="More"
               aria-label="More actions"
@@ -281,7 +281,7 @@
                     onSelect: () => void clearResults(null),
                   },
                 ])}
-              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:dither-fill hover:text-fg"
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:text-fg"
             >
               <MoreHorizontal size={14} aria-hidden="true" />
             </button>

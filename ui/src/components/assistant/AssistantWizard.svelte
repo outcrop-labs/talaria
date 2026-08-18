@@ -187,7 +187,7 @@
             </p>
             <div class="flex flex-wrap gap-2">
               {#each PRESETS as preset (preset.label)}
-                <button
+                <button data-dither-fill
                   type="button"
                   onclick={() => {
                     personality = preset.text
@@ -196,7 +196,7 @@
                   class={cn(
                     'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
                     focusGold,
-                    personality === preset.text ? 'border-accent text-accent' : 'border-line text-muted hover:dither-fill hover:text-fg',
+                    personality === preset.text ? 'border-accent text-accent' : 'border-line text-muted hover:text-fg',
                   )}
                 >
                   {preset.label}

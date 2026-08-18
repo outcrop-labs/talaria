@@ -52,10 +52,10 @@
         <Panel class="p-0">
           <div class="divide-y divide-line" use:listStagger>
             {#each alerts as a, i (i)}
-              <button
+              <button data-dither-fill
                 type="button"
                 onclick={() => void navigateHref(a.href)}
-                class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:dither-fill"
+                class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors"
               >
                 <span class="mt-0.5 w-5 shrink-0 text-center font-mono text-xs" style:color={SEV[a.severity].color}>
                   {SEV[a.severity].icon}

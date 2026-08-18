@@ -91,12 +91,12 @@
   {:else}
     <div class="mt-2 max-h-52 space-y-0.5 overflow-y-auto" use:listStagger>
       {#each projects as board (board.id)}
-        <a
+        <a data-dither-fill
           in:fade={{ duration: 150 }}
           out:slide={{ duration: 120 }}
           href={p('/boards/:boardId', { params: { boardId: board.id } })}
           onclick={() => (query = '')}
-          class="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors hover:dither-fill hover:text-fg"
+          class="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors hover:text-fg"
         >
           <FolderKanban size={14} strokeWidth={1.5} class="shrink-0" />
           <span class="min-w-0 flex-1 truncate font-sans text-[12px]">{board.name}</span>
@@ -104,12 +104,12 @@
         </a>
       {/each}
       {#each taskRows as task (task.id)}
-        <a
+        <a data-dither-fill
           in:fade={{ duration: 150 }}
           out:slide={{ duration: 120 }}
           href={p('/boards/:boardId/:taskId', { params: { boardId: task.boardId, taskId: task.id } })}
           onclick={() => (query = '')}
-          class="flex min-h-8 items-start gap-2 rounded-md px-2 py-1.5 text-muted transition-colors hover:dither-fill hover:text-fg"
+          class="flex min-h-8 items-start gap-2 rounded-md px-2 py-1.5 text-muted transition-colors hover:text-fg"
         >
           <ListTodo size={14} strokeWidth={1.5} class="mt-px shrink-0" />
           <span class="min-w-0 flex-1">
@@ -142,11 +142,11 @@
       class="h-9 w-full rounded-lg border border-line bg-raised pl-9 pr-8 font-sans text-xs text-fg outline-none transition-colors placeholder:text-muted hover:border-line-strong focus:border-[color:var(--theme-accent-border)] focus:ring-1 focus:ring-[color:var(--theme-accent-border)]"
     />
     {#if query}
-      <button
+      <button data-dither-fill
         type="button"
         onclick={() => (query = '')}
         aria-label="Clear search"
-        class="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted transition-colors hover:dither-fill hover:text-fg"
+        class="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted transition-colors hover:text-fg"
       >
         <X size={12} strokeWidth={1.7} />
       </button>

@@ -67,12 +67,12 @@
           {/each}
         </div>
         {#if value}
-          <button
+          <button data-dither-fill
             onclick={() => {
               onChange(null)
               close()
             }}
-            class="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:dither-fill hover:text-danger"
+            class="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-danger"
           >
             Clear color
           </button>

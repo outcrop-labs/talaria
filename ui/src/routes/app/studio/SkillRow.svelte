@@ -40,7 +40,7 @@
   }
 </script>
 
-<div class="group flex w-full items-center gap-3 px-5 py-3 transition-colors hover:dither-fill">
+<div data-dither-fill class="group flex w-full items-center gap-3 px-5 py-3 transition-colors">
   <button type="button" onclick={onOpen} class="min-w-0 flex-1 text-left">
     <span class="flex items-center gap-2">
       <span class="truncate text-sm font-medium text-fg">{skill.name}</span>

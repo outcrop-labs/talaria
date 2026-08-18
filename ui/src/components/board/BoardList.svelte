@@ -481,7 +481,7 @@
               {#if open}
                 {#each g.tasks as t (`${g.key}:${t.id}`)}
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                  <tr
+                  <tr data-dither-fill
                     in:fade={{ duration: 150 }}
                     out:fade={QUICK}
                     draggable={groupDroppable}
@@ -497,7 +497,7 @@
                     onclick={() => onOpen(t.id)}
                     use:warmRoute={{ path: '/boards/:boardId/:taskId', warm: () => prefetchTask(qc, t.id) }}
                     oncontextmenu={(e) => rowMenu(e, t)}
-                    class={cn('group cursor-pointer transition-colors hover:dither-fill', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
+                    class={cn('group cursor-pointer transition-colors', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
                   >
                     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                     <td class="pl-2" onclick={(e) => e.stopPropagation()}>
@@ -564,11 +564,11 @@
             {/snippet}
           </DropdownMenu>
           {#if me}
-            <Button variant="ghost" size="xs" class="py-1 hover:dither-fill" onclick={() => void bulk({ assignToMe: true })}>
+            <Button data-dither-fill variant="ghost" size="xs" class="py-1" onclick={() => void bulk({ assignToMe: true })}>
               Assign to me
             </Button>
           {/if}
-          <Button variant="ghost" size="xs" class="py-1 hover:dither-fill hover:text-danger" onclick={() => void bulk({ archive: true })}>
+          <Button data-dither-fill variant="ghost" size="xs" class="py-1 hover:text-danger" onclick={() => void bulk({ archive: true })}>
             Archive
           </Button>
           <button onclick={() => (sel = new Set())} title="Clear selection" class="rounded-md px-1.5 py-1 font-mono text-[10px] text-muted transition-colors hover:text-fg">

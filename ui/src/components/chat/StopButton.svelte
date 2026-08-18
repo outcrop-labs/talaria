@@ -11,13 +11,13 @@
   let { onClick, title = 'Stop (Esc)' }: { onClick: () => void; title?: string } = $props()
 </script>
 
-<button
+<button data-dither-fill
   type="button"
   {title}
   aria-label={title}
   onclick={onClick}
   class={cn(
-    'relative grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line-strong text-muted transition-colors hover:dither-fill hover:text-fg',
+    'relative grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line-strong text-muted transition-colors hover:text-fg',
     focusGold,
   )}
 >

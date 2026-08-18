@@ -107,14 +107,14 @@
 
 {#snippet btn(icon: IconType, title: string, active: boolean, action: () => void)}
   {@const Icon = icon}
-  <button
+  <button data-dither-fill
     type="button"
     {title}
     onmousedown={(e) => e.preventDefault()}
     onclick={action}
     class={cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
-      active ? 'bg-raised text-accent' : 'text-muted hover:dither-fill hover:text-fg',
+      active ? 'bg-raised text-accent' : 'text-muted hover:text-fg',
       focusGold,
     )}
   >
@@ -125,7 +125,7 @@
 <!-- Compact labeled buttons for the table segment — text beats cryptic icons
      for structural ops. -->
 {#snippet tableBtn(label: string, title: string, action: () => void)}
-  <button
+  <button data-dither-fill
     type="button"
     {title}
     onmousedown={(e) => {
@@ -133,7 +133,7 @@
       action()
     }}
     class={cn(
-      'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:dither-fill hover:text-fg',
+      'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
       focusGold,
     )}
   >

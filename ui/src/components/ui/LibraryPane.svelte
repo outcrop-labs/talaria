@@ -186,7 +186,7 @@
                 {@const id = idOf(item)}
                 {@const active = selectedId === id}
                 <div class="group/row flex items-center gap-1">
-                  <button
+                  <button data-dither-fill="on"
                     type="button"
                     onclick={() => onSelect(item)}
                     oncontextmenu={onRowMenu ? (e) => onRowMenu(e, item) : undefined}
@@ -196,7 +196,7 @@
                       // Selected keeps the texture and GAINS the solid tile — the two states
                       // differ by whether the surface has arrived, not by whether there
                       // is any texture at all.
-                      active ? 'bg-raised dither-bloom text-fg' : 'text-muted hover:dither-fill hover:text-fg',
+                      active ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
                     )}
                   >
                     {#if row}{@render row(item, active)}{:else}{labelOf(item)}{/if}

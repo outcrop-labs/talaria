@@ -69,22 +69,22 @@
        would otherwise have caused. -->
   <RailTooltip label={unseen ? `${label} · new output` : label}>
     {#if status === 'none'}
-      <a
+      <a data-dither-fill
         href="/settings/assistant"
         aria-label="Set up your assistant"
-        class="relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg"
+        class="relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:text-fg"
       >
         <Bot size={16} strokeWidth={1.5} />
       </a>
     {:else}
-      <button
+      <button data-dither-fill
         type="button"
         data-assistant-launcher
         onclick={toggle}
         aria-label={label}
         aria-expanded={panelOpen}
         class={cn(
-          'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg',
+          'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:text-fg',
           panelOpen && 'bg-raised text-fg',
         )}
       >
@@ -109,9 +109,9 @@
     {:else if status === 'none'}
       <!-- No assistant yet. The launcher would be a button that opens an empty
            conversation, so it points at the thing that fixes that instead. -->
-      <a
+      <a data-dither-fill
         href="/settings/assistant"
-        class="flex h-11 items-center gap-2.5 rounded-lg border border-dashed border-line px-2.5 text-left transition-colors duration-[120ms] hover:border-line-strong hover:dither-fill"
+        class="flex h-11 items-center gap-2.5 rounded-lg border border-dashed border-line px-2.5 text-left transition-colors duration-[120ms] hover:border-line-strong"
       >
         <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line text-muted"><Plus size={14} strokeWidth={1.5} /></span>
         <span class="min-w-0 flex-1">
@@ -120,7 +120,7 @@
         </span>
       </a>
     {:else}
-      <button
+      <button data-dither-fill
         type="button"
         data-assistant-launcher
         onclick={toggle}
@@ -128,7 +128,7 @@
         title={label}
         class={cn(
           'group flex h-11 w-full items-center gap-2.5 rounded-lg border px-2.5 text-left transition-colors duration-[120ms]',
-          panelOpen ? 'border-line-strong bg-raised' : 'border-line-subtle hover:border-line hover:dither-fill',
+          panelOpen ? 'border-line-strong bg-raised' : 'border-line-subtle hover:border-line',
         )}
       >
         <span class="relative shrink-0">

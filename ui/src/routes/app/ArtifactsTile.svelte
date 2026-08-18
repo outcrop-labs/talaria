@@ -58,13 +58,13 @@
   oncontextmenu={onContextMenu}
   class="group relative"
 >
-  <button
+  <button data-dither-fill
     type="button"
     onclick={onOpen}
     title={`${row.name} · ${row.kindLabel}`}
     class={cn(
       'flex w-full flex-col items-center gap-1.5 rounded-lg px-1 py-2.5 transition-colors',
-      selected ? 'bg-raised' : 'hover:dither-fill',
+      selected ? 'bg-raised' : '',
       active && !selected && 'bg-card',
       dropTarget && 'ring-1 ring-accent/60',
     )}

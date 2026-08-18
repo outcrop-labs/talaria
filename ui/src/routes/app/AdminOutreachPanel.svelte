@@ -128,7 +128,7 @@
         <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent outreach</div>
         <div class="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
           {#each data.events as ev, i (i)}
-            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:dither-fill">
+            <div data-dither-fill class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors">
               <span class="shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{ev.kind}</span>
               <span class="min-w-0 flex-1 truncate text-muted" title={ev.note ?? ''}>{ev.note ?? '—'}</span>
               <span class="shrink-0 font-mono text-[10px] text-muted">{ev.agentModel}</span>

@@ -48,14 +48,14 @@
       class={cn(popPanel, 'absolute left-0 right-0 top-full z-20 mt-1 max-h-80 origin-top overflow-y-auto')}
     >
       {#each hits as h (h.id)}
-        <button
+        <button data-dither-fill
           type="button"
           onmousedown={(e) => {
             e.preventDefault()
             onOpen(h)
             open = false
           }}
-          class="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:dither-fill"
+          class="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors"
         >
           <span class="flex items-center gap-1.5 text-xs text-fg">
             <span class="w-4 shrink-0 text-center">{h.icon ?? '📄'}</span>

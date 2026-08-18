@@ -13,7 +13,7 @@
  * next pass rather than leaking.
  */
 import { getContext, setContext } from 'svelte'
-import type { DitherSource } from './dither'
+import type { DitherSource, DitherTone } from './dither'
 
 const KEY = Symbol('dither-field-surface')
 
@@ -77,4 +77,63 @@ export function useField(el: () => HTMLElement | null, sources: () => DitherSour
     void key
     surface.invalidate()
   })
+}
+
+/**
+ * A DITHERED FILL FOR ANY ELEMENT, drawn by the surface.
+ *
+ * This replaces the CSS `dither-fill` utility, and the reason is not purity.
+ * That utility was a background image under a mask on a pseudo-element, and
+ * every one of those layers is work the BROWSER does on its own thread: a
+ * 64px tile resampled per element, a mask composited per element, all of it
+ * recomputed on scroll and on theme change. It pins the render cycle to the
+ * main thread precisely where the UI is busiest — a list of rows under a
+ * moving pointer. The same fill as a field costs one more entry in a uniform
+ * array and no compositing at all.
+ *
+ * It is a factory rather than an action because context is only readable
+ * during component init: call `createDitherFill()` in the script block, then
+ * attach the result to as many elements as you like.
+ *
+ *   const fill = createDitherFill()
+ *   <button {@attach fill}>…
+ *
+ * `active` makes the fill permanent for a selected row; otherwise it appears
+ * on hover and on keyboard focus, so the two reach the control the same way.
+ */
+export function createDitherFill(opts: {
+  /** Solid-state companion: keep the fill up regardless of pointer. */
+  active?: () => boolean
+  tone?: DitherTone
+  /** Peak density. The fill is flat, so this is the whole of its weight. */
+  strength?: number
+} = {}) {
+  const surface = useFieldSurface()
+
+  return (node: HTMLElement) => {
+    if (!surface) return
+    let hot = $state(false)
+    const on = () => (hot = true)
+    const off = () => (hot = false)
+    node.addEventListener('mouseenter', on)
+    node.addEventListener('mouseleave', off)
+    node.addEventListener('focusin', on)
+    node.addEventListener('focusout', off)
+
+    const stop = surface.register({
+      el: node,
+      sources: () =>
+        hot || opts.active?.()
+          ? [{ id: 'fill', kind: 'uniform', strength: opts.strength ?? 0.5, tone: opts.tone ?? 'neutral' }]
+          : [],
+    })
+
+    return () => {
+      node.removeEventListener('mouseenter', on)
+      node.removeEventListener('mouseleave', off)
+      node.removeEventListener('focusin', on)
+      node.removeEventListener('focusout', off)
+      stop()
+    }
+  }
 }

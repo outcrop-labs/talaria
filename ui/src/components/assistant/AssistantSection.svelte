@@ -194,7 +194,7 @@
              the active tier reads gold, inactive hairline+muted → hover. -->
         <div class="flex flex-wrap gap-1.5">
           {#each assistant.tiers as t (t.name)}
-            <button
+            <button data-dither-fill
               type="button"
               title={t.model}
               disabled={busy}
@@ -203,7 +203,7 @@
               class={cn(
                 'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
                 focusGold,
-                t.active ? 'border-accent text-accent' : 'border-line text-muted hover:dither-fill hover:text-fg',
+                t.active ? 'border-accent text-accent' : 'border-line text-muted hover:text-fg',
               )}
             >
               {t.name}

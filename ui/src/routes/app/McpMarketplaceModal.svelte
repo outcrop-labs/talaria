@@ -125,8 +125,8 @@
             {@const installed = addedState !== null}
             {@const busy = busyAdd === l.registryName}
             {@const badge = TIER_BADGE[l.tier]}
-            <div
-              class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line hover:dither-fill"
+            <div data-dither-fill
+              class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line"
             >
               <div class="flex items-center gap-3">
                 <McpServerMark title={l.title} domain={l.domain} icon={l.icon} size={34} />

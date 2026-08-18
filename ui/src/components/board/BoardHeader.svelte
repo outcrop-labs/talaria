@@ -92,10 +92,10 @@
   </div>
 
   {#if canEdit}
-    <button
+    <button data-dither-fill
       type="button"
       onclick={onSettings}
-      class="grid h-8 w-8 place-items-center rounded-md text-muted transition-colors hover:dither-fill hover:text-fg"
+      class="grid h-8 w-8 place-items-center rounded-md text-muted transition-colors hover:text-fg"
       title="Board settings"
       aria-label="Board settings"
     >

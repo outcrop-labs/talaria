@@ -24,11 +24,11 @@
 </script>
 
 <div class="relative shrink-0">
-  <button
+  <button data-dither-fill
     type="button"
     onclick={() => (open = !open)}
     class={cn(
-      'flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs transition-colors hover:dither-fill hover:text-fg',
+      'flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs transition-colors hover:text-fg',
       focusGold,
       open ? 'bg-raised text-fg' : 'text-muted',
     )}

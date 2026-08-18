@@ -56,7 +56,7 @@
     <SectionHeader title="Active this hour" action={String(live.lastHour.length).padStart(2, '0')} />
     <div class="divide-y divide-line" use:listStagger>
       {#each live.lastHour as a (a.agentModel)}
-        <div class="flex items-center gap-3 py-3 text-sm transition-colors hover:dither-fill">
+        <div data-dither-fill class="flex items-center gap-3 py-3 text-sm transition-colors">
           <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{a.agentModel}</span>
           {#if genByAgent.has(a.agentModel)}<WaitingMark site="observability/live-agent" size={12} class="text-accent" />{/if}
           <span class="shrink-0 font-mono text-[11px] text-muted">{a.generations} gen</span>

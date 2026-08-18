@@ -226,10 +226,10 @@
 
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
       <div class="relative shrink-0">
-        <button
+        <button data-dither-fill
           type="button"
           onclick={() => (emojiOpen = !emojiOpen)}
-          class="rounded-md px-1 text-xl leading-none transition-colors hover:dither-fill"
+          class="rounded-md px-1 text-xl leading-none transition-colors"
           title="Set icon"
         >
           {doc.icon ?? '📄'}
@@ -517,9 +517,9 @@
                 style:top="{Math.max(selPop.y, 4)}px"
                 class="absolute z-20 flex -translate-x-1/2 -translate-y-full overflow-hidden rounded-md border border-line bg-panel text-xs text-fg shadow-[var(--theme-shadow-2)]"
               >
-                <button
+                <button data-dither-fill
                   type="button"
-                  class="px-2 py-1 transition-colors hover:dither-fill"
+                  class="px-2 py-1 transition-colors"
                   onmousedown={(e) => {
                     e.preventDefault()
                     pendingQuote = selPop!.quote
@@ -531,9 +531,9 @@
                   <MessageSquareText size={12} class="mr-1 inline" /> Comment
                 </button>
                 <span class="my-1 border-l border-line-subtle"></span>
-                <button
+                <button data-dither-fill
                   type="button"
-                  class="px-2 py-1 text-accent transition-colors hover:dither-fill"
+                  class="px-2 py-1 text-accent transition-colors"
                   onmousedown={(e) => {
                     e.preventDefault()
                     museSel = { text: selPop!.quote, source: 'read' }
@@ -575,10 +575,10 @@
                   </div>
                   <div class="flex flex-wrap gap-2">
                     {#each backlinks as b (b.id)}
-                      <button
+                      <button data-dither-fill
                         type="button"
                         onclick={() => onSelect(b.id)}
-                        class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-muted transition-colors hover:dither-fill hover:text-fg"
+                        class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-muted transition-colors hover:text-fg"
                       >
                         <span>{b.icon ?? '📄'}</span>
                         <span class="max-w-[16rem] truncate">{b.title}</span>

@@ -61,10 +61,10 @@
   <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
     <MessageSquareText size={14} class="text-muted" />
     <span class="font-sans text-sm font-semibold text-fg">Thread</span>
-    <button
+    <button data-dither-fill
       type="button"
       onclick={onClose}
-      class="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:dither-fill hover:text-fg"
+      class="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-fg"
       title="Close thread"
     >
       <X size={14} />

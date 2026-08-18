@@ -165,7 +165,7 @@
         <ul class="divide-y divide-line">
           {#each perAgent as a (a.agentModel)}
             {@const d = agentLabel(a.agentModel)}
-            <li class="flex items-center gap-3 py-3 transition-colors hover:dither-fill">
+            <li data-dither-fill class="flex items-center gap-3 py-3 transition-colors">
               <Avatar name={d.label} class="h-6 w-6" />
               <span class="min-w-0 flex-1">
                 <span class="block truncate font-sans text-sm text-fg">{d.label}</span>

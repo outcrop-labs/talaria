@@ -87,10 +87,10 @@
     {#if keys.length > 0}
       <div class="mb-4 divide-y divide-line-subtle">
         {#each keys as k (k.id)}
-          <div
+          <div data-dither-fill
             in:fade={{ duration: 150 }}
             out:slide={{ duration: 150 }}
-            class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors hover:dither-fill"
+            class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors"
           >
             <span class="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
             <code class="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>

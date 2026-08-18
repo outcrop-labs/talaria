@@ -81,7 +81,7 @@
     {#snippet children(versions)}
       <div use:listStagger>
       {#each versions as v (v.version)}
-        <div class="flex items-center gap-3 py-2.5 text-sm transition-colors hover:dither-fill">
+        <div data-dither-fill class="flex items-center gap-3 py-2.5 text-sm transition-colors">
           <span class={cn('w-12 shrink-0 font-mono', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
           <span class="min-w-0 flex-1 truncate font-sans text-fg">{v.note ?? '—'}</span>
           <span class="shrink-0 font-mono text-[11px] text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>

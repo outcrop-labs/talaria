@@ -319,11 +319,11 @@
               <div use:listStagger>
               {#each revisions as rev, i (rev.id)}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                <div
+                <div data-dither-fill
                   class={cn(
                     'group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs',
                     diffing?.rev.id === rev.id && 'bg-raised',
-                    i !== 0 && 'cursor-pointer transition-colors hover:dither-fill',
+                    i !== 0 && 'cursor-pointer transition-colors',
                   )}
                   onclick={i === 0 ? undefined : () => void openDiff(rev)}
                   title={i === 0 ? undefined : 'Show changes since this revision'}
@@ -427,11 +427,11 @@
       class="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]"
     >
       <div class="flex shrink-0 items-center gap-2 border-b border-line px-6 py-3.5">
-        <button
+        <button data-dither-fill
           type="button"
           onclick={onClose}
           title="Back"
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:dither-fill hover:text-fg"
+          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-fg"
         >
           <ChevronLeft size={16} />
         </button>

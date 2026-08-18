@@ -61,11 +61,11 @@
     {#snippet empty()}<EmptyState variant="inline" title="No saved revisions yet." />{/snippet}
     {#snippet children(revs)}
       {#each revs as r, i (r.id)}
-        <button
+        <button data-dither-fill
           type="button"
           disabled={restoring !== null}
           onclick={() => void restore(r)}
-          class="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:dither-fill disabled:opacity-60"
+          class="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors disabled:opacity-60"
           title="Restore this version"
         >
           <div class="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>

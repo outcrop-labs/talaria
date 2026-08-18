@@ -31,7 +31,7 @@
 
 <!-- div, not li: the roster list renders these directly inside Materialize's
      container (a div carrying the panel frame + divide classes). -->
-<div role="presentation" oncontextmenu={am.onContextMenu} class={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:dither-fill', !d.enabled && 'opacity-60')}>
+<div data-dither-fill role="presentation" oncontextmenu={am.onContextMenu} class={cn('flex items-center gap-3 px-4 py-3 transition-colors', !d.enabled && 'opacity-60')}>
   <AgentStatusDot def={d} {containers} />
   <Avatar name={d.displayName} class="h-7 w-7" />
   <button type="button" onclick={() => (manage = true)} class="min-w-0 flex-1 text-left">

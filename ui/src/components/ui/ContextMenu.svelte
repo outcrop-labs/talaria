@@ -158,7 +158,7 @@
                 {#if kid === 'sep'}
                   <div class="mx-2 my-1 border-t border-line"></div>
                 {:else}
-                  <button
+                  <button data-dither-fill
                     type="button"
                     role="menuitem"
                     disabled={kid.disabled}
@@ -172,7 +172,7 @@
                         ? 'cursor-default text-muted opacity-50'
                         : kid.danger
                           ? 'text-danger hover:bg-danger/10'
-                          : 'text-fg hover:dither-fill',
+                          : 'text-fg',
                     )}
                   >
                     {#if kid.checked !== undefined}

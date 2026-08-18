@@ -181,12 +181,12 @@
           {#each agents as o (o.owner)}
             {@const meta = agentMeta(o)}
             {@const openCount = ownerGaps(o).length}
-            <button
+            <button data-dither-fill
               type="button"
               onclick={() => select(o.owner)}
               class={cn(
                 'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                selectedKey === o.owner ? 'bg-raised' : 'hover:dither-fill',
+                selectedKey === o.owner ? 'bg-raised' : '',
               )}
             >
               <Avatar name={o.label} class="h-8 w-8 shrink-0 text-xs" />
@@ -199,12 +199,12 @@
             </button>
           {/each}
           <div class="my-2 border-t border-line"></div>
-          <button
+          <button data-dither-fill
             type="button"
             onclick={() => select('shared')}
             class={cn(
               'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-              selectedKey === 'shared' ? 'bg-raised' : 'hover:dither-fill',
+              selectedKey === 'shared' ? 'bg-raised' : '',
             )}
           >
             <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line text-sm text-muted">✦</span>
@@ -353,10 +353,10 @@
                 <Panel class="p-0">
                   <div class="divide-y divide-line">
                     {#each routedTo(selected) as w (w.id)}
-                      <button
+                      <button data-dither-fill
                         type="button"
                         onclick={() => void navigate('/studio', { search: { a: selectedKey, w: w.id } })}
-                        class="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:dither-fill"
+                        class="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors"
                       >
                         <span class="min-w-0 flex-1">
                           <span class="block truncate text-sm font-medium text-fg">{w.name}</span>

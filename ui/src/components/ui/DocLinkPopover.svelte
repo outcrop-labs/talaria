@@ -90,11 +90,11 @@
       <div class="px-2 py-3 text-center text-xs text-muted">{q.trim() ? 'No matches.' : 'Type to search docs.'}</div>
     {:else}
       {#each results as d (d.id)}
-        <button
+        <button data-dither-fill
           type="button"
           onmousedown={(e) => e.preventDefault()}
           onclick={() => onPick(d)}
-          class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[13px] text-muted transition-colors hover:dither-fill hover:text-fg"
+          class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[13px] text-muted transition-colors hover:text-fg"
         >
           <span>{d.icon ?? '📄'}</span>
           <span class="min-w-0 flex-1 truncate">{d.title}</span>

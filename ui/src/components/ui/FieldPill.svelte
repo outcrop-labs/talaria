@@ -44,7 +44,7 @@
   const stopDrag = (e: MouseEvent) => e.stopPropagation()
 </script>
 
-<button
+<button data-dither-fill
   bind:this={ref}
   type="button"
   onmousedown={stopDrag}
@@ -57,8 +57,8 @@
     active
       ? 'border-line-strong bg-raised text-fg'
       : persistent
-        ? 'border-line-subtle bg-raised/40 text-muted hover:border-line hover:dither-fill hover:text-fg'
-        : 'border-transparent text-muted hover:border-line hover:dither-fill hover:text-fg',
+        ? 'border-line-subtle bg-raised/40 text-muted hover:border-line hover:text-fg'
+        : 'border-transparent text-muted hover:border-line hover:text-fg',
     // Unset placeholder: dimmest ink, same voice (no italics in Mercury).
     !active && empty && 'text-ink-dim',
     className,
