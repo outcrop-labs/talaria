@@ -4,7 +4,7 @@
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
-  import WaitingMark from '@/components/ui/WaitingMark.svelte'
+  import ChatWaiting from './ChatWaiting.svelte'
   import { fade } from '@/lib/motion'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import type { DisplayMessage } from './chat-view'
@@ -13,12 +13,15 @@
   // mono tool rows, 14px sans body.
   let {
     message,
+    turn,
     agentModel,
     agentLabel,
     live,
     onContextMenu,
   }: {
     message: DisplayMessage
+    /** Index in the thread — the handle that re-rolls the loader per turn. */
+    turn: number
     agentModel: string
     agentLabel: string
     live: boolean
@@ -84,8 +87,8 @@
         session by lib/waiting; the ROLE is fixed here — submitting while the
         first token is outstanding, reasoning once tools stream but no prose
         has landed — and the role is what sets the tempo. -->
-    {#if empty && live}<WaitingMark site="chat/first-token" class="py-1 text-accent" />{/if}
-    {#if !empty && !message.content && live}<WaitingMark site="chat/reasoning" class="py-1 text-accent" />{/if}
+    {#if empty && live}<ChatWaiting id={String(turn)} role="submitting" class="my-1" />{/if}
+    {#if !empty && !message.content && live}<ChatWaiting id={String(turn)} role="reasoning" class="my-1" />{/if}
     {#if message.content && live}<span class="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle"></span>{/if}
     {#if !live && message.status === 'streaming'}
       <div class="font-mono text-[11px] text-muted">· saved (was in progress)</div>

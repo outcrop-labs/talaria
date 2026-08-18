@@ -4,7 +4,7 @@
   import HoverAction from './HoverAction.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import WaitingMark from '@/components/ui/WaitingMark.svelte'
+  import ChatWaiting from './ChatWaiting.svelte'
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -114,7 +114,7 @@
         <Markdown children={m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content} />
       {:else if live}
         <!-- Awaiting the agent's first token — the submitting rung (spec §9). -->
-        <WaitingMark site="chat/message-first-token" class="py-1 text-accent" />
+        <ChatWaiting id={m.id} role="submitting" class="my-1" />
       {/if}
       {#if m.attachments && m.attachments.length > 0}<MessageAttachments items={m.attachments} />{/if}
       <!-- Mounted unconditionally (findings nulled while live) so the caveat's

@@ -355,6 +355,7 @@
         {:else}
           <AssistantTurn
             message={m}
+            turn={i}
             {agentModel}
             {agentLabel}
             live={(streaming || resuming) && i === messages.length - 1}

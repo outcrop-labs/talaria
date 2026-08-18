@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { CornerDownLeft, Sparkles, X } from '@lucide/svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
-  import WaitingMark from '@/components/ui/WaitingMark.svelte'
+  import ChatWaiting from '@/components/chat/ChatWaiting.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
@@ -170,7 +170,7 @@
                briefing panel; in a thread it is a wipe where the app everywhere
                else shows a mark. Two loaders for one moment is the drift, and
                the fix is to use theirs rather than to tune mine. -->
-          {#if message.content}<Markdown children={message.content} />{:else}<WaitingMark site="chat/first-token" class="py-1 text-accent" />{/if}
+          {#if message.content}<Markdown children={message.content} />{:else}<ChatWaiting id={String(i)} class="my-1" />{/if}
         </div>
       {/if}
     {/each}
