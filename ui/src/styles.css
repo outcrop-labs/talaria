@@ -598,31 +598,55 @@ kbd,
   position: relative;
   isolation: isolate;
 
+  /* TWO SHAPES, BECAUSE HOVER AND SELECTED ARE NOT THE SAME STATEMENT.
+     `::before` is the interior fill — a surface arriving under the pointer.
+     `::after` is the band hugging the border — the mark of the one that is
+     chosen. Collapsing them onto a single shape is what made hover read as a
+     faint fragment of an outline instead of as a highlight. */
   &::before {
     content: '';
     position: absolute;
-    inset: -5px;
+    inset: 0;
     z-index: -1;
     border-radius: inherit;
     pointer-events: none;
     background-color: var(--theme-border-strong);
-    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, rgb(0 0 0 / 0) 46%, #000 74%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile), radial-gradient(ellipse at center, rgb(0 0 0 / 0) 46%, #000 74%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: 64px 64px, 190% 190%;
-    mask-size: 64px 64px, 190% 190%;
-    -webkit-mask-position: 0 0, 18% 28%;
-    mask-position: 0 0, 18% 28%;
+    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
+    mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
+    -webkit-mask-size: 64px 64px, 100% 100%;
+    mask-size: 64px 64px, 100% 100%;
+    -webkit-mask-position: 0 0, center;
+    mask-position: 0 0, center;
     -webkit-mask-composite: source-in;
     mask-composite: intersect;
     opacity: 0;
     transition: opacity 180ms ease;
   }
 
-  /* Hover and keyboard focus reach the control the same way. A hover is a
-     state arriving, so it shows the field without setting it in motion. */
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background-color: var(--theme-border-strong);
+    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, rgb(0 0 0 / 0) 52%, #000 84%, rgb(0 0 0 / 0.55) 100%);
+    mask-image: var(--dither-tile), radial-gradient(ellipse at center, rgb(0 0 0 / 0) 52%, #000 84%, rgb(0 0 0 / 0.55) 100%);
+    -webkit-mask-size: 64px 64px, 100% 100%;
+    mask-size: 64px 64px, 100% 100%;
+    -webkit-mask-position: 0 0, center;
+    mask-position: 0 0, center;
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+    opacity: 0;
+    transition: opacity 180ms ease;
+  }
+
+  /* Approach fills the control. */
   &:hover::before,
   &:focus-visible::before {
-    opacity: 0.55;
+    opacity: 1;
   }
 
   &[data-status='active']::before,
@@ -632,20 +656,30 @@ kbd,
   &[aria-selected='true']::before,
   &[aria-pressed='true']::before {
     opacity: 1;
-    animation: dither-morph 23s ease-in-out infinite;
+  }
+
+  /* Chosen adds the band, and the band is the part that lives. */
+  &[data-status='active']::after,
+  &[data-active='true']::after,
+  &[aria-current='true']::after,
+  &[aria-current='page']::after,
+  &[aria-selected='true']::after,
+  &[aria-pressed='true']::after {
+    opacity: 1;
+    animation: dither-breathe 13s ease-in-out infinite;
   }
 
   /* Neighbours never breathe in unison — without this a list pulses as one. */
-  &:nth-child(5n + 2)::before { animation-delay: -4s; }
-  &:nth-child(5n + 3)::before { animation-delay: -9s; }
-  &:nth-child(5n + 4)::before { animation-delay: -14s; }
-  &:nth-child(5n + 5)::before { animation-delay: -19s; }
+  &:nth-child(5n + 2)::after { animation-delay: -3s; }
+  &:nth-child(5n + 3)::after { animation-delay: -6s; }
+  &:nth-child(5n + 4)::after { animation-delay: -9s; }
+  &:nth-child(5n + 5)::after { animation-delay: -11s; }
 
   /* It is the MOVEMENT that is unwelcome under a reduced-motion preference,
-     not the texture — so the field holds still at full strength rather than
-     flattening, which would remove information instead of motion. */
+     not the texture — the field holds still at full strength. */
   @media (prefers-reduced-motion: reduce) {
-    &::before {
+    &::before,
+    &::after {
       animation: none;
       transition: none;
     }
@@ -655,51 +689,31 @@ kbd,
 /* The name 126 call sites already use for the HOVER case. Identical: selection
    differs by gaining a solid tile beneath, not by losing the texture. */
 /* ── The movement ────────────────────────────────────────────────────────────
-   THE DOTS NEVER MOVE. THE FIELD THAT LIGHTS THEM DOES.
+   THE SHAPE HOLDS STILL. ONLY ITS FRINGE BREATHES.
 
-   Three attempts bracket this one. Sliding the tile makes the whole pattern
-   visibly scroll across the control, which reads as the texture coming loose
-   from the thing it belongs to. Cross-fading two copies is worse in a subtler
-   way: with only two states the eye locks onto the cycle and it becomes a glow
-   blinking between two stamps. Adding a second density blob and compositing
-   three mask layers lost the tile altogether — `mask-composite` and its
-   `-webkit-` spelling do not describe the same operation, so the intersection
-   silently stopped happening and the control wore a smooth grey blob.
+   Four attempts bracket this one, and the last was the instructive failure.
+   Sliding the tile scrolls the pattern across the control. Cross-fading two
+   copies blinks between two stamps. Compositing a third mask layer lost the
+   tile and left a smooth blob. And animating the density envelope's POSITION —
+   which is what "morph it like the canvas did" naively becomes — walks the
+   dense part of the field off the control entirely, so a highlight reads as a
+   cloud drifting past a button.
 
-   So: TWO layers, which is the arrangement known to composite correctly, and
-   the movement lives in the density layer alone. It wanders and swells over a
-   long cycle; the lattice underneath never shifts by a pixel. What changes is
-   which dots survive, which is exactly what the canvas fields did. */
-@keyframes dither-morph {
-  0% {
-    -webkit-mask-position: 0 0, 18% 28%;
-    mask-position: 0 0, 18% 28%;
-    -webkit-mask-size: 64px 64px, 190% 190%;
-    mask-size: 64px 64px, 190% 190%;
+   The canvas got away with a wandering field because it covered a whole pane,
+   where there is room for weather. A 30px row is not a pane. Here the shape
+   has to stay exactly where it is — a band hugging the border, concentric,
+   the same on every side — and the life has to come from the only thing that
+   can change without moving it: how far the band reaches. Scaling the density
+   layer about its own centre keeps it symmetrical and lets the dots at the
+   fringe wink in and out, which is liveliness without drift. */
+@keyframes dither-breathe {
+  0%, 100% {
+    -webkit-mask-size: 64px 64px, 94% 94%;
+    mask-size: 64px 64px, 94% 94%;
   }
-  30% {
-    -webkit-mask-position: 0 0, 74% 12%;
-    mask-position: 0 0, 74% 12%;
-    -webkit-mask-size: 64px 64px, 240% 210%;
-    mask-size: 64px 64px, 240% 210%;
-  }
-  58% {
-    -webkit-mask-position: 0 0, 86% 82%;
-    mask-position: 0 0, 86% 82%;
-    -webkit-mask-size: 64px 64px, 175% 260%;
-    mask-size: 64px 64px, 175% 260%;
-  }
-  81% {
-    -webkit-mask-position: 0 0, 26% 88%;
-    mask-position: 0 0, 26% 88%;
-    -webkit-mask-size: 64px 64px, 225% 185%;
-    mask-size: 64px 64px, 225% 185%;
-  }
-  100% {
-    -webkit-mask-position: 0 0, 18% 28%;
-    mask-position: 0 0, 18% 28%;
-    -webkit-mask-size: 64px 64px, 190% 190%;
-    mask-size: 64px 64px, 190% 190%;
+  50% {
+    -webkit-mask-size: 64px 64px, 112% 112%;
+    mask-size: 64px 64px, 112% 112%;
   }
 }
 
@@ -715,49 +729,25 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: var(--theme-border-strong);
-    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.78) 58%, rgb(0 0 0 / 0) 100%);
-    mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.78) 58%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: 64px 64px, 190% 190%;
-    mask-size: 64px 64px, 190% 190%;
-    -webkit-mask-position: 0 0, 18% 28%;
-    mask-position: 0 0, 18% 28%;
+    -webkit-mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
+    mask-image: var(--dither-tile), radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.72) 44%, rgb(0 0 0 / 0) 86%);
+    -webkit-mask-size: 64px 64px, 100% 100%;
+    mask-size: 64px 64px, 100% 100%;
+    -webkit-mask-position: 0 0, center;
+    mask-position: 0 0, center;
     -webkit-mask-composite: source-in;
     mask-composite: intersect;
     opacity: 0;
     transition: opacity 180ms ease;
   }
 
-  /* Hover and keyboard focus reach the control the same way. A hover is a
-     state arriving, so it shows the field without setting it in motion. */
   &:hover::before,
   &:focus-visible::before {
     opacity: 1;
   }
 
-  &[data-status='active']::before,
-  &[data-active='true']::before,
-  &[aria-current='true']::before,
-  &[aria-current='page']::before,
-  &[aria-selected='true']::before,
-  &[aria-pressed='true']::before {
-    opacity: 1;
-    animation: dither-morph 23s ease-in-out infinite;
-  }
-
-  /* Neighbours never breathe in unison — without this a list pulses as one. */
-  &:nth-child(5n + 2)::before { animation-delay: -4s; }
-  &:nth-child(5n + 3)::before { animation-delay: -9s; }
-  &:nth-child(5n + 4)::before { animation-delay: -14s; }
-  &:nth-child(5n + 5)::before { animation-delay: -19s; }
-
-  /* It is the MOVEMENT that is unwelcome under a reduced-motion preference,
-     not the texture — so the field holds still at full strength rather than
-     flattening, which would remove information instead of motion. */
   @media (prefers-reduced-motion: reduce) {
-    &::before {
-      animation: none;
-      transition: none;
-    }
+    &::before { transition: none; }
   }
 }
 
