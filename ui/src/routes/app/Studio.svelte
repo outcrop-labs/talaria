@@ -14,7 +14,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import WorkflowDetail from '@/components/workflows/WorkflowDetail.svelte'
-  import StudioSkillEditor from '@/components/workflows/StudioSkillEditor.svelte'
+  import SkillEditor from '@/components/skills/SkillEditor.svelte'
   import StudioGuide, { type GuidePrefill } from '@/components/workflows/StudioGuide.svelte'
   import { cn } from '@/lib/cn'
   import { staggerIn } from '@/lib/motion'
@@ -385,12 +385,13 @@
 
     <!-- Overlays -->
     {#if skOwner && skName && skOwnerInfo}
-      <StudioSkillEditor
+      <SkillEditor
         owner={skOwner}
         ownerLabel={skOwnerInfo.label}
         name={skName}
         canEdit={skOwnerInfo.canEdit && (!skOwnerInfo.skills.find((x) => x.name === skName)?.platform || isAdmin)}
         onClose={closeOverlay}
+        onChanged={() => void qc.invalidateQueries({ queryKey: ['skill-library'] })}
       />
     {/if}
     {#if openWorkflow}
