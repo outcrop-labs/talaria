@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { untrack } from 'svelte'
   import { ArrowDown, ArrowUp, Share2, Upload } from '@lucide/svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
@@ -384,9 +385,9 @@
         </a>
       {/if}
       <DangerLink onClick={() => void removeSelection()}>Delete</DangerLink>
-      <button type="button" onclick={clear} class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
+      <Button variant="ghost" size="xs" class="ml-auto" onclick={clear}>
         Clear
-      </button>
+      </Button>
     </div>
   {/if}
 

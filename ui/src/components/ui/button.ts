@@ -1,6 +1,24 @@
 import { cn } from '@/lib/cn'
 import { controlSizes, focusRing, type ControlSize } from './control'
 
+/**
+ * Button sizes: the shared control scale, plus one of its own.
+ *
+ * `xs` is NOT in `ControlSize`, deliberately. That union is the ROW-ALIGNMENT
+ * contract — Button, Input, Select and Combobox all draw their height from it
+ * so controls on one line agree — and an xs button does not belong on a form
+ * row. It is the compact chrome affordance: the 10px mono label in a toolbar,
+ * a tree header, a panel corner.
+ *
+ * It exists because the app had already invented it 58 times. A census of raw
+ * `<button>` elements that re-roll this primitive found 58 of 62 using
+ * `text-[10px]` with `px-2`, against a primitive whose smallest was
+ * `text-[11px] px-3`. People do not hand-roll a shared component for fun; they
+ * do it when it cannot say what they need. This is the missing size, so those
+ * call sites can come home.
+ */
+export type ButtonSize = ControlSize | 'xs'
+
 export type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger' | 'danger-outline' | 'accent-soft' | 'link'
 
 const base = cn(
@@ -43,14 +61,17 @@ const variants: Record<ButtonVariant, string> = {
   ),
 }
 
-const sizes: Record<ControlSize, string> = {
+const sizes: Record<ButtonSize, string> = {
+  // Height set directly rather than from `controlSizes`, because this size is
+  // deliberately not part of that scale.
+  xs: 'h-6 px-2 text-[10px]',
   sm: `${controlSizes.sm} px-3 text-[11px]`,
   md: `${controlSizes.md} px-4 text-[11px]`,
 }
 
 /** Shared button styling — reuse this on <a>/<label> etc. so links match buttons
  *  without duplicating the classes (see the Google sign-in anchor). */
-export function buttonClasses(opts?: { variant?: ButtonVariant; size?: ControlSize; className?: string | null }): string {
+export function buttonClasses(opts?: { variant?: ButtonVariant; size?: ButtonSize; className?: string | null }): string {
   const { variant = 'primary', size = 'md', className } = opts ?? {}
   // Variant AFTER size so `link` can restore the sans prose voice.
   return cn(base, sizes[size], variants[variant], className)

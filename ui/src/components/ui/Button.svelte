@@ -1,13 +1,12 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
   import DitherLayer, { bleedFor, rectIn, type RectShape } from './DitherLayer.svelte'
-  import { buttonClasses, splitLayoutClasses, type ButtonVariant } from './button'
-  import type { ControlSize } from './control'
+  import { buttonClasses, splitLayoutClasses, type ButtonSize, type ButtonVariant } from './button'
   import type { DitherSource, DitherTone } from '@/lib/dither'
 
   interface Props extends HTMLButtonAttributes {
     variant?: ButtonVariant
-    size?: ControlSize
+    size?: ButtonSize
     /** bind:ref for imperative focus/measure at call sites that need it. */
     ref?: HTMLButtonElement | null
     /**

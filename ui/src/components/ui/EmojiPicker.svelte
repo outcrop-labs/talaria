@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import Button from '@/components/ui/Button.svelte'
   // A full, searchable emoji picker. The ~1900-emoji dataset (@emoji-mart/data) is
   // lazy-loaded on first open so it never weighs down the initial bundle. Renders
   // as a click-away popover (§7 popover shell); the caller positions the trigger.
@@ -141,12 +142,8 @@
     {/if}
   </div>
   {#if onClear}
-    <button
-      type="button"
-      onclick={onClear}
-      class="mt-1 w-full rounded-md py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
-    >
+    <Button variant="ghost" size="xs" class="mt-1 w-full py-1" onclick={onClear}>
       Remove icon
-    </button>
+    </Button>
   {/if}
 </div>

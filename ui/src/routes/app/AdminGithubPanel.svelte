@@ -116,9 +116,9 @@
           <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
           <span class="text-fg">Connected{status.account ? ` as ${status.account}` : ''}</span>
           <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">via {status.mode === 'app' ? 'GitHub App' : 'access token'}</span>
-          <button type="button" onclick={() => void disconnect()} class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
+          <Button variant="ghost" size="xs" class="ml-auto hover:text-danger" onclick={() => void disconnect()}>
             Disconnect
-          </button>
+          </Button>
         </div>
       {:else}
         <div class="flex items-center gap-2 text-sm">

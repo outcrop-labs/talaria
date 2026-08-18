@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { CheckCircle2, CornerDownRight, MessageSquareText } from '@lucide/svelte'
   import CloseButton from '@/components/ui/CloseButton.svelte'
@@ -131,19 +132,16 @@
           class="min-h-0 flex-1 text-xs"
         />
       {:else}
-        <button type="button" onclick={() => (replyTo = root.id)} class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
+        <Button variant="ghost" size="xs" onclick={() => (replyTo = root.id)}>
           Reply
-        </button>
+        </Button>
       {/if}
       {#if root.authorUserId === meId || docOwnerId === meId}
-        <button
-          type="button"
-          onclick={() => void setResolved(root.id, !root.resolved)}
-          class="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-success"
-          title={root.resolved ? 'Reopen this thread' : 'Resolve this thread'}
-        >
+        <Button variant="ghost" size="xs" class="ml-auto gap-1 hover:text-success" onclick={() => void setResolved(root.id, !root.resolved)}
+          
+          title={root.resolved ? 'Reopen this thread' : 'Resolve this thread'}>
           <CheckCircle2 size={12} /> {root.resolved ? 'Reopen' : 'Resolve'}
-        </button>
+        </Button>
       {/if}
     </div>
   </div>
@@ -162,9 +160,9 @@
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Comments</span>
     <span class="flex-1"></span>
     {#if resolved.length > 0}
-      <button type="button" onclick={() => (showResolved = !showResolved)} class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
+      <Button variant="ghost" size="xs" onclick={() => (showResolved = !showResolved)}>
         {showResolved ? 'Hide resolved' : `Resolved (${resolved.length})`}
-      </button>
+      </Button>
     {/if}
     <CloseButton onClick={onClose} size={13} class="h-6 w-6 rounded p-0" />
   </div>

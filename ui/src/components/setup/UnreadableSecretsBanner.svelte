@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import Button from '@/components/ui/Button.svelte'
   // ── Unreadable secrets ───────────────────────────────────────────────────────
   // One of the setup bumps — the family doctrine ("nothing blocks; bumps render
   // only on RESOLVED gaps and say what the gap costs") lives in NoModelBump.svelte.
@@ -59,14 +60,10 @@
     >
       Review secrets
     </a>
-    <button
-      type="button"
-      onclick={dismiss}
-      class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim transition-colors hover:text-fg"
-    >
+    <Button variant="ghost" size="xs" class="shrink-0 text-ink-dim" onclick={dismiss}>
       <!-- Dismissible on purpose: this is a state to fix, not a modal to fight.
            An operator mid-recovery should not have to argue with the banner. -->
       Dismiss
-    </button>
+    </Button>
   </div>
 {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
 
   let { onAdd }: { onAdd: (title: string) => void } = $props()
@@ -17,13 +18,9 @@
 </script>
 
 {#if !open}
-  <button
-    type="button"
-    onclick={() => (open = true)}
-    class="w-full rounded-md px-2 py-1.5 text-left font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
-  >
+  <Button variant="ghost" size="xs" class="w-full py-1.5 text-left hover:bg-hover" onclick={() => (open = true)}>
     + Add card
-  </button>
+  </Button>
 {:else}
   <Input
     autofocus

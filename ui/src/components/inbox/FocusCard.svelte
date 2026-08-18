@@ -100,9 +100,9 @@
         <Clock3 size={12} />
       </button>
     </div>
-    <button type="button" onclick={onSkip} disabled={!canSkip || busyAction !== null} class="ml-auto flex h-8 items-center gap-1.5 px-2 font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:text-fg disabled:opacity-40">
+    <Button variant="ghost" size="xs" class="ml-auto h-8 gap-1.5 disabled:opacity-40" onclick={onSkip} disabled={!canSkip || busyAction !== null}>
       Skip <ChevronRight size={12} />
-    </button>
+    </Button>
   </div>
   <div class="mt-2 flex gap-4 font-mono text-[9px] uppercase tracking-[0.06em] text-ink-dim">
     <span>A · Primary</span><span>O · Open</span><span>S · Snooze</span>

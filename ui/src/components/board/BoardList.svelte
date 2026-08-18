@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
@@ -563,13 +564,13 @@
             {/snippet}
           </DropdownMenu>
           {#if me}
-            <button onclick={() => void bulk({ assignToMe: true })} class="rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg">
+            <Button variant="ghost" size="xs" class="py-1 hover:bg-hover" onclick={() => void bulk({ assignToMe: true })}>
               Assign to me
-            </button>
+            </Button>
           {/if}
-          <button onclick={() => void bulk({ archive: true })} class="rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-danger">
+          <Button variant="ghost" size="xs" class="py-1 hover:bg-hover hover:text-danger" onclick={() => void bulk({ archive: true })}>
             Archive
-          </button>
+          </Button>
           <button onclick={() => (sel = new Set())} title="Clear selection" class="rounded-md px-1.5 py-1 font-mono text-[10px] text-muted transition-colors hover:text-fg">
             ✕
           </button>

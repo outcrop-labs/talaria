@@ -270,14 +270,11 @@
         </div>
       {/if}
       {#if doc.okf}
-        <button
-          type="button"
-          onclick={() => (okfOpen = true)}
-          class="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:bg-accent/20"
-          title="This promoted document carries an agent-facing OKF summary, maintained by the Librarian. Click to view."
-        >
+        <Button variant="ghost" size="xs" class="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 text-accent hover:bg-accent/20" onclick={() => (okfOpen = true)}
+          
+          title="This promoted document carries an agent-facing OKF summary, maintained by the Librarian. Click to view.">
           OKF
-        </button>
+        </Button>
       {/if}
       {#if presenceList.notice}<QueryError {...presenceList.notice} />{/if}
       <!-- Who's here: green ring = editing right now. -->
@@ -331,18 +328,14 @@
         <KbVisibilityIcon v={doc.visibility} /> <span class="ml-1.5 capitalize">{doc.visibility}</span>
       </Button>
       {#if doc.official}
-        <button
-          type="button"
-          class="flex shrink-0 items-center gap-1 rounded-md border border-warning/50 bg-warning/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-warning transition-colors hover:bg-warning/20"
-          title="Official — grounds every agent via the org brain. Click to demote (double confirm)."
+        <Button variant="ghost" size="xs" class="shrink-0 gap-1 border border-warning/50 bg-warning/10 px-2.5 py-1 text-warning hover:bg-warning/20" title="Official — grounds every agent via the org brain. Click to demote (double confirm)."
           onclick={async () => {
             if (!(await confirm({ title: 'Demote from official?', message: `“${doc.title}” currently grounds every agent through the org brain. Demoting removes it from retrieval.`, confirmLabel: 'Continue' }))) return
             if (!(await confirm({ title: 'Really demote?', message: 'Agents stop grounding on this document immediately. This is the final confirmation.', confirmLabel: 'Demote', danger: true }))) return
             void save({ official: false })
-          }}
-        >
+          }}>
           <Star size={12} fill="currentColor" /> Official
-        </button>
+        </Button>
       {:else}
         <Button
           variant="ghost"

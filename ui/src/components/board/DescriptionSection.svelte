@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { Maximize2, ChevronLeft } from '@lucide/svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
@@ -108,12 +109,9 @@
       transition:fly={{ x: '100%', duration: 200 }}
     >
       <div class="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
-        <button
-          onclick={() => (reading = false)}
-          class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
-        >
+        <Button variant="ghost" size="xs" class="gap-1 py-1 hover:bg-hover" onclick={() => (reading = false)}>
           <ChevronLeft size={14} /> Back
-        </button>
+        </Button>
         <div class="min-w-0 flex-1 truncate text-center font-sans text-sm font-semibold text-fg">{title}</div>
         <div class="flex w-[4.5rem] justify-end">
           {@render modeToggle()}

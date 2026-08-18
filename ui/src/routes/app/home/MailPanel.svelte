@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { Mail, Send } from '@lucide/svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
@@ -50,13 +51,9 @@
       <Mail size={14} class="text-ink-dim" />
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mail</span>
       <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Gmail</span>
-      <button
-        type="button"
-        onclick={() => (composing = true)}
-        class="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:underline"
-      >
+      <Button variant="ghost" size="xs" class="ml-auto gap-1 text-accent hover:underline" onclick={() => (composing = true)}>
         <Send size={12} /> Compose
-      </button>
+      </Button>
     </div>
 
     {#if messages.length === 0}

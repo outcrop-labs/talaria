@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { CalendarDays, ExternalLink, Plus } from '@lucide/svelte'
   import Panel from '@/components/ui/Panel.svelte'
@@ -48,13 +49,9 @@
       <CalendarDays size={14} class="text-ink-dim" />
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agenda</span>
       <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Google Calendar</span>
-      <button
-        type="button"
-        onclick={() => (adding = !adding)}
-        class="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:underline"
-      >
+      <Button variant="ghost" size="xs" class="ml-auto gap-1 text-accent hover:underline" onclick={() => (adding = !adding)}>
         <Plus size={12} /> New event
-      </button>
+      </Button>
     </div>
 
     {#if adding}

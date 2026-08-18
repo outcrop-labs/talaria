@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import Select from '@/components/ui/Select.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -72,12 +73,9 @@
         </span>
         <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
         {#if m.role !== 'owner'}
-          <button
-            onclick={() => void unshareBoard(board.id, m.userId).then(refresh)}
-            class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger"
-          >
+          <Button variant="ghost" size="xs" class="hover:text-danger" onclick={() => void unshareBoard(board.id, m.userId).then(refresh)}>
             Remove
-          </button>
+          </Button>
         {/if}
       </div>
     {/each}

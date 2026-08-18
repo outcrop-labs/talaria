@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { Building2, ExternalLink, Globe, Lock, Users } from '@lucide/svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import CopyButton from '@/components/ui/CopyButton.svelte'
@@ -107,9 +108,9 @@
       <div class="py-2.5">
         <div class="mb-1.5 flex items-center gap-2">
           <span class="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Sharing</span>
-          <button type="button" onclick={onManageAccess} class="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
+          <Button variant="ghost" size="xs" class="ml-auto gap-1" onclick={onManageAccess}>
             <Users size={11} /> Manage access
-          </button>
+          </Button>
         </div>
         <div class="rounded-xl border border-line-subtle bg-surface p-3">
           <div class="flex items-start gap-2.5">

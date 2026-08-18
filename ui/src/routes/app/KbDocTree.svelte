@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import { Bot, Plus } from '@lucide/svelte'
   import { moveDoc, type KbDocMeta } from '@/lib/kb'
   import KbDocRow from './KbDocRow.svelte'
@@ -87,11 +88,11 @@
   {/each}
   <!-- Ghost actions (§8): mono uppercase, muted → readout. -->
   <div class="flex gap-1 pt-1">
-    <button type="button" onclick={() => onNew('human')} class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
+    <Button variant="ghost" size="xs" class="gap-1 py-1" onclick={() => onNew('human')}>
       <Plus size={11} /> Doc
-    </button>
-    <button type="button" onclick={() => onNew('agent')} class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg" title="OKF-structured for agents">
+    </Button>
+    <Button variant="ghost" size="xs" class="gap-1 py-1" onclick={() => onNew('agent')}  title="OKF-structured for agents">
       <Bot size={11} /> Agent doc
-    </button>
+    </Button>
   </div>
 </div>
