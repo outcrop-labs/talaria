@@ -4,7 +4,7 @@
   import { Gauge, Trash2 } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Rail from '@/components/app/Rail.svelte'
   import Stage from '@/components/app/Stage.svelte'
@@ -138,12 +138,13 @@
       {#snippet skeleton(i)}
         <div aria-hidden="true" class="rounded-md px-2 py-1.5">
           <div class="flex h-5 items-center gap-2">
-            <Skeleton class="h-1.5 w-1.5 shrink-0 rounded-full" delay={i * 0.12} />
-            <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-11/12', 'w-1/2', 'w-2/3'][i % 5]}`} delay={i * 0.12} />
+            <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
+            <div class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></div>
+            <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-11/12', 'w-1/2', 'w-2/3'][i % 5]}`} />
           </div>
           <div class="mt-0.5 flex h-4 items-center gap-2 pl-3.5">
-            <Skeleton class="h-3 w-12 rounded" delay={i * 0.12 + 0.06} />
-            <Skeleton class="h-2.5 w-16 rounded-full" delay={i * 0.12 + 0.1} />
+            <Skeleton class="h-3 w-12 rounded" />
+            <Skeleton class="h-2.5 w-16 rounded-full" />
           </div>
         </div>
       {/snippet}
@@ -211,7 +212,7 @@
         {#if selectedId}
           <RunView runId={selectedId} />
         {:else}
-          <div class="grid h-full place-items-center p-8">
+          <div class="grid h-full place-items-center">
             <EmptyState
               icon="◎"
               title="Research"
@@ -267,7 +268,7 @@
               }))}
             />
             {#if starting}
-              <span class="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><GeneratingDots /></span>
+              <span class="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
             {/if}
           </div>
           {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}

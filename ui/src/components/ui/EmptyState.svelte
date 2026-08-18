@@ -68,7 +68,14 @@
        still inset by exactly as much as before; it is the field that grew. -->
   <div
     class={cn(
-      variant === 'full' ? 'grid h-full place-items-center' : '',
+      // `h-full` is `height: 100%`, which resolves against the parent ONLY if
+      // the parent has a definite height — otherwise it computes to `auto` and
+      // the zero state collapses to the height of its own three lines, taking
+      // the vignette with it. That is most containers: a Panel, a branch of an
+      // `{#if}` inside an auto-height column. `min-h-48` is the floor that
+      // makes `full` read as a region it owns wherever it lands, and `h-full`
+      // still fills a container that does have a height.
+      variant === 'full' ? 'grid h-full min-h-48 place-items-center' : '',
       'text-center',
       wantsVignette && 'relative overflow-hidden',
       className,

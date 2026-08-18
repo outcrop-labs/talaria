@@ -300,7 +300,8 @@
                 action={selected.canEdit ? addSkillAction : undefined}
               />
               {#if selected.skills.length === 0 && (selected.owner === 'shared' || sharedSkills.size === 0)}
-                <Panel>
+                <!-- p-0 — the zero state fills this box; see Agents.svelte. -->
+                <Panel class="p-0">
                   <EmptyState
                     icon="✦"
                     title="Nothing yet"
