@@ -56,7 +56,13 @@
      *  role library). That difference belongs to the caller; the control does
      *  not change shape for it. */
     onCreate?: (name: string) => void | Promise<void>
-    /** Names the thing, not the act: "New template", not "Add". */
+    /** The create control's TOOLTIP and ACCESSIBLE NAME — not visible text.
+     *
+     *  The button itself is a bare `+`, because the footer of a library
+     *  already says what a new one would be and spelling it out tells the
+     *  reader what they can see. The name is a different audience: a screen
+     *  reader gets no help from placement, so this one SHOULD be specific.
+     *  Terse on screen, precise in the accessibility tree. */
     createLabel?: string
     createPlaceholder?: string
     /** Row body override, for rows that need more than a name. */
@@ -117,7 +123,7 @@
     class: className,
     onCreate,
     createLabel = 'New',
-    createPlaceholder,
+    createPlaceholder = 'Name',
     row,
     rowAction,
     detail,
@@ -203,9 +209,14 @@
 
     {#if onCreate}
       <div class="shrink-0 border-t border-line px-3 py-3">
+        <!-- A bare `+`, left-aligned. The footer of a library already says
+             what a new one would be; a button that spells it out is telling
+             the reader something they can see. The label survives as the
+             tooltip and the accessible name. -->
         <InlineCreate
+          icon
           label={createLabel}
-          placeholder={createPlaceholder ?? createLabel}
+          placeholder={createPlaceholder}
           onSubmit={(name) => void onCreate(name)}
         />
       </div>

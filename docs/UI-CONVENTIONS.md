@@ -38,13 +38,14 @@ nothing-selected pane. Callers bring data and snippets.
 - **Feed it `listQuery`.** It takes `pending` and `notice`, not a raw query, so
   "the read failed" arrives already shaped and cannot be dropped on the way in.
 - **Creation belongs to the pane.** Pass `onCreate` (plus `createLabel`) and
-  the pane renders the one shared control — `InlineCreate`, in the picker
-  footer. Do not hand-roll a create field: there were three of them across
-  three views (a raw Input+Button under the list, an `InlineCreate`, and a bare
-  `+` in the header opening an empty form), in three positions, and only one
-  said what it would create. The caller receives a trimmed, non-empty name and
-  decides what a record made of it is — a saved row, or an unsaved draft in the
-  editor. That difference is the caller's; the control does not change shape.
+  the pane renders the one shared control — `InlineCreate` in `icon` mode, a
+  bare left-aligned `+` in the picker footer that expands into an input. Do not
+  hand-roll a create field: there were three of them across three views (a raw
+  Input+Button under the list, an `InlineCreate`, and a `+` in the header
+  opening an empty form), in three positions. The caller receives a trimmed,
+  non-empty name and decides what a record made of it is — a saved row, or an
+  unsaved draft in the editor. That difference is the caller's; the control
+  does not change shape.
 - **`bare` inside a dialog.** The Modal is already a surface; a Panel within a
   Panel is a border inside a border with the padding twice. For the same reason
   a detail component rendered into the pane must not wrap itself in a `Panel`.
@@ -65,6 +66,21 @@ picks *who you are building for* beside a full authoring workspace, so it wants
 page-scroll workspace in a fixed-height panel and break its stagger contract.
 
 ## Controls — fewer, smaller, closer
+
+- **Do not label what placement already says.** A button in the footer of the
+  Roles library does not read "New role", and one on the Tickets tab of
+  Templates does not read "New ticket template" — the reader is standing in the
+  thing. It is a `+`. The house form is `<IconButton title="…">`, or
+  `<InlineCreate icon>` where the create expands into a field.
+
+  The exception is a page's one or two genuinely primary actions, and anything
+  destructive or deploying, which stay labeled.
+
+  **This is about VISIBLE text only.** The tooltip and accessible name go the
+  other way and should be specific — "New role", not "New" — because a screen
+  reader gets none of the context that placement gives everyone else. `title` on
+  `IconButton` is required for exactly this reason, and it sets `aria-label`
+  too. Terse on screen, precise in the accessibility tree.
 
 - **Icon buttons with tooltips** (`<IconButton title="…">`) for every action
   whose verb is implied by placement: rail-header "new", surface-header

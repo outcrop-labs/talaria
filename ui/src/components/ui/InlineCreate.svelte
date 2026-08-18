@@ -2,10 +2,11 @@
   import { Plus, CornerDownLeft } from '@lucide/svelte'
   import { scale } from '@/lib/motion'
   import Button from './Button.svelte'
+  import IconButton from './IconButton.svelte'
   import Input from './Input.svelte'
 
-  // A primary "+ <label>" button that expands into a full-width input. Enter (or
-  // blur) submits, Escape cancels. Reuse anywhere you want an unobtrusive create
+  // A "+" affordance that expands into a full-width input. Enter (or blur)
+  // submits, Escape cancels. Reuse anywhere you want an unobtrusive create
   // affordance that only takes space while in use.
   let {
     label,
@@ -13,12 +14,21 @@
     onSubmit,
     class: className,
     size = 'sm',
+    icon = false,
   }: {
+    /** The accessible name and tooltip. Still required when `icon` — a bare
+     *  glyph with no name is unreachable by a screen reader, and it is the
+     *  cheapest label in the app to get right. */
     label: string
     placeholder?: string
     onSubmit: (value: string) => void
     class?: string
     size?: 'sm' | 'md'
+    /** Collapse to a bare `+`, which is the house default wherever placement
+     *  already says what is being made — the footer of a library of roles does
+     *  not need a button that reads "New role". A labeled Button is for a
+     *  page's one or two primary actions. */
+    icon?: boolean
   } = $props()
 
   let open = $state(false)
@@ -37,10 +47,16 @@
 
 {#if !open}
   <div class={className}>
-    <Button {size} onclick={() => (open = true)}>
-      <Plus size={size === 'sm' ? 15 : 17} />
-      {label}
-    </Button>
+    {#if icon}
+      <IconButton title={label} size="sm" onclick={() => (open = true)}>
+        <Plus size={15} />
+      </IconButton>
+    {:else}
+      <Button {size} onclick={() => (open = true)}>
+        <Plus size={size === 'sm' ? 15 : 17} />
+        {label}
+      </Button>
+    {/if}
   </div>
 {:else}
   <!-- The React version grew from the left (scaleX 0.55 → 1); svelte's scale is
