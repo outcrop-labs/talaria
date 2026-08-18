@@ -636,6 +636,13 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
+    background-image: linear-gradient(
+      115deg,
+      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 0%,
+      var(--theme-border-strong) 50%,
+      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 100%
+    );
+    background-size: 200% 100%;
     -webkit-mask-image: var(--dither-tile),
       linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%),
       linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
@@ -666,6 +673,7 @@ kbd,
     /* Eased back on purpose: this sits on a solid tile, so it should read as
        texture IN that surface rather than as a second surface over it. */
     opacity: 0.55;
+    animation: dither-drift-light 44s linear infinite;
   }
 
   &::after {
@@ -689,7 +697,7 @@ kbd,
     mask-position: 0 0, center, center;
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
-    animation: dither-edge-in 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms both;
+    animation: dither-edge-in 460ms cubic-bezier(0.4, 0, 0.2, 1) 60ms both;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -720,6 +728,13 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
+    background-image: linear-gradient(
+      115deg,
+      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 0%,
+      var(--theme-border-strong) 50%,
+      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 100%
+    );
+    background-size: 200% 100%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
       radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
@@ -753,6 +768,7 @@ kbd,
        the part that looks like materialising. */
     /* Long enough to watch the centre arrive before the edges do. */
     transition: opacity 380ms cubic-bezier(0.33, 0, 0.2, 1);
+    animation: dither-drift-light 44s linear infinite;
   }
 
   &::after {
@@ -762,7 +778,7 @@ kbd,
     z-index: -1;
     border-radius: calc(var(--dither-radius) + var(--dither-offset));
     pointer-events: none;
-    border: 0 solid color-mix(in oklab, var(--theme-accent) 30%, transparent);
+    border: var(--dither-band) solid color-mix(in oklab, var(--theme-accent) 22%, transparent);
     /* THE BAND'S OUTER RANK FADES. A border ends flush, which on a dot field
        reads as a hard dotted rule drawn around the control rather than as a
        field the control is sitting in. Two fades tight to the box edges dim
@@ -780,13 +796,16 @@ kbd,
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
     opacity: 0;
-    /* Dull to full, ONCE. This pulsed between the two on a loop, which reads
-       as a glow rather than as a mark — a selected thing should announce
-       itself and then be still. */
+    /* DULL TO FULL, ONCE, AND NOTHING MOVES WHILE IT DOES.
+       The width used to grow from nothing, which meant the band's edge swept
+       outward across the tile and switched on a row of dots at a time — the
+       last of them landing right at the end, which is what popped. Geometry
+       cannot cross a lattice smoothly; only colour can. So the band sits at
+       its full width from the start and merely dull, and what travels is the
+       accent. */
     transition:
       opacity 140ms ease 80ms,
-      border-width 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms,
-      border-color 500ms cubic-bezier(0.4, 0, 0.2, 1) 80ms;
+      border-color 460ms cubic-bezier(0.4, 0, 0.2, 1) 60ms;
   }
 
   &:hover::before,
@@ -812,7 +831,6 @@ kbd,
   &[aria-selected='true']::after,
   &[aria-pressed='true']::after {
     opacity: 1;
-    border-width: var(--dither-band);
     border-color: var(--theme-accent);
   }
 
@@ -827,14 +845,21 @@ kbd,
    differs by gaining a solid tile beneath, not by losing the texture. */
 
 @keyframes dither-edge-in {
-  from {
-    border-width: 0;
-    border-color: color-mix(in oklab, var(--theme-accent) 30%, transparent);
-  }
-  to {
-    border-width: var(--dither-band);
-    border-color: var(--theme-accent);
-  }
+  from { border-color: color-mix(in oklab, var(--theme-accent) 22%, transparent); }
+  to { border-color: var(--theme-accent); }
+}
+
+/* ── The drift ───────────────────────────────────────────────────────────────
+   A WHISPER OF LIFE UNDER THE LATTICE, and no more than that.
+
+   The dots never move: a fixed mask cuts them, and underneath a very shallow
+   gradient of the same colour drifts across. What changes is how lit each dot
+   is, by about a tenth, over most of a minute. Louder than this and it becomes
+   a band you can watch crossing the control — which is what it was, and why
+   the quieter version was the better one to come back to. */
+@keyframes dither-drift-light {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
 }
 
 @utility dither-fill {
@@ -849,6 +874,13 @@ kbd,
     border-radius: inherit;
     pointer-events: none;
     background-color: color-mix(in oklab, var(--theme-border-strong) 45%, transparent);
+    background-image: linear-gradient(
+      115deg,
+      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 0%,
+      var(--theme-border-strong) 50%,
+      color-mix(in oklab, var(--theme-border-strong) 91%, transparent) 100%
+    );
+    background-size: 200% 100%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
       radial-gradient(circle at center, #000 0%, rgb(0 0 0 / 0.55) 45%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%),
@@ -882,6 +914,7 @@ kbd,
        the part that looks like materialising. */
     /* Long enough to watch the centre arrive before the edges do. */
     transition: opacity 380ms cubic-bezier(0.33, 0, 0.2, 1);
+    animation: dither-drift-light 44s linear infinite;
   }
 
   &:hover::before,
