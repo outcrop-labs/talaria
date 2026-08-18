@@ -778,7 +778,7 @@ kbd,
     z-index: -1;
     border-radius: calc(var(--dither-radius) + var(--dither-offset));
     pointer-events: none;
-    border: var(--dither-band) solid color-mix(in oklab, var(--theme-accent) 22%, transparent);
+    border: 1px solid color-mix(in oklab, var(--theme-accent) 22%, transparent);
     /* THE BAND'S OUTER RANK FADES. A border ends flush, which on a dot field
        reads as a hard dotted rule drawn around the control rather than as a
        field the control is sitting in. Two fades tight to the box edges dim
@@ -796,15 +796,20 @@ kbd,
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
     opacity: 0;
-    /* DULL TO FULL, ONCE, AND NOTHING MOVES WHILE IT DOES.
-       The width used to grow from nothing, which meant the band's edge swept
-       outward across the tile and switched on a row of dots at a time — the
-       last of them landing right at the end, which is what popped. Geometry
-       cannot cross a lattice smoothly; only colour can. So the band sits at
-       its full width from the start and merely dull, and what travels is the
-       accent. */
+    /* THE BAND GROWS, AND THE POP WAS THE CURVE, NOT THE GROWTH.
+       A border sweeping outward crosses the tile a ROW OF DOTS AT A TIME, and
+       each row is a discrete event. That is unavoidable — but it is only
+       VISIBLE when a row lands at a moment when nothing else is moving, and a
+       decelerating curve arranges exactly that: the last row arrived during
+       the long crawl at the end, in its own silence, so it read as a pop
+       rather than as the last step of a motion.
+       A near-linear curve keeps the edge travelling until it stops, so every
+       row lands mid-movement. Starting at 1px rather than 0 removes one of
+       the two events outright — at a 4px band on a 2px lattice there are only
+       ever two — and the colour travels alongside on the same clock. */
     transition:
       opacity 140ms ease 80ms,
+      border-width 420ms cubic-bezier(0.35, 0.15, 0.55, 1) 60ms,
       border-color 460ms cubic-bezier(0.4, 0, 0.2, 1) 60ms;
   }
 
@@ -831,6 +836,7 @@ kbd,
   &[aria-selected='true']::after,
   &[aria-pressed='true']::after {
     opacity: 1;
+    border-width: var(--dither-band);
     border-color: var(--theme-accent);
   }
 
@@ -845,8 +851,14 @@ kbd,
    differs by gaining a solid tile beneath, not by losing the texture. */
 
 @keyframes dither-edge-in {
-  from { border-color: color-mix(in oklab, var(--theme-accent) 22%, transparent); }
-  to { border-color: var(--theme-accent); }
+  from {
+    border-width: 1px;
+    border-color: color-mix(in oklab, var(--theme-accent) 22%, transparent);
+  }
+  to {
+    border-width: var(--dither-band);
+    border-color: var(--theme-accent);
+  }
 }
 
 /* ── The drift ───────────────────────────────────────────────────────────────
