@@ -48,12 +48,17 @@
   // Same rule as Button — the reach is a fraction of the tile, so a 28px
   // square gets a rim rather than a halo twice its own size.
   const BLEED = bleedFor([spreadFor(9999)])
-  const PAD = 1
+  // ZERO, deliberately. The field is strictly outside (`inner: 0`), so any pad
+  // is a ring of guaranteed emptiness between the border and the first dot —
+  // it reads as the treatment floating off the control. The radius is taken
+  // raw for the same reason: padding the rect would need padding the corner to
+  // match, and both were just pushing the field away.
+  const PAD = 0
 
   const arm = () => {
     if (!wrap || !ref) return
     rect = rectIn(wrap, ref, PAD, BLEED)
-    radius = (parseFloat(getComputedStyle(ref).borderTopLeftRadius) || 0) + PAD
+    radius = parseFloat(getComputedStyle(ref).borderTopLeftRadius) || 0
   }
   const disarm = () => (rect = null)
 

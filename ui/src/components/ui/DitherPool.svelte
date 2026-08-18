@@ -24,7 +24,7 @@
     tone = 'accent',
     spread,
     strength = 0.95,
-    pad = 2,
+    pad = 0,
     falloff,
   }: {
     key: unknown
@@ -68,7 +68,7 @@
         return
       }
       rect = rectIn(container, el, pad, bleed)
-      radius = (parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0) + pad
+      radius = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0
     }
     measure()
     const settle = window.setTimeout(measure, 230)

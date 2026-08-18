@@ -32,7 +32,7 @@
     // visible floor. Reach alone was never the problem; a wide field of
     // uniformly-lit sparse dots is the cloud. A wide field that fades is a
     // glow that Mercury is allowed to have.
-    return Math.max(8, Math.min(18, Math.round(shortSide * 0.30)))
+    return Math.max(10, Math.min(26, Math.round(shortSide * 0.42)))
   }
 
   /** The bleed a field needs so nothing is clipped: the widest reach in the

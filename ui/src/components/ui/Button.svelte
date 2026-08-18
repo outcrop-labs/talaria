@@ -67,7 +67,12 @@
    *  it is created once and the reach is only known after measuring. A button
    *  is never taller than the md size, so the ceiling of `spreadFor` bounds it. */
   const BLEED = bleedFor([spreadFor(9999)])
-  const PAD = 1
+  // ZERO, deliberately. The field is strictly outside (`inner: 0`), so any pad
+  // is a ring of guaranteed emptiness between the border and the first dot —
+  // it reads as the treatment floating off the control. The radius is taken
+  // raw for the same reason: padding the rect would need padding the corner to
+  // match, and both were just pushing the field away.
+  const PAD = 0
   /** Proportional to the control: a fixed reach makes a small button wear a
    *  cloud and lets neighbours in a toolbar merge into one. */
 
@@ -76,7 +81,7 @@
   const arm = () => {
     if (!wrap || !ref) return
     rect = rectIn(wrap, ref, PAD, BLEED)
-    radius = (parseFloat(getComputedStyle(ref).borderTopLeftRadius) || 0) + PAD
+    radius = parseFloat(getComputedStyle(ref).borderTopLeftRadius) || 0
   }
   const disarm = () => (rect = null)
 
