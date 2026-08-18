@@ -1,7 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Modal from '@/components/ui/Modal.svelte'
-  import InlineCreate from '@/components/ui/InlineCreate.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -44,16 +43,14 @@
     listWidth="w-60"
     bare
     class="min-h-[24rem]"
+    onCreate={create}
+    createLabel="New team"
   >
     {#snippet row(t: Team)}
       <span class="flex items-center justify-between gap-2">
         <span class="min-w-0 flex-1 truncate">{t.name}</span>
         <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{t.memberCount}</span>
       </span>
-    {/snippet}
-
-    {#snippet footer()}
-      <InlineCreate label="New team" placeholder="New team" onSubmit={(n) => void create(n)} />
     {/snippet}
 
     {#snippet empty()}

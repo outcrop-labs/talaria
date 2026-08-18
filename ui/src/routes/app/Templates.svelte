@@ -3,10 +3,7 @@
   import { createRawSnippet, type Snippet } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Plus } from '@lucide/svelte'
   import { navigate, route } from '@/router'
-  import Button from '@/components/ui/Button.svelte'
-  import Input from '@/components/ui/Input.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
@@ -63,7 +60,6 @@
   }
   const menu = useContextMenu()
 
-  let newName = $state('')
   let editorOpen = $state(false)
 
   const list = $derived(templates.filter((t) => t.kind === tab))
@@ -71,11 +67,10 @@
   const meta = $derived(TEMPLATE_TABS.find((t) => t.id === tab)!)
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['templates'] })
-  const create = async () => {
-    const name = newName.trim()
-    if (!name) return
+  // The pane hands over a trimmed, non-empty name; making the record out of it
+  // is this view's business, and landing on it afterwards is the point.
+  const create = async (name: string) => {
     const { template } = await createTemplate({ name, kind: tab })
-    newName = ''
     await refresh()
     if (template) select(template.id)
   }
@@ -139,16 +134,9 @@
               { label: 'Delete', danger: true, onSelect: () => void remove(t) },
             ])}
           class="h-full"
+          onCreate={create}
+          createLabel={`New ${tab} template`}
         >
-          {#snippet footer()}
-            <div class="flex items-center gap-1.5">
-              <Input size="sm" bind:value={newName} placeholder={`New ${tab} template`} onkeydown={(e) => e.key === 'Enter' && void create()} />
-              <Button size="sm" variant="outline" disabled={!newName.trim()} onclick={() => void create()}>
-                <Plus size={14} />
-              </Button>
-            </div>
-          {/snippet}
-
           {#snippet empty()}
             <!-- "Create the first one" is the same zero-claim in prose. -->
             <EmptyState

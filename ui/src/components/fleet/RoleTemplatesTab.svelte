@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Plus, Trash2 } from '@lucide/svelte'
+  import { Trash2 } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -52,10 +52,30 @@
     draft = { slug: t.slug, name: t.name, role: t.role, department: t.department, description: t.description, soul: t.soul }
   }
 
-  const blank = () => {
+  /** The slug a name implies. Editable in the form afterwards — this only has
+   *  to be a good default, and a role called "Research Analyst" wanting to be
+   *  `research-analyst` is not a guess. */
+  const slugify = (name: string) =>
+    name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+
+  // Creation is NAMED now, like every other library in the app: the pane's
+  // create control asks for the role's name and hands it here. The button used
+  // to open a wholly blank form instead, which is the same act with nothing
+  // filled in and no statement of what was about to be made.
+  //
+  // The draft is unsaved on purpose — a role is not a row until it has a soul,
+  // so this opens the editor rather than writing anything.
+  const blank = (name: string) => {
     selected = null
     err = null
-    draft = { slug: '', name: '', role: '', department: '', description: '', soul: '# Role — Title\n\n## Who you are\n\n## Voice & personality\n\n## How you work\n- Keep humans in the loop: create and triage tickets, never assign or close them.\n' }
+    draft = {
+      slug: slugify(name),
+      name,
+      role: name,
+      department: '',
+      description: '',
+      soul: `# Role — ${name}\n\n## Who you are\n\n## Voice & personality\n\n## How you work\n- Keep humans in the loop: create and triage tickets, never assign or close them.\n`,
+    }
   }
 
   const save = async () => {
@@ -114,13 +134,9 @@
   notice={list.notice}
   listWidth="w-72"
   class="h-[calc(100vh-16rem)] min-h-[28rem]"
+  onCreate={blank}
+  createLabel="New role"
 >
-  {#snippet action()}
-    <Button size="sm" variant="outline" class="w-8 px-0" onclick={blank} title="New role" aria-label="New role">
-      <Plus size={14} />
-    </Button>
-  {/snippet}
-
   {#snippet rowAction(t: RoleTemplate)}
     <!-- Only the org's own roles can be deleted; a built-in is restored by
          deleting your copy of it, which is the same button on that copy. -->

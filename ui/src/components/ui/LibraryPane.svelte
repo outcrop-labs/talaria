@@ -41,10 +41,24 @@
      *  such as a dialog. A panel within a panel is a border inside a border. */
     bare?: boolean
     class?: string
-    /** Toolbar slot in the picker header — the New button, typically. */
-    action?: Snippet
-    /** Footer under the picker — an inline create field, typically. */
-    footer?: Snippet
+    /** ADDING A NEW ONE, which is the pane's job rather than each caller's.
+     *
+     *  There were three affordances for this across three views: a raw
+     *  Input+Button pinned under the list, an `InlineCreate`, and a bare `+`
+     *  in the header that opened an empty editor. Same act, three controls,
+     *  three positions, and only one of them told you what it would create.
+     *
+     *  Given `onCreate`, the pane renders the one shared control in the picker
+     *  footer: a "+ <label>" button that expands into a named input, Enter or
+     *  blur to submit, Escape to cancel. The caller gets the trimmed, non-empty
+     *  name and decides what a new record made of it looks like — which may be
+     *  a saved row (Templates, Teams) or an unsaved draft in the editor (the
+     *  role library). That difference belongs to the caller; the control does
+     *  not change shape for it. */
+    onCreate?: (name: string) => void | Promise<void>
+    /** Names the thing, not the act: "New template", not "Add". */
+    createLabel?: string
+    createPlaceholder?: string
     /** Row body override, for rows that need more than a name. */
     row?: Snippet<[T, boolean]>
     /** Trailing per-row control (a delete affordance). Reveals on row hover. */
@@ -57,6 +71,7 @@
 </script>
 
 <script lang="ts" generics="T">
+  import InlineCreate from '@/components/ui/InlineCreate.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -100,8 +115,9 @@
     listWidth = 'w-64',
     bare = false,
     class: className,
-    action,
-    footer,
+    onCreate,
+    createLabel = 'New',
+    createPlaceholder,
     row,
     rowAction,
     detail,
@@ -121,14 +137,9 @@
 {#snippet panes()}
   <!-- ── The picker ──────────────────────────────────────────────────────── -->
   <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth)}>
-    {#if title || action}
-      <div class="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line-subtle px-4">
-        {#if title}
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{title}</span>
-        {:else}
-          <span></span>
-        {/if}
-        {@render action?.()}
+    {#if title}
+      <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
+        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{title}</span>
       </div>
     {/if}
 
@@ -190,8 +201,14 @@
       {/if}
     </div>
 
-    {#if footer}
-      <div class="shrink-0 border-t border-line px-3 py-3">{@render footer()}</div>
+    {#if onCreate}
+      <div class="shrink-0 border-t border-line px-3 py-3">
+        <InlineCreate
+          label={createLabel}
+          placeholder={createPlaceholder ?? createLabel}
+          onSubmit={(name) => void onCreate(name)}
+        />
+      </div>
     {/if}
   </div>
 

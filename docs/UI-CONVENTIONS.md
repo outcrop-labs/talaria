@@ -37,6 +37,14 @@ nothing-selected pane. Callers bring data and snippets.
   the other on a private copy of this.
 - **Feed it `listQuery`.** It takes `pending` and `notice`, not a raw query, so
   "the read failed" arrives already shaped and cannot be dropped on the way in.
+- **Creation belongs to the pane.** Pass `onCreate` (plus `createLabel`) and
+  the pane renders the one shared control — `InlineCreate`, in the picker
+  footer. Do not hand-roll a create field: there were three of them across
+  three views (a raw Input+Button under the list, an `InlineCreate`, and a bare
+  `+` in the header opening an empty form), in three positions, and only one
+  said what it would create. The caller receives a trimmed, non-empty name and
+  decides what a record made of it is — a saved row, or an unsaved draft in the
+  editor. That difference is the caller's; the control does not change shape.
 - **`bare` inside a dialog.** The Modal is already a surface; a Panel within a
   Panel is a border inside a border with the padding twice. For the same reason
   a detail component rendered into the pane must not wrap itself in a `Panel`.
