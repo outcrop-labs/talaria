@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
-  import DitherLayer, { rectIn, type RectShape } from './DitherLayer.svelte'
+  import DitherLayer, { bleedFor, rectIn, type RectShape } from './DitherLayer.svelte'
   import { buttonClasses, splitLayoutClasses, type ButtonVariant } from './button'
   import type { ControlSize } from './control'
   import type { DitherSource, DitherTone } from '@/lib/dither'
@@ -60,8 +60,10 @@
   let radius = $state(0)
 
   /** The halo lives outside the control, so the canvas has to reach past it —
-   *  `bleed` spills without the wrapper taking any space (see DitherLayer). */
-  const BLEED = 20
+   *  `bleed` spills without the wrapper taking any space (see DitherLayer).
+   *  Derived from the spread: a smaller bleed cuts the halo off square. */
+  const SPREAD = 22
+  const BLEED = bleedFor([SPREAD])
   const PAD = 1
 
   // Measured on APPROACH, not on mount: the page reflows constantly and a rect
@@ -89,7 +91,7 @@
             kind: 'rect',
             ...rect,
             radius,
-            spread: 22,
+            spread: SPREAD,
             strength: 0.7,
             inner: 0,
             rim: 0,

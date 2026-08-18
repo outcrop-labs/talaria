@@ -6,17 +6,35 @@
     h: number
   }
 
+  /** The bleed a field needs so nothing is clipped: the widest reach in the
+   *  sources, plus a margin for the dot grid itself.
+   *
+   *  Deriving it beats picking a number, because the failure is silent in code
+   *  and loud on screen — a spread larger than the bleed does not fade, it gets
+   *  cut off square, and the control looks like it is wearing a box. */
+  export function bleedFor(spreads: number[]): number {
+    return Math.ceil(Math.max(0, ...spreads)) + 6
+  }
+
   /** An element's box in its container's coordinate space — what a RectSource
    *  wants. `pad` grows the rect so the halo starts outside the control's edge. */
   export function rectIn(container: HTMLElement, el: HTMLElement, pad = 0, bleed = 0): RectShape {
     const c = container.getBoundingClientRect()
     const r = el.getBoundingClientRect()
+    // MEASURE FROM THE PADDING BOX, not the border box. `getBoundingClientRect`
+    // returns the border box, but an absolutely-positioned child — which the
+    // canvas is — is offset from its containing block's PADDING box. On a
+    // container with a 1px border those differ by exactly that border, and the
+    // whole field lands a pixel off the thing it is supposed to ring.
+    // `clientLeft`/`clientTop` are the border widths.
+    const originX = c.left + container.clientLeft
+    const originY = c.top + container.clientTop
     return {
-      // `bleed` shifts the origin: a bled canvas starts `bleed` px above and
-      // left of the container, so every rect in it moves by the same amount.
-      // Taking it here means a caller cannot forget it in one of two places.
-      x: r.left - c.left - pad + bleed,
-      y: r.top - c.top - pad + bleed,
+      // `bleed` shifts the origin again: a bled canvas starts `bleed` px above
+      // and left of that. Taking both here means a caller cannot apply one and
+      // forget the other.
+      x: r.left - originX - pad + bleed,
+      y: r.top - originY - pad + bleed,
       w: r.width + 2 * pad,
       h: r.height + 2 * pad,
     }
@@ -63,6 +81,12 @@
      *
      * Field coordinates are in the GROWN space: the container's own box starts
      * at (bleed, bleed). `rectIn` takes the bleed and does that for you.
+     *
+     * MUST BE >= the widest `spread` in `sources`, with a little margin. The
+     * canvas is the field's only extent: a halo that reaches further than the
+     * canvas does is not a soft halo that fades out, it is a halo sliced square
+     * at the canvas edge — a hard-edged rectangle floating around the control.
+     * `bleedFor()` computes it from the sources so the two cannot drift apart.
      *
      * An ancestor with `overflow-hidden` clips the spill. That degrades to a
      * cropped halo, never to a broken layout.

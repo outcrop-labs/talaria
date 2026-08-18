@@ -1,5 +1,5 @@
 <script lang="ts">
-  import DitherLayer, { rectIn, type RectShape } from './DitherLayer.svelte'
+  import DitherLayer, { bleedFor, rectIn, type RectShape } from './DitherLayer.svelte'
   import type { DitherSource, DitherTone } from '@/lib/dither'
 
   /**
@@ -22,23 +22,28 @@
     key,
     selector = '[aria-pressed="true"],[aria-current="true"],[aria-selected="true"]',
     tone = 'accent',
-    spread = 26,
+    spread = 14,
     strength = 0.55,
-    bleed = 18,
     pad = 2,
     falloff,
   }: {
     key: unknown
     selector?: string
     tone?: DitherTone
+    /** How far the halo reaches past the cell. Keep it in proportion to the
+     *  control: a segmented cell is ~16px tall, and a 26px reach on that is a
+     *  cloud with a control somewhere inside it rather than a halo around one. */
     spread?: number
     strength?: number
-    bleed?: number
     pad?: number
     /** Steeper decay for wide, short controls — a long row needs ~3 to read as
      *  concentric the way a small cell does at the default 2. */
     falloff?: number
   } = $props()
+
+  // Derived, never passed: a bleed smaller than the spread slices the halo
+  // square at the canvas edge, which is a box, not a glow.
+  const bleed = $derived(bleedFor([spread]))
 
   let anchor = $state<HTMLSpanElement | null>(null)
   let rect = $state<RectShape | null>(null)

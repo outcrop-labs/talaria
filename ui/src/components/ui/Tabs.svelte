@@ -30,7 +30,7 @@
      Tabs are wider and shorter than a segmented cell, so the field needs the
      steeper falloff to read as concentric rather than as two long bands. -->
 <div class={cn('relative flex items-center gap-1', className)}>
-  <DitherPool key={value} selector="[data-active='true']" falloff={3} spread={20} />
+  <DitherPool key={value} selector="[data-active='true']" falloff={3} spread={16} />
   {#each items as t (t.id)}
     <button
       type="button"
