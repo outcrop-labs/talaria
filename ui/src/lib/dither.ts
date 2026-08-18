@@ -152,6 +152,16 @@ export interface DitherEngineOptions {
 // reading a token colour. A copy there would drift, and the two fields sit
 // next to each other on screen.
 // prettier-ignore
+/**
+ * Alpha of an unlit cell, relative to a lit one.
+ *
+ * From dither-kit (MIT): drawing the gaps faintly instead of leaving them
+ * empty is what keeps a dithered field reading as one material rather than as
+ * dots scattered on a surface — and it is what makes a state change a change
+ * in degree rather than an appearance.
+ */
+export const OFF_TIER = 0.4
+
 export const BAYER = [
    0, 32,  8, 40,  2, 34, 10, 42,
   48, 16, 56, 24, 50, 18, 58, 26,
@@ -548,9 +558,32 @@ export class DitherEngine {
         if (shimmer > 0 && !this.reduced && density > 0.03 && density < 0.97) {
           density += (hash01(gx, gy, bucket) - 0.5) * shimmer
         }
-        if (density <= (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64) continue
+        // TWO TIERS, NOT DOTS AND HOLES.
+        //
+        // Adopted from dither-kit (MIT, Boring-Software-Inc/dither-kit), whose
+        // engine puts the rule plainly: the scatter modulates between two tiers
+        // of the SAME colour rather than leaving holes, so nothing shows the
+        // background through. The CSS tile does this now and the canvas fields
+        // have to agree, or the two paths read as different materials.
+        //
+        // It also softens every change of state. A cell that crosses the
+        // threshold steps from the faint tier to the full one — a change in
+        // DEGREE — where before it appeared out of nothing, which the eye
+        // catches as an event.
+        //
+        // A cell with no field on it at all is still skipped: the tier is a
+        // floor under the texture, not a wash over the whole surface.
+        if (density <= 0.002) continue
+        const lit = density > (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64
 
-        const alpha = cover ? 1 : alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
+        // The unlit tier is scaled by density rather than lifted off
+        // `alphaFloor`, so it fades out exactly where the field does instead of
+        // leaving a faint rectangle at the field's edge.
+        const alpha = cover
+          ? 1
+          : lit
+            ? alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
+            : maxAlpha * clamp01(density) * OFF_TIER
         ctx.fillStyle = `rgba(${Math.round(r / wsum)},${Math.round(g / wsum)},${Math.round(b / wsum)},${alpha})`
         ctx.fillRect(cx * pitch - this.fx + off, cy * pitch - this.fy + off, size, size)
       }
