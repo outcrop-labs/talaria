@@ -18,7 +18,7 @@
 
 <!-- The one close (✕) button. Padded hit area so you don't have to click
      dead-on the glyph. Reuse for modals, panels, dismissible surfaces. -->
-<button data-dither-fill
+<button
   type="button"
   onclick={onClick}
   aria-label={label}
@@ -26,7 +26,7 @@
   class={cn(
     // Ghost icon affordance (spec §8): muted → readout, hover-token fill,
     // radius 6, gold focus ring.
-    'grid place-items-center rounded-md p-1.5 text-muted transition-colors hover:text-fg',
+    'grid place-items-center rounded-md p-1.5 text-muted transition-colors dither-fill hover:text-fg',
     focusRing,
     className,
   )}

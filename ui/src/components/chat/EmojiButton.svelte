@@ -43,14 +43,14 @@
       <Input autofocus size="sm" bind:value={q} placeholder="Search emoji" class="mb-2" />
       <div class="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto" use:listStagger>
         {#each results as e (e.ch)}
-          <button data-dither-fill
+          <button
             type="button"
             title={`:${e.names[0]}:`}
             onclick={() => {
               onPick(e.ch)
               open = false
             }}
-            class="grid h-8 w-8 place-items-center rounded-md text-lg transition-colors"
+            class="grid h-8 w-8 place-items-center rounded-md text-lg transition-colors dither-fill"
           >
             {e.ch}
           </button>

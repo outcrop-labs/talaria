@@ -7,12 +7,12 @@
   let { title, onClick, children }: { title: string; onClick: () => void; children: Snippet } = $props()
 </script>
 
-<button data-dither-fill
+<button
   type="button"
   {title}
   aria-label={title}
   onclick={onClick}
-  class={cn('grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:text-fg', focusGold)}
+  class={cn('grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg', focusGold)}
 >
   {@render children()}
 </button>

@@ -5,7 +5,6 @@
   import Brand from '@/components/Brand.svelte'
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
-  import FieldSurface from '@/components/ui/FieldSurface.svelte'
   import NavRail from '@/components/app/NavRail.svelte'
   import { useNavCollapsed } from '@/components/app/nav-rail.svelte'
   import TopStrip from '@/components/app/TopStrip.svelte'
@@ -203,13 +202,9 @@
            so the live DOM appeared in one jump when the animation ended. See
            the note in styles.css. Content entrance is animated by Materialize
            and listStagger instead, which fire when the data actually lands. -->
-      <!-- ONE FIELD CANVAS FOR THE WHOLE VIEW. Every control below that asks
-           for a dither field is drawn here, in a single pass, behind the
-           content. This is what replaced a canvas per control — 126 hoverable
-           rows are 126 entries in an array, not 126 WebGL contexts. -->
-      <FieldSurface class="min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
         {@render children()}
-      </FieldSurface>
+      </div>
     </InboxFocusShell>
   </div>
 {/if}

@@ -139,10 +139,10 @@
      the list beneath it. -->
 <div class="flex flex-col overflow-hidden rounded-md border border-line bg-card">
   <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em]">
-    <button data-dither-fill
+    <button
       type="button"
       onclick={() => (open = !open)}
-      class="-ml-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-muted transition-colors hover:text-fg"
+      class="-ml-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-muted transition-colors dither-fill hover:text-fg"
       aria-expanded={open}
     >
       <span class={cn('text-[9px] transition-transform duration-150', open && 'rotate-90')}>▶</span>
@@ -158,13 +158,13 @@
     {#if counts.skip}<span class="text-ink-dim">{counts.skip} skipped</span>{/if}
     {#if open}
       <span class="ml-auto">
-        <button data-dither-fill
+        <button
           type="button"
           onclick={() => {
             follow = true
             if (pane) pane.scrollTop = pane.scrollHeight
           }}
-          class={cn('rounded px-1.5 py-0.5 transition-colors', follow ? 'text-ink-dim' : 'text-accent')}
+          class={cn('rounded px-1.5 py-0.5 transition-colors', follow ? 'text-ink-dim' : 'text-accent dither-fill')}
         >
           {follow ? 'following' : 'jump to end'}
         </button>
@@ -186,12 +186,12 @@
           <!-- THE ROW IS THE TOGGLE for its OWN turns and nothing else's, and it
                starts closed. Four running cases each unfurling a system prompt is
                the console losing its log. -->
-          <button data-dither-fill
+          <button
             type="button"
             onclick={() => (openTurns = { ...openTurns, [keyOf(c)]: !turnsOpen })}
             disabled={c.turns.length === 0}
             aria-expanded={turnsOpen}
-            class="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-1 py-0.5 text-left font-mono text-[11px] transition-colors enabled:"
+            class="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-1 py-0.5 text-left font-mono text-[11px] transition-colors enabled:dither-fill"
           >
             <span class={cn('text-accent transition-transform duration-150', turnsOpen && 'rotate-90')}>▶</span>
             <span class="text-muted">{c.harness}</span>

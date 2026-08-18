@@ -192,7 +192,7 @@
                   ...workViews.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to),
                   ...manageViews.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
                 ]}
-                <li data-dither-fill class="-mx-2 space-y-2 rounded-md px-2 py-3 transition-colors">
+                <li class="-mx-2 space-y-2 rounded-md px-2 py-3 transition-colors dither-fill">
                   <div class="flex items-center gap-3">
                     <Avatar name={u.name ?? u.email} class="h-7 w-7" />
                     <span class="min-w-0 flex-1">

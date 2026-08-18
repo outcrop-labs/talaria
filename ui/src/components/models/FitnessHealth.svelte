@@ -66,12 +66,12 @@
 
     <div class="flex flex-wrap items-center gap-1.5">
       {#each [['all', `All ${data.fixtures.length}`], ['ours', `Ours ${counts.ours}`], ['shared', `Most models ${counts.shared}`], ['model', `One model ${counts.model}`], ['unknown', `Unattributable ${counts.unknown}`]] as [id, label] (id)}
-        <button data-dither-fill
+        <button
           type="button"
           onclick={() => (filter = id as Suspicion | 'all')}
           class={cn(
             'rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
-            filter === id ? 'border-line bg-raised text-fg' : 'border-transparent text-muted hover:text-fg',
+            filter === id ? 'border-line bg-raised text-fg' : 'border-transparent text-muted dither-fill hover:text-fg',
           )}
         >
           {label}

@@ -460,7 +460,7 @@
         <div class="font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">{focusMode ? 'Inbox conversation' : `Assistant · ${surfaceLabel}`}</div>
       </div>
       <span class={cn('h-1.5 w-1.5 rounded-full', busy || conversation.data?.pages[0]?.working ? 'animate-pulse bg-success' : 'bg-line-strong')} aria-hidden="true"></span>
-      <button data-dither-fill type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted hover:text-fg">
+      <button type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted dither-fill hover:text-fg">
         <ChevronLeft size={14} />
       </button>
     </header>
@@ -535,7 +535,7 @@
           <button type="button" onclick={toggleActiveDecisionAttachment} class="min-w-0 flex-1 truncate text-left font-sans text-[11px] text-muted">
             {attached ? active.question : 'Decision detached — general conversation'}
           </button>
-          <button data-dither-fill type="button" onclick={toggleActiveDecisionAttachment} aria-label={attached ? 'Detach active decision' : 'Attach active decision'} class="grid h-6 w-6 place-items-center rounded text-ink-dim hover:text-fg">
+          <button type="button" onclick={toggleActiveDecisionAttachment} aria-label={attached ? 'Detach active decision' : 'Attach active decision'} class="grid h-6 w-6 place-items-center rounded text-ink-dim dither-fill hover:text-fg">
             {#if attached}<X size={12} />{:else}<Paperclip size={12} />{/if}
           </button>
         </div>

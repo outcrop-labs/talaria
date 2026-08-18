@@ -105,7 +105,7 @@
           <SectionHeader title="Served self-hosted · 30 days" action={String(data!.usage.perModel.length).padStart(2, '0')} />
           <div class="divide-y divide-line" use:listStagger>
             {#each data!.usage.perModel as m (m.llmModel ?? '?')}
-              <div data-dither-fill class="flex items-center gap-3 py-3 text-sm transition-colors">
+              <div class="flex items-center gap-3 py-3 text-sm transition-colors dither-fill">
                 <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m.llmModel ?? 'unattributed'}</span>
                 <span class="shrink-0 font-mono text-[11px] text-muted">{formatTokens(m.tokens)} tokens</span>
               </div>

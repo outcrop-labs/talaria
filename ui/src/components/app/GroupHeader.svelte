@@ -21,11 +21,11 @@
   } = $props()
 </script>
 
-<button data-dither-fill
+<button
   type="button"
   onclick={onToggle}
   aria-expanded={open}
-  class="flex w-full items-center gap-1 rounded-md py-1 pl-1 pr-2 text-left text-[11px] text-muted transition-colors duration-[120ms] hover:text-fg"
+  class="flex w-full items-center gap-1 rounded-md py-1 pl-1 pr-2 text-left text-[11px] text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
 >
   <ChevronRight size={11} class={cn('shrink-0 transition-transform duration-150', open && 'rotate-90')} />
   {@render icon?.()}

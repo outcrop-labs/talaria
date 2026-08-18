@@ -64,13 +64,13 @@
 <svelte:document onmousedown={onDocMousedown} />
 
 <div bind:this={ref} class="relative inline-block">
-  <button data-dither-fill
+  <button
     onclick={openPanel}
     title="Columns — show, hide, reorder"
     aria-label="Configure columns"
     class={cn(
       'grid h-6 w-6 place-items-center rounded-md transition-colors',
-      open ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
+      open ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
     )}
   >
     <SlidersHorizontal size={13} />
@@ -81,7 +81,7 @@
       {#each order as key (key)}
         {@const c = LIST_COLUMNS.find((x) => x.key === key)!}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div data-dither-fill
+        <div
           animate:flip={LIST}
           draggable="true"
           ondragstart={() => (dragKey = c.key)}
@@ -100,7 +100,7 @@
             drop(c.key)
           }}
           class={cn(
-            'relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 font-sans text-[13px] text-fg transition-colors',
+            'relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 font-sans text-[13px] text-fg transition-colors dither-fill',
             dragKey === c.key && 'opacity-40',
           )}
         >

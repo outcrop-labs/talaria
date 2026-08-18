@@ -343,7 +343,7 @@
     cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
       focusGold,
-      active ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
+      active ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
     )
   // Opening a ticket keeps the CURRENT view/filter state — the overlay sits
   // on top of whatever view you were in, and closing returns you to it.
@@ -395,7 +395,7 @@
     <!-- Row 1 — the VIEW: mode toggle, saved views, save. -->
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-2">
       <div class="flex rounded-md border border-line p-0.5">
-        <button data-dither-fill
+        <button
           class={toggleCls(view === 'board')}
           onclick={() => setView('board')}
           title="Board view"
@@ -403,7 +403,7 @@
         >
           <LayoutGrid size={15} />
         </button>
-        <button data-dither-fill
+        <button
           class={toggleCls(view === 'list')}
           onclick={() => setView('list')}
           title="List view"
@@ -411,7 +411,7 @@
         >
           <List size={15} />
         </button>
-        <button data-dither-fill
+        <button
           class={toggleCls(view === 'gantt')}
           onclick={() => setView('gantt')}
           title="Gantt view"
@@ -425,7 +425,7 @@
       {#each savedViews as sv (sv.id)}
         <!-- The tab wears its view type: board grid, list, or gantt. -->
         {@const TypeIcon = sv.config.view === 'gantt' ? CalendarRange : sv.config.view === 'list' ? List : LayoutGrid}
-        <button data-dither-fill
+        <button
           onclick={() => applyView(sv)}
           oncontextmenu={(e) => viewTabContextMenu(e, sv)}
           class={cn(
@@ -433,7 +433,7 @@
             focusGold,
             search.v === sv.id
               ? 'border-[var(--theme-accent-border)] bg-raised text-fg'
-              : 'border-transparent text-muted hover:text-fg',
+              : 'border-transparent text-muted dither-fill hover:text-fg',
           )}
         >
           <TypeIcon size={12} class={cn('shrink-0', search.v === sv.id ? 'text-accent' : 'opacity-70')} />

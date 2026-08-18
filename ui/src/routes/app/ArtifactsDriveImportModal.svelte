@@ -114,11 +114,11 @@
       {#if status === 'ready' && files && files.length === 0}<EmptyState variant="compact" title="No files found." />{/if}
       {#if status === 'ready' && files}
         {#each files as f (f.id)}
-          <button data-dither-fill
+          <button
             type="button"
             disabled={!!importing}
             onclick={() => void doImport(f.id)}
-            class="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors disabled:opacity-50"
+            class="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors dither-fill disabled:opacity-50"
           >
             <span class="w-14 shrink-0 text-[11px] text-muted">{driveKind(f.mimeType)}</span>
             <span class="min-w-0 flex-1 truncate text-sm text-fg">{f.name}</span>

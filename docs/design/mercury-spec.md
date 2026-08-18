@@ -240,10 +240,17 @@ progress feels faster than waiting) · 03 Frequency (frequent loaders stay short
 | Reasoning    | CONTEXT HELIX (loop)  | looping multi-color bar helix |
 | Tool activity| STAGE SCAN (scan)     | stepped scan across segment bars |
 | Background   | MONITOR BREATHE (idle)| slow breathing opacity on status bars |
+| Fetching     | SIGNAL STATIC (idle)  | skeletons as a dithered dot field, per-cell noise at 8Hz |
 
-Motif vocabulary: weave, pulse, scan, breathe, spark, helix, bounce, cascade → implemented as
-stagger, loop, stepped animation, pulse, orbit. Loaders are rows of small rounded bars
-(3×12px, like the chip meters) in surface/signal colors.
+Motif vocabulary: weave, pulse, scan, breathe, spark, helix, bounce, cascade, static →
+implemented as stagger, loop, stepped animation, pulse, orbit, dither. Loaders are rows of small
+rounded bars (3×12px, like the chip meters) in surface/signal colors.
+
+SIGNAL STATIC is the one motif that is DENSITY rather than opacity: skeletons render on the same
+Bayer grid as the dither engine (§ matte rule — no glows, no blurs), so waiting is a texture the
+surface already speaks rather than a second effect layered on it. It carries no direction and no
+stagger, because a fetch has no progress to report; under reduced motion the clock stops and the
+field freezes on one roll of the noise, which keeps the texture rather than flattening it.
 
 ### Rules
 - Hover/state transitions: ~120ms ease. Entrances: 150–250ms, small translate + fade

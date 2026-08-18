@@ -148,10 +148,10 @@
                the region's cascade (sections rise; rows come with them). -->
           <div class="divide-y divide-line">
             {#each byKind.get(k)! as e, i (`${e.at}-${i}`)}
-              <button data-dither-fill
+              <button
                 type="button"
                 onclick={() => void navigateHref(e.href)}
-                class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors"
+                class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors dither-fill"
               >
                 <Avatar name={e.actor} class="mt-0.5 h-6 w-6 shrink-0 text-xs" />
                 <div class="min-w-0 flex-1">

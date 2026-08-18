@@ -93,7 +93,7 @@
   <div class={editorShell(fullscreen)}>
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
       <div class="relative shrink-0">
-        <button data-dither-fill type="button" onclick={() => (emojiOpen = !emojiOpen)} class="rounded-md px-1 text-xl leading-none transition-colors" title="Set icon">
+        <button type="button" onclick={() => (emojiOpen = !emojiOpen)} class="rounded-md px-1 text-xl leading-none transition-colors dither-fill" title="Set icon">
           {space.icon ?? '📚'}
         </button>
         {#if emojiOpen}

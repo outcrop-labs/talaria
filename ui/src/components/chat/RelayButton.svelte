@@ -154,11 +154,11 @@
       </label>
 
       <div class="mt-2.5 flex items-center gap-2">
-        <button data-dither-fill
+        <button
           type="button"
           disabled={busy || !label.trim() || !value}
           onclick={() => void mint()}
-          class="rounded-md border border-line-strong px-2.5 py-1 font-sans text-xs text-fg transition-colors disabled:opacity-40"
+          class="rounded-md border border-line-strong px-2.5 py-1 font-sans text-xs text-fg transition-colors dither-fill disabled:opacity-40"
         >
           Hand it over
         </button>

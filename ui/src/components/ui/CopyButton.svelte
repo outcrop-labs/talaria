@@ -27,7 +27,7 @@
   let copied = $state(false)
 </script>
 
-<button data-dither-fill
+<button
   type="button"
   {title}
   aria-label={title}
@@ -42,7 +42,7 @@
   }}
   class={cn(
     // Ghost icon affordance (spec §8): muted → readout, hover-token fill.
-    'flex items-center gap-1 rounded-md p-1 text-muted transition-colors hover:text-fg',
+    'flex items-center gap-1 rounded-md p-1 text-muted transition-colors dither-fill hover:text-fg',
     focusRing,
     className,
   )}

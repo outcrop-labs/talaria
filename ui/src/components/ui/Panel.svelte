@@ -20,7 +20,7 @@
 
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { useField } from '@/lib/field-registry.svelte'
+  import DitherLayer from './DitherLayer.svelte'
   import type { DitherSource } from '@/lib/dither'
 
   // The core Mercury surface (spec §8): panel fill on ground, 1px hairline,
@@ -40,30 +40,29 @@
   // field replaces a heavier border or a fill — it marks the choice without
   // changing the card's weight, so the row does not reflow as you click along
   // it. `ambient` is for a card that is simply prominent.
-  let el = $state<HTMLElement | null>(null)
-
-  // `gain` rather than a lower strength: the corridor should be a full dot
-  // population sitting well back, not a handful of dots on a card. See the
-  // note on `gain` in lib/dither.ts.
-  useField(
-    () => el,
-    (): DitherSource[] =>
-      field === 'none'
-        ? []
-        : [
-            { id: 'base', kind: 'edge', side: 'top', depth: 40, strength: 0.12, gain: 0.5 },
-            ...(field === 'selected'
-              ? [{ id: 'mark', kind: 'edge', side: 'top', depth: 44, strength: 0.5, gain: 0.5, tone: 'accent' } as DitherSource]
-              : []),
-          ],
+  const sources = $derived<DitherSource[]>(
+    field === 'none'
+      ? []
+      : [
+          { id: 'base', kind: 'edge', side: 'top', depth: 40, strength: 0.12 },
+          ...(field === 'selected'
+            ? [{ id: 'mark', kind: 'edge', side: 'top', depth: 44, strength: 0.5, tone: 'accent' } as DitherSource]
+            : []),
+        ],
   )
 </script>
 
 <svelte:element
   this={as}
-  bind:this={el}
-  class={cn('rounded-lg border border-line bg-panel p-6', className)}
+  class={cn('rounded-lg border border-line bg-panel p-6', field !== 'none' && 'relative overflow-hidden', className)}
   {...rest}
 >
-  {@render children?.()}
+  {#if field !== 'none'}<DitherLayer {sources} organic={0.5} />{/if}
+  {#if field !== 'none'}
+    <!-- The field is decoration behind the content, so the content needs its
+         own stacking context to stay above it. -->
+    <div class="relative">{@render children?.()}</div>
+  {:else}
+    {@render children?.()}
+  {/if}
 </svelte:element>

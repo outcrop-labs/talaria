@@ -24,10 +24,10 @@
 </script>
 
 <div class={cn('overflow-hidden rounded-md border border-line bg-card', className)}>
-  <button data-dither-fill
+  <button
     type="button"
     onclick={() => (open = !open)}
-    class="group/disc flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] tracking-[0.05em] text-muted transition-colors hover:text-fg"
+    class="group/disc flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg"
   >
     <!-- The chevron is the affordance, so it gets brighter on hover rather than
          staying the same dim glyph the row's own text is. A row that expands and

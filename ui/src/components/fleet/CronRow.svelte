@@ -63,36 +63,36 @@
     {#if onAction}
       <span class={cn('flex shrink-0 items-center', busy && 'pointer-events-none opacity-40')}>
         {#if onEdit}
-          <button data-dither-fill
+          <button
             type="button"
             title="Edit"
             onclick={startEdit}
-            class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-fg"
+            class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
           >
             <Pencil size={13} />
           </button>
         {/if}
-        <button data-dither-fill
+        <button
           type="button"
           title="Run on the next tick (≤60s)"
           onclick={() => onAction('run')}
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-fg"
+          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
         >
           <Zap size={14} />
         </button>
-        <button data-dither-fill
+        <button
           type="button"
           title={paused ? 'Resume' : 'Pause'}
           onclick={() => onAction(paused ? 'resume' : 'pause')}
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-fg"
+          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
         >
           {#if paused}<Play size={14} fill="currentColor" />{:else}<Pause size={14} fill="currentColor" />{/if}
         </button>
-        <button data-dither-fill
+        <button
           type="button"
           title="Delete"
           onclick={() => onAction('remove')}
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-danger"
+          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-danger"
         >
           <Trash2 size={14} />
         </button>

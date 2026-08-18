@@ -27,10 +27,10 @@
 />
 
 <div bind:this={ref} class="relative">
-  <button data-dither-fill
+  <button
     type="button"
     onclick={() => (open = !open)}
-    class="flex h-7 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms]"
+    class="flex h-7 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms] dither-fill"
   >
     <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden="true"></span>
     <!-- Display name, not email: the flyover header still shows both. -->
@@ -60,19 +60,19 @@
         </div>
       </div>
 
-      <a data-dither-fill
+      <a
         href={p('/settings')}
         onclick={() => (open = false)}
-        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms]"
+        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] dither-fill"
       >
         <Settings size={15} class="shrink-0 text-muted" />
         <span>Settings</span>
       </a>
       {#if user.role === 'admin'}
-        <a data-dither-fill
+        <a
           href={p('/admin')}
           onclick={() => (open = false)}
-          class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms]"
+          class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] dither-fill"
         >
           <Shield size={15} class="shrink-0 text-muted" />
           <span>Admin</span>

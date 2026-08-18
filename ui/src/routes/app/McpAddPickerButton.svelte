@@ -46,7 +46,7 @@
 </script>
 
 <div bind:this={wrapRef} class="relative">
-  <button data-dither-fill
+  <button
     type="button"
     {title}
     onclick={() => {
@@ -55,7 +55,7 @@
     }}
     class={cn(
       'grid h-6 w-6 place-items-center rounded-md transition-colors',
-      open ? 'bg-raised text-accent' : 'text-muted hover:text-accent',
+      open ? 'bg-raised text-accent' : 'text-muted dither-fill hover:text-accent',
     )}
   >
     <Plus size={14} />

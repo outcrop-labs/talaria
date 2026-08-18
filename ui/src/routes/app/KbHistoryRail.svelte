@@ -78,10 +78,10 @@
     <EmptyState variant="inline" title="No saved revisions yet." />
   {:else}
     {#each revs as r, i (r.id)}
-      <button data-dither-fill
+      <button
         type="button"
         onclick={() => void open(r)}
-        class="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors"
+        class="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors dither-fill"
       >
         <div class="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
         <div class="font-mono text-[10px] tracking-[0.05em] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>

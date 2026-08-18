@@ -16,12 +16,12 @@
   } = $props()
 </script>
 
-<button data-dither-fill
+<button
   type="button"
   {title}
   onclick={onClick}
   class={cn(
-    'grid h-7 w-7 place-items-center rounded-md text-muted transition-colors',
+    'grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill',
     danger ? 'hover:text-[color:var(--theme-danger)]' : 'hover:text-fg',
   )}
 >

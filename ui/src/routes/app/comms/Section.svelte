@@ -51,12 +51,12 @@
     <span class="ml-auto"></span>
     {#if meta}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">{meta}</span>{/if}
     {#if onCreate}
-      <button data-dither-fill
+      <button
         type="button"
         title={`New ${label.toLowerCase().replace(/s$/, '')}`}
         onclick={() => (creating = true)}
         class={cn(
-          'grid h-5 w-5 place-items-center rounded-md text-muted transition-colors hover:text-fg',
+          'grid h-5 w-5 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg',
           focusGold,
         )}
       >

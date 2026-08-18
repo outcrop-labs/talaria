@@ -41,7 +41,7 @@
 </script>
 
 {#snippet btn(on: boolean, title: string, action: () => void, Icon: IconType)}
-  <button data-dither-fill
+  <button
     type="button"
     {title}
     onmousedown={(e) => {
@@ -50,7 +50,7 @@
     }}
     class={cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
-      on ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
+      on ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
       focusGold,
     )}
   >

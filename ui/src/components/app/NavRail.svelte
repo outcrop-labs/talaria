@@ -1,7 +1,6 @@
 <script lang="ts" module>
   import type { SessionUser } from '@/lib/session'
-  import FieldSurface from '@/components/ui/FieldSurface.svelte'
-  import DitherPool from '@/components/ui/DitherPool.svelte'
+  import DitherLayer from '@/components/ui/DitherLayer.svelte'
   import type { DitherSource } from '@/lib/dither'
 
   function userInitials(user: SessionUser): string {
@@ -112,16 +111,10 @@
   let inside = $state(false)
   const ambient = $derived.by((): DitherSource[] => {
     const a = inside ? { chrome: 0.2, grain: 0.05, foot: 0.09 } : { chrome: 0.14, grain: 0.035, foot: 0.06 }
-    // `gain` is what keeps this a whisper. It used to be a low `maxAlpha` on
-    // the rail's own canvas; on a shared surface the alpha ramp belongs to the
-    // surface, so the quietness has to travel with the sources. Lowering
-    // `strength` instead would thin the dot population and turn the rail's
-    // material into scattered specks — see the note on `gain` in lib/dither.ts.
-    const GAIN = 0.16
     return [
-      { id: 'chrome', kind: 'edge', side: 'top', depth: 64, strength: a.chrome, gain: GAIN },
-      { id: 'grain', kind: 'uniform', strength: a.grain, gain: GAIN },
-      { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot, gain: GAIN },
+      { id: 'chrome', kind: 'edge', side: 'top', depth: 64, strength: a.chrome },
+      { id: 'grain', kind: 'uniform', strength: a.grain },
+      { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot },
     ]
   })
 
@@ -154,16 +147,7 @@
   onmouseenter={() => (inside = true)}
   onmouseleave={() => (inside = false)}
 >
-<!-- THE RAIL OWNS A SURFACE, for two independent reasons. It sits outside the
-     shell's FieldSurface (which wraps only the content region), so there is no
-     surface above it to register with; and it paints an opaque `bg-sidebar`,
-     which would hide a field drawn on a canvas behind it in any case. A field
-     has to be drawn above the background of whatever it decorates. -->
-<FieldSurface class="h-full" ambient={ambient}>
-<!-- The halo rides the active item, and moves when the selection moves. It
-     re-finds on collapse too, so it follows the rail's own 200ms width
-     animation instead of teleporting to the icon tile. -->
-<DitherPool key={`${route.pathname}:${nav.collapsed}`} selector="[data-status='active']" falloff={3} />
+<DitherLayer sources={ambient} shimmer={inside ? 0.12 : 0} organic={0.5} alphaFloor={0.04} maxAlpha={0.14} />
 {#if nav.collapsed}
   <!-- ── Icon rail (64px, spec §5) ───────────────────────────────────────── -->
   <div class="flex h-full w-16 flex-col items-center pb-5 pt-3">
@@ -177,15 +161,14 @@
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
           <RailTooltip label={item.label}>
-            <a data-dither-fill="on"
+            <a
               href={item.to}
               data-status={statusFor(item)}
               aria-label={item.label}
               class={cn(
-                'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:text-fg',
+                'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-bloom hover:text-fg',
                 'data-[status=active]:bg-raised data-[status=active]:text-fg',
                 '[&[data-status=active]_svg]:h-[22px] [&[data-status=active]_svg]:w-[22px]',
-                '',
               )}
             >
               <NavIcon icon={item.icon} />
@@ -217,22 +200,22 @@
            marker says the list is missing; clicking asks again. -->
       {#if appsBroken}
         <RailTooltip label="App links unavailable — retry">
-          <button data-dither-fill
+          <button
             type="button"
             onclick={() => void appsQuery.refetch()}
             aria-label="App links unavailable — retry"
-            class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms]"
+            class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms] dither-fill"
           >
             <TriangleAlert size={16} strokeWidth={1.5} />
           </button>
         </RailTooltip>
       {/if}
       <RailTooltip label="Expand">
-        <button data-dither-fill
+        <button
           type="button"
           onclick={nav.toggleCollapsed}
           aria-label="Expand navigation"
-          class="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:text-fg"
+          class="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
         >
           <ChevronsRight size={16} strokeWidth={1.5} />
         </button>
@@ -276,11 +259,11 @@
           <ul class="space-y-1.5">
             {#each section.items as item (item.to)}
               <li>
-                <a data-dither-fill="on"
+                <a
                   href={item.to}
                   data-status={statusFor(item)}
                   class={cn(
-                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:text-fg',
+                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] dither-bloom hover:text-fg',
                     // Active gains the solid tile AND keeps the texture — same bloom as hover,
                     // materialised. `relative` so both paint under the label.
                     'relative data-[status=active]:bg-raised data-[status=active]:font-medium data-[status=active]:text-fg',
@@ -329,11 +312,11 @@
          that was hard-coded green and so reported nothing. It answered a
          question nobody asks mid-work and it was never once actionable. -->
     <div class="mt-4 flex h-5 shrink-0 items-center gap-2 px-1">
-      <button data-dither-fill
+      <button
         type="button"
         onclick={nav.toggleCollapsed}
         aria-label="Collapse navigation"
-        class="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] hover:text-fg"
+        class="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
       >
         <ChevronsLeft size={13} strokeWidth={1.5} />
       </button>
@@ -342,5 +325,4 @@
     {@render modals()}
   </div>
 {/if}
-</FieldSurface>
 </CollapsePane>

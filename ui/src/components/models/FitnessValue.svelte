@@ -170,13 +170,13 @@
   <!-- ── The table ─────────────────────────────────────────────────────────── -->
   <div class="mt-3 mb-2 flex flex-wrap items-center gap-1.5">
     {#each SORTS as s (s.id)}
-      <button data-dither-fill
+      <button
         type="button"
         onclick={() => (sort = s.id)}
         title={s.hint}
         class={cn(
           'rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors',
-          sort === s.id ? 'border-accent/40 bg-accent/10 text-fg' : 'border-line text-muted',
+          sort === s.id ? 'border-accent/40 bg-accent/10 text-fg' : 'border-line text-muted dither-fill',
           focusGold,
         )}
       >
@@ -199,7 +199,7 @@
       <tbody>
         {#each rows as m (m.model)}
           {@const caveat = costCaveat(m, data.unmeasured.length)}
-          <tr data-dither-fill class={cn('border-b border-line-subtle transition-colors last:border-0', selected === m.model && 'bg-card')}>
+          <tr class={cn('border-b border-line-subtle transition-colors last:border-0 dither-fill', selected === m.model && 'bg-card')}>
             <th scope="row" class="p-0 font-normal">
               <!-- Same affordance as the matrix row: a hover state on the LINK
                    rather than only on the row, so it is clear which part opens
@@ -296,7 +296,7 @@
         <tbody>
           {#each data.slots.filter((s) => s.perDay > 0 || s.candidates.length > 0) as slot (slot.key)}
             {@const best = slot.candidates.find((c) => c.model === slot.best)}
-            <tr data-dither-fill class="border-b border-line-subtle last:border-0">
+            <tr class="border-b border-line-subtle last:border-0 dither-fill">
               <th scope="row" class="px-3 py-2 font-sans text-xs font-normal text-fg">
                 {slot.label}
               </th>

@@ -163,7 +163,7 @@
         <EmptyState variant="compact" icon="◎" title="No research yet." hint="Ask something worth knowing." />
       {:else}
         {#each runs as r (r.id)}
-          <button data-dither-fill
+          <button
             type="button"
             onclick={() => setSelectedId(r.id)}
             oncontextmenu={(e) =>
@@ -175,7 +175,7 @@
                   : []),
               ])}
             class={cn(
-              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors',
+              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors dither-fill',
               selectedId === r.id ? 'bg-card' : '',
             )}
           >

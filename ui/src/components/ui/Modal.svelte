@@ -3,7 +3,6 @@
   import { fade, pop, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
   import CloseButton from './CloseButton.svelte'
-  import FieldSurface from './FieldSurface.svelte'
 
   // The one modal. Esc + backdrop-click close. Two shapes:
   //   • centered panel (default) — confirms, single-field creates, pickers.
@@ -72,11 +71,6 @@
       ? 'relative z-10 flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]'
       : `relative z-10 flex max-h-full w-full ${width} ${height} flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]`}
   >
-  <!-- A MODAL OWNS ITS OWN SURFACE, for the same two reasons the rail does: it
-       paints an opaque `bg-panel`, so a field drawn on the shell's canvas
-       underneath would be hidden by it; and it sits above the shell in its own
-       stacking context anyway. One canvas serves every control in the dialog. -->
-  <FieldSurface class="flex min-h-0 flex-1 flex-col">
     {#if title}
       <div class="flex shrink-0 items-center justify-between border-b border-line px-7 py-4">
         {#if typeof title === 'string'}
@@ -99,7 +93,6 @@
     {#if footer}
       <div class="shrink-0 border-t border-line px-7 py-4">{@render footer()}</div>
     {/if}
-  </FieldSurface>
   </div>
 {/snippet}
 

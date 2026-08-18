@@ -134,7 +134,7 @@
       <div in:fade={{ duration: 150 }} out:fade={QUICK} class="mt-1.5 flex flex-wrap items-center gap-1">
         {#each m.reactions ?? [] as r (r.emoji)}
           {@const mine = r.actors.some((a, i) => r.actorTypes[i] === 'user' && a === ctx.me)}
-          <button data-dither-fill
+          <button
             in:fade={{ duration: 150 }}
             out:fade={QUICK}
             type="button"
@@ -144,7 +144,7 @@
               'flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors',
               mine
                 ? 'border-accent bg-accent-soft text-fg'
-                : 'border-line bg-raised text-muted hover:text-fg',
+                : 'border-line bg-raised text-muted dither-fill hover:text-fg',
             )}
           >
             <span>{r.emoji}</span>
@@ -180,10 +180,10 @@
     >
       {#if picking}
         {#each REACTION_SET as e (e)}
-          <button data-dither-fill
+          <button
             type="button"
             onclick={() => react(e)}
-            class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors"
+            class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors dither-fill"
           >
             {e}
           </button>

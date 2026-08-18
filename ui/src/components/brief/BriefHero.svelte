@@ -1,7 +1,6 @@
 <script lang="ts">
+  import DitherLayer from '@/components/ui/DitherLayer.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
-  import { useField } from '@/lib/field-registry.svelte'
-  import FieldBackdrop from '@/components/ui/FieldBackdrop.svelte'
   import type { DitherSource } from '@/lib/dither'
   import { dateLabel, clockLabel, type BriefView } from './daily-brief.svelte'
 
@@ -22,29 +21,23 @@
    */
   let { brief }: { brief: BriefView } = $props()
 
-  let el = $state<HTMLElement | null>(null)
-
-  // Ambient, not decorative-loud: one drifting crest plus an edge, both held
-  // back by `gain` so the words stay the brightest thing in the box. The crest
-  // is the one source in the app that moves under its own steam rather than
-  // riding the clump morph — it is the whole reason this header reads as depth.
+  // Ambient, not decorative-loud: one drifting crest plus an edge, both well
+  // under half strength, so the words stay the brightest thing in the box.
   const FIELD: DitherSource[] = [
-    { id: 'crest', kind: 'wave', axis: 'x', wavelength: 320, speed: 9, strength: 0.34, gain: 0.5, tone: 'accent' },
-    { id: 'top', kind: 'edge', side: 'top', depth: 120, strength: 0.3, gain: 0.5 },
-    { id: 'grain', kind: 'uniform', strength: 0.06, gain: 0.5 },
+    { id: 'crest', kind: 'wave', axis: 'x', wavelength: 320, speed: 9, strength: 0.34, tone: 'accent' },
+    { id: 'top', kind: 'edge', side: 'top', depth: 120, strength: 0.3 },
+    { id: 'grain', kind: 'uniform', strength: 0.06 },
   ]
-
-  useField(() => el, () => FIELD)
 </script>
 
-<header bind:this={el} class="relative overflow-hidden rounded-lg border border-line bg-surface px-7 py-7">
-  <FieldBackdrop {el} />
+<header class="relative overflow-hidden rounded-lg border border-line bg-surface px-7 py-7">
+  <DitherLayer sources={FIELD} pitch={4} dot={1.6} organic={0.6} alphaFloor={0.05} maxAlpha={0.4} />
 
   <div class="relative">
     <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <h2 class="font-sans text-[22px] font-semibold leading-tight text-fg">
+      <h1 class="font-sans text-[22px] font-semibold leading-tight text-fg">
         {dateLabel(brief.date, brief.zone)}
-      </h2>
+      </h1>
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         Opened {clockLabel(brief.openedAt, brief.zone)}
       </span>

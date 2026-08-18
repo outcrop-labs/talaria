@@ -59,12 +59,12 @@
   oncontextmenu={onContextMenu}
   role="presentation"
 >
-  <button data-dither-fill
+  <button
     type="button"
     onclick={onOpen}
     class={cn(
       'grid w-full grid-cols-[minmax(0,1fr)_7rem_10rem_8rem] items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors',
-      selected ? 'bg-raised' : '',
+      selected ? 'bg-raised' : 'dither-fill',
       active && !selected && 'bg-card',
       dropTarget && 'ring-1 ring-accent/60',
     )}

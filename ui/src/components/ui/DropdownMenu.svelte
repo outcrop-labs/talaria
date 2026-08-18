@@ -124,7 +124,7 @@
             {#if item === 'sep'}
               <div class="mx-2 my-1 border-t border-line"></div>
             {:else}
-              <button data-dither-fill
+              <button
                 type="button"
                 role="menuitem"
                 disabled={item.disabled}
@@ -139,7 +139,7 @@
                     ? 'cursor-default text-muted opacity-50'
                     : item.danger
                       ? 'text-danger hover:bg-danger/10'
-                      : cn('', item.checked === false ? 'text-muted' : 'text-fg'),
+                      : cn('dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
                 )}
               >
                 <!-- checked state: leading ✓ slot (kept when unchecked so rows

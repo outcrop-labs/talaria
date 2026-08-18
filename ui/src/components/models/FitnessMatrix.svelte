@@ -135,23 +135,23 @@
         {@const summary = rowSummary(entry, ordered)}
         <!-- `group` so the hover reaches the STICKY cell too: it carries its
              own opaque background (it has to — the body scrolls under it), so
-             a row-level dithered fill stopped dead at the model name and the
+             a row-level `dither-fill` stopped dead at the model name and the
              highlight that helps you track a row across fifteen columns was
              missing from the one column you read it from.
 
              `border-line`, not `border-line-subtle`: subtle is #232019 against
              a #141312 panel, which is a rule you cannot see. -->
-        <tr data-dither-fill
-          class={cn('group border-b border-line transition-colors last:border-0', selected === m.id && 'bg-card')}
+        <tr
+          class={cn('group border-b border-line transition-colors last:border-0 dither-fill', selected === m.id && 'bg-card')}
         >
           <!-- THE WHOLE CELL IS THE TARGET. The button used to be a shrink-wrapped
                box around the text, so the dead space beside a short model id —
                most of a 22rem column — looked clickable (the row highlights) and
                was not. The padding moved onto the button so the hit area is the
                cell. -->
-          <th data-dither-fill
+          <th
             scope="row"
-            class={cn('sticky left-0 z-10 p-0 font-normal transition-colors', selected === m.id ? 'bg-card' : 'bg-panel')}
+            class={cn('sticky left-0 z-10 p-0 font-normal transition-colors', selected === m.id ? 'bg-card' : 'bg-panel group-dither-fill')}
           >
             <!-- THE ROW OPENS THE REPORT, and it has to look like it does. This
                  was a bare button with no hover state of its own inside a row
