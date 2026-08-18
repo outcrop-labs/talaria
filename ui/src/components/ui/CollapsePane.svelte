@@ -18,6 +18,7 @@
     style,
     class: className,
     children,
+    ...rest
   }: {
     collapsed: boolean
     /** Expanded width class, e.g. 'w-[208px]'. May carry responsive variants
@@ -26,6 +27,10 @@
     /** Collapsed width class, e.g. 'w-16'. Both must resolve to fixed widths — auto can't glide. */
     collapsedWidth: string
     tag?: 'div' | 'nav' | 'aside' | 'section'
+    /** Anything else lands on the element — presence listeners, data-*, aria-*.
+     *  The pane is a plain box that animates its width; it has no reason to
+     *  swallow the attributes a caller would put on the element it replaces. */
+    [key: string]: unknown
     /** false while the user is drag-resizing: the width must track the
      *  pointer instantly, not chase it through the transition. */
     animate?: boolean
@@ -44,6 +49,7 @@
     collapsed ? collapsedWidth : width,
     className,
   )}
+  {...rest}
 >
   {@render children()}
 </svelte:element>

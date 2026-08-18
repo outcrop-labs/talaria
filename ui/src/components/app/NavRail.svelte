@@ -1,5 +1,8 @@
 <script lang="ts" module>
   import type { SessionUser } from '@/lib/session'
+  import DitherLayer from '@/components/ui/DitherLayer.svelte'
+  import DitherPool from '@/components/ui/DitherPool.svelte'
+  import type { DitherSource } from '@/lib/dither'
 
   function userInitials(user: SessionUser): string {
     const base = user.name?.trim() || user.email || '?'
@@ -95,6 +98,27 @@
 
   // The active match feeding the data-status attribute (was TanStack Link's
   // activeOptions job — same exact/fuzzy semantics).
+  // AMBIENT TEXTURE ON THE RAIL, and the halo under whatever is active.
+  //
+  // A whisper by default and a notch louder while the pointer is over the
+  // panel, so the field surfaces on approach instead of shouting all day. It
+  // is presence, not interaction: nothing here is clickable and nothing about
+  // it reaches assistive tech.
+  //
+  // Subtlety here is TRANSPARENCY, not scarcity. The field keeps a real dot
+  // population and caps its alpha at a ghost of the halo's, which is what lets
+  // it read as the surface having material rather than as dots scattered on
+  // one. Shimmer is presence-gated and is the only motion in the rail.
+  let inside = $state(false)
+  const ambient = $derived.by((): DitherSource[] => {
+    const a = inside ? { chrome: 0.2, grain: 0.05, foot: 0.09 } : { chrome: 0.14, grain: 0.035, foot: 0.06 }
+    return [
+      { id: 'chrome', kind: 'edge', side: 'top', depth: 64, strength: a.chrome },
+      { id: 'grain', kind: 'uniform', strength: a.grain },
+      { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot },
+    ]
+  })
+
   const statusFor = (item: NavItem): 'active' | undefined =>
     (exactFor(item) ? pathname === item.to : pathname === item.to || pathname.startsWith(item.to + '/'))
       ? 'active'
@@ -110,7 +134,25 @@
      to be separate <nav>s, so the flip snapped with no animation possible).
      Inner divs pin each variant's width so content clips during the glide
      instead of squishing. -->
-<CollapsePane tag="nav" collapsed={nav.collapsed} width="w-[208px]" collapsedWidth="w-16" class="h-full shrink-0 border-r border-line bg-sidebar">
+<!-- `relative` anchors the two fields. CollapsePane already clips
+     (`overflow-hidden`, so the width animation does not spill), which means
+     the active halo's bleed is cropped at the rail's edge rather than
+     spilling onto the stage. That is the right side of the trade here: a halo
+     that leaks across the rail's border would read as a rendering fault. -->
+<CollapsePane
+  tag="nav"
+  collapsed={nav.collapsed}
+  width="w-[208px]"
+  collapsedWidth="w-16"
+  class="relative h-full shrink-0 border-r border-line bg-sidebar"
+  onmouseenter={() => (inside = true)}
+  onmouseleave={() => (inside = false)}
+>
+<DitherLayer sources={ambient} shimmer={inside ? 0.12 : 0} organic={0.5} alphaFloor={0.04} maxAlpha={0.14} />
+<!-- The halo rides the active item, and glides when the selection moves. It
+     re-measures on collapse too, so it follows the rail's own 200ms width
+     animation instead of teleporting to the icon tile. -->
+<DitherPool key={`${route.pathname}:${nav.collapsed}`} selector="[data-status='active']" falloff={3} />
 {#if nav.collapsed}
   <!-- ── Icon rail (64px, spec §5) ───────────────────────────────────────── -->
   <div class="flex h-full w-16 flex-col items-center pb-5 pt-3">

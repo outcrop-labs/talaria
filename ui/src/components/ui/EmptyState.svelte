@@ -61,16 +61,27 @@
     {title}{hint ? ` — ${hint}` : ''}
   </div>
 {:else}
+  <!-- EDGE TO EDGE. The padding moved OFF this box and onto the content
+       inside it, because the vignette fills this box — and any padding here is
+       a band of container the treatment cannot reach, so the zero state reads
+       as a textured card floating inside an untextured one. The words are
+       still inset by exactly as much as before; it is the field that grew. -->
   <div
     class={cn(
-      variant === 'full' ? 'grid h-full place-items-center p-6' : 'px-2 py-6',
+      variant === 'full' ? 'grid h-full place-items-center' : '',
       'text-center',
       wantsVignette && 'relative overflow-hidden',
       className,
     )}
   >
     {#if wantsVignette}<DitherLayer {sources} organic={0.55} />{/if}
-    <div class={cn('relative max-w-xs', variant === 'compact' && 'mx-auto')}>
+    <div
+      class={cn(
+        'relative max-w-xs',
+        variant === 'full' ? 'p-6' : 'px-2 py-6',
+        variant === 'compact' && 'mx-auto',
+      )}
+    >
       <div class={cn('mx-auto text-ink-dim', variant === 'full' ? 'mb-3 text-3xl' : 'mb-2 text-xl')}>
         {#if typeof icon === 'string'}{icon}{:else}{@render icon()}{/if}
       </div>
