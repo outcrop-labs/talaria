@@ -146,7 +146,7 @@
       {#if ep.models.length > 0}
         <div class="mb-2 divide-y divide-line">
           {#each ep.models as m (m)}
-            <div class="flex items-center gap-2 py-1.5 text-sm transition-colors hover:bg-hover">
+            <div class="flex items-center gap-2 py-1.5 text-sm transition-colors hover:dither-fill">
               <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m}</span>
               <Button variant="ghost" size="xs" class="shrink-0 hover:text-danger" onclick={() => removeModel(m)}>
                 Remove

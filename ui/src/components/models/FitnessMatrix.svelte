@@ -135,14 +135,14 @@
         {@const summary = rowSummary(entry, ordered)}
         <!-- `group` so the hover reaches the STICKY cell too: it carries its
              own opaque background (it has to — the body scrolls under it), so
-             a row-level `hover:bg-hover` stopped dead at the model name and the
+             a row-level `hover:dither-fill` stopped dead at the model name and the
              highlight that helps you track a row across fifteen columns was
              missing from the one column you read it from.
 
              `border-line`, not `border-line-subtle`: subtle is #232019 against
              a #141312 panel, which is a rule you cannot see. -->
         <tr
-          class={cn('group border-b border-line transition-colors last:border-0 hover:bg-hover', selected === m.id && 'bg-card')}
+          class={cn('group border-b border-line transition-colors last:border-0 hover:dither-fill', selected === m.id && 'bg-card')}
         >
           <!-- THE WHOLE CELL IS THE TARGET. The button used to be a shrink-wrapped
                box around the text, so the dead space beside a short model id —
@@ -151,7 +151,7 @@
                cell. -->
           <th
             scope="row"
-            class={cn('sticky left-0 z-10 p-0 font-normal transition-colors', selected === m.id ? 'bg-card' : 'bg-panel group-hover:bg-hover')}
+            class={cn('sticky left-0 z-10 p-0 font-normal transition-colors', selected === m.id ? 'bg-card' : 'bg-panel group-hover:dither-fill')}
           >
             <!-- THE ROW OPENS THE REPORT, and it has to look like it does. This
                  was a bare button with no hover state of its own inside a row

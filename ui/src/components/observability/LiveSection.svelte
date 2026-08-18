@@ -1,5 +1,5 @@
 <script lang="ts">
-  import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatCard from '@/components/ui/StatCard.svelte'
@@ -30,9 +30,9 @@
     {#snippet value()}
       {#if generatingTotal}
         <span class="flex items-center gap-2">
-          <!-- Live monitor, not an inline action — MONITOR BREATHE on
-               the ambient budget (spec §9). -->
-          {generatingTotal} <GeneratingDots variant="breathe" />
+          <!-- Live monitor, not an inline action — the background rung
+               (spec §9), which the site table pins for both of these. -->
+          {generatingTotal} <WaitingMark site="observability/live-total" size={12} class="text-accent" />
         </span>
       {:else}
         0
@@ -56,9 +56,9 @@
     <SectionHeader title="Active this hour" action={String(live.lastHour.length).padStart(2, '0')} />
     <div class="divide-y divide-line" use:listStagger>
       {#each live.lastHour as a (a.agentModel)}
-        <div class="flex items-center gap-3 py-3 text-sm transition-colors hover:bg-hover">
+        <div class="flex items-center gap-3 py-3 text-sm transition-colors hover:dither-fill">
           <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{a.agentModel}</span>
-          {#if genByAgent.has(a.agentModel)}<GeneratingDots variant="breathe" />{/if}
+          {#if genByAgent.has(a.agentModel)}<WaitingMark site="observability/live-agent" size={12} class="text-accent" />{/if}
           <span class="shrink-0 font-mono text-[11px] text-muted">{a.generations} gen</span>
           <span class="shrink-0 font-mono text-[11px] text-muted">{formatTokens(a.tokens)} tokens</span>
           <span class="w-16 shrink-0 text-right font-mono text-[11px] text-muted">{relativeTime(a.lastAt)}</span>

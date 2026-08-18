@@ -18,7 +18,7 @@
 </script>
 
 {#if !open}
-  <Button variant="ghost" size="xs" class="w-full py-1.5 text-left hover:bg-hover" onclick={() => (open = true)}>
+  <Button variant="ghost" size="xs" class="w-full py-1.5 text-left hover:dither-fill" onclick={() => (open = true)}>
     + Add card
   </Button>
 {:else}

@@ -79,7 +79,7 @@
     <div class="space-y-3">
       <div class="flex items-center gap-2">
         <Skeleton class="h-4 w-4" />
-        <Skeleton class="h-3 w-56 rounded-full" delay={0.12} />
+        <Skeleton class="h-3 w-56 rounded-full" />
       </div>
       <SkeletonRows rows={3} />
     </div>
@@ -103,7 +103,7 @@
     {#if restricted}
       <div class="space-y-1 rounded-lg border border-line p-2">
         {#each models as m (m.id)}
-          <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-hover">
+          <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:dither-fill">
             <input
               type="checkbox"
               checked={selection.includes(m.id)}

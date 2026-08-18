@@ -170,9 +170,10 @@
               data-status={statusFor(item)}
               aria-label={item.label}
               class={cn(
-                'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
+                'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg',
                 'data-[status=active]:bg-raised data-[status=active]:text-fg',
                 '[&[data-status=active]_svg]:h-[22px] [&[data-status=active]_svg]:w-[22px]',
+                'data-[status=active]:dither-bloom',
               )}
             >
               <NavIcon icon={item.icon} />
@@ -208,7 +209,7 @@
             type="button"
             onclick={() => void appsQuery.refetch()}
             aria-label="App links unavailable — retry"
-            class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms] hover:bg-hover"
+            class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms] hover:dither-fill"
           >
             <TriangleAlert size={16} strokeWidth={1.5} />
           </button>
@@ -219,7 +220,7 @@
           type="button"
           onclick={nav.toggleCollapsed}
           aria-label="Expand navigation"
-          class="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+          class="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg"
         >
           <ChevronsRight size={16} strokeWidth={1.5} />
         </button>
@@ -261,8 +262,10 @@
                   href={item.to}
                   data-status={statusFor(item)}
                   class={cn(
-                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
-                    'data-[status=active]:bg-raised data-[status=active]:font-medium data-[status=active]:text-fg',
+                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg',
+                    // Active gains the solid tile AND keeps the texture — same bloom as hover,
+                    // materialised. `relative` so both paint under the label.
+                    'relative data-[status=active]:bg-raised data-[status=active]:dither-bloom data-[status=active]:font-medium data-[status=active]:text-fg',
                     '[&[data-status=active]_.nav-bar]:bg-accent [&[data-status=active]_.nav-ico]:text-fg',
                   )}
                 >
@@ -312,7 +315,7 @@
         type="button"
         onclick={nav.toggleCollapsed}
         aria-label="Collapse navigation"
-        class="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+        class="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg"
       >
         <ChevronsLeft size={13} strokeWidth={1.5} />
       </button>

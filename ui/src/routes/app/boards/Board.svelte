@@ -5,7 +5,7 @@
   import { CalendarRange, Layers, LayoutGrid, List, Plus } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
+  import BoardSkeleton from './BoardSkeleton.svelte'
   import BoardHeader from '@/components/board/BoardHeader.svelte'
   import Kanban from '@/components/board/Kanban.svelte'
   import BoardList from '@/components/board/BoardList.svelte'
@@ -343,7 +343,7 @@
     cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
       focusGold,
-      active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+      active ? 'bg-raised text-fg' : 'text-muted hover:dither-fill hover:text-fg',
     )
   // Opening a ticket keeps the CURRENT view/filter state — the overlay sits
   // on top of whatever view you were in, and closing returns you to it.
@@ -365,16 +365,7 @@
      false-deletion sentence this whole path exists to prevent. Neither list has
      spoken until both have. -->
 {#if isLoading || archivedLoading || (board && !showArchived && tasksLoading)}
-  <div class="grid h-full grid-cols-2 gap-3 overflow-hidden p-6 sm:grid-cols-4">
-    {#each [0, 1, 2, 3] as c (c)}
-      <div class="space-y-3">
-        <Skeleton class="h-3 w-20 rounded-full" delay={c * 0.1} />
-        {#each [0, 1, 2] as r (r)}
-          <SkeletonCard delay={c * 0.1 + r * 0.15} />
-        {/each}
-      </div>
-    {/each}
-  </div>
+  <BoardSkeleton {view} />
 {:else if !board && boardListQuery.isError && boardListQuery.data === undefined}
   <QueryError
     error={boardListQuery.error}
@@ -442,7 +433,7 @@
             focusGold,
             search.v === sv.id
               ? 'border-[var(--theme-accent-border)] bg-raised text-fg'
-              : 'border-transparent text-muted hover:bg-hover hover:text-fg',
+              : 'border-transparent text-muted hover:dither-fill hover:text-fg',
           )}
         >
           <TypeIcon size={12} class={cn('shrink-0', search.v === sv.id ? 'text-accent' : 'opacity-70')} />

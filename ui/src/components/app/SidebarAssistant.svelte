@@ -72,7 +72,7 @@
       <a
         href="/settings/assistant"
         aria-label="Set up your assistant"
-        class="relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+        class="relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg"
       >
         <Bot size={16} strokeWidth={1.5} />
       </a>
@@ -84,7 +84,7 @@
         aria-label={label}
         aria-expanded={panelOpen}
         class={cn(
-          'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
+          'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:dither-fill hover:text-fg',
           panelOpen && 'bg-raised text-fg',
         )}
       >
@@ -103,7 +103,7 @@
         <Skeleton class="h-7 w-7 rounded-full" />
         <div class="min-w-0 flex-1 space-y-1.5">
           <Skeleton class="h-2 w-20 rounded-full" />
-          <Skeleton class="h-1.5 w-12 rounded-full" delay={0.08} />
+          <Skeleton class="h-1.5 w-12 rounded-full" />
         </div>
       </div>
     {:else if status === 'none'}
@@ -111,7 +111,7 @@
            conversation, so it points at the thing that fixes that instead. -->
       <a
         href="/settings/assistant"
-        class="flex h-11 items-center gap-2.5 rounded-lg border border-dashed border-line px-2.5 text-left transition-colors duration-[120ms] hover:border-line-strong hover:bg-hover"
+        class="flex h-11 items-center gap-2.5 rounded-lg border border-dashed border-line px-2.5 text-left transition-colors duration-[120ms] hover:border-line-strong hover:dither-fill"
       >
         <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line text-muted"><Plus size={14} strokeWidth={1.5} /></span>
         <span class="min-w-0 flex-1">
@@ -128,7 +128,7 @@
         title={label}
         class={cn(
           'group flex h-11 w-full items-center gap-2.5 rounded-lg border px-2.5 text-left transition-colors duration-[120ms]',
-          panelOpen ? 'border-line-strong bg-raised' : 'border-line-subtle hover:border-line hover:bg-hover',
+          panelOpen ? 'border-line-strong bg-raised' : 'border-line-subtle hover:border-line hover:dither-fill',
         )}
       >
         <span class="relative shrink-0">

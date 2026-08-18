@@ -182,9 +182,9 @@
       <ul aria-hidden="true" class="divide-y divide-line rounded-lg border border-line">
         {#each [0, 1] as i (i)}
           <li class="flex items-center gap-3 px-3.5 py-3.5">
-            <Skeleton class="h-3 w-32 rounded-full" delay={i * 0.12} />
-            <Skeleton class="h-2.5 w-14 rounded-full" delay={i * 0.12 + 0.12} />
-            <Skeleton class="ml-auto h-2.5 w-24 rounded-full" delay={i * 0.12 + 0.24} />
+            <Skeleton class="h-3 w-32 rounded-full" />
+            <Skeleton class="h-2.5 w-14 rounded-full" />
+            <Skeleton class="ml-auto h-2.5 w-24 rounded-full" />
           </li>
         {/each}
       </ul>
@@ -195,7 +195,7 @@
     {#snippet children(secrets)}
       <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
         {#each secrets as s (s.name)}
-          <li class="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-hover">
+          <li class="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:dither-fill">
             <code class="font-mono text-sm text-fg">{s.name}</code>
             <span class="font-mono text-xs text-muted">••••••••</span>
             <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">

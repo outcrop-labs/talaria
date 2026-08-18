@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { Check, Plus } from '@lucide/svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -87,7 +87,7 @@
         placeholder="Search the official MCP registry — GitHub, Linear, Notion, Stripe, Vercel…"
         class="max-w-xl"
       />
-      {#if resultsQuery.isFetching}<GeneratingBars bars={3} variant="scan" class="text-muted" />{/if}
+      {#if resultsQuery.isFetching}<WaitingMark site="mcp/search" size={12} class="text-muted" />{/if}
       <span class="flex-1"></span>
       <button type="button" onclick={onCustom} class="text-xs text-accent hover:underline">
         Custom / self-hosted server →
@@ -105,10 +105,10 @@
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {#each Array.from({ length: 9 }, (_, i) => i) as i (i)}
             <div class="rounded-lg border border-line-subtle bg-surface p-4">
-              <Skeleton class="h-3.5 w-32 rounded-full" delay={i * 0.08} />
-              <Skeleton class="mt-2 h-2.5 w-24 rounded-full" delay={i * 0.08 + 0.06} />
-              <Skeleton class="mt-3 h-2.5 w-full rounded-full" delay={i * 0.08 + 0.12} />
-              <Skeleton class="mt-1.5 h-2.5 w-4/5 rounded-full" delay={i * 0.08 + 0.18} />
+              <Skeleton class="h-3.5 w-32 rounded-full" />
+              <Skeleton class="mt-2 h-2.5 w-24 rounded-full" />
+              <Skeleton class="mt-3 h-2.5 w-full rounded-full" />
+              <Skeleton class="mt-1.5 h-2.5 w-4/5 rounded-full" />
             </div>
           {/each}
         </div>
@@ -126,7 +126,7 @@
             {@const busy = busyAdd === l.registryName}
             {@const badge = TIER_BADGE[l.tier]}
             <div
-              class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line hover:bg-hover"
+              class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line hover:dither-fill"
             >
               <div class="flex items-center gap-3">
                 <McpServerMark title={l.title} domain={l.domain} icon={l.icon} size={34} />
@@ -172,7 +172,7 @@
                         : 'border-line bg-raised text-muted opacity-0 hover:border-accent hover:text-accent group-hover:opacity-100',
                     )}
                   >
-                    {#if busy}<GeneratingBars bars={3} variant="weave" step={0.15} />{:else}<Plus size={14} />{/if}
+                    {#if busy}<WaitingMark site="mcp/install" size={12} />{:else}<Plus size={14} />{/if}
                   </button>
                 {/if}
               </div>

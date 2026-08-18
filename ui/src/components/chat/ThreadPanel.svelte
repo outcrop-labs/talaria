@@ -64,7 +64,7 @@
     <button
       type="button"
       onclick={onClose}
-      class="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+      class="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:dither-fill hover:text-fg"
       title="Close thread"
     >
       <X size={14} />
@@ -90,10 +90,10 @@
       <div aria-hidden="true" class="space-y-4">
         {#each Array.from({ length: 3 }) as _, i (i)}
           <div class="flex gap-2.5">
-            <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded" delay={i * 0.12} />
+            <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded" />
             <div class="min-w-0 flex-1 space-y-2 pt-1">
-              <Skeleton class="h-2.5 w-20 rounded-full" delay={i * 0.12} />
-              <Skeleton class="h-2.5 w-4/5 rounded-full" delay={i * 0.12 + 0.06} />
+              <Skeleton class="h-2.5 w-20 rounded-full" />
+              <Skeleton class="h-2.5 w-4/5 rounded-full" />
             </div>
           </div>
         {/each}

@@ -88,7 +88,7 @@
         onclick={() => (reading = true)}
         title="Expand"
         aria-label="Expand description"
-        class="grid h-6 w-6 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg"
+        class="grid h-6 w-6 place-items-center rounded text-muted transition-colors hover:dither-fill hover:text-fg"
       >
         <Maximize2 size={13} />
       </button>
@@ -109,7 +109,7 @@
       transition:fly={{ x: '100%', duration: 200 }}
     >
       <div class="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
-        <Button variant="ghost" size="xs" class="gap-1 py-1 hover:bg-hover" onclick={() => (reading = false)}>
+        <Button variant="ghost" size="xs" class="gap-1 py-1 hover:dither-fill" onclick={() => (reading = false)}>
           <ChevronLeft size={14} /> Back
         </Button>
         <div class="min-w-0 flex-1 truncate text-center font-sans text-sm font-semibold text-fg">{title}</div>

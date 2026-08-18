@@ -161,14 +161,14 @@
             <div class="divide-y divide-line-subtle">
               {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
                 <div class="flex items-center gap-3 py-3">
-                  <Skeleton class="h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                  <Skeleton class="h-7 w-7 shrink-0 rounded-full" />
                   <div class="min-w-0 flex-1 space-y-1.5">
-                    <Skeleton class="h-2.5 w-36 rounded-full" delay={i * 0.12} />
-                    <Skeleton class="h-2 w-48 rounded-full" delay={i * 0.12 + 0.06} />
+                    <Skeleton class="h-2.5 w-36 rounded-full" />
+                    <Skeleton class="h-2 w-48 rounded-full" />
                   </div>
-                  <Skeleton class="h-7 w-28 shrink-0" delay={i * 0.12} />
-                  <Skeleton class="h-4 w-12 shrink-0" delay={i * 0.12} />
-                  <Skeleton class="h-2.5 w-16 shrink-0 rounded-full" delay={i * 0.12} />
+                  <Skeleton class="h-7 w-28 shrink-0" />
+                  <Skeleton class="h-4 w-12 shrink-0" />
+                  <Skeleton class="h-2.5 w-16 shrink-0 rounded-full" />
                 </div>
               {/each}
             </div>
@@ -191,7 +191,7 @@
                   ...workViews.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to),
                   ...manageViews.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
                 ]}
-                <li class="-mx-2 space-y-2 rounded-md px-2 py-3 transition-colors hover:bg-hover">
+                <li class="-mx-2 space-y-2 rounded-md px-2 py-3 transition-colors hover:dither-fill">
                   <div class="flex items-center gap-3">
                     <Avatar name={u.name ?? u.email} class="h-7 w-7" />
                     <span class="min-w-0 flex-1">

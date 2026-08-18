@@ -96,7 +96,7 @@
           out:slide={{ duration: 120 }}
           href={p('/boards/:boardId', { params: { boardId: board.id } })}
           onclick={() => (query = '')}
-          class="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors hover:bg-hover hover:text-fg"
+          class="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors hover:dither-fill hover:text-fg"
         >
           <FolderKanban size={14} strokeWidth={1.5} class="shrink-0" />
           <span class="min-w-0 flex-1 truncate font-sans text-[12px]">{board.name}</span>
@@ -109,7 +109,7 @@
           out:slide={{ duration: 120 }}
           href={p('/boards/:boardId/:taskId', { params: { boardId: task.boardId, taskId: task.id } })}
           onclick={() => (query = '')}
-          class="flex min-h-8 items-start gap-2 rounded-md px-2 py-1.5 text-muted transition-colors hover:bg-hover hover:text-fg"
+          class="flex min-h-8 items-start gap-2 rounded-md px-2 py-1.5 text-muted transition-colors hover:dither-fill hover:text-fg"
         >
           <ListTodo size={14} strokeWidth={1.5} class="mt-px shrink-0" />
           <span class="min-w-0 flex-1">
@@ -146,7 +146,7 @@
         type="button"
         onclick={() => (query = '')}
         aria-label="Clear search"
-        class="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg"
+        class="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted transition-colors hover:dither-fill hover:text-fg"
       >
         <X size={12} strokeWidth={1.7} />
       </button>

@@ -32,7 +32,7 @@
   import Input from '@/components/ui/Input.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Steps from '@/components/ui/Steps.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { slide, staggerIn } from '@/lib/motion'
@@ -123,7 +123,7 @@
           Back
         </Button>
         <Button size="sm" onclick={() => void launch()} disabled={busy}>
-          {#if busy}<GeneratingBars bars={3} variant="weave" step={0.15} />{/if}
+          {#if busy}<WaitingMark site="assistant/wizard" size={12} />{/if}
           {busy ? 'Creating' : 'Create assistant'}
         </Button>
       </div>
@@ -196,7 +196,7 @@
                   class={cn(
                     'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
                     focusGold,
-                    personality === preset.text ? 'border-accent text-accent' : 'border-line text-muted hover:bg-hover hover:text-fg',
+                    personality === preset.text ? 'border-accent text-accent' : 'border-line text-muted hover:dither-fill hover:text-fg',
                   )}
                 >
                   {preset.label}

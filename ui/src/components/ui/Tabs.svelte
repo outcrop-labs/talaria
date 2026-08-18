@@ -39,7 +39,7 @@
       class={cn(
         'relative flex h-7 items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
         focusGold,
-        value === t.id ? 'text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+        value === t.id ? 'text-fg dither-bloom' : 'text-muted hover:dither-fill hover:text-fg',
       )}
     >
       {#if value === t.id}

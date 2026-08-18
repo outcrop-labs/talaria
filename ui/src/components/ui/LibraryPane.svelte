@@ -193,7 +193,10 @@
                     aria-current={active ? 'true' : undefined}
                     class={cn(
                       'min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left font-sans text-[13px] transition-colors',
-                      active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+                      // Selected keeps the texture and GAINS the solid tile — the two states
+                      // differ by whether the surface has arrived, not by whether there
+                      // is any texture at all.
+                      active ? 'bg-raised dither-bloom text-fg' : 'text-muted hover:dither-fill hover:text-fg',
                     )}
                   >
                     {#if row}{@render row(item, active)}{:else}{labelOf(item)}{/if}

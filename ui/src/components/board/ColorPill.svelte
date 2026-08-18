@@ -72,7 +72,7 @@
               onChange(null)
               close()
             }}
-            class="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-hover hover:text-danger"
+            class="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:dither-fill hover:text-danger"
           >
             Clear color
           </button>

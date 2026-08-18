@@ -173,7 +173,7 @@
                   : []),
               ])}
             class={cn(
-              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover',
+              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors hover:dither-fill',
               selectedId === r.id ? 'bg-card' : '',
             )}
           >

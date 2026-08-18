@@ -38,7 +38,43 @@
 
   /* Brand is a single FLAT warm gold — the old bronze gradient is retired. */
   --brand-gold: #c8b46c;
-  --chat-content-max-width: 900px;
+  /* ── The width scale ──────────────────────────────────────────────────
+     Four widths, and every centred column in the app is one of them. Before
+     this there were nine: page surfaces alone ran 672 / 896 / 1024 / 1152,
+     Models changed width between its OWN tabs, and the AppLayout skeleton was
+     wider than most of the content it stood in for — so a cold load settled
+     narrower and a tab change slid sideways.
+
+     They are tokens rather than Tailwind classes at the call sites because the
+     drift was the point of failure: `max-w-5xl` at forty call sites is forty
+     independent decisions, and four of them will be wrong within a month. One
+     name, one place, and `PageSurface` applies it so a view cannot opt out by
+     accident.
+
+     Why these four and not one: a width is a MEASURE, and the three narrow
+     ones exist because their content is read rather than scanned. Forcing
+     prose to 1152px is ~145 characters a line, which is unreadable — the jank
+     the scale fixes is FRAMES moving between views, not columns differing in
+     kind. */
+
+  /* Centred page surfaces: Home, Agents, Models, MCP, Observability, Studio,
+     Templates, Apps, Admin, Settings. The widest that was already in use, so
+     adopting it made every view wider or the same and compressed nothing. */
+  --page-width: 1152px;
+
+  /* Chat, Plan and Research transcripts. A conversation is read in turns, so
+     it wants a measure, but its rows carry chips and tool output that a prose
+     column would wrap badly. */
+  --converse-width: 900px;
+
+  /* The Home focus column: the inbox queue and the daily brief. These two are
+     sibling TABS — they were 760 and 800, so switching between them moved the
+     page 40px for no reason anyone could have named. */
+  --focus-width: 800px;
+
+  /* Long-form prose: KB documents, artifact bodies, public share pages. The
+     only one picked for typography rather than layout. */
+  --read-width: 46rem;
 
   /* Motion grammar timing ladder (spec §9): loop budgets for loaders. */
   --motion-immediate: 750ms;
@@ -519,6 +555,66 @@ kbd,
 .select-text, .select-text * {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* ── Dithered fill: hover, and selection ─────────────────────────────────────
+   A SURFACE THAT HAS NOT FINISHED MATERIALISING. The solid `bg-hover` fill
+   becomes a dotted one at the same colour: half there on approach, resolving
+   to a solid tile when the row is actually chosen. Hover is a question and
+   selection is the answer, and the two now differ by whether the surface
+   underneath has arrived — not by whether there is any texture at all, which
+   is why `dither-bloom` goes on BOTH.
+
+   IT BLOOMS FROM THE CONTENT. The mask is radial, so density peaks in the
+   middle of the control and thins toward its edges — the texture gathers
+   around the label rather than tiling the whole box evenly. A slab at uniform
+   density has no shape and reads as a rectangular patch stuck on the row; this
+   reads as the row's own surface, brightest where the words are.
+
+   IT IS ALWAYS UNDER THE TEXT, by construction: a background image paints
+   below its element's own content, so no z-index or stacking context is
+   involved and no call site can get the order wrong.
+
+   CSS AND NOT THE CANVAS ENGINE. `DitherEngine` is for fields whose density
+   varies over TIME as well as space — halos that tween, vignettes that
+   shimmer — and it costs a canvas and an rAF loop each. These are static, so
+   they are background images: no cost, and they scale to all 126 call sites.
+   A board list would otherwise mount a canvas per row.
+
+   STRENGTH IS THE DOT COLOUR, not the coverage. The dots cover about a
+   quarter of the surface, so drawing them in `--theme-hover` — the colour the
+   SOLID fill uses — lands at roughly a quarter of that fill's weight and
+   disappears. They are drawn in the strong hairline tone instead, which is
+   brighter than the fill it replaces, so a quarter of it reads at about the
+   weight the solid one did. The token still tracks the theme, so this holds in
+   both modes.
+
+   THE DOT PATTERN, and why it is not one repeating dot:
+   · SOFT STOPS — a hard `colour 0.5px, transparent 0.5px` edge lands on exact
+     device pixels and paints square blocks. A dot small enough to be one pixel
+     IS a block. Ramping the stop lets the browser antialias it round.
+   · TWO OFFSET LAYERS — a single repeating dot puts every dot in a straight
+     row and column, which the eye reads as a screen door. Offsetting a second
+     layer diagonally staggers them the way an ordered dither does. */
+@utility dither-bloom {
+  background-image:
+    radial-gradient(circle at 25% 25%, var(--theme-border-strong) 0.45px, transparent 0.95px),
+    radial-gradient(circle at 75% 75%, var(--theme-border-strong) 0.45px, transparent 0.95px);
+  background-size: 3px 3px;
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
+  mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
+}
+
+/* Kept as the name 126 call sites already use for the HOVER case. Identical to
+   `dither-bloom` — selection differs by gaining a solid tile beneath, not by
+   losing the texture. */
+@utility dither-fill {
+  background-image:
+    radial-gradient(circle at 25% 25%, var(--theme-border-strong) 0.45px, transparent 0.95px),
+    radial-gradient(circle at 75% 75%, var(--theme-border-strong) 0.45px, transparent 0.95px);
+  background-size: 3px 3px;
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
+  mask-image: radial-gradient(ellipse at center, #000 0%, rgb(0 0 0 / 0.62) 58%, transparent 100%);
 }
 
 /* ── View transitions (spec §9) — REMOVED ────────────────────────────────────

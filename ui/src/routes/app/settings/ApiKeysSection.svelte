@@ -75,7 +75,7 @@
       <SkeletonRows rows={2} class="mb-4" />
       <div class="flex items-center gap-2">
         <Skeleton class="h-9 flex-1" />
-        <Skeleton class="h-9 w-24" delay={0.12} />
+        <Skeleton class="h-9 w-24" />
       </div>
     </div>
   {:else if !data}
@@ -90,7 +90,7 @@
           <div
             in:fade={{ duration: 150 }}
             out:slide={{ duration: 150 }}
-            class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors hover:bg-hover"
+            class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors hover:dither-fill"
           >
             <span class="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
             <code class="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>

@@ -71,7 +71,7 @@
           onclick={() => (filter = id as Suspicion | 'all')}
           class={cn(
             'rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
-            filter === id ? 'border-line bg-raised text-fg' : 'border-transparent text-muted hover:bg-hover hover:text-fg',
+            filter === id ? 'border-line bg-raised text-fg' : 'border-transparent text-muted hover:dither-fill hover:text-fg',
           )}
         >
           {label}

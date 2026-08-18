@@ -229,7 +229,7 @@
         <button
           type="button"
           onclick={() => (emojiOpen = !emojiOpen)}
-          class="rounded-md px-1 text-xl leading-none transition-colors hover:bg-hover"
+          class="rounded-md px-1 text-xl leading-none transition-colors hover:dither-fill"
           title="Set icon"
         >
           {doc.icon ?? '📄'}
@@ -519,7 +519,7 @@
               >
                 <button
                   type="button"
-                  class="px-2 py-1 transition-colors hover:bg-hover"
+                  class="px-2 py-1 transition-colors hover:dither-fill"
                   onmousedown={(e) => {
                     e.preventDefault()
                     pendingQuote = selPop!.quote
@@ -533,7 +533,7 @@
                 <span class="my-1 border-l border-line-subtle"></span>
                 <button
                   type="button"
-                  class="px-2 py-1 text-accent transition-colors hover:bg-hover"
+                  class="px-2 py-1 text-accent transition-colors hover:dither-fill"
                   onmousedown={(e) => {
                     e.preventDefault()
                     museSel = { text: selPop!.quote, source: 'read' }
@@ -578,7 +578,7 @@
                       <button
                         type="button"
                         onclick={() => onSelect(b.id)}
-                        class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-muted transition-colors hover:bg-hover hover:text-fg"
+                        class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-muted transition-colors hover:dither-fill hover:text-fg"
                       >
                         <span>{b.icon ?? '📄'}</span>
                         <span class="max-w-[16rem] truncate">{b.title}</span>

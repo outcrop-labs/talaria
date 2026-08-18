@@ -55,7 +55,7 @@
             onOpen(h)
             open = false
           }}
-          class="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
+          class="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:dither-fill"
         >
           <span class="flex items-center gap-1.5 text-xs text-fg">
             <span class="w-4 shrink-0 text-center">{h.icon ?? '📄'}</span>

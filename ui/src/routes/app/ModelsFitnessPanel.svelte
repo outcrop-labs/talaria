@@ -9,7 +9,7 @@
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import { MoreHorizontal } from '@lucide/svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -217,11 +217,11 @@
               onclick={() => run.model && select(run.model)}
               title="Open {run.model} — the live console, and failures as they land"
               class={cn(
-                'group/run flex items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg',
+                'group/run flex items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:dither-fill hover:text-fg',
                 focusGold,
               )}
             >
-              <GeneratingBars bars={3} variant="breathe" step={0.2} />
+              <WaitingMark site="models/fitness-panel" size={11} />
               <span class="underline decoration-dotted decoration-line underline-offset-2 group-hover/run:decoration-accent">{run.model}</span>
               · {run.phase === 'scoring' ? 'scoring' : run.phase ? TIER_META[run.phase].label : ''}
               {#if run.total > 0}
@@ -281,7 +281,7 @@
                     onSelect: () => void clearResults(null),
                   },
                 ])}
-              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:dither-fill hover:text-fg"
             >
               <MoreHorizontal size={14} aria-hidden="true" />
             </button>

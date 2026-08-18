@@ -71,7 +71,7 @@
       <div class="space-y-3.5">
         {#each skeletonWidths as w, i (i)}
           <div style:width={w}>
-            <Skeleton class="h-3.5 w-full rounded-full" delay={i * 0.08} />
+            <Skeleton class="h-3.5 w-full rounded-full" />
           </div>
         {/each}
       </div>
@@ -104,7 +104,7 @@
           </thead>
           <tbody>
             {#each sheet.rows as row, ri (ri)}
-              <tr class="transition-colors duration-120 hover:bg-hover">
+              <tr class="transition-colors duration-120 hover:dither-fill">
                 {#each row as cell, ci (ci)}
                   <td class="border border-line px-3 py-1.5 font-sans text-fg">{cell}</td>
                 {/each}

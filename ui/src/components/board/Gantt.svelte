@@ -247,10 +247,10 @@
       <!-- ── Header: months + day grid + zoom ── -->
       <div class="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur">
         <div style="width: {labelW}px" class="flex shrink-0 items-center gap-0.5 border-r border-line-subtle px-2">
-          <button onclick={() => zoom(-1)} title="Zoom out" class="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg">
+          <button onclick={() => zoom(-1)} title="Zoom out" class="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:dither-fill hover:text-fg">
             <Minus size={12} />
           </button>
-          <button onclick={() => zoom(1)} title="Zoom in" class="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg">
+          <button onclick={() => zoom(1)} title="Zoom in" class="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:dither-fill hover:text-fg">
             <Plus size={12} />
           </button>
           <span class="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Zoom</span>
@@ -311,7 +311,7 @@
           {@const late = isOverdueTask(r.task, boardStatuses)}
           <!-- Ticket color wins; status tint is the fallback. -->
           {@const c = r.task.color ? LABEL_CSS[r.task.color] : statusColorOf(r.task.status, boardStatuses)}
-          <div class="group flex h-12 items-center border-b border-line-subtle/60 transition-colors hover:bg-hover/40">
+          <div class="group flex h-12 items-center border-b border-line-subtle/60 transition-colors hover:dither-fill/40">
             <button
               onclick={() => onOpen(r.task.id)}
               style="width: {labelW}px"
@@ -392,7 +392,7 @@
               if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
             }}
             onclick={() => onOpen(t.id)}
-            class={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-hover', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')}
+            class={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:dither-fill', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')}
           >
             <span class="h-1.5 w-1.5 shrink-0 rounded-full" style:background={t.color ? LABEL_CSS[t.color] : statusColorOf(t.status, boardStatuses)}></span>
             {#if t.ticketRef}

@@ -50,14 +50,14 @@
          hold their footprint so the toggle never flashes unchecked. -->
     <div class="flex flex-wrap items-center gap-4">
       <Skeleton class="h-4 w-44 rounded-full" />
-      <Skeleton class="h-8 w-32" delay={0.12} />
-      <Skeleton class="h-8 w-28" delay={0.24} />
+      <Skeleton class="h-8 w-32" />
+      <Skeleton class="h-8 w-28" />
     </div>
     <div class="mt-3">
       <Skeleton class="mb-2 h-2.5 w-28 rounded-full" />
       <div class="flex flex-wrap gap-x-4 gap-y-1.5">
         {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
-          <Skeleton class="h-4 w-28 rounded-full" delay={i * 0.1} />
+          <Skeleton class="h-4 w-28 rounded-full" />
         {/each}
       </div>
     </div>
@@ -128,7 +128,7 @@
         <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent outreach</div>
         <div class="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
           {#each data.events as ev, i (i)}
-            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:bg-hover">
+            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:dither-fill">
               <span class="shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{ev.kind}</span>
               <span class="min-w-0 flex-1 truncate text-muted" title={ev.note ?? ''}>{ev.note ?? '—'}</span>
               <span class="shrink-0 font-mono text-[10px] text-muted">{ev.agentModel}</span>

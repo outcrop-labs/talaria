@@ -100,21 +100,21 @@
           <div class="mb-2 flex min-h-6 items-center gap-2">
             <Skeleton class="h-3.5 w-3.5 rounded" />
             <Skeleton class="h-2.5 w-16 rounded-full" />
-            <Skeleton class="h-2.5 w-48 rounded-full" delay={0.1} />
-            <span class="ml-auto"><Skeleton class="h-2.5 w-6 rounded" delay={0.15} /></span>
+            <Skeleton class="h-2.5 w-48 rounded-full" />
+            <span class="ml-auto"><Skeleton class="h-2.5 w-6 rounded" /></span>
           </div>
           <div class="rounded-lg border border-line bg-panel">
             <div class="divide-y divide-line">
               {#each [0, 1, 2, 3, 4, 5] as i (i)}
                 <div class="flex items-start gap-3 px-6 py-3">
-                  <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded-full" delay={i * 0.1} />
+                  <Skeleton class="mt-0.5 h-6 w-6 shrink-0 rounded-full" />
                   <div class="min-w-0 flex-1 space-y-1.5">
                     <div class="flex items-center gap-2">
-                      <Skeleton class={`h-3.5 rounded-full ${['w-24', 'w-20', 'w-28'][i % 3]}`} delay={i * 0.1} />
-                      <Skeleton class="h-2.5 w-16 rounded" delay={i * 0.1 + 0.06} />
-                      <span class="ml-auto"><Skeleton class="h-2.5 w-12 rounded" delay={i * 0.1 + 0.1} /></span>
+                      <Skeleton class={`h-3.5 rounded-full ${['w-24', 'w-20', 'w-28'][i % 3]}`} />
+                      <Skeleton class="h-2.5 w-16 rounded" />
+                      <span class="ml-auto"><Skeleton class="h-2.5 w-12 rounded" /></span>
                     </div>
-                    <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-2/3'][i % 3]}`} delay={i * 0.1 + 0.08} />
+                    <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-2/3'][i % 3]}`} />
                   </div>
                 </div>
               {/each}
@@ -151,7 +151,7 @@
               <button
                 type="button"
                 onclick={() => void navigateHref(e.href)}
-                class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-hover"
+                class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:dither-fill"
               >
                 <Avatar name={e.actor} class="mt-0.5 h-6 w-6 shrink-0 text-xs" />
                 <div class="min-w-0 flex-1">

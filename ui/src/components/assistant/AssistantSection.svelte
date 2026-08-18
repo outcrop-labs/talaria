@@ -101,31 +101,31 @@
     <div class="mb-4 flex items-center gap-3">
       <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
       <div class="min-w-0 flex-1 space-y-2">
-        <Skeleton class="h-3 w-32 rounded-full" delay={0.12} />
-        <Skeleton class="h-2.5 w-48 rounded-full" delay={0.24} />
+        <Skeleton class="h-3 w-32 rounded-full" />
+        <Skeleton class="h-2.5 w-48 rounded-full" />
       </div>
-      <Skeleton class="h-9 w-16 rounded-lg" delay={0.12} />
+      <Skeleton class="h-9 w-16 rounded-lg" />
     </div>
     <div class="mb-4 grid gap-4 sm:grid-cols-2">
       <div class="space-y-2">
         <Skeleton class="h-2.5 w-12 rounded-full" />
-        <Skeleton class="h-11 w-full" delay={0.12} />
+        <Skeleton class="h-11 w-full" />
       </div>
       <div class="space-y-2">
-        <Skeleton class="h-2.5 w-14 rounded-full" delay={0.12} />
-        <Skeleton class="h-11 w-full" delay={0.24} />
+        <Skeleton class="h-2.5 w-14 rounded-full" />
+        <Skeleton class="h-11 w-full" />
       </div>
     </div>
     <div class="mb-4 flex flex-wrap gap-1.5">
       <Skeleton class="h-6 w-16 rounded-full" />
-      <Skeleton class="h-6 w-16 rounded-full" delay={0.12} />
-      <Skeleton class="h-6 w-16 rounded-full" delay={0.24} />
+      <Skeleton class="h-6 w-16 rounded-full" />
+      <Skeleton class="h-6 w-16 rounded-full" />
     </div>
-    <Skeleton class="mb-6 h-20 w-full rounded-xl" delay={0.12} />
+    <Skeleton class="mb-6 h-20 w-full rounded-xl" />
     <div class="flex gap-2 border-t border-line pt-5">
       <Skeleton class="h-8 w-24 rounded-lg" />
-      <Skeleton class="h-8 w-16 rounded-lg" delay={0.12} />
-      <Skeleton class="h-8 w-16 rounded-lg" delay={0.24} />
+      <Skeleton class="h-8 w-16 rounded-lg" />
+      <Skeleton class="h-8 w-16 rounded-lg" />
     </div>
   </section>
 {:else if !assistant}
@@ -203,7 +203,7 @@
               class={cn(
                 'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
                 focusGold,
-                t.active ? 'border-accent text-accent' : 'border-line text-muted hover:bg-hover hover:text-fg',
+                t.active ? 'border-accent text-accent' : 'border-line text-muted hover:dither-fill hover:text-fg',
               )}
             >
               {t.name}

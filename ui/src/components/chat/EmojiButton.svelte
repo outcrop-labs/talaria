@@ -50,7 +50,7 @@
               onPick(e.ch)
               open = false
             }}
-            class="grid h-8 w-8 place-items-center rounded-md text-lg transition-colors hover:bg-hover"
+            class="grid h-8 w-8 place-items-center rounded-md text-lg transition-colors hover:dither-fill"
           >
             {e.ch}
           </button>

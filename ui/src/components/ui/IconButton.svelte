@@ -96,7 +96,7 @@
       'relative grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
       focusRing,
       size === 'sm' ? 'h-7 w-7' : 'h-8 w-8',
-      active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover',
+      active ? 'bg-raised text-fg' : 'text-muted hover:dither-fill',
       danger ? 'hover:text-danger' : 'hover:text-fg',
       className,
     )}
@@ -135,7 +135,7 @@
 
          A 2px lattice is a subdivision of the 4px one, so this stays in phase
          with every other field on the page rather than starting a second grid. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0} alphaFloor={0.02} maxAlpha={0.85} />
+    <DitherLayer {sources} bleed={BLEED} organic={0.25} alphaFloor={0.02} maxAlpha={0.85} />
     {@render control()}
   </span>
 {:else}

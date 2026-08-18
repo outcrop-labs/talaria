@@ -186,7 +186,7 @@
               onclick={() => select(o.owner)}
               class={cn(
                 'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                selectedKey === o.owner ? 'bg-raised' : 'hover:bg-hover',
+                selectedKey === o.owner ? 'bg-raised' : 'hover:dither-fill',
               )}
             >
               <Avatar name={o.label} class="h-8 w-8 shrink-0 text-xs" />
@@ -204,7 +204,7 @@
             onclick={() => select('shared')}
             class={cn(
               'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-              selectedKey === 'shared' ? 'bg-raised' : 'hover:bg-hover',
+              selectedKey === 'shared' ? 'bg-raised' : 'hover:dither-fill',
             )}
           >
             <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line text-sm text-muted">✦</span>
@@ -356,7 +356,7 @@
                       <button
                         type="button"
                         onclick={() => void navigate('/studio', { search: { a: selectedKey, w: w.id } })}
-                        class="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-hover"
+                        class="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:dither-fill"
                       >
                         <span class="min-w-0 flex-1">
                           <span class="block truncate text-sm font-medium text-fg">{w.name}</span>

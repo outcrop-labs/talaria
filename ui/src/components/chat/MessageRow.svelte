@@ -4,7 +4,7 @@
   import HoverAction from './HoverAction.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -113,8 +113,8 @@
       {:else if m.content}
         <Markdown children={m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content} />
       {:else if live}
-        <!-- Awaiting the agent's first token — SIGNAL WEAVE burst (spec §9). -->
-        <GeneratingDots class="py-1" />
+        <!-- Awaiting the agent's first token — the submitting rung (spec §9). -->
+        <WaitingMark site="chat/message-first-token" class="py-1 text-accent" />
       {/if}
       {#if m.attachments && m.attachments.length > 0}<MessageAttachments items={m.attachments} />{/if}
       <!-- Mounted unconditionally (findings nulled while live) so the caveat's
@@ -144,7 +144,7 @@
               'flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors',
               mine
                 ? 'border-accent bg-accent-soft text-fg'
-                : 'border-line bg-raised text-muted hover:bg-hover hover:text-fg',
+                : 'border-line bg-raised text-muted hover:dither-fill hover:text-fg',
             )}
           >
             <span>{r.emoji}</span>
@@ -183,7 +183,7 @@
           <button
             type="button"
             onclick={() => react(e)}
-            class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors hover:bg-hover"
+            class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors hover:dither-fill"
           >
             {e}
           </button>

@@ -47,14 +47,14 @@
          rules) — hold the full control area so no false defaults flash. -->
     <div class="flex flex-wrap items-center gap-4">
       <Skeleton class="h-8 w-40" />
-      <Skeleton class="h-4 w-40 rounded-full" delay={0.12} />
-      <Skeleton class="h-4 w-44 rounded-full" delay={0.24} />
+      <Skeleton class="h-4 w-40 rounded-full" />
+      <Skeleton class="h-4 w-44 rounded-full" />
     </div>
     <div class="mt-3 space-y-1.5">
       {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
         <div class="flex items-center gap-2 py-0.5">
-          <Skeleton class="h-4 w-4" delay={i * 0.1} />
-          <Skeleton class="h-3 w-48 rounded-full" delay={i * 0.1} />
+          <Skeleton class="h-4 w-4" />
+          <Skeleton class="h-3 w-48 rounded-full" />
         </div>
       {/each}
     </div>
@@ -123,7 +123,7 @@
         <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent findings</div>
         <div class="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
           {#each data.findings.slice(0, 20) as f (f.id)}
-            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:bg-hover">
+            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:dither-fill">
               <span class={cn('shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em]', f.severity === 'high' ? 'text-danger' : 'text-warning')}>{f.check.replace(/_/g, ' ')}</span>
               <span class="min-w-0 flex-1 truncate text-muted" title={f.snippet}>{f.snippet || f.message}</span>
               <span class="shrink-0 font-mono text-[10px] text-muted">{f.model}</span>
