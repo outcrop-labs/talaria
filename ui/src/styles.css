@@ -726,17 +726,24 @@ kbd,
     background-size: 260% 260%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: 64px 64px, 34% 46%, 46% 34%;
-    mask-size: 64px 64px, 34% 46%, 46% 34%;
+    -webkit-mask-size: 64px 64px, 14% 26%, 26% 14%;
+    mask-size: 64px 64px, 14% 26%, 26% 14%;
     -webkit-mask-position: 0 0, center, center;
     mask-position: 0 0, center, center;
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
     opacity: 0;
+    /* THE MASK CARRIES THE REVEAL, SO IT HAS TO OUTLAST THE FADE.
+       Measured off the page: opacity hit 0.99 at 197ms while the mask was
+       still at 93%, so the field was fully lit before it had finished
+       assembling, and the whole thing read as a switch. The fade is now brief
+       and early — it only has to stop the first dots appearing from nothing —
+       and the mask spends half a second spreading the field outward, which is
+       the part that looks like materialising. */
     transition:
-      opacity 130ms ease,
-      mask-size 260ms cubic-bezier(0.2, 0.7, 0.3, 1),
-      -webkit-mask-size 260ms cubic-bezier(0.2, 0.7, 0.3, 1);
+      opacity 110ms ease,
+      mask-size 520ms cubic-bezier(0.16, 0.84, 0.28, 1),
+      -webkit-mask-size 520ms cubic-bezier(0.16, 0.84, 0.28, 1);
   }
 
   &::after {
@@ -765,8 +772,8 @@ kbd,
     mask-composite: intersect, intersect;
     opacity: 0;
     transition:
-      opacity 160ms ease 60ms,
-      border-width 300ms cubic-bezier(0.2, 0.7, 0.3, 1) 60ms;
+      opacity 140ms ease 80ms,
+      border-width 560ms cubic-bezier(0.16, 0.84, 0.28, 1) 80ms;
   }
 
   &:hover::before,
@@ -874,17 +881,24 @@ kbd,
     background-size: 260% 260%;
     -webkit-mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
     mask-image: var(--dither-tile), linear-gradient(to right, rgb(0 0 0 / 0) 0%, #000 14%, #000 86%, rgb(0 0 0 / 0) 100%), linear-gradient(to bottom, rgb(0 0 0 / 0) 0%, #000 16%, #000 84%, rgb(0 0 0 / 0) 100%);
-    -webkit-mask-size: 64px 64px, 34% 46%, 46% 34%;
-    mask-size: 64px 64px, 34% 46%, 46% 34%;
+    -webkit-mask-size: 64px 64px, 14% 26%, 26% 14%;
+    mask-size: 64px 64px, 14% 26%, 26% 14%;
     -webkit-mask-position: 0 0, center, center;
     mask-position: 0 0, center, center;
     -webkit-mask-composite: source-in, source-in;
     mask-composite: intersect, intersect;
     opacity: 0;
+    /* THE MASK CARRIES THE REVEAL, SO IT HAS TO OUTLAST THE FADE.
+       Measured off the page: opacity hit 0.99 at 197ms while the mask was
+       still at 93%, so the field was fully lit before it had finished
+       assembling, and the whole thing read as a switch. The fade is now brief
+       and early — it only has to stop the first dots appearing from nothing —
+       and the mask spends half a second spreading the field outward, which is
+       the part that looks like materialising. */
     transition:
-      opacity 130ms ease,
-      mask-size 260ms cubic-bezier(0.2, 0.7, 0.3, 1),
-      -webkit-mask-size 260ms cubic-bezier(0.2, 0.7, 0.3, 1);
+      opacity 110ms ease,
+      mask-size 520ms cubic-bezier(0.16, 0.84, 0.28, 1),
+      -webkit-mask-size 520ms cubic-bezier(0.16, 0.84, 0.28, 1);
   }
 
   &:hover::before,

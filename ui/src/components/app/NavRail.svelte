@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { SessionUser } from '@/lib/session'
+  import { markCrossfade } from '@/lib/motion'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
   import type { DitherSource } from '@/lib/dither'
 
@@ -122,6 +123,13 @@
   // population and caps its alpha at a ghost of the halo's, which is what lets
   // it read as the surface having material rather than as dots scattered on
   // one. Shimmer is presence-gated and is the only motion in the rail.
+  // ONE MARK FOR THE WHOLE RAIL, so the selected tile travels between items
+  // instead of vanishing here and appearing there. The canvas that used to do
+  // this measured the active row and drew at its coordinates, which is why it
+  // lagged a row behind on scroll; an element cannot be wrong about where it
+  // is.
+  const [sendMark, receiveMark] = markCrossfade()
+
   let inside = $state(false)
   const ambient = $derived.by((): DitherSource[] => {
     const a = inside ? { chrome: 0.2, grain: 0.05, foot: 0.09 } : { chrome: 0.14, grain: 0.035, foot: 0.06 }
@@ -279,18 +287,26 @@
                   href={item.to}
                   data-status={statusFor(item)}
                   class={cn(
-                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] dither-bloom hover:text-fg',
-                    // Active gains the solid tile AND keeps the texture — same bloom as hover,
-                    // materialised. `relative` so both paint under the label.
-                    'relative data-[status=active]:bg-raised data-[status=active]:font-medium data-[status=active]:text-fg',
+                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] dither-fill hover:text-fg',
+                    // The selected tile is the MARK below, not a background on
+                    // this row — that is what lets it slide between rows.
+                    'relative data-[status=active]:font-medium data-[status=active]:text-fg',
                     '[&[data-status=active]_.nav-bar]:bg-accent [&[data-status=active]_.nav-ico]:text-fg',
                   )}
                 >
-                  <span class="nav-bar h-3.5 w-[3px] shrink-0 rounded-[2px] bg-transparent" aria-hidden="true"></span>
-                  <span class="nav-ico grid h-4 w-4 shrink-0 place-items-center text-muted">
+                  {#if statusFor(item)}
+                    <span
+                      aria-hidden="true"
+                      in:receiveMark={{ key: 'rail-mark' }}
+                      out:sendMark={{ key: 'rail-mark' }}
+                      class="dither-mark absolute inset-0 rounded-md bg-raised"
+                    ></span>
+                  {/if}
+                  <span class="nav-bar relative h-3.5 w-[3px] shrink-0 rounded-[2px] bg-transparent" aria-hidden="true"></span>
+                  <span class="nav-ico relative grid h-4 w-4 shrink-0 place-items-center text-muted">
                     <NavIcon icon={item.icon} />
                   </span>
-                  <span class="flex-1 truncate">{item.label}</span>
+                  <span class="relative flex-1 truncate">{item.label}</span>
                   {#if item.to === '/home' && showUnread}
                     <!-- Spec §5: nav counts are muted (#8E877E) — not accent.
                          The unreadable case is the one exception: it is not a
