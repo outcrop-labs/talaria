@@ -1,6 +1,7 @@
 <script lang="ts" module>
   import type { SessionUser } from '@/lib/session'
   import { markCrossfade } from '@/lib/motion'
+  import { ditherSurface } from '@/lib/dither-surface'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
   import type { DitherSource } from '@/lib/dither'
 
@@ -284,10 +285,11 @@
             {#each section.items as item (item.to)}
               <li>
                 <a
+                  {@attach ditherSurface()}
                   href={item.to}
                   data-status={statusFor(item)}
                   class={cn(
-                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] dither-fill hover:text-fg',
+                    'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:text-fg',
                     // The selected tile is the MARK below, not a background on
                     // this row — that is what lets it slide between rows.
                     'relative data-[status=active]:font-medium data-[status=active]:text-fg',
@@ -299,7 +301,8 @@
                       aria-hidden="true"
                       in:receiveMark={{ key: 'rail-mark' }}
                       out:sendMark={{ key: 'rail-mark' }}
-                      class="dither-mark absolute inset-0 rounded-md bg-raised"
+                      class="absolute inset-0 rounded-md bg-raised"
+                      {@attach ditherSurface({ band: 6, always: () => true, selected: () => true })}
                     ></span>
                   {/if}
                   <span class="nav-bar relative h-3.5 w-[3px] shrink-0 rounded-[2px] bg-transparent" aria-hidden="true"></span>

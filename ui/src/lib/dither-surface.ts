@@ -1,0 +1,321 @@
+/**
+ * THE DITHER STATE SURFACE — a control's field, painted per cell.
+ *
+ * Adapted from dither-kit (MIT, Boring-Software-Inc/dither-kit), whose button
+ * does the thing every CSS attempt here could not.
+ *
+ * WHY THIS EXISTS, and it is worth stating plainly because a masked tile got
+ * very close. A CSS mask over a dot lattice is BINARY at the boundary: a cell
+ * is inside the mask or outside it, with no state in between. So anything that
+ * moves — a band growing, a window opening, a reveal spreading — switches whole
+ * ranks of dots on at once, and every one of those is an event the eye catches.
+ * Six different animations were tried and each failed in its own way for the
+ * same underlying reason. It is not a tuning problem and no easing curve
+ * reaches it.
+ *
+ * Painting the cells directly removes the boundary entirely. There is nothing
+ * to cross a lattice, because the lattice IS the pixels: every cell is redrawn
+ * every frame at whatever alpha the current state calls for, so a change of
+ * state is 1,400 simultaneous fades rather than a shape moving over a stencil.
+ *
+ * THE CANVAS IS TINY, which is what makes this affordable at all — the trick
+ * this borrows wholesale. One canvas pixel per dither CELL, so a 184x30 row is
+ * a 92x15 canvas: about 1,400 pixels, redrawn only while a state is settling
+ * and then never again. `image-rendering: pixelated` scales it up with no
+ * resampling, so the dots stay exactly as crisp as an SVG tile's.
+ */
+
+/** CSS px per dither cell. The house lattice — see `lib/dither.ts`. */
+export const CELL = 2
+
+/**
+ * Alpha of an unlit cell relative to a lit one — dither-kit's `OFF_TIER`.
+ *
+ * The field modulates between two tiers of one colour rather than leaving
+ * holes. It reads denser at the same pitch, and a cell crossing the threshold
+ * steps between two near values instead of appearing out of nothing.
+ */
+export const OFF_TIER = 0.4
+
+/** 4x4 ordered matrix, normalised to thresholds — dither-kit's, not the 8x8. */
+const BAYER4 = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5],
+].map((row) => row.map((v) => (v + 0.5) / 16))
+
+const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
+
+/**
+ * Stable per-cell value, for scattering the threshold.
+ *
+ * An ordered matrix at CONSTANT density returns the matrix itself — a 4x4 grid
+ * you can read off the screen, which is what a flat hover fill is. Mixing a
+ * hash into the threshold keeps the even spacing that makes ordered dithering
+ * look deliberate and loses the repeat that makes it look like mesh. Gradients
+ * keep the matrix's ordering where it earns its keep.
+ */
+function hash01(x: number, y: number): number {
+  let h = (x * 374761393 + y * 668265263) | 0
+  h = (h ^ (h >>> 13)) * 1274126177
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296
+}
+
+/** How much per-cell randomness is mixed into the ordered threshold. */
+const SCATTER = 0.38
+
+export interface DitherSurfaceOptions {
+  /** Interior density at rest, 0..1. */
+  density?: number
+  /** How far the field reaches past the control, in CSS px, for the band. */
+  band?: number
+  /** Is this control the selected one? Drives the accent band. */
+  selected?: () => boolean
+  /** Does the interior fill show at rest (a selected tile) or only on approach? */
+  always?: () => boolean
+}
+
+interface Tone {
+  fill: [number, number, number]
+  accent: [number, number, number]
+}
+
+function readTone(el: HTMLElement): Tone {
+  const s = getComputedStyle(el)
+  const parse = (v: string): [number, number, number] => {
+    const m = /(-?[\d.]+)[,\s]+(-?[\d.]+)[,\s]+(-?[\d.]+)/.exec(v)
+    return m ? [+m[1]!, +m[2]!, +m[3]!] : [128, 128, 128]
+  }
+  // Resolved through a throwaway element so tokens in any colour syntax come
+  // back as rgb() — the canvas cannot read a CSS variable.
+  const probe = document.createElement('span')
+  probe.style.display = 'none'
+  el.appendChild(probe)
+  probe.style.color = s.getPropertyValue('--theme-border-strong') || '#4a4640'
+  const fill = parse(getComputedStyle(probe).color)
+  probe.style.color = s.getPropertyValue('--theme-accent') || '#c8a45c'
+  const accent = parse(getComputedStyle(probe).color)
+  probe.remove()
+  return { fill, accent }
+}
+
+/**
+ * Paint one frame.
+ *
+ * `intensity` is the whole animation: 0 at rest, 1 on approach. It lowers the
+ * dither threshold slightly and lifts alpha — dither-kit's two levers — so the
+ * field thickens and brightens together without anything moving.
+ */
+function paint(
+  ctx: CanvasRenderingContext2D,
+  cols: number,
+  rows: number,
+  pad: number,
+  radius: number,
+  tone: Tone,
+  density: number,
+  intensity: number,
+  selection: number,
+  dpr: number,
+): void {
+  ctx.clearRect(0, 0, cols * CELL * dpr, rows * CELL * dpr)
+  const dot = Math.max(1, Math.round(dpr))
+  const [fr, fg, fb] = tone.fill
+  const [ar, ag, ab] = tone.accent
+
+  // THE CONTROL'S SHAPE, IN CELLS. A canvas is a rectangle and the control is
+  // not; without this the band squares off at the corners, which is the first
+  // place the eye checks whether a treatment belongs to the thing it edges.
+  const hw = (cols - pad * 2) / 2
+  const hh = (rows - pad * 2) / 2
+  const r = Math.min(radius / CELL, hw, hh)
+  const cx = cols / 2
+  const cy = rows / 2
+
+  /** Signed distance to the control's rounded rect: negative inside. */
+  const sdf = (x: number, y: number): number => {
+    const qx = Math.abs(x + 0.5 - cx) - hw + r
+    const qy = Math.abs(y + 0.5 - cy) - hh + r
+    const ox = Math.max(qx, 0)
+    const oy = Math.max(qy, 0)
+    return Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0) - r
+  }
+
+  // ONE DOT PER CELL, NOT ONE BLOCK PER CELL. dither-kit paints a canvas pixel
+  // per cell and scales it up, which gives its charts their deliberately chunky
+  // look. The house texture is finer — a 1px dot on a 2px lattice, with a gap —
+  // so the canvas runs at device resolution and the dot is drawn inside the
+  // cell. Same lattice as the CSS tile and `lib/dither.ts`, so a canvas field
+  // and a masked one are the same material.
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const sd = sdf(x, y)
+      let d: number
+      let colour: [number, number, number]
+
+      if (sd >= 0) {
+        // THE BAND — outside the control, densest against its edge, thinning
+        // outward. It follows the rounded shape because the distance does.
+        if (selection <= 0.002 || sd > pad) continue
+        d = selection * 0.62 * (1 - clamp01(sd / pad)) ** 1.4
+        colour = [ar, ag, ab]
+      } else {
+        // THE FILL — weighted toward the centre, so it emerges from the middle
+        // as intensity rises rather than arriving everywhere at once.
+        const nx = (x + 0.5 - cx) / Math.max(1, hw)
+        const ny = (y + 0.5 - cy) / Math.max(1, hh)
+        d = density * intensity * clamp01(1.15 - Math.hypot(nx, ny) * 0.8)
+        colour = [fr, fg, fb]
+      }
+      if (d <= 0.002) continue
+
+      const ordered = BAYER4[y & 3]![x & 3]!
+      const threshold = ordered + (hash01(x, y) - ordered) * SCATTER - 0.1 * intensity
+      const lit = d > threshold
+      const k = (0.3 + d * 0.7) * (1 + 0.22 * intensity)
+      const alpha = clamp01(lit ? k : k * OFF_TIER)
+      if (alpha <= 0.004) continue
+      ctx.fillStyle = `rgba(${colour[0]},${colour[1]},${colour[2]},${alpha})`
+      ctx.fillRect(x * CELL * dpr, y * CELL * dpr, dot, dot)
+    }
+  }
+}
+
+/**
+ * Attach a dither field to a control.
+ *
+ * Svelte attachment: `<button {@attach ditherSurface()}>`. It inserts its own
+ * canvas, watches the control's own pointer and focus, and cleans up after
+ * itself. The canvas sits at `z-index: -1` inside the control — above its
+ * background and below its content, which is where a `::before` sat and is the
+ * only position that works for a fill.
+ */
+export function ditherSurface(opts: DitherSurfaceOptions = {}) {
+  return (node: HTMLElement): (() => void) => {
+    const pad = Math.round((opts.band ?? 0) / CELL)
+    const density = opts.density ?? 0.85
+
+    const canvas = document.createElement('canvas')
+    canvas.setAttribute('aria-hidden', 'true')
+    canvas.style.cssText =
+      `position:absolute;inset:${-pad * CELL}px;width:calc(100% + ${pad * CELL * 2}px);` +
+      `height:calc(100% + ${pad * CELL * 2}px);z-index:-1;pointer-events:none`
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return () => {}
+
+    // The control has to establish a stacking context, or a negative z-index
+    // escapes behind an ancestor's background instead of sitting behind its
+    // own content.
+    const prev = { position: node.style.position, isolation: node.style.isolation }
+    if (getComputedStyle(node).position === 'static') node.style.position = 'relative'
+    node.style.isolation = 'isolate'
+    node.insertBefore(canvas, node.firstChild)
+
+    let tone = readTone(node)
+    let radius = 0
+    let dpr = window.devicePixelRatio || 1
+    let cols = 0
+    let rows = 0
+    let intensity = 0
+    let selection = 0
+    let raf = 0
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    const render = () => paint(ctx, cols, rows, pad, radius, tone, density, intensity, selection, dpr)
+
+    const targets = () => ({
+      intensity: hot || opts.always?.() ? 1 : 0,
+      selection: opts.selected?.() ? 1 : 0,
+    })
+
+    /**
+     * The whole animation, and it is four lines on purpose — dither-kit's
+     * exponential ease. It converges without a duration or a curve to pick,
+     * every cell moves continuously because the field is recomputed rather
+     * than revealed, and the loop stops the moment it has arrived.
+     */
+    const tick = () => {
+      const t = targets()
+      const di = t.intensity - intensity
+      const ds = t.selection - selection
+      if (Math.abs(di) < 0.01 && Math.abs(ds) < 0.01) {
+        intensity = t.intensity
+        selection = t.selection
+        render()
+        raf = 0
+        return
+      }
+      intensity += di * 0.16
+      selection += ds * 0.12
+      render()
+      raf = requestAnimationFrame(tick)
+    }
+
+    const settle = () => {
+      if (reduced) {
+        const t = targets()
+        intensity = t.intensity
+        selection = t.selection
+        render()
+      } else if (!raf) {
+        raf = requestAnimationFrame(tick)
+      }
+    }
+
+    let hot = false
+    const enter = () => ((hot = true), settle())
+    const leave = () => ((hot = false), settle())
+    node.addEventListener('pointerenter', enter)
+    node.addEventListener('pointerleave', leave)
+    node.addEventListener('focusin', enter)
+    node.addEventListener('focusout', leave)
+
+    const resize = () => {
+      const r = node.getBoundingClientRect()
+      radius = parseFloat(getComputedStyle(node).borderTopLeftRadius) || 0
+      const c = Math.max(4, Math.round(r.width / CELL) + pad * 2)
+      const w = Math.max(4, Math.round(r.height / CELL) + pad * 2)
+      dpr = window.devicePixelRatio || 1
+      if (c === cols && w === rows && canvas.width === cols * CELL * dpr) return
+      cols = c
+      rows = w
+      canvas.width = Math.round(cols * CELL * dpr)
+      canvas.height = Math.round(rows * CELL * dpr)
+      render()
+    }
+    resize()
+    // A control that is ALREADY selected has no event coming to wake it, so it
+    // would sit at intensity 0 and paint nothing at all.
+    settle()
+    const ro = new ResizeObserver(resize)
+    ro.observe(node)
+
+    // A theme flip changes the tokens under a canvas that cannot inherit them.
+    const mo = new MutationObserver(() => {
+      tone = readTone(node)
+      render()
+    })
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] })
+
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      node.removeEventListener('pointerenter', enter)
+      node.removeEventListener('pointerleave', leave)
+      node.removeEventListener('focusin', enter)
+      node.removeEventListener('focusout', leave)
+      ro.disconnect()
+      mo.disconnect()
+      canvas.remove()
+      node.style.position = prev.position
+      node.style.isolation = prev.isolation
+    }
+  }
+}
+
+/** Nudge a surface whose `selected` / `always` answer has changed. */
+export function refreshDitherSurfaces(root: ParentNode = document): void {
+  root.querySelectorAll('canvas[aria-hidden="true"]').forEach((c) => {
+    ;(c.parentElement as HTMLElement | null)?.dispatchEvent(new Event('pointerenter'))
+  })
+}
