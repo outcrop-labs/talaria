@@ -1,5 +1,17 @@
+import { activeAmong, isUnder, pathId } from './route-tabs'
+
 export function shouldAttachInboxDecision(pathname: string, tab: string | undefined): boolean {
-  return pathname === '/' && (tab === undefined || tab === 'inbox')
+  // TWO PLACES A TAB CAN LIVE, and conflating them attached the Inbox decision
+  // to every Home tab. `tab` is the LEGACY `?tab=` query param, which only
+  // still appears on `/` (see AppLayout's note about links already in the
+  // world). Under `/home` the tab is a PATH segment, so it has to be read from
+  // the path or `/home/boards` — which passes `tab: undefined` — reads as the
+  // Inbox.
+  if (pathname === '/') return tab === undefined || tab === 'inbox'
+  if (!isUnder(pathname, '/home')) return false
+  const seg = pathId(pathname, '/home')
+  // Bare `/home` renders the default tab, which is the Inbox.
+  return seg === null || seg === 'inbox'
 }
 
 /** Where the person is standing when they talk to the assistant. */
@@ -50,14 +62,17 @@ export const ASSISTANT_SURFACE_IDS: string[] = [...new Set(['inbox', 'home', ...
  *  and answered as if you had been reading your queue. The surface travels with
  *  the request so the answer is about the page you are on. */
 export function assistantSurface(pathname: string, tab: string | undefined): AssistantSurface {
-  // Home is a tabbed view and one of its tabs IS the focus queue.
-  if (pathname === '/') {
+  // Home is a tabbed view and one of its tabs IS the Inbox.
+  if (pathname === '/' || isUnder(pathname, '/home')) {
     return shouldAttachInboxDecision(pathname, tab)
       ? { id: 'inbox', label: 'Inbox' }
       : { id: 'home', label: 'Home' }
   }
-  const match = SURFACES.filter((s) => pathname === s.prefix || pathname.startsWith(`${s.prefix}/`)).sort(
-    (a, b) => b.prefix.length - a.prefix.length,
-  )[0]
+  // MOST SPECIFIC WINS, from the same helper the nav rail uses. This had its
+  // own sort-by-prefix-length copy of that rule; two implementations of "which
+  // of these contains the path" is how the rail and the assistant come to
+  // disagree about which view you are standing on.
+  const active = activeAmong(pathname, SURFACES.map((s) => s.prefix))
+  const match = active === null ? undefined : SURFACES.find((s) => s.prefix === active)
   return match ? { id: match.id, label: match.label } : { id: 'home', label: 'Home' }
 }

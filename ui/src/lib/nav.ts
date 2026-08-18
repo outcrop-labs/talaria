@@ -67,7 +67,12 @@ export const NAV: NavSection[] = [
   {
     title: 'Work',
     items: [
-      { to: '/', label: 'Inbox', icon: Inbox },
+      // `/home`, not `/`. The rail entry names the CONTAINER, so every tab
+      // inside it (`/home/inbox`, `/home/boards`, `/home/fleet`) lights this
+      // one item — which is what the nesting rule is for. Pointing it at
+      // `/home/inbox` would be precise and would leave every other Home tab
+      // lighting nothing.
+      { to: '/home', label: 'Inbox', icon: Inbox },
       { to: '/comms', label: 'Comms', icon: MessageCircle },
       { to: '/plan', label: 'Plan', icon: CalendarRange },
       { to: '/boards', label: 'Boards', icon: LayoutGrid },

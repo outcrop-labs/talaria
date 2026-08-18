@@ -34,13 +34,11 @@
     channelsList.failed ? 0 : channelsList.rows.reduce((n, c) => n + (c.unreadCount ?? 0), 0),
   )
 
-  // Inbox is `/`; the console tabs live under `/home/<tab>` rather than at the
-  // root, because their names — boards, comms, research — are the names of real
-  // views. `/boards` is the board list; `/home/boards` is Home's summary of it.
-  const setTab = (t: HomeTab) => {
-    if (t === 'inbox') void navigate('/')
-    else void navigate('/home/:tab', { params: { tab: t } })
-  }
+  // Every tab is `/home/<tab>`, the Inbox included. It used to be the one
+  // exception — `/` — so the tab strip had a branch, the Inbox had no URL of
+  // its own, and the rail's entry for it was a root path that matched
+  // everything.
+  const setTab = (t: HomeTab) => void navigate('/home/:tab', { params: { tab: t } })
 
   const tabs = $derived.by((): { id: HomeTab; label: string; badge?: number }[] => [
     { id: 'inbox', label: 'Inbox', badge: home.data?.unread || undefined },

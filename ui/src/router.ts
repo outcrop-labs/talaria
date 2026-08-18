@@ -32,11 +32,19 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     },
   },
   '/': {
-    '/': () => import('./routes/app/Home.svelte'),
-    // Home's console tabs. Under /home rather than at the root because their
+    // The landing bounces to the Inbox's own URL. `/` used to BE the Inbox,
+    // which left the surface with no address of its own — you could not link to
+    // it, and the nav rail entry for it was a root path that is an ancestor of
+    // every other route (see `activeAmong` in lib/route-tabs.ts for what that
+    // cost). Home is the container; the Inbox is a route inside it.
+    '/': () => import('./routes/app/HomeRedirect.svelte'),
+    // Home and its tabs. Under /home rather than at the root because their
     // names ARE the names of real views: /boards is the board list, /home/boards
     // is Home's summary of it.
     '/home': {
+      // Bare `/home` renders the default tab (the Inbox) rather than 404ing, so
+      // the nav rail can point at the container.
+      '/': () => import('./routes/app/Home.svelte'),
       '/:tab': () => import('./routes/app/Home.svelte'),
     },
     '/chat': () => import('./routes/app/Chat.svelte'),

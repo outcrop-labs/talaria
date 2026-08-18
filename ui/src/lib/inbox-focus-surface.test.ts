@@ -54,3 +54,27 @@ test('every surface the client can send has prose on the server', () => {
     assert.ok(surfaceBrief(id), `surface "${id}" has no server brief`)
   }
 })
+
+// THE INBOX HAS ITS OWN URL NOW. It used to be `/`, which meant it had no
+// address to link to and its nav entry was a root path that is an ancestor of
+// every route in the app. It is `/home/inbox`, a route nested under Home.
+test('the Inbox surface follows the path tab, not the legacy query tab', () => {
+  assert.equal(assistantSurface('/home/inbox', undefined).id, 'inbox')
+  assert.equal(assistantSurface('/home', undefined).id, 'inbox') // bare /home renders the default tab
+  // THE BUG THIS PINS: `tab` is the legacy `?tab=` param and is undefined on
+  // every path-tab route, so reading only that made every Home tab the Inbox.
+  assert.equal(assistantSurface('/home/boards', undefined).id, 'home')
+  assert.equal(assistantSurface('/home/fleet', undefined).id, 'home')
+  assert.equal(shouldAttachInboxDecision('/home/boards', undefined), false)
+  assert.equal(shouldAttachInboxDecision('/home/inbox', undefined), true)
+})
+
+test('the legacy root still honours ?tab=, because those links are in the world', () => {
+  assert.equal(shouldAttachInboxDecision('/', undefined), true)
+  assert.equal(shouldAttachInboxDecision('/', 'boards'), false)
+})
+
+test('a path that merely starts with /home is not Home', () => {
+  assert.equal(assistantSurface('/homework', undefined).id, 'home') // falls through to the default
+  assert.equal(shouldAttachInboxDecision('/homework', undefined), false)
+})

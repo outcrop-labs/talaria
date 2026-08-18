@@ -20,6 +20,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { activeAmong, isUnder } from '@/lib/route-tabs'
+  import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
   import BoardsSublist from './BoardsSublist.svelte'
   import NavIcon from './NavIcon.svelte'
   import RailTooltip from './RailTooltip.svelte'
@@ -47,7 +48,13 @@
   let creating = $state(false)
   let teamsOpen = $state(false)
   const nav = useNavCollapsed()
-  const isInbox = $derived(pathname === '/' || pathname === '/inbox')
+  // Are we ON the Inbox? The full queue loads here and only a count elsewhere.
+  //
+  // The SAME predicate the assistant surface uses, not a fourth spelling of it.
+  // Bare `/home` renders the Inbox as its default tab, so an `isUnder(…,
+  // '/home/inbox')` of its own would have quietly loaded the summary instead of
+  // the queue on the URL the nav rail itself points at.
+  const isInbox = $derived(shouldAttachInboxDecision(pathname, undefined))
   const inboxQueue = useInboxFocus(() => ({ enabled: isInbox }))
   const inboxSummary = useInboxFocusSummary(() => ({ enabled: !isInbox }))
   // `null` = the count could NOT be read, which is a different fact from zero
@@ -180,7 +187,7 @@
               )}
             >
               <NavIcon icon={item.icon} />
-              {#if item.to === '/' && showUnread}
+              {#if item.to === '/home' && showUnread}
                 <span
                   title={unreadTitle}
                   class={cn(
@@ -284,7 +291,7 @@
                     <NavIcon icon={item.icon} />
                   </span>
                   <span class="flex-1 truncate">{item.label}</span>
-                  {#if item.to === '/' && showUnread}
+                  {#if item.to === '/home' && showUnread}
                     <!-- Spec §5: nav counts are muted (#8E877E) — not accent.
                          The unreadable case is the one exception: it is not a
                          count, and a muted "!" reads as decoration. -->

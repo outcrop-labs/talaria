@@ -1,21 +1,30 @@
 <script lang="ts" module>
   import type { AppManifest } from '@/lib/apps'
   import { NAV } from '@/lib/nav'
+  import { activeAmong, isUnder } from '@/lib/route-tabs'
 
   // Derive the active view's name from the route: nav items first (covers WORK/
   // MANAGE/SYSTEM and their subpaths), then enabled-app surfaces, then a plain
   // capitalization of the first path segment (e.g. /chat → Chat).
   function viewName(pathname: string, apps: AppManifest[]): string {
-    if (pathname === '/') return 'Inbox'
+    if (pathname === '/' || isUnder(pathname, '/home')) return 'Inbox'
     const appMatch = /^\/x\/([^/]+)/.exec(pathname)
     if (appMatch) {
       const app = apps.find((a) => a.slug === appMatch[1])
-      if (app) return (pathname.startsWith(`/x/${app.slug}/manage`) ? app.surfaces.manage : app.surfaces.work) ?? app.name
+      // `isUnder`, not a bare prefix: `/x/foo/managers` is not the manage
+      // surface, and naming the wrong one in the top strip is the kind of
+      // wrong that reads as a rendering glitch rather than a routing bug.
+      if (app) return (isUnder(pathname, `/x/${app.slug}/manage`) ? app.surfaces.manage : app.surfaces.work) ?? app.name
       return appMatch[1]!
     }
-    const item = NAV.flatMap((s) => s.items).find(
-      (i) => i.to !== '/' && (pathname === i.to || pathname.startsWith(i.to + '/')),
-    )
+    // THE SAME RULE THE RAIL USES, from the same function. This inlined its
+    // own copy of the prefix test and took the FIRST match in nav order, so a
+    // nested pair was named by whichever happened to be declared first while
+    // the rail highlighted the other — the strip and the rail disagreeing about
+    // where you are.
+    const items = NAV.flatMap((s) => s.items).filter((i) => i.to !== '/')
+    const active = activeAmong(pathname, items.map((i) => i.to))
+    const item = active === null ? undefined : items.find((i) => i.to === active)
     if (item) return item.label
     const seg = pathname.split('/').filter(Boolean)[0] ?? ''
     return seg ? seg.charAt(0).toUpperCase() + seg.slice(1) : 'Inbox'

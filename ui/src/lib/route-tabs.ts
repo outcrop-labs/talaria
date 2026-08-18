@@ -38,6 +38,38 @@ export function isUnder(pathname: string, base: string): boolean {
   return pathname === base || pathname.startsWith(`${base}/`)
 }
 
+/** Which of `paths` is the ACTIVE one for `pathname` — the most specific
+ *  ancestor, or null when none of them contains it.
+ *
+ *  THE SIDEBAR RULE, stated once. A nav item is active when you are on it OR
+ *  anywhere nested inside it — `/boards` stays lit while you read
+ *  `/boards/<id>/<taskId>` — and that is `isUnder`. What `isUnder` alone cannot
+ *  do is decide between two items when BOTH contain the path, which happens
+ *  whenever one nav entry nests under another: an app's Work surface is
+ *  `/x/<slug>` and its Manage surface is `/x/<slug>/manage`, so standing on
+ *  Manage lit both, and the rail said you were in two places at once.
+ *
+ *  The fix used to be a special case (`exactFor` in NavRail: match Home and app
+ *  Work items EXACTLY, everything else by prefix), which fixed those two cases
+ *  and stated no rule — so the next nested pair would light both again, and
+ *  Home needed its own exemption for the same reason on its own.
+ *
+ *  MOST SPECIFIC WINS is that rule. It subsumes both special cases: `/` is an
+ *  ancestor of everything and therefore wins only where nothing longer matches,
+ *  which is exactly `/` itself, and Manage beats Work by being longer. Nothing
+ *  here knows what an app is.
+ *
+ *  Ties are impossible: two equal-length matches would have to be the same
+ *  string, and a nav with a duplicated path has a different problem. */
+export function activeAmong(pathname: string, paths: readonly string[]): string | null {
+  let best: string | null = null
+  for (const path of paths) {
+    if (!isUnder(pathname, path)) continue
+    if (best === null || path.length > best.length) best = path
+  }
+  return best
+}
+
 /** The tab a path selects, or `fallback` when the segment is missing, unknown,
  *  or deeper than one level.
  *
