@@ -83,7 +83,7 @@ import { distillerHarness } from './defs/distiller'
 import { inboxBriefHarness, inboxCommandHarness, inboxReplyHarness } from './defs/inbox-focus'
 import { judgeHarness } from './defs/judge'
 import { librarianHarness } from './defs/librarian'
-import { museAgentHarness, museCronHarness, museDraftHarness, museTicketHarness } from './defs/muse'
+import { museAgentHarness, museCronHarness, museDraftHarness, museSkillFormHarness, museTemplateFormHarness, museTicketHarness } from './defs/muse'
 import { outreachCheckInHarness } from './defs/outreach'
 import { planDocHarness } from './defs/plan-doc'
 import { researchQueriesHarness, researchSearchHarness, researchSynthesisHarness } from './defs/research'
@@ -179,6 +179,8 @@ const BUILTINS: RegisteredHarness[] = [
   register(museCronHarness, 'builtin'),
   register(museAgentHarness, 'builtin'),
   register(museTicketHarness, 'builtin'),
+  register(museSkillFormHarness, 'builtin'),
+  register(museTemplateFormHarness, 'builtin'),
   register(museDraftHarness, 'builtin'),
   register(judgeHarness, 'builtin'),
   // ── The model comes from the subject of the call ───────────────────────────

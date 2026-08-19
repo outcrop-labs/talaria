@@ -8,7 +8,7 @@
 
   /** Stop pulses while a reply streams — motion marks the live, interruptible
    *  moment. Esc triggers it from the keyboard. */
-  let { onClick, title = 'Stop (Esc)' }: { onClick: () => void; title?: string } = $props()
+  let { onClick, title = 'Stop (Esc)', class: className }: { onClick: () => void; title?: string; class?: string } = $props()
 </script>
 
 <button
@@ -19,6 +19,7 @@
   class={cn(
     'relative grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line-strong text-muted transition-colors dither-fill hover:text-fg',
     focusGold,
+    className,
   )}
 >
   <span class="gd-pulse absolute inset-0 rounded-md border border-[color:var(--theme-accent-border)]"></span>

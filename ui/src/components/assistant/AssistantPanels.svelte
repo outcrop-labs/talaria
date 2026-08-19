@@ -12,7 +12,7 @@
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import CronsPanel from '@/components/fleet/CronsPanel.svelte'
   import SkillsLibrary from '@/components/skills/SkillsLibrary.svelte'
-  import MemoryPanel from '@/components/memory/MemoryPanel.svelte'
+  import MemoryEditor from '@/components/memory/MemoryEditor.svelte'
   import { fly } from '@/lib/motion'
   import { type Assistant } from '@/lib/assistant'
 
@@ -29,12 +29,12 @@
     {#key tab}
       <div in:fly={{ y: 6, duration: 200 }}>
         {#if tab === 'Schedules'}<CronsPanel agentId={assistant.id} />{/if}
-        {#if tab === 'Skills'}<SkillsLibrary owner={assistant.slug} ownerLabel={assistant.displayName} surface="well" class="h-[32rem]" />{/if}
+        {#if tab === 'Skills'}<SkillsLibrary owner={assistant.slug} ownerLabel={assistant.displayName} surface="well" class="h-[38rem]" />{/if}
         {#if tab === 'Memory'}
-          <MemoryPanel
+          <MemoryEditor
             id={assistant.id}
             label={assistant.displayName}
-            surface="well"
+            class="h-[38rem]"
             museContext={`The memory of ${assistant.displayName}, a personal AI assistant.`}
             offline={assistant.running ? null : { title: 'Memory unavailable', hint: 'Start your assistant to read its memory.' }}
           />

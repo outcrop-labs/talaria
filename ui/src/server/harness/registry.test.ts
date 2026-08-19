@@ -25,6 +25,8 @@ describe('the registry', () => {
       'muse:cron',
       'muse:agent',
       'muse:ticket',
+      'muse:skill-form',
+      'muse:template-form',
       'muse:draft',
       'judge',
       'inbox-brief',

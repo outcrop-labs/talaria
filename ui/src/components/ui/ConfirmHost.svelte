@@ -11,10 +11,14 @@
 
   const spec = $derived(dialog.active?.spec)
   const isAlert = $derived(spec?.kind === 'alert')
+  // The typed challenge: both prompts and danger confirms with `requireText`
+  // gate the accept button on this matching exactly.
+  const needsText = $derived(spec?.kind === 'prompt' || !!spec?.requireText)
+  const unlocked = $derived(spec?.kind === 'confirm' && spec.requireText !== undefined ? value.trim() === spec.requireText : true)
 
   $effect(() => {
-    if (spec?.kind === 'prompt') {
-      value = spec.defaultValue ?? ''
+    if (needsText) {
+      value = spec?.kind === 'prompt' ? (spec.defaultValue ?? '') : ''
       const id = requestAnimationFrame(() => inputRef?.select())
       return () => cancelAnimationFrame(id)
     }
@@ -33,18 +37,20 @@
   {#if spec?.message}
     <div class="whitespace-pre-line text-sm text-muted">{spec.message}</div>
   {/if}
-  {#if spec?.kind === 'prompt'}
+  {#if needsText}
     <Input
       bind:ref={inputRef}
       bind:value
-      placeholder={spec.placeholder}
+      placeholder={spec?.kind === 'prompt' ? spec.placeholder : spec?.requireText}
       onkeydown={(e) => {
-        if (e.key === 'Enter') {
+        // Enter accepts only when the challenge is met — a matched name is
+        // the second opt-in, and the key must not skip it.
+        if (e.key === 'Enter' && unlocked) {
           e.preventDefault()
           accept()
         }
       }}
-      class={spec.message ? 'mt-4' : undefined}
+      class={spec?.message ? 'mt-4' : undefined}
       autofocus
     />
   {/if}
@@ -55,7 +61,12 @@
           {spec?.cancelLabel ?? 'Cancel'}
         </Button>
       {/if}
-      <Button variant={spec?.danger ? 'danger-outline' : 'primary'} size="sm" onclick={accept}>
+      <Button
+        variant={spec?.danger ? 'danger-outline' : 'primary'}
+        size="sm"
+        onclick={accept}
+        disabled={spec?.kind === 'confirm' ? !unlocked : false}
+      >
         {spec?.confirmLabel ?? (isAlert ? 'OK' : 'Confirm')}
       </Button>
     </div>

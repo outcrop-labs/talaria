@@ -24,13 +24,13 @@ import { UNTRUSTED_INPUT } from './harness/prompt-rules'
 import { resolveHarnessModel, type ModelSpec } from './harness/model'
 import type { Message } from './harness/define'
 
-export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket'
+export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket' | 'skillForm' | 'templateForm'
 
 /** The kinds whose answer is a CONTRACT rather than a document. Exported so the
- *  route has one place to branch on, instead of three string comparisons that
- *  can drift from the three harness definitions. */
-export type MuseJsonKind = 'cron' | 'agent' | 'ticket'
-export const JSON_KINDS: ReadonlySet<MuseKind> = new Set<MuseKind>(['cron', 'agent', 'ticket'])
+ *  route has one place to branch on, instead of five string comparisons that
+ *  can drift from the five harness definitions. */
+export type MuseJsonKind = 'cron' | 'agent' | 'ticket' | 'skillForm' | 'templateForm'
+export const JSON_KINDS: ReadonlySet<MuseKind> = new Set<MuseKind>(['cron', 'agent', 'ticket', 'skillForm', 'templateForm'])
 /** Narrows, so the route can index a per-kind message table without a cast. */
 export const isJsonKind = (k: MuseKind): k is MuseJsonKind => JSON_KINDS.has(k)
 
@@ -137,6 +137,41 @@ const SYSTEM: Record<MuseKind, string> = {
     'Shape example (do not copy the topic):\n## Summary\n_What and why, in two sentences._\n## Steps\n- \n- \n## Out of scope\n_What this deliberately does not cover._\n' +
     'When revising an existing template: prune verbosity first — tighten hints, merge overlapping sections; never grow it past the rules above. ' +
     DOC_RULES,
+  // THE FORM KINDS FILL WHOLE VIEWS, not one document. The prose kinds above
+  // answer with a single document; these answer with every field of the record
+  // the user is standing in — the Templates view is name + guidance + skeleton,
+  // the skill view is name + SKILL.md. The closed-world ask is stated the way
+  // `ticket` states it: the fields ARE the whole of the world, the out-of-scope
+  // asks a user actually types are named as concrete nouns, and the refusal is
+  // shown as a worked example. The two fields the prose kinds own (the
+  // template skeleton, the SKILL.md body) keep the prose kinds' hard rules,
+  // because the body of either record is graded by exactly those rules elsewhere.
+  templateForm:
+    'You fill out the TEMPLATE form of a Talaria workspace: the complete record of ONE template — its name, its agent guidance, and its skeleton body. Reply with ONLY a JSON object — no prose, no code fence — shaped exactly:\n' +
+    '{"name": "<short human name, e.g. "Incident report">", "guidance": "<the prompt-only guidance text>", "body": "<the full template skeleton>"}\n' +
+    'The name is short and human: one or two words, Title Case, no sentence.\n' +
+    'The guidance is PROMPT-ONLY: it travels with the template into the model\'s instructions and is never shown on the ticket or plan itself. A few tight sentences telling the agent how to use the template; no markdown inside it.\n' +
+    'The body is a Talaria template: the markdown skeleton a ticket description or plan document STARTS from. Scaffolding, never a finished document:\n' +
+    '- ## section headings only (no #, no ###). 3–6 sections.\n' +
+    '- Under each heading: NOTHING, a single italic placeholder hint, or 2–4 empty bullet stubs ("- "). Never real content.\n' +
+    '- Whole body under 25 lines; a big process becomes section NAMES, not content.\n' +
+    'THINGS THAT ARE NOT ON THAT LIST, and are therefore always a refusal: deleting or renaming the template for you, binding templates to boards, creating a SECOND template (the form holds exactly one), and writing real content into the skeleton. ' +
+    'Refuse by replying exactly {"error": "<one short sentence why>"} and nothing else — for example, ' +
+    '{"error": "I fill one template\'s form; I cannot create two templates or bind boards to them."} ' +
+    'A refusal is the RIGHT answer here and costs nothing; a second template or filled-in content is silently wrong and a person has to undo it.\n' +
+    'When a current record is given as JSON, return the COMPLETE revised record: change what the request asks, keep every field it does not name, and prune the body\'s verbosity first when revising. ' +
+    'On success, return ALL three fields, never a subset.',
+  skillForm:
+    'You fill out the SKILL form of a Talaria workspace: the complete record of ONE skill — its name and its full SKILL.md document. Reply with ONLY a JSON object — no prose, no code fence — shaped exactly:\n' +
+    '{"name": "<lowercase kebab skill name: letters, digits and hyphens>", "content": "<the full SKILL.md markdown>"}\n' +
+    'The name is a directory name: lowercase, first character a letter, no spaces or other punctuation. "nightly-build-triage", not "Nightly Build Triage".\n' +
+    'The content is the SKILL.md itself: a "# <Title>" heading as the very first line, a line on when to use the skill, then concrete numbered steps; be specific about tools or sources when the request names them. The content is the document, not a description of it.\n' +
+    'THINGS THAT ARE NOT ON THAT LIST, and are therefore always a refusal: deleting the skill, moving or copying it to another agent, creating a SECOND skill (the form holds exactly one), and editing anything but the record given to you. ' +
+    'Refuse by replying exactly {"error": "<one short sentence why>"} and nothing else — for example, ' +
+    '{"error": "I fill one skill\'s form; I cannot delete it or create a second skill."} ' +
+    'A refusal is the RIGHT answer here and costs nothing; a second skill is silently wrong and a person has to undo it.\n' +
+    'When a current record is given as JSON, return the COMPLETE revised record: change what the request asks, keep every field it does not name. ' +
+    'On success, return BOTH fields, never a subset.',
 }
 
 export interface MuseInput {

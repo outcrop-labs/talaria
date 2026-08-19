@@ -22,6 +22,11 @@ export interface DialogSpec {
   /** Style the confirm action as destructive — orange outline, never orange
    *  fill (Mercury spec §8 DANGER ZONE). */
   danger?: boolean
+  /** confirm only — DOUBLE OPT-IN: the confirm action stays disabled until
+   *  the user types this exact string. For deletions whose target is named
+   *  elsewhere on screen (a list row, an open record), where a plain
+   *  confirmation does not prove the user knows WHICH thing is going away. */
+  requireText?: string
   /** prompt only. */
   placeholder?: string
   /** prompt only — initial input value. */
@@ -60,4 +65,19 @@ export function alert(opts: ConfirmOptions): Promise<void> {
 /** Ask the user for a line of text. Resolves the entered string, or null if cancelled. */
 export function prompt(opts: ConfirmOptions): Promise<string | null> {
   return request({ ...opts, kind: 'prompt' }).then((v) => (typeof v === 'string' ? v : null))
+}
+
+/** THE DOUBLE OPT-IN DELETE — a confirm dialog with a typed challenge: the
+ *  destructive button stays disabled until the user types the record's exact
+ *  name. One helper so every deletion in the app asks the same way: a first
+ *  opt-in (the dialog itself), a second (typing the name), and no path to the
+ *  button that skips either. */
+export function confirmDelete(opts: { what: string; name: string; detail: string }): Promise<boolean> {
+  return confirm({
+    title: `Delete ${opts.what}`,
+    message: `${opts.detail}\n\nThis cannot be undone — type “${opts.name}” to confirm.`,
+    confirmLabel: `Delete ${opts.what}`,
+    danger: true,
+    requireText: opts.name,
+  })
 }
