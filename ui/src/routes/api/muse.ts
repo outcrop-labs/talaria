@@ -5,14 +5,14 @@
 //     text/plain, streamed. Tokens landing in the editor as they arrive is the
 //     feature, and nothing below changes it.
 //
-//   JSON (cron, agent, ticket)
-//     application/json, VALIDATED HERE. These streamed too, once, and the
-//     browser pulled the object back out with a greedy `/\{[\s\S]*\}/` (audit
-//     1.1 — the extractor verified to fail on three shapes a 14B model emits
-//     constantly). On failure the client got `null` and the button silently did
-//     nothing. Through `runHarness` the same call now gets a schema, one repair
-//     turn, a guard pass, and a harness_runs row; the client gets a validated
-//     value or a sentence saying why not.
+//   JSON (cron, agent, ticket, skillForm, templateForm)
+//     application/json, VALIDATED HERE. These streamed too, once — the first
+//     three of them (cron, agent, ticket) before the browser pulled the object
+//     back out with a greedy `/\{[\s\S]*\}/` (audit 1.1 — the extractor
+//     verified to fail on three shapes a 14B model emits constantly). The two
+//     form kinds land here directly, because the record a view is standing in
+//     is a contract a small model misses without a repair turn. On failure the
+//     client gets a validated value or a sentence saying why not.
 //
 // THE STREAMING HALF IS A HARNESS TOO — through the runner's own streaming
 // entry point, not around it (audit 1.5, the Muse row: these six draft SOULS,
@@ -50,6 +50,8 @@ import {
   museAgentHarness,
   museCronHarness,
   museDraftHarness,
+  museSkillFormHarness,
+  museTemplateFormHarness,
   museTicketHarness,
   type MuseDraftInput,
   type MuseProseInput,
@@ -59,7 +61,7 @@ import { resolveHarnessModel } from '@/server/harness/model'
 import { getGuardConfig, redactSecrets } from '@/server/guardrails'
 
 const Body = z.object({
-  kind: z.enum(['soul', 'personality', 'skill', 'memory', 'cron', 'agent', 'document', 'template', 'ticket']),
+  kind: z.enum(['soul', 'personality', 'skill', 'memory', 'cron', 'agent', 'document', 'template', 'ticket', 'skillForm', 'templateForm']),
   instruction: z.string().trim().min(1).max(8_000),
   current: z.string().max(300_000).optional(),
   context: z.string().max(2_000).optional(),
@@ -79,11 +81,14 @@ const UNUSABLE: Record<MuseJsonKind, string> = {
   cron: 'Muse could not turn that into a scheduled job — try saying when it should run and what it should do each time.',
   agent: 'Muse could not design an agent from that — try adding a sentence about what it should do.',
   ticket: 'Muse could not turn that into a ticket edit — try naming the fields to change.',
+  skillForm: 'Muse could not fill out that skill — try saying what the skill does, one skill at a time.',
+  templateForm: 'Muse could not fill out that template — try naming the template and a few sections it should have.',
 }
 
 const NO_MODEL = 'no routable model found — add an endpoint with models on /models first'
 
-// POST → a validated JSON draft (cron / agent / ticket) or a streamed document.
+// POST → a validated JSON draft (cron / agent / ticket / skillForm /
+// templateForm) or a streamed document.
 // Runs on the caller's muse model, metered as `platform:muse:<user>`. Any
 // signed-in user; what they can DO with the draft is still governed by the save
 // endpoints' own authorization.
@@ -109,7 +114,11 @@ export const Route = defineApi('/api/muse', {
           ? await runHarness(museCronHarness, input, ctx)
           : kind === 'agent'
             ? await runHarness(museAgentHarness, input, ctx)
-            : await runHarness(museTicketHarness, input, ctx)
+            : kind === 'ticket'
+              ? await runHarness(museTicketHarness, input, ctx)
+              : kind === 'skillForm'
+                ? await runHarness(museSkillFormHarness, input, ctx)
+                : await runHarness(museTemplateFormHarness, input, ctx)
 
       if (res.value) return json({ value: res.value, model: res.model }, { headers: { 'x-muse-model': res.model ?? '' } })
       // No model at all is a CONFIGURATION problem and the admin needs the real

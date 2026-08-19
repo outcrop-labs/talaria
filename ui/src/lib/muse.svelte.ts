@@ -5,19 +5,31 @@
 //   `streamMuse` — the six PROSE kinds. Tokens arrive as they are generated and
 //   land in the editor. Unchanged.
 //
-//   `draftCron` / `draftAgent` / `draftTicketPatch` — the three JSON kinds. They
-//   used to stream too, and this file parsed the result with three greedy
-//   `/\{[\s\S]*\}/` regexes that returned `null` on anything a model wrapped in
-//   prose (audit 1.1). The browser is the worst possible place for that parse:
-//   the tokens are already spent, so there is no repair turn; no guardrail can
-//   run on a value that never passed through the server; and a `null` is a
-//   button that silently does nothing. The parse, the schema, the identifier
-//   coercion and the ticket field allowlist all live in
+//   `draftCron` / `draftAgent` / `draftTicketPatch` / `draftSkillForm` /
+//   `draftTemplateForm` — the five JSON kinds. The first three used to stream
+//   too, and this file parsed the result with three greedy `/\{[\s\S]*\}/`
+//   regexes that returned `null` on anything a model wrapped in prose (audit
+//   1.1). The browser is the worst possible place for that parse: the tokens
+//   are already spent, so there is no repair turn; no guardrail can run on a
+//   value that never passed through the server; and a `null` is a button that
+//   silently does nothing. The parse, the schema, the identifier coercion, the
+//   ticket field allowlist and the form-record schemas all live in
 //   `server/harness/defs/muse.ts` now. What is left here is a fetch.
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
-export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket'
+export type MuseKind =
+  | 'soul'
+  | 'personality'
+  | 'skill'
+  | 'memory'
+  | 'cron'
+  | 'agent'
+  | 'document'
+  | 'template'
+  | 'ticket'
+  | 'skillForm'
+  | 'templateForm'
 
 export interface MuseRequest {
   kind: MuseKind
@@ -30,7 +42,7 @@ export interface MuseRequest {
 /** Stream a muse draft; onChunk receives text pieces as they arrive.
  *  Returns the full text. Throws with the server's message on failure.
  *
- *  PROSE KINDS ONLY. The three structured kinds answer with JSON and would
+ *  PROSE KINDS ONLY. The five structured kinds answer with JSON and would
  *  arrive here as one lump; use the `draft*` helpers below. */
 export async function streamMuse(input: MuseRequest, onChunk: (piece: string) => void, signal?: AbortSignal): Promise<string> {
   const r = await fetch('/api/muse', {
@@ -120,7 +132,7 @@ export async function savePreferredModel(model: string | null): Promise<{ error?
   return {}
 }
 
-// ── The three structured drafts ──────────────────────────────────────────────
+// ── The five structured drafts ───────────────────────────────────────────────
 //
 // The interfaces below MIRROR the zod schemas in `server/harness/defs/muse.ts`,
 // the same way `GatewayModel` above mirrors the gateway's own type. The server
@@ -169,3 +181,30 @@ export const draftAgent = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSigna
 
 export const draftTicketPatch = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSignal): Promise<TicketMusePatch> =>
   draft<TicketMusePatch>({ ...input, kind: 'ticket' }, signal)
+
+/** The complete record of ONE skill — the two fields of the skill view: its
+ *  name and its full SKILL.md — or `{ error }` when the instruction asked for
+ *  something the form cannot do (delete, move, create a second skill). The
+ *  two never arrive together; the server coerces the name to the write path's
+ *  alphabet before it reaches the caller. */
+export interface SkillForm {
+  name?: string
+  content?: string
+  error?: string
+}
+
+/** The complete record of ONE template — the three fields of the Templates
+ *  view: its name, its prompt-only guidance and its skeleton body — or
+ *  `{ error }` on refusal. The two never arrive together. */
+export interface TemplateForm {
+  name?: string
+  guidance?: string
+  body?: string
+  error?: string
+}
+
+export const draftSkillForm = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSignal): Promise<SkillForm> =>
+  draft<SkillForm>({ ...input, kind: 'skillForm' }, signal)
+
+export const draftTemplateForm = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSignal): Promise<TemplateForm> =>
+  draft<TemplateForm>({ ...input, kind: 'templateForm' }, signal)

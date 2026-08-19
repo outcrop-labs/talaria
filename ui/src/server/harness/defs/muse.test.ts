@@ -5,16 +5,22 @@ import { redactSecrets } from '@/server/guardrails'
 import {
   MUSE_AGENT,
   MUSE_CRON,
+  MUSE_SKILL_FORM,
+  MUSE_TEMPLATE_FORM,
   MUSE_TICKET,
   createStreamRedactor,
   looksLikeSchedule,
   museAgentHarness,
   museCronHarness,
   museDraftHarness,
+  museSkillFormHarness,
+  museTemplateFormHarness,
   museTicketHarness,
   type AgentDraft,
   type MuseDraftInput,
   type MuseProseInput,
+  type SkillForm,
+  type TemplateForm,
   type TicketMusePatch,
 } from '@/server/harness/defs/muse'
 import type { Capability } from '@/server/harness/capability'
@@ -317,6 +323,99 @@ describe('the ticket patch contract', () => {
   })
 })
 
+// ── skillForm / templateForm ─────────────────────────────────────────────────
+
+describe('the skill form contract', () => {
+  const parse = (v: unknown) => MUSE_SKILL_FORM.safeParse(v)
+  const CONTENT = '# Deploy triage\n\nUse this when a deploy train stops.\n\n1. Read the run log for the failing stage.\n2. Post the verdict in the deploy channel.'
+
+  it('coerces the name to the skill-name alphabet, and keeps the characters `ident` would strip', () => {
+    // The write path allows dots and underscores in a skill directory name, so
+    // the coercion must keep them: dropping them would silently rename the
+    // skill a "keep every field the request does not name" draft is holding.
+    expect(parse({ name: 'Deploy.Check_2', content: CONTENT }).data?.name).toBe('deploy.check_2')
+  })
+
+  it('coerces a hostile name down to what survives the alphabet', () => {
+    expect(parse({ name: '../../etc', content: CONTENT }).data?.name).toBe('etc')
+  })
+
+  it('fails a name that coerces to a directory the rename would not accept', () => {
+    const out = parse({ name: '!', content: CONTENT })
+    expect(out.success).toBe(false)
+    expect(out.error?.issues[0]?.message).toContain('name')
+  })
+
+  it('refuses a record with only one half, and says the ask is BOTH', () => {
+    const nameOnly = parse({ name: 'deploy-triage' })
+    expect(nameOnly.success).toBe(false)
+    expect(nameOnly.error?.issues[0]?.message).toContain('BOTH')
+    expect(parse({ content: CONTENT }).success).toBe(false)
+  })
+
+  it('keeps the error escape hatch exclusive of any edit', () => {
+    expect(parse({ error: 'I fill one skill form; I cannot delete it.', name: 'a-b', content: CONTENT }).data).toEqual({
+      error: 'I fill one skill form; I cannot delete it.',
+    })
+  })
+
+  it('holds the fields to the write path\'s bounds', () => {
+    expect(parse({ name: 'a'.repeat(81), content: CONTENT }).success).toBe(false)
+    expect(parse({ name: 'deploy-triage', content: 'c'.repeat(500_001) }).success).toBe(false)
+    expect(parse({ name: 'deploy-triage', content: CONTENT }).success).toBe(true)
+  })
+})
+
+describe('the template form contract', () => {
+  const parse = (v: unknown) => MUSE_TEMPLATE_FORM.safeParse(v)
+  const RECORD = {
+    name: 'Bug fix',
+    guidance: 'Use it for tickets that claim wrong behaviour.',
+    body: ['## Summary', '_What broke, in two sentences._', '## Steps', '- ', '## Expected', '_What should have happened._'].join('\n'),
+  }
+
+  it('refuses a record missing any of the three fields, and names the ask', () => {
+    const out = parse({ name: 'Bug fix', guidance: RECORD.guidance })
+    expect(out.success).toBe(false)
+    expect(out.error?.issues[0]?.message).toContain('ALL THREE')
+  })
+
+  it('lets an empty guidance or body through — presence, not content', () => {
+    // A template with no guidance is a state the write path accepts, and the
+    // complete-record contract is about presence: empty stays empty.
+    expect(parse({ ...RECORD, guidance: '' }).success).toBe(true)
+    expect(parse({ ...RECORD, body: '' }).success).toBe(true)
+  })
+
+  it('keeps the error escape hatch exclusive of any edit', () => {
+    expect(parse({ error: 'I fill one template form; I cannot create two.', ...RECORD }).data).toEqual({
+      error: 'I fill one template form; I cannot create two.',
+    })
+  })
+
+  it('holds every field to the write path\'s bounds', () => {
+    expect(parse({ ...RECORD, name: 'N'.repeat(121) }).success).toBe(false)
+    expect(parse({ ...RECORD, guidance: 'g'.repeat(10_001) }).success).toBe(false)
+    expect(parse({ ...RECORD, body: 'b'.repeat(50_001) }).success).toBe(false)
+    expect(parse(RECORD).success).toBe(true)
+  })
+
+  it('trims the name the way the write path does', () => {
+    expect(parse({ ...RECORD, name: '  Bug fix  ' }).data?.name).toBe('Bug fix')
+  })
+})
+
+describe('the skill form harness', () => {
+  it('passes the refusal through as a value rather than as a failure', async () => {
+    // "I cannot do that" is a correct answer to "delete this skill", and it
+    // has to reach the user as a sentence instead of as a parse failure.
+    const w = world({ replies: ['{"error":"I fill one skill form; I cannot delete it or create a second one."}'] })
+    const res = await run(museSkillFormHarness, { instruction: 'delete this skill and make a new one' }, w)
+    expect(res.value).toEqual({ error: 'I fill one skill form; I cannot delete it or create a second one.' })
+    expect(res.schemaValid).toBe(true)
+  })
+})
+
 describe('the ticket harness', () => {
   it('parses a patch the model wrapped in prose', async () => {
     const w = world({ replies: ['I will set both:\n\n{"priority":"urgent","dueDate":"2026-03-06T17:00:00.000Z"}\n\nAnything else?'] })
@@ -407,7 +506,7 @@ describe('the eval fixtures', () => {
     // WHAT THIS ACTUALLY ASSERTS is that nothing in a fixture reaches for a
     // model — it is a plain function over a value. It used to assert a fixture
     // COUNT, which measured nothing and broke every time a suite grew.
-    for (const h of [museCronHarness, museAgentHarness, museTicketHarness, museDraftHarness]) {
+    for (const h of [museCronHarness, museAgentHarness, museTicketHarness, museSkillFormHarness, museTemplateFormHarness, museDraftHarness]) {
       expect(h.evals?.length ?? 0).toBeGreaterThanOrEqual(8)
       for (const e of h.evals ?? []) expect(typeof e.check).toBe('function')
     }
@@ -452,6 +551,33 @@ describe('the eval fixtures', () => {
   it('catch a model that invents a patch for an instruction it cannot carry out', () => {
     expect(named(museTicketHarness.evals, 'outside the fields it may change')({ error: 'I cannot change assignees.' }, NO_TOOLS)).toBeNull()
     expect(named(museTicketHarness.evals, 'outside the fields it may change')({ status: 'in_progress' }, NO_TOOLS)).toContain('invented a patch')
+  })
+
+  it('catch the skill form draft that renamed what it was not told to', () => {
+    const good: SkillForm = {
+      name: 'deploy-triage',
+      content:
+        '# Deploy triage\n\nUse this when a deploy train stops.\n\n1. Read the run log for the failing stage.\n2. Page the on-call engineer before posting.\n3. Post the verdict with the stage and the first error.',
+    }
+    expect(named(museSkillFormHarness.evals, 'a revision keeps the name it was not asked to change')(good, NO_TOOLS)).toBeNull()
+    expect(
+      named(museSkillFormHarness.evals, 'a revision keeps the name it was not asked to change')({ ...good, name: 'incidents-review' }, NO_TOOLS),
+    ).toContain('did not ask for')
+  })
+
+  it('catch the template form draft that moved a field it was not told to touch', () => {
+    // The same "only what was asked" assertion the ticket fixtures carry, for
+    // the record the template view stands in: the fields that were not named
+    // have to come back unchanged.
+    const good: TemplateForm = {
+      name: 'Bug fix',
+      guidance: 'Use it for tickets that claim wrong behaviour: reproduce before describing, and state the delta, not the fix.',
+      body: ['## Summary', '_What broke, in two sentences._', '## Steps to reproduce', '- ', '- ', '## Expected', '_What should have happened._', '## Rollback', '_How this is undone._'].join('\n'),
+    }
+    expect(named(museTemplateFormHarness.evals, 'a revision keeps the fields it was not asked to change')(good, NO_TOOLS)).toBeNull()
+    expect(
+      named(museTemplateFormHarness.evals, 'a revision keeps the fields it was not asked to change')({ ...good, name: 'Bug report' }, NO_TOOLS),
+    ).toContain('did not ask for')
   })
 })
 

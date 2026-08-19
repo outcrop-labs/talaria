@@ -52,12 +52,19 @@ export async function saveMemory(id: string, content: string): Promise<void> {
 /** Append one dated line to the document.
  *
  *  Takes the CURRENT content rather than re-reading it: the caller already has
- *  the loaded document, and re-fetching here would open a window where an
- *  agent write lands between the read and the append and is overwritten. The
- *  caller must not call this before its read has landed, for the same reason —
- *  appending to `''` would clobber the whole file.
+ *  the loaded document (here, the editor's live text), and re-fetching here
+ *  would open a window where an agent write lands between the read and the
+ *  append and is overwritten. The caller must not call this before its read
+ *  has landed, for the same reason — appending to `''` would clobber the
+ *  whole file.
+ *
+ *  Returns the content it wrote, so the caller can stage that exact text in
+ *  its editor: a fact just appended can never be clobbered by a later Save
+ *  from an editor still showing the pre-append file.
  */
-export async function appendMemoryNote(id: string, current: string, note: string, today: string): Promise<void> {
+export async function appendMemoryNote(id: string, current: string, note: string, today: string): Promise<string> {
   const base = current.replace(/\s+$/, '')
-  await saveMemory(id, `${base ? `${base}\n` : ''}- ${note} _(added by hand, ${today})_\n`)
+  const content = `${base ? `${base}\n` : ''}- ${note} _(added by hand, ${today})_\n`
+  await saveMemory(id, content)
+  return content
 }

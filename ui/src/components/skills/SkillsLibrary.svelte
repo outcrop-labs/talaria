@@ -1,28 +1,32 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Input from '@/components/ui/Input.svelte'
+  import InfoTip from '@/components/ui/InfoTip.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
-  import Markdown from '@/components/ui/Markdown.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import RecordEditor from '@/components/editor/RecordEditor.svelte'
+  import { confirmDelete } from '@/components/ui/confirm.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import {
     SKILLS_KEY,
     SKILL_TEMPLATE,
+    deleteSkill,
+    renameSkill,
     saveSkill,
+    skillKey,
     skillName,
     skillsOf,
     useSkill,
     useSkills,
     type SkillSummary,
   } from '@/lib/skills'
-  import SkillEditor from './SkillEditor.svelte'
+  import { draftSkillForm } from '@/lib/muse.svelte'
 
-  // ONE OWNER'S SKILLS, as a library: pick on the left, read it on the right,
-  // Edit opens the full workspace editor. Same shape as Templates and the
-  // agent role library — a skill IS a record you pick and edit, so it gets the
-  // same surface rather than a third list-plus-modal of its own.
+  // ONE OWNER'S SKILLS, as a library: pick on the left, and the record's
+  // surface — its name, its SKILL.md workbench, its whole-form Muse — is the
+  // detail on the right. The editor is not opened; it IS the view.
   //
   // It replaces two list views (the assistant's Skills tab and the fleet
   // agent's) that had the same job and differed in row shape, create control,
@@ -32,6 +36,7 @@
     ownerLabel,
     canEdit = true,
     surface = 'panel',
+    onChanged,
     class: className,
   }: {
     owner: string
@@ -39,6 +44,8 @@
     canEdit?: boolean
     /** `well` when this sits inside a modal or a section — see LibraryPane. */
     surface?: 'panel' | 'well' | 'bare'
+    /** Extra invalidation for a caller with its own list key (the Studio). */
+    onChanged?: () => void
     class?: string
   } = $props()
 
@@ -56,23 +63,30 @@
   const skills = $derived(skillsOf(list.rows, owner))
 
   let selected = $state<string | null>(null)
-  let editing = $state(false)
   let createError = $state<unknown>(null)
 
-  // The selected skill's body, for the read pane. Reuses the same key the
-  // editor reads, so opening the editor is a cache hit rather than a refetch.
+  // The selected skill's body, for the workbench. Reuses the same key the
+  // editor reads, so picking a skill is a cache hit rather than a refetch.
   const doc = useSkill(() => owner, () => selected)
 
+  // The recorded name the record holds, and the name being typed. A skill name
+  // is the skill's DIRECTORY: lowercase, the write path's alphabet — the input
+  // is free text, the SAVE coerces it, and the dirty flag compares coerced to
+  // saved so a no-op recase does not count as unsaved work.
+  let name = $state('')
+  $effect(() => {
+    if (selected && (doc.data || doc.isError)) name = selected
+  })
+
   const create = async (raw: string) => {
-    const name = skillName(raw)
-    if (!name) return
+    const n = skillName(raw)
+    if (!n) return
     createError = null
     try {
       // A skill exists once its SKILL.md does, so creation is the first save.
-      await saveSkill(owner, name, SKILL_TEMPLATE(name))
+      await saveSkill(owner, n, SKILL_TEMPLATE(n))
       await qc.invalidateQueries({ queryKey: SKILLS_KEY })
-      selected = name
-      editing = true
+      selected = n
     } catch (e) {
       // This used to be `await fetch(...)` with the status ignored, so a
       // refused create silently opened an editor onto a skill that was never
@@ -80,6 +94,52 @@
       createError = e
     }
   }
+
+  const refresh = async () => {
+    await qc.invalidateQueries({ queryKey: SKILLS_KEY })
+    await qc.invalidateQueries({ queryKey: skillKey(owner, selected ?? '') })
+    onChanged?.()
+  }
+
+  // The record's Save. A save that renames is TWO writes, in this order: move
+  // the directory first, then write the content under the new name — so a
+  // failed content write after a rename leaves a skill that exists under its
+  // new name with its old content, which is a state the library can show.
+  const saveAll = async (content: string) => {
+    if (!selected) return
+    const toName = skillName(name) || selected
+    if (toName !== selected) {
+      await renameSkill(owner, selected, toName)
+      selected = toName
+    }
+    await saveSkill(owner, toName, content)
+    await refresh()
+  }
+
+  const remove = async () => {
+    if (!selected) return
+    if (
+      !(await confirmDelete({
+        what: 'skill',
+        name: selected,
+        detail: `Deleting “${selected}” removes its whole directory. Anything bound to it will flag it as missing.`,
+      }))
+    )
+      return
+    try {
+      await deleteSkill(owner, selected)
+      await refresh()
+      selected = null
+    } catch (e) {
+      createError = e
+    }
+  }
+
+  const museContext = $derived(
+    owner === 'shared'
+      ? 'A shared skill available to every agent in the fleet. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.'
+      : `A skill for the "${ownerLabel}" agent. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.`,
+  )
 </script>
 
 <LibraryPane
@@ -115,42 +175,78 @@
 
   {#snippet detail()}
     {#if selected}
-      <div class="flex min-h-0 flex-1 flex-col">
-        <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
-          <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{selected}</span>
-          <Button size="sm" variant="outline" onclick={() => (editing = true)}>
-            {canEdit ? 'Edit' : 'Open'}
-          </Button>
-        </div>
-        <div class="min-h-0 flex-1 overflow-y-auto p-6">
-          {#if doc.isError}
-            <QueryError
-              variant="compact"
-              error={doc.error}
-              title={`Could not open ${selected}`}
-              onRetry={() => void doc.refetch()}
-            />
-          {:else if !doc.data}
-            <SkeletonRows rows={6} />
-          {:else}
-            <Markdown class="tiptap" children={doc.data.content} />
-          {/if}
-        </div>
+      <!-- No padding: the record surface owns its inset, so its pinned menu
+           sits flush at the pane's edges. -->
+      <div class="min-h-0 flex-1 overflow-hidden">
+        {#if doc.isError}
+          <QueryError variant="compact" error={doc.error} title={`Could not open ${selected}`} onRetry={() => void doc.refetch()} />
+        {:else if !doc.data}
+          <SkeletonRows rows={6} />
+        {:else}
+          <!-- The record's surface, keyed on the record: picking another skill
+               reseeds the name input and the workbench; nothing about the
+               previous selection leaks into the next. -->
+          {#key selected}
+            <RecordEditor
+              kind="skill"
+              title={selected}
+              meta={ownerLabel}
+              subtitle={canEdit ? 'Read live; agents pick up edits on their next run.' : 'Read-only here — this record is maintained elsewhere.'}
+              fieldsDirty={canEdit ? skillName(name) !== selected : false}
+              onDelete={canEdit ? () => void remove() : undefined}
+              doc={{
+                value: doc.data.content,
+                editable: canEdit,
+                // Read-only records never reach a save; the no-op keeps the
+                // surface's contract whole.
+                onSave: canEdit ? saveAll : () => Promise.resolve(),
+                history: { kind: 'skill', owner, name: selected },
+                // No doc.muse: the whole-form Muse drafts name AND content,
+                // so the workbench carries no composer of its own.
+              }}
+              // The closure may outlive its {#if selected} scope, so the
+              // narrow does not reach in: guard it.
+              onCancel={canEdit ? () => {
+                if (selected) name = selected
+              } : undefined}
+              formMuse={
+                canEdit
+                  ? {
+                      label: 'skill',
+                      current: (docText) => ({ name: skillName(name) || selected, content: docText }),
+                      draft: async (input, signal) => draftSkillForm({ ...input, context: museContext }, signal),
+                      fields: (d: { name?: string; content?: string; error?: string }) => [
+                        { label: 'name', value: String(d.name ?? '').slice(0, 40) },
+                      ],
+                      docOf: (d: { content?: string }) => String(d.content ?? ''),
+                      apply: (d: { name?: string; content?: string }) => {
+                        const n = String(d.name ?? '').trim()
+                        if (n) name = n
+                      },
+                    }
+                  : undefined
+              }
+              class="h-full"
+            >
+              {#snippet fields(_)}
+                {#if canEdit}
+                  <div class="mb-4 shrink-0 rounded-lg border border-line bg-card/40 p-3">
+                    <div class="mb-1.5 flex items-center gap-1.5">
+                      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skill name</span>
+                      <InfoTip text="The skill's directory name: lowercase letters, digits, dots, underscores and hyphens. Renaming is part of the record's Save." />
+                    </div>
+                    <Input size="sm" bind:value={name} class="max-w-sm font-mono" />
+                  </div>
+                {/if}
+              {/snippet}
+            </RecordEditor>
+          {/key}
+        {/if}
       </div>
     {/if}
   {/snippet}
 </LibraryPane>
 
 {#if createError}
-  <QueryError variant="inline" error={createError} title="Could not create that skill" />
-{/if}
-
-{#if editing && selected}
-  <SkillEditor
-    {owner}
-    {ownerLabel}
-    name={selected}
-    {canEdit}
-    onClose={() => (editing = false)}
-  />
+  <QueryError variant="inline" error={createError} title="Could not save this skill" />
 {/if}

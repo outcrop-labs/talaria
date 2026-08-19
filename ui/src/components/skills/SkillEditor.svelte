@@ -1,23 +1,20 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import Button from '@/components/ui/Button.svelte'
+  import Input from '@/components/ui/Input.svelte'
+  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
-  import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
-  import { SKILLS_KEY, deleteSkill, saveSkill, skillKey, useSkill } from '@/lib/skills'
+  import RecordEditor from '@/components/editor/RecordEditor.svelte'
+  import { confirmDelete } from '@/components/ui/confirm.svelte'
+  import { SKILLS_KEY, deleteSkill, renameSkill, saveSkill, skillKey, skillName, useSkill } from '@/lib/skills'
+  import { draftSkillForm } from '@/lib/muse.svelte'
 
-  // ONE SKILL.md IN THE FULL WORKSPACE EDITOR — rich editing, Muse drafting,
-  // version history. Reads live; agents pick up saves on their next run.
-  //
-  // This replaces three near-identical editors (assistant, fleet, Studio) that
-  // differed only in query keys, delete wording, and whether they sent
-  // credentials. They also all ignored the SAVE RESPONSE — a bare `await
-  // fetch(...)` with no status check, so a 403 from `canEditSkill` reported
-  // success and the editor closed as though the write had landed. Going
-  // through `saveSkill`/`deleteSkill` means a refused write now throws and is
-  // shown.
+  // ONE SKILL.md IN THE MODAL WORKSPACE — the Studio's deep-link overlay
+  // (?sk=owner/name). The library views embed <RecordEditor> directly; this
+  // is the same surface in a modal, because the Studio opens it over the
+  // Studio. Everything the surface does — rename, workbench, whole-form Muse,
+  // delete — is the record's, not the modal's.
   let {
     owner,
     ownerLabel,
@@ -37,21 +34,32 @@
   } = $props()
 
   const qc = useQueryClient()
-  const query = useSkill(() => owner, () => name)
+  // The skill's live directory name: a save that renames moves it, and the
+  // overlay follows rather than reading a path that no longer exists.
+  let currentName = $state(name)
+  const query = useSkill(() => owner, () => currentName)
   let busy = $state(false)
   let failure = $state<unknown>(null)
+  let skillNameInput = $state(name)
 
   const refresh = async () => {
     await qc.invalidateQueries({ queryKey: SKILLS_KEY })
-    await qc.invalidateQueries({ queryKey: skillKey(owner, name) })
+    await qc.invalidateQueries({ queryKey: skillKey(owner, currentName) })
     onChanged?.()
   }
 
-  const save = async (content: string) => {
+  // The record's Save. A save that renames is two writes: move the directory
+  // first, then write the content under the new name.
+  const saveAll = async (content: string) => {
     busy = true
     failure = null
     try {
-      await saveSkill(owner, name, content)
+      const toName = skillName(skillNameInput) || currentName
+      if (toName !== currentName) {
+        await renameSkill(owner, currentName, toName)
+        currentName = toName
+      }
+      await saveSkill(owner, toName, content)
       await refresh()
     } catch (e) {
       failure = e
@@ -62,16 +70,15 @@
 
   const remove = async () => {
     if (
-      !(await confirm({
-        title: 'Delete skill',
-        message: `Delete "${name}"? Anything bound to it will flag it as missing.`,
-        confirmLabel: 'Delete',
-        danger: true,
+      !(await confirmDelete({
+        what: 'skill',
+        name: currentName,
+        detail: `Deleting “${currentName}” removes its whole directory. Anything bound to it will flag it as missing.`,
       }))
     )
       return
     try {
-      await deleteSkill(owner, name)
+      await deleteSkill(owner, currentName)
       await refresh()
       onClose()
     } catch (e) {
@@ -86,21 +93,14 @@
   )
 </script>
 
-<!-- The editor seeds ONCE from `value` — don't mount it until the content is
+<!-- The editor seeds ONCE from the read — don't mount it until the content is
      here. A failed read must never seed it with '': saving from there would
      replace the real SKILL.md with an empty file. But the click has to land
-     NOW, so the same shell shows with a prose-bar body meanwhile. -->
+     NOW, so the same shell shows with a skeleton body meanwhile. -->
 {#if !query.data}
-  <!-- The Modal primitive carries the shell (backdrop, Escape, portal). While
-       loading, dismissal stays inert; only a failed read may be Esc'd away. -->
-  <Modal open onClose={query.isError ? onClose : () => {}} width="max-w-3xl">
+  <Modal open onClose={query.isError ? onClose : () => {}} width="max-w-6xl" title={`${currentName} · SKILL.md`}>
     {#if query.isError}
-      <QueryError
-        variant="compact"
-        error={query.error}
-        title={`Could not open ${name}`}
-        onRetry={() => void query.refetch()}
-      />
+      <QueryError variant="compact" error={query.error} title={`Could not open ${currentName}`} onRetry={() => void query.refetch()} />
     {:else}
       <div class="space-y-3">
         <Skeleton class="h-2.5 w-2/3 rounded-full" />
@@ -110,22 +110,61 @@
     {/if}
   </Modal>
 {:else}
-  {#snippet deleteAction()}
-    <Button variant="ghost" size="sm" onclick={() => void remove()}>Delete skill</Button>
-  {/snippet}
-  <InternalEditorModal
-    open
-    {onClose}
-    title={`${name} · SKILL.md`}
-    subtitle={`${ownerLabel} — read live; agents pick up edits on their next run.`}
-    value={query.data.content}
-    editable={canEdit}
-    saving={busy}
-    onSave={save}
-    history={{ kind: 'skill', owner, name }}
-    muse={{ kind: 'skill', context: museContext }}
-    footerExtra={canEdit ? deleteAction : undefined}
-  />
+  <!-- padded=false: the record surface owns its inset, so its pinned menu sits
+       flush against the modal's frame like any other surface's. -->
+  <Modal open onClose={onClose} width="max-w-6xl" title={`${currentName} · SKILL.md`} padded={false}>
+    <div class="h-[76vh]">
+      <RecordEditor
+        kind="skill"
+        title={currentName}
+        meta={ownerLabel}
+        subtitle="Read live; agents pick up edits on their next run."
+        fieldsDirty={canEdit ? skillName(skillNameInput) !== currentName : false}
+        onDelete={canEdit ? () => void remove() : undefined}
+        doc={{
+          value: query.data.content,
+          editable: canEdit,
+          saving: busy,
+          onSave: canEdit ? saveAll : () => Promise.resolve(),
+          history: { kind: 'skill', owner, name: currentName },
+          // No doc.muse: the whole-form Muse drafts name AND content, so the
+          // workbench carries no composer of its own.
+        }}
+        formMuse={
+          canEdit
+            ? {
+                label: 'skill',
+                current: (docText) => ({ name: skillName(skillNameInput) || currentName, content: docText }),
+                draft: async (input, signal) => draftSkillForm({ ...input, context: museContext }, signal),
+                fields: (d: { name?: string; content?: string; error?: string }) => [
+                  { label: 'name', value: String(d.name ?? '').slice(0, 40) },
+                ],
+                docOf: (d: { content?: string }) => String(d.content ?? ''),
+                apply: (d: { name?: string }) => {
+                  const n = String(d.name ?? '').trim()
+                  if (n) skillNameInput = n
+                },
+              }
+            : undefined
+        }
+        onClose={onClose}
+        onCancel={canEdit ? () => (skillNameInput = currentName) : undefined}
+        class="h-full"
+      >
+        {#snippet fields(_)}
+          {#if canEdit}
+            <div class="mb-4 rounded-lg border border-line bg-card/40 p-3">
+              <div class="mb-1.5 flex items-center gap-1.5">
+                <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skill name</span>
+                <InfoTip text="The skill's directory name: lowercase letters, digits, dots, underscores and hyphens. Renaming is part of the record's Save." />
+              </div>
+              <Input size="sm" bind:value={skillNameInput} class="max-w-sm font-mono" />
+            </div>
+          {/if}
+        {/snippet}
+      </RecordEditor>
+    </div>
+  </Modal>
   <!-- A refused write used to be invisible: the old editors ignored the
        response, so a 403 closed cleanly and the edit was simply gone. -->
   {#if failure}

@@ -84,6 +84,17 @@ export async function deleteSkill(owner: string, name: string): Promise<void> {
   await getJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { method: 'DELETE' })
 }
 
+/** Rename the skill's directory without touching content. PUTs write to a
+ *  single path, so a record that saves under a new name is two writes: rename
+ *  the directory first, then write the content under the new name. */
+export async function renameSkill(owner: string, name: string, toName: string): Promise<void> {
+  await getJson<{ ok: true }>(`/api/skills/${owner}/${name}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'rename', toName }),
+  })
+}
+
 /** What a brand-new skill starts as.
  *
  *  One template, because the three call sites had three — one of which wrote a

@@ -31,8 +31,8 @@ it('census', () => {
     platformAgents: PLATFORM_AGENTS.length,
   }
   expect(report).toEqual({
-    harnesses: 36,
-    fixtures: 330,
+    harnesses: 38,
+    fixtures: 348,
     widens: 12,
     // EVERY JSON HARNESS REFUSES, derived rather than declared — see
     // `withJsonFloor` in define.ts. A harness whose output contract is a schema
@@ -46,6 +46,8 @@ it('census', () => {
       'muse:cron',
       'muse:agent',
       'muse:ticket',
+      'muse:skill-form',
+      'muse:template-form',
       'judge',
       'inbox-brief',
       'inbox-command',

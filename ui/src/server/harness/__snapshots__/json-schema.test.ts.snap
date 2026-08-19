@@ -9,6 +9,8 @@ exports[`every JSON harness Talaria ships > records WHICH harnesses can be sent 
     "inbox-command",
     "judge",
     "muse:agent",
+    "muse:skill-form",
+    "muse:template-form",
     "muse:ticket",
   ],
   "strict": [

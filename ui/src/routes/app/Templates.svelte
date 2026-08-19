@@ -10,7 +10,7 @@
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
+  import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
   import { fly, staggerIn } from '@/lib/motion'
@@ -61,8 +61,6 @@
   }
   const menu = useContextMenu()
 
-  let editorOpen = $state(false)
-
   const list = $derived(templates.filter((t) => t.kind === tab))
   const selected = $derived(templates.find((t) => t.id === selectedId && t.kind === tab) ?? null)
   const meta = $derived(TEMPLATE_TABS.find((t) => t.id === tab)!)
@@ -76,7 +74,14 @@
     if (template) select(template.id)
   }
   const remove = async (t: Template) => {
-    if (!(await confirm({ title: 'Delete template', message: `Delete "${t.name}"? Boards and agents bound to it fall back down the template chain.`, confirmLabel: 'Delete', danger: true }))) return
+    if (
+      !(await confirmDelete({
+        what: 'template',
+        name: t.name,
+        detail: `Deleting “${t.name}” (${t.kind}) cannot be undone — boards and agents bound to it fall back down the template chain.`,
+      }))
+    )
+      return
     await deleteTemplate(t.id)
     if (selectedId === t.id) select(null)
     await refresh()
@@ -115,8 +120,8 @@
       <Tabs items={tabItems} value={tab} onChange={setTab} />
 
       <!-- Tab-pane grammar: the whole library pane rises in on a kind switch
-           (no exit). Safe to key: the new-template input's state and
-           `editorOpen` live above; the detail is already keyed by selection. -->
+           (no exit). Safe to key: the new-template input's state lives above;
+           the detail is already keyed by selection. -->
       {#key tab}
       <div in:fly={{ y: 6, duration: 200 }} class="h-[calc(100vh-19rem)] min-h-[26rem]">
         <LibraryPane
@@ -154,8 +159,11 @@
           {#snippet detail()}
             {#if selected}
               {#key selected.id}
-                <div class="min-h-0 flex-1 overflow-y-auto p-6">
-                  <TemplateDetail template={selected} blurb={meta.blurb} onChanged={refresh} onDelete={() => selected && void remove(selected)} {editorOpen} setEditorOpen={(v) => (editorOpen = v)} />
+                <!-- No padding here: the record surface owns its own inset
+                     (inside its scroll) so its pinned menu runs flush to the
+                     pane's edges. -->
+                <div class="min-h-0 flex-1 overflow-hidden">
+                  <TemplateDetail template={selected} blurb={meta.blurb} onChanged={refresh} onDelete={() => selected && void remove(selected)} />
                 </div>
               {/key}
             {/if}
