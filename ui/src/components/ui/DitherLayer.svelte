@@ -74,7 +74,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { cn } from '@/lib/cn'
-  import { DitherEngine, type DitherEngineOptions, type DitherSource } from '@/lib/dither'
+  import { DitherEngine, type DitherEngineOptions, type DitherSource, type MaskRect } from '@/lib/dither'
   import { onReducedMotion } from '@/lib/motion'
   import { onThemeChange } from '@/lib/theme'
 
@@ -96,6 +96,7 @@
     shimmer,
     bleed = 0,
     class: className,
+    mask,
     ...opts
   }: DitherEngineOptions & {
     sources: DitherSource[]
@@ -123,6 +124,13 @@
      */
     bleed?: number
     class?: string
+    /**
+     * Clip the field to these rects on every paint — the field's own canvas
+     * space, NOT the container's. Callers re-measure as the target moves
+     * (the stream tail, a caret); the engine holds the last list until the
+     * next one arrives. `null`/undefined = the whole canvas, `[]` = nothing.
+     */
+    mask?: MaskRect[] | null
   } = $props()
 
   let canvas = $state<HTMLCanvasElement | null>(null)
@@ -162,6 +170,13 @@
       e.destroy()
       engine = null
     }
+  })
+
+  // The mask is geometry a caller re-measures, not a field property that
+  // tweens — it reaches the engine straight, un-tweened.
+  $effect(() => {
+    void mask
+    engine?.setMask(mask ?? null)
   })
 
   // Sources are compared by VALUE, not identity — callers rebuild the array on

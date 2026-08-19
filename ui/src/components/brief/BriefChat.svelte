@@ -4,8 +4,8 @@
   import { CornerDownLeft, Sparkles, X } from '@lucide/svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import ChatWaiting from '@/components/chat/ChatWaiting.svelte'
+  import StreamText from '@/components/chat/StreamText.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { parseAgentStream } from '@/lib/sse-parse'
   import { fade, QUICK } from '@/lib/motion'
@@ -159,7 +159,7 @@
           </div>
         </div>
       {:else}
-        <div class="font-sans text-[13px] leading-5">
+        <div class="font-sans text-[12.5px] leading-5">
           <!-- THE CHAT LOADER, not `Generating`.
                This is a chat reply bubble, and the app already has an answer for
                "an assistant turn with nothing streamed yet" — `AssistantTurn`
@@ -170,7 +170,7 @@
                briefing panel; in a thread it is a wipe where the app everywhere
                else shows a mark. Two loaders for one moment is the drift, and
                the fix is to use theirs rather than to tune mine. -->
-          {#if message.content}<Markdown children={message.content} />{:else}<ChatWaiting id={String(i)} class="my-1" />{/if}
+          {#if message.content}<StreamText content={message.content} live={replying && i === thread.length - 1} />{:else}<ChatWaiting id={String(i)} class="my-1" />{/if}
         </div>
       {/if}
     {/each}

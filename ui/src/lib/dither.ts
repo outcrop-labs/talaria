@@ -103,6 +103,14 @@ export type DitherSource =
   | UniformSource
   | WaveSource
 
+/** A rect in the engine canvas's own CSS-px space, for `setMask`. */
+export interface MaskRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 export interface DitherEngineOptions {
   /** Grid pitch in CSS px. Default 2 — see `dot`. */
   pitch?: number
@@ -350,6 +358,7 @@ export class DitherEngine {
   private reduced = false
   private lastShimmerBucket = -1
   private destroyed = false
+  private mask: MaskRect[] | null = null
 
   constructor(canvas: HTMLCanvasElement, opts: DitherEngineOptions = {}) {
     this.canvas = canvas
@@ -405,6 +414,20 @@ export class DitherEngine {
   /** Theme flipped — the tokens the tones resolved from have new values. */
   refreshColors(): void {
     this.tones = resolveTones()
+    this.schedule()
+  }
+
+  /**
+   * Clip subsequent paints to these rects (the canvas's own CSS-px space).
+   *
+   * This is how a field FOLLOWS something smaller than the canvas — the
+   * dither that condenses out of the scrambling tail of streaming text: the
+   * tail moves and the field moves with it, and every settled character
+   * outside the mask stays clean text. `null` paints the whole canvas; an
+   * EMPTY list paints nothing.
+   */
+  setMask(mask: MaskRect[] | null): void {
+    this.mask = mask
     this.schedule()
   }
 
@@ -511,6 +534,18 @@ export class DitherEngine {
     }
     if (active.length === 0) return
 
+    // A mask is a promise about WHERE: an empty list means the caller has
+    // nothing to field, and the cleared canvas above is the correct answer.
+    const mask = this.mask
+    if (mask && mask.length === 0) return
+
+    ctx.save()
+    if (mask && mask.length > 0) {
+      ctx.beginPath()
+      for (const r of mask) ctx.rect(r.x, r.y, r.w, r.h)
+      ctx.clip()
+    }
+
     // `+ frac` because the grid starts up to one pitch before this canvas —
     // without it the last column/row on the far edge would be dropped.
     const cols = Math.ceil((wCss + this.fx) / pitch)
@@ -588,5 +623,6 @@ export class DitherEngine {
         ctx.fillRect(cx * pitch - this.fx + off, cy * pitch - this.fy + off, size, size)
       }
     }
+    ctx.restore()
   }
 }

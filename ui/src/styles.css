@@ -363,6 +363,16 @@ body {
   50%, 100% { opacity: 0.35; }
 }
 
+/* Streamed text decoding out of its dither field (StreamText.svelte). The
+   settled line is full opacity — it is the text the user reads, and the field
+   is masked off of it. The unresolved run recedes behind that field instead:
+   the body of the tail sits at a whisper, and the head — the newest few
+   characters, the front of the rain — leads it brighter. A settled character
+   leaves its span and snaps to solid: that snap IS the moment of settling,
+   and it is the one thing that should read. */
+.stream-scramble { opacity: 0.08; }
+.stream-scramble-head { opacity: 0.24; }
+
 .gd-weave {
   animation: gd-weave var(--motion-immediate) ease-in-out infinite;
   transform-origin: center;
