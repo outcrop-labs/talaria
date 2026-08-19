@@ -9,6 +9,7 @@
   import type { AssistantMode } from '@/components/inbox/assistant-composer-controls'
   import Button from '@/components/ui/Button.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
+  import StreamText from '@/components/chat/StreamText.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
   import CollapsePane from '@/components/ui/CollapsePane.svelte'
@@ -524,7 +525,7 @@
               <div class="mb-2 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">
                 <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span>{streaming.status}
               </div>
-              {#if streaming.content}<div class="font-sans text-[13px] leading-5 text-fg"><Markdown children={streaming.content} /></div>{/if}
+              {#if streaming.content}<StreamText content={streaming.content} live class="font-sans text-[12.5px] leading-5 text-fg" />{/if}
             </div>
           {/if}
         </div>

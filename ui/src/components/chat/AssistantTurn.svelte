@@ -2,7 +2,7 @@
   import MessageAvatar from './MessageAvatar.svelte'
   import ToolStatus from './ToolStatus.svelte'
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
-  import Markdown from '@/components/ui/Markdown.svelte'
+  import StreamText from './StreamText.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
   import ChatWaiting from './ChatWaiting.svelte'
   import { fade } from '@/lib/motion'
@@ -74,9 +74,11 @@
     {/if}
 
     {#if message.content}
-      <div class="font-sans text-sm text-fg">
-        <Markdown children={resolveAgentMedia(message.content, agentModel)} />
-      </div>
+      <StreamText
+        content={resolveAgentMedia(message.content, agentModel)}
+        live={live}
+        class="font-sans text-[13px] text-fg"
+      />
     {/if}
     <!-- Mounted unconditionally (findings nulled while live) so the caveat's
         slide fires on the live→settled flip; behind an `{#if !live}` the
