@@ -15,7 +15,7 @@ function back(status: string): Response {
 // offline refresh token, and store the connection for the signed-in user.
 export const Route = defineApi('/api/integrations/google/callback', {
   GET: async ({ request }) => {
-    if (!googleIntegrationEnabled()) return back('disabled')
+    if (!(await googleIntegrationEnabled())) return back('disabled')
     const user = await getSessionUser(request)
     if (!user) return new Response(null, { status: 302, headers: { Location: '/login' } })
 

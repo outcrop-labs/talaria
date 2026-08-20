@@ -13,7 +13,7 @@ function back(status: string): Response {
 // GET /api/integrations/google/org/callback → store the shared org connection.
 export const Route = defineApi('/api/integrations/google/org/callback', {
   GET: async ({ request }) => {
-    if (!googleIntegrationEnabled()) return back('disabled')
+    if (!(await googleIntegrationEnabled())) return back('disabled')
     const user = await getSessionUser(request)
     if (!user) return new Response(null, { status: 302, headers: { Location: '/login' } })
     if (user.role !== 'admin') return back('forbidden')

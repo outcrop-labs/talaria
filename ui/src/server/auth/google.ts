@@ -3,6 +3,7 @@
 // profile from the userinfo endpoint (so we never have to verify a JWT locally).
 
 import { getAuthConfig } from './config'
+import { resolveGoogleClient, type GoogleClient } from '../google/client-config'
 import type { Identity } from '../users'
 
 export type LoginResult = Identity & { provider: 'google' }
@@ -23,8 +24,8 @@ export function resolveOrigin(request: Request): string {
 
 export const googleRedirectUri = (request: Request) => `${resolveOrigin(request)}/api/auth/google/callback`
 
-export function googleAuthUrl(redirectUri: string, state: string): string {
-  const cfg = getAuthConfig().google
+export async function googleAuthUrl(redirectUri: string, state: string): Promise<string> {
+  const cfg = (await resolveGoogleClient())!
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: redirectUri,
@@ -47,9 +48,11 @@ interface GoogleUserInfo {
   hd?: string
 }
 
-/** Exchange the auth code and resolve the Google identity. */
+/** Exchange the auth code and resolve the Google identity. The client comes
+ *  from the Admin UI record or the env fallback — login itself stays gated by
+ *  AUTH_GOOGLE_ENABLED (see `googleLoginEnabled`). */
 export async function exchangeGoogleCode(code: string, redirectUri: string): Promise<LoginResult> {
-  const cfg = getAuthConfig().google
+  const cfg = (await resolveGoogleClient()) as GoogleClient
 
   const tokenRes = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',

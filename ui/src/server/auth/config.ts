@@ -10,9 +10,11 @@
 //   AUTH_ALLOWED_DOMAINS       comma-separated email domains allowed to sign in
 //   AUTH_ALLOWED_EMAILS        comma-separated exact emails allowed to sign in
 //
-//   Google OAuth
-//   AUTH_GOOGLE_ENABLED=1
+//   Google OAuth — credentials from EITHER the Admin UI record (Admin → Org →
+//   Google Workspace, stored in app_settings; see google/client-config.ts) OR:
 //   AUTH_GOOGLE_CLIENT_ID / AUTH_GOOGLE_CLIENT_SECRET
+//   AUTH_GOOGLE_ENABLED=1     login gate (policy — a workspace client alone
+//                             must not open a login path; see googleLoginEnabled)
 //   AUTH_GOOGLE_HD             optional Google Workspace hosted-domain restriction
 //
 //   Username / password

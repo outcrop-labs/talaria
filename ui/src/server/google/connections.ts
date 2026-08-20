@@ -5,7 +5,7 @@
 // when the cached one is expired, re-encrypt, and hand back the bearer string.
 // Nothing here ever returns a refresh token to callers.
 
-import { getAuthConfig } from '../auth/config'
+import { resolveGoogleClient } from './client-config'
 import { db } from '../db/pg'
 import { open, seal } from '../secretbox'
 
@@ -18,7 +18,7 @@ export const EXPIRY_SKEW_MS = 60_000
  *  throws with name 'InvalidGrant' so callers can clear the dead connection.
  *  Shared by the per-user and org connections. */
 export async function requestRefresh(refreshToken: string): Promise<{ accessToken: string; expiresIn: number | null }> {
-  const cfg = getAuthConfig().google
+  const cfg = (await resolveGoogleClient())!
   const res = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
