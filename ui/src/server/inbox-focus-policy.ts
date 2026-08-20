@@ -368,6 +368,42 @@ export function surfaceBrief(surfaceId: string | null | undefined): string | nul
   ].join(' ')
 }
 
+// THE TOOLS THIS CONVERSATION MAY USE, in the order the owner would want them
+// tried. The detached reply used to open with "Tools are disabled" — the panel
+// is a conversation with the owner's personal assistant, and disarming it made
+// every live-state question ("how many tickets on Finance?") unanswerable
+// except by invention. Tools are on now; what the surface adds is a PRIORITY,
+// not a boundary: the assistant keeps every tool it has and reaches for the
+// ones that match the view first, then the rest.
+//
+// Server-side by design, like SURFACE_BRIEFS: the client sends an id, and an
+// id the server must recognise cannot be used to write tool names into the
+// prompt from outside. Names come from the agent-facing tool roster
+// (`fitness/toolbox/talaria-tools.ts`) — read tools plus the conversational
+// writes a view's question would naturally need.
+const SURFACE_TOOLS: Record<string, string[]> = {
+  boards: ['list_boards', 'list_tickets', 'get_ticket', 'comment'],
+  comms: ['list_channels', 'read_channel', 'post_to_channel', 'message_user', 'list_teammates'],
+  chat: ['message_user', 'list_teammates'],
+  inbox: ['list_tickets', 'get_ticket', 'comment'],
+  plan: ['list_tickets', 'get_ticket', 'list_teammates'],
+  research: ['research', 'list_research', 'research_status', 'get_document'],
+  knowledge: ['search_knowledge', 'list_kb_spaces', 'list_kb_docs', 'read_kb_doc'],
+  artifacts: ['list_documents', 'get_document'],
+  home: ['list_tickets', 'search_knowledge'],
+}
+
+/** The tool-guidance line for the detached prompt: the view's tools first,
+ *  then the rest — or, for a surface with no natural tool set (Settings,
+ *  Admin, Models…), the plain "tools are on" line. */
+export function surfaceToolLine(surfaceId: string | null | undefined): string {
+  const tools = surfaceId ? SURFACE_TOOLS[surfaceId] : undefined
+  if (!tools?.length) {
+    return 'Tools are enabled. Use your tools when the answer needs live workspace state, and say when you are unsure.'
+  }
+  return `Tools are enabled. Reach for this view's tools first (${tools.join(', ')}), then your other tools when those cannot answer.`
+}
+
 export function buildInboxConversationPrompt(input: {
   instruction: string
   /** Which view the panel is floating over; see surfaceBrief. */
@@ -388,7 +424,7 @@ export function buildInboxConversationPrompt(input: {
     return [
       '[Detached general assistant conversation.]',
       ...(surface ? [surface] : []),
-      'Tools are disabled. Do not call tools or propose executable mutations.',
+      surfaceToolLine(input.surface),
       // Deliberately unnamed: an agent's identity comes from its own rendered
       // persona, which already anchors it to the owner and the organization.
       // Naming an assistant here would override that for every customer.

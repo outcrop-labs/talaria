@@ -521,7 +521,6 @@
           {fleet}
           conversationId={agentSel.conversationId}
           newChatSignal={fresh}
-          onSwitchAgent={openAgent}
           onNewThread={() => agentSel && newThread(agentSel.model)}
           onCreated={(id) => {
             if (agentSel) setSel({ t: 'agent', model: agentSel.model, conversationId: id })

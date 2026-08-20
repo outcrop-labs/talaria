@@ -7,6 +7,7 @@
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
+  import { useProfilePrefs } from '@/lib/muse.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import StreamText from '@/components/chat/StreamText.svelte'
@@ -117,10 +118,26 @@
   // Offered only when the assistant's model publishes levels; the panel never
   // picks delegate/response models (attach + text + submit only), so the
   // assistant's own model is the one the pick is validated against.
+  //
+  // The seeded default is the assistant persona's CONFIGURED effort (the agent
+  // editor's pick beside the assistant's model) when there is one, else the
+  // owner's platform default (Settings) — and an explicit pick, including
+  // auto, stays authoritative for the conversation. Same rule as ChatView.
   let effort = $state('')
-  const { efforts } = useModelEfforts(() => assistant?.model ?? null)
+  let effortPristine = $state(true)
+  const { efforts, default: agentEffort } = useModelEfforts(() => assistant?.model ?? null)
+  const prefs = useProfilePrefs()
+  const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
+  const seedEffort = $derived(agentEffort ?? preferredEffort)
   $effect(() => {
-    if (effort && !efforts.includes(effort)) effort = ''
+    if (effort && !efforts.includes(effort)) {
+      effort = ''
+      effortPristine = true
+    }
+    if (effortPristine) {
+      const next = seedEffort && efforts.includes(seedEffort) ? seedEffort : ''
+      if (effort !== next) effort = next
+    }
   })
   let detachedKey = $state<string | null>(null)
   let dragWidth = $state<number | null>(null)
@@ -300,6 +317,18 @@
   const stick = bottomStick()
   $effect(() => stick.attach(scroller))
 
+  // OPEN AT THE NEWEST. The aside unmounts when the panel collapses, so every
+  // expand (and every reload) starts at scrollTop 0 — the top of the newest
+  // page, which is the OLDEST of what loaded. The newest turn is what the
+  // owner opened the panel for. Runs exactly when the scroller is (re)bound,
+  // and `jump` releases any hold left over from the last session so the
+  // follow below can take over from the first delta.
+  $effect(() => {
+    if (!scroller) return
+    stick.jump()
+    stick.follow()
+  })
+
   $effect(() => {
     // Deps: entry count and the streaming turn's text. The helper decides
     // whether to actually move — if the reader has scrolled away to read, it
@@ -335,6 +364,10 @@
       attachmentIds: split.attachmentIds,
       refs: split.refs,
     })
+    // YOU ALWAYS SEE WHAT YOU JUST SAID (ChatView's rule). A reader parked up
+    // in history stays parked through their own send otherwise — the hold
+    // suppresses the follow, and the reply streams below the fold.
+    stick.jump()
     composer?.clear()
     attachments = []
   }
@@ -366,19 +399,31 @@
 >
 {#if !collapsed}
   <!-- fixed, not absolute: the pane (nearest positioned ancestor now) has zero
-       width in overlay mode, so an absolute inset-0 backdrop would be zero-size. -->
+        width in overlay mode, so an absolute inset-0 backdrop would be zero-size. -->
   <button type="button" onclick={collapse} aria-label="Close assistant overlay" class="fixed inset-0 z-30 bg-black/45 min-[1400px]:hidden"></button>
   <!-- WIDTH IS MEASURED AGAINST THE VIEWPORT, NOT THE PANE. Overlay mode floats
-       the aside inside a pane that is deliberately `w-0` (the note above says
-       so, for the backdrop) — so the `calc(100% - 44px)` this used to carry
-       computed to -44px, which is not a legal width, so the declaration was
-       dropped and the aside shrink-to-fit against a zero-width container:
-       a drawer squashed against the left edge. `100vw` is the box the "leave
-       44px of the page showing" rule was always about. In flow mode (≥1400px)
-       the pane already owns that arithmetic, so the aside simply fills it. -->
+        the aside inside a pane that is deliberately `w-0` (the note above says
+        so, for the backdrop) — so the `calc(100% - 44px)` this used to carry
+        computed to -44px, which is not a legal width, so the declaration was
+        dropped and the aside shrink-to-fit against a zero-width container:
+        a drawer squashed against the left edge. `100vw` is the box the "leave
+        44px of the page showing" rule was always about. In flow mode (≥1400px)
+        the pane already owns that arithmetic, so the aside simply fills it.
+
+        THE HEIGHT CHAIN, which is the same methodology the NAV RAIL uses and
+        this aside used to lack in flow mode. Below 1400px the aside is
+        `absolute inset-y-0`, so its height is the pane's — definite, and the
+        flex-1 transcript scrolls. At ≥1400px it turns `relative`, and a block
+        child of the pane is AUTO height, not "fills it": with no definite
+        height the flex-1 scroller grows to its content instead of scrolling,
+        the panel becomes as tall as the whole conversation, and the composer
+        sat below the app height, out of view. `min-[1400px]:h-full` is the
+        NavRail's rule — the rail's inner column is `h-full` inside the
+        `h-full` CollapsePane, and now the aside is too: header, scrolling
+        transcript, composer, always exactly the pane's height. -->
   <aside
     class={cn(
-      'absolute inset-y-0 left-0 z-40 flex w-[var(--aside-w)] shrink-0 flex-col border-r border-line bg-sidebar shadow-[var(--theme-shadow-3)] min-[1400px]:relative min-[1400px]:z-20 min-[1400px]:w-full min-[1400px]:shadow-none',
+      'absolute inset-y-0 left-0 z-40 flex w-[var(--aside-w)] shrink-0 flex-col border-r border-line bg-sidebar shadow-[var(--theme-shadow-3)] min-[1400px]:relative min-[1400px]:z-20 min-[1400px]:h-full min-[1400px]:w-full min-[1400px]:shadow-none',
     )}
     style:--aside-w="min({panelWidth}px, calc(100vw - 44px))"
     aria-label="Assistant conversation"
@@ -438,7 +483,7 @@
           <div class="max-w-xs">
             <span class="mx-auto grid h-10 w-10 place-items-center rounded-full border border-line text-muted"><Bot size={16} /></span>
             <h2 class="mt-4 font-sans text-base font-medium text-fg">{focusMode ? `Work through Inbox with ${assistantName}` : `Talk with ${assistantName} about ${surfaceLabel}`}</h2>
-            <p class="mt-2 font-sans text-xs leading-5 text-muted">{focusMode ? 'The active decision is attached by default. Remove it to have a general, non-executing conversation.' : 'This conversation stays with you as you move through Talaria. General messages do not execute tools or mutations.'}</p>
+            <p class="mt-2 font-sans text-xs leading-5 text-muted">{focusMode ? 'The active decision is attached by default. Remove it to have a general, non-executing conversation.' : 'This conversation stays with you as you move through Talaria. Your assistant answers with its tools — reaching for the ones that match the view you are on first.'}</p>
           </div>
         </div>
       {:else}
@@ -502,19 +547,30 @@
           canSend={attachments.length > 0 || undefined}
         >
           {#snippet controlRail()}
-            <!-- Attach menu, effort (when the assistant's model publishes
-                 levels), and send: this surface is a conversation with the
-                 owner's personal assistant, not a harness configurator. The
-                 effort chip sits immediately left of the send tile, which
-                 ChatComposer pins to the rail's end. -->
+            <!-- Attach left; spacer; effort + send right — the same rail
+                 geometry every other composer uses (ChatView renders its
+                 flex-1 spacer between leftControls and rightControls; a
+                 controlRail host supplies its own). The send tile is pinned
+                 to the rail's end by ChatComposer, immediately after the
+                 effort chip. -->
             <AttachButton onAttach={addAttachment} disabled={busy} />
-            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => (effort = v)} disabled={busy} />{/if}
+            <span class="flex-1"></span>
+            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => { effort = v; effortPristine = false }} disabled={busy} />{/if}
           {/snippet}
         </ChatComposer>
       </div>
       <div class="mt-1.5 flex items-center justify-between gap-2 px-1 font-mono text-[8px] uppercase tracking-[0.06em] text-ink-dim">
         <span>{assistant?.configured ? `${assistant.name ?? 'your assistant'} orchestrates` : 'Assistant not configured'}</span>
-        <span>{attached ? 'Decision attached' : 'No tools'}</span>
+        <span class="flex items-center gap-2">
+          {#if attached}
+            <span>Decision attached</span>
+          {:else}
+            <!-- The conversation is armed now: the assistant answers with its
+                 tools, steered by the view. Saying so here replaces the old
+                 standing "No tools", which the detached turn no longer earns. -->
+            <span>Tools on</span>
+          {/if}
+        </span>
       </div>
     </div>
   </aside>

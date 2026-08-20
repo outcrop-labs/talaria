@@ -11,7 +11,6 @@
     fleet,
     conversationId,
     newChatSignal,
-    onSwitchAgent,
     onNewThread,
     onCreated,
   }: {
@@ -19,9 +18,6 @@
     fleet: { id: string; label: string; tiers?: string[] }[]
     conversationId: string | null
     newChatSignal: number
-    /** The composer rail's agent chip switches agents route-level — same
-     *  behavior as clicking the agent in the sidebar (working thread or fresh). */
-    onSwitchAgent: (model: string) => void
     onNewThread: () => void
     onCreated: (id: string) => void
   } = $props()
@@ -47,8 +43,6 @@
         agentModel={model}
         agentLabel={agent.label}
         tiers={agent.tiers ?? []}
-        agents={fleet}
-        onAgentChange={onSwitchAgent}
         {conversationId}
         {newChatSignal}
         {onCreated}

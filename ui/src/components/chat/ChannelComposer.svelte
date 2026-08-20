@@ -4,7 +4,6 @@
   import AttachButton from '@/components/chat/AttachButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
-  import KeyHint from '@/components/ui/KeyHint.svelte'
   import { cn } from '@/lib/cn'
   import { uploadFile, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
@@ -77,13 +76,11 @@
       canSend={!empty || attachments.length > 0}
     >
       <!-- No single selected agent in a channel — the generic ask (the
-          placeholder above), with the @mention affordance kept discoverable. -->
+           placeholder above), with the @mention affordance kept discoverable.
+           The rail's last word is the send tile ChatComposer pins itself. -->
       {#snippet leftControls()}
         <AttachButton onAttach={(a) => attachments.push(a)} />
         <EmojiButton onPick={(ch) => editorRef?.insertText(ch)} />
-      {/snippet}
-      {#snippet rightControls()}
-        <KeyHint keys="⏎" label="send" visible={!empty || attachments.length > 0} />
       {/snippet}
     </ChatComposer>
   </div>

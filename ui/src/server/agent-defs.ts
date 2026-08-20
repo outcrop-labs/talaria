@@ -61,6 +61,13 @@ export interface ModelTarget {
   endpoint: string // llm_endpoints.name
   model: string
   contextLength?: number
+  /** The reasoning effort this target's model should run at, when its catalog
+   *  metadata publishes levels — the agent-configured default, offered in the
+   *  agent editor next to the model picker and applied wherever a turn on this
+   *  agent (base or tier id) runs without an explicit pick. Stored bare: at
+   *  run time every consumer re-validates against the model's live levels, so
+   *  a stale level after a model swap is inert rather than a 400. */
+  effort?: string | null
 }
 
 /** The structured, Talaria-owned slice of an agent version's config. `raw`

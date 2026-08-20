@@ -47,7 +47,7 @@
 <div class="space-y-5">
   <section>
     <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Main model</div>
-    <TargetRow {endpoints} value={main} onChange={(t) => (main = t)} />
+    <TargetRow {endpoints} value={main} onChange={(t) => (main = t)} allowEffort />
   </section>
 
   <section>
@@ -66,6 +66,7 @@
             namePlaceholder="alias"
             onChange={(t) => (aliases = aliases.map((x, j) => (j === i ? { ...x, ...t } : x)))}
             onRemove={() => (aliases = aliases.filter((_, j) => j !== i))}
+            allowEffort
           />
         </div>
       {/each}

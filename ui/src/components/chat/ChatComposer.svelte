@@ -11,6 +11,7 @@
   import { MentionSuggest } from '@/components/ui/mention-suggest'
   import { EmojiSuggest } from '@/components/chat/emoji-suggest'
   import SendButton from '@/components/chat/SendButton.svelte'
+  import StopButton from '@/components/chat/StopButton.svelte'
   import ComposerToolbar from './ComposerToolbar.svelte'
   import { emojify } from '@/lib/emoji'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
@@ -38,6 +39,7 @@
     onEmptyChange,
     disabled,
     canSend,
+    onStop,
     leftControls,
     rightControls,
     controlRail,
@@ -57,6 +59,13 @@
      *  attachments make an empty editor sendable). Falls back to "editor has
      *  content" when omitted. */
     canSend?: boolean
+    /** THE SEND TILE BECOMES THE STOP TILE while this is set: the host passes
+     *  its stop handler for exactly as long as a reply is streaming, and the
+     *  rail's last item swaps the gold ArrowUp for the pulsing stop square —
+     *  one tile, two jobs, never both at once. Enter still submits (the host
+     *  queues the message into the streaming turn) and Escape still reaches
+     *  `onEscape`. */
+    onStop?: () => void
     /** Host controls rendered at the START of the bottom row (attach, emoji). */
     leftControls?: Snippet
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
@@ -182,7 +191,8 @@
 
   // Slack's split, Mercury's skin: the inset prompt well (text only) on top;
   // the gold send tile is the LAST item on the 36px chip rail below, with
-  // host controls — attach, emoji, formatting, pickers, stop — all before it.
+  // host controls — attach, emoji, formatting, pickers — all before it. While
+  // a reply streams, the SAME tile is the stop square (see `onStop`).
   const sendEnabled = $derived(!disabled && (canSend ?? !empty))
 </script>
 
@@ -193,7 +203,11 @@
   {#if controlRail}
     <div class="flex h-10 min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {@render controlRail()}
-      <SendButton enabled={sendEnabled} onClick={submit} />
+      {#if onStop}
+        <StopButton onClick={onStop} />
+      {:else}
+        <SendButton enabled={sendEnabled} onClick={submit} />
+      {/if}
     </div>
   {:else}
     <!-- Overflow guard: a crowded rail on a narrow pane (the plan's split)
@@ -206,7 +220,11 @@
       {/if}
       <span class="flex-1"></span>
       {@render rightControls?.()}
-      <SendButton enabled={sendEnabled} onClick={submit} />
+      {#if onStop}
+        <StopButton onClick={onStop} />
+      {:else}
+        <SendButton enabled={sendEnabled} onClick={submit} />
+      {/if}
     </div>
   {/if}
 </div>

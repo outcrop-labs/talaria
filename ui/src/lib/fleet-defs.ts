@@ -11,6 +11,9 @@ export interface ModelTarget {
   endpoint: string
   model: string
   contextLength?: number
+  /** Default reasoning effort for this target's model, when it publishes
+   *  levels — set in the agent editor beside the model pick. */
+  effort?: string | null
 }
 
 export interface AgentConfig {

@@ -101,7 +101,6 @@
           <ChatView
             agentModel={run.agentModel}
             {agentLabel}
-            {agents}
             {conversationId}
             newChatSignal={0}
             onCreated={() => {}}

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { proxyChat } from '@/server/gateway'
 import { routedModelFor } from '@/server/fleet-agents'
 import { effortsForModel } from '@/server/model-efforts'
+import { personaConfiguredEffort } from '@/server/harness/persona'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { canUseAgentModel } from '@/server/users'
@@ -112,14 +113,23 @@ export const Route = defineApi('/api/chat', {
     // persona id to the model actually serving it). A model that publishes no
     // levels supports no pick, so ANY effort on it is the error — "not
     // supported" and "not one of yours" read identically to the sender.
-    if (body.effort !== undefined) {
-      const efforts = await effortsForModel(routedModel)
-      if (!efforts.includes(body.effort)) {
-        return json(
-          { error: `unsupported effort "${body.effort}" for ${routedModel}${efforts.length ? ` (offered: ${efforts.join(', ')})` : ''}` },
-          { status: 400 },
-        )
-      }
+    //
+    // No pick on a persona with a CONFIGURED default (the agent editor's pick
+    // beside the model) runs at that default — re-validated here, so a level
+    // that went stale between the admin saving it and the turn using it is
+    // inert rather than a 400. An explicit pick always wins, including the
+    // composer's `auto`-means-absent.
+    const efforts = await effortsForModel(routedModel)
+    let effort: string | undefined = body.effort
+    if (effort !== undefined && !efforts.includes(effort)) {
+      return json(
+        { error: `unsupported effort "${effort}" for ${routedModel}${efforts.length ? ` (offered: ${efforts.join(', ')})` : ''}` },
+        { status: 400 },
+      )
+    }
+    if (effort === undefined) {
+      const configured = await personaConfiguredEffort(routedModel).catch(() => null)
+      if (configured && efforts.includes(configured)) effort = configured
     }
 
     // Validate attachments belong to real uploads before stamping them;
@@ -150,7 +160,7 @@ export const Route = defineApi('/api/chat', {
     // reply that is already streaming means this turn is covered later by
     // `continueConversation`, which re-reads exactly this stamp (and
     // re-validates it against the routed model) when it builds the next turn.
-    const userMsgId = await insertUserMessage(convId, userSeq, content, attachments, user.id, body.effort ? { effort: body.effort } : {})
+    const userMsgId = await insertUserMessage(convId, userSeq, content, attachments, user.id, effort ? { effort } : {})
     await touchConversation(convId, title)
 
     // Plan turns feed the ambient activity brain (plan-owner-scoped) and
@@ -225,7 +235,7 @@ export const Route = defineApi('/api/chat', {
     const upstream = await proxyChat({
       model: routedModel,
       messages,
-      ...(body.effort ? { reasoning_effort: body.effort } : {}),
+      ...(effort ? { reasoning_effort: effort } : {}),
     })
     const headers = new Headers({
       'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream',
