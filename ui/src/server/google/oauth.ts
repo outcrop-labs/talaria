@@ -25,8 +25,11 @@ export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   // View + edit calendar events (agenda + create).
   'https://www.googleapis.com/auth/calendar.events',
-  // Read recent mail (metadata + snippets) and send on the user's behalf.
-  'https://www.googleapis.com/auth/gmail.readonly',
+  // Read + ORGANIZE mail: labels, mark-read, archive (gmail.modify — it covers
+  // reads too, and the organize tools batch-apply labels). Swapped in for
+  // gmail.readonly when organizing shipped; a connection granted before then
+  // needs one reconnect to pick the scope up (the routes say so when they hit it).
+  'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/gmail.send',
 ]
 

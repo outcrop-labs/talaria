@@ -773,6 +773,62 @@ server.registerTool(
 )
 
 server.registerTool(
+  'read_email',
+  {
+    description:
+      'Read ONE full email (headers + complete plain-text body) by its id — the id `read_recent_email` returns. Use it before summarizing a thread, quoting a question, or drafting a reply: the snippet is a teaser, not the message. Reads are free; only sending waits for approval.',
+    inputSchema: { id: z.string().describe('Message id from read_recent_email') },
+  },
+  async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/gmail/${encodeURIComponent(id)}`)),
+)
+
+server.registerTool(
+  'list_labels',
+  {
+    description:
+      "List the Gmail labels on the account you act for — your owner's if you're a personal assistant, otherwise the shared org mailbox. Labels are Gmail's folders: a message is 'in a folder' by carrying its label, INBOX and UNREAD are system labels, and organizing mail means applying and removing them. Requires that Google account connected in Talaria.",
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/integrations/google/agent/gmail/labels')),
+)
+
+server.registerTool(
+  'create_label',
+  {
+    description:
+      "Create a Gmail label (Gmail's name for a folder) on the account you act for, find-or-create: an existing label of the same name is returned as-is, so a retry is safe. Create the label BEFORE organize_emails refers to it — organizing refuses a label that does not exist.",
+    inputSchema: { name: z.string().min(1).max(60).describe('Label name, e.g. "Vendor"') },
+  },
+  async ({ name }) => ok(await api('POST', '/api/integrations/google/agent/gmail/labels', { name })),
+)
+
+server.registerTool(
+  'organize_emails',
+  {
+    description:
+      'File, archive or mark-read emails by id — the ids read_recent_email returns. addLabels/removeLabels take label NAMES (from list_labels or create_label, or the system labels): removing INBOX archives a message (it stays in All Mail and keeps its labels), removing UNREAD marks it read. Applies immediately and reversibly — nothing is ever deleted, TRASH/SPAM are refused, and mail you file stays recoverable. Read before you file: sort by what the messages actually say, never by subject alone.',
+    inputSchema: {
+      ids: z.array(z.string()).min(1).max(100).describe('Message ids from read_recent_email'),
+      addLabels: z.array(z.string()).max(10).optional().describe('Label names to apply'),
+      removeLabels: z.array(z.string()).max(10).optional().describe('Label names to remove (INBOX archives, UNREAD marks read)'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/gmail/organize', args)),
+)
+
+
+server.registerTool(
+  'search_drive',
+  {
+    description:
+      "Find files in the Google Drive you act for — your owner's if you're a personal assistant, otherwise the shared org Drive. Returns names, types, modified dates and links. Read-only: locating and linking files, not changing them. Optional `q` matches file names.",
+    inputSchema: { q: z.string().optional().describe('Name substring to match') },
+  },
+  async ({ q }) => ok(await api('GET', `/api/integrations/google/agent/drive${q ? `?q=${encodeURIComponent(q)}` : ''}`)),
+)
+
+
+server.registerTool(
   'draft_email',
   {
     description:
