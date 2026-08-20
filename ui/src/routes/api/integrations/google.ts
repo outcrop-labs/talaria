@@ -11,7 +11,7 @@ export const Route = defineApi('/api/integrations/google', {
     const user = await getSessionUser(request)
     if (!user) return json({ error: 'unauthorized' }, { status: 401 })
     const status = await getConnectionStatus(user.id)
-    return json({ available: googleIntegrationEnabled(), ...status })
+    return json({ available: await googleIntegrationEnabled(), ...status })
   },
   DELETE: async ({ request }) => {
     const user = await getSessionUser(request)

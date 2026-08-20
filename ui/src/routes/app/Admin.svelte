@@ -27,6 +27,7 @@
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
   import AdminGithubPanel from './AdminGithubPanel.svelte'
+  import AdminGoogleClientPanel from './AdminGoogleClientPanel.svelte'
   import AdminGuardrailsPanel from './AdminGuardrailsPanel.svelte'
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
   import AdminInvitesPanel from './AdminInvitesPanel.svelte'
@@ -109,6 +110,7 @@
         <AdminSignupDomainsPanel />
         <AdminEmailPanel />
         <AdminGithubPanel />
+        <AdminGoogleClientPanel />
         <AdminOrgGooglePanel />
       {/if}
       {#if tab === 'agents'}

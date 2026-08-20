@@ -20,9 +20,10 @@
     connectedAt: string | null
   }
 
-  // Connected accounts. Per-user OAuth: connecting grants Talaria (and the agents
-  // working for you) offline access to build Google Docs/Sheets in YOUR Drive.
-
+  // Connected accounts. Per-user OAuth: connecting grants Talaria (and the
+  // agents working for you) offline access to YOUR Google Workspace — mail,
+  // calendar, and Drive. Your assistant acts strictly as you; outbound mail
+  // and invites it drafts wait for your approval (confirm-sends).
   const qc = useQueryClient()
   const query = createQuery(() => ({
     queryKey: ['integration-google'],
@@ -43,7 +44,7 @@
   })
 
   const disconnect = async () => {
-    if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect Google? Agents and exports lose access to your Drive.', confirmLabel: 'Disconnect', danger: true }))) return
+    if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect Google? Your assistant loses mail, calendar, and Drive access until you reconnect.', confirmLabel: 'Disconnect', danger: true }))) return
     await fetch('/api/integrations/google', { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['integration-google'] })
   }
@@ -61,7 +62,7 @@
   <SectionHeader
     class="mb-4"
     title="Connected accounts"
-    info="Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google Docs on your behalf."
+    info="Connect your Google Workspace account to give your assistant mail, calendar, and Drive access — acting as you, with outbound mail and invites held for your approval."
   />
 
   {#if isLoading}
@@ -85,21 +86,23 @@
       onRetry={() => void query.refetch()}
     />
   {:else if !data.available}
-    <div class="text-xs text-muted">Google integration isn’t configured on this server yet.</div>
+    <!-- An unregistered client is the ADMIN's gap to close — the old copy
+         dead-ended here with no hint of whose fix it was. -->
+    <div class="text-xs text-muted">Google isn’t set up on this server yet — ask an admin to register the Google client in Admin → Org.</div>
   {:else}
     <div class="flex items-center gap-3 rounded-md border border-line p-4">
       <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">
-        🗂️
+        ✉️
       </div>
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
-          Google Drive & Docs
+          Google Workspace
           {#if data?.connected}<span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>{/if}
         </div>
         <div class="truncate font-mono text-[11px] text-muted">
           {data?.connected
             ? `Connected${data.email ? ` as ${data.email}` : ''}${data.connectedAt ? ` · ${relativeTime(data.connectedAt)}` : ''}`
-            : 'Not connected'}
+            : 'Gmail · Calendar · Drive — not connected'}
         </div>
       </div>
       {#if data?.connected}
@@ -112,6 +115,9 @@
         </a>
       {/if}
     </div>
+    <p class="mt-2 max-w-prose text-xs text-muted">
+      Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you — every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
+    </p>
   {/if}
 
   {#if flash}

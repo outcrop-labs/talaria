@@ -3,11 +3,14 @@ import { getSessionUser } from '@/server/auth/session'
 import { clearStateCookie, parseCookies, STATE_COOKIE } from '@/server/auth/session'
 import { completeGoogleConnect, googleConnectRedirectUri, googleIntegrationEnabled } from '@/server/google/oauth'
 
-// Land back on the integrations settings with a status flag.
+// Land back on the integrations settings with a status flag. The CONNECTIONS
+// tab, not bare /settings: the flash that interprets this param is mounted by
+// IntegrationsSection, which only exists on that tab — on /settings the param
+// sat unread in the URL and the user saw no outcome at all.
 function back(status: string): Response {
   return new Response(null, {
     status: 302,
-    headers: { Location: `/settings?google=${encodeURIComponent(status)}`, 'Set-Cookie': clearStateCookie() },
+    headers: { Location: `/settings/connections?google=${encodeURIComponent(status)}`, 'Set-Cookie': clearStateCookie() },
   })
 }
 
@@ -15,7 +18,7 @@ function back(status: string): Response {
 // offline refresh token, and store the connection for the signed-in user.
 export const Route = defineApi('/api/integrations/google/callback', {
   GET: async ({ request }) => {
-    if (!googleIntegrationEnabled()) return back('disabled')
+    if (!(await googleIntegrationEnabled())) return back('disabled')
     const user = await getSessionUser(request)
     if (!user) return new Response(null, { status: 302, headers: { Location: '/login' } })
 

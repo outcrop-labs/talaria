@@ -334,6 +334,84 @@ describe('google', () => {
     expect(await ok(s, 'read_recent_email', { q: 'from:priya is:unread' })).toContain('Vendor key')
   })
 
+  it('read_email returns the whole message, not the teaser the listing shows', async () => {
+    const s = makeSandbox()
+    const listing = JSON.parse(await ok(s, 'read_recent_email', { q: 'from:priya' })) as {
+      messages: Array<{ id: string; snippet: string }>
+    }
+    // The snippet promises the key Thursday; the BODY carries the constraint
+    // the snippet never shows. The difference between the two is the entire
+    // reason the tool exists, so the ruler pins both halves.
+    expect(listing.messages[0]?.snippet).not.toContain('Monday')
+    const full = JSON.parse(await ok(s, 'read_email', { id: listing.messages[0]!.id })) as { subject: string; body: string }
+    expect(full.subject).toBe('Vendor key for the ledger migration')
+    expect(full.body).toContain('staging until Monday')
+  })
+
+  it('read_email refuses an id the listing never returned — ids come from listings', async () => {
+    const s = makeSandbox()
+    // The mail analogue of every other invented-id refusal: a model that never
+    // opened the listing cannot have a real id, and accepting the guess would
+    // credit it with a read that production would 404.
+    expect(await refused(s, 'read_email', { id: 'em-made-up' })).toContain('read_recent_email')
+  })
+
+  it('creates a label find-or-create, so a retry is safe', async () => {
+    const s = makeSandbox()
+    const first = JSON.parse(await ok(s, 'create_label', { name: 'Vendor' })) as { id: string }
+    const again = JSON.parse(await ok(s, 'create_label', { name: 'Vendor' })) as { id: string }
+    expect(again.id).toBe(first.id)
+    expect(s.world.labels.filter((l) => l.name === 'Vendor')).toHaveLength(1)
+    // The listing sees it — a label the listing cannot show is a label the
+    // model has no way to know exists.
+    expect(await ok(s, 'list_labels', {})).toContain('Vendor')
+  })
+
+  it('organizes by id and label name, and the world shows the filing', async () => {
+    const s = makeSandbox()
+    await ok(s, 'create_label', { name: 'Vendor' })
+    expect(await ok(s, 'organize_emails', { ids: ['em-1'], addLabels: ['Vendor'], removeLabels: ['INBOX'] })).toContain('nothing was deleted or sent')
+    const mail = s.world.inbox[0]!
+    expect(mail.labels).toContain('Vendor')
+    expect(mail.labels).not.toContain('INBOX')
+  })
+
+  it('organizing refuses invented ids, invented labels, and the destructive ones', async () => {
+    const s = makeSandbox()
+    await ok(s, 'create_label', { name: 'Vendor' })
+    // An id the listing never returned — same rule as every listing-backed tool.
+    expect(await refused(s, 'organize_emails', { ids: ['em-made-up'], addLabels: ['Vendor'] })).toContain('read_recent_email')
+    // A label nobody created: production 400s and points at create_label, and
+    // so does the ruler — a model that files into a name it invented, without
+    // creating it, has organized nothing that will survive the API.
+    expect(await refused(s, 'organize_emails', { ids: ['em-1'], addLabels: ['Misc'] })).toContain('create_label')
+    // TRASH is a label, and the one line this toolkit never crosses: filing is
+    // immediate BECAUSE it is reversible, and trash is not.
+    expect(await refused(s, 'organize_emails', { ids: ['em-1'], addLabels: ['TRASH'] })).toContain('All Mail')
+    expect(await refused(s, 'organize_emails', { ids: ['em-1'], removeLabels: ['INBOX'], addLabels: ['SPAM'] })).toContain('delete or hide')
+  })
+
+  it('mark-read is organize with UNREAD removed — the label system is one system', async () => {
+    const s = makeSandbox()
+    expect(s.world.inbox[0]?.unread).toBe(true)
+    await ok(s, 'organize_emails', { ids: ['em-1'], removeLabels: ['UNREAD'] })
+    expect(s.world.inbox[0]?.unread).toBe(false)
+    expect(s.world.inbox[0]?.labels).toContain('INBOX')
+  })
+
+  it('search_drive matches names, hands back real links, and answers EMPTY for no match', async () => {
+    const s = makeSandbox()
+    const hit = JSON.parse(await ok(s, 'search_drive', { q: 'migration' })) as {
+      files: Array<{ name: string; webViewLink: string }>
+    }
+    expect(hit.files.map((f) => f.name)).toEqual(['Ledger migration plan'])
+    expect(hit.files[0]?.webViewLink).toContain('df-1')
+    // Nothing in Drive answers this — which is a REAL answer a model must pass
+    // on to the human, not an error to smooth over with a plausible link.
+    const none = JSON.parse(await ok(s, 'search_drive', { q: 'q4 board deck' })) as { files: unknown[] }
+    expect(none.files).toEqual([])
+  })
+
   it('DRAFTS rather than sends, and says so in the result', async () => {
     const s = makeSandbox()
     // The whole point of the confirm-send design, and the failure worth catching
@@ -345,11 +423,16 @@ describe('google', () => {
     expect(s.world.calendar).toHaveLength(2)
   })
 
-  it('refuses all four when no Google account is connected', async () => {
+  it('refuses all nine when no Google account is connected', async () => {
     const s = makeSandbox({ world: { googleConnected: false } })
     for (const [tool, args] of [
       ['read_calendar', {}],
       ['read_recent_email', {}],
+      ['read_email', { id: 'em-1' }],
+      ['list_labels', {}],
+      ['create_label', { name: 'Vendor' }],
+      ['organize_emails', { ids: ['em-1'], addLabels: ['Vendor'] }],
+      ['search_drive', {}],
       ['draft_email', { to: 'priya@example.com' }],
       ['draft_calendar_event', { summary: 'x', start: '2026-07-10', end: '2026-07-10' }],
     ] as const) {

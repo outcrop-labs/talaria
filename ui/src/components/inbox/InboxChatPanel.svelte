@@ -30,6 +30,7 @@
     type FocusItem,
     type InboxTimelineEntry,
   } from '@/lib/inbox-focus.svelte'
+  import { useGoogleConnectStatus } from '@/lib/google-connect.svelte'
   import {
     PANEL_WIDTH_KEY,
     readPanelCollapsed,
@@ -139,6 +140,11 @@
       if (effort !== next) effort = next
     }
   })
+  // Google connection state — the footer offers the connect link the moment
+  // the assistant could use mail/calendar but can't (the chat reply only ever
+  // says "not connected"; this is the way out of that sentence). Same cache
+  // entry as every other Google status reader, so it costs one shared fetch.
+  const google = useGoogleConnectStatus()
   let detachedKey = $state<string | null>(null)
   let dragWidth = $state<number | null>(null)
   let composer = $state<ChatComposerHandle | null>(null)
@@ -569,6 +575,11 @@
                  tools, steered by the view. Saying so here replaces the old
                  standing "No tools", which the detached turn no longer earns. -->
             <span>Tools on</span>
+          {/if}
+          {#if google.data?.available && !google.data.connected}
+            <!-- Where "I can't reach your mail" actually bites: the connect
+                 path, offered in the panel's own voice, one link, no lecture. -->
+            <a href="/api/integrations/google/connect" class="text-accent hover:underline">Connect Google →</a>
           {/if}
         </span>
       </div>

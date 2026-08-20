@@ -4,6 +4,50 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 
 ## [Unreleased]
 
+### Added
+- **Agents can clean up an inbox, without ever being able to empty one.** Three
+  new fleet tools over the connected Google account: `list_labels` (Gmail's
+  folders ARE labels — INBOX and UNREAD are system ones), `create_label`
+  (find-or-create, so a retry is safe), and `organize_emails` (apply/remove
+  label names on up to 100 messages by id: removing INBOX archives — mail stays
+  in All Mail — removing UNREAD marks read). The HITL line is deliberate and
+  follows the platform's own rule: sends and invites leave the building under
+  the owner's identity and wait for approval, while filing, archiving and
+  mark-read stay inside the mailbox and are reversible — so they apply
+  immediately, because "clean up my inbox" behind fifty approval cards is not
+  cleanup. TRASH and SPAM are refused everywhere (service layer, sandbox,
+  agent-facing routes), so nothing in the toolkit can delete mail. Message
+  listings now carry label names alongside each message. Organizing needs the
+  `gmail.modify` scope (swapped in for `gmail.readonly`); a connection granted
+  before this needs one reconnect, and the routes say so when they hit it.
+  Fixtures grade the two real risks: filing into a label that was named but
+  never created, and reorganizing a mailbox without reading a single message in
+  it — including archiving an unread mail its owner still needs.
+- **Your Google Workspace account, connected to your assistant where you look
+  at your assistant.** Settings → Assistant now carries the connect card:
+  Gmail · Calendar · Drive, with the safety story beside the button — reads
+  are live, and every email or invite the assistant drafts waits in your
+  Inbox for your approval before anything sends. The Connections tab says the
+  same thing instead of "Google Drive & Docs", the connect callback lands on
+  the tab that interprets its result (it used to land on Profile, where the
+  outcome flash never rendered), and the Inbox assistant panel offers a
+  one-link "Connect Google" in its footer — right where a "can't reach your
+  mail" reply actually bites.
+- **The assistant can actually read the mail it manages.** Two new fleet
+  tools: `read_email` (one full message by id — headers plus the complete
+  plain-text body, decoded from Gmail's nested MIME tree, capped at 20k
+  characters) because the listing tool only ever returned snippets, and
+  `search_drive` (find files by name in the Drive the agent acts for, with
+  links — read-only). Both are modelled and simulated in the fitness toolbox,
+  same as every tool in the kit, and both refuse a legacy shared-key caller
+  the way the existing Google tools do.
+- **Google approvals show the payload, not a paraphrase.** An agent-drafted
+  email or calendar event surfaces in the Inbox as a P0 approval card whose
+  recommendation says "review the exact outbound payload" — which the card
+  never showed. The evidence rows are now the payload's own fields: To,
+  Subject, and Body for an email; When, Where/who, and Notes for an event —
+  so the human approves what will actually go out, not a summary of it.
+
 ### Fixed
 - **A migration added while the dev server runs now applies on the next
   request.** The migration runner caches its "done" promise on globalThis so
@@ -77,6 +121,18 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   throttle). Live result: unpriced cloud tokens 13.5M → 0.
 
 ### Added
+- **The Google OAuth client is registered in the Admin UI, not a .env file.**
+  Admin → Org → Google Workspace · OAuth client: paste the client ID, secret,
+  and an optional Workspace domain restriction; the secret is sealed
+  (AES-256-GCM) in the database and never shown again. The panel lists the
+  exact redirect URIs to authorize in Google Cloud Console — account connect,
+  org connect, and login — with copy buttons, which was the step the .env
+  workflow never helped with. The env vars remain as a fallback for scripted
+  deployments; the Admin-UI record wins when one exists, and removing it hands
+  control back to the env. Google LOGIN stays env-flag-gated
+  (AUTH_GOOGLE_ENABLED) on purpose — registering a workspace client must not
+  silently open a new way into the instance — but the flag now works with
+  credentials from either source.
 - **A platform-default reasoning effort, yours.** Settings → Preferred model
   now offers a "Default reasoning effort" pick directly beneath the model —
   but only when the selected model publishes effort levels (a model with no

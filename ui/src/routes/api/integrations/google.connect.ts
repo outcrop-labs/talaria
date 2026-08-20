@@ -10,11 +10,11 @@ export const Route = defineApi('/api/integrations/google/connect', {
   GET: async ({ request }) => {
     const user = await getSessionUser(request)
     if (!user) return new Response(null, { status: 302, headers: { Location: '/login' } })
-    if (!googleIntegrationEnabled()) {
+    if (!(await googleIntegrationEnabled())) {
       return json({ error: 'Google integration is not configured' }, { status: 400 })
     }
     const state = randomToken()
-    const url = googleConnectUrl(googleConnectRedirectUri(request), state)
+    const url = await googleConnectUrl(googleConnectRedirectUri(request), state)
     return new Response(null, {
       status: 302,
       headers: { Location: url, 'Set-Cookie': stateCookie(state) },

@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getAuthConfig } from '@/server/auth/config'
+import { googleLoginEnabled } from '@/server/google/client-config'
 import { googleAuthUrl, googleRedirectUri } from '@/server/auth/google'
 import { randomToken, stateCookie } from '@/server/auth/session'
 
@@ -8,13 +8,12 @@ import { randomToken, stateCookie } from '@/server/auth/session'
 // 302 to Google's consent screen.
 export const Route = defineApi('/api/auth/google', {
   GET: async ({ request }) => {
-    const cfg = getAuthConfig()
-    if (!cfg.google.enabled) {
+    if (!(await googleLoginEnabled())) {
       return json({ error: 'Google login is disabled' }, { status: 400 })
     }
 
     const state = randomToken()
-    const url = googleAuthUrl(googleRedirectUri(request), state)
+    const url = await googleAuthUrl(googleRedirectUri(request), state)
     return new Response(null, {
       status: 302,
       headers: { Location: url, 'Set-Cookie': stateCookie(state) },

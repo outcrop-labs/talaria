@@ -19,7 +19,7 @@ export const Route = defineApi('/api/integrations/google/org', {
     const user = await getSessionUser(request)
     if (!user) return json({ error: 'unauthorized' }, { status: 401 })
     if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-    return json({ available: googleIntegrationEnabled(), ...(await getOrgConnectionStatus()) })
+    return json({ available: await googleIntegrationEnabled(), ...(await getOrgConnectionStatus()) })
   },
   PUT: async ({ request }) => {
     const user = await getSessionUser(request)

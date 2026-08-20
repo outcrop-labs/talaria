@@ -81,7 +81,10 @@
       onRetry={() => void query.refetch()}
     />
   {:else if !data.available}
-    <div class="text-xs text-muted">Google integration isn’t configured on this server.</div>
+    <!-- Points at the client panel directly above rather than a dead end —
+         "isn't configured on this server" sent admins to a .env they no
+         longer need to touch. -->
+    <div class="text-xs text-muted">Set up the Google OAuth client above first, then connect the org account here.</div>
   {:else}
     <div class="flex items-center gap-3 rounded-md border border-line p-4">
       <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">🏢</div>
