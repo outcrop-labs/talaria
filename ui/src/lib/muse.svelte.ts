@@ -111,13 +111,21 @@ export function useModels() {
   }))
 }
 
-export function usePreferredModel() {
+/** The signed-in user's saved preferences. `preferredModel: null` = the
+ *  server's default drafting model; `preferredEffort: null` = no default, so
+ *  every effort-enabled surface starts at the model's own default. */
+export interface ProfilePrefs {
+  preferredModel: string | null
+  preferredEffort: string | null
+}
+
+/** The profile preferences, including `preferredModel: null` meaning "no
+ *  preference set" — a real 200 answer. A failed profile read must not look
+ *  like a cleared preference. */
+export function useProfilePrefs() {
   return createQuery(() => ({
     queryKey: ['profile-prefs'],
-    // `preferredModel: null` means "no preference set" — a real 200 answer.
-    // A failed profile read must not look like a cleared preference.
-    queryFn: (): Promise<{ preferredModel: string | null }> =>
-      getJson<{ preferredModel: string | null }>('/api/profile'),
+    queryFn: (): Promise<ProfilePrefs> => getJson<ProfilePrefs>('/api/profile'),
   }))
 }
 
@@ -127,6 +135,20 @@ export async function savePreferredModel(model: string | null): Promise<{ error?
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ preferredModel: model }),
+  })
+  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
+  return {}
+}
+
+/** Save the platform-default reasoning effort. `null` clears it — every model
+ *  runs at its own default again. The preference is a bare level string; each
+ *  surface applies it only where the model's metadata publishes the level. */
+export async function savePreferredEffort(effort: string | null): Promise<{ error?: string }> {
+  const r = await fetch('/api/profile', {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ preferredEffort: effort }),
   })
   if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
   return {}

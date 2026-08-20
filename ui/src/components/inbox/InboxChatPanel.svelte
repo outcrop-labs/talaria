@@ -7,6 +7,7 @@
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
+  import { useProfilePrefs } from '@/lib/muse.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import StreamText from '@/components/chat/StreamText.svelte'
@@ -118,10 +119,26 @@
   // Offered only when the assistant's model publishes levels; the panel never
   // picks delegate/response models (attach + text + submit only), so the
   // assistant's own model is the one the pick is validated against.
+  //
+  // The seeded default is the assistant persona's CONFIGURED effort (the agent
+  // editor's pick beside the assistant's model) when there is one, else the
+  // owner's platform default (Settings) — and an explicit pick, including
+  // auto, stays authoritative for the conversation. Same rule as ChatView.
   let effort = $state('')
-  const { efforts } = useModelEfforts(() => assistant?.model ?? null)
+  let effortPristine = $state(true)
+  const { efforts, default: agentEffort } = useModelEfforts(() => assistant?.model ?? null)
+  const prefs = useProfilePrefs()
+  const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
+  const seedEffort = $derived(agentEffort ?? preferredEffort)
   $effect(() => {
-    if (effort && !efforts.includes(effort)) effort = ''
+    if (effort && !efforts.includes(effort)) {
+      effort = ''
+      effortPristine = true
+    }
+    if (effortPristine) {
+      const next = seedEffort && efforts.includes(seedEffort) ? seedEffort : ''
+      if (effort !== next) effort = next
+    }
   })
   // Google connection state — the footer offers the connect link the moment
   // the assistant could use mail/calendar but can't (the chat reply only ever
@@ -544,7 +561,7 @@
                  effort chip. -->
             <AttachButton onAttach={addAttachment} disabled={busy} />
             <span class="flex-1"></span>
-            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => (effort = v)} disabled={busy} />{/if}
+            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => { effort = v; effortPristine = false }} disabled={busy} />{/if}
           {/snippet}
         </ChatComposer>
       </div>

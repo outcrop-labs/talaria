@@ -4,21 +4,25 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 
 ## [Unreleased]
 
-### Fixed
-- **Model cost autodetect is consistent now.** The price oracle only ever
-  priced an endpoint's REGISTERED models — but tier routing and aliases
-  attribute usage to models nobody registered (grok via a tier mention,
-  gemini "-latest" aliases), which stayed unpriced forever, and id shapes
-  like "~"-prefixed aliases, ":free" variants, "-latest", and trailing
-  release dates never matched OpenRouter's catalog ids. The oracle now
-  prices the union of registered models and every model usage has
-  actually landed on (keyed by the exact usage string so the costing
-  join hits), matches through alias fallbacks (strip "~", ":variant",
-  "-YYYYMMDD", "-latest", vendor-prefixed suffix match), and an unpriced
-  cloud usage row nudges a refresh ahead of the 6h cadence (15min
-  throttle). Live result: unpriced cloud tokens 13.5M → 0.
-
 ### Added
+- **Agents can clean up an inbox, without ever being able to empty one.** Three
+  new fleet tools over the connected Google account: `list_labels` (Gmail's
+  folders ARE labels — INBOX and UNREAD are system ones), `create_label`
+  (find-or-create, so a retry is safe), and `organize_emails` (apply/remove
+  label names on up to 100 messages by id: removing INBOX archives — mail stays
+  in All Mail — removing UNREAD marks read). The HITL line is deliberate and
+  follows the platform's own rule: sends and invites leave the building under
+  the owner's identity and wait for approval, while filing, archiving and
+  mark-read stay inside the mailbox and are reversible — so they apply
+  immediately, because "clean up my inbox" behind fifty approval cards is not
+  cleanup. TRASH and SPAM are refused everywhere (service layer, sandbox,
+  agent-facing routes), so nothing in the toolkit can delete mail. Message
+  listings now carry label names alongside each message. Organizing needs the
+  `gmail.modify` scope (swapped in for `gmail.readonly`); a connection granted
+  before this needs one reconnect, and the routes say so when they hit it.
+  Fixtures grade the two real risks: filing into a label that was named but
+  never created, and reorganizing a mailbox without reading a single message in
+  it — including archiving an unread mail its owner still needs.
 - **Your Google Workspace account, connected to your assistant where you look
   at your assistant.** Settings → Assistant now carries the connect card:
   Gmail · Calendar · Drive, with the safety story beside the button — reads
@@ -43,24 +47,80 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   never showed. The evidence rows are now the payload's own fields: To,
   Subject, and Body for an email; When, Where/who, and Notes for an event —
   so the human approves what will actually go out, not a summary of it.
-- **Agents can clean up an inbox, without ever being able to empty one.** Three
-  new fleet tools over the connected Google account: `list_labels` (Gmail's
-  folders ARE labels — INBOX and UNREAD are system ones), `create_label`
-  (find-or-create, so a retry is safe), and `organize_emails` (apply/remove
-  label names on up to 100 messages by id: removing INBOX archives — mail stays
-  in All Mail — removing UNREAD marks read). The HITL line is deliberate and
-  follows the platform's own rule: sends and invites leave the building under
-  the owner's identity and wait for approval, while filing, archiving and
-  mark-read stay inside the mailbox and are reversible — so they apply
-  immediately, because "clean up my inbox" behind fifty approval cards is not
-  cleanup. TRASH and SPAM are refused everywhere (service layer, sandbox,
-  agent-facing routes), so nothing in the toolkit can delete mail. Message
-  listings now carry label names alongside each message. Organizing needs the
-  `gmail.modify` scope (swapped in for `gmail.readonly`); a connection granted
-  before this needs one reconnect, and the routes say so when they hit it.
-  Fixtures grade the two real risks: filing into a label that was named but
-  never created, and reorganizing a mailbox without reading a single message in
-  it — including archiving an unread mail its owner still needs.
+
+### Fixed
+- **A migration added while the dev server runs now applies on the next
+  request.** The migration runner caches its "done" promise on globalThis so
+  vite's SSR module reloads don't re-open the pool — but that also meant a
+  MIGRATIONS array that grew after boot was never re-run, and every query
+  touching the new column 500'd ("column does not exist") until someone
+  restarted the dev server, which is exactly how `preferred_effort` got stuck.
+  The runner now records the array length of the last successful run beside
+  the promise, and a GROWN array re-arms the run: already-applied statements
+  no-op against schema_migrations, appended ones apply, and edits to applied
+  statements still trip the checksum check. Production is unaffected — the
+  array never changes inside a running process there.
+- **The assistant panel answers with its tools now, steered by the view.** The
+  sidebar conversation used to open every detached turn with "Tools are
+  disabled" — disarming the owner's personal assistant made every live-state
+  question ("how many tickets are on Finance?") unanswerable except by
+  invention. The reply harness now arms the persona's own governed tool loop,
+  and the prompt tells it which tools to reach for FIRST: the ones that match
+  the view the panel is floating over (Boards → list_boards/list_tickets/
+  get_ticket/comment; Knowledge → search_knowledge and the KB reads; Comms →
+  channels and messaging; …), then its other tools when those cannot answer.
+  The surface tool lists are server-side, keyed by the same id the briefs use,
+  so a client cannot write tool names into the prompt. Inbox queue-card
+  sign-offs keep their own path: propose through the command branch, confirm
+  with a click — never the detached conversation. Three inbox-reply fixtures
+  were reworded to the new contract (unbacked action claims still fail;
+  Inbox-card action ids still fail; live-state answers must be grounded in
+  tools or hedged, never invented).
+- **The assistant panel follows the conversation again.** Two scroll fixes:
+  sending now jumps to your message (a reader parked up in history used to
+  stay parked while the reply streamed below the fold), and opening or
+  expanding the panel starts at the NEWEST turn — the transcript remounts at
+  scrollTop 0 on every expand, which used to open on the oldest of what
+  loaded.
+- **The assistant panel's composer rail matches the platform.** Attach sits
+  left, and the effort chip + send/stop tile are right-aligned (the rail had
+  no spacer, so everything packed against the left edge). The footer's
+  standing "No tools" readout is gone — it now says "Tools on", which since
+  the tools change above is the truth.
+- **The assistant panel no longer runs past the app height when docked.** In
+  flow mode (≥1400px) the panel's aside turned `relative` with no height of
+  its own, and a block child of the collapse pane is auto-height — so the
+  flex-1 transcript stopped scrolling and grew to its full content height,
+  pushing the composer below the bottom of the app. The aside now carries the
+  nav rail's own methodology (`h-full` inside the `h-full` CollapsePane), so
+  header, scrolling transcript, and composer always compose to exactly the
+  pane's height. Overlay mode (below 1400px) was already definite
+  (`absolute inset-y-0`) and is unchanged.
+- **The effort picker now appears on deployments upgraded past its ship.** The
+  stored per-model catalog's only production writer is the model-adder modal,
+  so a catalog written before the effort extraction had no levels for anyone
+  and the chip stayed hidden until an admin re-opened the modal. An empty read
+  on `/api/models/efforts` now runs a one-time backfill — the serving
+  endpoints' catalogs are refreshed live (once per endpoint; a catalog written
+  by the current build never re-triggers, and a failed refresh retries no more
+  than every five minutes) — and the route answers from the fresh store. Also:
+  the agent chip is gone from the chat composer rails (Comms, Plan, Research) —
+  the sidebar owns the conversation partner, and the rail's right side is now
+  tier, effort, then the send/stop tile.
+- **Model cost autodetect is consistent now.** The price oracle only ever
+  priced an endpoint's REGISTERED models — but tier routing and aliases
+  attribute usage to models nobody registered (grok via a tier mention,
+  gemini "-latest" aliases), which stayed unpriced forever, and id shapes
+  like "~"-prefixed aliases, ":free" variants, "-latest", and trailing
+  release dates never matched OpenRouter's catalog ids. The oracle now
+  prices the union of registered models and every model usage has
+  actually landed on (keyed by the exact usage string so the costing
+  join hits), matches through alias fallbacks (strip "~", ":variant",
+  "-YYYYMMDD", "-latest", vendor-prefixed suffix match), and an unpriced
+  cloud usage row nudges a refresh ahead of the 6h cadence (15min
+  throttle). Live result: unpriced cloud tokens 13.5M → 0.
+
+### Added
 - **The Google OAuth client is registered in the Admin UI, not a .env file.**
   Admin → Org → Google Workspace · OAuth client: paste the client ID, secret,
   and an optional Workspace domain restriction; the secret is sealed
@@ -73,6 +133,55 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   (AUTH_GOOGLE_ENABLED) on purpose — registering a workspace client must not
   silently open a new way into the instance — but the flag now works with
   credentials from either source.
+- **A platform-default reasoning effort, yours.** Settings → Preferred model
+  now offers a "Default reasoning effort" pick directly beneath the model —
+  but only when the selected model publishes effort levels (a model with no
+  ladder shows no control; there is nothing to default). The saved level
+  becomes the starting pick everywhere effort is offered — Comms agent chats
+  (tiers included) and the assistant panel — wherever the model in play
+  supports it; models that don't simply run at their own default and show no
+  chip. An explicit pick in any conversation (including auto) stays
+  authoritative for that conversation, and the default re-seeds exactly when a
+  model switch retires the pick. Stored on the profile beside the preferred
+  model (`users.preferred_effort`); picking auto clears it. Because the
+  preference travels across models, the server stores the bare level string
+  and each surface applies it only against the levels that model's metadata
+  vouches for — a stale level is inert, never an error.
+- **Agents carry their own default effort, set where the model is picked.**
+  The agent editor's model rows — main model and every tier alias — now show
+  the effort chip beside the picker when the chosen model publishes levels,
+  and the saved level becomes that agent's conversation default: Comms DMs
+  with the agent (or the tier) and the assistant panel start there, and the
+  chat routes apply it server-side when a sender made no pick, re-validated
+  against the model's live levels so a stale config is inert. Precedence is
+  specific-over-general: your explicit conversation pick > the agent's
+  configured default > your platform default (Settings) > the model's own.
+  `/api/models/efforts` answers both halves (`efforts` + `default`), and the
+  persona resolver reads the configured effort from the same cached agent
+  config walk that resolves capability keys — one read, one TTL, re-pointing
+  an agent's model or effort follows within a minute.
+- **The Comms composer is one honest tile.** The gold send tile now becomes
+  the stop square while a reply streams (ChatComposer's `onStop`) instead of
+  stop appearing beside submit, the "⏎ send" key-hint chip is gone — the
+  component itself deleted, its three remaining uses (comms rail, the channel
+  composer, the research start bar) removed with it — and the effort picker
+  was rebuilt in the agent-chip anatomy: strong-border mono chip with the
+  3×12 bar meter marking where the pick sits on the model's ladder, opening
+  the §7 popover with a bar meter on every row.
+- **Sending while a reply streams no longer interrupts it — anywhere in the
+  turn.** The server queue (`queue: true` + the chained follow-up turn) has
+  always existed, but a message sent during the FIRST turn's opening window —
+  after the request leaves, before the response headers carry the
+  conversation id back, which the server can hold for minutes behind a
+  restarting agent — took the fresh-send path and started a second stream,
+  forking the thread. Those messages are now held locally and flushed the
+  moment the id lands (or re-sent as a fresh turn if the first one died
+  without producing one); a hold never leaks across a thread switch, and
+  attachments stay live while streaming because the queue carries them. Stop
+  now means stop, too: the turn freezes what was on screen instead of the
+  live-resume poller re-animating the server's copy until it finished anyway.
+  Verified: `npx tsc --noEmit`, `npm run typecheck` (0 errors), `npm test`
+  (2476 passing), plus the queue paths walked by hand in the running app.
 - **Reasoning effort reaches the primary chat surfaces.** Comms agent DMs and
   the assistant panel now offer an effort chip on the composer rail, right
   aligned just left of the send tile — but only when the model's own catalog

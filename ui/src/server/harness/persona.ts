@@ -140,6 +140,56 @@ export function personaTargets(model: string, rows: readonly PersonaRow[]): Mode
   return personaIndex(rows).get(model) ?? []
 }
 
+// ── The agent-configured effort default ─────────────────────────────────────
+//
+// A persona's config may name a default reasoning effort on its main target or
+// any alias (the agent editor offers the pick beside the model, only when the
+// model's catalog metadata publishes levels). This is the same jsonb walk as
+// `personaIndex` with one field read instead of a pool built — kept beside it,
+// reading the same rows through the same defensive lens, so the two views of
+// "what this persona's config says" cannot drift apart.
+
+/** The configured effort off one stored target record, or null. Same posture
+ *  as `readTarget`: a missing or malformed field is no default, never a
+ *  guess. */
+function readEffort(raw: unknown): string | null {
+  const t = asRecord(raw)
+  const e = t?.effort
+  return typeof e === 'string' && e.trim() ? e.trim() : null
+}
+
+/** The CONFIGURED default effort per routable persona id (base and tiers).
+ *  Same two-pass claim order as `personaIndex`: base ids first, so an agent
+ *  literally named "x-opus" wins over the reading of that string as the "opus"
+ *  tier of "x". Ids with no configured effort are absent from the map. */
+export function personaEffortIndex(rows: readonly PersonaRow[]): Map<string, string> {
+  const out = new Map<string, string>()
+  const parsed = rows.map((row) => {
+    const config = asRecord(row.config)
+    return {
+      agent: row.agent,
+      hasMain: readTarget(config?.main) !== null,
+      mainEffort: readEffort(config?.main),
+      aliases: config && Array.isArray(config.aliases) ? config.aliases : [],
+    }
+  })
+  for (const row of parsed) {
+    if (row.hasMain && row.mainEffort) out.set(row.agent, row.mainEffort)
+  }
+  for (const row of parsed) {
+    for (const raw of row.aliases) {
+      const alias = asRecord(raw)
+      const name = typeof alias?.name === 'string' ? alias.name.trim() : ''
+      if (!name || !readTarget(alias)) continue
+      const id = `${row.agent}-${name}`
+      if (out.has(id)) continue // an agent's own id outranks another's tier
+      const effort = readEffort(raw)
+      if (effort) out.set(id, effort)
+    }
+  }
+  return out
+}
+
 /** `personaTargets` as capability keys, deduplicated — a persona whose fallback
  *  points at the same endpoint:model as its main must not ask the same question
  *  twice on the hot path, and must not count twice in a unanimity vote. */
@@ -163,6 +213,11 @@ interface Snapshot {
   at: number
   ok: boolean
   byId: Map<string, ModelTarget[]>
+  /** Configured effort defaults per routable persona id (see
+   *  `personaEffortIndex`). Same cache, same TTL — an admin who sets a
+   *  target's effort sees it applied within a minute, exactly like a
+   *  re-pointed model. */
+  efforts: Map<string, string>
 }
 
 let snapshot: Snapshot | null = null
@@ -182,15 +237,15 @@ async function load(): Promise<Snapshot> {
       join agent_versions v on v.agent_id = d.id and v.version = d.current_version
       where d.enabled
     `) as unknown as PersonaRow[]
-    return { at: Date.now(), ok: true, byId: personaIndex(rows) }
+    return { at: Date.now(), ok: true, byId: personaIndex(rows), efforts: personaEffortIndex(rows) }
   } catch {
-    return { at: Date.now(), ok: false, byId: new Map() }
+    return { at: Date.now(), ok: false, byId: new Map(), efforts: new Map() }
   }
 }
 
-async function index(): Promise<Map<string, ModelTarget[]>> {
+async function index(): Promise<Snapshot> {
   const now = Date.now()
-  if (snapshot && now - snapshot.at < (snapshot.ok ? TTL_MS : RETRY_MS)) return snapshot.byId
+  if (snapshot && now - snapshot.at < (snapshot.ok ? TTL_MS : RETRY_MS)) return snapshot
   if (!inflight) {
     const pending = load()
     inflight = pending
@@ -199,15 +254,26 @@ async function index(): Promise<Map<string, ModelTarget[]>> {
       if (inflight === pending) inflight = null
     })
   }
-  return (await inflight).byId
+  return await inflight
 }
 
 /** The runner's default `personaKeys` edge: the capability keys a fleet persona
  *  inherits from the model actually serving it. Empty for anything that is not a
  *  live persona, which leaves the caller on the unknown path. */
 export async function personaCapabilityKeys(model: string): Promise<CapabilityKey[]> {
-  const byId = await index()
-  return [...new Set((byId.get(model) ?? []).map((t) => capabilityKey(t.endpoint, t.model)))]
+  const snap = await index()
+  return [...new Set((snap.byId.get(model) ?? []).map((t) => capabilityKey(t.endpoint, t.model)))]
+}
+
+/** The agent-configured default reasoning effort for a routable persona id
+ *  (base or tier), or null. NEVER THROWS — same posture as
+ *  `personaCapabilityKeys`: a lookup that improves a turn, not a precondition
+ *  for one. The answer is the CONFIGURED string, unvalidated; the caller holds
+ *  it against the model's live published levels, which is where staleness is
+ *  decided. */
+export async function personaConfiguredEffort(model: string): Promise<string | null> {
+  const snap = await index()
+  return snap.efforts.get(model) ?? null
 }
 
 /** The TARGETS behind one routable persona id (tier included), from the same
@@ -217,8 +283,8 @@ export async function personaCapabilityKeys(model: string): Promise<CapabilityKe
  *  contract as `personaTargets`: empty when the id is not a persona, its
  *  config is missing or malformed, or it names a tier the agent does not have. */
 export async function personaTargetsFor(model: string): Promise<ModelTarget[]> {
-  const byId = await index()
-  return byId.get(model) ?? []
+  const snap = await index()
+  return snap.byId.get(model) ?? []
 }
 
 /** Drop the cached index. For tests, and for any caller that has just changed an

@@ -2,10 +2,8 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
 
-  // Keyboard-key chip + the composer's contextual key hint (KeyHint.svelte).
-  // Chats are meant to be keyboard-driven — these make the keys visible right
-  // where the action is, fading in only when the shortcut is actually
-  // available. Mercury: raised tile + hairline + 10px mono chrome voice.
+  // Keyboard-key chip (⌘, ⏎, esc) for shortcut hints in menus and chrome.
+  // Mercury: raised tile + hairline + 10px mono chrome voice.
   let { children, class: className }: { children: Snippet; class?: string } = $props()
 </script>
 

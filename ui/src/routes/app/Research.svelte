@@ -18,7 +18,6 @@
   import AgentPicker from '@/components/chat/AgentPicker.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-  import KeyHint from '@/components/ui/KeyHint.svelte'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import Materialize from '@/components/ui/Materialize.svelte'
@@ -274,7 +273,6 @@
             {#if starting}
               <span class="grid h-9 w-9 shrink-0 place-items-center"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
             {/if}
-            <KeyHint keys="⏎" label="start" visible={!!question.trim() && !!agent} />
             <span class="flex-1"></span>
             <SendButton
               title="Start (⏎)"

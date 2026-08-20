@@ -11,6 +11,11 @@ const Target = z.object({
   endpoint: z.string().min(1).max(100),
   model: z.string().min(1).max(200),
   contextLength: z.number().int().positive().optional(),
+  /** The target's default reasoning effort. Not validated against the model's
+   *  published levels here: the editor only offers real levels, and every RUN
+   *  TIME consumer re-validates against the live metadata — so a level that
+   *  went stale between save and use is inert, never a refused turn. */
+  effort: z.string().min(1).max(24).nullable().optional(),
 })
 
 const Body = z.object({

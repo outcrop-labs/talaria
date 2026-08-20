@@ -194,8 +194,6 @@
               <ChatView
                 agentModel={selectedAgent}
                 agentLabel={current.label}
-                {agents}
-                onAgentChange={selectAgent}
                 conversationId={selectedConversationId}
                 {newChatSignal}
                 {onCreated}

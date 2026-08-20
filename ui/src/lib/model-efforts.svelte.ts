@@ -26,8 +26,8 @@ export function useModelEfforts(model: MaybeModel) {
       // Same freshness the gateway-models catalog claims: catalog refreshes run
       // on a daily cadence, so a minute of cache is invisible.
       staleTime: 60_000,
-      queryFn: (): Promise<{ efforts: string[] }> =>
-        getJson<{ efforts: string[] }>(`/api/models/efforts?model=${encodeURIComponent(id!)}`),
+      queryFn: (): Promise<{ efforts: string[]; default: string | null }> =>
+        getJson<{ efforts: string[]; default: string | null }>(`/api/models/efforts?model=${encodeURIComponent(id!)}`),
     }
   })
   return {
@@ -35,6 +35,12 @@ export function useModelEfforts(model: MaybeModel) {
      *  see the file header for why empty is the only failure shape. */
     get efforts(): string[] {
       return query.data?.efforts ?? []
+    },
+    /** The AGENT-CONFIGURED default for this model id (the pick saved beside
+     *  the model in the agent editor), when the id is a persona whose config
+     *  names one and the level is still published. Null everywhere else. */
+    get default(): string | null {
+      return query.data?.default ?? null
     },
   }
 }

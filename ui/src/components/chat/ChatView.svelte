@@ -1,11 +1,8 @@
 <script lang="ts">
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import AgentChip from '@/components/chat/AgentChip.svelte'
   import TierPicker from '@/components/chat/TierPicker.svelte'
   import EffortPicker from '@/components/chat/EffortPicker.svelte'
-  import StopButton from '@/components/chat/StopButton.svelte'
-  import KeyHint from '@/components/ui/KeyHint.svelte'
   import { type Mentionable } from '@/components/chat/mentions.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
   import { bottomStick } from '@/lib/stick-to-bottom'
@@ -15,6 +12,7 @@
   import RelayButton from '@/components/chat/RelayButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
+  import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -31,8 +29,6 @@
     agentModel,
     agentLabel,
     tiers = [],
-    agents = [],
-    onAgentChange,
     conversationId,
     newChatSignal,
     onCreated,
@@ -47,13 +43,6 @@
     agentLabel: string
     /** Requestable model tiers for this agent (alias names). */
     tiers?: string[]
-    /** Fleet options for the composer rail's agent chip (spec §7). A
-     *  conversation is bound to its agent, so picking a different one is
-     *  route-level: `onAgentChange` swaps to that agent's thread — the same
-     *  behavior as picking the agent in the host's sidebar. Chip renders only
-     *  when both are provided. */
-    agents?: { id: string; label: string; role?: string }[]
-    onAgentChange?: (id: string) => void
     conversationId: string | null
     newChatSignal: number
     onCreated: (id: string) => void
@@ -74,8 +63,8 @@
     onTurnComplete?: () => void
     /** The view OWNS the conversation partner: the surface's sidebar picks the
      *  agent, its chrome picks the harness/model. So the composer rail drops
-     *  both pickers and the relay/emoji affordances — the surface is left with
-     *  exactly attach, text, and submit (plus stop while a reply streams). */
+     *  the relay/emoji affordances — the surface is left with exactly attach,
+     *  text, and submit (plus stop while a reply streams). */
     minimal?: boolean
     /** Requestable model tier for this conversation ('' = the agent's main
      *  model). Bindable so a surface can lift the pick up into its own chrome
@@ -105,6 +94,26 @@
   let scrollEl = $state<HTMLDivElement | null>(null)
   let composer = $state<ChatComposerHandle | null>(null)
 
+  // ── The message queue ──────────────────────────────────────────────────────
+  // Claude-style: sending while the agent replies NEVER interrupts. The server
+  // has always had the queue (POST /api/chat `queue: true` inserts the message
+  // and the completing turn chains the next one), but the client had a hole in
+  // it: a message sent during the FIRST turn's opening window — after the
+  // request leaves but before the response headers carry the conversation id
+  // back, which the server can hold for minutes behind a restarting agent —
+  // took the fresh-send path and started a SECOND stream, forking the thread
+  // and visibly interrupting the reply. Those messages are now held locally
+  // and flushed the moment the id lands; if the first turn dies without ever
+  // producing one, they are re-sent as a fresh turn instead of vanishing.
+  let held: Array<{ text: string; atts: Attachment[] }> = []
+  // Set when the READER stopped a turn (the send tile's stop face / Esc). The
+  // server still finishes and persists its copy — history is the server's, by
+  // design — but the transcript freezes what was on screen and the
+  // live-resume poller must not re-animate the reply the reader walked away
+  // from. Without this, "stop" read as a stutter: the text kept arriving via
+  // the poller until the server finished anyway.
+  let userStopped = $state(false)
+
   // Follow the stream WITHOUT smooth-scrolling: token flushes fire this every
   // few ms, and overlapping smooth animations rubber-band (the "bounce").
   // Follow the newest turn unless the reader scrolled away (lib/stick-to-bottom
@@ -132,6 +141,10 @@
     abortCtrl?.abort()
     convId = null
     messages = []
+    // A hold belongs to the thread it was typed into; a fresh thread starts
+    // owed nothing.
+    held = []
+    userStopped = false
     loadingConversation = false
     error = null
   })
@@ -141,11 +154,30 @@
   // picker lists from — `routedModelFor` builds exactly this string when the
   // tier is one of the agent's aliases.
   const routedModel = $derived(tier ? `${agentModel}-${tier}` : agentModel)
-  const { efforts } = useModelEfforts(() => routedModel)
-  // A model switch (agent or tier) can retire the picked level; reset to the
-  // default rather than sending a level the new model would 400 on.
+  const { efforts, default: agentEffort } = useModelEfforts(() => routedModel)
+  // ── The seeded default: the AGENT-CONFIGURED effort for the routed model
+  // (the pick saved beside the model in the agent editor) when there is one,
+  // else the owner's platform default (Settings). Both are only ever offered
+  // when this model publishes the level. `effortPristine` is what keeps an
+  // explicit pick authoritative: choosing auto or a level is a decision about
+  // THIS conversation, and re-applying a default after it would override the
+  // one person whose opinion matters. It re-arms exactly when the pick stops
+  // being valid — a tier switch to a model that cannot honor it — so the seed
+  // follows the owner across models instead of stranding them on a level the
+  // new model would 400 on.
+  const prefs = useProfilePrefs()
+  const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
+  const seedEffort = $derived(agentEffort ?? preferredEffort)
+  let effortPristine = $state(true)
   $effect(() => {
-    if (effort && !efforts.includes(effort)) effort = ''
+    if (effort && !efforts.includes(effort)) {
+      effort = ''
+      effortPristine = true
+    }
+    if (effortPristine) {
+      const next = seedEffort && efforts.includes(seedEffort) ? seedEffort : ''
+      if (effort !== next) effort = next
+    }
   })
 
   // Load an existing conversation when the selection changes.
@@ -153,6 +185,12 @@
     if (!conversationId || conversationId === convId) return
     abortCtrl?.abort()
     convId = conversationId
+    // Same rule as the new-chat reset: switching threads drops any hold —
+    // those messages were typed against a thread whose id never arrived, and
+    // queueing them into the newly selected one would put them in a
+    // conversation their author never saw.
+    held = []
+    userStopped = false
     let cancelled = false
     loadingConversation = true
     loadConversation(conversationId)
@@ -172,10 +210,12 @@
   // reply still 'streaming'), or the last message is the user's (a queued
   // message whose chained follow-up turn hasn't appeared yet — without this
   // the follow-up lands server-side but the chat never shows it). Capped so
-  // it can't poll forever.
+  // it can't poll forever. A READER STOP suppresses it (see `userStopped`):
+  // the poller's sync would hand back the server's still-streaming row and
+  // the stopped reply would keep typing.
   const last = $derived(messages[messages.length - 1])
   const resuming = $derived(
-    !streaming && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming')),
+    !streaming && !userStopped && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming')),
   )
 
   // Turn-landing edge: fire onTurnComplete when an IN-FLIGHT turn (one we
@@ -229,29 +269,68 @@
 
     // Claude-style flow: sending while the agent is replying never interrupts —
     // the message queues into history and the agent picks it up next turn.
-    if (streaming && convId) {
+    // (Sending while the server owes a turn we didn't stream — the `resuming`
+    // poller's watch — goes the fresh path below on purpose: the server demotes
+    // it to a queue itself when a chained turn is already streaming, via the
+    // `queued` event, and when one is not the fresh turn is exactly right.)
+    if (streaming) {
       messages.push({ role: 'user', content: text, attachments: atts })
-      try {
-        await queueChatMessage({
-          model: agentModel,
-          conversationId: convId,
-          content: text,
-          tier: tier || undefined,
-          effort: effort || undefined,
-          ...splitAttachments(atts),
-          kind,
-        })
-      } catch (e) {
-        error = (e as Error).message
-      }
+      if (convId) void enqueue(text, atts)
+      // No conversation id yet — the first turn's response headers are the
+      // only place it comes from. Hold locally; the flush happens the moment
+      // the id lands (or the turn dies and the re-send path takes over).
+      else held.push({ text, atts })
       return
     }
 
-    messages.push(
-      { role: 'user', content: text, attachments: atts },
-      { role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming' },
-    )
+    await startTurn(text, atts, false)
+  }
+
+  /** Queue one message into the streaming turn. Never throws — a failed queue
+   *  is a surfaced error, not a broken submit. */
+  const enqueue = async (text: string, atts: Attachment[]) => {
+    try {
+      await queueChatMessage({
+        model: agentModel,
+        conversationId: convId!,
+        content: text,
+        tier: tier || undefined,
+        effort: effort || undefined,
+        ...splitAttachments(atts),
+        kind,
+      })
+    } catch (e) {
+      error = (e as Error).message
+    }
+  }
+
+  /** Drain the hold. With a conversation id, everything queues server-side;
+   *  without one AND nothing streaming, the first turn died before the server
+   *  ever answered — the held messages never left, so the first of them starts
+   *  a fresh turn (its message is already on screen, hence `shown`) and the
+   *  rest follow it. Still streaming with no id: keep holding. */
+  const flushHeld = async () => {
+    while (held.length > 0) {
+      if (convId) {
+        const m = held.shift()!
+        await enqueue(m.text, m.atts)
+      } else if (!streaming) {
+        const m = held.shift()!
+        await startTurn(m.text, m.atts, true)
+        // startTurn either produced a conversation id (loop continues; the
+        // rest queue behind the turn that just ran) or failed the same way
+        // the first turn did — loop retries with the next held message.
+      } else return
+    }
+  }
+
+  /** One streamed assistant turn. `shown` says the user's message is already
+   *  in the transcript (the flush path put it there when it was sent). */
+  const startTurn = async (text: string, atts: Attachment[], shown: boolean) => {
+    if (!shown) messages.push({ role: 'user', content: text, attachments: atts })
+    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming' })
     streaming = true
+    userStopped = false
 
     const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
       const l = messages[messages.length - 1]
@@ -267,6 +346,9 @@
           if (!convId) {
             convId = meta.conversationId
             onCreated(meta.conversationId)
+            // The hold can drain the instant the id exists — the turn is
+            // streaming, so everything lands in the server's queue.
+            void flushHeld()
           }
         },
         ctrl.signal,
@@ -289,14 +371,27 @@
         status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
       }))
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') error = (e as Error).message
+      if ((e as Error).name === 'AbortError') {
+        // Stop means stop: freeze whatever arrived as this turn's final word
+        // (see `userStopped`). An empty stop is an error bubble, same as an
+        // empty stream — a silent frozen chat reads as broken.
+        userStopped = true
+        patchLast((m) => ({
+          ...m,
+          status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
+        }))
+      } else error = (e as Error).message
     } finally {
       streaming = false
       abortCtrl = null
       // Pick up whatever happened meanwhile: queued messages, and the
       // follow-up turn the server chains for them (the resuming poller
-      // animates it live once it appears).
-      void syncFromServer()
+      // animates it live once it appears). Skipped on a reader stop — a sync
+      // here would hand the poller the server's still-streaming row and the
+      // stopped reply would keep typing. Also the last chance to drain a
+      // hold whose turn ended without ever producing an id.
+      if (!userStopped) void syncFromServer()
+      void flushHeld()
     }
   }
 
@@ -453,9 +548,13 @@
         onEscape={streaming ? stop : undefined}
         onEmptyChange={(v) => (composerEmpty = v)}
         canSend={!composerEmpty || attachments.length > 0}
+        onStop={streaming ? stop : undefined}
       >
         {#snippet leftControls()}
-          <AttachButton onAttach={(a) => attachments.push(a)} disabled={streaming} />
+          <!-- Attach stays live while a reply streams: a queued message may
+               carry attachments (the server queue accepts them), same as the
+               text. -->
+          <AttachButton onAttach={(a) => attachments.push(a)} />
           {#if !minimal}
             <EmojiButton onPick={(ch) => composer?.insertText(ch)} />
             <!-- The handle lands in the editor; the value never does. See
@@ -465,33 +564,24 @@
           {/if}
         {/snippet}
         {#snippet rightControls()}
-          <!-- Spec §7 rail order: agent chip, then model chip, then stop.
-                MINIMAL mode (plan/research): the surface owns the agent in its
-                sidebar and the model in its chrome, so both pickers stay out of
-                the composer — send is the last word on the rail. -->
+          <!-- Spec §7 rail order: tier chip, then effort — and the rail's last
+               tile is send, which becomes stop while a reply streams
+               (ChatComposer's onStop). The AGENT CHIP IS DELIBERATELY ABSENT:
+               a conversation is bound to its agent and every host picks the
+               agent in its own sidebar (comms rail, plan sidebar, research
+               run) — a second switcher in the composer was a way to change
+               the conversation's subject out from under the surface that owns
+               it. MINIMAL mode (plan/research) drops the tier and effort chips
+               too — the surface's chrome owns the model, and its contract is
+               exactly attach, text, and submit. -->
           {#if !minimal}
-            {#if agents.length > 0 && onAgentChange}
-              <AgentChip {agents} value={agentModel} onChange={onAgentChange} />
-            {/if}
             {#if tiers.length > 0}<TierPicker {tiers} value={tier} onChange={(t) => (tier = t)} />{/if}
-          {/if}
-          {#if streaming}<StopButton onClick={stop} />{/if}
-          <!-- MINIMAL mode (plan/research) leaves the KeyHint out too: the
-                surface pane is narrow, the hint's always-rendered slot was what
-                pushed the send tile past the panel's edge, and Esc/Enter behave
-                identically here as in comms. -->
-          {#if !minimal}
-            <KeyHint
-              keys={streaming ? 'esc' : '⏎'}
-              label={streaming ? 'stop' : 'send'}
-              visible={streaming || !composerEmpty || attachments.length > 0}
-            />
             <!-- Effort sits immediately left of the send tile, and only when the
                  routed model's metadata vouches for levels — a model with no
                  published ladder shows no chip and its requests carry no effort.
                  Not disabled while streaming (TierPicker isn't either): a
                  queued message picks up the level set when it is sent. -->
-            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => (effort = v)} />{/if}
+            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => { effort = v; effortPristine = false }} />{/if}
           {/if}
         {/snippet}
       </ChatComposer>

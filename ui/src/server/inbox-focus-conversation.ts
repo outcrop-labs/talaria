@@ -28,6 +28,7 @@ import {
 } from '@/lib/inbox-focus-timeline'
 import { gatewayModelsFor } from './model-access'
 import { effortsForModel } from './model-efforts'
+import { personaConfiguredEffort } from './harness/persona'
 import { attachmentTextBlocks, canAccessUpload, resolveAttachments } from './uploads'
 import { refBlocks, resolveRefs, type MessageRef } from './refs'
 import type {
@@ -146,6 +147,17 @@ async function validatedEffort(model: string | null, effort: string | null | und
   return effort
 }
 
+/** The persona-configured default for the answering model, held against its
+ *  published levels — the same rule `/api/chat` applies when a chat sender
+ *  made no pick. Null for anything that is not a persona with a configured
+ *  effort, and for a configured level the model no longer publishes. */
+async function defaultEffortFor(model: string | null): Promise<string | null> {
+  if (!model) return null
+  const configured = await personaConfiguredEffort(model).catch(() => null)
+  if (!configured) return null
+  return (await effortsForModel(model)).includes(configured) ? configured : null
+}
+
 function messageEntry(input: {
   id: string
   role: 'user' | 'assistant'
@@ -203,7 +215,15 @@ export async function* runInboxConversationCommand(
 ): AsyncGenerator<InboxCommandEvent> {
   const assistant = await focusAssistantFor(user.id)
   const responseModel = await validatedResponseModel(user, input.responseModel)
-  const effort = await validatedEffort(responseModel ?? assistant.model, input.effort)
+  // The owner's explicit pick, else the assistant persona's CONFIGURED default
+  // (the agent editor's effort beside the assistant's model) — never both, and
+  // the default only when the answering model IS the persona that carries it
+  // (`personaConfiguredEffort` answers null for any other id, including a
+  // picked response model, whose effort is nobody's to default).
+  const answering = responseModel ?? assistant.model
+  const effort = input.effort
+    ? await validatedEffort(answering, input.effort)
+    : await defaultEffortFor(answering)
   const mode = input.mode ?? 'normal'
   const modeInstruction = mode === 'plan'
     ? '\n\n[Plan mode: answer with a concise plan or clarifying question. Do not propose or imply execution.]'

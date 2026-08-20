@@ -164,6 +164,22 @@ export async function setPreferredModel(userId: string, model: string | null): P
   await sql`update users set preferred_model = ${model} where id = ${userId}`
 }
 
+/** The user's platform-default reasoning effort, or null for "the model's own
+ *  default everywhere". Stored as a bare level string ('high') rather than
+ *  model-scoped: it travels across every model the user talks to, and each
+ *  surface applies it only when that model's metadata publishes the level —
+ *  so a level the current model does not know is inert, never an error. */
+export async function getPreferredEffort(userId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`select preferred_effort as e from users where id = ${userId}`) as unknown as Array<{ e: string | null }>
+  return rows[0]?.e ?? null
+}
+
+export async function setPreferredEffort(userId: string, effort: string | null): Promise<void> {
+  const sql = await db()
+  await sql`update users set preferred_effort = ${effort} where id = ${userId}`
+}
+
 /** Everyone who has signed in — for people pickers (share, invite, channels). */
 export async function listUsers(): Promise<Array<{ id: string; email: string | null; name: string | null }>> {
   const sql = await db()

@@ -181,6 +181,10 @@ The signature component. Applies to chat, channels/comms, and any prompt surface
   rail, outside the well, in every composer.) Disabled stays in the accent family —
   soft gold tile (accent border at 40% + accent-subtle fill + accent glyph), never
   the grey raised tile other chrome controls use.
+  (Talaria decision, 2026-08: while a reply streams, the SAME tile becomes the stop
+  square — the pulsing bordered tile from StopButton — rather than showing stop
+  beside send. One tile, two jobs: submit when idle, stop when generating. There is
+  no separate "⏎ send" key hint chip anywhere; Enter sends and the tile says so.)
 
 ### Control rail (bottom row, 40px zone; chips 36px tall)
 Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip (border
@@ -189,9 +193,15 @@ Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip (borde
 mode chip `NORMAL MODE` (border `#302D29`, muted text); `● MCP 3` (7px gold dot + mono);
 `SKILLS 11`; then flex spacer; `?` help and mic icon tiles (36×36, border `#302D29`);
 then the SEND TILE (above) — always the last thing on the rail. (Talaria decision,
-2026-08: the rail is host-driven per surface — the Inbox assistant's is just
-attach + send; the plan/research composers drop the agent/model chips to their host
-views; only chips whose feature the surface actually offers are shown.)
+2026-08: the rail is host-driven per surface — the Inbox assistant's is attach
+on the left, then the same right-aligned pair as Comms (effort, when the model
+publishes levels, then send/stop); the effort chip never renders for a model
+with no published ladder, and a surface without tiers shows just send. The
+plan/research composers drop the agent/model chips to their host views; only
+chips whose feature the surface actually offers are shown. The AGENT
+CHIP is absent from every Talaria chat rail: a conversation is bound to its agent
+and the host's sidebar is where that choice lives — the composer never offers to
+change the conversation's subject out from under the surface that owns it.)
 - All chips radius 6, paddingInline 10, mono 10/12.
 - Primary chips (agent/model) read brighter: border `#4A4640` + readout text; secondary
   chips: border `#302D29` + muted text → readout on hover.

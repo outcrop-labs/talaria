@@ -8,7 +8,13 @@ import postgres from 'postgres'
 import { initSecretbox } from '../secretbox'
 
 type Sql = ReturnType<typeof postgres>
-const g = globalThis as unknown as { __talariaSql?: Sql; __talariaMigrated?: Promise<void> }
+const g = globalThis as unknown as {
+  __talariaSql?: Sql
+  __talariaMigrated?: Promise<void>
+  /** MIGRATIONS.length as of the last successful run — see `ensureMigrated`
+   *  for why the count rides globalThis beside the promise. */
+  __talariaMigrationCount?: number
+}
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL
@@ -1930,6 +1936,18 @@ const MIGRATIONS: string[] = [
      on brief_chat_messages(brief_id, coalesce(source_key, ''), seq)`,
   `create index if not exists brief_chat_thread_idx
      on brief_chat_messages(brief_id, source_key, seq)`,
+  // Preferred reasoning effort — the user's platform default, applied wherever
+  // a model they use publishes the level (a level string like 'high', or null
+  // for "always the model's own default"). Inert by construction on models
+  // without a published ladder: surfaces only offer what the metadata vouches
+  // for, so a stale level never reaches a request.
+  //
+  // APPENDED, NOT FILED NEXT TO preferred_model: a statement's index is its
+  // identity in schema_migrations, so anything but the end of the array trips
+  // the checksum check on every database that already ran past this point —
+  // which is exactly the boot-refusal this line caused the first time it was
+  // written.
+  `alter table users add column if not exists preferred_effort text`,
 
 ]
 
@@ -2034,6 +2052,7 @@ async function runMigrations(): Promise<void> {
     }
     // Load/create the data key so seal()/open() are synchronous thereafter.
     await initSecretbox(sql)
+    g.__talariaMigrationCount = MIGRATIONS.length
   } finally {
     // Ending the pool ends the session, which releases the advisory lock; the
     // explicit unlock is so a slow close does not hold up another instance.
@@ -2043,9 +2062,20 @@ async function runMigrations(): Promise<void> {
 }
 
 function ensureMigrated(): Promise<void> {
+  // THE COUNT IS CACHED WITH THE PROMISE, and both ride globalThis — because a
+  // vite dev SSR module reload keeps globalThis while swapping the code. The
+  // promise alone would then answer "migrated" for an array that GREW since
+  // the process booted, and every query touching the new column would 500
+  // ("column does not exist") until somebody restarted the dev server —
+  // exactly the trap `preferred_effort` fell into. Growing is the only change
+  // the append-only rule permits, so growth is the only thing that re-arms
+  // the run: the statements already applied are no-ops against
+  // schema_migrations, the appended ones apply, and an edit to an APPLIED
+  // statement is still caught by the checksum check inside.
+  if (g.__talariaMigrated && MIGRATIONS.length > (g.__talariaMigrationCount ?? -1)) {
+    g.__talariaMigrated = undefined
+  }
   if (!g.__talariaMigrated) {
-    // Drop the cached promise if the run fails, so the next db() retries: a
-    // cached rejection poisons every later call for the life of the process.
     const run: Promise<void> = runMigrations().catch((e) => {
       if (g.__talariaMigrated === run) g.__talariaMigrated = undefined
       throw e

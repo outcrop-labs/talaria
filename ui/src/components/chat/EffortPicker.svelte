@@ -1,18 +1,19 @@
 <script lang="ts">
-  import { Gauge } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
-  import { chipSecondary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
+  import MeterBars from '@/components/chat/MeterBars.svelte'
+  import { chipPrimary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
+  import { pop, POPOVER } from '@/lib/motion'
 
-  // The composer's reasoning-effort chip (Mercury spec §7): a secondary 36px
-  // mono chip — gauge glyph + current level — that opens the §7 popover (panel
-  // bg, mono section header, hover fill, dashed-gold selected row). Rendered
-  // by the chat surfaces ONLY with a non-empty `efforts` list, which the
-  // server derives from the model's own catalog metadata: a model that
-  // publishes no levels gets no picker and its requests carry no effort. ''
-  // (the default row) omits the parameter entirely — the model's own default
-  // effort, which is a real setting and not "none".
+  // The composer's effort chip (Mercury spec §7): the agent-chip anatomy —
+  // strong border, mono label, 3×12 meter marking where the pick sits on the
+  // model's effort ladder — opening the §7 popover (panel bg, mono section
+  // header, hover fill, dashed-gold selected row, a bar meter on every row).
+  // Rendered by the chat surfaces ONLY with a non-empty `efforts` list, which
+  // the server derives from the model's own catalog metadata: a model that
+  // publishes no levels gets no chip and its requests carry no effort.
+  // '' (the first row) means the model's own default — no parameter sent, and
+  // a bar meter with nothing lit.
   let {
     efforts,
     value,
@@ -27,19 +28,6 @@
     onChange: (v: string) => void
     disabled?: boolean
   } = $props()
-
-  // What each well-known level reads as, right-aligned in the row. Providers
-  // coin levels this map has never heard of; those rows simply carry no sub
-  // rather than a guess.
-  const SUBS: Record<string, string> = {
-    none: 'no reasoning',
-    minimal: 'fastest',
-    low: 'fast',
-    medium: 'balanced',
-    high: 'thorough',
-    xhigh: 'deeper',
-    max: 'deepest',
-  }
 
   let open = $state(false)
   let pos = $state<{ left: number; bottom: number } | null>(null)
@@ -67,7 +55,10 @@
     }
   })
 
-  // The chip's readout: the picked level, or 'auto' for the model default.
+  // Where the pick sits on the ladder: nothing lit at the model's default,
+  // otherwise every bar up to and including the picked level — the same
+  // read the tier chip gives ("how far up the ladder am I?").
+  const lit = $derived(Math.max(0, efforts.indexOf(value) + 1))
   const label = $derived(value || 'auto')
 </script>
 
@@ -76,20 +67,19 @@
   type="button"
   onclick={() => (open = !open)}
   disabled={disabled}
-  class={cn(chipSecondary, 'shrink-0')}
+  class={cn(chipPrimary, 'shrink-0')}
   title="Reasoning effort for this reply"
   aria-haspopup="listbox"
   aria-expanded={open}
 >
-  <Gauge size={12} />
   <span class="max-w-24 truncate">{label}</span>
+  <MeterBars total={efforts.length} {lit} />
 </button>
 {#if open && pos}
   <div
     use:portal
     bind:this={panelRef}
     in:pop={POPOVER}
-    out:fade={QUICK}
     class={cn(popPanel, 'fixed z-[60] min-w-48 overflow-hidden')}
     style:left="{pos.left}px"
     style:bottom="{pos.bottom}px"
@@ -104,9 +94,9 @@
       class={cn(popRow, value === '' ? popRowSelected : 'text-muted')}
     >
       <span class="min-w-0 flex-1 truncate">auto</span>
-      <span class="shrink-0 text-right font-mono text-[10px] tracking-[0.05em] text-ink-dim">model default</span>
+      <span class="shrink-0 text-right font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">model default</span>
     </button>
-    {#each efforts as level (level)}
+    {#each efforts as level, i (level)}
       <button
         type="button"
         onclick={() => {
@@ -116,9 +106,7 @@
         class={cn(popRow, level === value ? popRowSelected : 'text-muted')}
       >
         <span class="min-w-0 flex-1 truncate">{level}</span>
-        {#if SUBS[level]}
-          <span class="shrink-0 text-right font-mono text-[10px] tracking-[0.05em] text-ink-dim">{SUBS[level]}</span>
-        {/if}
+        <MeterBars total={efforts.length} lit={i + 1} class="shrink-0" />
       </button>
     {/each}
   </div>

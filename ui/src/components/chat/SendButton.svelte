@@ -1,8 +1,9 @@
 <script lang="ts">
   // The composer's send affordance (Mercury, spec §7). Send is the gold 36×36
-  // tile pinned to the END of the control rail — outside the prompt well;
-  // Enter still sends everywhere and the KeyHint chip says so. (Stop, its
-  // streaming-time sibling, lives in StopButton.svelte.)
+  // tile pinned to the END of the control rail — outside the prompt well. It
+  // is the rail's one submit tile: while a reply streams, ChatComposer swaps
+  // it for the stop square (see its `onStop`) rather than showing both.
+  // (Enter still sends everywhere.)
   import { ArrowUp } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
