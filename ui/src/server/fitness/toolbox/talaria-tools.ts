@@ -525,6 +525,59 @@ export const TALARIA_TOOLS: readonly SandboxTool[] = [
     parameters: { type: 'object', properties: { q: str("Gmail search query (default 'in:inbox')") }, required: [] },
   },
   {
+    name: 'read_email',
+    caller: 'hermes',
+    group: 'google',
+    needsGoogle: true,
+    description:
+      'Read ONE full email (headers + complete plain-text body) by its id — the id `read_recent_email` returns. Use it before summarizing a thread, quoting a question, or drafting a reply: the snippet is a teaser, not the message. Reads are free; only sending waits for approval.',
+    parameters: { type: 'object', properties: { id: str('Message id from read_recent_email') }, required: ['id'] },
+  },
+  {
+    name: 'list_labels',
+    caller: 'hermes',
+    group: 'google',
+    needsGoogle: true,
+    description:
+      "List the Gmail labels on the account you act for — your owner's if you're a personal assistant, otherwise the shared org mailbox. Labels are Gmail's folders: a message is 'in a folder' by carrying its label, INBOX and UNREAD are system labels, and organizing mail means applying and removing them. Requires that Google account connected in Talaria.",
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'create_label',
+    caller: 'hermes',
+    group: 'google',
+    needsGoogle: true,
+    description:
+      "Create a Gmail label (Gmail's name for a folder) on the account you act for, find-or-create: an existing label of the same name is returned as-is, so a retry is safe. Create the label BEFORE organize_emails refers to it — organizing refuses a label that does not exist.",
+    parameters: { type: 'object', properties: { name: str('Label name, e.g. "Vendor"') }, required: ['name'] },
+  },
+  {
+    name: 'organize_emails',
+    caller: 'hermes',
+    group: 'google',
+    needsGoogle: true,
+    description:
+      'File, archive or mark-read emails by id — the ids read_recent_email returns. addLabels/removeLabels take label NAMES (from list_labels or create_label, or the system labels): removing INBOX archives a message (it stays in All Mail and keeps its labels), removing UNREAD marks it read. Applies immediately and reversibly — nothing is ever deleted, TRASH/SPAM are refused, and mail you file stays recoverable. Read before you file: sort by what the messages actually say, never by subject alone.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ids: strs('Message ids from read_recent_email'),
+        addLabels: strs('Label names to apply'),
+        removeLabels: strs('Label names to remove (INBOX archives, UNREAD marks read)'),
+      },
+      required: ['ids'],
+    },
+  },
+  {
+    name: 'search_drive',
+    caller: 'hermes',
+    group: 'google',
+    needsGoogle: true,
+    description:
+      "Find files in the Google Drive you act for — your owner's if you're a personal assistant, otherwise the shared org Drive. Returns names, types, modified dates and links. Read-only: locating and linking files, not changing them. Optional `q` matches file names.",
+    parameters: { type: 'object', properties: { q: str('Name substring to match') }, required: [] },
+  },
+  {
     name: 'draft_email',
     caller: 'hermes',
     group: 'google',

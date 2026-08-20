@@ -145,9 +145,9 @@ export interface DriveListEntry {
   sizeBytes: number | null
 }
 
-/** List/search the user's Drive files (most-recent first). `query` matches names. */
-export async function listDriveFiles(userId: string, nowMs: number, query?: string, pageSize = 25): Promise<DriveListEntry[]> {
-  const token = await requireToken(userId, nowMs)
+/** List/search Drive files using an already-resolved token (per-user or org) —
+ *  the agent-facing twin of `listDriveFiles`. */
+export async function listDriveFilesWithToken(token: string, query?: string, pageSize = 25): Promise<DriveListEntry[]> {
   // Exclude trashed + folders; optionally filter by name substring.
   const clauses = ['trashed = false', `mimeType != 'application/vnd.google-apps.folder'`]
   if (query && query.trim()) clauses.push(`name contains '${query.trim().replace(/['\\]/g, ' ')}'`)
@@ -172,6 +172,11 @@ export async function listDriveFiles(userId: string, nowMs: number, query?: stri
     webViewLink: f.webViewLink ?? null,
     sizeBytes: f.size ? Number(f.size) : null,
   }))
+}
+
+/** List/search the user's Drive files (most-recent first). `query` matches names. */
+export async function listDriveFiles(userId: string, nowMs: number, query?: string, pageSize = 25): Promise<DriveListEntry[]> {
+  return listDriveFilesWithToken(await requireToken(userId, nowMs), query, pageSize)
 }
 
 /** Minimal CSV → grid parser (handles quotes, escaped quotes, CRLF). */

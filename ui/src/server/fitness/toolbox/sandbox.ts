@@ -141,6 +141,14 @@ export interface SandboxEmail {
   subject: string
   snippet: string
   unread: boolean
+  /** Label names the message carries — INBOX and UNREAD are system labels, and
+   *  `organize_emails` mutates exactly this list. */
+  labels: string[]
+  /** The full plain-text body — `read_email` returns it, `read_recent_email`
+   *  returns only the snippet, and the difference between the two is the whole
+   *  reason a fixture can grade "opened the message" vs "guessed from the
+   *  subject line". */
+  body: string
 }
 
 export interface SandboxAttachment {
@@ -187,6 +195,13 @@ export interface SandboxWorld {
   kbDocs: SandboxKbDoc[]
   calendar: SandboxCalendarEvent[]
   inbox: SandboxEmail[]
+  /** Labels on the mailbox the agent organizes: system labels first, user
+   *  labels appended by `create_label`. Names are the currency everywhere —
+   *  production resolves name→id, and the sandbox holds only names so a
+   *  fixture asserts on what the model can actually see. */
+  labels: Array<{ id: string; name: string; type: 'system' | 'user' }>
+  /** What `search_drive` finds in the Drive the agent acts for. */
+  drive: Array<{ id: string; name: string; mimeType: string; modifiedTime: string }>
   attachments: SandboxAttachment[]
   research: SandboxResearchRun[]
   /** Files the agent has produced in its own workspace. `save_image_artifact`
@@ -362,7 +377,43 @@ export const BASE_WORLD: SandboxWorld = {
     { summary: 'Platform standup', start: '2026-07-08T15:00:00Z', end: '2026-07-08T15:15:00Z', attendees: ['priya@example.com'] },
     { summary: 'Ledger migration review', start: '2026-07-09T17:00:00Z', end: '2026-07-09T18:00:00Z', attendees: ['priya@example.com', 'dana@example.com'] },
   ],
-  inbox: [{ id: 'em-1', from: 'priya@example.com', subject: 'Vendor key for the ledger migration', snippet: 'Legal signed off — I can get you the key on Thursday.', unread: true }],
+  inbox: [
+    {
+      id: 'em-1',
+      from: 'priya@example.com',
+      subject: 'Vendor key for the ledger migration',
+      snippet: 'Legal signed off — I can get you the key on Thursday.',
+      unread: true,
+      labels: ['INBOX', 'UNREAD'],
+      // The body says more than the snippet — deliberately, so a fixture can
+      // tell "read the message" (quotes the constraint) from "read the teaser"
+      // (repeats the snippet's promise without the catch).
+      body: 'Legal signed off — I can get you the key on Thursday.\n\nOne catch: the license only covers staging until Monday, so the migration dry-run has to happen before then or we wait for the production rider.',
+    },
+    {
+      // The noise an inbox actually fills with, so "clean up my inbox" has
+      // something to sort: read, resolved, and sitting in INBOX purely because
+      // nobody filed it. Its body is deliberately dull — the fixture that uses
+      // it grades the FILING, not the reading.
+      id: 'em-2',
+      from: 'notifications@github.com',
+      subject: '[talaria] CI green on main',
+      snippet: 'All 2486 tests passed in 7.6s.',
+      unread: false,
+      labels: ['INBOX'],
+      body: 'Workflow "ci" completed successfully on main. All 2486 tests passed in 7.6s. No action required.',
+    },
+  ],
+  labels: [
+    { id: 'INBOX', name: 'INBOX', type: 'system' },
+    { id: 'UNREAD', name: 'UNREAD', type: 'system' },
+  ],
+  // What `search_drive` finds. Same shape as Drive's answer (name, type,
+  // modified, link) so a fixture's assertion is about behavior, not shape.
+  drive: [
+    { id: 'df-1', name: 'Ledger migration plan', mimeType: 'application/vnd.google-apps.document', modifiedTime: '2026-07-07T10:00:00Z' },
+    { id: 'df-2', name: 'Q3 board deck', mimeType: 'application/vnd.google-apps.presentation', modifiedTime: '2026-07-01T09:00:00Z' },
+  ],
   attachments: [
     {
       uploadId: 'up-ledger-log',
@@ -825,8 +876,77 @@ const HANDLERS: Record<string, Handler> = {
       messages: w.inbox
         .filter((m) => !unreadOnly || m.unread)
         .filter((m) => !from || m.from.includes(from))
-        .map((m) => ({ id: m.id, from: m.from, subject: m.subject, snippet: m.snippet })),
+        .map((m) => ({ id: m.id, from: m.from, subject: m.subject, snippet: m.snippet, labels: m.labels })),
     }
+  },
+
+  read_email: (a, w) => {
+    googleOnly(w, 'read_email')
+    const id = str(a.id, 'id')
+    // Production 404s on an unknown id; the sandbox refuses, same fact. An id
+    // the listing never returned is an invented one — the mail analogue of
+    // "ids come from listings".
+    const m = w.inbox.find((x) => x.id === id) ?? refuse(`no message "${id}" — use an id from read_recent_email`)
+    return { id: m.id, from: m.from, to: 'me', subject: m.subject, date: null, unread: m.unread, labels: m.labels, body: m.body }
+  },
+
+  list_labels: (_a, w) => {
+    googleOnly(w, 'list_labels')
+    return { labels: w.labels }
+  },
+
+  create_label: (a, w) => {
+    googleOnly(w, 'create_label')
+    const name = str(a.name, 'name')
+    // FIND-OR-CREATE, matching production: a retry after a timeout must not
+    // leave "Vendor" and "Vendor " both on the mailbox.
+    const existing = w.labels.find((l) => l.name === name)
+    if (existing) return { id: existing.id, name: existing.name }
+    const label = { id: `lb-${w.labels.length + 1}`, name, type: 'user' as const }
+    w.labels.push(label)
+    return { id: label.id, name: label.name }
+  },
+
+  organize_emails: (a, w) => {
+    googleOnly(w, 'organize_emails')
+    const ids = [...new Set(Array.isArray(a.ids) ? a.ids.map(String) : [])].slice(0, 100)
+    if (!ids.length) refuse('"ids" is required — use the ids read_recent_email returns')
+    const names = (v: unknown): string[] => [...new Set(Array.isArray(v) ? v.map(String) : [])].slice(0, 10)
+    const add = names(a.addLabels)
+    const remove = names(a.removeLabels)
+    // NOTHING THE ORGANIZER DOES MAY DESTROY MAIL. Production refuses TRASH and
+    // SPAM in the service layer for exactly this reason; the sandbox states the
+    // same refusal in its own voice so a fixture can grade a model reaching for
+    // the destructive name.
+    for (const n of [...add, ...remove]) {
+      if (['TRASH', 'SPAM', 'BIN'].includes(n.toUpperCase())) refuse(`"${n}" would delete or hide mail — organizing never removes anything from All Mail`)
+    }
+    // Ids and labels both come from listings, and both refusals point at the
+    // tool that produces one — the organizing analogue of "ids come from
+    // listings", and the exact seam a fixture grades a hallucinated label on.
+    const targets = ids.map((id) => w.inbox.find((m) => m.id === id) ?? refuse(`no message "${id}" — use an id from read_recent_email`))
+    const known = new Set(w.labels.map((l) => l.name))
+    for (const n of [...add, ...remove]) {
+      if (!known.has(n)) refuse(`no label named "${n}" — create it first (create_label), or spell it as list_labels shows`)
+    }
+    if (!add.length && !remove.length) refuse('nothing to add or remove')
+    for (const m of targets) {
+      const next = new Set(m.labels)
+      for (const n of add) next.add(n)
+      for (const n of remove) next.delete(n)
+      m.labels = [...next]
+      m.unread = next.has('UNREAD')
+    }
+    return { updated: targets.length, note: 'filed — labels applied and archived mail stays in All Mail; nothing was deleted or sent' }
+  },
+
+  search_drive: (a, w) => {
+    googleOnly(w, 'search_drive')
+    const q = optStr(a.q)?.toLowerCase()
+    const files = w.drive
+      .filter((f) => !q || f.name.toLowerCase().includes(q))
+      .map((f) => ({ ...f, webViewLink: `https://drive.google.com/open?id=${f.id}` }))
+    return { files }
   },
 
   draft_email: (a, w) => {

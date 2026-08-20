@@ -123,6 +123,14 @@ export async function approvalItems(user: SessionUser, sourceId?: string): Promi
   const approvals = sourceId ? pending.filter((approval) => approval.id === sourceId) : pending
   return approvals.map((approval) => {
     const label = approval.kind === 'gmail_send' ? 'SEND EMAIL' : 'CREATE EVENT'
+    // The payload's own fields, not a paraphrase: the card recommends
+    // "review the exact outbound payload", so the evidence IS the payload.
+    // Capped per entry like every other source (1_000) — enough to judge,
+    // never enough to bury the card. The actor rides last (4 rows max render).
+    const evidence = [
+      ...(approval.kind === 'gmail_send' ? approvalEvidenceEmail(approval.payload) : approvalEvidenceEvent(approval.payload)),
+      { label: 'Drafted by', text: approval.agentModel ?? 'Agent' },
+    ]
     const base: Omit<RawFocusItem, 'sourceFingerprint'> = {
       key: keyOf('approval', approval.id),
       sourceType: 'approval',
@@ -135,10 +143,7 @@ export async function approvalItems(user: SessionUser, sourceId?: string): Promi
       question: `${approval.kind === 'gmail_send' ? 'Send' : 'Create'} “${approval.summary ?? label.toLowerCase()}”?`,
       recommendation: 'Review the exact outbound payload before confirming this identity-bearing action.',
       recommendedActionId: 'approve',
-      evidence: [
-        { label: 'Draft', text: approval.summary ?? label.replaceAll('_', ' ').toLowerCase() },
-        { label: 'Actor', text: approval.agentModel ?? 'Agent' },
-      ],
+      evidence,
       metadata: { kind: approval.kind, agent: approval.agentModel, organizationAction: approval.isOrg },
       sourceHref: '/',
       briefStatus: 'fallback',
@@ -154,6 +159,28 @@ export async function approvalItems(user: SessionUser, sourceId?: string): Promi
     }
     return finalizeItem(base)
   })
+}
+
+/** An email draft as evidence rows: who gets it, what it says. */
+function approvalEvidenceEmail(payload: unknown): RawFocusItem['evidence'] {
+  const p = (payload ?? {}) as { to?: string; cc?: string; subject?: string; body?: string }
+  const out: RawFocusItem['evidence'] = []
+  if (p.to) out.push({ label: 'To', text: `${p.to}${p.cc ? ` · cc ${p.cc}` : ''}`.slice(0, 1_000) })
+  if (p.subject !== undefined) out.push({ label: 'Subject', text: p.subject.slice(0, 1_000) })
+  if (p.body) out.push({ label: 'Body', text: p.body.slice(0, 1_000) })
+  else out.push({ label: 'Body', text: '(empty)' })
+  return out
+}
+
+/** An event draft as evidence rows: when, where, who. */
+function approvalEvidenceEvent(payload: unknown): RawFocusItem['evidence'] {
+  const p = (payload ?? {}) as { summary?: string; start?: string; end?: string; allDay?: boolean; location?: string; attendees?: string[]; description?: string }
+  const out: RawFocusItem['evidence'] = []
+  if (p.start && p.end) out.push({ label: 'When', text: `${p.start} → ${p.end}${p.allDay ? ' · all day' : ''}`.slice(0, 1_000) })
+  const where = [p.location, ...(p.attendees ?? [])].filter(Boolean).join(' · ')
+  if (where) out.push({ label: 'Where / who', text: where.slice(0, 1_000) })
+  if (p.description) out.push({ label: 'Notes', text: p.description.slice(0, 1_000) })
+  return out
 }
 
 export async function channelItems(userId: string, sourceId?: string): Promise<RawFocusItem[]> {

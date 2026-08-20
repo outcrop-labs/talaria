@@ -4,6 +4,98 @@
 import { getAccessToken } from './connections'
 
 const GMAIL_BASE = 'https://www.googleapis.com/gmail/v1/users/me'
+const LABELS_ENDPOINT = `${GMAIL_BASE}/labels`
+
+// ── Labels (Gmail's folders) ─────────────────────────────────────────────────
+
+export interface GmailLabel {
+  id: string
+  name: string
+  type: 'system' | 'user'
+}
+
+/** Every label on the account. INBOX and UNREAD are system labels — a message
+ *  "is in a folder" by carrying its label, and organizing mail means applying
+ *  and removing them. */
+export async function listLabelsWithToken(token: string): Promise<GmailLabel[]> {
+  const res = await fetch(`${LABELS_ENDPOINT}?fields=labels(id,name,type)`, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) throw new Error(`gmail labels failed: ${res.status} ${await res.text()}`)
+  const data = (await res.json()) as { labels?: GmailLabel[] }
+  return data.labels ?? []
+}
+
+/** Create a label, FIND-OR-CREATE: an existing label of the same name comes
+ *  back as-is, so a retry after a timeout is safe and the caller never ends up
+ *  with "Vendor" and "vendor " both on the account. */
+export async function createLabelWithToken(token: string, name: string): Promise<GmailLabel> {
+  const existing = (await listLabelsWithToken(token)).find((l) => l.name === name)
+  if (existing) return existing
+  const res = await fetch(LABELS_ENDPOINT, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, labelListVisibility: 'labelShow', labelVisibility: 'labelShow' }),
+  })
+  if (!res.ok) throw new Error(`gmail label create failed: ${res.status} ${await res.text()}`)
+  return (await res.json()) as GmailLabel
+}
+
+/** Labels an organize call may never touch, on either side. Deleting mail (or
+ *  hiding it as spam) is not "organizing" — the toolkit's whole safety story
+ *  is that everything it does is reversible, and nothing from TRASH comes back
+ *  on its own. */
+const FORBIDDEN_LABELS = new Set(['TRASH', 'SPAM', 'BIN'])
+
+export interface OrganizeInput {
+  /** Message ids (from the listing tool), up to 100 per call. */
+  ids: string[]
+  /** Label NAMES to apply (from list_labels / create_label, or INBOX/UNREAD). */
+  addLabels?: string[]
+  /** Label NAMES to remove — INBOX archives, UNREAD marks read. */
+  removeLabels?: string[]
+}
+
+/** File/archive/read messages by applying and removing labels. Names are
+ *  resolved to ids; an unknown name is an error naming the fix (create_label),
+ *  never a silent skip. Nothing here can delete. */
+export async function organizeEmailsWithToken(
+  token: string,
+  input: OrganizeInput,
+): Promise<{ updated: number }> {
+  const ids = [...new Set(input.ids)].slice(0, 100)
+  if (!ids.length) throw new Error('gmail organize: no message ids')
+  const add = [...new Set(input.addLabels ?? [])].slice(0, 10)
+  const remove = [...new Set(input.removeLabels ?? [])].slice(0, 10)
+  for (const name of [...add, ...remove]) {
+    if (FORBIDDEN_LABELS.has(name.toUpperCase())) throw new Error(`gmail organize: "${name}" would delete or hide mail — organizing never removes anything from All Mail`)
+  }
+  const labels = await listLabelsWithToken(token)
+  const byName = new Map(labels.map((l) => [l.name, l.id]))
+  const addIds = add.map((n) => byName.get(n) ?? missing(n))
+  const removeIds = remove.map((n) => byName.get(n) ?? missing(n))
+  if (!addIds.length && !removeIds.length) throw new Error('gmail organize: nothing to add or remove')
+
+  // batchModify takes up to 1000 ids; cap the call at 100 (the tool's own cap)
+  // so one agent turn cannot reorganize a mailbox wholesale by accident.
+  const res = await fetch(`${GMAIL_BASE}/messages/batchModify`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, addLabelIds: addIds, removeLabelIds: removeIds }),
+  })
+  if (!res.ok) throw new Error(`gmail organize failed: ${res.status} ${await res.text()}`)
+  return { updated: ids.length }
+}
+
+function missing(name: string): string {
+  throw new Error(`gmail organize: no label named "${name}" — create it first (create_label), or spell it as list_labels shows`)
+}
+
+/** labelId → name, one labels read for however many ids are asked about. */
+async function labelNameMap(token: string, labelIds: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(labelIds)]
+  if (!unique.length) return new Map()
+  const labels = await listLabelsWithToken(token)
+  return new Map(labels.map((l) => [l.id, l.name]))
+}
 
 async function requireToken(userId: string, nowMs: number): Promise<string> {
   const token = await getAccessToken(userId, nowMs)
@@ -23,6 +115,9 @@ export interface MailSummary {
   snippet: string
   date: string | null
   unread: boolean
+  /** Label names the message carries (INBOX, UNREAD, and user labels) — what
+   *  an organizing agent needs to see before it files anything. */
+  labels: string[]
 }
 
 interface GmailMessage {
@@ -63,15 +158,97 @@ export async function listRecentMessagesWithToken(token: string, maxResults = 8,
     }),
   )
 
-  return msgs.filter((m): m is GmailMessage => !!m).map((m) => ({
+  // One labels read for the whole listing, shared across messages — the label
+  // map cannot change between two messages of the same fetch, so asking for it
+  // once per message would be N identical calls.
+  const labelNames = await labelNameMap(token, msgs.flatMap((m) => m?.labelIds ?? []))
+
+  return msgs
+    .filter((m): m is GmailMessage => !!m)
+    .map((m) => ({
+      id: m.id,
+      threadId: m.threadId,
+      from: header(m, 'From'),
+      subject: header(m, 'Subject') || '(no subject)',
+      snippet: m.snippet ?? '',
+      date: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : header(m, 'Date') || null,
+      unread: (m.labelIds ?? []).includes('UNREAD'),
+      labels: (m.labelIds ?? []).map((id) => labelNames.get(id) ?? id),
+    }))
+}
+
+// ── One full message ─────────────────────────────────────────────────────────
+
+interface GmailPart {
+  mimeType?: string
+  body?: { data?: string; size?: number }
+  parts?: GmailPart[]
+}
+
+interface GmailMessageFull {
+  id: string
+  threadId: string
+  snippet?: string
+  labelIds?: string[]
+  internalDate?: string
+  payload?: GmailPart & { headers?: Array<{ name: string; value: string }> }
+}
+
+/** Deepest first text/plain part — the message's own words. `multipart/alternative`
+ *  carries plain and html versions of the same body; plain is the one an agent
+ *  should read (and quote), html is the same words with markup. */
+function plainTextOf(part: GmailPart): string {
+  if (part.mimeType === 'text/plain' && part.body?.data) return decode(part.body.data)
+  for (const child of part.parts ?? []) {
+    const found = plainTextOf(child)
+    if (found) return found
+  }
+  return ''
+}
+
+function decode(b64url: string): string {
+  return Buffer.from(b64url, 'base64url').toString('utf8')
+}
+
+export interface MailMessage {
+  id: string
+  threadId: string
+  from: string
+  to: string
+  subject: string
+  snippet: string
+  date: string | null
+  unread: boolean
+  /** Label names the message carries (INBOX, UNREAD, and user labels). */
+  labels: string[]
+  /** The plain-text body (empty when Google serves none — rare; snippet then). */
+  body: string
+}
+
+/** One full message (headers + plain-text body) using an already-resolved
+ *  token. Body is capped — a mailing-list monster must not eat the agent's
+ *  context window whole. */
+export async function getMessageWithToken(token: string, id: string): Promise<MailMessage> {
+  const r = await fetch(`${GMAIL_BASE}/messages/${encodeURIComponent(id)}?format=full`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!r.ok) throw new Error(`gmail get failed: ${r.status} ${await r.text()}`)
+  const m = (await r.json()) as GmailMessageFull
+  const h = (name: string) => m.payload?.headers?.find((x) => x.name.toLowerCase() === name.toLowerCase())?.value ?? ''
+  const labelIds = (m as { labelIds?: string[] }).labelIds ?? []
+  const labelNames = await labelNameMap(token, labelIds)
+  return {
     id: m.id,
     threadId: m.threadId,
-    from: header(m, 'From'),
-    subject: header(m, 'Subject') || '(no subject)',
+    from: h('From'),
+    to: h('To'),
+    subject: h('Subject') || '(no subject)',
     snippet: m.snippet ?? '',
-    date: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : header(m, 'Date') || null,
-    unread: (m.labelIds ?? []).includes('UNREAD'),
-  }))
+    date: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : h('Date') || null,
+    unread: labelIds.includes('UNREAD'),
+    labels: labelIds.map((id) => labelNames.get(id) ?? id),
+    body: plainTextOf(m.payload ?? {}).slice(0, 20_000),
+  }
 }
 
 export interface SendInput {

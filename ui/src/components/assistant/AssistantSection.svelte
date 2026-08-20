@@ -10,6 +10,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import AssistantWizard from './AssistantWizard.svelte'
   import AssistantPanels from './AssistantPanels.svelte'
+  import AssistantGoogleCard from './AssistantGoogleCard.svelte'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
@@ -265,6 +266,9 @@
     </div>
     {#if saved}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-success">Saved</div>{/if}
     {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}
+    <!-- The assistant's outside reach: Google Workspace. Sits above the working
+         parts because it is the grant most owners are actually here to make. -->
+    <AssistantGoogleCard />
     <div class="mt-6 border-t border-line pt-5">
       <AssistantPanels {assistant} />
     </div>
