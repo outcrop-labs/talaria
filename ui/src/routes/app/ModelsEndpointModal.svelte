@@ -51,7 +51,10 @@
     await refresh()
   }
   let cascading = $state(false)
-  const runCascading = async (op: (force: boolean) => Promise<EndpointOpResult>) => {
+  // Returns the final result so callers can react to it (the provider-removal
+  // button closes the modal only when the removal actually succeeded — a
+  // refused delete must stay open and show why, or the refusal is invisible).
+  const runCascading = async (op: (force: boolean) => Promise<EndpointOpResult>): Promise<EndpointOpResult> => {
     err = null
     let r = await op(false)
     if (r.needsForce && r.affected) {
@@ -73,6 +76,7 @@
     if (r.error) err = r.error
     await refresh()
     void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+    return r
   }
 
   const addModel = (id: string) => {
@@ -199,7 +203,7 @@
       <Button
         variant="ghost"
         size="sm"
-        onclick={async () => { if (await confirm({ title: 'Remove provider', message: `Remove the ${ep.name} provider?`, confirmLabel: 'Remove', danger: true })) void runCascading((force) => removeEndpoint(ep.id, force)).then(onClose) }}
+        onclick={async () => { if (await confirm({ title: 'Remove provider', message: `Remove the ${ep.name} provider?`, confirmLabel: 'Remove', danger: true })) void runCascading((force) => removeEndpoint(ep.id, force)).then((r) => { if (r.ok && !r.error) onClose() }) }}
       >
         Remove provider
       </Button>

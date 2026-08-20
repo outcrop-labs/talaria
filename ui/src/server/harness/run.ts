@@ -346,6 +346,14 @@ export interface RunContext {
    *  Naming the tier here is how a caller says it deliberately, once, and gets
    *  the routing and the price together. */
   tier?: string
+  /** THE REASONING EFFORT THIS TURN RUNS AT, when the caller's surface let a
+   *  human pick one. A model id, not a harness, decides whether the level is
+   *  honored — the transports send it as `reasoning_effort` and the provider
+   *  rejects what it rejects — so callers are expected to have asked
+   *  `effortsForModel` first (the chat routes validate against it). Absent
+   *  means the model's own default, which is the only honest default there
+   *  is: an unrequested effort is a request the user did not make. */
+  effort?: string
   /** Where this turn's spend belongs. See `RunLedger`. */
   ledger?: RunLedger
   signal?: AbortSignal
@@ -967,6 +975,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         // of a question the model was never asked.
         ...(def.toolDefs?.length ? { toolDefs: def.toolDefs } : {}),
         ledger,
+        // The caller's effort pick rides the request untouched; whether it can
+        // be honored is a per-transport question (a tool-offering turn cannot
+        // take one — see gatewayToolTurn), not the runner's.
+        ...(ctx.effort ? { effort: ctx.effort } : {}),
         ...(def.holdMs !== undefined ? { holdMs: def.holdMs } : {}),
         caller: ctx.caller,
         ...(ctx.signal ? { signal: ctx.signal } : {}),

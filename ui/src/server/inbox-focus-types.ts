@@ -50,6 +50,9 @@ export interface InboxMessageMetadata {
   delegateModel?: string | null
   responseModel?: string | null
   mode?: 'normal' | 'fast' | 'plan'
+  /** The reasoning effort the turn ran at, when the owner picked one off the
+   *  composer's picker. Absent/null = the model's own default. */
+  effort?: string | null
   decisionId?: string | null
 }
 

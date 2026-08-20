@@ -106,6 +106,7 @@
             newChatSignal={0}
             onCreated={() => {}}
             kind="research"
+            minimal
             {mentionables}
           />
         </div>

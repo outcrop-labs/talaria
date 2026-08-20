@@ -366,6 +366,71 @@ describe('offering tool definitions', () => {
   })
 })
 
+// ── The reasoning-effort pick, from the composer to the provider ─────────────
+//
+// The chat surfaces offer an effort chip only when the model's catalog
+// metadata vouches for levels, and the routes validate the pick against the
+// same metadata. What THESE assertions hold is the second half of the
+// contract: once a pick is legitimately in a `TransportRequest`, every
+// transport that can honor it sends it as `reasoning_effort` — and the one
+// turn that cannot (a tool-offering gateway round) keeps the `'none'` the
+// provider demands rather than the pick.
+
+describe('the reasoning-effort pick', () => {
+  /** A persona reply stream, as `pumpPersonaStream` reads it (no canned header). */
+  const fleetBody = () =>
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+        c.close()
+      },
+    })
+
+  it('travels to a persona gateway as reasoning_effort, beside temperature', async () => {
+    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
+    await fleetTransport({
+      model: 'engineer-engineering',
+      messages: [{ role: 'user', content: 'hi' }],
+      jsonMode: false,
+      caller: 't',
+      temperature: 0.4,
+      effort: 'high',
+    })
+    const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect(sent.reasoning_effort).toBe('high')
+    expect(sent.temperature).toBe(0.4)
+  })
+
+  it('is absent on a persona turn that never picked one', async () => {
+    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
+    await fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: false, caller: 't' })
+    const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect('reasoning_effort' in sent).toBe(false)
+  })
+
+  it('rides a streamed gateway turn', async () => {
+    fetchUpstream.mockResolvedValue(new Response(fleetBody(), { headers: { 'content-type': 'text/event-stream' } }))
+    await gatewayStream({ model: 'qwen3-14b', messages: [{ role: 'user', content: 'hi' }], jsonMode: false, caller: 't', effort: 'low' }, () => {})
+    expect(built[0]?.body.reasoning_effort).toBe('low')
+    expect(built[0]?.body.stream).toBe(true)
+  })
+
+  it('rides a blocking gateway turn through completeViaGateway', async () => {
+    completeViaGateway.mockResolvedValue({ text: 'a reply', contractDrops: [] })
+    await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't', effort: 'medium' })
+    expect(completeViaGateway).toHaveBeenCalledWith('qwen3-14b', [], expect.objectContaining({ effort: 'medium' }))
+  })
+
+  it('never reaches a turn that OFFERS tools — the provider accepts only none there', async () => {
+    // The gpt-5.6-terra refusal names the whole conflict: function tools and a
+    // reasoning effort cannot share a request on /v1/chat/completions. The
+    // user's pick loses to the value that makes the tool loop work at all.
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport({ ...toolRequest, effort: 'high' })
+    expect(built[0]?.body.reasoning_effort).toBe('none')
+  })
+})
+
 describe('offersToolDefinitions', () => {
   it('answers for the transport that would actually take the call', async () => {
     gatewayModels.mockResolvedValue([{ id: 'qwen3-14b' }])

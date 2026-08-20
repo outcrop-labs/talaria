@@ -1,11 +1,12 @@
 <script lang="ts">
   import { bottomStick } from '@/lib/stick-to-bottom'
   import Button from '@/components/ui/Button.svelte'
-  import { CornerDownLeft, Sparkles, X } from '@lucide/svelte'
+  import { Sparkles, X } from '@lucide/svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import ChatWaiting from '@/components/chat/ChatWaiting.svelte'
   import StreamText from '@/components/chat/StreamText.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import SendButton from '@/components/chat/SendButton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { parseAgentStream } from '@/lib/sse-parse'
   import { fade, QUICK } from '@/lib/motion'
@@ -188,7 +189,9 @@
     </div>
   {/if}
 
-  <div class="flex items-end gap-2">
+  <!-- Composer shape: text on top, controls on the row underneath, submit
+       right-aligned — the same anatomy as every other chat input here. -->
+  <div class="flex min-w-0 flex-col gap-2">
     <Textarea
       autoGrow
       rows={1}
@@ -202,8 +205,9 @@
         }
       }}
     />
-    <IconButton size="sm" title="Send" disabled={replying || !draft.trim()} onclick={() => void send(draft)}>
-      <CornerDownLeft size={13} />
-    </IconButton>
+    <div class="flex items-center">
+      <span class="flex-1"></span>
+      <SendButton onClick={() => void send(draft)} enabled={!replying && !!draft.trim() && brief.agent.configured} />
+    </div>
   </div>
 </div>

@@ -295,6 +295,27 @@ export async function activeStreamingAssistant(conversationId: string): Promise<
   return row.id
 }
 
+/** The reasoning effort the NEWEST user message asked for, or null.
+ *
+ *  `continueConversation` builds the turn that covers a message somebody sent
+ *  while a reply was streaming, so the effort that message picked travels the
+ *  only way it can: stamped on the row itself (`/api/chat` writes
+ *  `metadata.effort`), read back here by the chain. Messages that never picked
+ *  one — every message before the feature, and every send at the model's
+ *  default — answer null, which is the default again, which is correct. */
+export async function lastUserMessageEffort(conversationId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select metadata from messages
+    where conversation_id = ${conversationId} and role = 'user'
+    order by seq desc limit 1
+  `) as unknown as Array<{ metadata: unknown }>
+  const meta = rows[0]?.metadata
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
+  const effort = (meta as Record<string, unknown>).effort
+  return typeof effort === 'string' && effort.trim() ? effort : null
+}
+
 /** Create the assistant row (status='streaming'); returns its id. */
 export async function insertStreamingAssistant(conversationId: string, seq: number, metadata: Record<string, unknown> = {}): Promise<string> {
   const sql = await db()

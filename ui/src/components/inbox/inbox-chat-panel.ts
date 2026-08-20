@@ -1,8 +1,12 @@
 // Shared types + panel-chrome persistence for InboxChatPanel.svelte. The
 // localStorage read/write helpers live here (plain TS, no runes) — the
 // component mirrors them into $state and subscribes to the sync events.
-import type { AssistantMode } from '@/components/inbox/assistant-composer-controls'
 import { DEFAULT_INBOX_PANEL_WIDTH, clampInboxPanelWidth } from '@/lib/inbox-panel-size'
+
+/** The assistant command modes the server API accepts. The panel's composer
+ *  no longer lets the owner pick one (attach + text + submit only) — it always
+ *  sends 'normal' — but the wire shape keeps the union. */
+export type AssistantMode = 'normal' | 'fast' | 'plan'
 
 export interface InboxChatPanelHandle {
   focus: () => void
@@ -21,6 +25,9 @@ export interface InboxCommandOptions {
   delegateModel: string | null
   responseModel: string | null
   mode: AssistantMode
+  /** The owner's reasoning-effort pick ('' = the model's default). Offered by
+   *  the composer only when the assistant's model publishes levels. */
+  effort: string | null
   attachmentIds: string[]
   refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
 }

@@ -22,11 +22,12 @@
   // Shift+Enter is always a soft newline. Messages travel as markdown, which is
   // exactly what the message list renders and agents read.
   //
-  // Mercury anatomy (spec §7): the editor sits in an INSET prompt well —
-  // ground background, hairline border, radius 6 — with the gold 36×36 send
-  // tile pinned top-right; every other control lives on the 36px chip rail
-  // below. The host supplies the outer #141312 panel (strong border, radius 8,
-  // padding 8) so attachment chips can ride between well and rail.
+  // Mercury anatomy (spec §7, updated): the editor sits in an INSET prompt well
+  // — ground background, hairline border, radius 6, 14px padding all round —
+  // and NOTHING else; the gold 36×36 send tile is the LAST item on the 36px
+  // control rail below, outside the well, every other control before it. The
+  // host supplies the outer #141312 panel (strong border, radius 8, padding 8)
+  // so attachment chips can ride between well and rail.
 
   let {
     placeholder,
@@ -130,10 +131,10 @@
       content: '',
       editorProps: {
         // Prompt well interior: transparent 14/20 sans on the ground inset,
-        // 14px padding, min-height ~76px, right side clearing the 36px send
-        // tile (spec §7).
+        // 14px padding all round, min-height ~76px (spec §7). The well holds
+        // ONLY the text — the send tile lives on the rail below.
         attributes: {
-          class: 'tiptap max-h-40 overflow-y-auto py-3.5 pl-3.5 pr-14 font-sans text-sm leading-5',
+          class: 'tiptap max-h-40 overflow-y-auto px-3.5 py-3.5 font-sans text-sm leading-5',
           style: 'min-height:4.625rem',
         },
         handlePaste: (_view, event) => {
@@ -179,23 +180,25 @@
     $editor?.commands.clearContent(true)
   }
 
-  // Slack's split, Mercury's skin: the inset prompt well (with the gold
-  // send tile inside, top-right) on top; every other control — attach, emoji,
-  // formatting, pickers, stop — on the 36px chip rail below.
+  // Slack's split, Mercury's skin: the inset prompt well (text only) on top;
+  // the gold send tile is the LAST item on the 36px chip rail below, with
+  // host controls — attach, emoji, formatting, pickers, stop — all before it.
   const sendEnabled = $derived(!disabled && (canSend ?? !empty))
 </script>
 
 <div class="flex min-w-0 flex-1 flex-col gap-2">
-  <div class="relative rounded-md border border-line bg-surface">
+  <div class="rounded-md border border-line bg-surface">
     <EditorContent editor={$editor} />
-    <SendButton class="absolute right-2 top-2" enabled={sendEnabled} onClick={submit} />
   </div>
   {#if controlRail}
-    <div class="flex h-10 min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div class="flex h-10 min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {@render controlRail()}
+      <SendButton enabled={sendEnabled} onClick={submit} />
     </div>
   {:else}
-    <div class="flex h-10 min-w-0 items-center gap-1.5">
+    <!-- Overflow guard: a crowded rail on a narrow pane (the plan's split)
+         scrolls instead of pushing the send tile past the panel's edge. -->
+    <div class="flex h-10 min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {@render leftControls?.()}
       {#if leftControls}<span class="mx-1 h-5 border-l border-line"></span>{/if}
       {#if editor}
@@ -203,6 +206,7 @@
       {/if}
       <span class="flex-1"></span>
       {@render rightControls?.()}
+      <SendButton enabled={sendEnabled} onClick={submit} />
     </div>
   {/if}
 </div>

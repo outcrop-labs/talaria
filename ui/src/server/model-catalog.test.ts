@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { advertisedWindow, capabilitiesFromCatalog, catalogEntriesFor, refreshCatalogs, refreshEndpointCatalog, type CatalogDeps, type CatalogStore } from '@/server/model-catalog'
+import { advertisedWindow, capabilitiesFromCatalog, catalogEntriesFor, catalogEntriesForTargets, effortLevelsOf, effortsFor, refreshCatalogs, refreshEndpointCatalog, type CatalogDeps, type CatalogStore } from '@/server/model-catalog'
 import type { CatalogModel } from '@/server/provider-catalog'
 import type { Capability, CapabilityFact } from '@/server/harness/capability'
 import type { LlmEndpoint } from '@/server/agent-defs'
@@ -16,6 +16,7 @@ const model = (over: Partial<CatalogModel> = {}): CatalogModel => ({
   contextLength: null,
   inputModalities: null,
   supportedParameters: null,
+  efforts: null,
   pricing: null,
   ...over,
 })
@@ -251,5 +252,64 @@ describe('finding a model in the catalog', () => {
 
   it('answers null for a model no catalog carries', async () => {
     expect(await advertisedWindow('openrouter/nothing-here', deps)).toBeNull()
+  })
+})
+
+describe('reasoning effort', () => {
+  // THE PICKER'S OPTION LIST IS THE CATALOG'S WORD. A level is offered only
+  // when the provider published it (`reasoning.supported_efforts`, parsed in
+  // provider-catalog.ts), and a pool only offers what EVERY publishing member
+  // accepts — the same worst-member rule `advertisedWindow` applies to a
+  // window, for the same reason: a bare id can land on any member.
+
+  it('lists the levels every publishing member of the pool accepts', async () => {
+    const b = bench(
+      {},
+      {
+        spark: { endpoint: 'spark', at: AT, models: [model({ id: 'qwen', efforts: ['low', 'high'] })] },
+        local: { endpoint: 'local', at: AT, models: [model({ id: 'qwen', efforts: ['low', 'medium', 'high'] })] },
+      },
+    )
+    expect(await effortsFor('qwen', b.deps)).toEqual(['low', 'high'])
+  })
+
+  it('is empty when nothing vouches for a level — unknown is not false', async () => {
+    // A self-host answering /models with ids only, and a model nobody has
+    // heard of, are the same answer: no picker, and no effort field on the
+    // request. Neither is an error, and neither vetoes a sibling that DOES
+    // publish (the test above's `local` had to survive `spark` saying nothing).
+    const b = bench({}, { spark: { endpoint: 'spark', at: AT, models: [model({ id: 'qwen', efforts: null })] } })
+    expect(await effortsFor('qwen', b.deps)).toEqual([])
+    expect(await effortsFor('never-heard-of-it', b.deps)).toEqual([])
+  })
+
+  it('answers for the endpoint-qualified spelling', async () => {
+    const b = bench(
+      {},
+      { spark: { endpoint: 'spark', at: AT, models: [model({ id: 'deepseek/v4', efforts: ['low', 'medium', 'high'] })] } },
+    )
+    expect(await effortsFor('spark/deepseek/v4', b.deps)).toEqual(['low', 'medium', 'high'])
+  })
+
+  it('orders the ladder weakest to strongest, provider coinages last', () => {
+    // The provider's spelling is the contract — nothing is renamed — but the
+    // DISPLAY order is ours, so 'high' never sits under 'low' in a picker.
+    expect(effortLevelsOf([{ endpoint: 'e', model: model({ efforts: ['max', 'low', 'turbo'] }) }])).toEqual(['low', 'max', 'turbo'])
+  })
+
+  it('serves explicit persona targets by exact endpoint and id', async () => {
+    // The persona path does not pool by id: the agent config NAMES the
+    // endpoint, so `qwen` on `spark` must never be answered from `other`'s
+    // row for the same id.
+    const b = bench(
+      {},
+      {
+        spark: { endpoint: 'spark', at: AT, models: [model({ id: 'qwen', efforts: ['low'] })] },
+        other: { endpoint: 'other', at: AT, models: [model({ id: 'qwen', efforts: ['high'] })] },
+      },
+    )
+    const entries = await catalogEntriesForTargets([{ endpoint: 'spark', model: 'qwen' }], b.deps)
+    expect(entries.map((e) => e.endpoint)).toEqual(['spark'])
+    expect(effortLevelsOf(entries)).toEqual(['low'])
   })
 })

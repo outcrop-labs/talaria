@@ -546,19 +546,26 @@ export function gatewayPulse(): GatewayPulse {
  *  the per-model confabulation rate that the model-fitness page reads. Defaults
  *  to true, so every existing caller keeps exactly the guard it has today.
  *
- *  `contractDrops` says whether `responseFormat` actually survived to the model.
+ * `contractDrops` says whether `responseFormat` actually survived to the model.
  *  A caller that asked for JSON and got an empty drop list may parse; one that
- *  sees a `json` drop has been handed prose and must repair or fall back. */
+ *  sees a `json` drop has been handed prose and must repair or fall back.
+ *
+ *  `effort` is the caller's reasoning-effort pick, forwarded as
+ *  `reasoning_effort` verbatim. Callers are expected to have checked the
+ *  model's supported levels first (`server/model-efforts.ts`); an unsupported
+ *  value here is the provider's to reject, which the parameter ratchet then
+ *  remembers. */
 export async function completeViaGateway(
   model: string,
   messages: Array<{ role: string; content: string }>,
-  opts: { temperature?: number; caller: string; responseFormat?: ResponseFormat; guard?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  opts: { temperature?: number; caller: string; responseFormat?: ResponseFormat; effort?: string; guard?: boolean; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<{ text: string; contractDrops: ContractDrop[] }> {
   const route = await resolveRoute(model)
   if (!route) throw new Error(`model "${model}" is not on the gateway`)
   const clientBody: Record<string, unknown> = { model, messages, stream: false }
   if (opts.temperature !== undefined) clientBody.temperature = opts.temperature
   if (opts.responseFormat) clientBody.response_format = opts.responseFormat
+  if (opts.effort) clientBody.reasoning_effort = opts.effort
   const call = await buildUpstream(route, clientBody)
   if (opts.signal) call.signal = opts.signal
   if (opts.timeoutMs !== undefined) call.timeoutMs = opts.timeoutMs

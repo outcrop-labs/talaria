@@ -1,12 +1,12 @@
 <script lang="ts">
   import { bottomStick } from '@/lib/stick-to-bottom'
   import { Bot, ChevronLeft, GripVertical, Paperclip, X } from '@lucide/svelte'
-  import { createQuery } from '@tanstack/svelte-query'
+  import AttachButton from '@/components/chat/AttachButton.svelte'
+  import EffortPicker from '@/components/chat/EffortPicker.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
-  import AssistantComposerControls from '@/components/inbox/AssistantComposerControls.svelte'
-  import type { AssistantMode } from '@/components/inbox/assistant-composer-controls'
+  import { useModelEfforts } from '@/lib/model-efforts.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import StreamText from '@/components/chat/StreamText.svelte'
@@ -14,8 +14,6 @@
   import { cn } from '@/lib/cn'
   import CollapsePane from '@/components/ui/CollapsePane.svelte'
   import { fade, listStagger, slide, GROW_Y, QUICK } from '@/lib/motion'
-  import { getJson } from '@/lib/fetch-json'
-  import { useAgents } from '@/lib/agents'
   import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
   import { mergeInboxTimelinePages } from '@/lib/inbox-focus-timeline'
   import {
@@ -31,8 +29,6 @@
     type FocusItem,
     type InboxTimelineEntry,
   } from '@/lib/inbox-focus.svelte'
-  import { useModels } from '@/lib/muse.svelte'
-  import { useSkillLibrary } from '@/lib/workflows'
   import {
     PANEL_WIDTH_KEY,
     readPanelCollapsed,
@@ -45,13 +41,6 @@
     type StreamingTurn,
   } from './inbox-chat-panel'
   import TimelineEntry from './TimelineEntry.svelte'
-
-  interface AgentMcpSummary {
-    id: string
-    slug: string
-    displayName: string
-    servers: Array<{ name: string; extras: string[] }>
-  }
 
   let {
     active,
@@ -122,23 +111,17 @@
   }
 
   const conversation = useInboxFocusConversation()
-  const agentsQuery = useAgents()
-  const models = useModels()
-  const skills = useSkillLibrary()
-  const mcp = createQuery(() => ({
-    queryKey: ['inbox-assistant-mcp'],
-    // A failed read is not "this agent has no MCP servers". Swallowing it here
-    // would make the tool picker quietly under-report what the agent can do,
-    // with no way for anything downstream to tell that apart from a real empty
-    // roster — `getJson` throws, so `mcp.isError` stays reachable.
-    queryFn: (): Promise<{ agents: AgentMcpSummary[] }> => getJson<{ agents: AgentMcpSummary[] }>('/api/mcp'),
-    staleTime: 30_000,
-  }))
-  let delegateModel = $state('')
-  let responseModel = $state('')
-  let mode = $state<AssistantMode>('normal')
   let attachments = $state<Attachment[]>([])
   let attachmentError = $state<string | null>(null)
+  // The effort pick for the next command ('' = the assistant model's default).
+  // Offered only when the assistant's model publishes levels; the panel never
+  // picks delegate/response models (attach + text + submit only), so the
+  // assistant's own model is the one the pick is validated against.
+  let effort = $state('')
+  const { efforts } = useModelEfforts(() => assistant?.model ?? null)
+  $effect(() => {
+    if (effort && !efforts.includes(effort)) effort = ''
+  })
   let detachedKey = $state<string | null>(null)
   let dragWidth = $state<number | null>(null)
   let composer = $state<ChatComposerHandle | null>(null)
@@ -161,55 +144,6 @@
   const resizing = $derived(dragWidth !== null)
 
   const entries = $derived(mergeInboxTimelinePages((conversation.data?.pages ?? []).map((page) => page.entries)))
-
-  const agents = $derived([
-    {
-      id: '',
-      label: assistant?.name ?? 'your assistant',
-      role: assistant?.configured ? 'Personal orchestrator' : 'Not configured',
-    },
-    ...(agentsQuery.data?.agents ?? []).filter((agent) => agent.id !== assistant?.model),
-  ])
-
-  $effect(() => {
-    const available = models.data?.models ?? []
-    if (available.length === 0) {
-      if (!models.isLoading) responseModel = ''
-      return
-    }
-    if (available.some((model) => model.id === responseModel)) return
-    const preferred = models.data?.effective
-    responseModel = available.some((model) => model.id === preferred) ? preferred! : available[0]!.id
-  })
-
-  const effectiveAgentModel = $derived(delegateModel || assistant?.model || '')
-  const skillOwner = $derived(skills.data?.find((owner) => owner.model === effectiveAgentModel))
-  const skillItems = $derived.by(() => {
-    const owners = skills.data ?? []
-    const selected = owners.filter((owner) => owner.owner === 'shared' || owner.model === effectiveAgentModel)
-    const seen = new Set<string>()
-    return selected.flatMap((owner) => owner.skills.map((skill) => ({
-      id: `${owner.owner}:${skill.name}`,
-      label: skill.name,
-      detail: owner.owner === 'shared' ? 'Shared' : owner.label,
-    }))).filter((skill) => {
-      if (seen.has(skill.label)) return false
-      seen.add(skill.label)
-      return true
-    })
-  })
-  const mcpItems = $derived.by(() => {
-    const roster = mcp.data?.agents ?? []
-    const selected = roster.find((agent) => agent.slug === skillOwner?.owner)
-      ?? roster.find((agent) => agent.displayName === (delegateModel
-        ? agentsQuery.data?.agents.find((agent) => agent.id === delegateModel)?.label
-        : assistant?.name))
-    return (selected?.servers ?? []).map((server) => ({
-      id: `${selected?.id ?? 'agent'}:${server.name}`,
-      label: server.name,
-      detail: server.extras.includes('built-in') ? 'Built in' : server.extras.includes('managed') ? 'Managed' : undefined,
-    }))
-  })
 
   function addAttachment(attachment: Attachment) {
     attachments = attachments.some((item) => item.id === attachment.id) ? attachments : [...attachments, attachment]
@@ -389,11 +323,15 @@
     const instruction = markdown.trim() || (attachments.length ? 'Review the attached context.' : '')
     if (!instruction || busy) return
     const split = splitAttachments(attachments)
+    // This surface no longer offers delegate/model/mode picks (attach + text +
+    // submit only), so the command always runs the assistant's own default in
+    // the normal mode — the API fields stay, the choices just never come here.
     onSubmit(instruction, {
       focusKey: attached && active ? active.key : null,
-      delegateModel: delegateModel || null,
-      responseModel: responseModel || null,
-      mode,
+      delegateModel: null,
+      responseModel: null,
+      mode: 'normal',
+      effort: effort || null,
       attachmentIds: split.attachmentIds,
       refs: split.refs,
     })
@@ -564,28 +502,19 @@
           canSend={attachments.length > 0 || undefined}
         >
           {#snippet controlRail()}
-            <AssistantComposerControls
-              {agents}
-              agentValue={delegateModel}
-              onAgentChange={(value) => (delegateModel = value)}
-              models={models.data?.models ?? []}
-              modelValue={responseModel}
-              onModelChange={(value) => (responseModel = value)}
-              modelsLoading={models.isLoading}
-              {mode}
-              onModeChange={(next) => (mode = next)}
-              {mcpItems}
-              {skillItems}
-              onAttach={addAttachment}
-              onTranscript={(text) => composer?.insertText(text)}
-              disabled={busy}
-            />
+            <!-- Attach menu, effort (when the assistant's model publishes
+                 levels), and send: this surface is a conversation with the
+                 owner's personal assistant, not a harness configurator. The
+                 effort chip sits immediately left of the send tile, which
+                 ChatComposer pins to the rail's end. -->
+            <AttachButton onAttach={addAttachment} disabled={busy} />
+            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => (effort = v)} disabled={busy} />{/if}
           {/snippet}
         </ChatComposer>
       </div>
       <div class="mt-1.5 flex items-center justify-between gap-2 px-1 font-mono text-[8px] uppercase tracking-[0.06em] text-ink-dim">
         <span>{assistant?.configured ? `${assistant.name ?? 'your assistant'} orchestrates` : 'Assistant not configured'}</span>
-        <span>{agentsQuery.isLoading ? 'Loading' : delegateModel ? 'Specialist ready' : attached ? 'Decision attached' : 'No tools'}</span>
+        <span>{attached ? 'Decision attached' : 'No tools'}</span>
       </div>
     </div>
   </aside>

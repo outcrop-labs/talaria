@@ -171,18 +171,27 @@ The signature component. Applies to chat, channels/comms, and any prompt surface
   shadow `0 8px 24px rgba(0,0,0,0.28)`.
 
 ### Prompt field (inset well)
-- bg **`#090A09`** (ground inset!), border 1px `#302D29`, radius 6, padding 14; min-height
-  ~76px; textarea transparent, 14/20 sans `#E7E2DB`; placeholder `#8E877E`:
-  `What would you like <agent> to work on?` (agent name from the selected agent).
-- Send button inside, top-right: **36×36, radius 6, bg `#C8B46C`**, dark up-arrow glyph
-  (~16px, stroke ground `#090A09`). Disabled: raised tile + muted glyph.
+- bg **`#090A09`** (ground inset!), border 1px `#302D29`, radius 6, padding 14 all
+  round; min-height ~76px; textarea transparent, 14/20 sans `#E7E2DB`; placeholder
+  `#8E877E`: `What would you like <agent> to work on?` (agent name from the selected
+  agent). The well holds the TEXT ONLY — the send tile lives on the control rail,
+  never inside the inset.
+- Send button: **36×36, radius 6, bg `#C8B46C`**, dark up-arrow glyph (~16px, stroke
+  ground `#090A09`). (Talaria decision, 2026-08: it is the LAST item on the control
+  rail, outside the well, in every composer.) Disabled stays in the accent family —
+  soft gold tile (accent border at 40% + accent-subtle fill + accent glyph), never
+  the grey raised tile other chrome controls use.
 
 ### Control rail (bottom row, 40px zone; chips 36px tall)
 Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip (border
 **`#4A4640`**, text 10px mono `#E7E2DB`, + meter: five 3×12 bars, gap ~2, lit bars
 `#C8B46C`, unlit raised-tone); model chip `✳ FABLE 5` (same anatomy, 10px glyph icon);
 mode chip `NORMAL MODE` (border `#302D29`, muted text); `● MCP 3` (7px gold dot + mono);
-`SKILLS 11`; then flex spacer; `?` help and mic icon tiles (36×36, border `#302D29`).
+`SKILLS 11`; then flex spacer; `?` help and mic icon tiles (36×36, border `#302D29`);
+then the SEND TILE (above) — always the last thing on the rail. (Talaria decision,
+2026-08: the rail is host-driven per surface — the Inbox assistant's is just
+attach + send; the plan/research composers drop the agent/model chips to their host
+views; only chips whose feature the surface actually offers are shown.)
 - All chips radius 6, paddingInline 10, mono 10/12.
 - Primary chips (agent/model) read brighter: border `#4A4640` + readout text; secondary
   chips: border `#302D29` + muted text → readout on hover.

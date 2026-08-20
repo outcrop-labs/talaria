@@ -117,6 +117,8 @@ export async function* streamInboxFocusCommand(
     delegateModel?: string | null
     responseModel?: string | null
     mode?: 'normal' | 'fast' | 'plan'
+    /** Reasoning effort for the reply ('' / null = the model's default). */
+    effort?: string | null
     attachmentIds?: string[]
     refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
   },

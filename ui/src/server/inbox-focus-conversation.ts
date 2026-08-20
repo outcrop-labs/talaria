@@ -27,6 +27,7 @@ import {
   type InboxTimelineRecord,
 } from '@/lib/inbox-focus-timeline'
 import { gatewayModelsFor } from './model-access'
+import { effortsForModel } from './model-efforts'
 import { attachmentTextBlocks, canAccessUpload, resolveAttachments } from './uploads'
 import { refBlocks, resolveRefs, type MessageRef } from './refs'
 import type {
@@ -126,6 +127,25 @@ async function validatedResponseModel(user: SessionUser, requested: string | nul
   return requested
 }
 
+/** The effort the ANSWERING model may be asked for. Same rule as
+ *  `validatedResponseModel`: the pick is checked against what the model's own
+ *  metadata vouches for (`effortsForModel` resolves the assistant persona to
+ *  the model actually serving it), and a pick that fails the check is an
+ *  error rather than a silent drop — the sender has a picker built on the same
+ *  metadata, so a mismatch means one of the two is stale and both should say
+ *  so. Null (no pick) is always fine and means the model's default. */
+async function validatedEffort(model: string | null, effort: string | null | undefined): Promise<string | null> {
+  if (!effort) return null
+  if (!model) throw new Error('Your assistant is not configured, so it cannot honor an effort pick.')
+  const efforts = await effortsForModel(model)
+  if (!efforts.includes(effort)) {
+    throw new Error(
+      `That effort ("${effort}") is not available on ${model}${efforts.length ? ` — offered: ${efforts.join(', ')}` : ''}.`,
+    )
+  }
+  return effort
+}
+
 function messageEntry(input: {
   id: string
   role: 'user' | 'assistant'
@@ -173,6 +193,9 @@ export async function* runInboxConversationCommand(
     delegateModel?: string | null
     responseModel?: string | null
     mode?: 'normal' | 'fast' | 'plan'
+    /** Reasoning effort the owner picked, validated against the answering
+     *  model's supported levels (see `validatedEffort`). */
+    effort?: string | null
     attachmentIds?: string[]
     refs?: MessageRef[]
     signal?: AbortSignal
@@ -180,6 +203,7 @@ export async function* runInboxConversationCommand(
 ): AsyncGenerator<InboxCommandEvent> {
   const assistant = await focusAssistantFor(user.id)
   const responseModel = await validatedResponseModel(user, input.responseModel)
+  const effort = await validatedEffort(responseModel ?? assistant.model, input.effort)
   const mode = input.mode ?? 'normal'
   const modeInstruction = mode === 'plan'
     ? '\n\n[Plan mode: answer with a concise plan or clarifying question. Do not propose or imply execution.]'
@@ -212,6 +236,7 @@ export async function* runInboxConversationCommand(
     actor: { type: 'human', id: user.id, label: actorOf(user) },
     responseModel,
     mode,
+    effort,
   }
   const userSeq = await nextSeq(conversationId)
   const userMessageId = await insertUserMessage(conversationId, userSeq, input.instruction, messageAttachments, user.id, userMetadata as unknown as Record<string, unknown>)
@@ -221,6 +246,7 @@ export async function* runInboxConversationCommand(
     delegateModel: input.delegateModel ?? null,
     responseModel,
     mode,
+    effort,
   }
   const assistantMessageId = await insertStreamingAssistant(conversationId, userSeq + 1, assistantMetadata as unknown as Record<string, unknown>)
   await touchConversation(conversationId)
@@ -246,6 +272,7 @@ export async function* runInboxConversationCommand(
         delegateModel: input.delegateModel,
         responseModel,
         mode,
+        effort,
         attachmentContext,
         history,
         signal: input.signal,
@@ -283,7 +310,7 @@ export async function* runInboxConversationCommand(
         content = 'Your personal assistant is not configured yet. You can still use the safe actions in the Focus Queue.'
       } else {
         const caller = responseModel ? `user:${user.email ?? user.id}` : `inbox:${model}`
-        const reply = streamReply(model, [{ role: 'user', content: prompt }], caller, 20_000, input.signal)
+        const reply = streamReply(model, [{ role: 'user', content: prompt }], caller, { max: 20_000, parentSignal: input.signal, effort })
         let accumulated = ''
         for (;;) {
           const next = await reply.next()
