@@ -101,7 +101,13 @@
     {/if}
     {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
     <div class="min-h-0 flex-1 overflow-y-auto">
-      {#if !results}
+      {#if resultsQuery.isError}
+        <EmptyState
+          icon="⚠"
+          title="Marketplace didn't load"
+          hint="The MCP registry could not be reached. Close and reopen the marketplace to retry."
+        />
+      {:else if !results}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {#each Array.from({ length: 9 }, (_, i) => i) as i (i)}
             <div class="rounded-lg border border-line-subtle bg-surface p-4">

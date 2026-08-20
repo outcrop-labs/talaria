@@ -7,6 +7,21 @@
 //   community    io.github.* — surfaces only in explicit searches
 // Only servers with a hosted (streamable-http) endpoint appear at all: the
 // gateway speaks that transport; stdio packages would need a process runtime.
+//
+// SERVING STRATEGY — why this module has three layers of caching:
+//   1. Bounded concurrency. The registry answers one search in ~100-400ms and
+//      THROTTLES bursts: the featured shelf used to resolve all 32 publishers
+//      through one unbounded Promise.all, half the fan-out queued for 3-4.6s,
+//      and the shelf (which waits for the slowest) took ~4.6s — the
+//      "marketplace loads super slowly" report. Six in flight stays in the
+//      registry's fast lane: measured 271ms pooled vs 4615ms unbounded.
+//   2. Stale-while-revalidate. The featured shelf is editorial — an hour-old
+//      answer NOW beats a several-second fan-out for a fresh one. Stale data
+//      is served instantly and refreshed in the background, single-flighted.
+//   3. A scheduler job warms the shelf at boot and every 30 minutes, so even
+//      the one truly cold load (first request ever, registry up) usually
+//      happens before any user opens the marketplace.
+import { registerJob } from './scheduler'
 import { warmIcons } from './mcp-icons'
 import { safeFetch } from './safe-fetch'
 
@@ -61,6 +76,24 @@ export interface LibraryServer {
 
 const REGISTRY_URL = 'https://registry.modelcontextprotocol.io/v0/servers'
 const CACHE_MS = 15 * 60 * 1000
+
+/** Same number warmIcons uses; measured to stay under the registry's burst
+ *  throttle (see the header). See mapPool for how it is applied. */
+const REGISTRY_CONCURRENCY = 6
+
+/** items → promises → results, at most `limit` in flight, results in input
+ *  order. The queue discipline is the whole point: an unbounded fan-out is
+ *  what made the marketplace slow. */
+async function mapPool<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i]!)
+    }),
+  )
+  return out
+}
 
 const host = (u: string): string | null => {
   try {
@@ -187,20 +220,31 @@ const knownServer = (domain: string): LibraryServer | null => {
   }
 }
 
-/** One publisher, best source wins: registry → well-known → documented. */
+const PUBLISHER_TTL_MS = 60 * 60 * 1000
+const publisherCache = new Map<string, { at: number; server: LibraryServer | null }>()
+
+/** One publisher, best source wins: registry → well-known → documented.
+ *  Resolved at most once an hour per domain, and the featured refresh warms
+ *  every FEATURED_DOMAIN — so a brand-shaped search ("git", "stripe") pins
+ *  its publisher from cache instead of re-resolving it live. */
 async function resolvePublisher(domain: string): Promise<LibraryServer | null> {
+  const hit = publisherCache.get(domain)
+  if (hit && Date.now() - hit.at < PUBLISHER_TTL_MS) return hit.server
   const term = domain.split('.')[0]!
+  let server: LibraryServer | null = null
   try {
     const entries = await registryPage({ search: term, limit: '30' })
     const hits = entries
       .map(classify)
       .filter((s): s is LibraryServer => !!s && (s.domain === domain || onDomain(s.domain, domain)))
       .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier])
-    if (hits[0]) return hits[0]
+    server = hits[0] ?? null
   } catch {
     /* registry hiccup — try the fallbacks */
   }
-  return (await wellKnownServer(domain)) ?? knownServer(domain)
+  server ??= (await wellKnownServer(domain)) ?? knownServer(domain)
+  publisherCache.set(domain, { at: Date.now(), server })
+  return server
 }
 
 /** Search the registry SERVER-SIDE (complete over 20k+ entries), rank locally:
@@ -240,7 +284,9 @@ export async function searchMcpLibrary(query: string): Promise<LibraryServer[]> 
 // The featured shelf is EDITORIAL — services businesses actually run on — but
 // the DATA stays live: each name resolves against the registry at request
 // time, and companies that haven't published a server simply don't appear.
-const FEATURED_DOMAINS = [
+// Exported so tests (and anything that asks "is this publisher featured?")
+// read the one true list instead of a copy that drifts.
+export const FEATURED_DOMAINS = [
   'github.com', 'gitlab.com', 'linear.app', 'atlassian.com', 'asana.com', 'monday.com',
   'notion.so', 'airtable.com', 'figma.com', 'canva.com', 'slack.com', 'intercom.com',
   'stripe.com', 'paypal.com', 'squareup.com', 'shopify.com', 'hubspot.com',
@@ -249,12 +295,63 @@ const FEATURED_DOMAINS = [
   'huggingface.co', 'browserbase.com', 'e2b.dev', 'postman.com', 'linkup.so',
 ]
 
+const FEATURED_FRESH_MS = 60 * 60 * 1000
 let featured: { at: number; servers: LibraryServer[] } | null = null
-export async function featuredMcpLibrary(): Promise<{ servers: LibraryServer[] }> {
-  if (featured && Date.now() - featured.at < 60 * 60 * 1000) return { servers: featured.servers }
-  const results = await Promise.all(FEATURED_DOMAINS.map(resolvePublisher))
-  const servers = results.filter((s): s is LibraryServer => s !== null)
+let featuredRefresh: Promise<LibraryServer[]> | null = null
+
+/** Resolve the featured shelf from live sources and cache the result. Never
+ *  throws for per-domain failures — a publisher that cannot be resolved just
+ *  drops off the shelf until it can be. */
+async function refreshFeatured(): Promise<LibraryServer[]> {
+  const servers = (await mapPool(FEATURED_DOMAINS, REGISTRY_CONCURRENCY, resolvePublisher)).filter(
+    (s): s is LibraryServer => s !== null,
+  )
+  // Only a NON-EMPTY answer replaces what's cached: an empty or partial one
+  // means the registry is misbehaving, and evicting a good shelf for it would
+  // trade a stale shelf for an empty one.
   if (servers.length > 0) featured = { at: Date.now(), servers }
   warmIcons(servers.filter((s) => !s.icon && s.domain).map((s) => ({ domain: s.domain })))
-  return { servers }
+  return servers
 }
+
+/** Single-flight the refresh so N concurrent stale serves trigger ONE
+ *  fan-out, not N. The in-flight slot clears on settlement, success or not. */
+const refreshFeaturedOnce = (): Promise<LibraryServer[]> =>
+  (featuredRefresh ??= (async () => {
+    try {
+      return await refreshFeatured()
+    } finally {
+      featuredRefresh = null
+    }
+  })())
+
+export async function featuredMcpLibrary(): Promise<{ servers: LibraryServer[] }> {
+  if (featured) {
+    // Stale-while-revalidate: serve the shelf we have, however old, and only
+    // then kick a refresh. The only caller who ever blocks on the fan-out is
+    // the one who arrives before ANY answer exists — in production the
+    // scheduler job below has usually been there first.
+    if (Date.now() - featured.at >= FEATURED_FRESH_MS) void refreshFeaturedOnce().catch(() => {})
+    return { servers: featured.servers }
+  }
+  return { servers: await refreshFeaturedOnce() }
+}
+
+// Scheduled, not on-demand-only. Without this, the first marketplace open
+// after every boot — or after the hourly TTL expired with nobody looking —
+// paid the full 32-publisher fan-out, skeletons and all. perInstance because
+// the cache being warmed is THIS process's memory; the upstream work is
+// read-only, so instances duplicating it is the intended behavior.
+registerJob({
+  name: 'mcp-library-refresh',
+  everyMs: 30 * 60_000,
+  // Early: it warms a cache, writes nothing anyone sees, and the whole point
+  // is to be done before the first user opens the marketplace.
+  firstRunDelayMs: 10_000,
+  maxRunMs: 2 * 60_000,
+  perInstance: true,
+  run: async () => {
+    const servers = await refreshFeaturedOnce()
+    return `${servers.length} featured marketplace server(s)`
+  },
+})
