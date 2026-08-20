@@ -25,9 +25,11 @@
   const failed = $derived(catalogQuery.isError ? catalogQuery : prefsQuery.isError ? prefsQuery : null)
   const savedFlash = useSavedFlash()
   let error = $state<string | null>(null)
-  // Bare model names only — endpoint-qualified ids stay available as raw ids
-  // for power users via the same list (they're in the catalog too).
-  const models = $derived((catalog?.models ?? []).filter((m) => !m.qualified))
+  // The catalog as the server spells it: "<endpoint>/<model>" pins, plus bare
+  // pool ids where a model is served by more than one endpoint. This was
+  // filtered to bare ids once, back when the catalog emitted both spellings —
+  // now it emits bare ids only for pools, so the filter hid every model.
+  const models = $derived(catalog?.models ?? [])
 
   const save = async (model: string | null) => {
     error = null

@@ -33,7 +33,26 @@
     queryFn: (): Promise<AdminSettings> => getJson<AdminSettings>('/api/admin/settings'),
   }))
   const settings = $derived(settingsQuery.data)
-  const models = $derived((catalogQuery.data?.models ?? []).filter((m) => !m.qualified))
+  // One checkbox per MODEL, not per endpoint deployment: the allowlist is
+  // judged by bare model id (`modelAllowedFor` — allowing "m" allows "ep/m"
+  // on every endpoint that serves it), so model granularity is what a save
+  // actually has. The catalog spells each model "<endpoint>/<model>" (a bare
+  // id survives only as a multi-endpoint POOL), so collapse: strip the
+  // endpoint prefix from qualified ids, keep pool ids as they are, dedupe.
+  const models = $derived.by(() => {
+    const byId = new Map<string, { id: string; label?: string; blurb?: string }>()
+    for (const m of catalogQuery.data?.models ?? []) {
+      const bare = m.qualified ? m.id.slice(m.id.indexOf('/') + 1) : m.id
+      if (!byId.has(bare)) byId.set(bare, { id: bare, label: m.label, blurb: m.blurb })
+    }
+    return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
+  })
+  // A bare id's capability facts: the POOL row when one exists (its facts are
+  // merged across every endpoint serving the model), else the first qualified
+  // row for the same model. Advisory display, same as every other picker.
+  const capsRowFor = (id: string) =>
+    capsQuery.data?.models.find((c) => !c.qualified && c.id === id) ??
+    capsQuery.data?.models.find((c) => c.qualified && c.id.slice(c.id.indexOf('/') + 1) === id)
   const rawSaved = $derived(settings?.memberModels ?? [])
   // Models removed from the registry drop out of the list here (and get
   // persisted out on the next save) — the allowlist tracks reality. Guarded
@@ -117,7 +136,7 @@
                    A capability recorded FALSE here is the difference between a
                    member picking a brain that works and one that quietly
                    returns nothing on every structured surface. -->
-              <CapabilityTags class="mt-0.5" row={capsQuery.data?.models.find((c) => c.id === m.id)} />
+              <CapabilityTags class="mt-0.5" row={capsRowFor(m.id)} />
             </span>
           </label>
         {/each}
