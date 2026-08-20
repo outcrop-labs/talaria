@@ -190,6 +190,17 @@ export interface TransportRequest {
   toolDefs?: ToolDefinition[]
   /** Absent means the default persona attribution. Read it through `ledgerOf`. */
   ledger?: LedgerAttribution
+  /** THE REASONING EFFORT THIS TURN RUNS AT — a human's pick from the levels
+   *  the model's metadata vouches for (see `model-efforts.ts`). Sent as
+   *  `reasoning_effort` wherever the turn can honor it, and dropped without a
+   *  murmur where it cannot: a TOOL-OFFERING gateway turn must keep its
+   *  `'none'` (see `gatewayToolTurn` for the provider sentence that forced
+   *  it), and a field the request cannot honor is not a reason to fail a chat.
+   *
+   *  Unlike `temperature` there is no "silently dropped" hazard to defend
+   *  against: effort is a dial, not a contract — a turn that runs at the
+   *  model's default effort still answers the question it was asked. */
+  effort?: string
   /** How long a persona transport may HOLD for an agent that is not answering
    *  yet, in ms. `proxyChat` defaults to two minutes; a restarting agent under a
    *  config propagation refuses connections for tens of seconds, and a work
@@ -293,6 +304,12 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
   }
   if (req.temperature !== undefined) payload.temperature = req.temperature
   if (req.jsonMode) payload.response_format = { type: 'json_object' }
+  // The effort pick travels like temperature: one request field, forwarded to
+  // the persona's own gateway, which hands it to the provider it fronts. The
+  // agent container owns the model, so honoring the level is its call — Talaria
+  // already refused it on the way IN (the routes validate against
+  // `effortsForModel`), which is the only side of the contract Talaria can see.
+  if (req.effort) payload.reasoning_effort = req.effort
   return payload
 }
 
@@ -474,6 +491,14 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
   // an endpoint that does not know the field answers 400 naming it, it IS in the
   // body, and the existing ratchet strips it for good on the retry. The quirk
   // costs one 400 once, on providers that have it, and nothing thereafter.
+  //
+  // A USER-PICKED EFFORT (`req.effort`) IS DELIBERATELY NOT SENT HERE, on either
+  // branch of that rule: with defs offered the explicit 'none' above is the one
+  // value the provider accepts, and without them the turn replays a tool
+  // conversation whose history can trip the same restriction. The pick is not
+  // lost — the closing, tool-free turn of the loop still carries it — and the
+  // alternative is a 400 the ratchet would answer by stripping effort from every
+  // future turn on that model.
   if (defs.length) body.reasoning_effort = 'none'
   const toolFormat = responseFormatOf(req)
   if (toolFormat) body.response_format = toolFormat
@@ -542,6 +567,7 @@ export const gatewayTransport: Transport = async (req) => {
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     caller: req.caller,
     ...(responseFormatOf(req) ? { responseFormat: responseFormatOf(req)! } : {}),
+    ...(req.effort ? { effort: req.effort } : {}),
     guard: false,
   })
   const droppedJson = res.contractDrops.some((d) => d.capability === 'json')
@@ -775,6 +801,7 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
     stream: true,
   }
   if (req.temperature !== undefined) body.temperature = req.temperature
+  if (req.effort) body.reasoning_effort = req.effort
   const toolFormat = responseFormatOf(req)
   if (toolFormat) body.response_format = toolFormat
   const call = await buildUpstream(route, body)

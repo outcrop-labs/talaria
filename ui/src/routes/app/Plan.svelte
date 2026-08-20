@@ -11,6 +11,7 @@
   import PlanModal from '@/components/chat/PlanModal.svelte'
   import PlanDoc from '@/components/chat/PlanDoc.svelte'
   import PlanDocSkeleton from '@/components/chat/PlanDocSkeleton.svelte'
+  import TierPicker from '@/components/chat/TierPicker.svelte'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -71,6 +72,10 @@
   )
   let newChatSignal = $state(0)
   let planOpen = $state(false)
+  // The model-tier pick lives in the VIEW, not the composer: the plan's chat
+  // surface is attach + text + submit only, and the sidebar owns the agent.
+  // A new conversation starts on the agent's main model ('').
+  let planTier = $state('')
   // The template a NEW plan's living doc seeds from ('' = automatic: the plan
   // agent's bound plan template). Locked in when the first turn creates the plan.
   let templateId = $state('')
@@ -92,6 +97,7 @@
     setSelectedConversationId(null)
     newChatSignal += 1
     templateId = ''
+    planTier = ''
   }
   const newPlan = () => {
     if (selectedAgent) selectAgent(selectedAgent)
@@ -140,6 +146,11 @@
         </Select>
       </label>
     {/if}
+    {#if (current?.tiers ?? []).length > 0}
+      <!-- The harness sits beside the view's other model-level controls, not
+           in the composer. -->
+      <TierPicker tiers={current!.tiers ?? []} value={planTier} onChange={(t) => (planTier = t)} />
+    {/if}
     <Button size="sm" variant="outline" disabled={!selectedConversationId} onclick={() => (planOpen = true)}>
       Draft tickets
     </Button>
@@ -183,13 +194,14 @@
               <ChatView
                 agentModel={selectedAgent}
                 agentLabel={current.label}
-                tiers={current.tiers ?? []}
                 {agents}
                 onAgentChange={selectAgent}
                 conversationId={selectedConversationId}
                 {newChatSignal}
                 {onCreated}
                 kind="plan"
+                minimal
+                tier={planTier}
                 templateId={templateId || null}
                 {mentionables}
                 onTurnComplete={() => (turnSignal += 1)}

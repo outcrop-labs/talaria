@@ -1378,6 +1378,21 @@ describe('tool passthrough', () => {
     expect(r.requests[0]?.holdMs).toBe(600_000)
   })
 
+  it("carries the caller's reasoning-effort pick, or nothing at all", async () => {
+    // The chat routes validate the level against the model's own metadata
+    // before handing it here; the runner's only job is to not drop it on the
+    // way to the transport. Effort is the same class of field temperature was
+    // for the five hand-written shims — a declaration the request must spend.
+    const picked = world({ replies: ['a title'] })
+    await runHarness(titler, { transcript: 'x' }, { caller: 'test:harness', effort: 'high', deps: picked.deps })
+    expect(picked.requests[0]?.effort).toBe('high')
+    // Absent when nobody picked one: the transports read absence as "send no
+    // parameter", which is the model's own default effort.
+    const plain = world({ replies: ['a title'] })
+    await run(titler, { transcript: 'x' }, plain)
+    expect(plain.requests[0]?.effort).toBeUndefined()
+  })
+
   it('FAILS rather than quietly dropping tools a transport cannot serve', async () => {
     // The rule the whole request type is built on. Three of the five shims
     // silently dropped `temperature` and `jsonMode`; a field that cannot be

@@ -210,6 +210,17 @@ export async function personaCapabilityKeys(model: string): Promise<CapabilityKe
   return [...new Set((byId.get(model) ?? []).map((t) => capabilityKey(t.endpoint, t.model)))]
 }
 
+/** The TARGETS behind one routable persona id (tier included), from the same
+ *  cached index `personaCapabilityKeys` reads. Callers that need the
+ *  endpoint:upstream pairs themselves — the catalog-backed readers, e.g.
+ *  `model-efforts.ts` — rather than the capability keys they fold into. Same
+ *  contract as `personaTargets`: empty when the id is not a persona, its
+ *  config is missing or malformed, or it names a tier the agent does not have. */
+export async function personaTargetsFor(model: string): Promise<ModelTarget[]> {
+  const byId = await index()
+  return byId.get(model) ?? []
+}
+
 /** Drop the cached index. For tests, and for any caller that has just changed an
  *  agent's config and would rather not wait out the TTL. */
 export function clearPersonaCache(): void {

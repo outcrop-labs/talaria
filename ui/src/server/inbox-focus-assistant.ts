@@ -110,16 +110,21 @@ export async function requestFocusBrief(
  *  instruction actually authorized. The allowlist comes from
  *  `allowedFocusActionIds` — the SAME call `render` made — with the runner's
  *  answer about whether this model earned the widened surface. Deriving both
- *  from one function is what stops the prompt and the gate from drifting. */
+ *  from one function is what stops the prompt and the gate from drifting.
+ *
+ *  `effort` is the owner's reasoning-effort pick, already validated against
+ *  the answering model's supported levels by the caller; it rides the harness
+ *  context to the transport, which sends it where the turn can honor it. */
 export async function requestFocusCommand(
   model: string,
   input: FocusCommandInput,
   caller: string,
   parentSignal?: AbortSignal,
+  effort?: string | null,
 ): Promise<FocusCommandTurn | null> {
   const deadline = deadlineSignal(parentSignal)
   try {
-    const result = await runHarness(inboxCommandHarness, input, { caller, model, signal: deadline.signal })
+    const result = await runHarness(inboxCommandHarness, input, { caller, model, signal: deadline.signal, ...(effort ? { effort } : {}) })
     parentSignal?.throwIfAborted()
     if (!result.value) return null
     return validateCommandObject(result.value, new Set(allowedFocusActionIds(input, result.widened)))
@@ -195,10 +200,9 @@ export async function* streamReply(
   model: string,
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   caller: string,
-  max = 20_000,
-  parentSignal?: AbortSignal,
+  opts: { max?: number; parentSignal?: AbortSignal; effort?: string | null } = {},
 ): AsyncGenerator<string, string | null, void> {
-  const deadline = deadlineSignal(parentSignal, REPLY_DEADLINE_MS)
+  const deadline = deadlineSignal(opts.parentSignal, REPLY_DEADLINE_MS)
   const stream = await pickStreamingTransport(model)
 
   const queue: string[] = []
@@ -215,7 +219,15 @@ export async function* streamReply(
   const run = runHarnessStreamed(
     inboxReplyHarness,
     { messages },
-    { caller, model, signal: deadline.signal },
+    {
+      caller,
+      model,
+      signal: deadline.signal,
+      // The owner's effort pick for this reply, validated against this model's
+      // supported levels by the caller; the transport forwards it as
+      // `reasoning_effort` on whichever side of the house the model lives on.
+      ...(opts.effort ? { effort: opts.effort } : {}),
+    },
     {
       stream,
       onDelta: (delta) => {
@@ -225,7 +237,7 @@ export async function* streamReply(
     },
   )
     .then((result) => {
-      value = result.value ? result.value.slice(0, max) || null : null
+      value = result.value ? result.value.slice(0, opts.max ?? 20_000) || null : null
     })
     .catch((e: unknown) => {
       failure = e
@@ -248,7 +260,7 @@ export async function* streamReply(
     }
     await run
     if (failure) throw failure
-    parentSignal?.throwIfAborted()
+    opts.parentSignal?.throwIfAborted()
     return value
   } finally {
     deadline.dispose()

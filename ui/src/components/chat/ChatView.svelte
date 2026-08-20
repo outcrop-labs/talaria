@@ -3,6 +3,7 @@
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import AgentChip from '@/components/chat/AgentChip.svelte'
   import TierPicker from '@/components/chat/TierPicker.svelte'
+  import EffortPicker from '@/components/chat/EffortPicker.svelte'
   import StopButton from '@/components/chat/StopButton.svelte'
   import KeyHint from '@/components/ui/KeyHint.svelte'
   import { type Mentionable } from '@/components/chat/mentions.svelte'
@@ -13,6 +14,7 @@
   import AttachButton from '@/components/chat/AttachButton.svelte'
   import RelayButton from '@/components/chat/RelayButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
+  import { useModelEfforts } from '@/lib/model-efforts.svelte'
   import UserTurn from './UserTurn.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -38,6 +40,8 @@
     templateId,
     mentionables = [],
     onTurnComplete,
+    minimal = false,
+    tier = $bindable(''),
   }: {
     agentModel: string
     agentLabel: string
@@ -68,6 +72,15 @@
      *  streamed it or the poller observed a server-chained one (the plan
      *  surface syncs its living document on this). */
     onTurnComplete?: () => void
+    /** The view OWNS the conversation partner: the surface's sidebar picks the
+     *  agent, its chrome picks the harness/model. So the composer rail drops
+     *  both pickers and the relay/emoji affordances — the surface is left with
+     *  exactly attach, text, and submit (plus stop while a reply streams). */
+    minimal?: boolean
+    /** Requestable model tier for this conversation ('' = the agent's main
+     *  model). Bindable so a surface can lift the pick up into its own chrome
+     *  (the Plan surface renders it in the stage header). */
+    tier?: string
   } = $props()
 
   let messages = $state<DisplayMessage[]>([])
@@ -75,8 +88,11 @@
   /** Measured height of the floating composer — what the transcript reserves. */
   let composerH = $state(0)
   let attachments = $state<Attachment[]>([])
-  let tier = $state('') // '' = the agent's main model
   let streaming = $state(false)
+  // The effort pick for this conversation's next turns ('' = model default).
+  // Offered only when the ROUTED model's metadata vouches for levels — a tier
+  // switch can change the list, and a pick that leaves it resets to default.
+  let effort = $state('')
   // True while an EXISTING conversation's history is being fetched — the pane
   // shows transcript-shaped skeletons, never the "Talk to X" hero.
   let loadingConversation = $state(false)
@@ -118,6 +134,18 @@
     messages = []
     loadingConversation = false
     error = null
+  })
+
+  // ── Effort offering ────────────────────────────────────────────────────────
+  // The routed id is what the server validates against, so it is also what the
+  // picker lists from — `routedModelFor` builds exactly this string when the
+  // tier is one of the agent's aliases.
+  const routedModel = $derived(tier ? `${agentModel}-${tier}` : agentModel)
+  const { efforts } = useModelEfforts(() => routedModel)
+  // A model switch (agent or tier) can retire the picked level; reset to the
+  // default rather than sending a level the new model would 400 on.
+  $effect(() => {
+    if (effort && !efforts.includes(effort)) effort = ''
   })
 
   // Load an existing conversation when the selection changes.
@@ -209,6 +237,7 @@
           conversationId: convId,
           content: text,
           tier: tier || undefined,
+          effort: effort || undefined,
           ...splitAttachments(atts),
           kind,
         })
@@ -233,7 +262,7 @@
     abortCtrl = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, ...splitAttachments(atts), kind, templateId },
+        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId },
         (meta) => {
           if (!convId) {
             convId = meta.conversationId
@@ -427,24 +456,43 @@
       >
         {#snippet leftControls()}
           <AttachButton onAttach={(a) => attachments.push(a)} disabled={streaming} />
-          <EmojiButton onPick={(ch) => composer?.insertText(ch)} />
-          <!-- The handle lands in the editor; the value never does. See
-               RelayButton.svelte for why that is a property of the route it
-               took rather than a rule anybody has to remember. -->
-          <RelayButton {agentModel} {agentLabel} onMinted={(h) => composer?.insertText(h)} disabled={streaming} />
+          {#if !minimal}
+            <EmojiButton onPick={(ch) => composer?.insertText(ch)} />
+            <!-- The handle lands in the editor; the value never does. See
+                 RelayButton.svelte for why that is a property of the route it
+                 took rather than a rule anybody has to remember. -->
+            <RelayButton {agentModel} {agentLabel} onMinted={(h) => composer?.insertText(h)} disabled={streaming} />
+          {/if}
         {/snippet}
         {#snippet rightControls()}
-          <!-- Spec §7 rail order: agent chip, then model chip. -->
-          {#if agents.length > 0 && onAgentChange}
-            <AgentChip {agents} value={agentModel} onChange={onAgentChange} />
+          <!-- Spec §7 rail order: agent chip, then model chip, then stop.
+                MINIMAL mode (plan/research): the surface owns the agent in its
+                sidebar and the model in its chrome, so both pickers stay out of
+                the composer — send is the last word on the rail. -->
+          {#if !minimal}
+            {#if agents.length > 0 && onAgentChange}
+              <AgentChip {agents} value={agentModel} onChange={onAgentChange} />
+            {/if}
+            {#if tiers.length > 0}<TierPicker {tiers} value={tier} onChange={(t) => (tier = t)} />{/if}
           {/if}
-          {#if tiers.length > 0}<TierPicker {tiers} value={tier} onChange={(t) => (tier = t)} />{/if}
           {#if streaming}<StopButton onClick={stop} />{/if}
-          <KeyHint
-            keys={streaming ? 'esc' : '⏎'}
-            label={streaming ? 'stop' : 'send'}
-            visible={streaming || !composerEmpty || attachments.length > 0}
-          />
+          <!-- MINIMAL mode (plan/research) leaves the KeyHint out too: the
+                surface pane is narrow, the hint's always-rendered slot was what
+                pushed the send tile past the panel's edge, and Esc/Enter behave
+                identically here as in comms. -->
+          {#if !minimal}
+            <KeyHint
+              keys={streaming ? 'esc' : '⏎'}
+              label={streaming ? 'stop' : 'send'}
+              visible={streaming || !composerEmpty || attachments.length > 0}
+            />
+            <!-- Effort sits immediately left of the send tile, and only when the
+                 routed model's metadata vouches for levels — a model with no
+                 published ladder shows no chip and its requests carry no effort.
+                 Not disabled while streaming (TierPicker isn't either): a
+                 queued message picks up the level set when it is sent. -->
+            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => (effort = v)} />{/if}
+          {/if}
         {/snippet}
       </ChatComposer>
       </div>

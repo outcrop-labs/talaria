@@ -851,6 +851,10 @@ export async function runFocusCommand(
     delegateTier?: string | null
     responseModel?: string | null
     mode?: 'normal' | 'fast' | 'plan'
+    /** The owner's reasoning-effort pick, validated by the caller against the
+     *  answering model's supported levels. Rides the harness context to the
+     *  transport; absent = the model's default. */
+    effort?: string | null
     attachmentContext?: string
     history?: Array<{ role: 'user' | 'assistant'; content: string }>
     signal?: AbortSignal
@@ -896,6 +900,7 @@ export async function runFocusCommand(
       { ...shared, role: 'orchestrator', specialist: specialistResponse },
       caller,
       input.signal,
+      input.effort,
     )
   }
 

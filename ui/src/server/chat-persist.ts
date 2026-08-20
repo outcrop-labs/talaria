@@ -8,6 +8,7 @@ import { maybeRetitleConversation } from './titler'
 import {
   activeStreamingAssistant,
   insertStreamingAssistant,
+  lastUserMessageEffort,
   nextSeq,
   priorMessages,
   setMessageGuard,
@@ -15,6 +16,7 @@ import {
   updateAssistant,
 } from './conversations'
 import { routedModelFor } from './fleet-agents'
+import { effortsForModel } from './model-efforts'
 import { estimateTokens, recordUsage } from './usage'
 import { guardChatReply, needsRedaction, redactFindings, redactSecrets } from './guardrails'
 import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from './plan-doc'
@@ -57,7 +59,20 @@ export async function continueConversation(conversationId: string, meta: TurnMet
     ]
     const routed = (meta.tier ? await routedModelFor(meta.agentModel, meta.tier).catch(() => null) : null) ?? meta.agentModel
     const assistantId = await insertStreamingAssistant(conversationId, await nextSeq(conversationId))
-    const upstream = await proxyChat({ model: routed, messages })
+    // THE QUEUED MESSAGE'S OWN EFFORT, not the completed turn's: the message
+    // this chain exists to cover picked its level when it was sent (stamped on
+    // its row by /api/chat), and the model it will run on is only known now.
+    // Re-validated rather than trusted — an agent re-pointed mid-conversation
+    // leaves a stale pick on the row, and a chained turn nobody is watching
+    // degrades to the default rather than dying on a 400.
+    const effort = await lastUserMessageEffort(conversationId)
+    const honored =
+      effort && (await effortsForModel(routed).catch((): string[] => [])).includes(effort) ? effort : null
+    const upstream = await proxyChat({
+      model: routed,
+      messages,
+      ...(honored ? { reasoning_effort: honored } : {}),
+    })
     if (!upstream.ok || !upstream.body) {
       await updateAssistant(assistantId, { content: '', reasoning: '', tools: [], status: 'error' })
       return

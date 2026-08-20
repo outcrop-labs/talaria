@@ -201,6 +201,7 @@
         delegateModel: options.delegateModel,
         responseModel: options.responseModel,
         mode: options.mode,
+        effort: options.effort || null,
         attachmentIds: options.attachmentIds,
         refs: options.refs,
       }, controller.signal)) {

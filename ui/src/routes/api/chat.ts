@@ -3,6 +3,7 @@ import { json } from '@/server/http'
 import { z } from 'zod'
 import { proxyChat } from '@/server/gateway'
 import { routedModelFor } from '@/server/fleet-agents'
+import { effortsForModel } from '@/server/model-efforts'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { canUseAgentModel } from '@/server/users'
@@ -34,6 +35,12 @@ const Body = z.object({
   content: z.string().max(100_000).default(''),
   /** Model tier (alias name) to route this turn to; omit for the main model. */
   tier: z.string().max(60).optional(),
+  /** Reasoning effort for this turn, from the levels the routed model's
+   *  metadata vouches for. Omitted = the model's own default, and the outbound
+   *  request carries no effort field at all. Validated against the same
+   *  metadata the composer's picker lists, so a mismatch is a stale client or
+   *  a hand-built request — answered like the tier check below, not ignored. */
+  effort: z.string().max(24).optional(),
   attachmentIds: z.array(z.string().uuid()).max(10).optional(),
   /** Knowledge docs / artifacts attached as references (ACL-checked). */
   refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
@@ -100,6 +107,21 @@ export const Route = defineApi('/api/chat', {
     const routedModel = await routedModelFor(agentModel, body.tier)
     if (!routedModel) return json({ error: `unknown tier "${body.tier}" for ${agentModel}` }, { status: 400 })
 
+    // Effort: the same rule the tier above follows, against the per-model
+    // metadata the catalog refresh extracted (`effortsForModel` resolves a
+    // persona id to the model actually serving it). A model that publishes no
+    // levels supports no pick, so ANY effort on it is the error — "not
+    // supported" and "not one of yours" read identically to the sender.
+    if (body.effort !== undefined) {
+      const efforts = await effortsForModel(routedModel)
+      if (!efforts.includes(body.effort)) {
+        return json(
+          { error: `unsupported effort "${body.effort}" for ${routedModel}${efforts.length ? ` (offered: ${efforts.join(', ')})` : ''}` },
+          { status: 400 },
+        )
+      }
+    }
+
     // Validate attachments belong to real uploads before stamping them;
     // knowledge/artifact refs resolve to content-carrying chips.
     const uploads = await resolveAttachments(body.attachmentIds ?? [])
@@ -124,7 +146,11 @@ export const Route = defineApi('/api/chat', {
     // new message isn't duplicated into the prior list).
     const prior = queued ? [] : await priorMessages(convId)
     const userSeq = await nextSeq(convId)
-    const userMsgId = await insertUserMessage(convId, userSeq, content, attachments, user.id)
+    // The effort pick rides the user's row: the queued-message contract. A
+    // reply that is already streaming means this turn is covered later by
+    // `continueConversation`, which re-reads exactly this stamp (and
+    // re-validates it against the routed model) when it builds the next turn.
+    const userMsgId = await insertUserMessage(convId, userSeq, content, attachments, user.id, body.effort ? { effort: body.effort } : {})
     await touchConversation(convId, title)
 
     // Plan turns feed the ambient activity brain (plan-owner-scoped) and
@@ -196,7 +222,11 @@ export const Route = defineApi('/api/chat', {
     // be tied together. See research-origin.ts for what it is for.
     void markAgentTurn(agentModel, convId).catch(() => {})
 
-    const upstream = await proxyChat({ model: routedModel, messages })
+    const upstream = await proxyChat({
+      model: routedModel,
+      messages,
+      ...(body.effort ? { reasoning_effort: body.effort } : {}),
+    })
     const headers = new Headers({
       'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream',
       'Cache-Control': 'no-cache',

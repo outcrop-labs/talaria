@@ -239,34 +239,26 @@
       <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6 pt-2">
         <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
         <!-- §7 composer anatomy: panel body, STRONG hairline, radius 8,
-             p-2, matte float shadow — with the prompt in a ground inset. -->
+             p-2, matte float shadow — the prompt in a ground inset on top,
+             every control on the row UNDERNEATH it, submit right-aligned. -->
         <div class="pointer-events-auto rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
-          <div class="flex items-end gap-2">
-            <div class="relative min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1">
-              <Textarea
-                autoGrow
-                rows={1}
-                bind:value={question}
-                disabled={!mayRun.current}
-                placeholder={mayRun.current ? 'What should we find out?' : 'You don’t have permission to run research'}
-                class="max-h-40 min-h-[2.75rem] border-0 bg-transparent pr-12 focus:border-0"
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    void start()
-                  }
-                }}
-              />
-              <!-- §7 signature affordance: gold send tile inside the well,
-                   top-right — mouse/touch path to start a run. -->
-              <SendButton
-                class="absolute right-2 top-2"
-                title="Start (⏎)"
-                enabled={mayRun.current && !starting && !!question.trim() && !!agent}
-                onClick={() => void start()}
-              />
-            </div>
-            <KeyHint keys="⏎" label="start" visible={!!question.trim() && !!agent} class="self-end mb-3" />
+          <div class="rounded-md border border-line bg-surface px-2 py-1">
+            <Textarea
+              autoGrow
+              rows={1}
+              bind:value={question}
+              disabled={!mayRun.current}
+              placeholder={mayRun.current ? 'What should we find out?' : 'You don’t have permission to run research'}
+              class="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void start()
+                }
+              }}
+            />
+          </div>
+          <div class="mt-2 flex h-10 min-w-0 items-center gap-1.5">
             <ComposerPicker
               icon={Gauge}
               value={mode}
@@ -280,8 +272,15 @@
               }))}
             />
             {#if starting}
-              <span class="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
+              <span class="grid h-9 w-9 shrink-0 place-items-center"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
             {/if}
+            <KeyHint keys="⏎" label="start" visible={!!question.trim() && !!agent} />
+            <span class="flex-1"></span>
+            <SendButton
+              title="Start (⏎)"
+              enabled={mayRun.current && !starting && !!question.trim() && !!agent}
+              onClick={() => void start()}
+            />
           </div>
           {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
         </div>

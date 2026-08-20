@@ -170,6 +170,12 @@ export interface CatalogModel {
   /** The request parameters this model accepts — `tools`, `response_format`,
    *  `structured_outputs`, `web_search_options`, … Null when unpublished. */
   supportedParameters: string[] | null
+  /** The reasoning-effort levels this model accepts (`reasoning_effort`) —
+   *  `['low', 'medium', 'high']` and friends, exactly as the provider spells
+   *  them. Null when unpublished: most catalogs never describe parameters at
+   *  all, and a model with no list is a model nobody has vouched for, not a
+   *  model that was refused. The picker only appears for a non-empty list. */
+  efforts: string[] | null
   /** USD per token, as strings in the source; parsed to numbers per MILLION
    *  tokens to match how everything else in Talaria quotes a price. */
   pricing: { inPerMTok: number | null; outPerMTok: number | null } | null
@@ -191,6 +197,11 @@ interface RawCatalogEntry {
   max_context_length?: unknown
   architecture?: { input_modalities?: unknown; modality?: unknown }
   supported_parameters?: unknown
+  /** OpenRouter publishes the effort ladder here (and only here — the other
+   *  catalogs Talaria reads describe no parameters at all):
+   *    reasoning: { supported_efforts: ['low','medium','high'], default_effort: 'medium', … }
+   *  An empty or absent list means "not vouched for", never "cannot". */
+  reasoning?: { supported_efforts?: unknown }
   top_provider?: { context_length?: unknown }
   pricing?: { prompt?: unknown; completion?: unknown }
 }
@@ -217,12 +228,14 @@ function toCatalogModel(m: RawCatalogEntry, normalize: (id: string) => string): 
     (typeof m.architecture?.modality === 'string' ? (m.architecture.modality.split('->')[0]?.split('+').filter(Boolean) ?? null) : null)
   const inTok = num(m.pricing?.prompt)
   const outTok = num(m.pricing?.completion)
+  const efforts = strings(m.reasoning?.supported_efforts)
   return {
     id: normalize(id),
     name: m.name ?? null,
     contextLength: windowOf(m),
     inputModalities: modalities,
     supportedParameters: strings(m.supported_parameters),
+    efforts: efforts?.length ? efforts : null,
     pricing: inTok === null && outTok === null ? null : { inPerMTok: inTok === null ? null : inTok * 1e6, outPerMTok: outTok === null ? null : outTok * 1e6 },
   }
 }
@@ -235,7 +248,7 @@ export async function catalogModels(ep: LlmEndpoint): Promise<CatalogModel[]> {
   // Perplexity has no catalog API; its docs give ids and nothing else, so every
   // descriptive field is honestly null rather than guessed at.
   if (base.includes('api.perplexity.ai')) {
-    return (await perplexityModels()).map((id) => ({ id, name: null, contextLength: null, inputModalities: null, supportedParameters: null, pricing: null }))
+    return (await perplexityModels()).map((id) => ({ id, name: null, contextLength: null, inputModalities: null, supportedParameters: null, efforts: null, pricing: null }))
   }
   const keyEnv = ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null
   const key = await resolveEndpointKey(ep)

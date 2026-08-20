@@ -1,14 +1,15 @@
 <script lang="ts">
   // The composer's send affordance (Mercury, spec §7). Send is the gold 36×36
-  // tile that lives INSIDE the prompt well, top-right; Enter still sends
-  // everywhere and the KeyHint chip on the control rail says so. (Stop, its
+  // tile pinned to the END of the control rail — outside the prompt well;
+  // Enter still sends everywhere and the KeyHint chip says so. (Stop, its
   // streaming-time sibling, lives in StopButton.svelte.)
   import { ArrowUp } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
 
-  /** The gold submit tile: 36×36, radius 6, dark up-arrow on gold. Disabled
-   *  reads as a raised tile with a muted glyph (spec §7). */
+  /** The accent submit tile: 36×36, radius 6, dark up-arrow on gold. Disabled
+   *  stays in the accent family — a soft gold tile, never the grey raised
+   *  tile other chrome controls use. */
   let {
     onClick,
     enabled,
@@ -32,7 +33,7 @@
     'grid h-9 w-9 shrink-0 place-items-center rounded-md transition-colors',
     enabled
       ? 'bg-accent text-[color:var(--theme-bg)] hover:bg-[color:var(--theme-accent-secondary)]'
-      : 'border border-line bg-raised text-muted',
+      : 'border border-accent/40 bg-accent-soft text-accent',
     focusGold,
     className,
   )}

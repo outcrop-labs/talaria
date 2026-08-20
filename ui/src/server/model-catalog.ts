@@ -119,6 +119,64 @@ export async function advertisedWindow(model: string, deps?: Partial<CatalogDeps
   return windows.length ? Math.min(...windows) : null
 }
 
+/** Catalog entries for EXPLICIT endpoint:upstream pairs — the persona path.
+ *
+ *  A fleet persona id is not a catalog id, so it cannot be looked up the way
+ *  `catalogEntriesFor` looks one up. Its agent config names the exact targets
+ *  (`harness/persona.ts`), and this answers the catalog rows for those targets
+ *  and nothing else: the endpoint prefix-stripping in `catalogEntriesFor`
+ *  would be guessing at what the config already knows. */
+export async function catalogEntriesForTargets(
+  targets: ReadonlyArray<{ endpoint: string; model: string }>,
+  deps?: Partial<CatalogDeps>,
+): Promise<Array<{ endpoint: string; model: CatalogModel }>> {
+  const store = await withDeps(deps).read().catch((): CatalogStore => ({}))
+  const out: Array<{ endpoint: string; model: CatalogModel }> = []
+  for (const t of targets) {
+    const hit = store[t.endpoint]?.models.find((m) => m.id === t.model)
+    if (hit) out.push({ endpoint: t.endpoint, model: hit })
+  }
+  return out
+}
+
+// ── Reasoning effort ─────────────────────────────────────────────────────────
+
+/** The effort ladder's display order, weakest to strongest. Levels a provider
+ *  coins that this list does not know still show — appended after the known
+ *  ones, in the provider's own order — because the provider's spelling is the
+ *  contract and the picker must never rename a level into one the model
+ *  rejects. */
+export const EFFORT_ORDER: readonly string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+const orderedEfforts = (levels: Iterable<string>): string[] => {
+  const set = new Set(levels)
+  return [...EFFORT_ORDER.filter((l) => set.has(l)), ...[...set].filter((l) => !EFFORT_ORDER.includes(l))]
+}
+
+/** THE EFFORT LEVELS A POOL AGREES ON.
+ *
+ *  Same posture as `advertisedWindow`'s minimum: a bare id (and a persona
+ *  behind fallbacks) can land on any member of the pool, so a level is only
+ *  offered when every member that speaks at all accepts it. Members that say
+ *  nothing do not veto — UNKNOWN IS NOT FALSE — they are skipped, exactly as
+ *  an endpoint without a published window does not shrink the minimum. An
+ *  empty answer means "nobody vouched for any level" and the picker stays
+ *  hidden, which is the honest rendering of an unmeasured model. */
+export function effortLevelsOf(entries: ReadonlyArray<{ endpoint: string; model: CatalogModel }>): string[] {
+  const lists = entries.map((e) => e.model.efforts).filter((l): l is string[] => Array.isArray(l) && l.length > 0)
+  if (lists.length === 0) return []
+  const [first, ...rest] = lists
+  const shared = rest.reduce((acc, l) => new Set([...acc].filter((x) => l.includes(x))), new Set(first))
+  return orderedEfforts(shared)
+}
+
+/** The effort levels a CATALOG model id may be asked for, across every
+ *  endpoint that serves it. Persona ids resolve one level up, in
+ *  `model-efforts.ts` — this is the catalog-only half. */
+export async function effortsFor(model: string, deps?: Partial<CatalogDeps>): Promise<string[]> {
+  return effortLevelsOf(await catalogEntriesFor(model, deps))
+}
+
 // ── Deriving capabilities ────────────────────────────────────────────────────
 
 /** Which advertised parameter proves which capability. Only entries whose

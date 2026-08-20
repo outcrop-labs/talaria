@@ -13,6 +13,10 @@ const Body = z.object({
   delegateModel: z.string().max(300).nullable().optional(),
   responseModel: z.string().max(300).nullable().optional(),
   mode: z.enum(['normal', 'fast', 'plan']).default('normal'),
+  /** Reasoning effort for the reply, from the levels the answering model's
+   *  metadata vouches for; omitted = the model's default. Validated server-side
+   *  against the same metadata the composer's picker lists. */
+  effort: z.string().max(24).nullable().optional(),
   attachmentIds: z.array(z.string().uuid()).max(12).default([]),
   refs: z.array(z.object({
     type: z.enum(['kb-doc', 'artifact']),
@@ -39,6 +43,7 @@ export const Route = defineApi('/api/inbox/focus/command', {
             delegateModel: body.delegateModel,
             responseModel: body.responseModel,
             mode: body.mode,
+            effort: body.effort ?? null,
             attachmentIds: body.attachmentIds,
             refs: body.refs,
             signal: request.signal,
