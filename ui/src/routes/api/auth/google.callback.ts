@@ -1,5 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
+import { googleLoginEnabled } from '@/server/google/client-config'
 import { exchangeGoogleCode, googleRedirectUri } from '@/server/auth/google'
 import {
   clearStateCookie,
@@ -25,7 +26,7 @@ function loginError(reason: string): Response {
 export const Route = defineApi('/api/auth/google/callback', {
   GET: async ({ request }) => {
     const cfg = getAuthConfig()
-    if (!cfg.google.enabled) return loginError('google_disabled')
+    if (!(await googleLoginEnabled())) return loginError('google_disabled')
 
     const url = new URL(request.url)
     const code = url.searchParams.get('code')

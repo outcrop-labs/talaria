@@ -11,9 +11,9 @@ export const Route = defineApi('/api/integrations/google/org/connect', {
     const user = await getSessionUser(request)
     if (!user) return new Response(null, { status: 302, headers: { Location: '/login' } })
     if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-    if (!googleIntegrationEnabled()) return json({ error: 'Google integration is not configured' }, { status: 400 })
+    if (!(await googleIntegrationEnabled())) return json({ error: 'Google integration is not configured' }, { status: 400 })
     const state = randomToken()
-    const url = googleConnectUrl(googleOrgConnectRedirectUri(request), state)
+    const url = await googleConnectUrl(googleOrgConnectRedirectUri(request), state)
     return new Response(null, { status: 302, headers: { Location: url, 'Set-Cookie': stateCookie(state) } })
   },
 })

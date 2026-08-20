@@ -5,8 +5,8 @@
 // prompt=consent → a refresh token we store encrypted). Separate redirect URI so
 // the two flows never cross-wire.
 
-import { getAuthConfig } from '../auth/config'
 import { resolveOrigin } from '../auth/google'
+import { resolveGoogleClient, type GoogleClient } from './client-config'
 import { saveConnection } from './connections'
 import { saveOrgConnection } from './org-connection'
 
@@ -30,9 +30,10 @@ export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
 ]
 
-/** Whether the Google integration can run at all (same client as login). */
-export function googleIntegrationEnabled(): boolean {
-  return getAuthConfig().google.enabled
+/** Whether the Google integration can run at all — an OAuth client exists,
+ *  from the Admin UI record or the env fallback (same client as login). */
+export async function googleIntegrationEnabled(): Promise<boolean> {
+  return !!(await resolveGoogleClient())
 }
 
 export const googleConnectRedirectUri = (request: Request) =>
@@ -41,8 +42,8 @@ export const googleConnectRedirectUri = (request: Request) =>
 export const googleOrgConnectRedirectUri = (request: Request) =>
   `${resolveOrigin(request)}/api/integrations/google/org/callback`
 
-export function googleConnectUrl(redirectUri: string, state: string): string {
-  const cfg = getAuthConfig().google
+export async function googleConnectUrl(redirectUri: string, state: string): Promise<string> {
+  const cfg = (await resolveGoogleClient())!
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: redirectUri,
@@ -71,9 +72,10 @@ interface ExchangedTokens {
 }
 
 /** Exchange an auth code for tokens + the Google identity. Shared by the
- *  per-user and org connect flows. */
+ *  per-user and org connect flows. Throws when no client is configured —
+ *  callers gate on `googleIntegrationEnabled` first. */
 async function exchangeConnectCode(code: string, redirectUri: string): Promise<{ tokens: ExchangedTokens; info: UserInfo }> {
-  const cfg = getAuthConfig().google
+  const cfg = (await resolveGoogleClient()) as GoogleClient
   const tokenRes = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
