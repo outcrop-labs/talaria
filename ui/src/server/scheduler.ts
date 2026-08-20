@@ -104,6 +104,11 @@ export type JobName =
   // server/daily-brief.ts — opens each person's brief before their workday and
   // follows it for the rest of the day.
   | 'daily-brief'
+  // server/mcp-library.ts — keeps the MCP marketplace's featured shelf warm
+  // so its first paint is a cache read, not a registry fan-out. NOT in
+  // REQUIRED_JOBS: its failure mode is a slower first marketplace load (the
+  // request path resolves on demand), not work that silently never happens.
+  | 'mcp-library-refresh'
 
 const REQUIRED_JOBS: JobName[] = [
   'comms-decay',
