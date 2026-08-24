@@ -112,6 +112,8 @@ export interface AgendaEvent {
   htmlLink: string | null
 }
 
+export { groupAgendaByDay, formatAgendaTime } from '@/lib/agenda'
+
 // The user's Google connection status — one cheap 200 up front (cache shared
 // with Settings via the query key) so the agenda/mail panels never fire the
 // data requests that answer 409 for the unconnected.
@@ -145,13 +147,6 @@ export const useAgenda = (enabled: () => boolean) =>
     retry: false,
     refetchInterval: 5 * 60_000,
   }))
-
-export function formatWhen(e: AgendaEvent): string {
-  if (!e.start) return ''
-  const d = new Date(e.start)
-  if (e.allDay) return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ' · all day'
-  return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-}
 
 export interface Mail {
   id: string
