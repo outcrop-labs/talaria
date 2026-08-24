@@ -92,16 +92,23 @@ AUTH_SECRET=<random, ≥32 bytes>        # also encrypts stored tokens
 # TALARIA_SECRET_KEY=<override>         # optional: separate key for secretbox
 ```
 
-In the **Google Cloud console** for that OAuth client, register **both** redirect
-URIs (login + connect):
+In the **Google Cloud console** for that OAuth client, register **all three**
+redirect URIs (login + per-user connect + org connect):
 
 ```
 <public-url>/api/auth/google/callback
 <public-url>/api/integrations/google/callback
+<public-url>/api/integrations/google/org/callback
 ```
 
-and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**.
-Add the `drive.file`, `drive.readonly`, `calendar.events`, `gmail.readonly`, and
+The Admin → Google Workspace · OAuth client panel lists these with the actual
+origin — copy them from there rather than by hand.
+
+and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**
+(listed with console links under Admin → Google Workspace · OAuth client;
+**Test** next to the connected org account probes all three live — consent
+succeeds even with the APIs off, so the probe is how you find out). Add the
+`drive.file`, `drive.readonly`, `calendar.events`, `gmail.readonly`, and
 `gmail.send` scopes to the consent screen. `drive.file` is not restricted;
 `drive.readonly` / `calendar.events` are sensitive; `gmail.*` are restricted.
 For an **Internal** (Workspace-only) OAuth app none of these need a verification
