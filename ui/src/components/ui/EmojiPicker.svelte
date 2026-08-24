@@ -98,7 +98,7 @@
 {#snippet grid(entries: EmojiEntry[])}
   <div class="grid grid-cols-8 gap-0.5" use:listStagger>
     {#each entries as e (e.id)}
-      <button type="button" title={e.name} onclick={() => onPick(e.native)} class="grid h-8 place-items-center rounded-md text-lg transition-colors dither-fill">
+      <button type="button" title={e.name} onclick={() => onPick(e.native)} class="grid h-8 select-none place-items-center rounded-md text-lg transition-colors dither-fill">
         {e.native}
       </button>
     {/each}

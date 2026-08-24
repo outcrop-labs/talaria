@@ -33,9 +33,8 @@
 //   caller rather than resolving a pin. Giving them `pin: 'briefer'` would
 //   invent an assignment slot the product deliberately does not offer.
 //
-//   'briefer' also now HAS harnesses ('briefer:brief', 'briefer:chat'); they
-//   simply declare no pin, for the reason above. That is a change from the
-//   sentence this header carried through phase 2, when the briefer had none.
+//   'briefer' also HAS harnesses (the daily-brief family); they simply declare
+//   no pin, for the reason above.
 //
 //   THE CALLER-PINNED HARNESSES have no platform-agent entry, for the same
 //   reason from the other side: there is nothing for an admin to assign,
@@ -71,9 +70,6 @@ import type { PlatformAgentId } from '../platform-agents'
 import { blurbWriterHarness } from './defs/blurb-writer'
 import {
   assistantReplyHarness,
-  briefingChatHarness,
-  briefingHarness,
-  dailyBriefChatHarness,
   dailyBriefLedeHarness,
   dailyBriefNoteHarness,
 } from './defs/briefer'
@@ -184,19 +180,15 @@ const BUILTINS: RegisteredHarness[] = [
   register(museDraftHarness, 'builtin'),
   register(judgeHarness, 'builtin'),
   // ── The model comes from the subject of the call ───────────────────────────
-  // The owner's own personal assistant: the Inbox trio and the two briefer
-  // surfaces.
+  // The owner's own personal assistant: the Inbox trio and the daily brief.
   register(inboxBriefHarness, 'builtin'),
   register(inboxCommandHarness, 'builtin'),
   register(inboxReplyHarness, 'builtin'),
-  register(briefingHarness, 'builtin'),
-  register(briefingChatHarness, 'builtin'),
   // The daily brief's two writers. Same agent and the same unassignable model
-  // rule as the pair above; different contract, because what these write is
+  // rule as the trio above; different contract, because what these write is
   // appended permanently rather than replaced on the next fingerprint.
   register(dailyBriefLedeHarness, 'builtin'),
   register(dailyBriefNoteHarness, 'builtin'),
-  register(dailyBriefChatHarness, 'builtin'),
   // The sharpest of the family: this one writes to somebody OTHER than the
   // owner, in their name. Same unassignable model rule, and the reason is
   // strongest here.

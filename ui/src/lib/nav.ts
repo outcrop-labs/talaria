@@ -12,7 +12,6 @@ import {
   CalendarRange,
   Cpu,
   FileBox,
-  FolderSearch,
   Hexagon,
   Inbox,
   LayoutGrid,
@@ -20,6 +19,7 @@ import {
   MessageCircle,
   PlugZap,
   Settings2,
+  Telescope,
 } from '@lucide/svelte'
 
 export interface NavItem {
@@ -76,7 +76,7 @@ export const NAV: NavSection[] = [
       { to: '/comms', label: 'Comms', icon: MessageCircle },
       { to: '/plan', label: 'Plan', icon: CalendarRange },
       { to: '/boards', label: 'Boards', icon: LayoutGrid },
-      { to: '/research', label: 'Research', icon: FolderSearch },
+      { to: '/research', label: 'Research', icon: Telescope },
       { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { to: '/artifacts', label: 'Files', icon: FileBox },
     ],

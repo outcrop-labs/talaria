@@ -46,7 +46,7 @@ failure behavior — it *declares* them, and `runHarness` honors the declaration
 | `server/harness/capability.ts` | What a model can actually do, and who says so. |
 | `server/harness/transport.ts` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
 | `server/harness/registry.ts` | The 23 shipped harnesses, merged builtin < app-shipped < admin-custom. |
-| `server/harness/defs/*.ts` | The definitions themselves — 38 harnesses, 353 eval fixtures. |
+| `server/harness/defs/*.ts` | The definitions themselves — 35 harnesses, 328 eval fixtures. |
 | `server/harness/recorded.ts` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 
 **One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a call to
@@ -245,7 +245,7 @@ Two sharp edges, both locked by `registry.test.ts`:
   bad. That is what put the judge on `zero_tool_claim` and `fabricated_outage` — rules structurally
   wrong for a verdict, which *describes* claimed work rather than doing any — and inflated
   `guard_findings.model`, the per-model confabulation rate the fitness page reads, for whichever
-  model the admin had chosen to judge with. All 38 harnesses name their rules. A harness that
+  model the admin had chosen to judge with. All 35 harnesses name their rules. A harness that
   genuinely wants all of them says so by listing them.
 
 Redaction runs on the raw reply and then **re-applies the whole contract, `verify` included**, so a
@@ -258,7 +258,7 @@ to validate would be the worst of both.
 `{ requires: Capability[]; note: string }`. Set it and `render` is called with `widened: true` only
 when every capability listed is **known-true from a probe** for the resolved model. Both branches
 must be real answers: `widened: false` is the product working, not a degraded mode with an apology in
-it. Twelve of the 38 harnesses widen; the titler deliberately does not, because a wider prompt would
+it. Eleven of the 35 harnesses widen; the titler deliberately does not, because a wider prompt would
 only buy a longer name.
 
 ### `ground`
@@ -605,8 +605,8 @@ coin flip. Aim for **8–12 fixtures per harness**, spread across the bands.
 
 ### The dry run — measuring what a model DID, not what it said
 
-Three harnesses declare `tools: 'own'` because the tool loop *is* the feature (`work-session`,
-`outreach:check-in`, `briefer:chat`), and three more are coding harnesses (`workbench:*`). For those,
+Harnesses declare `tools: 'own'` when the tool loop *is* the feature (`work-session`,
+`outreach:check-in`), and three more are coding harnesses (`workbench:*`). For those,
 "did it *say* it triaged the ticket" is the wrong question; the failure that costs an org a week is a
 model that says so having called nothing.
 
@@ -754,10 +754,10 @@ A verdict is produced for **all twenty**; the matrix draws a **column for the fi
 reach** (`slotViews`). The five it drops are `unbound` for every model forever, and they were dead for
 two different reasons that the one "reserved" chip flattened: four are reserved *roles* whose surfaces
 do not exist yet (vision, image-generation, embedding, reranker), and the fifth is the **briefer**,
-which is not reserved at all — it ships, it runs every Inbox and console briefing, and its model is
-fixed by design because a briefing reads one person's own views and answers in their own assistant's
-voice. Its harnesses take their model from the subject of the call, so they are scored under
-`FitnessReport.unbound` and shown there in the model's report. Scoring is unchanged and
+which is not reserved at all — it ships, it writes the daily brief every morning and follows it all
+day, and its model is fixed by design because a brief reads one person's own views and answers in
+their own assistant's voice. Its harnesses take their model from the subject of the call, so they are
+scored under `FitnessReport.unbound` and shown there in the model's report. Scoring is unchanged and
 `roleAssignmentIssues` still warns an admin who points a blind model at the reserved vision role.
 
 `ready` / `workable` / `unfit`, plus `untested` (nothing measured this) and `unbound` (no harness

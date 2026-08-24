@@ -1,149 +1,202 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Chip from '@/components/ui/Chip.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import Select from '@/components/ui/Select.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
+  import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import { getJson } from '@/lib/fetch-json'
-  import { slide } from '@/lib/motion'
-  import CapabilityTags from '@/components/models/CapabilityTags.svelte'
-  import { assignmentNotice } from '@/components/models/fitness'
-  import { useModelCapabilities } from '@/components/models/fitness-queries'
+  import CategoryDetail from '@/components/models/CategoryDetail.svelte'
+  import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
 
-  // ── Model Roles — which model handles each class of activity ────────────────
-  interface ModelRoleRow {
-    role: string
-    label: string
-    hint: string
-    wired: boolean
-  }
-  /** Audit 1.6: a role assignment whose model is KNOWN not to be able to do the
-   *  work. The server sends only real gaps — an unprobed model produces
-   *  nothing, because unknown is not a lack — so anything here is worth a line
-   *  of the admin's attention. */
-  interface RoleIssue {
-    role: string
-    model: string
-    missing: string[]
-    note: string
-  }
+  // ── Roles & workers — which model runs what ────────────────────────────────
+  // Two catalogs, one question. The old Platform tab answered it for
+  // Talaria's own named workers in a stacked panel while this tab answered it
+  // for activity classes in a library — two layouts for one act, so the
+  // workers joined the library. Both PUT endpoints survive unchanged; this
+  // pane only merges the ASK (and dispatches each save back to the route that
+  // owns its validation).
   type ModelRolesData = {
     roles: ModelRoleRow[]
     assignments: Record<string, string>
     models: string[]
     issues: RoleIssue[]
+    /** Per-role reasoning-effort preference (null = the model's own default). */
+    efforts: Record<string, string | null>
+  }
+  type PlatformAgentsData = {
+    agents: PlatformAgentRow[]
+    assignments: Record<string, string>
+    models: string[]
+    /** Per-agent reasoning-effort preference (null = the model's default). */
+    efforts: Record<string, string | null>
   }
 
   const qc = useQueryClient()
-  const query = createQuery(() => ({
+  const rolesQuery = createQuery(() => ({
     queryKey: ['model-roles'],
     queryFn: (): Promise<ModelRolesData> => getJson<ModelRolesData>('/api/admin/model-roles'),
   }))
-  const noteFor = $derived(new Map((query.data?.issues ?? []).map((i) => [i.role, i.note])))
-  // Capability facts (the tags) and the last fitness run's per-slot bands (the
-  // warning). `issues` above is the server's capability half — a capability
-  // recorded FALSE. This adds the run half: a slot this model TESTED unfit for.
-  // Both are advisory and neither blocks; see `assignmentNotice`.
-  const capsQuery = useModelCapabilities()
-  const rowFor = (model: string | undefined) => capsQuery.data?.models.find((m) => m.id === model)
-  const noticeFor = (role: string, model: string | undefined) =>
-    model
-      ? assignmentNotice({
-          entry: capsQuery.data?.index[model],
-          slotKey: `role:${role}`,
-          capabilityNote: noteFor.get(role) ?? null,
-        })
-      : null
-  const assign = async (role: string, model: string | null) => {
-    await fetch('/api/admin/model-roles', {
+  const agentsQuery = createQuery(() => ({
+    queryKey: ['platform-agents'],
+    queryFn: (): Promise<PlatformAgentsData> => getJson<PlatformAgentsData>('/api/admin/platform-agents'),
+  }))
+
+  // Both catalogs into one list of slots, each with a kind-prefixed id.
+  const slots = $derived.by(() => {
+    const out: Slot[] = []
+    for (const r of rolesQuery.data?.roles ?? []) out.push({ kind: 'role', id: `role:${r.role}`, row: r })
+    for (const a of agentsQuery.data?.agents ?? []) out.push({ kind: 'agent', id: `agent:${a.id}`, row: a })
+    return out
+  })
+  const assignmentOf = (s: Slot) =>
+    s.kind === 'role' ? rolesQuery.data?.assignments[s.row.role] : agentsQuery.data?.assignments[s.row.id]
+  const effortOf = (s: Slot) =>
+    (s.kind === 'role'
+      ? rolesQuery.data?.efforts?.[s.row.role]
+      : agentsQuery.data?.efforts?.[s.row.id]) ?? null
+
+  // THE MENU IS THE CATEGORIES. Every setting in both catalogs files under
+  // exactly one, and a category's members share the fallback chain its blurb
+  // names — Chores rides the Utility chain (Utility at its head), Writing is
+  // the Muse family, Oversight stands alone on pl-main — so the grouping
+  // doubles as the resolution map. Anything a later build adds to either
+  // catalog without a home here lands in Other rather than silently
+  // vanishing from the menu.
+  const CATEGORIES: Array<{ id: string; label: string; blurb: string; ids: string[] }> = [
+    {
+      id: 'research',
+      label: 'Research',
+      blurb: 'The search stages behind every research run. Each stage needs a web-search-capable model — without live search a model answers from memory and the citations come out invented.',
+      ids: ['role:research-recon', 'role:research-brief', 'role:research-expedition'],
+    },
+    {
+      id: 'workbench',
+      label: 'Workbench',
+      blurb: 'The coding harness’s effort ladder. Agents pick the effort; these settings pick the model that runs it.',
+      ids: ['role:code-light', 'role:code-standard', 'role:code-heavy'],
+    },
+    {
+      id: 'chores',
+      label: 'Chores',
+      blurb: 'The platform’s background upkeep — blurbs, titles, gists, digests. Everything here falls back to the Utility chain, so Utility is the one pick that moves them all.',
+      ids: ['role:utility', 'agent:blurb-writer', 'agent:titler', 'agent:summarizer', 'agent:librarian'],
+    },
+    {
+      id: 'writing',
+      label: 'Writing',
+      blurb: 'The Muse family — drafting and distillation that follows the requesting user’s muse, else the Utility chain.',
+      ids: ['agent:muse', 'agent:distiller', 'agent:concluder', 'agent:briefer'],
+    },
+    {
+      id: 'oversight',
+      label: 'Oversight',
+      blurb: 'Judging agents’ reported ticket outcomes against the ask — verdicts and findings on boards with judging on.',
+      ids: ['agent:judge'],
+    },
+    {
+      id: 'reserved',
+      label: 'Reserved',
+      blurb: 'Slots for surfaces that haven’t landed yet. Assign now — the pick takes effect the day the surface does.',
+      ids: ['role:vision', 'role:image-generation', 'role:embedding', 'role:reranker'],
+    },
+  ]
+  const categories = $derived.by(() => {
+    const known = new Set(CATEGORIES.flatMap((c) => c.ids))
+    const out = CATEGORIES.map(({ ids, ...c }) => ({ ...c, slots: slots.filter((s) => ids.includes(s.id)) })).filter(
+      (c) => c.slots.length > 0,
+    )
+    const other = slots.filter((s) => !known.has(s.id))
+    if (other.length)
+      out.push({ id: 'other', label: 'Other', blurb: 'Settings that arrived after this view’s map was written.', slots: other })
+    return out
+  })
+
+  // A fixed menu, not a user library: the categories are known, so the view
+  // opens ON one rather than on a nothing-selected zero state.
+  let selectedId = $state<string | null>(null)
+  $effect(() => {
+    if (selectedId || categories.length === 0) return
+    selectedId = categories[0]!.id
+  })
+  const selected = $derived(categories.find((c) => c.id === selectedId) ?? null)
+
+  // One act, two endpoints: each route treats absent fields as "leave it
+  // alone", so a model save and an effort save are the same PUT either way.
+  // The refetch is what surfaces the unfit warning for a pick just made —
+  // nothing blocks or reverts; the admin is told and the choice stands.
+  const save = async (slot: Slot, patch: { model?: string | null; effort?: string | null }) => {
+    await fetch(slot.kind === 'role' ? '/api/admin/model-roles' : '/api/admin/platform-agents', {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ role, model }),
+      body: JSON.stringify(slot.kind === 'role' ? { role: slot.row.role, ...patch } : { id: slot.row.id, ...patch }),
     })
-    // The refetch is what surfaces the unfit warning for the pick just made.
-    // Nothing here blocks or reverts the assignment: the admin is told, and the
-    // choice stands. They may know something the capability probe does not.
     await qc.invalidateQueries({ queryKey: ['model-roles'] })
+    await qc.invalidateQueries({ queryKey: ['platform-agents'] })
   }
+
+  // The row's second line: the category's members' live states, in order —
+  // the whole fleet still reads from the menu without clicking in.
+  const sublineOf = (c: { slots: Slot[] }) => c.slots.map((s) => slotState(s, assignmentOf(s))).join(' · ')
+
+  // Both reads green or neither has data — one load-failed state for the
+  // pane, not two competing banners.
+  const loadFailed = $derived((rolesQuery.isError && !rolesQuery.data) || (agentsQuery.isError && !agentsQuery.data))
 </script>
 
-{#if !query.data}
-  <!-- Card skeleton matching the resolved layout: title bar + label/select rows
-       — but only while it is genuinely still loading. -->
-  <Panel>
-    {#if query.isError}
-      <QueryError
-        variant="compact"
-        error={query.error}
-        title="Could not load model roles"
-        onRetry={() => void query.refetch()}
+<!-- Templates' pane height minus this view's ViewHeader row and its gap —
+     the one structural difference between the two shells. -->
+<div class="h-[calc(100vh-20.5rem)] min-h-[26rem]">
+  <LibraryPane
+    title="Roles & workers"
+    groups={[{ items: categories }]}
+    idOf={(c: (typeof categories)[number]) => c.id}
+    labelOf={(c: (typeof categories)[number]) => c.label}
+    selectedId={selected?.id ?? null}
+    onSelect={(c: (typeof categories)[number]) => (selectedId = c.id)}
+    pending={rolesQuery.isPending || agentsQuery.isPending}
+    notice={loadFailed
+      ? {
+          error: rolesQuery.error ?? agentsQuery.error,
+          title: 'Could not load the slot catalogs',
+          onRetry: () => {
+            void rolesQuery.refetch()
+            void agentsQuery.refetch()
+          },
+          variant: 'compact',
+        }
+      : null}
+    listWidth="w-72"
+    class="h-full"
+  >
+    {#snippet row(c: (typeof categories)[number])}
+      <span class="block truncate">{c.label}</span>
+      <!-- The members' live states as the row's second line — the fleet's
+           state at a glance, which is what a library list is for. -->
+      <span class="block truncate font-mono text-[10px] text-ink-dim">{sublineOf(c)}</span>
+    {/snippet}
+
+    {#snippet empty()}
+      <EmptyState
+        icon="▤"
+        title="Nothing selected"
+        hint={loadFailed ? 'The slot catalogs could not be loaded — retry on the left.' : 'Pick a category on the left to set its models.'}
       />
-    {:else}
-      <Skeleton class="mb-4 h-4 w-24 rounded-full" />
-      <div class="space-y-4">
-        {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
-          <div class="flex items-center gap-3">
-            <div class="min-w-0 flex-1 space-y-1.5">
-              <Skeleton class="h-3 w-40 rounded-full" />
-              <Skeleton class="h-2.5 w-64 rounded-full" />
-            </div>
-            <Skeleton class="h-8 w-56 shrink-0" />
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </Panel>
-{:else}
-  {@const data = query.data}
-  <Panel>
-    <SectionHeader
-      title="Model roles"
-      info="Which model handles each class of activity. Unset = auto (a sensible pick from what's registered). Agents' own brains are configured per agent and unaffected."
-    />
-    <ul class="divide-y divide-line">
-      {#each data.roles as r (r.role)}
-        {@const assigned = data.assignments[r.role]}
-        {@const notice = noticeFor(r.role, assigned)}
-        <li class="py-2.5">
-          <div class="flex items-center gap-3">
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2 font-sans text-sm text-fg">
-                {r.label}
-                {#if !r.wired}<Chip title="This slot takes effect when its surface lands.">reserved</Chip>{/if}
-                <!-- No `title` here on purpose: the sentence is already visible
-                     below the row, and a tooltip repeating it is noise. -->
-                {#if notice}<Chip tone="warn">unfit</Chip>{/if}
-              </div>
-              <div class="font-sans text-xs text-muted">{r.hint}</div>
-              <!-- What is KNOWN about the model actually assigned here. Three
-                   states: measured yes, measured no, never measured — and the
-                   third is not the second. -->
-              <CapabilityTags class="mt-1" row={rowFor(assigned)} />
-            </div>
-            <Select
-              size="sm"
-              class="w-56 shrink-0"
-              value={data.assignments[r.role] ?? ''}
-              onchange={(e) => void assign(r.role, e.currentTarget.value || null)}
-            >
-              <option value="">Auto</option>
-              {#each data.models as m (m)}
-                <option value={m}>
-                  {m}
-                </option>
-              {/each}
-            </Select>
-          </div>
-          <!-- The notice row: a sentence, not a validation error. It appears
-               under the row it belongs to and leaves the Select untouched. -->
-          {#if notice}
-            <p transition:slide={{ duration: 150 }} class="mt-1.5 max-w-prose font-sans text-xs text-warning">{notice.text}</p>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  </Panel>
-{/if}
+    {/snippet}
+
+    {#snippet detail()}
+      {#if selected}
+        {#key selected.id}
+          <CategoryDetail
+            label={selected.label}
+            blurb={selected.blurb}
+            slots={selected.slots}
+            models={rolesQuery.data?.models ?? agentsQuery.data?.models ?? []}
+            issues={rolesQuery.data?.issues ?? []}
+            {assignmentOf}
+            {effortOf}
+            onSave={(slot, patch) => void save(slot, patch)}
+          />
+        {/key}
+      {/if}
+    {/snippet}
+  </LibraryPane>
+</div>

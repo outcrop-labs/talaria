@@ -257,12 +257,67 @@ export async function channelItems(userId: string, sourceId?: string): Promise<R
   })
 }
 
+// A brief/queue line exists to be FOLLOWED — "a brief that names a blocked
+// ticket and cannot open it is a newsletter". A notification with no href has
+// nowhere to go (a fact-level approval announcement, deliberately linkless),
+// and a notification whose link points at a board or channel the reader is
+// not a member of is a line about somebody else's resource. Either way the
+// reader cannot act on it from their own list, so it never enters: the row
+// stays in the bell, where being informed without being able to click through
+// is the honest shape.
+const BOARD_HREF = /^\/boards\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+const CHANNEL_HREF = /^\/comms\/channel\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+
+/** Which of these notification hrefs lead somewhere THE READER may go.
+ *
+ *  Resource-shaped hrefs — the two shapes the product's own notification
+ *  writers emit — are checked against the same membership predicates the task
+ *  and comms sources use (board: member or team; channel: member, not
+ *  archived), so a notification about a ticket on a board the reader was
+ *  removed from cannot re-enter their list as a line that 403s when opened.
+ *  Every other href — app surfaces like /research — passes: it is linkable,
+ *  and its accessibility is the surface's own route rule, not a membership. */
+async function accessibleNotificationHrefs(userId: string, hrefs: readonly string[]): Promise<Set<string>> {
+  const boardIds = [...new Set(hrefs.map((h) => BOARD_HREF.exec(h)?.[1]).filter((v): v is string => !!v))]
+  const channelIds = [...new Set(hrefs.map((h) => CHANNEL_HREF.exec(h)?.[1]).filter((v): v is string => !!v))]
+  const sql = await db()
+  const [boardRows, channelRows] = await Promise.all([
+    boardIds.length
+      ? (sql`
+          select distinct b.id::text as id from boards b
+          left join board_members m on m.board_id = b.id and m.user_id = ${userId}
+          left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
+          where b.id = any(${boardIds}::uuid[]) and b.archived_at is null and (m.user_id is not null or tm.user_id is not null)
+        ` as unknown as Promise<Array<{ id: string }>>)
+      : Promise.resolve([] as Array<{ id: string }>),
+    channelIds.length
+      ? (sql`
+          select distinct c.id::text as id from channels c
+          join channel_members m on m.channel_id = c.id and m.user_id = ${userId}
+          where c.id = any(${channelIds}::uuid[]) and c.archived_at is null
+        ` as unknown as Promise<Array<{ id: string }>>)
+      : Promise.resolve([] as Array<{ id: string }>),
+  ])
+  const boards = new Set(boardRows.map((r) => r.id))
+  const channels = new Set(channelRows.map((r) => r.id))
+  return new Set(
+    hrefs.filter((h) => {
+      const board = BOARD_HREF.exec(h)?.[1]
+      if (board) return boards.has(board)
+      const channel = CHANNEL_HREF.exec(h)?.[1]
+      if (channel) return channels.has(channel)
+      return true
+    }),
+  )
+}
+
 export async function notificationItems(userId: string, sourceId?: string): Promise<RawFocusItem[]> {
   const sql = await db()
   const rows = (await sql`
     select id, kind, title, body, href, created_at as "createdAt"
     from notifications
     where user_id = ${userId} and read_at is null and kind = any(${[...ACTIONABLE_NOTIFICATION_KINDS]})
+      and coalesce(href, '') not in ('', '/')
       and (${sourceId ?? null}::text is null or id::text = ${sourceId ?? null})
     order by created_at asc limit 200
   `) as unknown as Array<{
@@ -274,8 +329,14 @@ export async function notificationItems(userId: string, sourceId?: string): Prom
     createdAt: string
   }>
 
-  return rows.map((row) => {
-    const direct = ['mention', 'dm', 'agent-outreach'].includes(row.kind)
+  // ACCESSIBILITY, not just linkability: a row whose href leads to a resource
+  // this reader is not on is about somebody else's work, and a list they
+  // cannot act from is where it must not appear.
+  const accessible = await accessibleNotificationHrefs(userId, rows.map((r) => r.href))
+  return rows
+    .filter((row) => accessible.has(row.href))
+    .map((row) => {
+      const direct = ['mention', 'dm', 'agent-outreach'].includes(row.kind)
     const bucket = direct ? 2 : 5
     const base: Omit<RawFocusItem, 'sourceFingerprint'> = {
       key: keyOf('notification', row.id),

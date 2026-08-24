@@ -36,7 +36,7 @@
         // lives on the mark span below, because that is the element that
         // slides between cells — putting it here made the tile glide while
         // the texture popped out of one cell and into the next.
-        'relative flex h-7 items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+        'relative flex h-7 select-none items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
         focusGold,
         'dither-fill',
         value === t.id ? 'text-fg' : 'text-muted hover:text-fg',

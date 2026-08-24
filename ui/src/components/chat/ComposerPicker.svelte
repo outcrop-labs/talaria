@@ -23,6 +23,7 @@
     onChange,
     title,
     menuLabel,
+    placement = 'top',
     class: className,
   }: {
     icon: IconType
@@ -31,12 +32,17 @@
     onChange: (v: string) => void
     title: string
     menuLabel: string
+    /** Which side of the trigger the popover anchors to. Composers sit at
+     *  the bottom of their surface, so they open UP ('top'); a picker living
+     *  in a header at the top of a stage opens DOWN, or the panel would fly
+     *  off-screen. */
+    placement?: 'top' | 'bottom'
     class?: string
   } = $props()
 
   let open = $state(false)
   let q = $state('')
-  let pos = $state<{ left: number; bottom: number } | null>(null)
+  let pos = $state<{ left: number; top?: number; bottom?: number } | null>(null)
   let btnRef = $state<HTMLButtonElement | null>(null)
   let panelRef = $state<HTMLDivElement | null>(null)
 
@@ -44,7 +50,11 @@
     if (!open) return
     const place = () => {
       const r = btnRef?.getBoundingClientRect()
-      if (r) pos = { left: r.left, bottom: window.innerHeight - r.top + 6 }
+      if (!r) return
+      pos =
+        placement === 'top'
+          ? { left: r.left, bottom: window.innerHeight - r.top + 6 }
+          : { left: r.left, top: r.bottom + 6 }
     }
     place()
     const onDoc = (e: MouseEvent) => {
@@ -89,7 +99,8 @@
     out:fade={QUICK}
     class={cn(popPanel, 'fixed z-[60] min-w-56 overflow-hidden')}
     style:left="{pos.left}px"
-    style:bottom="{pos.bottom}px"
+    style:top={pos.top !== undefined ? `${pos.top}px` : undefined}
+    style:bottom={pos.bottom !== undefined ? `${pos.bottom}px` : undefined}
   >
     <PopSearch value={q} onChange={(v) => (q = v)} placeholder={`Search ${menuLabel.toLowerCase()}`} />
     <div class={popHeader}>{menuLabel}</div>

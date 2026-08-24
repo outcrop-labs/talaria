@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { CalendarClock, Sparkles } from '@lucide/svelte'
+  import { CalendarClock, PenLine, Sparkles } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { navigate } from '@/router'
   import type { BriefAbsent } from './daily-brief.svelte'
 
@@ -10,9 +11,15 @@
    *
    * THREE ABSENCES, THREE RENDERINGS, which is the empty-≠-broken rule applied
    * to a surface where the distinction is unusually load-bearing. "Your brief
-   * opens at 07:00" and "your brief did not get written" look identical if you
-   * collapse them, and the second one is a bug report the person will never
-   * file because the screen told them everything was fine.
+   * opens at 07:00", "you have no assistant" and "it is being written right
+   * now" look identical if you collapse them, and the first two are states to
+   * read while the third is a state to wait through.
+   *
+   * There is deliberately no fourth state for "the scheduled run missed and
+   * nothing will write it": the read itself opens a missing brief that is due
+   * (see getBrief), so the reader can no longer arrive at a blank page that
+   * stays blank all day. What used to render here as a bug report now renders
+   * as 'writing' — because it is being fixed in the same request that noticed.
    */
   let { state }: { state: BriefAbsent } = $props()
 
@@ -34,26 +41,34 @@
     hint="Your daily brief is written by your own assistant, and by nothing else — it reads your private work, so it never runs on a model somebody else picked. Set one up and your first brief opens tomorrow morning."
     action={setup}
   />
-{:else if state.absent === 'pending'}
+{:else if state.absent === 'writing'}
+  <!-- The one state that moves. The page is polling fast; the moment the
+       document's first batch lands, this whole state is replaced by the brief.
+       No action, because there is nothing to do but let it finish — and a
+       manual refresh control would imply the page is not already doing that. -->
+  <EmptyState
+    icon={pen}
+    title="{state.agent.name ?? 'Your assistant'} is writing today’s brief"
+    hint="The lede, your calendar, what needs you and who is waiting — it takes a few seconds, and the page fills itself in the moment it lands."
+    action={writing}
+  />
+{:else}
+  <!-- 'pending': the hour has not come. Honest, and it says WHEN. -->
   <EmptyState
     icon={clock}
     title={nextLabel ? `Your next brief opens ${nextLabel}` : 'Your next brief has not opened yet'}
     hint="It arrives two hours before the workday starts, so it is waiting for you rather than the other way around."
   />
-{:else}
-  <!-- 'none': the hour passed and nothing was written. NOT dressed up as a
-       quiet morning — that is the failure this whole split exists to avoid. -->
-  <EmptyState
-    icon={clock}
-    title="Today’s brief hasn’t been written"
-    hint={nextLabel
-      ? `The scheduled run should already have happened. The next one is ${nextLabel} — if this keeps happening, the daily-brief job is worth checking on Observability.`
-      : 'The scheduled run should already have happened. If this keeps happening, the daily-brief job is worth checking on Observability.'}
-  />
 {/if}
 
 {#snippet sparkle()}<Sparkles size={22} />{/snippet}
 {#snippet clock()}<CalendarClock size={22} />{/snippet}
+{#snippet pen()}<PenLine size={22} />{/snippet}
+{#snippet writing()}
+  <div class="flex items-center justify-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+    <WaitingMark site="brief/writing" size={12} /> writing
+  </div>
+{/snippet}
 {#snippet setup()}
   <Button size="sm" variant="outline" onclick={() => void navigate('/agents')}>Set up your assistant</Button>
 {/snippet}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Markdown from '@/components/ui/Markdown.svelte'
   import { listStagger } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import { clockLabel, type BriefView } from './daily-brief.svelte'
@@ -16,6 +17,11 @@
    * NEWEST FIRST, unlike the mirrored artifact, and the difference is about who
    * is reading. A shared document is read top-to-bottom as a narrative. A
    * person checking back at 14:00 wants the last thing that happened first.
+   *
+   * THE NOTE RENDERS AS MARKDOWN, like the lede above it and the artifact
+   * mirror beside it — the note is the same assistant writing the same kind of
+   * sentence, and a literal `**` here would be the model's formatting leaking
+   * onto the page in the one place it was still plain text.
    */
   let { brief }: { brief: BriefView } = $props()
 
@@ -53,7 +59,9 @@
         </div>
 
         {#if update.note}
-          <p class="mt-1 font-sans text-[13px] leading-5 text-fg">{update.note}</p>
+          <div class="mt-1 max-w-[60ch] font-sans text-[13px] leading-5 text-fg">
+            <Markdown children={update.note} />
+          </div>
         {/if}
 
         <div class="mt-2 space-y-1.5">

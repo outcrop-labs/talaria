@@ -13,7 +13,7 @@
   }: BaseProps & { name?: string } = $props()
 </script>
 
-<label {title} class={cn('flex cursor-pointer items-center gap-1.5 text-xs text-muted', disabled && 'cursor-default opacity-50', className)}>
+<label {title} class={cn('flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted', disabled && 'cursor-default opacity-50', className)}>
   <input
     type="radio"
     {name}

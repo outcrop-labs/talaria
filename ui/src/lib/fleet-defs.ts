@@ -71,6 +71,9 @@ export interface LlmEndpoint {
   priceOutPerMtok?: number | null
   models: string[]
   modelPrices?: Record<string, { in?: number; out?: number }>
+  /** Admin-declared reasoning-effort ladders, for models whose catalog
+   *  publishes none — the endpoint modal's effort editor writes here. */
+  modelEfforts?: Record<string, string[]>
   /** Auto-fetched $/MTok (public OpenRouter catalog); overrides win. */
   autoPrices?: Record<string, { in: number; out: number }>
   /** Extra request-body defaults merged into gateway/agent calls (e.g. the

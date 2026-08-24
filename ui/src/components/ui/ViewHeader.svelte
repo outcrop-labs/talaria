@@ -1,17 +1,22 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
-  import InfoTip from './InfoTip.svelte'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
 
-  // The one view header. Every full-page view opens with this — title voice,
-  // spacing, and control placement are decided HERE, not re-derived per view
-  // (the audit found three different gap scales and two different ways of
-  // right-aligning the same buttons).
+  // The one view header. The TITLE (and its InfoTip) live in the top strip
+  // now — this component claims them there on mount, so title voice is still
+  // decided HERE, not re-derived per view — and renders what stays in the
+  // body: the status readout, the right-aligned controls, and the blurb.
   //
   //   <ViewHeader title="MCP" info="Model Context Protocol servers…">
-  //     {#snippet status()}<span>3/5 online</span>{/snippet}   ← mono readout beside the title
+  //     {#snippet status()}<span>3/5 online</span>{/snippet}   ← mono readout row
   //     {#snippet actions()}<Button …>New</Button>{/snippet}   ← right-aligned controls
   //   </ViewHeader>
+  //
+  // A view whose header was ONLY a title claims it directly with
+  // claimViewTitle() instead — rendering an empty header element buys
+  // nothing, and an invisible node inside a `space-y` still takes its turn
+  // in the rhythm.
   //
   // Tabs are NOT part of the header — they render as the next sibling section
   // (they're their own grammar row for the stagger cascade). As a child of a
@@ -25,35 +30,37 @@
     class: className,
   }: {
     title: string
-    /** InfoTip copy shown beside the title. */
+    /** InfoTip copy shown beside the title in the top strip. */
     info?: string
-    /** One muted sentence under the title row. */
+    /** One muted sentence under the controls row. */
     blurb?: string | Snippet
-    /** Mono metadata beside the title (counts, health) — the caller keeps a
-     *  stable slot (skeleton/error state) so the row never jogs. */
+    /** Mono metadata (counts, health) — the caller keeps a stable slot
+     *  (skeleton/error state) so the row never jogs. */
     status?: Snippet
     /** Right-aligned controls: buttons, pickers, search. */
     actions?: Snippet
     class?: string
   } = $props()
+
+  claimViewTitle(title, { info })
 </script>
 
-<header class={cn('space-y-1', className)}>
-  <div class="flex flex-wrap items-center gap-3">
-    <div class="flex items-center gap-1.5">
-      <h1 class="font-sans text-2xl font-semibold tracking-tight text-fg">{title}</h1>
-      {#if info}<InfoTip text={info} />{/if}
-    </div>
-    {#if status}
-      <div class="font-mono text-[11px] tracking-[0.05em] text-muted">{@render status()}</div>
+{#if status || actions || blurb}
+  <header class={cn('space-y-1', className)}>
+    {#if status || actions}
+      <div class="flex flex-wrap items-center gap-3">
+        {#if status}
+          <div class="font-mono text-[11px] tracking-[0.05em] text-muted">{@render status()}</div>
+        {/if}
+        {#if actions}
+          <div class="ml-auto flex flex-wrap items-center gap-2">{@render actions()}</div>
+        {/if}
+      </div>
     {/if}
-    {#if actions}
-      <div class="ml-auto flex flex-wrap items-center gap-2">{@render actions()}</div>
+    {#if blurb}
+      <p class="font-sans text-xs text-muted">
+        {#if typeof blurb === 'string'}{blurb}{:else}{@render blurb()}{/if}
+      </p>
     {/if}
-  </div>
-  {#if blurb}
-    <p class="font-sans text-xs text-muted">
-      {#if typeof blurb === 'string'}{blurb}{:else}{@render blurb()}{/if}
-    </p>
-  {/if}
-</header>
+  </header>
+{/if}

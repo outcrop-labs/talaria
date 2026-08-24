@@ -153,13 +153,17 @@ export interface BriefView {
   lastSweptAt: string | null
 }
 
-/** No brief today — and WHICH kind of nothing, because the three render
+/** No document yet — and WHICH kind of not-yet, because the kinds render
  *  differently and collapsing them is how a surface lies.
  *    'pending'   the brief hour has not arrived yet; here is when it will
  *    'no-agent'  no personal assistant, so nothing can write one
- *    'none'      the hour passed and no brief exists (a missed run) */
+ *    'writing'   the document is being written right now — either the scheduled
+ *                open is mid-flight, or the reader arrived past the due hour
+ *                with no brief and the read itself kicked one off (see
+ *                getBrief). The surface polls fast and the append publishes,
+ *                so this state lasts seconds, not a day. */
 export interface BriefAbsent {
-  absent: 'pending' | 'no-agent' | 'none'
+  absent: 'pending' | 'no-agent' | 'writing'
   /** ISO of the next brief opening, when that is knowable. */
   nextAt: string | null
   agent: BriefAssistant

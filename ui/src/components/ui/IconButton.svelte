@@ -56,7 +56,7 @@
       // `relative` so the absolutely-positioned field paints BEHIND the tile
       // rather than over its edges — see the note in Button.
       wantsBloom && 'dither-fill',
-    'grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
+    'grid shrink-0 select-none place-items-center rounded-md transition-colors disabled:opacity-40',
       focusRing,
       size === 'sm' ? 'h-7 w-7' : 'h-8 w-8',
       active ? 'bg-raised text-fg' : 'text-muted dither-fill',

@@ -1,9 +1,8 @@
 <script lang="ts">
   import PageSurface from '@/components/app/PageSurface.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
-  import { greeting, useHome, type HomeTab } from './home'
+  import { useHome, type HomeTab } from './home'
   import HomeTabs from './HomeTabs.svelte'
   import BoardsTab from './BoardsTab.svelte'
   import CommsTab from './CommsTab.svelte'
@@ -18,16 +17,19 @@
   const isAdmin = $derived(session.data?.role === 'admin')
   const home = useHome()
 
-
+  // No strip claim from the console: the strip's route fallback names each
+  // tab by its segment (TopStrip's viewName — "Boards", "Comms", …), which is
+  // the honest title for a tabbed digest and needs no per-tab wiring here. A
+  // mount-time greeting claim was tried and rotted: tab switches change the
+  // path without remounting, so the claim's key went stale and every tab
+  // after the first fell back to "Inbox".
 </script>
 
 <PageSurface>
-  <!-- Page content entrance: greeting → tab strip → pane rise in sequence
-       (ANIMATIONS.md). The keyed pane below keeps its own fly on tab switch —
-       one level of stagger only, so the dense panes themselves stay flat. -->
+  <!-- Page content entrance: tab strip → pane rise in sequence (ANIMATIONS.md).
+       The keyed pane below keeps its own fly on tab switch — one level of
+       stagger only, so the dense panes themselves stay flat. -->
   <div use:staggerIn class="space-y-6">
-    <ViewHeader title={greeting(session.data?.name ?? session.data?.email)} />
-
     <HomeTabs value={tab} />
 
     <!-- The inbox tab is the focus queue now (Home.svelte renders

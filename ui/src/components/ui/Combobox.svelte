@@ -22,6 +22,7 @@
     size = 'md',
     allowCreate = false,
     searchable = true,
+    bare = false,
     triggerLabel,
   }: {
     options: ComboOption[]
@@ -35,6 +36,10 @@
     allowCreate?: boolean
     /** Show the search field. Off for short option lists (a clean menu). */
     searchable?: boolean
+    /** Trigger without its own frame — for a picker embedded as one segment
+     *  of a bordered control cluster (e.g. the [effort | model] assignment
+     *  cluster), the role a transparent <Select> used to play there. */
+    bare?: boolean
     /** Override the trigger content (e.g. a constant "Add label" for tag inputs). */
     triggerLabel?: string | Snippet
   } = $props()
@@ -122,9 +127,13 @@
     onclick={() => (open = !open)}
     class={cn(
       controlSizes[size],
-      // Spec §8 input pattern: raised tile, hairline, radius 6, gold focus.
-      'flex w-full items-center gap-2 rounded-md border border-line bg-[var(--theme-input)] px-2.5 font-sans text-sm outline-none transition-colors hover:border-line-strong disabled:opacity-50',
-      'focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent-soft',
+      'flex w-full items-center gap-2 rounded-md font-sans text-sm outline-none transition-colors disabled:opacity-50',
+      bare
+        ? // A cluster segment: the cluster owns the frame, so the trigger
+          // draws no border of its own and only surfaces on hover/focus.
+          'border border-transparent bg-transparent px-2 hover:bg-card/60 focus-visible:ring-2 focus-visible:ring-accent-soft'
+        : // Spec §8 input pattern: raised tile, hairline, radius 6, gold focus.
+          'border border-line bg-[var(--theme-input)] px-2.5 hover:border-line-strong focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent-soft',
     )}
   >
     <span class="min-w-0 flex-1 text-left">

@@ -12,7 +12,6 @@
   import { useConversations } from '@/lib/conversations.svelte'
   import { useAgents } from '@/lib/agents'
   import { relativeTime } from '@/lib/fleet'
-  import AssistantBriefing from './AssistantBriefing.svelte'
 
   // Plans: your live plans (and ones shared with you).
   const menu = useContextMenu()
@@ -24,7 +23,6 @@
 </script>
 
 <div class="space-y-6">
-  <AssistantBriefing scope="plans" />
   <Panel>
     <SectionHeader title="Plans" />
     <!-- `failed` swaps the list for this; a stale list keeps its rows and

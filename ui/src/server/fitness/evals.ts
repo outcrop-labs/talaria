@@ -111,9 +111,10 @@ export interface EvalCaseScore {
    *  `scoreHarness` excludes the case from every rate rather than averaging the
    *  zeros in — which is the whole reason the field exists.
    *
-   *  THE NUMBER THIS REPLACES WAS A LIE, and an expensive one. Three harnesses
-   *  declare `tools: 'own'` because the tool loop IS their feature
-   *  (`work-session`, `outreach:check-in`, `briefer:chat`). Replayed against an
+   *  THE NUMBER THIS REPLACES WAS A LIE, and an expensive one. Harnesses
+   *  whose whole feature is the tool loop (`work-session`,
+   *  `outreach:check-in`) declare `tools: 'own'` because the
+   *  loop IS the feature. Replayed against an
    *  ORG GATEWAY candidate, `gatewayToolsRefusal` refuses each one in about four
    *  milliseconds, before a token is spent — and the sweep recorded that as
    *  `contractHeld: false`, so the matrix printed "0% first pass" for a model

@@ -978,9 +978,9 @@ export const offersToolDefinitions = async (model: string): Promise<boolean> => 
  *  handed tool definitions; the gateway can be handed definitions and has no
  *  loop. Neither transport does both.
  *
- *  THE FITNESS SWEEP ASKS THIS, and until it did, three harnesses whose whole
- *  feature is the tool loop (`work-session`, `outreach:check-in`,
- *  `briefer:chat`) were replayed against every ORG GATEWAY candidate, refused by
+ *  THE FITNESS SWEEP ASKS THIS, and until it did, harnesses whose whole
+ *  feature is the tool loop (`work-session`, `outreach:check-in`, and since
+ *  deleted kin) were replayed against every ORG GATEWAY candidate, refused by
  *  `gatewayToolsRefusal` before a single token was spent, and recorded as 0%
  *  first-pass. A model that was never called scoring zero is the same class of
  *  confidently-wrong number the probe suite's `skipped` outcome exists to

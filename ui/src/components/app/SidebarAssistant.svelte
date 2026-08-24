@@ -54,13 +54,13 @@
   const dotClass = $derived(
     status === 'online' ? 'bg-success' : status === 'unknown' ? 'bg-[color:var(--theme-danger)]' : 'bg-line-strong',
   )
-  const label = $derived(
-    status === 'none'
-      ? 'Set up your assistant'
-      : status === 'unknown'
-        ? `${name} — status unavailable`
-        : `${name} — ${status}`,
+  // STATUS LIVES ON THE AVATAR — the dot over its corner, with this sentence
+  // as its tooltip. The chip's own line is just the name; spelling the status
+  // out twice (chip text AND tooltip) was the noise this shed.
+  const statusLabel = $derived(
+    status === 'online' ? 'Online' : status === 'unknown' ? 'Status unavailable' : 'Offline',
   )
+  const label = $derived(name)
 </script>
 
 {#if collapsed}
@@ -131,7 +131,7 @@
           panelOpen ? 'border-line-strong bg-raised' : 'border-line-subtle hover:border-line dither-fill',
         )}
       >
-        <span class="relative shrink-0">
+        <span class="relative shrink-0" title={statusLabel}>
           <Avatar name={name} class="h-7 w-7" />
           <span
             class={cn('absolute -bottom-px -right-px h-2 w-2 rounded-full border border-[color:var(--theme-sidebar)]', dotClass)}
@@ -140,9 +140,6 @@
         </span>
         <span class="min-w-0 flex-1">
           <span class="block truncate font-sans text-[13px] leading-4 text-fg">{name}</span>
-          <span class="block truncate font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">
-            {status === 'unknown' ? 'Status unavailable' : `@${assistant?.slug ?? ''} · ${status}`}
-          </span>
         </span>
         {#if unseen}
           <span

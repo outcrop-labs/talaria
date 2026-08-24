@@ -1197,7 +1197,11 @@ const MIGRATIONS: string[] = [
      primary key (run_id, user_id)
    )`,
   // Inbox briefing: the assistant's attention summary, regenerated only when
-  // the attention fingerprint actually changes.
+  // the attention fingerprint actually changes. (Superseded — see the drop at
+  // the end of this array — when the per-tab briefing panel was removed in
+  // favour of the daily brief. Kept verbatim here because this array is
+  // append-only: a statement's index is its identity on every database that
+  // already ran it.)
   `create table if not exists briefings (
      user_id uuid not null references users(id) on delete cascade,
      scope text not null default 'inbox',
@@ -1920,7 +1924,9 @@ const MIGRATIONS: string[] = [
   // (`briefer:daily-chat`) declared no `redact` on the explicit grounds that
   // nothing was saved. That is no longer true, and it now redacts — a
   // credential quoted out of a ticket title would otherwise sit in this table
-  // for the life of the brief.
+  // for the life of the brief. (Later: the table AND the harness are gone —
+  // see the drop at the end of this array — but the reasoning is kept because
+  // it is the argument for any saved chat redacting.)
   `create table if not exists brief_chat_messages (
      id uuid primary key default gen_random_uuid(),
      brief_id uuid not null references daily_briefs(id) on delete cascade,
@@ -1948,6 +1954,78 @@ const MIGRATIONS: string[] = [
   // which is exactly the boot-refusal this line caused the first time it was
   // written.
   `alter table users add column if not exists preferred_effort text`,
+
+  // The per-tab briefing panel is gone — the daily brief is the one summary a
+  // person is given — so the briefings cache it wrote has no writer and no
+  // reader. Dropped, APPEND-ONLY as ever: the create above stays where it has
+  // always been and this runs after it on every database.
+  `drop table if exists briefings`,
+
+  // Same for the brief's own chat thread. Asking about a line happens from the
+  // sidebar assistant panel now, which carries its own (already-persisted)
+  // conversation — a second per-line thread beside it was a second chat to
+  // find, and the panel is the one people already have open.
+  `drop table if exists brief_chat_messages`,
+
+  // The assistant panel's conversation is SEGMENTED now — many instances per
+  // owner, picked from a dropdown — so the one-live-inbox-conversation-per-user
+  // guarantee this index enforced is gone. Instances are created explicitly
+  // and archived, never deduplicated. (The create above stays, append-only as
+  // ever; existing installs keep their single row as their first instance.)
+  `drop index if exists conversations_inbox_user_idx`,
+
+  // ── PLAN DRAFTS: a ticket-draft JOB's durable half ────────────────────────
+  //
+  // The run row (same uuid, kind 'plan-draft') owns the STATE MACHINE —
+  // queued/running/done/error, the lease, the reclaim sweep. This table owns
+  // the DOMAIN: which conversation, which board the tickets were drafted for,
+  // and the proposals themselves as jsonb — which is why a draft survives a
+  // closed browser, a reloaded tab and a restarted server: the client asks
+  // "is there a draft for this conversation?" and the answer is a row, not a
+  // memory. `proposals` is written once by the run (the agent's output) and
+  // then by PATCHes from the review walk, so edits survive a reload too.
+  //
+  // APPENDED, NOT FILED NEXT TO the runs tables it belongs beside — the first
+  // version of this change did file it there, and every database that had
+  // already migrated past the runs block refused to boot on the checksum
+  // mismatch, which is the guard doing its job. Index identity beats topical
+  // order; the comment is the map.
+  `create table if not exists plan_drafts (
+     id uuid primary key default gen_random_uuid(),
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     created_by uuid references users(id) on delete set null,
+     source text not null,
+     agent_model text not null,
+     routed_model text,
+     tier text,
+     board_id uuid,
+     template_id uuid,
+     proposals jsonb not null default '[]'::jsonb,
+     note text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // THE one real query: "the latest draft for this conversation" — the
+  // review's way back after a reload. Partial over the live states would not
+  // help it (it wants finished drafts most of all), so a plain covering index
+  // on the conversation's timeline.
+  `create index if not exists plan_drafts_conversation_idx
+     on plan_drafts (conversation_id, created_at desc)`,
+
+  // ── ADMIN-DECLARED EFFORT LADDERS ──────────────────────────────────────────
+  //
+  // The effort feature's contract is "offered only where the model metadata
+  // vouches for it", and the only vouching voice was the provider's catalog.
+  // That left every minimal OpenAI-compatible self-host (vLLM, Ollama, a
+  // hand-rolled gateway — GET /models answering `{id}` and nothing else) with
+  // no picker forever, no matter what the weights behind it accept. This
+  // column is the second voice: an ADMIN declaring "this endpoint's build of
+  // <model> takes these levels" — the same standing a declared capability
+  // fact has over a catalog one (a human outranks a provider's silence), with
+  // the same honesty rule: the declaration REPLACES the catalog's ladder for
+  // that endpoint's model, it never merges with it. Keyed by upstream model
+  // id, exactly like model_prices beside it.
+  `alter table llm_endpoints add column if not exists model_efforts jsonb not null default '{}'::jsonb`,
 
 ]
 

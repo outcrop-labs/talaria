@@ -56,19 +56,16 @@ export function channelEventStream(channelId: string, signal: AbortSignal): Read
 //               nobody else's, which is the only reason it can be one topic per
 //               person rather than one per thing.
 //
-// The second one is the point of the whole file for runs. A run is durable
+// THE SECOND ONE is the point of the whole file for runs. A run is durable
 // server state, so "I started it on my laptop and I am now on my phone" has to
 // be a live view and not a poll — and it must update for a run the person is
 // NOT looking at, because the transition that matters most (`awaiting`: this
 // run has stopped and is asking you something) is exactly the one that happens
 // while their attention is elsewhere.
 //
-// NOTHING PUBLISHES TO `user:<id>` YET EXCEPT RUNS. It is deliberately named
-// for the PERSON and not for runs, because notifications belong here too:
-// today `addNotification` publishes to nothing at all and the bell polls every
-// 30 seconds for a row that has been sitting in Postgres since. That is the
-// next thing to land on this topic, and `UserEvent` already carries the
-// discriminant for it.
+// Notifications publish here now (`addNotification` → `{type:'notification'}`,
+// the bell's signal) alongside runs and the brief — which is what the topic was
+// NAMED for: it is the person's, not any one feature's.
 
 /** What goes over `run:<id>`.
  *
@@ -109,8 +106,7 @@ export interface RunEvent {
  *  a routing change and not a disclosure review. */
 export type UserEvent =
   | { type: 'run'; runId: string; state: RunState }
-  /** Reserved, and the reason this topic is named for the person: the bell
-   *  currently polls because nothing publishes when a notification is written. */
+  /** The bell's signal: a notification row landed for this person. */
   | { type: 'notification'; notificationId: string }
   /** Something was appended to the person's daily brief.
    *

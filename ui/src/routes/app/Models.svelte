@@ -18,7 +18,6 @@
   import ModelsEndpointModal from './ModelsEndpointModal.svelte'
   import ModelsFitnessPanel from './ModelsFitnessPanel.svelte'
   import ModelsMemberAccessPanel from './ModelsMemberAccessPanel.svelte'
-  import ModelsPlatformAgentsPanel from './ModelsPlatformAgentsPanel.svelte'
   import ModelsRolesPanel from './ModelsRolesPanel.svelte'
   import { MODEL_TABS, type ModelsTab } from './models'
 
@@ -119,7 +118,6 @@
         {/if}
       {/if}
       {#if tab === 'roles'}<ModelsRolesPanel />{/if}
-      {#if tab === 'platform'}<ModelsPlatformAgentsPanel />{/if}
       {#if tab === 'fitness'}<ModelsFitnessPanel />{/if}
       {#if tab === 'access'}<ModelsMemberAccessPanel />{/if}
       </div>

@@ -134,7 +134,7 @@
               menu.closeMenu()
             }}
             class={cn(
-              'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
+              'flex w-full select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
               item.disabled
                 ? 'cursor-default text-muted opacity-50'
                 : item.danger
@@ -167,7 +167,7 @@
                       menu.closeMenu()
                     }}
                     class={cn(
-                      'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
+                      'flex w-full select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
                       kid.disabled
                         ? 'cursor-default text-muted opacity-50'
                         : kid.danger

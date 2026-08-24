@@ -2,9 +2,9 @@
 //
 // WHY THE FITNESS SUITE NEEDED THIS. Tier 2 replayed fixtures and graded the
 // PROSE that came back. For thirteen single-shot structured harnesses that is
-// exactly right — the contract is the answer. For the three whose whole feature
+// exactly right — the contract is the answer. For the ones whose whole feature
 // is the tool loop it measured nothing at all: `work-session`,
-// `outreach:check-in` and `briefer:chat` declare `tools: 'own'`, the org gateway
+// `outreach:check-in` declare `tools: 'own'`, the org gateway
 // runs no tool loop, and the sweep recorded a refusal it could not distinguish
 // from a bad model. Even where it did run, grading the reply text asks "did it
 // SAY it triaged the ticket", and the failure that actually costs an org is a

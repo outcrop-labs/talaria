@@ -64,6 +64,32 @@ test('linked notifications yield to their richer source card', () => {
   assert.deepEqual(dedupeItems([task, notification]).map(({ key }) => key), ['task:123'])
 })
 
+// The fingerprint is the brief's change detector: same → a checked-off line
+// stays closed; moved → a change row reopens it. These hold the two halves of
+// that contract to what the policy declares the fingerprint is over — what the
+// line SAYS (question, evidence, actions) and what it SHOWS (status chip, due
+// badge) — and, load-bearing, that a mere `updatedAt` bump is neither.
+test('the fingerprint ignores a bare updated_at bump', () => {
+  const before = item('task:123', 1)
+  const after = item('task:123', 1, { updatedAt: '2026-08-19T09:00:00.000Z' })
+  // A comment, an assignee edit, a label — anything that touches the row
+  // without changing what the brief's line says. The dismissal sticks.
+  assert.equal(after.sourceFingerprint, before.sourceFingerprint)
+})
+
+test('the fingerprint moves on new information the line renders', () => {
+  const before = item('task:123', 1, { question: 'Where should "X" go next?', dueAt: null, statusLabel: 'INBOX' })
+  for (const change of [
+    { question: 'Approve the completed work for "X"?' }, // a status flip rewords the question
+    { statusLabel: 'IN REVIEW' }, // the chip
+    { dueAt: '2026-08-21T17:00:00.000Z' }, // the badge
+    { evidence: [{ label: 'Failure', text: 'OOM at row 840k' }] }, // why it needs you
+  ]) {
+    const after = item('task:123', 1, change)
+    assert.notEqual(after.sourceFingerprint, before.sourceFingerprint)
+  }
+})
+
 test('only an explicit owner instruction deterministically authorizes an action', () => {
   const focusItem = {
     ...item('task:123', 3),

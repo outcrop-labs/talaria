@@ -7,6 +7,7 @@
 
 import { announceApproval } from '../approvals'
 import { db } from '../db/pg'
+import { markBriefStale } from '../daily-brief-stale'
 import { createEventWithToken, type CreateEventInput } from './calendar'
 import { getAccessToken } from './connections'
 import { sendMessageWithToken, type SendInput } from './gmail'
@@ -92,8 +93,17 @@ export async function decideAction(
   if (!authorized) return { status: 'forbidden' }
   if (action.status !== 'pending') return { status: action.status } // already decided
 
+  // A terminal decision resolves the approval line on the owner's (and the
+  // decider's) brief. Detached and silent: the decider is waiting on this
+  // response. Org actions decided by one admin leave other admins' briefs to
+  // the scheduled sweep — the nudge is an optimization, never the floor.
+  const nudgeBrief = (): void => {
+    void markBriefStale([action.ownerUserId, actor.id].filter((id): id is string => !!id)).catch(() => {})
+  }
+
   if (decision === 'reject') {
     await sql`update google_pending_actions set status = 'rejected', decided_at = now(), decided_by = ${actor.id} where id = ${actionId}`
+    nudgeBrief()
     return { status: 'rejected' }
   }
 
@@ -117,6 +127,7 @@ export async function decideAction(
       set status = 'executed', result = ${JSON.stringify(result)}, decided_at = now(), decided_by = ${actor.id}
       where id = ${actionId}
     `
+    nudgeBrief()
     return { status: 'executed' }
   } catch (err) {
     await sql`
@@ -124,6 +135,7 @@ export async function decideAction(
       set status = 'failed', result = ${JSON.stringify({ error: (err as Error).message })}, decided_at = now(), decided_by = ${actor.id}
       where id = ${actionId}
     `
+    nudgeBrief()
     return { status: 'failed', message: 'Google rejected the action.' }
   }
 }

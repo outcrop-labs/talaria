@@ -548,24 +548,11 @@ body {
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
-/* ── Text selection: chrome is not selectable, content is. ──────────────────
-   The app default is user-select none — dragging cards, clicking pills, and
-   sweeping the cursor across chrome must never paint blue. Selection comes
-   back on purpose-built surfaces: form fields, editors, rendered content
-   (Markdown/tiptap), code, and anything opting in with .select-text. */
-body { -webkit-user-select: none; user-select: none; }
-input,
-textarea,
-[contenteditable='true'],
-[contenteditable=''],
-pre, pre *,
-code,
-kbd,
-.tiptap, .tiptap *,
-.select-text, .select-text * {
-  -webkit-user-select: text;
-  user-select: text;
-}
+/* ── Text selection: content is selectable, controls opt out. ──────────────
+   The browser default stands — prose, code, messages, cards can be selected
+   and copied. Interactive chrome (buttons, tabs, pills, menu items, form
+   labels) opts out per component with Tailwind's `select-none` where it is
+   declared, so nothing here reaches globally. */
 
 /* ── Dithered fill: hover, and selection ─────────────────────────────────────
    A SURFACE THAT HAS NOT FINISHED MATERIALISING. The solid `bg-hover` fill

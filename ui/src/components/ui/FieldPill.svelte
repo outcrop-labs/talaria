@@ -52,7 +52,7 @@
     // Chip-family control (spec §8): radius 6, raised tile when engaged,
     // hover fill card2, dashed-gold keyboard focus. Chip chrome voice
     // (spec §2): mono UPPERCASE + letterspacing — never italic.
-    'group/pill inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-left font-mono text-[10px] uppercase leading-3 tracking-[0.05em] transition-colors',
+    'group/pill inline-flex max-w-full cursor-pointer select-none items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-left font-mono text-[10px] uppercase leading-3 tracking-[0.05em] transition-colors',
     focusGold,
     active
       ? 'border-line-strong bg-raised text-fg'

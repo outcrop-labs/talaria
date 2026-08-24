@@ -250,7 +250,7 @@ describe('bindSlots', () => {
     const bindings = await bindSlots(builtinActivityHarnesses())
     const assistant = bindings.find((b) => slotKey(b.slot) === 'fleet:assistant')
     const agent = bindings.find((b) => slotKey(b.slot) === 'fleet:agent')
-    expect(assistant?.harnesses.map((h) => h.id)).toEqual(expect.arrayContaining(['inbox-brief', 'inbox-command', 'inbox-reply', 'briefer:brief', 'briefer:chat']))
+    expect(assistant?.harnesses.map((h) => h.id)).toEqual(expect.arrayContaining(['inbox-brief', 'inbox-command', 'inbox-reply', 'briefer:daily-open', 'briefer:daily-delta']))
     expect(agent?.harnesses.map((h) => h.id)).toEqual(expect.arrayContaining(['work-session', 'hermes:knowledge', 'channel-plan']))
     // The two are disjoint — a harness in both would be scored twice against
     // one model and read as corroboration.

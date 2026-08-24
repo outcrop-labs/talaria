@@ -1607,7 +1607,7 @@ describe('runHarnessStreamed', () => {
     await runHarnessStreamed(
       { ...titler, tools: 'own' },
       { transcript: 'x' },
-      { caller: 'briefer:chat', model: 'assistant-operations', ledger: { refId: 'c-3' }, deps: r.deps },
+      { caller: 'outreach:check-in', model: 'assistant-operations', ledger: { refId: 'c-3' }, deps: r.deps },
       {
         stream: async (req, emit) => {
           seen = req

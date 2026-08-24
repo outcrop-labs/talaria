@@ -10,7 +10,7 @@
    * Two rules make that hold, and both cost more markup than an approximation:
    *
    * 1. THE CONTAINER CHAIN IS COPIED VERBATIM from its counterparts —
-   *    `BoardHeader`'s frame, `Board.svelte`'s two toolbar rows and the
+   *    `Board.svelte`'s two toolbar rows and the
    *    `relative min-h-0 min-w-0 flex-1` canvas slot, `Kanban`/`BoardList`/
    *    `Gantt`'s own roots. Same padding, same borders, same gaps, same flex
    *    math, nesting included. An intermediate wrapper that looks redundant is
@@ -18,7 +18,7 @@
    *
    * 2. A TEXT SLOT KEEPS THE REAL TEXT'S LINE BOX. `text-lg` is 28px tall
    *    whatever it says; a 24px bar in its place shortens the row by 4px, and
-   *    a header, two toolbar rows and every card title do that together. So
+   *    two toolbar rows and every card title do that together. So
    *    `line` renders the real typography classes around an invisible glyph —
    *    the browser computes the box exactly as it will for the real string —
    *    and floats the dither inside it. The ink is a bar; the BOX is the text's.
@@ -103,21 +103,10 @@
 {/snippet}
 
 <div aria-hidden="true" class="flex h-full min-w-0 flex-col">
-  <!-- BoardHeader -->
-  <div class="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
-    <div class="min-w-0 flex-1">
-      {@render line('font-sans text-lg font-semibold', 'w-52', 'h-4', true)}
-    </div>
-    <div class="flex -space-x-2">
-      {#each [0, 1, 2] as i (i)}
-        <Skeleton class="h-7 w-7 rounded-full ring-2 ring-[color:var(--theme-panel)]" />
-      {/each}
-    </div>
-    <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
-  </div>
-
-  <!-- Row 1 — the VIEW: mode toggle, saved views, ticket count. The toggle
-       frame and its three cells always exist, so the frame is drawn. -->
+  <!-- Row 1 — the VIEW: mode toggle, saved views, ticket count, and (from the
+       header row this page no longer has) the member stack and settings gear
+       on the right. The gear's h-8 is the row's tallest box — it must be
+       drawn here or the row grows when the board lands. -->
   <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-2">
     <div class="flex rounded-md border border-line p-0.5">
       {#each [0, 1, 2] as i (i)}
@@ -125,8 +114,14 @@
       {/each}
     </div>
     {@render line('font-mono text-[10px] uppercase tracking-[0.05em]', 'w-20', 'h-2')}
-    <span class="ml-auto">
+    <span class="ml-auto flex items-center gap-2">
       {@render line('font-mono text-[10px] uppercase tracking-[0.05em]', 'w-16', 'h-2')}
+      <span class="flex -space-x-2">
+        {#each [0, 1] as i (i)}
+          <Skeleton class="h-7 w-7 rounded-full ring-2 ring-[color:var(--theme-panel)]" />
+        {/each}
+      </span>
+      <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
     </span>
   </div>
 

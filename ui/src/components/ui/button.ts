@@ -24,9 +24,11 @@ export type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger' | 'danger
 const base = cn(
   // whitespace-nowrap: a button label NEVER line-breaks — if space is tight the
   // layout should shrink something else, not fold the label.
+  // select-none: a button is chrome, not content — its label is never
+  // selectable, no matter what text sits around it.
   // Mercury (spec §8): buttons speak in the mono chrome voice — uppercase,
   // letterspaced, radius 6 — with a solid gold focus ring. Matte: no glows.
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-mono font-medium uppercase tracking-[0.05em] transition-all disabled:pointer-events-none',
+  'inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-md font-mono font-medium uppercase tracking-[0.05em] transition-all disabled:pointer-events-none',
   focusRing,
 )
 

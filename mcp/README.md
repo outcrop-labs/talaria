@@ -27,9 +27,10 @@ Beyond the PM tools above, the toolkit also carries **artifacts**
 (create/update/list/get + `export_to_google_doc`), **knowledge base**
 (`list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `edit_kb_doc` — edit only
 where granted), **channels** (`list_channels` / `read_channel` /
-`post_to_channel` — membership-gated; agent posts don't trigger other agents),
-**Google** (per-user calendar/mail read + confirm-send drafts), and
-`search_knowledge` (RAG). Same auth model throughout.
+`post_to_channel` — a personal assistant sees its owner's channels and DMs,
+any other agent sees its own memberships; posts stay agent-attributed and
+don't trigger other agents), **Google** (per-user calendar/mail read +
+confirm-send drafts), and `search_knowledge` (RAG). Same auth model throughout.
 
 ## Setup
 

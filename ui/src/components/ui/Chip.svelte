@@ -18,7 +18,7 @@
 
   const base = $derived(
     cn(
-      'shrink-0 rounded border px-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em]',
+      'shrink-0 select-none rounded border px-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em]',
       selected ? 'border-line-strong bg-raised text-fg' : TONES[tone],
       onSelect && !selected && 'transition-colors hover:text-fg',
       className,

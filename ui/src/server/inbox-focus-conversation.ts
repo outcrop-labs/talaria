@@ -16,6 +16,7 @@ import {
 } from './inbox-focus'
 import {
   buildInboxConversationPrompt,
+  INBOX_HISTORY_MAX_TURNS,
   limitInboxModelHistory,
   type InboxModelTurn,
 } from './inbox-focus-policy'
@@ -43,7 +44,7 @@ import type {
   FocusSourceType,
 } from './inbox-focus-types'
 
-export { buildInboxConversationPrompt, limitInboxModelHistory }
+export { buildInboxConversationPrompt, INBOX_HISTORY_MAX_TURNS, limitInboxModelHistory }
 
 const PAGE_SIZE = 30
 const UNDO_MS = 30_000
@@ -71,32 +72,142 @@ function focusContext(item: { key: string; question: string; sourceHref: string;
   }
 }
 
-export async function ensureInboxConversation(userId: string, agentModel: string | null): Promise<string> {
-  const sql = await db()
-  const rows = await sql`
-    insert into conversations (user_id, agent_model, title, kind)
-    values (${userId}, ${agentModel ?? 'inbox-assistant'}, 'Inbox', 'inbox')
-    on conflict (user_id) where kind = 'inbox' and archived = false
-    do update set agent_model = excluded.agent_model
-    returning id
-  `
-  return (rows[0] as { id: string }).id
+// ── Conversation instances ───────────────────────────────────────────────────
+//
+// The panel's conversation is SEGMENTED: many instances per owner, picked from
+// a dropdown, rather than one ever-growing thread. Segmentation IS the context
+// strategy — a fresh instance is how old context is shed, chosen by the person
+// rather than imposed by a budget. Everything here is scoped by ownership and
+// `kind = 'inbox'` so an instance id from the dropdown can never address one of
+// the owner's ordinary chat conversations.
+
+/** One row of the panel's chat picker. The preview is the FIRST user message —
+ *  "what did I start this chat about" — not the last, which for a working
+ *  thread is usually a fragment of the task at hand. */
+export interface InboxConversationSummary {
+  id: string
+  preview: string
+  createdAt: string
+  updatedAt: string
 }
 
+const CONVERSATION_PREVIEW_CHARS = 80
+
+export async function listInboxConversations(userId: string): Promise<InboxConversationSummary[]> {
+  const sql = await db()
+  const rows = (await sql`
+    select c.id, c.created_at as "createdAt", c.updated_at as "updatedAt",
+           (select left(m.content, ${CONVERSATION_PREVIEW_CHARS}) from messages m
+             where m.conversation_id = c.id and m.role = 'user' and m.status = 'complete' and m.content <> ''
+             order by m.seq asc limit 1) as preview
+    from conversations c
+    where c.user_id = ${userId} and c.kind = 'inbox' and c.archived = false
+    order by c.updated_at desc
+    limit 50
+  `) as unknown as Array<InboxConversationSummary & { preview: string | null }>
+  return rows.map((row) => ({ ...row, preview: row.preview ?? '' }))
+}
+
+export async function createInboxConversation(userId: string, agentModel: string | null): Promise<string> {
+  const sql = await db()
+  const rows = (await sql`
+    insert into conversations (user_id, agent_model, title, kind)
+    values (${userId}, ${agentModel ?? 'inbox-assistant'}, 'Inbox', 'inbox')
+    returning id
+  `) as unknown as Array<{ id: string }>
+  return rows[0]!.id
+}
+
+export async function archiveInboxConversation(userId: string, conversationId: string): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`
+    update conversations set archived = true, updated_at = now()
+    where id = ${conversationId} and user_id = ${userId} and kind = 'inbox' and archived = false
+    returning id
+  `) as unknown as Array<{ id: string }>
+  return rows.length > 0
+}
+
+/** The instance a request may use: the requested one when it is the owner's
+ *  live inbox conversation, else their most recently touched one. Null when
+ *  they have none — the READ path stops here (an empty page, no row created);
+ *  the WRITE path (`resolveInboxConversationForWrite`) starts a fresh one. */
+async function ownedInboxConversationId(userId: string, requested: string | null | undefined): Promise<string | null> {
+  const sql = await db()
+  if (requested) {
+    const rows = (await sql`
+      select id from conversations
+      where id = ${requested} and user_id = ${userId} and kind = 'inbox' and archived = false
+      limit 1
+    `) as unknown as Array<{ id: string }>
+    if (rows[0]) return rows[0].id
+  }
+  const latest = (await sql`
+    select id from conversations
+    where user_id = ${userId} and kind = 'inbox' and archived = false
+    order by updated_at desc limit 1
+  `) as unknown as Array<{ id: string }>
+  return latest[0]?.id ?? null
+}
+
+async function resolveInboxConversationForWrite(
+  userId: string,
+  agentModel: string | null,
+  requested: string | null | undefined,
+): Promise<string> {
+  const existing = await ownedInboxConversationId(userId, requested)
+  return existing ?? createInboxConversation(userId, agentModel)
+}
+
+/** The model's history for ONE inbox conversation instance.
+ *
+ *  THE CONTEXT STRATEGY, in one place (the bounds live beside
+ *  `limitInboxModelHistory`, which applies them): segmentation first — the
+ *  owner picks the instance from the panel's chat picker, and starting a
+ *  fresh one is how old context is shed. Within an instance: a turn window,
+ *  and ATTACHMENTS EXPAND ONLY WHILE FRESH — full text for the last two user
+ *  turns (the "keep asking about the doc I just attached" loop), a bare
+ *  `[attached: …]` marker after that. Re-expanding every file on every turn
+ *  forever was the single biggest silent bloat in this prompt: one 6k-char
+ *  attachment rode along in full until it aged out of the turn window, on
+ *  every command, answering questions that had nothing to do with it.
+ *    · QUICK ACTIONS NEVER ENTER — decisions, proposals, confirmations and
+ *      undos are timeline rows, not messages, so the noise the owner clicks
+ *      through cannot become the model's context. That is a property of this
+ *      loader reading `messages` only, and it is deliberate.
+ */
 async function recentInboxHistory(conversationId: string): Promise<InboxModelTurn[]> {
   const sql = await db()
   const rows = (await sql`
     select role, content, attachments from messages
     where conversation_id = ${conversationId} and role in ('user', 'assistant')
       and status = 'complete' and content <> ''
-    order by seq desc limit 20
+    order by seq desc limit ${INBOX_HISTORY_MAX_TURNS}
   `) as unknown as Array<InboxModelTurn & { attachments: unknown }>
-  const mapped = await Promise.all(rows.reverse().map(async (row) => ({
-    role: row.role,
-    content: row.role === 'user'
-      ? `${row.content}${refBlocks(row.attachments)}${await attachmentTextBlocks(row.attachments)}`
-      : row.content,
-  })))
+  const oldestFirst = rows.reverse()
+  // Which user turns are "fresh" enough to carry their attachment text: the
+  // LAST TWO user rows in the window. Everything older keeps a marker.
+  const freshUserRows = new Set(
+    oldestFirst
+      .filter((row) => row.role === 'user')
+      .slice(-2)
+      .map((row) => oldestFirst.indexOf(row)),
+  )
+  const markerFor = (attachments: unknown): string => {
+    const names = publicAttachments(attachments).map((a) => a.filename)
+    return names.length ? `\n[attached: ${names.join(', ')}]` : ''
+  }
+  const mapped = await Promise.all(
+    oldestFirst.map(async (row, index) => ({
+      role: row.role,
+      content:
+        row.role === 'user'
+          ? freshUserRows.has(index)
+            ? `${row.content}${refBlocks(row.attachments)}${await attachmentTextBlocks(row.attachments)}`
+            : `${row.content}${markerFor(row.attachments)}`
+          : row.content,
+    })),
+  )
   return limitInboxModelHistory(mapped)
 }
 
@@ -210,6 +321,11 @@ export async function* runInboxConversationCommand(
     effort?: string | null
     attachmentIds?: string[]
     refs?: MessageRef[]
+    /** Which conversation instance this command belongs to — the panel's chat
+     *  picker. Validated against the owner's live inbox conversations; a null
+     *  or stale id falls back to their most recent instance, creating one
+     *  only when none exists. */
+    conversationId?: string | null
     signal?: AbortSignal
   },
 ): AsyncGenerator<InboxCommandEvent> {
@@ -230,7 +346,7 @@ export async function* runInboxConversationCommand(
     : mode === 'fast'
       ? '\n\n[Fast mode: answer directly and keep the response brief.]'
       : ''
-  const conversationId = await ensureInboxConversation(user.id, assistant.model)
+  const conversationId = await resolveInboxConversationForWrite(user.id, assistant.model, input.conversationId)
   const item = input.focusKey ? await findFocusItemForUser(user, input.focusKey) : null
   if (input.focusKey && !item) {
     yield { type: 'error', message: 'That focus item changed or was already resolved.' }
@@ -463,10 +579,18 @@ async function timelineRecordForDecision(
   }
 }
 
-export async function getInboxConversation(user: SessionUser, cursor?: string | null): Promise<InboxConversationPage> {
-  const assistant = await focusAssistantFor(user.id)
-  const conversationId = await ensureInboxConversation(user.id, assistant.model)
-  const { rows, hasMore } = await timelineRows(conversationId, cursor)
+/** One instance's timeline page. READ-ONLY: an owner with no instances yet
+ *  gets an empty page (conversationId null) rather than a conversation row
+ *  created by a GET — instances are created by an explicit action (the
+ *  picker's "New chat") or by the first thing written. */
+export async function getInboxConversation(
+  user: SessionUser,
+  cursor?: string | null,
+  conversationId?: string | null,
+): Promise<InboxConversationPage> {
+  const resolved = await ownedInboxConversationId(user.id, conversationId)
+  if (!resolved) return { conversationId: null, entries: [], nextCursor: null, working: false }
+  const { rows, hasMore } = await timelineRows(resolved, cursor)
   const records: InboxTimelineRecord[] = []
   for (const row of rows) {
     if (row.recordType === 'message' && row.role && row.messageStatus) {
@@ -487,7 +611,7 @@ export async function getInboxConversation(user: SessionUser, cursor?: string | 
   }
   const oldest = rows.at(-1)
   return {
-    conversationId,
+    conversationId: resolved,
     entries: buildInboxTimeline(records),
     nextCursor: hasMore && oldest
       ? encodeInboxTimelineCursor(normalizeInboxTimelineTimestamp(oldest.createdAt), oldest.id)
@@ -501,13 +625,12 @@ export async function timelineEntryForDecision(
   decisionId: string,
   currentResult?: FocusActionResult,
 ): Promise<InboxTimelineEntry | null> {
-  const assistant = await focusAssistantFor(user.id)
-  const conversationId = await ensureInboxConversation(user.id, assistant.model)
+  // No conversation resolution here, deliberately: the decision already
+  // carries the instance it was made in (`linkDecision`/`recordInboxSnooze`
+  // write it at insert), and under segmentation there is no "the user's one
+  // conversation" to re-link it to. The earlier re-link was legacy from before
+  // the column existed.
   const sql = await db()
-  await sql`
-    update inbox_decisions set conversation_id = ${conversationId}
-    where id = ${decisionId} and user_id = ${user.id}
-  `
   const rows = (await sql`
     select 'decision'::text as "recordType", d.id, d.created_at as "createdAt",
            null::text as role, null::text as content, null::text as "messageStatus", null::jsonb as metadata,
@@ -532,7 +655,7 @@ export async function recordInboxSnooze(
   const item = await findFocusItemForUser(user, `${input.sourceType}:${input.sourceId}`)
   if (!item) return null
   const assistant = await focusAssistantFor(user.id)
-  const conversationId = await ensureInboxConversation(user.id, assistant.model)
+  const conversationId = await resolveInboxConversationForWrite(user.id, assistant.model, null)
   const sql = await db()
   const rows = (await sql`
     insert into inbox_decisions (

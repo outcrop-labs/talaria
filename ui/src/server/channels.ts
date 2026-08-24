@@ -7,7 +7,7 @@ import { db } from './db/pg'
 import { briefsFollowMessage } from './daily-brief-stale'
 import { guardAgentWrite } from './agent-writes'
 import { publishChannel } from './realtime'
-import { isElevatedAssistant } from './users'
+import { assistantOwnerId, isElevatedAssistant } from './users'
 import { subjectModel, type AgentSubject } from './agent-auth'
 import type { Finding } from './guardrails'
 
@@ -94,6 +94,11 @@ export async function markChannelRead(channelId: string, userId: string, seq: nu
 }
 
 export async function channelRole(userId: string, channelId: string): Promise<ChannelRole | null> {
+  // A non-uuid id is not a membership question, and handing it to Postgres is
+  // a 500 (`invalid input syntax for type uuid`). Answering null makes the
+  // routes say forbidden/not-found instead — the honest answer for an id that
+  // cannot name a channel. See `isChannelId`.
+  if (!isChannelId(channelId)) return null
   const sql = await db()
   const rows = await sql`
     select role from channel_members where channel_id = ${channelId} and user_id = ${userId}
@@ -206,7 +211,16 @@ export async function removeChannelMember(channelId: string, userId: string): Pr
   publishChannel(channelId, { type: 'channel' })
 }
 
+/** A syntactically valid channel id (a uuid). Guards every comparison against
+ *  the uuid-typed `channel_id` column: the database casts the parameter, and a
+ *  string like "platform" — an id a model GUESSES when a listing came back
+ *  empty — throws `invalid input syntax for type uuid`, which surfaces as a
+ *  500 the caller reads as breakage. Checked here, at the predicates the
+ *  routes and the agent paths enter through, so no route has to remember. */
+const isChannelId = (id: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+
 export async function listChannelAgents(channelId: string): Promise<string[]> {
+  if (!isChannelId(channelId)) return []
   const sql = await db()
   const rows = await sql`select agent_model from channel_agents where channel_id = ${channelId} order by agent_model`
   return (rows as unknown as Array<{ agent_model: string }>).map((r) => r.agent_model)
@@ -215,7 +229,18 @@ export async function listChannelAgents(channelId: string): Promise<string[]> {
 /** Channels a given agent has been added to. Pass the AgentCaller where one is
  *  in hand — org-wide reach is only for a caller that PROVED its identity, and
  *  a bare string reads as proven (`subjectProven`), so `caller.model` here
- *  quietly throws the legacy flag away. */
+ *  quietly throws the legacy flag away.
+ *
+ *  A PERSONAL ASSISTANT sees its owner's channels instead — the identity-proxy
+ *  model (`actingUser`): the briefing chat's whole subject is the owner's
+ *  attention state ("Priya mentioned you in #platform"), and a tool view that
+ *  listed only the assistant's own memberships answered that question with an
+ *  empty list every time, because nobody adds a personal assistant to channels
+ *  — its owner is the member. This is the owner's OWN view, DMs included: the
+ *  assistant is the owner's proxy reading the owner's conversations, the same
+ *  posture the brief itself already takes (commsLines reads the owner's DM
+ *  excerpts server-side). Org-wide reach past the owner's memberships remains
+ *  what it always was: `elevated`, checked first. */
 export async function listChannelsForAgent(agent: AgentSubject): Promise<Channel[]> {
   const sql = await db()
   const model = subjectModel(agent)
@@ -229,6 +254,8 @@ export async function listChannelsForAgent(agent: AgentSubject): Promise<Channel
     `
     return all as unknown as Channel[]
   }
+  const owner = await assistantOwnerId(agent)
+  if (owner) return listChannels(owner)
   const rows = await sql`
     select c.id, c.name, c.topic, c.kind, c.created_at as "createdAt", c.updated_at as "updatedAt"
     from channels c join channel_agents a on a.channel_id = c.id and a.agent_model = ${model}
@@ -239,13 +266,23 @@ export async function listChannelsForAgent(agent: AgentSubject): Promise<Channel
 
 /** May this agent read/post in this channel? Membership — or org-wide
  *  elevation, which still never reaches DMs. Pass the AgentCaller, not its
- *  model: elevation is only for a proven identity. */
+ *  model: elevation is only for a proven identity.
+ *
+ *  A personal assistant may read/post where its OWNER is a member — same
+ *  identity-proxy reach as `listChannelsForAgent` above. Posts stay attributed
+ *  to the agent (the messages route inserts agent posts under the caller's own
+ *  model), so this grants the assistant its owner's VIEW, not the ability to
+ *  speak as its owner. */
 export async function agentMayAccessChannel(channelId: string, agent: AgentSubject): Promise<boolean> {
+  if (!isChannelId(channelId)) return false
   if ((await listChannelAgents(channelId)).includes(subjectModel(agent))) return true
-  if (!(await isElevatedAssistant(agent))) return false
-  const sql = await db()
-  const rows = await sql`select 1 from channels where id = ${channelId} and kind <> 'dm' and archived_at is null`
-  return rows.length > 0
+  if (await isElevatedAssistant(agent)) {
+    const sql = await db()
+    const rows = await sql`select 1 from channels where id = ${channelId} and kind <> 'dm' and archived_at is null`
+    return rows.length > 0
+  }
+  const owner = await assistantOwnerId(agent)
+  return owner ? (await channelRole(owner, channelId)) !== null : false
 }
 
 export async function addChannelAgent(channelId: string, model: string): Promise<void> {

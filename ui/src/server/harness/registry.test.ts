@@ -32,11 +32,8 @@ describe('the registry', () => {
       'inbox-brief',
       'inbox-command',
       'inbox-reply',
-      'briefer:brief',
-      'briefer:chat',
       'briefer:daily-open',
       'briefer:daily-delta',
-      'briefer:daily-chat',
       'briefer:reply',
       'work-session',
       'hermes:knowledge',
@@ -237,11 +234,10 @@ describe('the PLATFORM_AGENTS cross-check', () => {
     // Locked so that a change is a decision rather than a surprise. See the
     // header of registry.ts for the argument behind each one.
     //
-    // 'briefer' is assignable: false — the Inbox and the briefing both run on
-    // the owner's own assistant, so there is no pin for a harness to declare.
-    // It now HAS harnesses (briefer:brief, briefer:chat); what it does not have
-    // is an assignment slot, which is a different sentence and the one that
-    // matters.
+    // 'briefer' is assignable: false — the Inbox trio and the daily brief both
+    // run on the owner's own assistant, so there is no pin for a harness to
+    // declare. It HAS harnesses; what it does not have is an assignment slot,
+    // which is a different sentence and the one that matters.
     expect(PLATFORM_AGENTS.find((a) => a.id === 'briefer')?.assignable).toBe(false)
     expect(harnesses.filter((h) => agentOf.get(h.id) === 'briefer')).toEqual([])
     // ...and from the other side: the harnesses with no platform agent are
@@ -267,11 +263,8 @@ describe('the PLATFORM_AGENTS cross-check', () => {
       'inbox-brief',
       'inbox-command',
       'inbox-reply',
-      'briefer:brief',
-      'briefer:chat',
       'briefer:daily-open',
       'briefer:daily-delta',
-      'briefer:daily-chat',
       'briefer:reply',
       'work-session',
       // The Hermes family: its model is the AGENT IN THE CONVERSATION, so there

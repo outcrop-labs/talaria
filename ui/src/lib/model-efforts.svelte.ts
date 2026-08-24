@@ -36,6 +36,11 @@ export function useModelEfforts(model: MaybeModel) {
     get efforts(): string[] {
       return query.data?.efforts ?? []
     },
+    /** Whether the answer has landed. A caller that renders a "no levels"
+     * hint needs to distinguish "none published" from "not asked yet". */
+    get isLoading(): boolean {
+      return query.isLoading
+    },
     /** The AGENT-CONFIGURED default for this model id (the pick saved beside
      *  the model in the agent editor), when the id is a persona whose config
      *  names one and the level is still published. Null everywhere else. */

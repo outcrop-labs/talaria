@@ -25,6 +25,9 @@ vi.mock('../llm-gateway', async (importOriginal) => ({
 }))
 
 vi.mock('../harness/persona', () => ({
+  // model-efforts (now in this graph via effort-prefs) asks for persona
+  // targets at load; it only ever needs [] here.
+  personaTargetsFor: async () => [],
   personaCapabilityKeys: (): Promise<string[]> => Promise.resolve(state.personaKeys),
 }))
 

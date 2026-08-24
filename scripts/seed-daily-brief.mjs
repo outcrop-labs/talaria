@@ -150,18 +150,26 @@ const DMS = [
   },
 ]
 
-const NOTIFICATIONS = [
+// Notifications carry REAL hrefs, or the brief lines built from them are
+// unfollowable — the row is the only source the brief has. Two of the four
+// below therefore point at things this script just seeded (the platform
+// channel and the landing ticket), which is also what production does:
+// `notifyUserMentions` links `/comms/channel/<id>` and `notifyTaskUsers`
+// links the ticket, and the brief's cross-source dedupe then folds those
+// notifications into the channel/task lines instead of double-listing them.
+// The other two land on real top-level surfaces (`/research`, `/fleet`).
+const notificationSet = (refs) => [
   {
     kind: 'mention',
     title: 'Priya mentioned you in #platform',
     body: '@you — the rollback window question is still open, can you weigh in before standup?',
-    href: '/comms',
+    href: `/comms/channel/${refs.platformChannelId}`,
   },
   {
     kind: 'task-assigned',
     title: 'You were assigned "Landing page follow-up"',
     body: 'Dana assigned this to you and flagged it as needed for the Thursday review.',
-    href: '/boards',
+    href: `/boards/${refs.boardId}/${refs.taskIds.get('landing')}`,
   },
   {
     kind: 'research',
@@ -301,15 +309,48 @@ async function seedDms(owner, mates) {
   log(`${DMS.length} unread DMs`)
 }
 
-async function seedNotifications(owner) {
+/** The #platform room the mention notification is ABOUT. Without it the
+ *  notification names a channel that does not exist and its brief line points
+ *  at `/comms` — a fixture row with no referent, which on the surface reads
+ *  as "stuck dummy data". Real, unread, from Priya: the comms source and the
+ *  mention notification then say the same thing, and the dedupe folds them
+ *  into one followable line. */
+async function seedPlatformChannel(owner, mates) {
+  const name = 'platform'
+  const existing = await sql`select id from channels where name = ${name} and kind = 'channel' and archived_at is null`
+  const channel =
+    existing[0] ??
+    (await sql`
+      insert into channels (name, kind, created_by) values (${name}, 'channel', ${owner.id}) returning id
+    `)[0]
+
+  await sql`insert into channel_members (channel_id, user_id, role) values (${channel.id}, ${owner.id}, 'owner') on conflict do nothing`
+  for (const handle of ['priya', 'dana']) {
+    const mate = mates.get(handle)
+    if (mate) await sql`insert into channel_members (channel_id, user_id, role) values (${channel.id}, ${mate.id}, 'editor') on conflict do nothing`
+  }
+  await sql`delete from channel_messages where channel_id = ${channel.id}`
+  const first = (owner.name ?? owner.email ?? 'you').split(/\s+/)[0]
+  await sql`
+    insert into channel_messages (channel_id, seq, author_type, author, content, status, created_at)
+    values (${channel.id}, 1, 'user', ${mates.get('priya')?.email ?? 'priya@seed.talaria.test'},
+            ${`@${first} — the rollback window question is still open, can you weigh in before standup?`}, 'complete', now() - interval '75 minutes')
+  `
+  await sql`update channels set msg_seq = 1, updated_at = now() - interval '75 minutes' where id = ${channel.id}`
+  await sql`update channel_members set last_read_seq = 0 where channel_id = ${channel.id} and user_id = ${owner.id}`
+  log(`#${name} with Priya’s mention`)
+  return channel.id
+}
+
+async function seedNotifications(owner, refs) {
   await sql`delete from notifications where user_id = ${owner.id} and body like ${'%' + SEED_TAG + '%'}`
-  for (const n of NOTIFICATIONS) {
+  for (const n of notificationSet(refs)) {
     await sql`
       insert into notifications (user_id, kind, title, body, href, created_at)
       values (${owner.id}, ${n.kind}, ${n.title}, ${`${n.body}\n\n<!-- ${SEED_TAG} -->`}, ${n.href}, now() - interval '4 hours')
     `
   }
-  log(`${NOTIFICATIONS.length} unread notifications`)
+  log(`${notificationSet(refs).length} unread notifications`)
 }
 
 // ── Walking the day forward ──────────────────────────────────────────────────
@@ -418,9 +459,10 @@ async function main() {
   }
 
   const mates = await seedTeammates()
-  const { ids } = await seedBoard(owner, mates)
+  const { board, ids } = await seedBoard(owner, mates)
   await seedDms(owner, mates)
-  await seedNotifications(owner)
+  const platformChannelId = await seedPlatformChannel(owner, mates)
+  await seedNotifications(owner, { boardId: board.id, taskIds: ids, platformChannelId })
 
   if (!assistants[0]) {
     log('done — seeded the sources only.')

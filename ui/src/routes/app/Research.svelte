@@ -1,8 +1,9 @@
 <script lang="ts">
   import { pathId } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Gauge, Trash2 } from '@lucide/svelte'
+  import { Gauge, Telescope, Trash2 } from '@lucide/svelte'
   import { navigate, route } from '@/router'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
@@ -109,6 +110,25 @@
   const canDelete = (run: ResearchRun) => run.ownerUserId === session?.id || session?.role === 'admin'
 
   const selected = $derived(runs.find((r) => r.id === selectedId) ?? null)
+
+  // The picker's pick filters the rail: whose runs show below. `selected`
+  // still resolves from the UNFILTERED list — the URL is the selection, the
+  // filter is only the rail's view of it, so a deep link to another agent's
+  // run still opens with its name claimed in the strip.
+  const visibleRuns = $derived(agent ? runs.filter((r) => r.agentModel === agent) : runs)
+  const agentLabel = $derived(agents.find((a) => a.id === agent)?.label ?? 'this agent')
+
+  // The selected run is what the page is ABOUT, so it owns the strip: its
+  // title becomes the view title and the crumb's last segment (WORK /
+  // RESEARCH / <run>). Claimed from an effect because the run arrives from
+  // the list query — on a deep link the pathname key keeps the fallback
+  // ("Research") honest until it resolves, and a run→run hop re-claims
+  // without remounting.
+  $effect(() => {
+    if (!selected) return
+    const name = selected.title ?? selected.question
+    claimViewTitle(name, { trail: [name] })
+  })
 </script>
 
 {#snippet stageHeader()}
@@ -118,8 +138,9 @@
         <DangerLink onClick={() => selected && void remove(selected)}>Remove</DangerLink>
       {/if}
     {/snippet}
+    <!-- No title: the strip carries the run's name (claimed above); the row
+         keeps the run's meta and the Remove action. -->
     <StageHeader
-      title={selected.title ?? selected.question}
       meta={`${MODE_META[selected.mode].label} · ${selected.agentModel}`}
       actions={canDelete(selected) ? headerActions : undefined}
     />
@@ -127,9 +148,22 @@
 {/snippet}
 
 <RailSurface>
-  <Rail title="Research">
+  <Rail>
     <div class="mb-3">
-      <AgentPicker {agents} value={agent} onChange={pickAgent} loading={agentsLoading} fullWidth />
+      <!-- The picker does double duty: it chooses who RUNS the next research
+           and FILTERS the history below by who ran it — one control, because
+           it's one question: whose work is this rail about? "All agents" is
+           browse-only; research needs a runner, so the send button waits for
+           a concrete pick. -->
+      <AgentPicker
+        {agents}
+        value={agent}
+        onChange={pickAgent}
+        onSelectAll={() => pickAgent(null)}
+        allLabel="All agents"
+        loading={agentsLoading}
+        fullWidth
+      />
     </div>
     <!-- Skeleton → content as one motion: run-row-shaped skeletons (dot +
          title line, then the chip/meta line) materialize into the real rows.
@@ -160,8 +194,18 @@
         />
       {:else if runs.length === 0}
         <EmptyState variant="compact" icon="◎" title="No research yet." hint="Ask something worth knowing." />
+      {:else if visibleRuns.length === 0}
+        <!-- The filter's own empty state, distinct from the workspace's: the
+             org HAS research, just none by this agent — "No research yet"
+             would be a lie about everyone. -->
+        <EmptyState
+          variant="compact"
+          icon="◎"
+          title={`No runs by ${agentLabel} yet.`}
+          hint="Pick another agent above, or start one — it lands here."
+        />
       {:else}
-        {#each runs as r (r.id)}
+        {#each visibleRuns as r (r.id)}
           <button
             type="button"
             onclick={() => setSelectedId(r.id)}
@@ -276,6 +320,7 @@
             <span class="flex-1"></span>
             <SendButton
               title="Start (⏎)"
+              icon={Telescope}
               enabled={mayRun.current && !starting && !!question.trim() && !!agent}
               onClick={() => void start()}
             />

@@ -5,6 +5,7 @@
   import Select from '@/components/ui/Select.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { submitOnEnter } from '@/components/ui/control'
+  import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import { slide } from '@/lib/motion'
   import type { RagAdmin } from './retrieval'
 
@@ -83,12 +84,7 @@
     {/if}
     {#if meta && meta.id !== 'tei'}
       {#if models}
-        <Select size="sm" value={cfg.model ?? ''} onchange={(e) => void apply({ model: e.currentTarget.value || null })} class="w-64">
-          <option value="">default model</option>
-          {#each models as m (m)}
-            <option value={m}>{m}</option>
-          {/each}
-        </Select>
+        <ModelIdPicker models={models} value={cfg.model ?? null} onChange={(model) => void apply({ model })} emptyLabel="default model" class="w-64" />
       {:else}
         <Button size="sm" variant="outline" onclick={() => void loadModels()}>
           Load models

@@ -134,6 +134,26 @@ export async function isElevatedAssistant(subject: AgentSubject): Promise<boolea
   return rows.length > 0
 }
 
+/** The owner a personal assistant acts for, or null. The identity-proxy reach
+ *  this answers — "your assistant manages your boards for you" — is the OWNER'S
+ *  OWN view (their memberships, their DMs), not org-wide: that larger grant is
+ *  `elevated` on the agent_defs row and stays gated by `isElevatedAssistant`.
+ *
+ *  Demands the resolved CALLER, never a bare model string. `subjectProven`
+ *  reads a string as proven, and owner reach is a human-identity grant — the
+ *  same belt-and-braces `actingUser` applies (it checks `legacy` explicitly
+ *  even though agent-auth already refuses a legacy caller claiming a
+ *  personal-assistant name). */
+export async function assistantOwnerId(subject: AgentSubject): Promise<string | null> {
+  if (typeof subject === 'string' || subject.legacy) return null
+  const sql = await db()
+  const rows = (await sql`
+    select d.owner_user_id as id from agent_defs d
+    where d.model = ${subject.model} and d.owner_user_id is not null
+  `) as unknown as Array<{ id: string }>
+  return rows[0]?.id ?? null
+}
+
 /** Flip org-wide elevation on a user's personal assistant. Returns false if
  *  the user has no assistant. Elevating requires the owner to be an admin. */
 export async function setAssistantElevated(userId: string, elevated: boolean): Promise<boolean> {

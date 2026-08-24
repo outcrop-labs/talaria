@@ -623,7 +623,8 @@ server.registerTool(
 server.registerTool(
   'list_channels',
   {
-    description: 'List the team channels you (this agent) have been added to. Returns id + name + topic.',
+    description:
+      'List the team channels you can see and read. A personal assistant sees its owner’s channels and DMs; any other agent sees the channels it has been added to. Returns id + name + topic — pass the id, never the name, to read/post.',
     inputSchema: {},
   },
   async () => ok(await api('GET', '/api/channels')),
