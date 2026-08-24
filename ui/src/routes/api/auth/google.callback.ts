@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
 import { googleLoginEnabled } from '@/server/google/client-config'
-import { exchangeGoogleCode, googleRedirectUri } from '@/server/auth/google'
+import { exchangeGoogleCode, googleRedirectUri, orgGoogleLoginAllowed } from '@/server/auth/google'
 import {
   clearStateCookie,
   createSession,
@@ -12,12 +12,16 @@ import {
 import { upsertUser } from '@/server/users'
 import { selfJoinAllowed } from '@/server/org-domains'
 import { inviteAllowed, markInviteAccepted } from '@/server/invites'
+import { emailDomainOf } from '@/server/google/aliasing'
+import { getOrgConnectionStatus } from '@/server/google/org-connection'
 
-// Bounce back to the login screen with a machine-readable reason.
-function loginError(reason: string): Response {
+// Bounce back to the login screen with a machine-readable reason. Extra params
+// ride along (the org-domain refusal carries WHICH domain to name).
+function loginError(reason: string, extra: Record<string, string> = {}): Response {
+  const params = new URLSearchParams({ error: reason, ...extra })
   return new Response(null, {
     status: 302,
-    headers: { Location: `/login?error=${encodeURIComponent(reason)}`, 'Set-Cookie': clearStateCookie() },
+    headers: { Location: `/login?${params.toString()}`, 'Set-Cookie': clearStateCookie() },
   })
 }
 
@@ -44,6 +48,17 @@ export const Route = defineApi('/api/auth/google/callback', {
     } catch (err) {
       if (import.meta.env.DEV) console.error('[auth/google] callback failed:', err)
       return loginError('exchange_failed')
+    }
+
+    // The org account's domain is the outer gate. Once a Talaria is wired to
+    // a Google Workspace, Google sign-in is for that workspace's people —
+    // checked BEFORE the doors below because "only this org" is a property of
+    // the install, not a membership policy an invite can override. The
+    // connected flag (a live refresh token) is part of the anchor: a dead
+    // leftover row must not lock every human out.
+    const org = await getOrgConnectionStatus()
+    if (!orgGoogleLoginAllowed(org.connected ? org.email : null, identity.email)) {
+      return loginError('org_domain', { domain: emailDomainOf(org.email) ?? '' })
     }
 
     // Three doors in: the env allow-list, SELF-JOIN (verified email on a
