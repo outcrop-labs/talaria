@@ -20,9 +20,10 @@ export type * from '@/server/daily-brief-types'
 export { isBriefAbsent } from '@/lib/brief-absent'
 
 /** The browser's IANA zone, sent on the brief read and on item actions. The
- *  org config's zone is a server default; this is what makes "due" and
- *  "today" mean the READER'S day rather than the server's — an evening in
- *  Denver is not tomorrow, whatever UTC thinks. */
+ *  person's STORED zone (Settings, or the first-run adoption) outranks it on
+ *  the server; this param is the fallback that predates the stored zone —
+ *  still what makes "due" and "today" mean the READER'S day rather than the
+ *  server's for anyone who has never set one. */
 const browserZone = (): string => {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone

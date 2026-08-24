@@ -2027,6 +2027,17 @@ const MIGRATIONS: string[] = [
   // id, exactly like model_prices beside it.
   `alter table llm_endpoints add column if not exists model_efforts jsonb not null default '{}'::jsonb`,
 
+  // ── PER-USER TIME ZONE ─────────────────────────────────────────────────────
+  //
+  // The zone a person's brief opens in and their digest arrives in. Nullable
+  // on purpose: null IS the setting "follow the workspace zone" (brief_config
+  // / digest_config → TZ env → UTC), so the fallback chain lives in the
+  // column's null state rather than a sentinel value that would need its own
+  // validation. The value is an IANA name, validated at the profile-PUT
+  // boundary and trusted after that; a stale or hand-edited bad name degrades
+  // to UTC inside localMoment rather than stopping scheduled work.
+  `alter table users add column if not exists timezone text`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

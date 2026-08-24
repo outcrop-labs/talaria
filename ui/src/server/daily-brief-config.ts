@@ -8,12 +8,12 @@
 // the LEAD, not the start. Storing only the answer would have made both of
 // those edits look identical, and the second one silently wrong.
 //
-// ORG-WIDE, DELIBERATELY, AND EXACTLY AS FAR AS `digest_config` GOES. The
-// `users` table has no timezone column, and inventing one here would make this
-// feature the owner of a field that belongs to the account. `zoneFor` below is
-// the single function that changes on the day a per-user zone lands — the same
-// seam `server/digest.ts` left itself with `recipientZone`, and for the same
-// reason.
+// THE ZONE IS PER-PERSON: `users.timezone` when the account set one, this
+// config's zone (TZ env → UTC) otherwise. The seam the old "ORG-WIDE,
+// DELIBERATELY" note here left open — `zoneFor` was the single function that
+// would change, and it did: it now resolves the person's stored zone against
+// the workspace default, and `server/digest.ts` does the same through its own
+// `recipientZone`.
 import { getSetting, setSetting } from './audit'
 
 export interface BriefConfig {
@@ -74,9 +74,14 @@ export function fireHour(config: BriefConfig): number {
   return (config.workdayStartHour - config.leadHours + 24) % 24
 }
 
-/** The person's zone. One line, and the seam a per-user zone lands on. */
-export function zoneFor(_userId: string, config: BriefConfig): string {
-  return config.timeZone
+/** The person's zone: their stored preference when they set one, the
+ *  workspace's otherwise. Pure over the VALUE (not the userId) on purpose —
+ *  callers that hold only an id fetch it first, `runBriefPass` carries it in
+ *  the same query as the user row, and the digest loop stays sync. A blank
+ *  stored value counts as unset, so a hand-emptied row follows the workspace
+ *  rather than throwing at every format call. */
+export function zoneFor(stored: string | null | undefined, config: { timeZone: string }): string {
+  return stored && stored.trim() ? stored : config.timeZone
 }
 
 /** Next moment a brief opens in `zone`, from `at`. Rendered by the surface

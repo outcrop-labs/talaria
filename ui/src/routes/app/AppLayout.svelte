@@ -7,6 +7,7 @@
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
   import NavRail from '@/components/app/NavRail.svelte'
   import { useNavCollapsed } from '@/components/app/nav-rail.svelte'
+  import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
   import TopStrip from '@/components/app/TopStrip.svelte'
   import InboxFocusShell from '@/components/inbox/InboxFocusShell.svelte'
   import UnreadableSecretsBanner from '@/components/setup/UnreadableSecretsBanner.svelte'
@@ -216,6 +217,11 @@
            confused colleague days later. Renders nothing for members, and
            nothing at all when there is nothing to say. -->
       <UnreadableSecretsBanner />
+      <!-- Silent first-run timezone adoption. Renders nothing; see the
+           component. Here, next to the banner, because both are "the shell
+           quietly makes the workspace honest" — one about secrets, one about
+           whose clock the person is on. -->
+      <TimezoneAdopt />
       <!-- This region used to carry `vt-view` and be animated by the View
            Transitions API on nav clicks. Removed: the transition paints a
            static snapshot while the incoming view is still loading its data,

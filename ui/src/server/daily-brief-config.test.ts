@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { briefWindow, fireHour, localMoment, nextBriefAt, type BriefConfig } from './daily-brief-config'
+import { briefWindow, fireHour, localMoment, nextBriefAt, zoneFor, type BriefConfig } from './daily-brief-config'
 
 // The clock. Every assertion here is a way somebody loses a brief for a day:
 // a fire hour computed wrong, a window that only opens on the exact minute the
@@ -94,5 +94,19 @@ describe('nextBriefAt', () => {
     // adding 24h of milliseconds would drift by the hour the zone gave back.
     const next = nextBriefAt(config(), 'America/New_York', new Date('2026-10-31T20:00:00Z'))
     expect(localMoment('America/New_York', next).hour).toBe(7)
+  })
+})
+
+describe('zoneFor', () => {
+  // The whole per-user zone feature hangs on this one resolution: a zone the
+  // person set wins, anything that is not a set zone follows the workspace.
+  it('lets the person’s stored zone win over the workspace default', () => {
+    expect(zoneFor('Asia/Tokyo', config())).toBe('Asia/Tokyo')
+  })
+
+  it('follows the workspace zone when nothing real is stored', () => {
+    for (const unset of [null, undefined, '', '   ']) {
+      expect(zoneFor(unset, config({ timeZone: 'America/Denver' }))).toBe('America/Denver')
+    }
   })
 })

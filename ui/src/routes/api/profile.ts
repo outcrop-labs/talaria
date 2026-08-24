@@ -5,13 +5,16 @@ import { parseBody, requireUser } from '@/server/api-guard'
 import { updateSessionUser } from '@/server/auth/session'
 import { gatewayModels } from '@/server/llm-gateway'
 import { memberModelAllowlist, modelAllowedFor } from '@/server/model-access'
-import { getPreferredEffort, getPreferredModel, setPreferredEffort, setPreferredModel, setUserName } from '@/server/users'
+import { getPreferredEffort, getPreferredModel, getTimezone, setPreferredEffort, setPreferredModel, setTimezone, setUserName } from '@/server/users'
+import { isValidTimeZone } from '@/lib/timezone'
 
 // The signed-in user's profile. GET → preferences (preferred model, preferred
-// effort). PUT { name?, preferredModel?, preferredEffort? } → update display
-// name (users row + live session), the model powering their AI drafting (null
-// clears → server default), and/or their platform-default reasoning effort
-// (null clears → every model's own default).
+// effort, timezone). PUT { name?, preferredModel?, preferredEffort?,
+// timezone? } → update display name (users row + live session), the model
+// powering their AI drafting (null clears → server default), their
+// platform-default reasoning effort (null clears → every model's own
+// default), and/or their IANA zone (null clears → follow the workspace
+// zone).
 export const Route = defineApi('/api/profile', {
   GET: async ({ request }) => {
     const user = await requireUser(request)
@@ -19,6 +22,7 @@ export const Route = defineApi('/api/profile', {
     return json({
       preferredModel: await getPreferredModel(user.id),
       preferredEffort: await getPreferredEffort(user.id),
+      timezone: await getTimezone(user.id),
     })
   },
   PUT: async ({ request }) => {
@@ -31,8 +35,13 @@ export const Route = defineApi('/api/profile', {
           name: z.string().min(1).max(80).optional(),
           preferredModel: z.string().min(1).max(200).nullable().optional(),
           preferredEffort: z.string().min(1).max(24).nullable().optional(),
+          timezone: z.string().min(1).max(64).nullable().optional(),
         })
-        .refine((b) => b.name !== undefined || b.preferredModel !== undefined || b.preferredEffort !== undefined, { message: 'nothing to update' }),
+        .refine(
+          (b) =>
+            b.name !== undefined || b.preferredModel !== undefined || b.preferredEffort !== undefined || b.timezone !== undefined,
+          { message: 'nothing to update' },
+        ),
     )
     if (body instanceof Response) return body
     let updated = user
@@ -64,6 +73,19 @@ export const Route = defineApi('/api/profile', {
       // or foreign level is inert everywhere else. A length bound is the whole
       // server-side contract.
       await setPreferredEffort(user.id, body.preferredEffort)
+    }
+    if (body.timezone !== undefined) {
+      // An IANA name this runtime can resolve, or a refusal — the stored
+      // value drives scheduled work (brief opens, digest sends), so a typo
+      // must die here rather than warn from localMoment at 6am. Null passes
+      // straight through: it IS the setting "follow the workspace zone".
+      if (body.timezone !== null) {
+        const tz = body.timezone.trim()
+        if (!isValidTimeZone(tz)) return json({ error: 'not a recognized time zone' }, { status: 400 })
+        await setTimezone(user.id, tz)
+      } else {
+        await setTimezone(user.id, null)
+      }
     }
     return json({ user: updated })
   },
