@@ -11,6 +11,7 @@
   import { getJson } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
+  import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
 
   interface OrgGoogle {
     available: boolean
@@ -154,6 +155,7 @@
     {/if}
   {/if}
   {#if data?.connected}<AdminOrgGoogleTargets targets={data.targets} />{/if}
+  {#if data?.connected}<AdminOrgGoogleWorkspace />{/if}
   {#if flash}
     <div class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
       {msg[flash] ?? flash}

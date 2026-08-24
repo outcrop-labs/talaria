@@ -33,6 +33,26 @@ export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
 ]
 
+// The ORG connect asks for more than a personal one: provisioning the shared
+// workspace means CREATING its containers — an org calendar plus its share
+// rules, a whole Shared Drive plus its domain permission — and the per-file /
+// per-event scopes above cannot create either. Full `calendar` covers
+// calendars.insert + acl.insert (and everything calendar.events did); full
+// `drive` covers drives.insert + permissions (and everything drive.file and
+// drive.readonly did). An org connected before this array existed keeps its
+// old scopes until one reconnect — the provisioning route says so when it
+// checks (same convention the gmail.modify swap set).
+export const ORG_CONNECT_SCOPES = [
+  'openid',
+  'email',
+  // Create + share the org calendar; edit its (and the primary's) events.
+  'https://www.googleapis.com/auth/calendar',
+  // Create the Shared Drive and grant the domain access to it.
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
+]
+
 /** Whether the Google integration can run at all — an OAuth client exists,
  *  from the Admin UI record or the env fallback (same client as login). */
 export async function googleIntegrationEnabled(): Promise<boolean> {
@@ -45,13 +65,15 @@ export const googleConnectRedirectUri = (request: Request) =>
 export const googleOrgConnectRedirectUri = (request: Request) =>
   `${resolveOrigin(request)}/api/integrations/google/org/callback`
 
-export async function googleConnectUrl(redirectUri: string, state: string): Promise<string> {
+/** The consent URL for a connect flow. `scopes` defaults to the personal
+ *  set; the org connect passes ORG_CONNECT_SCOPES (see its comment). */
+export async function googleConnectUrl(redirectUri: string, state: string, scopes: string[] = WORKSPACE_SCOPES): Promise<string> {
   const cfg = (await resolveGoogleClient())!
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: WORKSPACE_SCOPES.join(' '),
+    scope: scopes.join(' '),
     state,
     access_type: 'offline',
     // Force a refresh token even if the user has consented before.
@@ -132,7 +154,7 @@ export async function completeGoogleOrgConnect(
   await saveOrgConnection({
     googleSub: info.sub,
     email: info.email ?? null,
-    scope: tokens.scope ?? WORKSPACE_SCOPES.join(' '),
+    scope: tokens.scope ?? ORG_CONNECT_SCOPES.join(' '),
     refreshToken: tokens.refresh_token ?? null,
     accessToken: tokens.access_token,
     expiresInSeconds: tokens.expires_in ?? null,

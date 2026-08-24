@@ -19,6 +19,7 @@ interface OrgRow {
   drive_folder_id: string | null
   calendar_id: string | null
   send_as: string | null
+  shared_drive_id: string | null
   created_at: string
 }
 
@@ -30,6 +31,8 @@ export interface OrgTargets {
   calendarId: string | null
   /** Verified send-as address for org mail (null → the account's own address). */
   sendAs: string | null
+  /** The provisioned Shared Drive itself (null → not provisioned). */
+  sharedDriveId: string | null
 }
 
 export async function getOrgConnectionStatus(): Promise<GoogleConnectionStatus & { targets: OrgTargets }> {
@@ -39,6 +42,7 @@ export async function getOrgConnectionStatus(): Promise<GoogleConnectionStatus &
     driveFolderId: row?.drive_folder_id ?? null,
     calendarId: row?.calendar_id ?? null,
     sendAs: row?.send_as ?? null,
+    sharedDriveId: row?.shared_drive_id ?? null,
   }
   if (!row || !row.refresh_token_enc) return { connected: false, email: null, scope: [], connectedAt: null, targets }
   return {
@@ -53,26 +57,48 @@ export async function getOrgConnectionStatus(): Promise<GoogleConnectionStatus &
 /** The org build targets alone (for execution paths). Null when not connected. */
 export async function getOrgTargets(): Promise<OrgTargets> {
   const sql = await db()
-  const [row] = await sql<OrgRow[]>`select drive_folder_id, calendar_id, send_as from google_org_connection where id = 1`
+  const [row] = await sql<OrgRow[]>`select drive_folder_id, calendar_id, send_as, shared_drive_id from google_org_connection where id = 1`
   return {
     driveFolderId: row?.drive_folder_id ?? null,
     calendarId: row?.calendar_id ?? null,
     sendAs: row?.send_as ?? null,
+    sharedDriveId: row?.shared_drive_id ?? null,
   }
 }
 
-/** Update the org build targets (admin). Empty/blank values clear to null. */
+/** The connected org account's email alone, or null. The aliasing derivation
+ *  reads this on the send path — plus-addresses hang off the org account, so
+ *  no connection means no derived addresses (an agent's override still wins). */
+export async function getOrgEmail(): Promise<string | null> {
+  const sql = await db()
+  const [row] = await sql<{ email: string | null; refresh: string | null }[]>`
+    select email, refresh_token_enc as refresh from google_org_connection where id = 1
+  `
+  return row?.refresh ? row.email : null
+}
+
+/** Update the org build targets (admin). Only the fields PRESENT in the patch
+ *  are written — a caller setting one target must not silently clear the other
+ *  two (the admin form sends all three; provisioning sends one). Empty/blank
+ *  values clear to null. The Shared Drive id has its own writer. */
 export async function setOrgTargets(t: Partial<OrgTargets>): Promise<void> {
   const sql = await db()
   const norm = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null)
-  await sql`
-    update google_org_connection set
-      drive_folder_id = ${norm(t.driveFolderId)},
-      calendar_id = ${norm(t.calendarId)},
-      send_as = ${norm(t.sendAs)},
-      updated_at = now()
-    where id = 1
-  `
+  if (t.driveFolderId !== undefined) {
+    await sql`update google_org_connection set drive_folder_id = ${norm(t.driveFolderId)}, updated_at = now() where id = 1`
+  }
+  if (t.calendarId !== undefined) {
+    await sql`update google_org_connection set calendar_id = ${norm(t.calendarId)}, updated_at = now() where id = 1`
+  }
+  if (t.sendAs !== undefined) {
+    await sql`update google_org_connection set send_as = ${norm(t.sendAs)}, updated_at = now() where id = 1`
+  }
+}
+
+/** Record the provisioned Shared Drive (null clears). */
+export async function setOrgSharedDrive(id: string | null): Promise<void> {
+  const sql = await db()
+  await sql`update google_org_connection set shared_drive_id = ${id}, updated_at = now() where id = 1`
 }
 
 export async function isOrgConnected(): Promise<boolean> {
