@@ -38,17 +38,24 @@
 //      to an admin who could not have approved it anyway.
 //
 // ASSUMPTIONS, STATED
-//   · NO TIME ZONE PER USER. The `users` table has no timezone column and this
-//     agent may not add a migration this run, so the send hour is ORG-WIDE:
-//     app_settings `digest_config` = { hour, timeZone, … }, defaulting to 08:00
-//     in TZ (or UTC). When a per-user zone lands, `recipientZone()` below is the
-//     one function that has to change.
+//   · THE SEND HOUR IS PER-PERSON: `users.timezone` when the account set one,
+//     the workspace default otherwise (app_settings `digest_config` = { hour,
+//     timeZone, … }, defaulting to 08:00 in TZ or UTC). `recipientZone()`
+//     below resolves that chain through the same `zoneFor` the brief uses, so
+//     the digest and the brief can never disagree about whose clock a person
+//     is on.
 //   · THE OPT-OUT IS ONE RESERVED KEY. The notification prefs table
 //     (lib/notifications.ts) routes CLASSES, and a digest is not a class, so the
 //     switch rides in the same jsonb blob under `digest`. Settings →
 //     Notifications writes it; `digestEnabled` there decides, and this file's
 //     `digestOptedIn` is that call and nothing else.
 import { getSetting, setSetting } from './audit'
+// `zoneFor` from the BRIEF's config module, not a local copy: one resolution
+// of "the person's zone vs the workspace's" for both scheduled surfaces. Safe
+// to import here — daily-brief-config pulls in only ./audit, which this file
+// already depends on (unlike daily-brief.ts itself, which would drag the
+// brief's module graph along).
+import { zoneFor } from './daily-brief-config'
 import { emailButton, emailEscape, emailShell } from './email'
 import { homeQueues, type WorkItem } from './home'
 import { instanceBaseUrl } from './instance'
@@ -119,18 +126,21 @@ export async function digestConfig(): Promise<DigestConfig> {
 
 // ── Recipients ───────────────────────────────────────────────────────────────
 
-interface Recipient {
+export interface Recipient {
   id: string
   email: string
   name: string | null
   role: 'admin' | 'member'
   prefs: unknown
+  /** The person's IANA zone, null = follow the workspace default. Carried in
+   *  the same query as the rest of the row so the send loop stays sync. */
+  timezone: string | null
 }
 
 async function recipients(): Promise<Recipient[]> {
   const sql = await db()
   return (await sql`
-    select id, email, name, role, notify_prefs as prefs
+    select id, email, name, role, notify_prefs as prefs, timezone
     from users where email is not null and length(trim(email)) > 0
     order by created_at asc
   `) as unknown as Recipient[]
@@ -151,10 +161,12 @@ export function digestOptedIn(prefs: unknown): boolean {
   return digestEnabled(prefs)
 }
 
-/** The zone the send hour is read in for this person. Org-wide today; the one
- *  place to change when the user record grows a zone. */
-function recipientZone(_user: Recipient, config: DigestConfig): string {
-  return config.timeZone
+/** The zone the send hour is read in for this person: their stored zone, the
+ *  workspace's otherwise — the same resolution `zoneFor` gives the brief, so
+ *  a person's digest and their brief always speak the same clock. Exported
+ *  for the precedence test. */
+export function recipientZone(user: Recipient, config: DigestConfig): string {
+  return zoneFor(user.timezone, config)
 }
 
 /** Local hour and calendar date in a zone. An invalid zone must not take the

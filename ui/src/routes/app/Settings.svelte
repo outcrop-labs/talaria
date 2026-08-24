@@ -19,6 +19,7 @@
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import PreferredModelPicker from './settings/PreferredModelPicker.svelte'
+  import TimezonePicker from './settings/TimezonePicker.svelte'
   import NotificationsSection from './settings/NotificationsSection.svelte'
   import McpConnectionsSection from './settings/McpConnectionsSection.svelte'
   import IntegrationsSection from './settings/IntegrationsSection.svelte'
@@ -152,6 +153,7 @@
         {/if}
         {#if savedFlash.saved}<div class="mt-2 text-xs text-success">Saved</div>{/if}
         <PreferredModelPicker />
+        <TimezonePicker />
       </Panel>
     {/if}
 

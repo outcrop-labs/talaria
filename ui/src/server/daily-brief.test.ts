@@ -27,6 +27,8 @@ const state = vi.hoisted(() => {
     entries: new Map<string, unknown[]>(),
     briefSeq: 0,
     publishes: [] as Array<{ userId: string; event: { type: string } }>,
+    // The person's stored zone (users.timezone); null = follow the workspace.
+    userTz: null as string | null,
   }
 })
 
@@ -126,6 +128,10 @@ const publishUser = vi.fn((userId: string, event: { type: string }) => {
 })
 
 vi.mock('@/server/db/pg', () => ({ db: async () => makeSql() }))
+// Whole-module stub (not importOriginal-spread): the real users.ts drags the
+// auth session graph (redis, crypto) into a test that never touches it, and
+// nothing else in this file's module graph imports users.ts for anything.
+vi.mock('@/server/users', () => ({ getTimezone: async () => state.userTz }))
 vi.mock('@/server/scheduler', () => ({ registerJob: () => {} }))
 vi.mock('@/server/realtime', () => ({ publishUser }))
 vi.mock('@/server/harness/run', () => ({
@@ -176,6 +182,7 @@ describe('getBrief opens on demand', () => {
     state.entries.clear()
     state.briefSeq = 0
     state.publishes.length = 0
+    state.userTz = null
     state.agentRows.push({ model: 'aide-1', displayName: 'Aida' })
   })
   afterEach(() => {
@@ -297,6 +304,32 @@ describe('getBrief opens on demand', () => {
     const res = await lib.getBrief(user, NOT_YET, 'not/a zone!!')
     expect(res).toMatchObject({ absent: 'pending' })
     expect(state.briefs).toHaveLength(0)
+  })
+
+  it('lets the stored zone beat the browser’s: the set zone is the contract', async () => {
+    const lib = await load()
+    // 23:30Z on Aug 20 is Aug 21 08:30 in Tokyo (due, FOR Aug 21) but still
+    // Aug 20 17:30 in Denver (due, for Aug 20). The person SET Tokyo; a
+    // laptop reporting Denver — travel, a VPN, a wrong system clock — must
+    // not re-file their day. Under browser-wins this opens Aug 20.
+    state.userTz = 'Asia/Tokyo'
+    const res = await lib.getBrief(user, new Date('2026-08-20T23:30:00Z'), 'America/Denver')
+    expect(res).toMatchObject({ absent: 'writing' })
+    await until(() => state.briefs.length === 1)
+    expect(state.briefs[0]!.briefDate).toBe('2026-08-21')
+    expect(state.briefs[0]!.zone).toBe('Asia/Tokyo')
+  })
+
+  it('degrades to UTC on an unreadable STORED zone instead of throwing', async () => {
+    const lib = await load()
+    // Only reachable by direct DB edit — the PUT validates — but the rule a
+    // typo in one person's row must not stop their brief is the same one the
+    // org-config typo already follows: localMoment warns and reads UTC.
+    state.userTz = 'bogus/zone'
+    const res = await lib.getBrief(user, DUE_AT)
+    expect(res).toMatchObject({ absent: 'writing' })
+    await until(() => state.briefs.length === 1)
+    expect(state.briefs[0]!.briefDate).toBe('2026-08-20')
   })
 
   it("answers 'no-agent' when nothing can write the brief, opening nothing", async () => {

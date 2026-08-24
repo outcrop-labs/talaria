@@ -45,6 +45,7 @@ import { dedupeItems, sortItems } from './inbox-focus-policy'
 import type { RawFocusItem } from './inbox-focus-types'
 import { listUpcomingEvents } from './google/calendar'
 import { briefConfig, briefWindow, localMoment, nextBriefAt, zoneFor, type BriefConfig } from './daily-brief-config'
+import { getTimezone } from './users'
 import { publishUser } from './realtime'
 import { registerJob } from './scheduler'
 import { runHarness } from './harness/run'
@@ -400,28 +401,29 @@ async function loadEntries(briefId: string): Promise<BriefEntry[]> {
  *  while any open for that person is still running. */
 const opensInFlight = new Set<string>()
 
-/** The READER'S zone, when their client said one, as an IANA name Intl can
- *  actually resolve — anything else falls back to the config zone.
+/** The READER'S zone: the one they SET, else the one their browser said, as
+ *  an IANA name Intl can actually resolve — anything else falls back to the
+ *  workspace config zone.
  *
- *  WHY THIS SEAM EXISTS. The config's zone is org-wide and, on a server, is
- *  usually UTC regardless of where the humans are: 18:00 in Denver is 00:00
- *  UTC, and a reader's evening used to read as the small hours of TOMORROW —
- *  "your next brief opens 7:00 AM" over a brief that existed and was
- *  perfectly readable. The browser sends its zone on the read; the scheduled
- *  pass keeps the config zone (`zoneFor`, unchanged). `users` still has no
- *  timezone column — this is the per-reader read of the same seam
- *  daily-brief-config.ts documents, not a new source of truth.
+ *  STORED FIRST, DELIBERATELY. A zone the person chose in Settings is the
+ *  contract and wins everywhere — brief reads, the scheduled open, the digest
+ *  — so a laptop in an airport lounge cannot re-file their day. The browser
+ *  `?tz=` param is the fallback that predates the column: it kept a Denver
+ *  evening from reading as the small hours of TOMORROW when the config's
+ *  org-wide zone was UTC. An unparseable param is discarded, never stored.
  *
  *  NOT TRUSTED, MERELY BELIEVED: a zone name cannot widen anything (worst
  *  case it computes the wrong day, same class as an admin misconfiguring the
- *  org zone), and an unparseable one is discarded rather than stored. */
-function readerZone(tz: string | null | undefined, config: BriefConfig): string {
-  if (!tz || tz.length > 64) return zoneFor('', config)
+ *  org zone). A stored name is validated at the profile PUT; a bad one that
+ *  lands here anyway degrades to UTC inside `localMoment`, not a throw. */
+function readerZone(stored: string | null, tz: string | null | undefined, config: BriefConfig): string {
+  if (stored && stored.trim()) return stored
+  if (!tz || tz.length > 64) return config.timeZone
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: tz })
     return tz
   } catch {
-    return zoneFor('', config)
+    return config.timeZone
   }
 }
 
@@ -450,8 +452,8 @@ function openBriefDetached(user: SessionUser, at: Date, tz: string | null | unde
  *  'writing' for the few seconds it takes, and the append's publish turns the
  *  page into the document without them touching anything. */
 export async function getBrief(user: SessionUser, at = new Date(), tz: string | null = null): Promise<BriefResponse> {
-  const config = await briefConfig()
-  const zone = readerZone(tz, config)
+  const [config, stored] = await Promise.all([briefConfig(), getTimezone(user.id)])
+  const zone = readerZone(stored, tz, config)
   const { due, date } = briefWindow(config, zone, at)
   const [row, agent] = await Promise.all([loadRow(user.id, date), briefAssistant(user.id)])
 
@@ -576,8 +578,8 @@ export async function markBriefItem(
   at = new Date(),
   tz: string | null = null,
 ): Promise<{ ok: boolean; reason?: string }> {
-  const config = await briefConfig()
-  const zone = readerZone(tz, config)
+  const [config, stored] = await Promise.all([briefConfig(), getTimezone(user.id)])
+  const zone = readerZone(stored, tz, config)
   const { date } = briefWindow(config, zone, at)
   const row = await loadRow(user.id, date)
   if (!row) return { ok: false, reason: 'no brief today' }
@@ -705,8 +707,8 @@ export async function openBrief(
   at = new Date(),
   tz: string | null = null,
 ): Promise<{ opened: boolean; briefId: string | null }> {
-  const config = await briefConfig()
-  const zone = readerZone(tz, config)
+  const [config, stored] = await Promise.all([briefConfig(), getTimezone(user.id)])
+  const zone = readerZone(stored, tz, config)
   const { date } = briefWindow(config, zone, at)
   const agent = await briefAssistant(user.id)
   // No assistant, no brief. NOT a degraded brief written by some other model —
@@ -799,7 +801,7 @@ export interface SweepResult {
 export async function sweepBrief(user: SessionUser, at = new Date()): Promise<SweepResult> {
   const none: SweepResult = { appended: 0, added: 0, changed: 0, resolved: 0 }
   const config = await briefConfig()
-  const zone = zoneFor(user.id, config)
+  const zone = zoneFor(await getTimezone(user.id), config)
   const { date } = briefWindow(config, zone, at)
   const row = await loadRow(user.id, date)
   // NOT DURING BIRTH. A row with lastSeq === 0 is an open mid-flight — the
@@ -1004,18 +1006,35 @@ async function writeNote(row: BriefRow, appends: NewEntry[]): Promise<NewEntry |
 
 /** Users who could have a brief: everyone with an enabled personal assistant.
  *  Scoped by that rather than by `users`, because a person with no assistant
- *  has nothing that can write one and sweeping them is pure cost. */
-async function briefableUsers(): Promise<SessionUser[]> {
+ *  has nothing that can write one and sweeping them is pure cost. Carries the
+ *  person's timezone in the same row — the scheduled pass resolves each zone
+ *  with zero queries beyond the one it already paid. */
+async function briefableUsers(): Promise<Array<SessionUser & { timezone: string | null }>> {
   const sql = await db()
   const rows = (await sql`
-    select u.id, u.email, u.name, u.role
+    select u.id, u.email, u.name, u.role, u.timezone
     from users u join agent_defs d on d.owner_user_id = u.id and d.enabled
     order by u.created_at asc
-  `) as unknown as Array<{ id: string; email: string | null; name: string | null; role: 'admin' | 'member' }>
+  `) as unknown as Array<{
+    id: string
+    email: string | null
+    name: string | null
+    role: 'admin' | 'member'
+    timezone: string | null
+  }>
   // `sub`, `picture` and `provider` are session fields the source functions
   // never read — only `id` and `role` (which gates org-wide approvals) matter
   // here, and filling the rest with nulls is honest about that.
-  return rows.map((r) => ({ id: r.id, sub: '', email: r.email, name: r.name, picture: null, provider: 'local' as never, role: r.role }))
+  return rows.map((r) => ({
+    id: r.id,
+    sub: '',
+    email: r.email,
+    name: r.name,
+    picture: null,
+    provider: 'local' as never,
+    role: r.role,
+    timezone: r.timezone,
+  }))
 }
 
 export interface BriefPassResult {
@@ -1039,7 +1058,7 @@ export async function runBriefPass(at = new Date()): Promise<BriefPassResult> {
 
   for (const user of users) {
     try {
-      const zone = zoneFor(user.id, config)
+      const zone = zoneFor(user.timezone, config)
       const { due, date } = briefWindow(config, zone, at)
       const existing = await loadRow(user.id, date)
       if (!existing) {
@@ -1074,7 +1093,7 @@ const sweepDue = (row: BriefRow, config: BriefConfig, at: Date): boolean =>
  *  lastSeq-0 row. */
 export async function sweepIfDue(user: SessionUser, at = new Date()): Promise<SweepResult | null> {
   const config = await briefConfig()
-  const zone = zoneFor(user.id, config)
+  const zone = zoneFor(await getTimezone(user.id), config)
   const { date } = briefWindow(config, zone, at)
   const row = await loadRow(user.id, date)
   if (!row || row.lastSeq === 0 || !sweepDue(row, config, at)) return null

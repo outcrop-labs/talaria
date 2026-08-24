@@ -113,10 +113,12 @@ export function useModels() {
 
 /** The signed-in user's saved preferences. `preferredModel: null` = the
  *  server's default drafting model; `preferredEffort: null` = no default, so
- *  every effort-enabled surface starts at the model's own default. */
+ *  every effort-enabled surface starts at the model's own default;
+ *  `timezone: null` = follow the workspace zone. */
 export interface ProfilePrefs {
   preferredModel: string | null
   preferredEffort: string | null
+  timezone: string | null
 }
 
 /** The profile preferences, including `preferredModel: null` meaning "no
@@ -149,6 +151,20 @@ export async function savePreferredEffort(effort: string | null): Promise<{ erro
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ preferredEffort: effort }),
+  })
+  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
+  return {}
+}
+
+/** Save the person's IANA zone — the zone their brief opens in and their
+ *  digest arrives in. `null` clears it back to "follow the workspace zone".
+ *  Used by the Settings picker and by TimezoneAdopt's silent first adoption. */
+export async function saveTimezone(timezone: string | null): Promise<{ error?: string }> {
+  const r = await fetch('/api/profile', {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ timezone }),
   })
   if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
   return {}

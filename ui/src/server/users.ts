@@ -200,6 +200,21 @@ export async function setPreferredEffort(userId: string, effort: string | null):
   await sql`update users set preferred_effort = ${effort} where id = ${userId}`
 }
 
+/** The person's IANA time zone — the zone their brief opens in and their
+ *  digest arrives in. Null means "follow the workspace zone", which is the
+ *  chain `zoneFor` in daily-brief-config.ts resolves. Validated at the
+ *  profile-PUT boundary, trusted (and degraded to UTC by `localMoment`) after. */
+export async function getTimezone(userId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`select timezone as tz from users where id = ${userId}`) as unknown as Array<{ tz: string | null }>
+  return rows[0]?.tz ?? null
+}
+
+export async function setTimezone(userId: string, tz: string | null): Promise<void> {
+  const sql = await db()
+  await sql`update users set timezone = ${tz} where id = ${userId}`
+}
+
 /** Everyone who has signed in — for people pickers (share, invite, channels). */
 export async function listUsers(): Promise<Array<{ id: string; email: string | null; name: string | null }>> {
   const sql = await db()
