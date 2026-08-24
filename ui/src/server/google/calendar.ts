@@ -50,6 +50,13 @@ function normalize(e: {
   }
 }
 
+// Working locations ("at the office Mon–Fri") are Calendar events under the
+// hood — eventType 'workingLocation' — and they repeat all day every weekday,
+// so with singleEvents expansion one of them eats a big share of a 10-slot
+// agenda. They are where you'll be, not what you're doing: an agenda lists
+// commitments. focusTime and outOfOffice stay — those ARE commitments.
+const AGENDA_EVENT_TYPES = new Set(['default', 'focusTime', 'outOfOffice'])
+
 /** Upcoming events (from now), soonest first. */
 export async function listUpcomingEvents(userId: string, nowMs: number, maxResults = 10): Promise<CalendarEvent[]> {
   return listUpcomingEventsWithToken(await requireToken(userId, nowMs), nowMs, maxResults)
@@ -57,16 +64,22 @@ export async function listUpcomingEvents(userId: string, nowMs: number, maxResul
 
 /** Upcoming events using an already-resolved token (per-user or org). */
 export async function listUpcomingEventsWithToken(token: string, nowMs: number, maxResults = 10, calendarId?: string | null): Promise<CalendarEvent[]> {
+  const wanted = Math.min(Math.max(maxResults, 1), 50)
   const params = new URLSearchParams({
     timeMin: new Date(nowMs).toISOString(),
-    maxResults: String(Math.min(Math.max(maxResults, 1), 50)),
+    // Over-fetch 3× so dropped working locations don't shrink the agenda —
+    // they were fetched, they just don't count against the slots.
+    maxResults: String(Math.min(wanted * 3, 50)),
     singleEvents: 'true',
     orderBy: 'startTime',
   })
   const res = await fetch(`${eventsUrl(calendarId ?? undefined)}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok) throw new Error(`calendar list failed: ${res.status} ${await res.text()}`)
-  const data = (await res.json()) as { items?: Parameters<typeof normalize>[0][] }
-  return (data.items ?? []).map(normalize)
+  const data = (await res.json()) as { items?: Array<Parameters<typeof normalize>[0] & { eventType?: string }> }
+  return (data.items ?? [])
+    .filter((e) => AGENDA_EVENT_TYPES.has(e.eventType ?? 'default'))
+    .slice(0, wanted)
+    .map(normalize)
 }
 
 export interface CreateEventInput {
