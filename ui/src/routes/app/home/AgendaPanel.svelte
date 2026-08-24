@@ -9,7 +9,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QuickEvent from './QuickEvent.svelte'
   import { slide } from '@/lib/motion'
-  import { formatWhen, useAgenda, useGoogleStatus } from './home'
+  import { formatAgendaTime, groupAgendaByDay, useAgenda, useGoogleStatus } from './home'
 
   // The user's Google Calendar agenda, shown only when they've connected Google.
   // Stays invisible otherwise so Home isn't cluttered for the unconnected.
@@ -68,19 +68,26 @@
     {#if events.length === 0}
       <EmptyState variant="inline" class="py-3" title="Nothing on the calendar coming up." />
     {:else}
+      <!-- Day-grouped: Today · Tomorrow · weekday headers, time-only rows.
+           Days without events simply don't appear. -->
       <div class="divide-y divide-line">
-        {#each events as e (e.id)}
-          <a
-            href={e.htmlLink ?? '#'}
-            target="_blank"
-            rel="noreferrer"
-            class="group flex items-center gap-3 py-2 transition-colors hover:bg-card2"
-          >
-            <span class="w-32 shrink-0 font-mono text-[11px] text-muted">{formatWhen(e)}</span>
-            <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{e.summary}</span>
-            {#if e.location}<span class="hidden shrink-0 truncate font-sans text-[11px] text-muted sm:block sm:max-w-[8rem]">{e.location}</span>{/if}
-            <ExternalLink size={12} class="shrink-0 text-muted opacity-0 group-hover:opacity-100" />
-          </a>
+        {#each groupAgendaByDay(events) as day (day.key)}
+          <div class="px-1 pb-1 pt-2.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            {day.label}
+          </div>
+          {#each day.events as e (e.id)}
+            <a
+              href={e.htmlLink ?? '#'}
+              target="_blank"
+              rel="noreferrer"
+              class="group flex items-center gap-3 py-2 transition-colors hover:bg-card2"
+            >
+              <span class="w-20 shrink-0 font-mono text-[11px] text-muted">{formatAgendaTime(e)}</span>
+              <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{e.summary}</span>
+              {#if e.location}<span class="hidden shrink-0 truncate font-sans text-[11px] text-muted sm:block sm:max-w-[8rem]">{e.location}</span>{/if}
+              <ExternalLink size={12} class="shrink-0 text-muted opacity-0 group-hover:opacity-100" />
+            </a>
+          {/each}
         {/each}
       </div>
     {/if}
