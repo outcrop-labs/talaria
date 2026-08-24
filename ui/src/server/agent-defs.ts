@@ -53,8 +53,13 @@ export interface AgentDef {
   displayName: string
   /** Human-readable job title (e.g. "Support Lead"); editable, distinct from department. */
   role: string | null
+  /** Optional override of the agent's derived send address (google/aliasing.ts);
+   *  null = derive the org account's plus-address for its slug. */
+  emailAlias: string | null
   enabled: boolean
   managed: boolean
+  /** The human this PERSONAL assistant belongs to (null = an org agent). */
+  ownerUserId: string | null
   /** 'imported' keeps its pre-Talaria state volume name; 'created' is fresh. */
   source: 'imported' | 'created'
   /** Template overrides — this agent always formats tickets/plans on these. */
@@ -231,7 +236,9 @@ export async function addEndpointModels(name: string, models: string[]): Promise
 export async function listAgentDefs(): Promise<Array<AgentDef & { latest: AgentVersion | null }>> {
   const sql = await db()
   const defs = (await sql`
-    select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
+    select id, slug, department, model, display_name as "displayName", role,
+           email_alias as "emailAlias", owner_user_id as "ownerUserId",
+           enabled, managed, source,
            workbench, workbench_profile as "workbenchProfile",
            workbench_harness as "workbenchHarness", workbench_models as "workbenchModels",
            ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
@@ -258,7 +265,9 @@ export async function listVersions(agentId: string): Promise<AgentVersion[]> {
 export async function getAgentDef(id: string): Promise<AgentDef | null> {
   const sql = await db()
   const rows = await sql`
-    select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
+    select id, slug, department, model, display_name as "displayName", role,
+           email_alias as "emailAlias", owner_user_id as "ownerUserId",
+           enabled, managed, source,
            workbench, workbench_profile as "workbenchProfile",
            workbench_harness as "workbenchHarness", workbench_models as "workbenchModels",
            ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
@@ -285,19 +294,38 @@ export async function upsertAgentDef(input: {
       display_name = excluded.display_name,
       -- keep an existing role unless a new one is supplied (imports don't carry it)
       role = coalesce(excluded.role, agent_defs.role), updated_at = now()
-    returning id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
+    returning id, slug, department, model, display_name as "displayName", role,
+              email_alias as "emailAlias", owner_user_id as "ownerUserId",
+              enabled, managed, source,
               ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
               current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
   `
   return rows[0] as unknown as AgentDef
 }
 
-/** Update editable identity metadata (role, display name). Not versioned —
- *  this is the agent's identity, not its config payload. */
-export async function updateAgentMeta(id: string, patch: { role?: string | null; displayName?: string }): Promise<void> {
+/** Update editable identity metadata (role, display name, email alias). Not
+ *  versioned — this is the agent's identity, not its config payload. */
+export async function updateAgentMeta(
+  id: string,
+  patch: { role?: string | null; displayName?: string; emailAlias?: string | null },
+): Promise<void> {
   const sql = await db()
   if (patch.role !== undefined) await sql`update agent_defs set role = ${patch.role}, updated_at = now() where id = ${id}`
   if (patch.displayName) await sql`update agent_defs set display_name = ${patch.displayName}, updated_at = now() where id = ${id}`
+  if (patch.emailAlias !== undefined) {
+    await sql`update agent_defs set email_alias = ${patch.emailAlias}, updated_at = now() where id = ${id}`
+  }
+}
+
+/** The alias-relevant identity of an agent by MODEL: slug + stored override.
+ *  The confirm-send path asks this when an org action executes — the address
+ *  an agent sends from is derived there, not stored on the action. */
+export async function agentAddressIdentity(model: string): Promise<{ slug: string; emailAlias: string | null } | null> {
+  const sql = await db()
+  const rows = await sql<{ slug: string; emailAlias: string | null }[]>`
+    select slug, email_alias as "emailAlias" from agent_defs where model = ${model}
+  `
+  return rows[0] ?? null
 }
 
 /** Re-hire a retired agent: re-enable so it renders + can start again. */
