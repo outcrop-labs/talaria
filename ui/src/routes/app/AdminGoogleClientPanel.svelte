@@ -12,6 +12,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import { GOOGLE_API_LIBRARY as GOOGLE_APIS } from '@/lib/google-apis'
 
   // The Google OAuth CLIENT — the credential every Google flow (workspace
   // connect, calendar/mail/drive, login when enabled) runs on. Registered
@@ -149,6 +150,28 @@
               <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{r.uri}</span>
               <span class="shrink-0 font-sans text-[10px] text-muted">{r.what}</span>
               <CopyButton value={r.uri} class="shrink-0" />
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <!-- The library switches. Consent succeeds with these off — Google only
+           checks at call time — so they're easy to miss until a surface 403s. -->
+      <div>
+        <div class="mb-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+          <span>Enabled APIs</span>
+          <InfoTip text="Google Cloud Console → APIs &amp; Services → Library → enable each of these on the project that owns the OAuth client. Connecting works without them; using Drive, Calendar, or Mail does not." />
+        </div>
+        <div class="space-y-1">
+          {#each GOOGLE_APIS as a (a.service)}
+            <div class="flex items-center gap-2">
+              <a
+                href={a.consoleUrl}
+                target="_blank"
+                rel="noreferrer"
+                class="min-w-0 flex-1 truncate text-xs text-accent hover:underline"
+              >{a.name}</a>
+              <span class="shrink-0 font-sans text-[10px] text-muted">enable ↗</span>
             </div>
           {/each}
         </div>

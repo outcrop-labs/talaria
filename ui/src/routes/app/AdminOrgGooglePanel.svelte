@@ -9,6 +9,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { getJson } from '@/lib/fetch-json'
+  import type { GoogleApiHealth } from '@/lib/google-apis'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
 
   interface OrgGoogle {
@@ -41,6 +42,23 @@
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     await fetch('/api/integrations/google/org', { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['org-google'] })
+  }
+
+  // Live probe of Drive / Calendar / Gmail — consent succeeds even with the
+  // APIs disabled in Google Cloud Console, so "connected" alone proves nothing
+  // about calls actually working. On demand, never on load (three real Google
+  // requests per click).
+  let apiResults = $state<GoogleApiHealth[] | null>(null)
+  let probing = $state(false)
+  let probeError = $state<string | null>(null)
+  const probeApis = async () => {
+    probing = true
+    probeError = null
+    const r = await fetch('/api/integrations/google/org/health')
+    probing = false
+    const j = (await r.json().catch(() => ({}))) as { results?: GoogleApiHealth[]; error?: string; message?: string }
+    if (!r.ok || !j.results) probeError = j.message ?? 'The probe failed. Try again.'
+    else apiResults = j.results
   }
 
   const msg: Record<string, string> = {
@@ -103,6 +121,37 @@
         <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Connect</a>
       {/if}
     </div>
+    {#if data?.connected}
+      <!-- The "can we actually call Google" check — see probeApis above. -->
+      <div class="mt-3 space-y-1.5">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">APIs</span>
+          <Button variant="ghost" size="sm" onclick={() => void probeApis()} disabled={probing}>
+            {probing ? 'Testing…' : 'Test'}
+          </Button>
+          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail reachability</span>
+        </div>
+        {#if probeError}<div class="text-xs text-danger">{probeError}</div>{/if}
+        {#if apiResults}
+          {#each apiResults as a (a.service)}
+            <div class="flex items-center gap-2 text-xs">
+              <span
+                aria-hidden="true"
+                class={cn('h-1.5 w-1.5 shrink-0 rounded-full', a.state === 'ok' ? 'bg-success' : 'bg-danger')}
+              ></span>
+              {#if a.state === 'disabled'}
+                <!-- The one state an admin can fix from the linked console page. -->
+                <a href={a.consoleUrl} target="_blank" rel="noreferrer" class="text-accent hover:underline">{a.name}</a>
+                <span class="text-muted">{a.detail} <span class="text-accent">enable ↗</span></span>
+              {:else}
+                <span class="text-fg">{a.name}</span>
+                {#if a.state === 'error'}<span class="text-muted">{a.detail}</span>{/if}
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      </div>
+    {/if}
   {/if}
   {#if data?.connected}<AdminOrgGoogleTargets targets={data.targets} />{/if}
   {#if flash}
