@@ -194,13 +194,11 @@ interface GmailMessageFull {
   payload?: GmailPart & { headers?: Array<{ name: string; value: string }> }
 }
 
-/** Deepest first text/plain part — the message's own words. `multipart/alternative`
- *  carries plain and html versions of the same body; plain is the one an agent
- *  should read (and quote), html is the same words with markup. */
-function plainTextOf(part: GmailPart): string {
-  if (part.mimeType === 'text/plain' && part.body?.data) return decode(part.body.data)
+/** Deepest-first part of a given text mime type. */
+function textPartOf(part: GmailPart, mime: string): string {
+  if (part.mimeType === mime && part.body?.data) return decode(part.body.data)
   for (const child of part.parts ?? []) {
-    const found = plainTextOf(child)
+    const found = textPartOf(child, mime)
     if (found) return found
   }
   return ''
@@ -208,6 +206,40 @@ function plainTextOf(part: GmailPart): string {
 
 function decode(b64url: string): string {
   return Buffer.from(b64url, 'base64url').toString('utf8')
+}
+
+/** HTML → readable text, hand-rolled (no dependency): an agent reading a
+ *  message needs the words, not a browser-grade rendering. Entity order
+ *  matters — &amp; last, so a literal "&amp;lt;" cannot decay into "<". */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|table|h[1-6]|li|blockquote)\s*>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/** The message's own words. text/plain when Google serves one (multipart/
+ *  alternative carries the same body without markup — the version to quote),
+ *  else the html stripped to text. Html-ONLY mail is common — most
+ *  transactional and marketing senders ship no plain part — and returning
+ *  empty there was a real read_email failure in the field (body empty,
+ *  snippet present). */
+function bodyTextOf(part: GmailPart): string {
+  const plain = textPartOf(part, 'text/plain')
+  if (plain) return plain
+  const html = textPartOf(part, 'text/html')
+  return html ? htmlToText(html) : ''
 }
 
 export interface MailMessage {
@@ -221,7 +253,8 @@ export interface MailMessage {
   unread: boolean
   /** Label names the message carries (INBOX, UNREAD, and user labels). */
   labels: string[]
-  /** The plain-text body (empty when Google serves none — rare; snippet then). */
+  /** The plain-text body — the html stripped to text when the mail ships no
+   *  plain part. Empty only when Google serves neither; snippet then. */
   body: string
 }
 
@@ -247,7 +280,7 @@ export async function getMessageWithToken(token: string, id: string): Promise<Ma
     date: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : h('Date') || null,
     unread: labelIds.includes('UNREAD'),
     labels: labelIds.map((id) => labelNames.get(id) ?? id),
-    body: plainTextOf(m.payload ?? {}).slice(0, 20_000),
+    body: bodyTextOf(m.payload ?? {}).slice(0, 20_000),
   }
 }
 

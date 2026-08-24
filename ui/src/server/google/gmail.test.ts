@@ -89,10 +89,42 @@ describe('getMessageWithToken', () => {
     expect(m.body).toBe('Café — résumé 📎')
   })
 
-  it('answers an empty body when Google serves no text part — the snippet then carries it', async () => {
+  it('strips the html when the mail ships no plain part — html-only is the transactional-mail norm', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => message({ headers, mimeType: 'text/html', body: { data: b64('<p>only html</p>') } })),
+      vi.fn(async () =>
+        message({
+          headers,
+          mimeType: 'multipart/alternative',
+          // The shape that matters: alternative carrying ONLY an html child —
+          // many bulk senders ship no plain part at all.
+          parts: [
+            {
+              mimeType: 'text/html',
+              body: {
+                data: b64(
+                  '<html><head><style>a{color:red}</style></head><body>' +
+                    '<p>The plan is signed off.</p><ul><li>Staging first</li><li>Prod on Friday</li></ul>' +
+                    '<p>Questions? &amp;mdash; ask the &lt;owner&gt;.</p></body></html>',
+                ),
+              },
+            },
+          ],
+        }),
+      ),
+    )
+    const m = await getMessageWithToken('tok', 'm-1')
+    // Markup and <style> gone, list items kept as bullets, entities decoded —
+    // &amp; LAST so the literal "&amp;mdash;" did not decay into an em dash.
+    expect(m.body).toBe(
+      'The plan is signed off.\n• Staging first\n• Prod on Friday\nQuestions? &mdash; ask the <owner>.',
+    )
+  })
+
+  it('answers an empty body only when Google serves neither plain nor html — the snippet then carries it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => message({ headers, mimeType: 'multipart/mixed', parts: [] })),
     )
     const m = await getMessageWithToken('tok', 'm-1')
     expect(m.body).toBe('')
