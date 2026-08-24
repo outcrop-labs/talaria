@@ -359,7 +359,7 @@
 </script>
 
 <RailSurface>
-  <Rail title="Files">
+  <Rail>
     <RailSection label="Places">
       {#each PLACES as p (p.id)}
         <RailRow active={place === p.id && !activeId} onClick={() => goPlace(p.id)}>

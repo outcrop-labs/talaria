@@ -13,6 +13,10 @@ const Body = z.object({
   delegateModel: z.string().max(300).nullable().optional(),
   responseModel: z.string().max(300).nullable().optional(),
   mode: z.enum(['normal', 'fast', 'plan']).default('normal'),
+  /** Which conversation instance (the panel's chat picker). Validated against
+   *  the owner's live inbox conversations; stale ids fall back to their most
+   *  recent instance rather than failing the command. */
+  conversationId: z.string().uuid().nullable().optional(),
   /** Reasoning effort for the reply, from the levels the answering model's
    *  metadata vouches for; omitted = the model's default. Validated server-side
    *  against the same metadata the composer's picker lists. */
@@ -43,6 +47,7 @@ export const Route = defineApi('/api/inbox/focus/command', {
             delegateModel: body.delegateModel,
             responseModel: body.responseModel,
             mode: body.mode,
+            conversationId: body.conversationId ?? null,
             effort: body.effort ?? null,
             attachmentIds: body.attachmentIds,
             refs: body.refs,

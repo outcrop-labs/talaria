@@ -64,6 +64,11 @@ export const WAITING_SITES = {
     slot: 'inline',
     note: 'Rewriting the plan document from the conversation (overlay).',
   },
+  'plan/draft': {
+    role: 'reasoning',
+    slot: 'inline',
+    note: 'The plan modal while an agent reads the conversation and drafts tickets.',
+  },
 
   /* ── Comms ────────────────────────────────────────────────────────────── */
   'comms/conclude': {
@@ -103,6 +108,9 @@ export const WAITING_SITES = {
   'mcp/search': { role: 'tool', slot: 'inline', note: 'Marketplace search in flight.' },
   'mcp/install': { role: 'submitting', slot: 'button', note: 'Installing a server from the marketplace.' },
   'mcp/server-refresh': { role: 'tool', slot: 'button', note: 'Re-probing a server card for its tool list.' },
+
+  /* ── The brief ────────────────────────────────────────────────────────── */
+  'brief/writing': { role: 'reasoning', slot: 'inline', note: 'The daily brief being opened for this reader — lede first, then the day.' },
 
   /* ── Models ───────────────────────────────────────────────────────────── */
   'models/fitness-detail': { role: 'background', slot: 'inline', note: 'Fitness evaluation running, detail view.' },

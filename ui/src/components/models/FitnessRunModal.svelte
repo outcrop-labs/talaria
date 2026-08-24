@@ -4,8 +4,8 @@
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
-  import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import { getJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import CapabilityTags from './CapabilityTags.svelte'
@@ -101,9 +101,8 @@
   <div class="space-y-5">
     <div>
       <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Candidate</div>
-      <Select size="sm" class="w-full" bind:value={model}>
-        {#each models as m (m.id)}<option value={m.id}>{m.id}</option>{/each}
-      </Select>
+      <!-- A required pick: no Auto row — every option is a model. -->
+      <ModelIdPicker models={models.map((m) => m.id)} value={model} onChange={(m) => m && (model = m)} class="w-full" />
       <div class="mt-2 flex flex-wrap items-center gap-1">
         <CapabilityTags {row} />
       </div>
@@ -182,12 +181,16 @@
     {#if wantsAdversarial}
       <div transition:slide={{ duration: 150 }}>
         <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Adversary</div>
-        <Select size="sm" class="w-full" bind:value={adversary}>
-          <option value="">No escalation round (seed corpus only)</option>
-          <!-- The candidate is not offered: a model grading its own resistance
-               is the who-judges-the-judge regress with the stakes raised. -->
-          {#each models.filter((m) => m.id !== model) as m (m.id)}<option value={m.id}>{m.id}</option>{/each}
-        </Select>
+        <ModelIdPicker
+          models={models.filter((m) => m.id !== model).map((m) => m.id)}
+          value={adversary || null}
+          onChange={(m) => (adversary = m ?? '')}
+          emptyLabel="No escalation round (seed corpus only)"
+          class="w-full"
+        />
+        <!-- The candidate is not offered above: a model grading its own
+             resistance is the who-judges-the-judge regress with the stakes
+             raised. -->
         {#if estimateQuery.data}
           <p class="mt-1.5 max-w-prose font-sans text-xs text-muted">{estimateQuery.data.adversaryRequirement.note}</p>
         {/if}

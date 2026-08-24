@@ -2,19 +2,23 @@
   import { pathId } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate, route } from '@/router'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import ChatView from '@/components/chat/ChatView.svelte'
+  import { LayoutTemplate, ListChecks } from '@lucide/svelte'
   import ConversationSidebar from '@/components/chat/ConversationSidebar.svelte'
   import type { SidebarFailure } from '@/components/chat/conversation-sidebar'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Stage from '@/components/app/Stage.svelte'
   import StageHeader from '@/components/app/StageHeader.svelte'
   import PlanModal from '@/components/chat/PlanModal.svelte'
+  import { hydratePlanDraft, planDraft } from '@/components/chat/plan-drafts.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import PlanDoc from '@/components/chat/PlanDoc.svelte'
   import PlanDocSkeleton from '@/components/chat/PlanDocSkeleton.svelte'
   import TierPicker from '@/components/chat/TierPicker.svelte'
+  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -85,6 +89,13 @@
   const templatesList = listQuery(useTemplates(), { title: 'Could not load plan templates', variant: 'inline' })
   const templatesLoading = $derived(templatesList.pending)
   const planTemplates = $derived(templatesList.rows.filter((t) => t.kind === 'plan'))
+  // The picker's rows: Automatic first (it is the default and the most common
+  // choice), the library after. The sub line carries what the old option's
+  // parenthetical spelled out.
+  const templateOptions = $derived([
+    { value: '', label: 'Automatic', sub: 'agent default' },
+    ...planTemplates.map((t) => ({ value: t.id, label: t.name })),
+  ])
   // Bumped when an agent turn lands; the doc pane syncs itself on it.
   let turnSignal = $state(0)
 
@@ -118,6 +129,40 @@
   const current = $derived(agents.find((a) => a.id === selectedAgent))
 
   const selected = $derived(conversations.find((c) => c.id === selectedConversationId) ?? null)
+
+  // The selected plan's ticket-draft job, if any — drafts PAIR to the plan,
+  // so drafting (and the review that lands after it) survives leaving the
+  // modal or the surface. The header button is the pairing made visible.
+  const job = $derived(selectedConversationId ? planDraft(selectedConversationId) : undefined)
+  const draftTitle = $derived(
+    !selectedConversationId
+      ? 'Start a plan first — tickets draft from its conversation'
+      : job?.status === 'drafting'
+        ? 'Drafting continues in the background — reopen to watch'
+        : job?.status === 'ready'
+          ? 'The drafted tickets are waiting for your review'
+          : 'Turn this plan into tickets to review',
+  )
+
+  // The selected plan owns the strip: its title becomes the view title and
+  // the crumb's last segment (WORK / PLAN / <plan>). Effect-claimed like
+  // Research/Boards — the list query lands after mount, and the pathname key
+  // keeps the fallback honest on deep links. An unsaved "New plan" claims
+  // nothing: it isn't a place yet.
+  $effect(() => {
+    if (!selected) return
+    const name = selected.title || 'Untitled plan'
+    claimViewTitle(name, { trail: [name] })
+  })
+
+  // Drafts pair to the plan SERVER-side: arriving at a conversation asks what
+  // is paired to it, so a reload lands back on an in-flight draft
+  // ("Drafting…") or a finished one ("Review drafts") with nothing lost.
+  $effect(() => {
+    const id = selectedConversationId
+    if (!id) return
+    void hydratePlanDraft(id, `/api/plan/${id}/draft`)
+  })
 </script>
 
 {#snippet headerActions()}
@@ -134,36 +179,60 @@
            only looks empty. -->
       {#if templatesList.notice}<QueryError {...templatesList.notice} />{/if}
     {:else if planTemplates.length > 0}
-      <label class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted" title="The structure the living document starts from. Automatic uses the agent's bound plan template.">
-        Template
-        <Select size="sm" bind:value={templateId} class="w-44">
-          <option value="">Automatic (agent default)</option>
-          {#each planTemplates as t (t.id)}
-            <option value={t.id}>
-              {t.name}
-            </option>
-          {/each}
-        </Select>
-      </label>
+      <!-- The template pick in the header's own language — the §7 chip
+           TierPicker beside it already speaks. It was a native <select> under
+           a mono label: its fixed-width trigger overflowed on long template
+           names and its OS-drawn option list clashed with everything around
+           it. The chip truncates instead, and the popover opens DOWN
+           ('bottom' placement) — the header sits at the top of the stage, so
+           the composer-style upward anchor would fly off-screen. -->
+      <ComposerPicker
+        icon={LayoutTemplate}
+        value={templateId}
+        options={templateOptions}
+        onChange={(v) => (templateId = v)}
+        title="The structure the living document starts from. Automatic uses the agent's bound plan template."
+        menuLabel="Template"
+        placement="bottom"
+      />
     {/if}
     {#if (current?.tiers ?? []).length > 0}
       <!-- The harness sits beside the view's other model-level controls, not
            in the composer. -->
       <TierPicker tiers={current!.tiers ?? []} value={planTier} onChange={(t) => (planTier = t)} />
     {/if}
-    <Button size="sm" variant="outline" disabled={!selectedConversationId} onclick={() => (planOpen = true)}>
-      Draft tickets
-    </Button>
+    <!-- The payoff, dressed like it: this surface exists to turn planning
+         into tickets, so the action takes the gold primary (spec §8) and
+         outranks the chips beside it. It is also the drafts' pairing made
+         visible: while the job drafts it says so (the waiting mark stands in
+         for the icon), and once drafts land it becomes the way back to them.
+         `primary`'s disabled reading is the raised tile — and the explanatory
+         title lives on a WRAPPER because the button drops pointer-events when
+         disabled; hover falls through to the span, which is what keeps the
+         "why is it waiting" copy reachable. -->
+    <span class="inline-flex" title={draftTitle}>
+      <Button size="sm" disabled={!selectedConversationId} onclick={() => (planOpen = true)}>
+        {#if job?.status === 'drafting'}
+          <WaitingMark site="plan/draft" size={13} class="text-[color:var(--theme-bg)]" />
+          Drafting…
+        {:else if job?.status === 'ready'}
+          <ListChecks size={14} />
+          Review drafts
+        {:else}
+          <ListChecks size={14} />
+          Draft tickets
+        {/if}
+      </Button>
+    </span>
   </div>
 {/snippet}
 
 {#snippet stageHeader()}
   {#if selectedAgent && current}
-    <StageHeader
-      title={selected ? selected.title || 'Untitled plan' : 'New plan'}
-      meta={`with ${current.label}`}
-      actions={headerActions}
-    />
+    <!-- No title: a selected plan's name lives in the strip (claimed above);
+         an unsaved one has no name worth a header. The row keeps the agent
+         and the plan-level controls. -->
+    <StageHeader meta={`with ${current.label}`} actions={headerActions} />
   {/if}
 {/snippet}
 
@@ -261,6 +330,7 @@
     <PlanModal
       open={planOpen}
       onClose={() => (planOpen = false)}
+      planId={selectedConversationId}
       draftUrl={`/api/plan/${selectedConversationId}/draft`}
       agents={[current]}
     />

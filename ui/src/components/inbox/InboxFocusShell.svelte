@@ -3,7 +3,8 @@
   import type { Snippet } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import InboxChatPanel from '@/components/inbox/InboxChatPanel.svelte'
-  import type { InboxChatPanelHandle, InboxCommandOptions, StreamingTurn } from '@/components/inbox/inbox-chat-panel'
+  import type { InboxChatPanelHandle, InboxCommandOptions, PanelFocusContext, StreamingTurn } from '@/components/inbox/inbox-chat-panel'
+  import { readPanelCollapsed, subscribePanelCollapsed } from '@/components/inbox/inbox-chat-panel'
   import {
     runInboxFocusAction,
     streamInboxFocusCommand,
@@ -57,6 +58,27 @@
   }
 
   const items = $derived(focusQuery.data?.items ?? [])
+  // A context PINNED by the surface under the shell — the brief's "ask about
+  // this line", today. It overrides the queue's top item as the panel's
+  // attached decision until the panel closes, because the person just said
+  // THIS is the thing they mean. Cleared on collapse rather than on send: a
+  // follow-up question is still about the same line, and the panel reopening
+  // from the launcher should be the general conversation again.
+  let pinned = $state<PanelFocusContext | null>(null)
+  $effect(() =>
+    subscribePanelCollapsed(() => {
+      if (readPanelCollapsed()) pinned = null
+    }),
+  )
+  /** A key the focus world can resolve pins the line as the panel's attached
+   *  context. A keyless line (the brief's calendar entries have no focus
+   *  counterpart) gets the question seeded into the composer instead — a
+   *  general question that names its subject, never a fake attachment. */
+  function askAbout(context: { key: string | null; question: string }) {
+    pinned = context.key ? { key: context.key, question: context.question } : null
+    panel?.expand()
+    if (!context.key) window.setTimeout(() => panel?.insertText(`About "${context.question}": `), 0)
+  }
   // Drop skipped keys that left the queue. `untrack` keeps the effect keyed on
   // `items` alone (mirroring the React deps), and the length check makes the
   // write conditional so the effect settles instead of looping.
@@ -197,6 +219,7 @@
       for await (const event of streamInboxFocusCommand({
         key: options.focusKey,
         surface: surface.id,
+        conversationId: options.conversationId,
         instruction: trimmedInstruction,
         delegateModel: options.delegateModel,
         responseModel: options.responseModel,
@@ -331,14 +354,15 @@
     performAction,
     snooze,
     skip,
+    askAbout,
   })
 </script>
 
 <div class="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-surface">
   <InboxChatPanel
     bind:this={panel}
-    active={attachActiveDecision ? active : null}
-    focusMode={attachActiveDecision}
+    active={pinned ?? (attachActiveDecision ? active : null)}
+    focusMode={!!pinned || attachActiveDecision}
     surfaceLabel={surface.label}
     assistant={focusQuery.data?.assistant}
     busy={busyAction !== null}

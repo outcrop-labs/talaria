@@ -57,6 +57,7 @@
 // registry, the clock — is a field on `DecideDeps` defaulted to the real thing,
 // so decide.test.ts drives both halves with no database, no Redis and no clock.
 import { announceApproval, audienceFor, mayDecide, runDecisionApproval, type Disclosure, type PendingApproval } from '../approvals'
+import { markBriefStale } from '../daily-brief-stale'
 import { runDefinition, type AnyRunDefinition, type DecisionAnswer, type DecisionRequest, type RunRow, type RunState } from './define'
 import { drive, publishRunEvent, type RunDeps } from './run'
 import { pgRunStore, type RunStore } from './store'
@@ -365,6 +366,13 @@ export async function decide(
   // an enforcement rather than a habit.
   const res = await resumeAnswered({ runId: args.runId, answer, start: args.start }, deps)
   if (!res.ok) return res
+
+  // THE DECISION IS ALSO A BRIEF EVENT. Everyone in the content audience had
+  // this approval on their brief (that is what `announce` put there); the
+  // answer resolves those lines. Detached, because the decider is waiting on
+  // this response and bookkeeping for other people's pages must not cost them
+  // a millisecond — the nudge clears a throttle and the next read does the work.
+  void markBriefStale([...new Set([...who.content, args.by])]).catch(() => {})
   return { ok: true, run: res.run, answer }
 }
 

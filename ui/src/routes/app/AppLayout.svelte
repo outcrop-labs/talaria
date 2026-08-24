@@ -146,16 +146,24 @@
       </nav>
     {/if}
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header class="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4">
-        <Skeleton class="h-2.5 w-56 rounded-full" />
+      <!-- Two-row strip skeleton: title, then the breadcrumb line under it —
+           the same shape the real strip paints, so loading never reflows.
+           h-6/h-4 match the real rows' line boxes (text-base 24px, 10px mono
+           15px + mt-0.5), not a guess at them. -->
+      <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2">
+        <div>
+          <Skeleton class="h-6 w-44 rounded-full" />
+          <Skeleton class="mt-0.5 h-4 w-28 rounded-full" />
+        </div>
         {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" />{/if}
       </header>
       <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
         {#if content}
           {@render content()}
         {:else}
-          <div class="mx-auto w-full max-w-[var(--page-width)] space-y-6">
-            <Skeleton class="h-6 w-64 rounded-full" />
+          <!-- No title skeleton: view titles live in the strip now, so the
+               page body starts straight at its content. -->
+          <div class="mx-auto w-full max-w-[var(--page-width)]">
             <div class="grid gap-4 xl:grid-cols-3">
               {#each [0, 1, 2] as i (i)}
                 <div class="rounded-lg border border-line bg-panel p-6">

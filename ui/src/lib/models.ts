@@ -161,8 +161,10 @@ export function useAvailableModels(endpointId: MaybeGetter<string>) {
       staleTime: 60_000,
       // An empty catalog WITH a `note` (missing key, provider down) is a 200 the
       // picker explains. A non-2xx has no note and must not read as "no models".
-      queryFn: (): Promise<{ models: string[]; note?: string }> =>
-        getJson<{ models: string[]; note?: string }>(`/api/fleet/endpoints/${id}/available`),
+      queryFn: (): Promise<{ models: string[]; note?: string; catalog?: Array<{ id: string; efforts: string[] | null }> }> =>
+        getJson<{ models: string[]; note?: string; catalog?: Array<{ id: string; efforts: string[] | null }> }>(
+          `/api/fleet/endpoints/${id}/available`,
+        ),
     }
   })
 }
@@ -225,6 +227,9 @@ export const patchEndpoint = (
     priceOutPerMtok?: number | null
     models?: string[]
     modelPrices?: Record<string, { in?: number; out?: number }>
+    /** Admin-declared effort ladders — the whole map replaces the stored one,
+     *  same read-modify-write shape as modelPrices. */
+    modelEfforts?: Record<string, string[]>
     requestDefaults?: Record<string, unknown>
     /** Raw provider key — sealed server-side. '' clears it; omitted leaves it. */
     apiKey?: string | null

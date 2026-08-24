@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ChevronDown, ChevronRight } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -15,6 +16,25 @@
   // the old standalone /inbox page redirects here.
   const query = useNotifications()
   const markRead = useMarkNotificationsRead()
+
+  // LIVE, NOT JUST POLLED. `addNotification` publishes the row's id to this
+  // person's firehose the moment it lands; the 30s poll in useNotifications
+  // stays as the floor for a dropped SSE connection or a sleeping laptop.
+  // Same shape as useBriefLive: the event carries no content — it invalidates,
+  // and the ordinary route re-reads with the ordinary read path.
+  const qc = useQueryClient()
+  $effect(() => {
+    const es = new EventSource('/api/me/events')
+    es.onmessage = (event: MessageEvent<string>) => {
+      try {
+        if ((JSON.parse(event.data) as { type?: string }).type !== 'notification') return
+      } catch {
+        return
+      }
+      void qc.invalidateQueries({ queryKey: ['notifications'] })
+    }
+    return () => es.close()
+  })
   const items = $derived(query.data?.notifications ?? [])
   const unread = $derived(query.data?.unread ?? 0)
   // Collapsed by default: the briefing above is the working surface — this is

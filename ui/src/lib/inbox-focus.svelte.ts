@@ -73,11 +73,13 @@ export function useInboxFocusSummary(options: MaybeGetter<{ enabled?: boolean }>
   }))
 }
 
-export function useInboxFocusConversation(options: MaybeGetter<{ enabled?: boolean }> = {}) {
+/** One conversation instance's timeline. Keyed by instance id so switching the
+ *  panel's chat picker swaps the cached thread rather than merging two. */
+export function useInboxFocusConversation(conversationId: string | null, options: MaybeGetter<{ enabled?: boolean }> = {}) {
   return createInfiniteQuery(() => ({
-    queryKey: ['inbox-focus-conversation'],
+    queryKey: ['inbox-focus-conversation', conversationId],
     queryFn: ({ pageParam, signal }: { pageParam: string; signal: AbortSignal }) => getJson<InboxConversationPage>(
-      `/api/inbox/focus/conversation${pageParam ? `?cursor=${encodeURIComponent(pageParam)}` : ''}`,
+      `/api/inbox/focus/conversation?conversationId=${encodeURIComponent(conversationId ?? '')}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
       signal,
     ),
     initialPageParam: '' as string,
@@ -85,6 +87,38 @@ export function useInboxFocusConversation(options: MaybeGetter<{ enabled?: boole
     enabled: resolve(options).enabled,
     staleTime: 5_000,
   }))
+}
+
+// ── Conversation instances (the panel's chat picker) ─────────────────────────
+
+export interface InboxConversationSummary {
+  id: string
+  preview: string
+  createdAt: string
+  updatedAt: string
+}
+
+export function useInboxConversations() {
+  return createQuery(() => ({
+    queryKey: ['inbox-conversations'],
+    queryFn: (): Promise<{ conversations: InboxConversationSummary[] }> =>
+      getJson<{ conversations: InboxConversationSummary[] }>('/api/inbox/focus/conversations'),
+    staleTime: 10_000,
+  }))
+}
+
+export async function createInboxConversation(): Promise<string> {
+  const out = await sendJson<{ conversation: { id: string } }>('/api/inbox/focus/conversations', 'POST', {})
+  return out.conversation.id
+}
+
+export async function archiveInboxConversation(id: string): Promise<void> {
+  const response = await fetch(`/api/inbox/focus/conversations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    signal: requestSignal(),
+  })
+  if (!response.ok) throw new Error(`Request failed (${response.status})`)
 }
 
 export function updateInboxFocusState(input: {
@@ -121,6 +155,8 @@ export async function* streamInboxFocusCommand(
     effort?: string | null
     attachmentIds?: string[]
     refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
+    /** Which conversation instance (the panel's chat picker). */
+    conversationId?: string | null
   },
   signal?: AbortSignal,
 ): AsyncGenerator<InboxCommandEvent> {

@@ -102,20 +102,17 @@ const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; require
     hint: "The model behind an owner's own assistant: reads their inbox, briefs them, drafts replies in their voice.",
     // It reads a whole inbox and a whole briefing window before it answers.
     requires: ['instruction-following', 'long-context'],
-    // The daily-brief trio belongs here and not under its own slot: it is the
-    // same job as `briefer:brief` — one owner's private attention state, in
-    // their assistant's voice — measured over a document that is appended to
-    // rather than replaced. An admin choosing an assistant model is choosing it
-    // for all eight at once, which is exactly what one column means.
+    // The daily-brief family belongs here and not under its own slot: it is
+    // the same job — one owner's private attention state, in their assistant's
+    // voice — measured over a document that is appended to rather than
+    // replaced. An admin choosing an assistant model is choosing it for all
+    // six at once, which is exactly what one column means.
     harnesses: [
       'inbox-brief',
       'inbox-command',
       'inbox-reply',
-      'briefer:brief',
-      'briefer:chat',
       'briefer:daily-open',
       'briefer:daily-delta',
-      'briefer:daily-chat',
       'briefer:reply',
     ],
   },

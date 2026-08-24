@@ -6,8 +6,8 @@
   // feeling like fifteen apps:
   //
   //   <RailSurface>            work surfaces with a list rail + a stage
-  //     <Rail title actions>   LEFT rail: w-72 · bg-sidebar · border-r
-  //       rows go here
+  //     <Rail actions>         LEFT rail: w-72 · bg-sidebar · border-r
+  //       rows go here         (no title — the top strip names the view)
   //     </Rail>
   //     <Stage header={stageHeader}>the main area</Stage>
   //   </RailSurface>

@@ -19,17 +19,40 @@ export type * from '@/server/daily-brief-types'
 
 export { isBriefAbsent } from '@/lib/brief-absent'
 
+/** The browser's IANA zone, sent on the brief read and on item actions. The
+ *  org config's zone is a server default; this is what makes "due" and
+ *  "today" mean the READER'S day rather than the server's — an evening in
+ *  Denver is not tomorrow, whatever UTC thinks. */
+const browserZone = (): string => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return ''
+  }
+}
+
 export const BRIEF_KEY = ['daily-brief'] as const
 
 export function useBrief() {
   return createQuery(() => ({
     queryKey: BRIEF_KEY,
-    queryFn: (): Promise<BriefResponse> => getJson<BriefResponse>('/api/brief'),
+    queryFn: (): Promise<BriefResponse> =>
+      getJson<BriefResponse>(`/api/brief?tz=${encodeURIComponent(browserZone())}`),
     // A slow poll UNDER the realtime subscription, not instead of it. The
     // subscription is the fast path and covers everything that publishes; this
     // is the floor for a dropped SSE connection, a sleeping laptop, and the
     // scheduler's own sweep — none of which reach a socket that is not there.
-    refetchInterval: 2 * 60_000,
+    //
+    // FAST WHILE 'writing': that state means the server is opening the brief
+    // for this reader right now (getBrief kicks the open on demand), and the
+    // document's first append may beat the SSE connection up — a fresh page's
+    // EventSource can still be handshaking when the brief event fires. Four
+    // seconds closes that gap without a spinner anyone has to watch; the
+    // ordinary 2-minute cadence resumes the moment a document exists.
+    refetchInterval: (query): number => {
+      const data = query.state.data
+      return data && 'absent' in data && data.absent === 'writing' ? 4_000 : 120_000
+    },
     refetchOnWindowFocus: true,
   }))
 }
@@ -94,7 +117,7 @@ export function useBriefActions() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sourceKey, action }),
+        body: JSON.stringify({ sourceKey, action, tz: browserZone() }),
       })
       await refresh()
       return res.ok

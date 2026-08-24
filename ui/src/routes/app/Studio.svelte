@@ -11,7 +11,6 @@
   import Modal from '@/components/ui/Modal.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import WorkflowDetail from '@/components/workflows/WorkflowDetail.svelte'
@@ -21,6 +20,7 @@
   import { staggerIn } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import { useSession } from '@/lib/session'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useBoards } from '@/lib/boards.svelte'
   import {
     deleteWorkflow,
@@ -34,6 +34,12 @@
   } from '@/lib/workflows'
   import SectionTitle from './studio/SectionTitle.svelte'
   import SkillRow from './studio/SkillRow.svelte'
+
+  // The view's title and its InfoTip live in the top strip (lib/view-title) —
+  // the body opens straight onto the rail+world grid.
+  claimViewTitle('Studio', {
+    info: 'Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it\'s asked for help with. Pick who you\'re building for on the left.',
+  })
 
   // The Studio — build your agents, one at a time. The rail picks who you're
   // building for ("Every agent" = shared know-how, or one agent); the dashboard
@@ -147,15 +153,9 @@
 {:else}
   <PageSurface>
     <!-- Page content entrance AND post-skeleton reveal in one: this branch
-         mounts when the library lands, so title → failures → rail+world grid
-         rise in sequence (ANIMATIONS.md). Never on the skeleton branch. -->
+         mounts when the library lands, so failures → rail+world grid rise in
+         sequence (ANIMATIONS.md). Never on the skeleton branch. -->
     <div use:staggerIn>
-      <ViewHeader
-        class="mb-6"
-        title="Studio"
-        info="Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it's asked for help with. Pick who you're building for on the left."
-      />
-
       {#if sideFailures.length > 0}
         <div class="mb-6 space-y-2 rounded-xl border border-line-subtle p-3">
           {#each sideFailures as r (r.key)}

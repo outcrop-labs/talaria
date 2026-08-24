@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
   import InfoTip from '@/components/ui/InfoTip.svelte'
+  import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Select from '@/components/ui/Select.svelte'
   import { getList } from '@/lib/fetch-json'
@@ -65,17 +66,13 @@
     {#each EFFORTS as [key, label] (key)}
       <span class="flex items-center gap-1">
         <span class="text-xs text-muted">{label}</span>
-        <Select
-          size="sm"
-          value={def.workbenchModels?.[key] ?? ''}
-          onchange={(e) => void save({ workbenchModels: { [key]: e.currentTarget.value || null } })}
+        <ModelIdPicker
+          models={models.map((m) => m.id)}
+          value={def.workbenchModels?.[key] ?? null}
+          onChange={(model) => void save({ workbenchModels: { [key]: model } })}
+          emptyLabel="org default"
           class="w-44"
-        >
-          <option value="">org default</option>
-          {#each models as m (m.id)}
-            <option value={m.id}>{m.id}</option>
-          {/each}
-        </Select>
+        />
       </span>
     {/each}
     <InfoTip text="What low / medium / high effort means for THIS agent. Blank follows the org-wide Workbench model roles on /models. Agents pick the effort; these decide the model." />

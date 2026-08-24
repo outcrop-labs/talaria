@@ -7,6 +7,10 @@ import { markBriefItem } from '@/server/daily-brief'
 const Body = z.object({
   sourceKey: z.string().min(1).max(200),
   action: z.enum(['check', 'dismiss', 'restore']),
+  /** The reader's IANA zone — the check-off must land on the brief they are
+   *  LOOKING at, which the fallback read may have served across a UTC
+   *  midnight their timezone has not reached. */
+  tz: z.string().max(64).nullable().optional(),
 })
 
 /** The owner's own verdict on a line: done, not needed, or put it back.
@@ -20,7 +24,7 @@ export const Route = defineApi('/api/brief/item', {
     if (user instanceof Response) return user
     const body = await parseBody(request, Body)
     if (body instanceof Response) return body
-    const result = await markBriefItem(user, body.sourceKey, body.action)
+    const result = await markBriefItem(user, body.sourceKey, body.action, new Date(), body.tz ?? null)
     // 404 rather than 400: the request was well formed, the line just is not on
     // today's page — usually a stale tab from yesterday's brief.
     if (!result.ok) return json({ error: result.reason ?? 'could not update that line' }, { status: 404 })

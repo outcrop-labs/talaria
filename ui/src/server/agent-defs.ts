@@ -23,6 +23,15 @@ export interface LlmEndpoint {
   /** Per-model $/MTok overrides: { "<model>": { in, out } }. Endpoint-level
    *  price_in/out are the fallback. */
   modelPrices: Record<string, { in?: number; out?: number }>
+  /** Admin-declared reasoning-effort ladders: { "<model>": ['low','medium',…] }.
+   *  For an endpoint whose catalog publishes nothing (most self-hosts answer
+   *  /models with `{id}` alone), this is the only thing that makes the effort
+   *  picker appear; where a catalog DOES publish, the declaration replaces it
+   *  — a human's word outranks a provider's, same standing as a declared
+   *  capability fact. Keyed by upstream model id, like modelPrices. Optional
+   *  because hand-built literals (tests) and rows predating the column omit
+   *  it — readers treat absent as "nothing declared". */
+  modelEfforts?: Record<string, string[]>
   /** Auto-fetched $/MTok from the public OpenRouter catalog (price-oracle).
    *  Read-only from the UI; modelPrices overrides always win. */
   autoPrices: Record<string, { in: number; out: number }>
@@ -99,6 +108,7 @@ export async function listEndpoints(): Promise<LlmEndpoint[]> {
     select id, name, provider, base_url as "baseUrl", class, api_key_env as "apiKeyEnv",
            context_length as "contextLength", price_in_per_mtok as "priceInPerMtok",
            price_out_per_mtok as "priceOutPerMtok", models, model_prices as "modelPrices",
+           model_efforts as "modelEfforts",
            auto_prices as "autoPrices", request_defaults as "requestDefaults",
            (api_key_cipher is not null) as "hasKey"
     from llm_endpoints order by (class = 'local') desc, name asc
@@ -133,6 +143,7 @@ export async function updateEndpoint(
     priceOutPerMtok?: number | null
     models?: string[]
     modelPrices?: Record<string, { in?: number; out?: number }>
+    modelEfforts?: Record<string, string[]>
     requestDefaults?: Record<string, unknown>
     /** Raw provider API key: a non-empty string seals + stores it; '' clears it;
      *  undefined leaves the stored key untouched. Never round-tripped to clients. */
@@ -155,6 +166,8 @@ export async function updateEndpoint(
     await sql`update llm_endpoints set models = ${sql.json(patch.models)}, updated_at = now() where id = ${id}`
   if (patch.modelPrices)
     await sql`update llm_endpoints set model_prices = ${sql.json(patch.modelPrices)}, updated_at = now() where id = ${id}`
+  if (patch.modelEfforts)
+    await sql`update llm_endpoints set model_efforts = ${sql.json(patch.modelEfforts as never)}, updated_at = now() where id = ${id}`
 }
 
 /** Create a user-defined endpoint (Models tab). Name must be fresh. */

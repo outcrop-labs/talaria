@@ -8,16 +8,24 @@
   import type { AgentModel } from '@/lib/agents'
 
   // The agent switcher — pick which fleet agent you're talking to.
+  // `onSelectAll`/`allLabel` (optional) add an "every agent" entry: for
+  // surfaces where the pick also FILTERS (Research's history), null then means
+  // "filter off" — rendered as the allLabel instead of "Select an agent".
   let {
     agents,
     value,
     onChange,
+    onSelectAll,
+    allLabel = 'All agents',
     loading,
     fullWidth,
   }: {
     agents: AgentModel[]
     value: string | null
     onChange: (id: string) => void
+    /** Choose the "all" entry; the parent decides what that means. */
+    onSelectAll?: () => void
+    allLabel?: string
     loading?: boolean
     fullWidth?: boolean
   } = $props()
@@ -65,9 +73,15 @@
         <Skeleton class="h-2 w-16 rounded-full" />
       </span>
     {:else}
-      <Avatar name={current?.label} />
+      {#if current}
+        <Avatar name={current.label} />
+      {:else if onSelectAll}
+        <!-- Avatar-shaped (h-7, same border) so the trigger keeps its geometry
+             with no agent chosen — a glyph, not a blank. -->
+        <span aria-hidden="true" class="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line-strong text-[11px] text-muted">✦</span>
+      {/if}
       <span class="min-w-0 flex-1 text-left">
-        <span class="block truncate text-fg">{current ? current.label : 'Select an agent'}</span>
+        <span class="block truncate text-fg">{current ? current.label : onSelectAll ? allLabel : 'Select an agent'}</span>
         {#if current?.role}<span class="block truncate text-xs text-muted">{current.role}</span>{/if}
       </span>
     {/if}
@@ -79,6 +93,24 @@
       <!-- §7 popover pattern: search field on top (mono placeholder, ⌘K hint). -->
       <PopSearch value={q} onChange={(v) => (q = v)} placeholder="Search agents" />
       <ul class="max-h-72 overflow-auto" use:listStagger>
+        {#if onSelectAll}
+          <li>
+            <button
+              type="button"
+              onclick={() => {
+                onSelectAll()
+                open = false
+              }}
+              class={cn(popRow, 'py-2', value === null ? popRowSelected : 'text-muted')}
+            >
+              <span aria-hidden="true" class="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line-strong text-[11px] text-muted">✦</span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-fg">{allLabel}</span>
+              </span>
+              {#if value === null}<span aria-hidden="true" class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>{/if}
+            </button>
+          </li>
+        {/if}
         {#each visible as a (a.id)}
           <li>
             <button

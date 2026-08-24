@@ -16,6 +16,7 @@
   import { useEnabledApps } from '@/lib/apps'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { fly, staggerIn } from '@/lib/motion'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import PreferredModelPicker from './settings/PreferredModelPicker.svelte'
   import NotificationsSection from './settings/NotificationsSection.svelte'
@@ -25,7 +26,9 @@
 
   // Personal settings, tabbed by concern: Profile (identity + drafting model),
   // Assistant (the member's whole personal agent), Connections, API keys —
-  // plus one tab per enabled app that ships a settings surface.
+  // plus one tab per enabled app that ships a settings surface. The title
+  // lives in the top strip (lib/view-title); the body opens on its tabs.
+  claimViewTitle('Settings')
 
   type SettingsTab = 'profile' | 'notifications' | 'assistant' | 'connections' | 'keys' | `app:${string}`
   const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -101,7 +104,6 @@
 
 <PageSurface>
   <div>
-    <h1 class="mb-4 text-2xl font-semibold tracking-tight text-fg">Settings</h1>
     <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} class="mb-6" />
     {#if appsList.notice}<div class="-mt-4 mb-6"><QueryError {...appsList.notice} /></div>{/if}
     <!-- Tab-pane grammar: pane rises in on switch (no exit) and its sections

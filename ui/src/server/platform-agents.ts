@@ -91,8 +91,8 @@ export const PLATFORM_AGENTS: Array<{
   {
     id: 'briefer',
     label: 'Briefer',
-    job: 'Generates the per-view briefings in your Inbox and consoles, and answers chat-back on them.',
-    skills: ['scope-aware summarizing', 'ephemeral (persists nothing)'],
+    job: 'Writes your daily brief every morning and follows it through the day as it moves.',
+    skills: ['scope-aware summarizing', 'the append-only document contract'],
     auto: 'always the user’s personal assistant — its persona and privacy are the point',
     assignable: false,
   },

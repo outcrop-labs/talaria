@@ -37,6 +37,8 @@ import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
 import { emailButton, emailEscape, emailShell, sendEmail } from './email'
 import { instanceBaseUrl } from './instance'
+import { markBriefStale } from './daily-brief-stale'
+import { publishUser } from './realtime'
 import { registerJob } from './scheduler'
 import {
   DIGEST_PREF_KEY,
@@ -891,6 +893,21 @@ export async function addNotification(userId: string, n: NotificationInput): Pro
     values (${userId}, ${n.kind}, ${n.title}, ${n.body ?? ''}, ${n.href ?? ''}, null)
     returning id
   `) as unknown as Array<{ id: string }>
+
+  // PUBLISH, NOW THAT THERE IS SOMETHING TO PUBLISH. This is the row's second
+  // job after existing: every surface that shows notifications — the bell, the
+  // brief's 'worth knowing' section — learns the row landed the moment it does,
+  // instead of discovering it on the next poll. Two events, two topics in one:
+  // the notification event is the bell's (id-shaped; it refetches through its
+  // ordinary route), and the brief nudge clears this person's sweep throttle so
+  // the brief's own read picks the change up live. Both detached — the row is
+  // written, which is the part the caller needed, and neither fan-out may cost
+  // the request it rode in on (rule 1 above, applied to pub/sub).
+  const notificationId = rows[0]?.id
+  if (notificationId) publishUser(userId, { type: 'notification', notificationId })
+  void markBriefStale([userId]).catch((e: unknown) =>
+    console.error(`[notifications] brief nudge failed for ${userId}:`, e),
+  )
   // `both` deliberately passes null: that route wants the in-app copy to stay
   // unread whatever the mail does.
   if (willMail) enqueueMail(userId, n, route === 'email' ? (rows[0]?.id ?? null) : null)
@@ -913,7 +930,12 @@ export async function unreadCount(userId: string): Promise<number> {
   return (rows[0] as { n: number }).n
 }
 
-/** Mark specific notifications read, or all of the user's when ids is omitted. */
+/** Mark specific notifications read, or all of the user's when ids is omitted.
+ *
+ *  Also nudges the brief, detached: unread notifications are one of the brief's
+ *  sources, so a read here is a line resolving there — and without the nudge
+ *  the person's own brief would keep naming a notification they just handled
+ *  until the next scheduled sweep. */
 export async function markNotificationsRead(userId: string, ids?: string[]): Promise<void> {
   const sql = await db()
   if (ids && ids.length > 0) {
@@ -921,4 +943,5 @@ export async function markNotificationsRead(userId: string, ids?: string[]): Pro
   } else {
     await sql`update notifications set read_at = now() where user_id = ${userId} and read_at is null`
   }
+  void markBriefStale([userId]).catch(() => {})
 }

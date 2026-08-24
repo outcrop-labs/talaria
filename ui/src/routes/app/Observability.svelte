@@ -3,8 +3,8 @@
   import { tabFromPath } from '@/lib/route-tabs'
   import { navigate, route } from '@/router'
   import Tabs from '@/components/ui/Tabs.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { fly, staggerIn } from '@/lib/motion'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import ComputePanel from '@/components/observability/ComputePanel.svelte'
   import CostPanel from '@/components/observability/CostPanel.svelte'
   import AuditPanel from '@/components/observability/AuditPanel.svelte'
@@ -19,14 +19,17 @@
     if (t === 'overview') void navigate('/observability')
     else void navigate('/observability/:tab', { params: { tab: t } })
   }
+
+  // The view's title lives in the top strip (lib/view-title) — the body opens
+  // straight onto its tabs.
+  claimViewTitle('Observability')
 </script>
 
 <PageSurface>
-  <!-- Page content entrance: title → tab strip → panel region rise in sequence
+  <!-- Page content entrance: tab strip → panel region rise in sequence
        (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
        stays unstaggered inside — one level only. -->
   <div use:staggerIn class="space-y-6">
-    <ViewHeader title="Observability" />
     <Tabs items={OBS_TABS} value={tab} onChange={setTab} />
     <!-- Tab-pane grammar: rise in on switch, no exit; no AutoHeight. On MOUNT
          the pane is a section whose items cascade: Overview's three blocks

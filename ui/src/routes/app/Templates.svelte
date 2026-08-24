@@ -9,14 +9,20 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { createTemplate, deleteTemplate, useTemplates, type Template, type TemplateKind } from '@/lib/templates'
   import TemplateDetail from './templates/TemplateDetail.svelte'
+
+  // The view's title and its InfoTip live in the top strip (lib/view-title) —
+  // the body opens straight onto its tabs.
+  claimViewTitle('Templates', {
+    info: 'The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform.',
+  })
 
   // Templates — the skeletons work starts from, managed in one place. One tab
   // per surface that consumes them (tickets, plans); the body edits in the
@@ -108,15 +114,10 @@
   <EmptyState icon="▣" title="Admins only" />
 {:else}
   <PageSurface>
-    <!-- Page content entrance: header row → tab strip → list+detail pane rise
-         in sequence (ANIMATIONS.md). The keyed pane keeps its own fly on kind
-         switch and stays unstaggered inside — one level only. -->
+    <!-- Page content entrance: tab strip → list+detail pane rise in sequence
+         (ANIMATIONS.md). The keyed pane keeps its own fly on kind switch and
+         stays unstaggered inside — one level only. -->
     <div use:staggerIn class="space-y-6">
-      <ViewHeader
-        title="Templates"
-        info="The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform."
-      />
-
       <Tabs items={tabItems} value={tab} onChange={setTab} />
 
       <!-- Tab-pane grammar: the whole library pane rises in on a kind switch

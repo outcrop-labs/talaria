@@ -76,6 +76,7 @@ import { promptShape, wireSchemaOf, type WireSchema } from './json-schema'
 import { personaCapabilityKeys } from './persona'
 import { parseJson, repairPrompt } from './json'
 import { resolveHarnessModel, type ModelChainStep, type ModelSpec } from './model'
+import { agentSlot, roleSlot, slotEffortForModel } from '../effort-prefs'
 import { defaultTransport, type LedgerAttribution, type StreamingTransport, type Transport, type TransportKind, type TransportRequest } from './transport'
 import type { Grounding, HarnessDefinition, Message, RenderContext } from './define'
 
@@ -224,6 +225,11 @@ export interface HarnessRunRow {
 
 export interface HarnessDeps {
   resolveModel: (spec: ModelSpec) => Promise<{ model: string; step: ModelChainStep } | null>
+  /** The admin's slot-level effort preference (Models → Roles / Platform),
+   *  validated against the model's live published levels — or null. Injected
+   *  for the same reason every other edge here is: the policy is the part
+   *  worth testing without a database. */
+  slotEffort: (slot: string, model: string) => Promise<string | null>
   /** Where a model CAN land, without advancing the round-robin cursor. */
   routing: (model: string) => Promise<{ endpoints: string[]; upstreamModel: string }>
   /** Capability keys a FLEET PERSONA inherits from the model behind it — see
@@ -251,6 +257,7 @@ export interface HarnessDeps {
 
 const REAL_DEPS: HarnessDeps = {
   resolveModel: resolveHarnessModel,
+  slotEffort: (slot, model) => slotEffortForModel(slot, model),
   routing: async (model) => {
     const r = await routingFor(model)
     return { endpoints: r.endpoints.map((e) => e.name), upstreamModel: r.upstreamModel }
@@ -721,6 +728,28 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   // from a routed id for callers that arrive with one already built.
   const routed = ctx.tier ? `${model}-${ctx.tier}` : model
 
+  // THE SLOT THAT PRODUCED THIS MODEL, when one did — the admin's effort
+  // preference hangs off the WORK, not the model: 'role:utility' can ask for
+  // low while 'role:code-heavy' on the same model asks for high. Only the pin
+  // and role steps carry a slot the admin configured; env/preferred/
+  // first-routable wins have no slot and no preference, which is correct: the
+  // admin expressed no opinion about a model the chain found by itself.
+  const slot =
+    step === 'pin' && def.model.pin
+      ? agentSlot(def.model.pin)
+      : step === 'role' && def.model.role
+        ? roleSlot(def.model.role)
+        : step === 'utility'
+          ? roleSlot('utility')
+          : null
+  // PRECEDENCE, in one line: the nearer the ask, the stronger it is — a
+  // conversation pick (ctx.effort) beats the agent-configured default the
+  // surface already folded into it, and both beat the slot preference. A
+  // caller who never picked anything inherits the admin's dial for this class
+  // of work, held against the model's live levels by the prefs module (a
+  // stale level is dropped there, not sent here).
+  const effort = ctx.effort ?? (slot ? await deps.slotEffort(slot, routed).catch(() => null) : null)
+
   // Capability facts are keyed 'endpoint:model', because capability is a
   // property of the ENDPOINT serving the model (see capability.ts). A bare
   // model name may be served by a POOL, and we cannot know which member will
@@ -975,10 +1004,11 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         // of a question the model was never asked.
         ...(def.toolDefs?.length ? { toolDefs: def.toolDefs } : {}),
         ledger,
-        // The caller's effort pick rides the request untouched; whether it can
-        // be honored is a per-transport question (a tool-offering turn cannot
-        // take one — see gatewayToolTurn), not the runner's.
-        ...(ctx.effort ? { effort: ctx.effort } : {}),
+        // The winning effort — caller pick, else the slot preference above.
+        // Whether it can be honored is a per-transport question (a
+        // tool-offering turn cannot take one — see gatewayToolTurn), not the
+        // runner's.
+        ...(effort ? { effort } : {}),
         ...(def.holdMs !== undefined ? { holdMs: def.holdMs } : {}),
         caller: ctx.caller,
         ...(ctx.signal ? { signal: ctx.signal } : {}),

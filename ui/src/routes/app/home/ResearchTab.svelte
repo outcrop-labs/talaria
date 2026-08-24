@@ -11,7 +11,6 @@
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { useResearchRuns } from '@/lib/research'
-  import AssistantBriefing from './AssistantBriefing.svelte'
   import { RUN_DOT } from './home'
 
   // Research: runs in flight and fresh reports.
@@ -20,7 +19,6 @@
 </script>
 
 <div class="space-y-6">
-  <AssistantBriefing scope="research" />
   <Panel>
     <SectionHeader title="Research" />
     {#if list.notice}

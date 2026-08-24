@@ -35,7 +35,7 @@
       aria-pressed={value === o.id}
       onclick={() => onChange(o.id)}
       class={cn(
-        'relative rounded font-mono uppercase tracking-[0.05em] transition-colors',
+        'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
         size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
         'dither-fill',

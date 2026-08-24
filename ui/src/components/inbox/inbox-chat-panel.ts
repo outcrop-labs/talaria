@@ -14,6 +14,16 @@ export interface InboxChatPanelHandle {
   insertText: (text: string) => void
 }
 
+/** The minimum the panel needs from an attached context: what to call it, and
+ *  the focus key a command rides when it stays attached. A FocusItem satisfies
+ *  this structurally; the brief's lines satisfy it by mapping their key and
+ *  title — the panel shows the row and sends the key, and the SERVER resolves
+ *  the key against the real focus source either way. */
+export interface PanelFocusContext {
+  key: string
+  question: string
+}
+
 export interface StreamingTurn {
   user: string
   status: string
@@ -21,6 +31,9 @@ export interface StreamingTurn {
 }
 
 export interface InboxCommandOptions {
+  /** Which conversation instance the command belongs to (the panel's chat
+   *  picker). Null = the server's most recent instance. */
+  conversationId: string | null
   focusKey: string | null
   delegateModel: string | null
   responseModel: string | null
@@ -34,6 +47,13 @@ export interface InboxCommandOptions {
 
 export const PANEL_COLLAPSED_KEY = 'talaria:inbox-chat-collapsed'
 export const PANEL_COLLAPSED_EVENT = 'talaria:inbox-chat-collapsed'
+// Which conversation instance the panel is on. Persisted like collapse so a
+// reload reopens the thread the person was reading; null = "whatever is most
+// recent" (an empty panel on a first-ever visit, or after archiving the last
+// chat). Same event pattern as collapse so the launcher and any second tab
+// follow a switch.
+export const SELECTED_CHAT_KEY = 'talaria:inbox-chat-id'
+export const SELECTED_CHAT_EVENT = 'talaria:inbox-chat-id'
 // v2 adopts the 700px composer width from the design spec as the default,
 // while retaining resizing.
 export const PANEL_WIDTH_KEY = 'talaria:inbox-chat-width-v2'
@@ -72,6 +92,35 @@ export function writePanelCollapsed(next: boolean): void {
     /* private mode: keep the in-memory preference for this tab */
   }
   window.dispatchEvent(new Event(PANEL_COLLAPSED_EVENT))
+}
+
+// ── Which conversation instance is on screen ────────────────────────────────
+
+export function readSelectedChatId(): string | null {
+  try {
+    return window.localStorage.getItem(SELECTED_CHAT_KEY) || null
+  } catch {
+    return null
+  }
+}
+
+export function subscribeSelectedChat(onChange: () => void): () => void {
+  window.addEventListener(SELECTED_CHAT_EVENT, onChange)
+  window.addEventListener('storage', onChange)
+  return () => {
+    window.removeEventListener(SELECTED_CHAT_EVENT, onChange)
+    window.removeEventListener('storage', onChange)
+  }
+}
+
+export function writeSelectedChatId(id: string | null): void {
+  try {
+    if (id === null) window.localStorage.removeItem(SELECTED_CHAT_KEY)
+    else window.localStorage.setItem(SELECTED_CHAT_KEY, id)
+  } catch {
+    /* private mode: the switch still applies for this tab */
+  }
+  window.dispatchEvent(new Event(SELECTED_CHAT_EVENT))
 }
 
 // ── Output the user has not seen yet ────────────────────────────────────────

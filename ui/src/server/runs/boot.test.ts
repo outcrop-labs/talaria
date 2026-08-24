@@ -89,10 +89,10 @@ describe('server/runs/boot.ts', () => {
     }
   })
 
-  it('registers the kinds this change ports, and no others', () => {
-    // Named explicitly rather than counted, so porting a kind without meaning
+  it('registers the kinds anyone has meant to add, and no others', () => {
+    // Named explicitly rather than counted, so adding a kind without meaning
     // to shows up here as a failing test rather than as a behaviour change
     // nobody reviewed.
-    expect(runDefinitions().map((d) => d.kind).sort()).toEqual(['rag-backfill', 'rag-reindex', 'research', 'work-session'])
+    expect(runDefinitions().map((d) => d.kind).sort()).toEqual(['plan-draft', 'rag-backfill', 'rag-reindex', 'research', 'work-session'])
   })
 })

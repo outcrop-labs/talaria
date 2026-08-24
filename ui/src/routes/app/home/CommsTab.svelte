@@ -10,7 +10,6 @@
   import { listQuery } from '@/components/ui/query-state'
   import { useChannels, type Channel } from '@/lib/channels.svelte'
   import { relativeTime } from '@/lib/fleet'
-  import AssistantBriefing from './AssistantBriefing.svelte'
   import ActivityList from './ActivityList.svelte'
 
   // Comms: what's unread, then the room's pulse.
@@ -22,7 +21,6 @@
 </script>
 
 <div class="space-y-6">
-  <AssistantBriefing scope="comms" />
   <Panel>
     <SectionHeader title="Unread" action={unread.length > 0 ? String(unread.length).padStart(2, '0') : undefined} />
     {#if list.notice}

@@ -13,6 +13,7 @@
   import { patchEndpoint, removeEndpoint, useAvailableModels, type EndpointOpResult } from '@/lib/models'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
   import ModelsModelAdder from './ModelsModelAdder.svelte'
+  import ModelsEffortRow from './ModelsEffortRow.svelte'
   import ModelsPrivacyRow from './ModelsPrivacyRow.svelte'
   import { describeAffected } from './models'
 
@@ -95,6 +96,18 @@
     else next[m] = entry
     void run(patchEndpoint(ep.id, { modelPrices: next }))
   }
+
+  // Declaring a ladder is a whole-map write like the pricing edits beside it.
+  // A cache refresh rides along: the composer's effort chip reads through the
+  // efforts API, which caches for a minute — kicking the query is what makes
+  // the picker appear on a surface that already asked.
+  const setEfforts = (m: string, levels: string[] | null) => {
+    const next = { ...(ep.modelEfforts ?? {}) }
+    if (levels) next[m] = levels
+    else delete next[m]
+    void run(patchEndpoint(ep.id, { modelEfforts: next }))
+    void qc.invalidateQueries({ queryKey: ['model-efforts'] })
+  }
 </script>
 
 <Modal open {onClose} title={`${ep.name} · ${ep.provider}`} width="max-w-2xl">
@@ -164,6 +177,34 @@
       <ModelsModelAdder catalog={available?.models ?? []} existing={ep.models} onAdd={addModel} />
       {#if available?.note}<div class="mt-1.5 text-xs text-muted">Provider catalog unavailable: {available.note}</div>{/if}
     </section>
+
+    <!-- Reasoning-effort ladders. Rendered for EVERY endpoint class — a
+         self-host is the case that needs it most: minimal OpenAI-compatible
+         servers publish no per-model parameters at all, so without a
+         declaration the composer never offers the dial for models that take
+         one. The provider's own ladder (when it publishes one) rides along
+         with the live catalog the modal already fetched. -->
+    {#if ep.models.length > 0}
+      <section>
+        <div class="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+          <span>Reasoning effort</span>
+        </div>
+        <div class="divide-y divide-line">
+          {#each ep.models as m (m)}
+            <ModelsEffortRow
+              model={m}
+              catalogEfforts={available?.catalog?.find((c) => c.id === m)?.efforts ?? null}
+              declared={ep.modelEfforts?.[m]}
+              onDeclare={(levels) => setEfforts(m, levels)}
+            />
+          {/each}
+        </div>
+        <InfoTip
+          class="mt-1"
+          text="Levels the model accepts, sent verbatim (e.g. low, medium, high). A declaration stands in where the provider's catalog publishes none, and replaces it where it does."
+        />
+      </section>
+    {/if}
 
     {#if ep.class === 'cloud'}
       <section>

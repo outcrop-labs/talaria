@@ -19,6 +19,7 @@
   import SessionRowBody from '@/components/chat/SessionRowBody.svelte'
   import ChannelSettingsModal from '@/components/chat/ChannelSettingsModal.svelte'
   import PlanModal from '@/components/chat/PlanModal.svelte'
+  import { hydratePlanDraft } from '@/components/chat/plan-drafts.svelte'
   import { useAgents } from '@/lib/agents'
   import { slide } from '@/lib/motion'
   import { useSession, useHasPerm } from '@/lib/session'
@@ -209,6 +210,15 @@
   const detail = $derived(detailQuery.data)
   const refresh = () => qc.invalidateQueries({ queryKey: ['channels'] })
 
+  // Ticket drafts pair to the channel SERVER-side: opening one asks what is
+  // paired to it, so a reload lands back on an in-flight draft or a finished
+  // review with nothing lost (the plan surface does the same for its kind).
+  $effect(() => {
+    const id = selected?.id
+    if (!id) return
+    void hydratePlanDraft(id, `/api/channels/${id}/plan`)
+  })
+
   // Right-click menus on sidebar rows — shortcuts to actions the rows already
   // perform (open/copy the URL-driven selection, advance the read cursor).
   const menu = useContextMenu()
@@ -300,7 +310,7 @@
 {#snippet avatarRowSkeleton(i: number)}{@render railRowSkeleton(i, true)}{/snippet}
 
 <RailSurface>
-  <Rail title="Comms">
+  <Rail>
     <Section
       label="Channels"
       meta={rooms.length > 0 ? String(rooms.length).padStart(2, '0') : undefined}
@@ -612,6 +622,7 @@
     <PlanModal
       open={planOpen}
       onClose={() => (planOpen = false)}
+      planId={selected.id}
       draftUrl={`/api/channels/${selected.id}/plan`}
       agents={fleet.filter((a) => detail.agents.includes(a.id))}
     />

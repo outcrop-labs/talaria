@@ -51,7 +51,7 @@
   )
 </script>
 
-<Rail title="Plan">
+<Rail>
   {#snippet actions()}
     {#if canCreatePlans.current}
       <IconButton size="sm" title="New plan: think it through, then draft tickets" onclick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>

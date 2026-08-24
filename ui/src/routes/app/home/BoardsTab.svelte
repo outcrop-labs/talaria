@@ -11,7 +11,6 @@
   import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { cn } from '@/lib/cn'
-  import AssistantBriefing from './AssistantBriefing.svelte'
   import ActivityList from './ActivityList.svelte'
   import { QUEUE_META, type HomeQuery, type QueueKey } from './home'
 
@@ -26,7 +25,6 @@
 </script>
 
 <div class="space-y-6">
-  <AssistantBriefing scope="boards" />
   <div class="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)]">
     <aside class="space-y-1">
       {#each queueKeys as k (k)}

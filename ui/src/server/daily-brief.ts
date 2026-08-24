@@ -390,39 +390,146 @@ async function loadEntries(briefId: string): Promise<BriefEntry[]> {
   `) as unknown as BriefEntry[]
 }
 
+// ── Reads ────────────────────────────────────────────────────────────────────
+
+/** An open in flight for this person, by user id. The unique key on (user_id,
+ *  brief_date) already makes a double-open harmless — the loser's insert
+ *  conflicts and it returns the winner's id — but the reader's fast poll while
+ *  a brief is 'writing' would re-kick one open PER POLL, each costing an
+ *  assistant lookup and a doomed insert. This set makes the re-kick a no-op
+ *  while any open for that person is still running. */
+const opensInFlight = new Set<string>()
+
+/** The READER'S zone, when their client said one, as an IANA name Intl can
+ *  actually resolve — anything else falls back to the config zone.
+ *
+ *  WHY THIS SEAM EXISTS. The config's zone is org-wide and, on a server, is
+ *  usually UTC regardless of where the humans are: 18:00 in Denver is 00:00
+ *  UTC, and a reader's evening used to read as the small hours of TOMORROW —
+ *  "your next brief opens 7:00 AM" over a brief that existed and was
+ *  perfectly readable. The browser sends its zone on the read; the scheduled
+ *  pass keeps the config zone (`zoneFor`, unchanged). `users` still has no
+ *  timezone column — this is the per-reader read of the same seam
+ *  daily-brief-config.ts documents, not a new source of truth.
+ *
+ *  NOT TRUSTED, MERELY BELIEVED: a zone name cannot widen anything (worst
+ *  case it computes the wrong day, same class as an admin misconfiguring the
+ *  org zone), and an unparseable one is discarded rather than stored. */
+function readerZone(tz: string | null | undefined, config: BriefConfig): string {
+  if (!tz || tz.length > 64) return zoneFor('', config)
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return tz
+  } catch {
+    return zoneFor('', config)
+  }
+}
+
+/** Kick today's open, detached, at most one at a time per person. The caller
+ *  answers the read with 'writing' immediately; `appendEntries` publishes the
+ *  brief event that turns the surface into the document. */
+function openBriefDetached(user: SessionUser, at: Date, tz: string | null | undefined): void {
+  if (opensInFlight.has(user.id)) return
+  opensInFlight.add(user.id)
+  void openBrief(user, at, tz)
+    .catch((e: unknown) => console.error(`[daily-brief] on-demand open failed for ${user.id}:`, e))
+    .finally(() => opensInFlight.delete(user.id))
+}
+
 /** The surface's one read. Returns the day's document, or WHICH KIND of nothing
- *  — the three absences render differently and collapsing them into one empty
- *  state is how a surface tells a person "you are all clear" over a brief that
- *  simply has not been written yet. */
-export async function getBrief(user: SessionUser, at = new Date()): Promise<BriefResponse> {
+ *  — the absences render differently and collapsing them into one empty state
+ *  is how a surface tells a person "you are all clear" over a brief that
+ *  simply has not been written yet.
+ *
+ *  THE READ OPENS, and that is the fix for the blank day. The scheduled pass is
+ *  still the ordinary way a brief starts, but a tick can be missed for reasons
+ *  that have nothing to do with this reader — a Redis lease skipped, a deploy
+ *  window, an assistant configured at noon — and "the hour passed and nothing
+ *  was written" used to be a state the person stared at until tomorrow. Now
+ *  the first read past the due hour kicks the open itself; the reader sees
+ *  'writing' for the few seconds it takes, and the append's publish turns the
+ *  page into the document without them touching anything. */
+export async function getBrief(user: SessionUser, at = new Date(), tz: string | null = null): Promise<BriefResponse> {
   const config = await briefConfig()
-  const zone = zoneFor(user.id, config)
+  const zone = readerZone(tz, config)
   const { due, date } = briefWindow(config, zone, at)
   const [row, agent] = await Promise.all([loadRow(user.id, date), briefAssistant(user.id)])
 
   if (row) {
-    // Two reads, and the second is not the log. `commsLines` is asked again at
-    // request time because a draft's approvability and a grant's existence are
-    // present-tense facts — the log can only say what was true when it was
-    // written, and acting on that would offer to send a draft the owner already
-    // discarded. A failure here costs the controls, never the document.
-    const [entries, live] = await Promise.all([
-      loadEntries(row.id),
-      commsLines(user.id, row.agentModel).catch((e: unknown) => {
-        console.error(`[daily-brief] live comms state failed for ${user.id}:`, e)
-        return [] as CommsLine[]
-      }),
-    ])
-    const comms: CommsState[] = live.map((line) => ({
-      sourceKey: line.key,
-      channelId: line.channelId,
-      delegated: line.delegated,
-      draft: line.draft && !line.draft.stale ? { id: line.draft.id, content: line.draft.content, stale: false } : line.draft,
-    }))
-    return view(row, entries, agent, comms)
+    // BIRTH, NOT A DOCUMENT. `openBrief` inserts the row first and appends the
+    // lede and first items in one batch afterwards, so lastSeq === 0 is only
+    // reachable while that first append is in flight. Rendering it as a brief
+    // would show an empty page — "nothing is waiting on you", asserted by a
+    // surface whose document has not arrived. It is the same 'writing' the
+    // reader gets before the row exists, because it is the same fact.
+    if (row.lastSeq === 0) return { absent: 'writing', nextAt: null, agent }
+    return documentView(row, agent)
   }
   if (!agent.configured) return { absent: 'no-agent', nextAt: null, agent }
-  return { absent: due ? 'none' : 'pending', nextAt: nextBriefAt(config, zone, at).toISOString(), agent }
+  if (due) {
+    openBriefDetached(user, at, tz)
+    return { absent: 'writing', nextAt: null, agent }
+  }
+  // NEVER 'pending' OVER A READABLE DOCUMENT. The window said "not due yet",
+  // which is a statement about the NEXT brief — not a reason to hide the last
+  // one. A person opening the surface in their evening (or from a timezone
+  // the org config disagrees with) still has yesterday's page, titled with
+  // its own date, and anything they check off or reply to there is real work.
+  // The 48h window matches `markBriefStale`'s: within two days the document
+  // is "the current one"; past that, the pending state with its WHEN is the
+  // honest answer again.
+  const recent = await loadRecentRow(user.id, at)
+  if (recent) return documentView(recent, agent)
+  return { absent: 'pending', nextAt: nextBriefAt(config, zone, at).toISOString(), agent }
+}
+
+/** The person's most recent brief, when it is recent enough to still be "the
+ *  current one". Null otherwise — see the 48h note above `loadRecentRow`'s
+ *  caller. */
+async function loadRecentRow(userId: string, at: Date): Promise<BriefRow | null> {
+  const sql = await db()
+  // Cutoff computed here rather than as SQL `created_at - interval` — a
+  // parameterized timestamp does not participate in interval arithmetic
+  // without a cast, and a JS boundary is the same fact with no cast to get
+  // wrong.
+  const since = new Date(at.getTime() - 48 * 60 * 60 * 1000).toISOString()
+  const rows = (await sql`
+    select id, user_id as "userId", to_char(brief_date, 'YYYY-MM-DD') as "briefDate", zone,
+           agent_model as "agentModel", agent_name as "agentName", artifact_id as "artifactId",
+           last_seq as "lastSeq", read_seq as "readSeq",
+           last_swept_at as "lastSweptAt", created_at as "createdAt"
+    from daily_briefs
+    where user_id = ${userId} and last_seq > 0 and created_at > ${since}
+    order by brief_date desc limit 1
+  `) as unknown as BriefRow[]
+  return rows[0] ?? null
+}
+
+/** The read-side assembly shared by the today row and the recent-brief
+ *  fallback: live comms state plus the fold. One function because the two
+ *  callers must not drift — a fallback that forgot the comms controls would
+ *  serve a read-only page for the same document depending on the clock.
+ *
+ *  Two reads, and the second is not the log. `commsLines` is asked fresh
+ *  because a draft's approvability and a grant's existence are present-tense
+ *  facts — the log can only say what was true when it was written, and acting
+ *  on that would offer to send a draft the owner already discarded. A failure
+ *  here costs the controls, never the document. */
+async function documentView(row: BriefRow, agent: BriefAssistant): Promise<BriefResponse> {
+  const [entries, live] = await Promise.all([
+    loadEntries(row.id),
+    commsLines(row.userId, row.agentModel).catch((e: unknown) => {
+      console.error(`[daily-brief] live comms state failed for ${row.userId}:`, e)
+      return [] as CommsLine[]
+    }),
+  ])
+  const comms: CommsState[] = live.map((line) => ({
+    sourceKey: line.key,
+    channelId: line.channelId,
+    delegated: line.delegated,
+    draft: line.draft && !line.draft.stale ? { id: line.draft.id, content: line.draft.content, stale: false } : line.draft,
+  }))
+  return view(row, entries, agent, comms)
 }
 
 /** Move the reader's cursor. The only update this feature performs on a brief,
@@ -467,9 +574,10 @@ export async function markBriefItem(
   sourceKey: string,
   action: BriefItemAction,
   at = new Date(),
+  tz: string | null = null,
 ): Promise<{ ok: boolean; reason?: string }> {
   const config = await briefConfig()
-  const zone = zoneFor(user.id, config)
+  const zone = readerZone(tz, config)
   const { date } = briefWindow(config, zone, at)
   const row = await loadRow(user.id, date)
   if (!row) return { ok: false, reason: 'no brief today' }
@@ -592,9 +700,13 @@ async function appendEntries(briefId: string, userId: string, rows: NewEntry[]):
 /** Open today's brief. Idempotent: the unique key on (user_id, brief_date) is
  *  what makes a double-firing tick a no-op rather than a second document, and
  *  the `returning` tells us which of the two we are. */
-export async function openBrief(user: SessionUser, at = new Date()): Promise<{ opened: boolean; briefId: string | null }> {
+export async function openBrief(
+  user: SessionUser,
+  at = new Date(),
+  tz: string | null = null,
+): Promise<{ opened: boolean; briefId: string | null }> {
   const config = await briefConfig()
-  const zone = zoneFor(user.id, config)
+  const zone = readerZone(tz, config)
   const { date } = briefWindow(config, zone, at)
   const agent = await briefAssistant(user.id)
   // No assistant, no brief. NOT a degraded brief written by some other model —
@@ -690,7 +802,13 @@ export async function sweepBrief(user: SessionUser, at = new Date()): Promise<Sw
   const zone = zoneFor(user.id, config)
   const { date } = briefWindow(config, zone, at)
   const row = await loadRow(user.id, date)
-  if (!row) return none
+  // NOT DURING BIRTH. A row with lastSeq === 0 is an open mid-flight — the
+  // lede and first items have not landed — and a sweep that ran now would race
+  // the open's own append: the same source keys written twice, a lede that is
+  // not seq 1, a timeline that says the day started twice. The open owns the
+  // document until its first batch lands; sweeps are for following one that
+  // exists.
+  if (!row || row.lastSeq === 0) return none
 
   const [entries, first] = await Promise.all([loadEntries(row.id), snapshot(user, zone, row.agentModel)])
 
@@ -948,13 +1066,18 @@ const sweepDue = (row: BriefRow, config: BriefConfig, at: Date): boolean =>
 /** Sweep one person NOW, on demand. Used by the surface when the reader opens
  *  it and by the realtime nudge — both want "is it current" answered before the
  *  next tick, and both are rate-limited by `sweepDue` so an open tab cannot
- *  turn into a query loop. */
+ *  turn into a query loop.
+ *
+ *  Null, never a no-op sweep, for a brief still being born: the caller asked
+ *  "did anything need doing" and "the document does not exist yet" is the null
+ *  answer. See the birth guard on `sweepBrief` for why nothing may sweep a
+ *  lastSeq-0 row. */
 export async function sweepIfDue(user: SessionUser, at = new Date()): Promise<SweepResult | null> {
   const config = await briefConfig()
   const zone = zoneFor(user.id, config)
   const { date } = briefWindow(config, zone, at)
   const row = await loadRow(user.id, date)
-  if (!row || !sweepDue(row, config, at)) return null
+  if (!row || row.lastSeq === 0 || !sweepDue(row, config, at)) return null
   return sweepBrief(user, at)
 }
 

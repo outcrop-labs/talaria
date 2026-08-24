@@ -211,9 +211,10 @@
 
 <div class="flex h-full min-h-0">
   <aside class="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar font-sans">
+    <!-- No "Knowledge" label: naming the view is the top strip's job now. The
+         bar stays to carry the one action it always had. -->
     <div class="flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
-      <span class="min-w-0 flex-1 truncate text-sm font-semibold text-fg">Knowledge</span>
-      <IconButton size="sm" title="New space" onclick={() => (creatingSpace = !creatingSpace)}>
+      <IconButton class="ml-auto" size="sm" title="New space" onclick={() => (creatingSpace = !creatingSpace)}>
         <Plus size={15} />
       </IconButton>
     </div>

@@ -562,8 +562,8 @@ describe('runEvalSweep', () => {
   })
 
   it('records a tool-loop harness as skipped only when NOTHING can drive its loop', async () => {
-    // THE DEFECT THIS LOCKS. `work-session`, `outreach:check-in` and
-    // `briefer:chat` declare `tools: 'own'` because the tool loop IS the
+    // THE DEFECT THIS LOCKS. `work-session`, `outreach:check-in` and the
+    // brief chat declare `tools: 'own'` because the tool loop IS the
     // feature. On an org-gateway model the transport refuses them in about four
     // milliseconds, before a token is spent — and the sweep used to record that
     // refusal as `contractHeld: false`, so the matrix printed "0% first pass"

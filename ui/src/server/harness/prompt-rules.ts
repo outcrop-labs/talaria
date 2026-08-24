@@ -47,7 +47,7 @@ export const UNTRUSTED_INPUT =
  *  `blurb-writer` is not — its untrusted text is vendor copy pulled live from
  *  the public model catalog, written by somebody outside the organization
  *  entirely. That makes it the least trusted of the three, not the most. */
-export const STATES_THE_BOUNDARY = ['summarizer', 'channel-plan', 'plan-doc', 'research-queries', 'briefer:brief', 'inbox-reply', 'librarian', 'distiller', 'blurb-writer'] as const
+export const STATES_THE_BOUNDARY = ['summarizer', 'channel-plan', 'plan-doc', 'research-queries', 'inbox-reply', 'librarian', 'distiller', 'blurb-writer'] as const
 
 /** `muse:draft` states it too, through `SYSTEM.document` in muse.ts, but its
  *  system prompt is chosen per KIND at render time — so the test below cannot

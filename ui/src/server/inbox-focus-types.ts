@@ -110,7 +110,9 @@ export type InboxTimelineEntry =
     }
 
 export interface InboxConversationPage {
-  conversationId: string
+  /** The instance these entries belong to, or null when the owner has no
+   *  conversations yet (reads create nothing — see getInboxConversation). */
+  conversationId: string | null
   entries: InboxTimelineEntry[]
   nextCursor: string | null
   working: boolean

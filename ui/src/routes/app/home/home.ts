@@ -97,24 +97,10 @@ export const RUN_DOT: Record<string, DotStatus> = {
   error: 'danger',
 }
 
-// ── The assistant briefing: what needs you, in your assistant's voice ───────
-export interface BriefingData {
-  none?: boolean
-  summary: string
-  agentModel: string | null
-  agentName: string | null
-  generating: boolean
-  generatedAt: string | null
-}
-
-export type BriefScope = 'inbox' | 'boards' | 'comms' | 'plans' | 'research'
-export const BRIEF_ASK: Record<BriefScope, string> = {
-  inbox: 'about any of this',
-  boards: 'about board work',
-  comms: 'about your comms',
-  plans: 'about your plans',
-  research: 'about the research',
-}
+// ── The assistant's summary is the DAILY BRIEF, not a per-tab panel. Each
+// console tab used to open with its own ephemeral briefing (`AssistantBriefing`);
+// those are gone — the brief on the Inbox tab is the one summary a person is
+// given, and asking about a tab's work happens from the brief's own chat.
 
 export interface AgendaEvent {
   id: string

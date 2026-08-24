@@ -22,6 +22,7 @@
   import { useSession } from '@/lib/session'
   import { relativeTime } from '@/lib/fleet'
   import { fly, slide, staggerIn } from '@/lib/motion'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
@@ -42,6 +43,9 @@
   import { ADMIN_TABS, useAdminPermissions, useAdminUsers, type AdminTab } from './admin'
 
   // The admin console: people, their roles, and which agents each may use.
+  // The title lives in the top strip (lib/view-title); the body opens on its
+  // tabs.
+  claimViewTitle('Admin')
   const qc = useQueryClient()
   const session = useSession()
   const me = $derived(session.data)
@@ -95,8 +99,6 @@
 {:else}
   <PageSurface>
     <div class="space-y-6">
-      <h1 class="text-2xl font-semibold tracking-tight text-fg">Admin</h1>
-
       <!-- One concern per tab; every panel keeps its own component. -->
       <Tabs items={ADMIN_TABS} value={tab} onChange={setTab} />
 

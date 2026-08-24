@@ -15,6 +15,11 @@ const Patch = z.object({
   modelPrices: z
     .record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() }))
     .optional(),
+  /** Admin-declared effort ladders for models whose catalog publishes none
+   *  (or publishes wrong ones). Levels are the provider's own spellings,
+   *  sent verbatim — the picker must never rename a level into one the model
+   *  rejects, so no enum here. */
+  modelEfforts: z.record(z.string().max(120), z.array(z.string().min(1).max(24)).min(1).max(12)).optional(),
   /** Extra request-body defaults for the LLM gateway (deep-merged under the
    *  client body — e.g. OpenRouter provider allowlists). Admin-only, so a
    *  permissive record is acceptable here. */
@@ -67,6 +72,7 @@ export const Route = defineApi('/api/fleet/endpoints/$id', {
       priceOutPerMtok: body.priceOutPerMtok,
       models: body.models,
       modelPrices: body.modelPrices,
+      modelEfforts: body.modelEfforts,
       requestDefaults: body.requestDefaults,
       // Empty string = an untouched masked field round-tripping — keep the
       // stored key. Only a non-empty value rotates it.

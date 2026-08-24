@@ -1,6 +1,8 @@
 <script lang="ts">
   import { bottomStick } from '@/lib/stick-to-bottom'
-  import { Bot, ChevronLeft, GripVertical, Paperclip, X } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import { Archive, Bot, ChevronDown, ChevronLeft, GripVertical, Paperclip, Plus, X } from '@lucide/svelte'
+  import { relativeTime } from '@/lib/fleet'
   import AttachButton from '@/components/chat/AttachButton.svelte'
   import EffortPicker from '@/components/chat/EffortPicker.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
@@ -25,6 +27,9 @@
     shouldCollapseInboxPanel,
   } from '@/lib/inbox-panel-size'
   import {
+    archiveInboxConversation,
+    createInboxConversation,
+    useInboxConversations,
     useInboxFocusConversation,
     type FocusAssistant,
     type FocusItem,
@@ -33,12 +38,16 @@
   import { useGoogleConnectStatus } from '@/lib/google-connect.svelte'
   import {
     PANEL_WIDTH_KEY,
+    type PanelFocusContext,
     readPanelCollapsed,
     readPanelWidth,
+    readSelectedChatId,
     subscribePanelCollapsed,
+    subscribeSelectedChat,
     writePanelCollapsed,
     writePanelUnseen,
     writePanelWidth,
+    writeSelectedChatId,
     type InboxCommandOptions,
     type StreamingTurn,
   } from './inbox-chat-panel'
@@ -58,7 +67,11 @@
     onRetry,
     onUndo,
   }: {
-    active: FocusItem | null
+    /** The attached context: a queue FocusItem, or the lighter
+     *  PanelFocusContext a surface like the brief hands over when the person
+     *  asks about one of its lines. Only `key` and `question` are read — the
+     *  row shows the question and the command carries the key. */
+    active: FocusItem | PanelFocusContext | null
     focusMode: boolean
     /** The view the panel is floating over — shown under the assistant name so
      *  the conversation reads as being about where you are, not about Inbox. */
@@ -112,7 +125,73 @@
     writePanelWidth(clamped)
   }
 
-  const conversation = useInboxFocusConversation()
+  // ── Which conversation instance is on screen ─────────────────────────────
+  //
+  // SEGMENTATION IS THE CONTEXT STRATEGY: the picker at the top of the header
+  // swaps instances, a fresh one sheds old context, and nothing imposes a
+  // budget on a thread the person still wants. The selection persists like
+  // collapse does (localStorage + event), so a reload reopens the thread being
+  // read and a second tab follows a switch.
+  const queryClient = useQueryClient()
+  let chatId = $state<string | null>(readSelectedChatId())
+  $effect(() => subscribeSelectedChat(() => (chatId = readSelectedChatId())))
+  let menuOpen = $state(false)
+  const chats = useInboxConversations()
+  const chatList = $derived(chats.data?.conversations ?? [])
+  const currentChat = $derived(chatList.find((c) => c.id === chatId) ?? null)
+  // NOTE: deliberately NO "deselect when the id leaves the cached list"
+  // watchdog. A selection missing from the list means THE LIST IS STALE (the
+  // list refetches on its own), not that the selection is bad — the server
+  // falls back to the most recent instance for any unknown id, so a stale
+  // selection degrades to the right page anyway. A watchdog here fought the
+  // adopter below in refetch races (adopt → list lands without it → deselect
+  // → adopt → …) and the oscillation took the whole panel down with an
+  // unhandled effect loop.
+  const conversation = useInboxFocusConversation(chatId)
+  // ADOPT, DON'T ASK. With nothing selected, the server answers from the most
+  // recent instance (creating nothing) — and the picker should name whatever
+  // is actually on screen, so the resolved id becomes the selection. This is
+  // also how a first command on an empty account puts its new thread in the
+  // picker without a round trip.
+  //
+  // GATED ON THE LIST, and that gate is load-bearing for the same race: an
+  // instance the loaded list does not know (just-created, just-archived) is
+  // never adopted, so this write cannot pick an id the next list refresh will
+  // contradict — the loop the watchdog ran into cannot form.
+  $effect(() => {
+    const resolved = conversation.data?.pages[0]?.conversationId ?? null
+    const known = !chats.isSuccess || chatList.some((c) => c.id === resolved)
+    if (chatId === null && resolved && known) writeSelectedChatId(resolved)
+  })
+
+  async function startNewChat() {
+    menuOpen = false
+    try {
+      const id = await createInboxConversation()
+      writeSelectedChatId(id)
+      await queryClient.invalidateQueries({ queryKey: ['inbox-conversations'] })
+      window.setTimeout(() => composer?.focus(), 0)
+    } catch {
+      /* the list refreshes on its own cadence; a failed create is a failed click */
+    }
+  }
+
+  async function archiveCurrentChat() {
+    if (!chatId || busy) return
+    menuOpen = false
+    const id = chatId
+    // ARCHIVE BEFORE DESELECTING. Clearing the selection first would start the
+    // "most recent instance" read while the archive is still in flight — the
+    // server would hand back the very chat being archived, the adopter would
+    // re-select it, and the list refresh would drop it again. Delete, then
+    // switch, then refresh: the fallback read never sees the dead chat.
+    await archiveInboxConversation(id).catch(() => {})
+    writeSelectedChatId(null)
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['inbox-conversations'] }),
+      queryClient.invalidateQueries({ queryKey: ['inbox-focus-conversation'] }),
+    ])
+  }
   let attachments = $state<Attachment[]>([])
   let attachmentError = $state<string | null>(null)
   // The effort pick for the next command ('' = the assistant model's default).
@@ -362,6 +441,7 @@
     // submit only), so the command always runs the assistant's own default in
     // the normal mode — the API fields stay, the choices just never come here.
     onSubmit(instruction, {
+      conversationId: chatId,
       focusKey: attached && active ? active.key : null,
       delegateModel: null,
       responseModel: null,
@@ -459,10 +539,60 @@
       </span>
     </div>
     <header class="flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
-      <span class="grid h-7 w-7 place-items-center rounded-md border border-line text-muted"><Bot size={14} /></span>
-      <div class="min-w-0 flex-1">
-        <div class="truncate font-sans text-[13px] font-medium text-fg">{assistantName}</div>
-        <div class="font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">{focusMode ? 'Inbox conversation' : `Assistant · ${surfaceLabel}`}</div>
+      <span class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line text-muted"><Bot size={14} /></span>
+      <!-- THE AGENT, THEN THE THREAD. The primary line is WHO you are talking
+           to; which conversation instance is the switchable thing, so it sits
+           underneath as the picker. The old layout led with the thread and
+           buried the assistant in the fine print. -->
+      <div class="relative min-w-0 flex-1">
+        <div class="truncate font-sans text-[13px] font-medium leading-tight text-fg">{assistantName}</div>
+        <button
+          type="button"
+          onclick={() => (menuOpen = !menuOpen)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          title="Switch conversation"
+          class="-ml-1.5 mt-0.5 flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left transition-colors duration-[120ms] dither-fill hover:bg-raised"
+        >
+          <span class="truncate font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">
+            {currentChat?.preview?.trim() || 'New conversation'}
+          </span>
+          <ChevronDown size={11} class="shrink-0 text-ink-dim" />
+        </button>
+        {#if menuOpen}
+          <!-- fixed, not absolute: the menu has to close from a click anywhere,
+               including outside the panel. -->
+          <button type="button" tabindex="-1" aria-label="Close menu" onclick={() => (menuOpen = false)} class="fixed inset-0 z-40 cursor-default"></button>
+          <div role="menu" class="absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-88px)] rounded-lg border border-line bg-sidebar p-1 shadow-[var(--theme-shadow-3)]">
+            {#each chatList as c (c.id)}
+              <button
+                type="button"
+                role="menuitem"
+                onclick={() => {
+                  writeSelectedChatId(c.id)
+                  menuOpen = false
+                }}
+                class={cn('flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-[120ms] dither-fill hover:bg-raised', c.id === chatId && 'bg-raised')}
+              >
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-sans text-[12px] text-fg">{c.preview?.trim() || 'New conversation'}</span>
+                  <span class="block font-mono text-[8px] uppercase tracking-[0.06em] text-ink-dim">{relativeTime(c.updatedAt)}</span>
+                </span>
+              </button>
+            {/each}
+            {#if chatList.length > 0}<div class="my-1 h-px bg-line"></div>{/if}
+            <button type="button" role="menuitem" onclick={() => void startNewChat()} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-[120ms] dither-fill hover:bg-raised">
+              <Plus size={12} class="text-ink-dim" />
+              <span class="font-sans text-[12px] text-fg">New chat</span>
+            </button>
+            {#if currentChat}
+              <button type="button" role="menuitem" onclick={() => void archiveCurrentChat()} disabled={busy} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-[120ms] dither-fill hover:bg-raised disabled:opacity-50">
+                <Archive size={12} class="text-ink-dim" />
+                <span class="font-sans text-[12px] text-fg">Archive this chat</span>
+              </button>
+            {/if}
+          </div>
+        {/if}
       </div>
       <span class={cn('h-1.5 w-1.5 rounded-full', busy || conversation.data?.pages[0]?.working ? 'animate-pulse bg-success' : 'bg-line-strong')} aria-hidden="true"></span>
       <button type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted dither-fill hover:text-fg">
@@ -565,24 +695,16 @@
           {/snippet}
         </ChatComposer>
       </div>
-      <div class="mt-1.5 flex items-center justify-between gap-2 px-1 font-mono text-[8px] uppercase tracking-[0.06em] text-ink-dim">
-        <span>{assistant?.configured ? `${assistant.name ?? 'your assistant'} orchestrates` : 'Assistant not configured'}</span>
-        <span class="flex items-center gap-2">
-          {#if attached}
-            <span>Decision attached</span>
-          {:else}
-            <!-- The conversation is armed now: the assistant answers with its
-                 tools, steered by the view. Saying so here replaces the old
-                 standing "No tools", which the detached turn no longer earns. -->
-            <span>Tools on</span>
-          {/if}
-          {#if google.data?.available && !google.data.connected}
-            <!-- Where "I can't reach your mail" actually bites: the connect
-                 path, offered in the panel's own voice, one link, no lecture. -->
-            <a href="/api/integrations/google/connect" class="text-accent hover:underline">Connect Google →</a>
-          {/if}
-        </span>
-      </div>
+      {#if google.data?.available && !google.data.connected}
+        <!-- Where "I can't reach your mail" actually bites: the connect path,
+             offered in the panel's own voice, one link, no lecture. The only
+             thing that ever lived under the composer worth saying — the old
+             status line beside it ("… orchestrates", "Tools on") said nothing
+             the person could act on and is gone. -->
+        <div class="mt-1.5 px-1 font-mono text-[8px] uppercase tracking-[0.06em] text-ink-dim">
+          <a href="/api/integrations/google/connect" class="text-accent hover:underline">Connect Google →</a>
+        </div>
+      {/if}
     </div>
   </aside>
 {/if}

@@ -2,11 +2,11 @@
   import { untrack } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { CalendarRange, Layers, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Settings2 } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import Avatar from '@/components/ui/Avatar.svelte'
   import BoardSkeleton from './BoardSkeleton.svelte'
-  import BoardHeader from '@/components/board/BoardHeader.svelte'
   import Kanban from '@/components/board/Kanban.svelte'
   import BoardList from '@/components/board/BoardList.svelte'
   import type { GroupByKey } from '@/components/board/board-list'
@@ -23,6 +23,7 @@
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { staggerIn } from '@/lib/motion'
+  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useAgents } from '@/lib/agents'
   import {
     useBoards,
@@ -350,6 +351,20 @@
   const openTicket = (taskId: string) =>
     void navigate('/boards/:boardId/:taskId', { params: { boardId, taskId }, search: searchParams.toString() })
   const canEdit = $derived(board?.role === 'owner' || board?.role === 'editor')
+
+  // THE STRIP TITLES THIS VIEW WITH THE BOARD'S OWN NAME — the view is
+  // named by the breadcrumb underneath it (section / view / team / board).
+  // An effect, not a mount-time call — the board arrives from a query, and
+  // the claim must land again when it does (or when the route walks to
+  // another board, which keeps this component mounted). Until it lands the
+  // strip's fallback already says "Boards"; a board that never lands has
+  // nothing to add.
+  $effect(() => {
+    if (!board) return
+    claimViewTitle(board.name, {
+      trail: [...(board.teamName ? [board.teamName] : []), board.name],
+    })
+  })
 </script>
 
 {#snippet groupByIcon()}<Layers size={12} />{/snippet}
@@ -385,14 +400,15 @@
   <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 {:else}
   <!-- Page content entrance AND post-skeleton reveal in one: this branch
-       mounts when board+tasks land, so header → view row → filter row → the
-       task canvas rise in sequence (ANIMATIONS.md). The canvas is ONE child —
+       mounts when board+tasks land, so view row → filter row → the task
+       canvas rise in sequence (ANIMATIONS.md). The canvas is ONE child —
        its columns/rows are query data and never stagger. Never on the
        skeleton branch. -->
   <div use:staggerIn class="flex h-full min-w-0 flex-col">
-    <BoardHeader {board} onSettings={() => (settingsOpen = true)} />
-
-    <!-- Row 1 — the VIEW: mode toggle, saved views, save. -->
+    <!-- Row 1 — the VIEW: mode toggle, saved views, save; and (from the
+         header row this view no longer has) the board's people and its
+         settings gear on the right. The board's own name lives in the top
+         strip now. -->
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-2">
       <div class="flex rounded-md border border-line p-0.5">
         <button
@@ -455,6 +471,39 @@
       <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
         {filtersActive(filters) || q ? `${tasks.length} of ${allTasks.length}` : `${allTasks.length} tickets`}
       </span>
+      {#if board.archivedAt}
+        <span class="flex items-center gap-1 rounded-md border border-line bg-raised px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+          <Archive size={12} /> Archived
+        </span>
+      {/if}
+      <!-- The member read's failure already speaks in Row 2 — an empty stack
+           here must never read as "only you". -->
+      <div class="flex -space-x-2">
+        {#if membersList.pending}
+          {#each [0, 1] as i (i)}
+            <Skeleton class="h-7 w-7 rounded-full ring-2 ring-[color:var(--theme-panel)]" />
+          {/each}
+        {/if}
+        {#each members.slice(0, 5) as m (m.userId)}
+          <Avatar name={m.email ?? m.name} class="h-7 w-7 ring-2 ring-[color:var(--theme-panel)]" />
+        {/each}
+        {#if members.length > 5}
+          <span class="grid h-7 w-7 place-items-center rounded-full border border-line-strong bg-raised font-mono text-[10px] tracking-[0.05em] text-muted ring-2 ring-[color:var(--theme-panel)]">
+            +{members.length - 5}
+          </span>
+        {/if}
+      </div>
+      {#if canEdit}
+        <button
+          type="button"
+          onclick={() => (settingsOpen = true)}
+          class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
+          title="Board settings"
+          aria-label="Board settings"
+        >
+          <Settings2 size={17} />
+        </button>
+      {/if}
       <ContextMenu {menu} />
     </div>
 

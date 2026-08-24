@@ -28,6 +28,12 @@ export interface InboxFocusWorkspaceValue {
   performAction: (item: FocusItem, actionId: string, payload?: unknown) => Promise<void>
   snooze: () => Promise<void>
   skip: () => void
+  /** Open the sidebar assistant panel about ONE thing — the brief's "ask about
+   *  this line", and any surface that reaches for the same move. A key the
+   *  focus world can resolve is attached as the panel's context; a null key
+   *  seeds the question into the composer instead. The context outlives the
+   *  call until the panel closes. */
+  askAbout: (context: { key: string | null; question: string }) => void
 }
 
 export const INBOX_FOCUS_WORKSPACE_KEY = Symbol('inbox-focus-workspace')
