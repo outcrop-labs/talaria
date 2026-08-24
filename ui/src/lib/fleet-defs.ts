@@ -42,6 +42,11 @@ export interface AgentDef {
   displayName: string
   /** Human-readable job title (e.g. "Support Lead"); editable, shown on the roster. */
   role: string | null
+  /** Send-address override for org agents: null = the derived org plus-address
+   *  (org+slug@domain) — see server/google/aliasing.ts. */
+  emailAlias: string | null
+  /** The human a PERSONAL assistant belongs to (null = an org agent). */
+  ownerUserId: string | null
   enabled: boolean
   managed: boolean
   source: 'imported' | 'created'
@@ -191,7 +196,7 @@ export async function createFleetAgent(input: {
 /** Update an agent's editable identity (role, display name, template bindings). */
 export async function patchAgentMeta(
   id: string,
-  patch: { role?: string | null; displayName?: string; ticketTemplateId?: string | null; planTemplateId?: string | null; workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null; workbenchHarness?: string | null; workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string | null>> },
+  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null; workbenchHarness?: string | null; workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string | null>> },
 ): Promise<{ ok?: boolean; error?: string }> {
   const r = await fetch(`/api/fleet/defs/${id}`, {
     method: 'PATCH',

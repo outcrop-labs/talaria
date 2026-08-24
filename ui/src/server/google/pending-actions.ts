@@ -8,10 +8,12 @@
 import { announceApproval } from '../approvals'
 import { db } from '../db/pg'
 import { markBriefStale } from '../daily-brief-stale'
+import { agentAddressIdentity } from '../agent-defs'
 import { createEventWithToken, type CreateEventInput } from './calendar'
 import { getAccessToken } from './connections'
 import { sendMessageWithToken, type SendInput } from './gmail'
-import { getOrgAccessToken, getOrgTargets } from './org-connection'
+import { agentFromAddress } from './aliasing'
+import { getOrgAccessToken, getOrgEmail, getOrgTargets } from './org-connection'
 
 export type PendingKind = 'gmail_send' | 'calendar_create'
 
@@ -63,6 +65,15 @@ export async function queueAction(input: {
   return row!
 }
 
+/** The From address an org agent sends as: its alias override, else its
+ *  derived plus-address of the org account (aliasing.ts). null when neither
+ *  resolves — the caller falls back to the org sendAs target. */
+async function orgAgentFromAddress(agentModel: string): Promise<string | null> {
+  const [identity, orgEmail] = await Promise.all([agentAddressIdentity(agentModel), getOrgEmail()])
+  if (!identity) return null
+  return agentFromAddress(identity, orgEmail)
+}
+
 /** The actions a user should decide: their own personal ones, plus — for an
  *  admin — the org-scoped ones. */
 export async function listPending(userId: string, isAdmin: boolean): Promise<PendingAction[]> {
@@ -84,8 +95,8 @@ export async function decideAction(
   nowMs: number,
 ): Promise<{ status: string; message?: string } | null> {
   const sql = await db()
-  const [action] = await sql<{ kind: PendingKind; payload: unknown; ownerUserId: string | null; isOrg: boolean; status: string }[]>`
-    select kind, payload, owner_user_id as "ownerUserId", is_org as "isOrg", status
+  const [action] = await sql<{ kind: PendingKind; payload: unknown; agentModel: string | null; ownerUserId: string | null; isOrg: boolean; status: string }[]>`
+    select kind, payload, agent_model as "agentModel", owner_user_id as "ownerUserId", is_org as "isOrg", status
     from google_pending_actions where id = ${actionId}
   `
   if (!action) return null
@@ -113,12 +124,17 @@ export async function decideAction(
     return { status: 'not_connected', message: action.isOrg ? 'Reconnect the org Google account to run this.' : 'Reconnect Google to run this action.' }
   }
 
-  // Org actions land on the configured shared targets (calendar / send-as alias).
+  // Org actions land on the configured shared targets (calendar / send-as
+  // alias) — except an org agent's mail, which carries ITS OWN address: the
+  // stored override, else the org account's plus-address for its slug, else
+  // the send-as target as before. Resolved at execution (not queueing) so an
+  // alias edit between draft and approve is honored.
   const targets = action.isOrg ? await getOrgTargets() : null
+  const agentFrom = action.isOrg && action.kind === 'gmail_send' && action.agentModel ? await orgAgentFromAddress(action.agentModel) : null
 
   try {
     let result: unknown
-    if (action.kind === 'gmail_send') result = await sendMessageWithToken(token, action.payload as SendInput, targets?.sendAs)
+    if (action.kind === 'gmail_send') result = await sendMessageWithToken(token, action.payload as SendInput, agentFrom ?? targets?.sendAs)
     else if (action.kind === 'calendar_create') result = await createEventWithToken(token, action.payload as CreateEventInput, targets?.calendarId)
     else throw new Error(`unknown action kind: ${action.kind}`)
 

@@ -10,6 +10,16 @@ import { logAudit } from '@/server/audit'
 const Body = z.object({
   role: z.string().max(80).nullish(),
   displayName: z.string().min(1).max(80).optional(),
+  /** Send-address override for ORG agents (google/aliasing.ts). null = derive
+   *  the org account's plus-address for the slug. Must be a bare address —
+   *  Gmail rejects a From it doesn't own, which the send surfaces anyway, but
+   *  a typo'd shape should never even save. */
+  emailAlias: z
+    .string()
+    .trim()
+    .max(320)
+    .refine((v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), 'not an email address')
+    .nullish(),
   /** Template overrides: uuid binds, null clears, omitted leaves unchanged. */
   ticketTemplateId: z.string().uuid().nullable().optional(),
   planTemplateId: z.string().uuid().nullable().optional(),
@@ -35,7 +45,7 @@ export const Route = defineApi('/api/fleet/defs/$id', {
     if (body instanceof Response) return body
     const def = await getAgentDef(params.id)
     if (!def) return json({ error: 'not found' }, { status: 404 })
-    await updateAgentMeta(params.id, { role: body.role, displayName: body.displayName })
+    await updateAgentMeta(params.id, { role: body.role, displayName: body.displayName, emailAlias: body.emailAlias })
     if (body.workbench !== undefined || body.workbenchProfile !== undefined) {
       await setAgentWorkbench(params.id, body.workbench ?? (def as unknown as { workbench?: 'off' | 'auto' | 'on' }).workbench ?? 'auto', body.workbenchProfile)
     }

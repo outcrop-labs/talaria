@@ -21,6 +21,17 @@
     await patchAgentMeta(def.id, { role: role.trim() || null })
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
+  // Send address for ORG agents only — a personal assistant sends as its
+  // owner, where no alias applies. Empty = the derived org plus-address
+  // (org+slug@domain); an override must be an address Gmail will accept
+  // (a verified send-as on the org account).
+  const isOrg = $derived(def.ownerUserId === null)
+  let alias = $state(def.emailAlias ?? '')
+  const saveAlias = async () => {
+    if (alias.trim() === (def.emailAlias ?? '')) return
+    await patchAgentMeta(def.id, { emailAlias: alias.trim() || null })
+    await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+  }
 </script>
 
 <!-- Model identity is chrome — mono chip, radius 6, class in signal color. -->
@@ -51,6 +62,20 @@
       <div class="text-fg">{def.role ?? '—'}</div>
     {/if}
   </div>
+  {#if isOrg}
+    <!-- Send address — empty means the derived org plus-address for the slug. -->
+    <div>
+      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Email alias</div>
+      {#if isAdmin}
+        <Input size="sm" bind:value={alias} onblur={() => void saveAlias()} placeholder={`auto: org+${def.slug}`} class="max-w-xs" />
+        <div class="mt-1 text-xs text-muted">
+          Empty sends from the org account’s plus-address for this agent ({def.slug}). Set an address only if it is a verified send-as on the org Google account.
+        </div>
+      {:else}
+        <div class="text-fg">{def.emailAlias ?? `org+${def.slug}`}</div>
+      {/if}
+    </div>
+  {/if}
   <!-- Workbench — THE sandbox setting: off / auto (fit rules) / on. -->
   <WorkbenchControl {def} {isAdmin} />
   <div class="grid grid-cols-2 gap-3">
