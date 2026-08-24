@@ -1,6 +1,34 @@
 import { createRouter } from 'sv-router'
 import NotFound from './routes/NotFound.svelte'
 
+// Server-path anchors vs. sv-router's global click interceptor.
+//
+// Router.svelte listens for (bubble-phase) clicks on window and rewrites ANY
+// same-origin <a> into a client-side navigation — including plain anchors to
+// server routes (the Google login buttons, every Google "Connect" link). Those
+// paths have no client route, so the '*' catch-all rendered NotFound at e.g.
+// /api/integrations/google/org/connect and the request never reached the
+// server. Capture-phase runs before that handler; stopping propagation for
+// same-origin /api (and /.well-known) anchors — without preventDefault — lets
+// the browser navigate them for real. Same path predicate as the dev
+// middleware and server/app.ts.
+if (typeof document !== 'undefined') {
+  document.addEventListener(
+    'click',
+    (event) => {
+      if (event.button !== 0 || event.defaultPrevented) return
+      const anchor = (event.target as HTMLElement | null)?.closest?.('a')
+      if (!anchor?.hasAttribute('href')) return
+      const url = new URL(anchor.href, location.href)
+      if (url.origin !== location.origin) return
+      if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/.well-known/')) {
+        event.stopPropagation()
+      }
+    },
+    { capture: true },
+  )
+}
+
 // The whole route map, explicit (sv-router code-based tree mode). Lazy
 // `() => import(...)` per view keeps code splitting; the app shell
 // (AppLayout) is the layout for everything behind the session gate — and it
