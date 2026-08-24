@@ -10,6 +10,8 @@
   // screen wants string | undefined.
   const rawError = $derived(searchParams.get('error'))
   const error = $derived(rawError == null ? undefined : String(rawError))
+  const rawDomain = $derived(searchParams.get('domain'))
+  const domain = $derived(rawDomain == null ? undefined : String(rawDomain))
 
   // Already signed in → straight to the cockpit.
   $effect(() => {
@@ -18,4 +20,4 @@
 </script>
 
 <MercuryBackdrop />
-<LoginScreen {error} />
+<LoginScreen {error} {domain} />

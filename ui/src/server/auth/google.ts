@@ -3,6 +3,7 @@
 // profile from the userinfo endpoint (so we never have to verify a JWT locally).
 
 import { getAuthConfig } from './config'
+import { emailDomainOf } from '../google/aliasing'
 import { resolveGoogleClient, type GoogleClient } from '../google/client-config'
 import type { Identity } from '../users'
 
@@ -46,6 +47,19 @@ interface GoogleUserInfo {
   name?: string
   picture?: string
   hd?: string
+}
+
+/** May this Google identity sign in, given the connected org account's email?
+ *  A Talaria wired to a Google Workspace is FOR that workspace's people: once
+ *  the org account is connected, Google sign-in is domain-members-only — even
+ *  an invited outside address is refused (invite them a password instead).
+ *  No org connection (null orgEmail) gates nothing: a fresh install's logins
+ *  are governed by the allow-list/invite doors alone, as before. */
+export function orgGoogleLoginAllowed(orgEmail: string | null | undefined, loginEmail: string | null | undefined): boolean {
+  if (!orgEmail) return true
+  const domain = emailDomainOf(orgEmail)
+  if (!domain) return true // a connected row with no usable email cannot gate anything
+  return emailDomainOf(loginEmail) === domain
 }
 
 /** Exchange the auth code and resolve the Google identity. The client comes

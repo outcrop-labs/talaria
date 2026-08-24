@@ -5,6 +5,8 @@
     bad_state: 'Sign-in expired or was tampered with. Please try again.',
     exchange_failed: 'Could not complete Google sign-in. Please try again.',
     not_allowed: 'That account is not allowed to access this Talaria.',
+    // The domain ride-along (org.domain) personalizes this one when present.
+    org_domain: 'Google sign-in is limited to this workspace’s accounts.',
   }
 </script>
 
@@ -19,7 +21,7 @@
   import { fly, slide, PANEL } from '@/lib/motion'
   import { useProviders } from '@/lib/session'
 
-  let { error }: { error?: string } = $props()
+  let { error, domain }: { error?: string; domain?: string } = $props()
 
   const providersQuery = useProviders()
   const providers = $derived(providersQuery.data?.providers ?? [])
@@ -50,7 +52,7 @@
       {#if error && ERROR_COPY[error]}
         <!-- Failure speaks safety-orange as an outline, never a fill (spec §8). -->
         <div transition:slide={{ duration: 150 }} class="mb-4 rounded-md border border-danger/40 px-3 py-2 text-center font-sans text-sm text-danger">
-          {ERROR_COPY[error]}
+          {error === 'org_domain' && domain ? `Sign in with your @${domain} Google account.` : ERROR_COPY[error]}
         </div>
       {/if}
 
