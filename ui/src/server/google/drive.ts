@@ -157,6 +157,11 @@ export async function listDriveFilesWithToken(token: string, query?: string, pag
     orderBy: 'modifiedTime desc',
     fields: 'files(id,name,mimeType,modifiedTime,iconLink,webViewLink,size)',
     spaces: 'drive',
+    // Without these two, files living in a Shared Drive are invisible to the
+    // listing — the org's agents would browse an empty Drive while the
+    // provisioned shared drive (their actual workspace) sat unread.
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
   })
   const res = await fetch(`${FILES_ENDPOINT}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok) throw new Error(`drive list failed: ${res.status} ${await res.text()}`)

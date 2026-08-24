@@ -2038,6 +2038,25 @@ const MIGRATIONS: string[] = [
   // to UTC inside localMoment rather than stopping scheduled work.
   `alter table users add column if not exists timezone text`,
 
+  // ── ORG SHARED DRIVE ────────────────────────────────────────────────────────
+  //
+  // The Shared Drive provisioning creates (google_org_connection.shared_drive_
+  // id) — the team-owned container everyone at the Workspace domain can reach.
+  // Kept SEPARATE from drive_folder_id (the export target, which provisioning
+  // also points at the drive's root) so an admin can retarget exports into a
+  // subfolder without losing track of the drive itself.
+  `alter table google_org_connection add column if not exists shared_drive_id text`,
+
+  // ── PER-AGENT EMAIL ALIAS ───────────────────────────────────────────────────
+  //
+  // An OPTIONAL override of an agent's derived send address. The default is
+  // derived, not stored: the org account's plus-address for the agent's slug
+  // (org+triage@domain — see google/aliasing.ts), which needs no storage and
+  // no Google-side setup. This column exists only for the rare agent whose
+  // address should differ — a verified send-as, a differently-named plus-tag —
+  // which is why it is null for every row this migration touches.
+  `alter table agent_defs add column if not exists email_alias text`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
