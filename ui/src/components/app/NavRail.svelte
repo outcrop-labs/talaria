@@ -76,30 +76,41 @@
   const unreadLabel = $derived(unread === null ? '!' : String(unread))
   const unreadTitle = $derived(unread === null ? 'Could not load what is waiting for you; open the Inbox' : undefined)
   const showUnread = $derived(unread === null || unread > 0)
-  // Enabled apps slot into the sections as if they shipped with the platform:
-  // work surfaces under Work, manage surfaces under Manage (grant-gated like
-  // any core Manage view via deniedViews).
+  // Enabled apps get their own rail category, separate from Work: Work is
+  // Talaria's own surfaces, and an app's work surface is a guest with its own
+  // heading — you should be able to tell platform from app at a glance. An
+  // app's MANAGE surface still slots under Manage, because Manage is the
+  // control plane no matter who published the view (same grant model as any
+  // core Manage view). The Apps section appears between the two and only when
+  // it has something in it — no app installed, no empty heading.
   // Query handling only. `{ data: apps = [] }` discarded the query on the line
   // that made it, so a failed /api/apps silently removed every app's nav entry
   // — the surface just is not in the rail, and nothing anywhere says why.
   const appsQuery = useEnabledApps()
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
   const appsBroken = $derived(appsList.failed || appsList.stale)
-  const appItems: Record<string, NavItem[]> = $derived({
-    Work: appsList.rows.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work!, icon: a.icon })),
-    Manage: appsList.rows.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })),
-  })
+  const appWork = $derived(appsList.rows.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work!, icon: a.icon })))
+  const appManage = $derived(appsList.rows.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })))
 
-  // Denied-view + role filtering, shared by both modes.
-  const sections = $derived.by(() =>
-    NAV.flatMap((section) => {
+  // Denied-view + role filtering, shared by both modes and by the app items
+  // wherever they land.
+  const passes = (i: NavItem) =>
+    (!i.adminOnly || isAdmin) && !denied.current.includes(i.to) && !denied.current.some((d) => i.to.startsWith(d + '/'))
+
+  const sections = $derived.by(() => {
+    const core = NAV.flatMap((section) => {
       if (section.adminOnly && !isAdmin) return []
-      const items = [...section.items, ...(appItems[section.title] ?? [])].filter(
-        (i) => (!i.adminOnly || isAdmin) && !denied.current.includes(i.to) && !denied.current.some((d) => i.to.startsWith(d + '/')),
-      )
+      const items = [...section.items, ...(section.title === 'Manage' ? appManage : [])].filter(passes)
       return items.length === 0 ? [] : [{ title: section.title, items }]
-    }),
-  )
+    })
+    const apps = appWork.filter(passes)
+    if (apps.length === 0) return core
+    // After Work when Work exists; otherwise ahead of Manage (or at the top,
+    // in the nothing-core-survives edge) — either way: Work, Apps, Manage.
+    const workAt = core.findIndex((s) => s.title === 'Work')
+    const at = workAt >= 0 ? workAt + 1 : Math.max(core.findIndex((s) => s.title === 'Manage'), 0)
+    return [...core.slice(0, at), { title: 'Apps', items: apps }, ...core.slice(at)]
+  })
 
   // THE ACTIVE ITEM IS THE MOST SPECIFIC ONE CONTAINING THE ROUTE, decided
   // across every section at once by `activeAmong` — so `/boards` stays lit
