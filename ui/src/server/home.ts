@@ -41,7 +41,6 @@ export interface HomeSummary {
   queues: HomeQueues
   unread: number
   boards: number
-  fleet: { online: number; total: number; down: string[] }
 }
 
 // Full lists — the Boards console shows everything per queue (capped sanely).

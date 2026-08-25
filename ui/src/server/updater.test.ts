@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test, vi } from 'vitest'
 import { getSetting, setSetting } from './audit'
-import { registerJob } from './scheduler'
 
 // The updater's branching, exercised without a second process: git, the
 // settings store, and the scheduler are all stood in for, and what's left is
@@ -61,7 +60,7 @@ const LATEST = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 // all stop at a gate or a planted failure), but the belt stays on.
 vi.spyOn(process, 'kill').mockReturnValue(true)
 
-const plant = (args: string[], out: string) => gitAnswers.set(args.join(' '), out)
+const plant = (args: string[], out: string | Error) => gitAnswers.set(args.join(' '), out)
 const plantRev = (ref: string, rev: string) =>
   plant(['show', '-s', '--format=%H%n%s%n%cI', ref], `${rev}\nA subject\n2026-08-25T12:00:00+00:00\n`)
 

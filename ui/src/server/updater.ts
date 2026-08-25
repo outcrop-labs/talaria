@@ -214,9 +214,11 @@ export async function applyUpdate(by: 'manual' | 'auto'): Promise<{ started: boo
   const root = repoRoot()!
   applying = true
   const fail = async (error: string) => {
-    await patchState((s) => (s.lastRun && s.lastRun.state === 'running'
-      ? { ...s, lastRun: { ...s.lastRun, state: 'failed', error }, history: [{ ...s.lastRun, state: 'failed', error }, ...s.history].slice(0, 10) }
-      : s))
+    await patchState((s) => {
+      if (!s.lastRun || s.lastRun.state !== 'running') return s
+      const failed: UpdateRun = { ...s.lastRun, state: 'failed', error }
+      return { ...s, lastRun: failed, history: [failed, ...s.history].slice(0, 10) }
+    })
     applying = false
     return { started: false, error }
   }
