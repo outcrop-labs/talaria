@@ -8,9 +8,9 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/index.ts",
+    "dev": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "//prepare": "dist/ is gitignored but IS what runs (the app spawns dist/index.js). npm runs `prepare` after `npm install`/`npm ci` here, so installing this package can never leave you without a dist — the last line of defence behind scripts/setup.sh, scripts/dev.sh and CI.",
+    "//prepare": "dist/ is gitignored but IS what runs (the app spawns dist/index.js). Both npm and bun run `prepare` after an install here, so installing this package can never leave you without a dist — the last line of defence behind scripts/setup.sh, scripts/dev.sh and CI.",
     "prepare": "tsc"
   },
   "engines": { "node": ">=20" },
@@ -19,7 +19,6 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "@types/node": "^22.15.0"
   }

@@ -77,17 +77,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: '22.x'
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+          bun-version: '1.4.0'
 
       # The smoke test parses the chassis with the `yaml` package, resolved from
       # ui/node_modules via createRequire — hand-rolling a YAML parser to avoid
       # this install would be its own source of bugs. Nothing else here is used.
       - name: Install (for the yaml parser)
-        run: npm ci --no-audit --no-fund
+        run: bun install --frozen-lockfile
         working-directory: ui
 
       # Pull explicitly rather than letting `compose up` do it, so a registry
@@ -96,4 +94,4 @@ jobs:
         run: docker pull nousresearch/hermes-agent:latest
 
       - name: Boot the chassis and stop it
-        run: node scripts/chassis-boot-smoke.mjs
+        run: bun scripts/chassis-boot-smoke.mjs

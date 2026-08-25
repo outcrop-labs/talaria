@@ -17,9 +17,12 @@ rand() { openssl rand -hex "$1" 2>/dev/null || head -c "$1" /dev/urandom | od -A
 say "Checking prerequisites"
 command -v docker >/dev/null || die "docker is required (https://docs.docker.com/get-docker/)"
 docker compose version >/dev/null 2>&1 || die "docker compose v2 is required"
-command -v node >/dev/null || die "node is required (>= 20)"
+command -v node >/dev/null || die "node is required (>= 20 — it executes the vite/vitest/tsc toolchain)"
 [ "$(node -e 'console.log(process.versions.node.split(".")[0])')" -ge 20 ] || die "node >= 20 required (found $(node -v))"
-ok "docker, compose, node $(node -v)"
+# Bun is the runner and installer for the whole repo (see the root package.json);
+# node stays a floor because the toolchain binaries carry node shebangs.
+command -v bun >/dev/null || die "bun is required (https://bun.sh — e.g. 'mise use -g bun@latest')"
+ok "docker, compose, node $(node -v), bun $(bun --version)"
 
 PG_PORT="${TALARIA_PG_PORT:-5544}"
 REDIS_PORT="${TALARIA_REDIS_PORT:-6399}"
@@ -153,7 +156,7 @@ fi
 
 say "App dependencies"
 if [ -d ui/node_modules ]; then skip "ui/node_modules"; else
-  (cd ui && npm install --no-fund --no-audit) && ok "npm install"
+  (cd ui && bun install) && ok "bun install"
 fi
 
 # mcp/ is a SEPARATE package that compiles to mcp/dist/index.js — the fleet's
@@ -163,9 +166,9 @@ fi
 # tool calls fail and the only trace is one stderr line from mcp-service.
 say "Fleet toolkit (mcp/)"
 if [ -d mcp/node_modules ]; then skip "mcp/node_modules"; else
-  (cd mcp && npm install --no-fund --no-audit) && ok "npm install (mcp)"
+  (cd mcp && bun install) && ok "bun install (mcp)"
 fi
-(cd mcp && npm run build) && ok "mcp/dist built" || die "mcp/ failed to build — the fleet toolkit will not start; fix mcp/src and re-run"
+(cd mcp && bun run build) && ok "mcp/dist built" || die "mcp/ failed to build — the fleet toolkit will not start; fix mcp/src and re-run"
 
 say "Git convenience"
 # `git wt <name>` → an isolated dev worktree (own DB seeded from main). Using this

@@ -146,7 +146,8 @@ layer — not by a checkbox you can forget.
 ## Quick start
 
 One script takes a blank machine to a running instance (secrets, admin login, docker network,
-deps):
+deps). You'll need [Docker](https://docs.docker.com/get-docker/), Node ≥ 20, and
+[Bun](https://bun.sh) — the repo's runner:
 
 ```bash
 ./scripts/setup.sh         # prints your generated admin credentials

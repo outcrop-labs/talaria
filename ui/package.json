@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite dev --port 5273",
     "build": "vite build && vite build --config vite.server.config.ts",
-    "start": "node server-entry.js",
+    "start": "bun server-entry.js",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"

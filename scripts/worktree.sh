@@ -6,7 +6,7 @@
 #
 #   ./scripts/worktree.sh <name> [base-ref]
 #
-# Then:  cd ../talaria-<name>/ui && npm run dev   (prints the exact command)
+# Then:  cd ../talaria-<name>/ui && bun run dev   (prints the exact command)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -79,7 +79,7 @@ ok "linked"
 
 echo
 printf '\033[1;32mWorktree "%s" ready — fully isolated from main.\033[0m\n\n' "$NAME"
-echo "  Run it:   cd $WT/ui && npm run dev -- --port $APP_PORT"
+echo "  Run it:   cd $WT/ui && bun run dev -- --port $APP_PORT"
 echo "  App:      http://localhost:$APP_PORT   (Postgres :$PG_PORT · Redis :$REDIS_PORT)"
 echo
 echo "  Tear down when done:"

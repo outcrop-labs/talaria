@@ -7,7 +7,7 @@ main dev environment.
 
 ```bash
 git wt <name>                         # = ./scripts/worktree.sh <name> (alias set by setup.sh)
-cd ../talaria-<name>/ui && npm run dev -- --port <printed>
+cd ../talaria-<name>/ui && bun run dev -- --port <printed>
 # … hack away …
 docker compose -p talaria-wt-<name> down -v   # tear down when done
 git worktree remove ../talaria-<name> && git branch -D wt/<name>
@@ -44,7 +44,7 @@ data so you still have realistic agents/boards/tickets to work against.
    shared, and it's a read-only root — see below.
 5. Symlinks `node_modules` from main (fast; no reinstall).
 
-It prints the exact `npm run dev` command and the teardown steps.
+It prints the exact `bun run dev` command and the teardown steps.
 
 ## Rules of the road
 

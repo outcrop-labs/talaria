@@ -2,9 +2,9 @@
 #
 # WHAT THIS DOES
 #   On every pull request and every push to main:
-#     node scripts/check-invariants.mjs      (no install, seconds)
-#     cd ui && npm test                      (vitest)
-#     cd ui && npm run typecheck             (svelte-check)
+#     bun scripts/check-invariants.mjs          (no install, seconds)
+#     cd ui && bun install && bun run test      (vitest)
+#     cd ui && bun run typecheck                (svelte-check)
 #     cd mcp && typecheck + build
 #   That is the whole thing. It takes a couple of minutes.
 #
@@ -14,7 +14,16 @@
 #   skip it. A slow required check gets bypassed, and a bypassed check is worse
 #   than none because it reads as coverage.
 #
-# WHY `npm run typecheck` AND NOT `npx tsc --noEmit`. They are not the same
+# WHY BUN *AND* NODE ARE BOTH INSTALLED. Bun is the repo's runner and installer
+#   (root package.json, scripts/setup.sh, scripts/dev.sh), so CI installs and
+#   drives everything through it — the same commands a developer runs. But the
+#   toolchain binaries (vite, vitest, svelte-check, tsc) carry `env node`
+#   shebangs, and `bun run <script>` executes those under Node. Dropping
+#   setup-node would work right up to the first `vitest` invocation and then
+#   fail with a shebang error nobody enjoys diagnosing. Bun orchestrates;
+#   Node executes the tools; both floors are load-bearing.
+#
+# WHY `bun run typecheck` AND NOT `tsc --noEmit`. They are not the same
 #   check any more and the difference is 384 files. The UI is Svelte 5 +
 #   sv-router; `tsc` does not read `.svelte` at all, so a component with a
 #   broken prop type, a missing import or a bad `$derived` typechecks perfectly
@@ -25,9 +34,13 @@
 #   behavior this job wants: 127 pre-existing a11y warnings must not fail the
 #   build, and one new type error must.
 #
-# WHY THE TESTS ARE NOT A LIST. `npm test` runs vitest, which DISCOVERS
+# WHY THE TESTS ARE NOT A LIST. `bun run test` runs vitest, which DISCOVERS
 #   `src/**/*.test.ts` rather than being handed a list, so a new test file gates
 #   on the next push without anyone remembering to register it.
+#
+# NO ACTIONS/CACHE, on purpose. Bun's cold install from bun.lock is seconds;
+#   a cache step would add config surface to save less time than the tripwire
+#   philosophy is willing to spend.
 #
 # DELIBERATELY LEFT OUT (do not treat these as oversights)
 #   - THE MODEL FITNESS SUITE (ui/src/server/fitness/*). It costs money and
@@ -56,7 +69,7 @@
 #   perfectly, because a copy of a correct expression is a correct expression
 #   until the original changes. `scripts/check-invariants.mjs` fails on the
 #   specific patterns that history says are wrong and prints what to write
-#   instead. It is plain Node with ZERO dependencies, so this job needs no
+#   instead. It is plain script with ZERO dependencies, so this job needs no
 #   install step and finishes in seconds — which is also why it is not eslint.
 #   The rules live in that file, commented; amend them there, not here.
 #
@@ -69,9 +82,16 @@
 #   longer exists passes forever.
 #
 # NOTES FOR WHOEVER TOUCHES THIS NEXT
+#   - The Bun version is pinned HERE and in the root package.json's
+#     `packageManager` field. Move the two together.
 #   - Node 22 is a hard floor, not a preference: vite 7 declares
 #     `^20.19.0 || >=22.12.0`. If you add a .nvmrc at the repo root, switch this
 #     to `node-version-file:` so there is one source of truth.
+#   - `bun install --frozen-lockfile` makes bun.lock authoritative: a drifting
+#     ui/package.json fails here instead of silently resolving to something
+#     else. package-lock.json is ALSO committed, for the npm holdouts during
+#     the migration — treat bun.lock as canonical and update both when deps
+#     change (or, post-alpha, delete the npm one and this note).
 #   - `ui/tsconfig.json` includes `../apps`, so this needs a full-repo checkout,
 #     not a sparse one. `apps/contacts` is Svelte and is therefore checked by
 #     the ui typecheck job, not by a job of its own.
@@ -95,7 +115,7 @@ permissions:
   contents: read
 
 jobs:
-  # Deliberately FIRST and deliberately dependency-free: it needs no `npm ci`,
+  # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
   # learns that before the other jobs have finished installing.
   invariants:
@@ -106,17 +126,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: '22.x'
-          # No `cache:` on purpose — there is nothing to install, and asking for
-          # a cache without a lockfile path fails the step.
+          bun-version: '1.4.0'
+          # No dependency cache on purpose — there is nothing to install.
 
       # Reads ui/src and mcp/src. Every failure names the file, the line, and
       # the thing to write instead; if you think a match is a false positive,
       # argue it in the PR rather than widening the pattern.
       - name: Check invariants
-        run: node scripts/check-invariants.mjs
+        run: bun scripts/check-invariants.mjs
 
   ui:
     name: test + typecheck (ui)
@@ -130,18 +149,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # See "WHY BUN *AND* NODE" in the header: bun installs and drives, node
+      # executes the toolchain shebangs.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
       - uses: actions/setup-node@v5
         with:
           node-version: '22.x'
-          cache: npm
-          # Path is relative to the repo root, NOT to defaults.working-directory.
-          cache-dependency-path: ui/package-lock.json
+          # No `cache:` on purpose — bun owns the install; npm has nothing
+          # installed and nothing to cache.
 
-      # --no-audit/--no-fund shave a few seconds and produce no signal we act on.
-      # `npm ci` (not `install`) so the lockfile is authoritative and a drifting
+      # `--frozen-lockfile` so bun.lock is authoritative and a drifting
       # package.json fails here instead of silently resolving to something else.
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       # TESTS FIRST, and the order is a decision rather than a coin toss. The
       # unit suite runs in seconds and its failures name a behavior ("the runner
@@ -149,10 +172,10 @@ jobs:
       # failures name a type. When both are broken the behavioral failure is the
       # one worth reading first.
       - name: Test
-        run: npm test
+        run: bun run test
 
       - name: Typecheck
-        run: npm run typecheck
+        run: bun run typecheck
 
   mcp:
     name: typecheck + build (mcp)
@@ -166,24 +189,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
       - uses: actions/setup-node@v5
         with:
           node-version: '22.x'
-          cache: npm
-          cache-dependency-path: mcp/package-lock.json
 
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
-        run: npm run typecheck
+        run: bun run typecheck
 
       # Emit for real. `--noEmit` above proves the types; this proves the thing
       # dev.sh and setup.sh actually run can produce mcp/dist/index.js, which is
       # what the app spawns (`ui/src/server/mcp-service.ts`). The artifact is
       # thrown away — CI does not ship dist.
       - name: Build
-        run: npm run build
+        run: bun run build
 
       - name: Verify build output
         run: test -s dist/index.js
