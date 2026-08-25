@@ -21,8 +21,8 @@ anything, read the current work order: [`docs/AUDIT-2026-07-30.md`](./docs/AUDIT
 Talaria is the nerve center for a lean, agent-powered business: one multiplayer
 workspace where your people and your AI agents share the same surfaces (boards,
 chats, plans, design, finance, code) and run the company together, with human-in-the-loop
-guardrails. It's Talaria's **own** app in [`ui/`](./ui) (Vite + TanStack Start,
-React 19 + TS, Tailwind v4 "Mercury" design system), backed by Talaria's **own**
+guardrails. It's Talaria's **own** app in [`ui/`](./ui) (Vite + Svelte 5 + TS,
+Tailwind v4 "Mercury" design system), backed by Talaria's **own**
 Postgres/Redis. Every agent is a full Hermes agent underneath.
 
 We build the app by ripping the good parts out of hermes-workspace (chat, agent UX)
@@ -43,7 +43,10 @@ DM notifications, and distill-then-archive decay), the **multiplayer Plan view**
 (shared plan conversations + living plan document with member grants, presence, and
 templated, dependency-aware ticket drafting), **org identity**, **personal assistants**
 (identity proxy for owner governance, privacy-gated group channels, admin elevation),
-the fleet engine and full agent harness
+the knowledge base with artifacts (incl. Google Drive export), the **Research view**
+(cited recon/brief/expedition with Model Roles on `/models`), ticket/plan
+**templates**, and **per-person timezones** (each brief opens and each digest
+arrives on that person's clock). Beneath it all, the fleet engine and full agent harness
 (federate/design/render/orchestrate/create/retire, versioned config + MCP edits,
 skills/memory management, **zero-downtime rolling replacement**, brain-routability
 alerts), the token ledger with auto-fetched pricing, activity/alerts, and auth.
@@ -81,7 +84,7 @@ Full project-management suite, all live in `ui/`:
   then refused). See [docs/API-CONVENTIONS.md](./docs/API-CONVENTIONS.md) before adding a
   route that writes to a ticket.
 - **Agent MCP (`talaria-mcp`)** - MCP server in [`mcp/`](./mcp) (TS, built with
-  `npm run build`; stdio for one agent, or fleet **streamable-HTTP** mode via
+  `bun run build`; stdio for one agent, or fleet **streamable-HTTP** mode via
   `MCP_HTTP_PORT` — pass-through auth, each request bound to the calling agent's own
   credential, self-hosted by the app
   via `server/mcp-service.ts` and injected into every rendered config). Exposes only
@@ -124,7 +127,7 @@ Full project-management suite, all live in `ui/`:
 
 - **Notifications** - user @mentions in channels, plain **DM messages** (kind `dm`,
   deduped while one sits unread, deep-linking via `/comms?c=<id>`), and **plan shares**
-  (kind `plan-share`, `/plan?p=<id>`) land in the **Inbox** (`/inbox`, unread badge in
+  (kind `plan-share`, `/plan?p=<id>`) land in the **Inbox** (`/home/inbox`, unread badge in
   the nav; 30s poll). `server/notifications.ts` + `GET/PUT /api/notifications`; the
   composer autocompletes members and agents. Mention tokens: email localpart / dashed
   name / first name (`userMentionTokens` in `server/mentions.ts` — the composer mirrors

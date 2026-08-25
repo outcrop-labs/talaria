@@ -111,3 +111,25 @@ Neither is free. The options worth weighing, if this is taken further:
 Today we are at (3), and the preflight is what makes it survivable. Anyone
 picking this up should read (1) as the target rather than assuming the firewall
 rule is the intended design.
+
+## What changed since (2026-08-25)
+
+Two quiet assumptions in the story above have since been fixed in code.
+
+**The preflight probes the whole path now.** It still stands where the agent
+stands, but it no longer asks only "can a container open a socket to the app":
+it checks the app port the rendered configs point at, the actual `/api/mcp/gw`
+target an agent's MCP client dials (it previously probed the toolkit's
+standalone listener on 5280, a path no agent takes), and whether the fleet
+network can resolve an external name, probed with the same resolvers the
+chassis gives agents. The all-clear reads "agents can reach the app, the
+toolkit, and the internet", and each failure names its own fix.
+
+**Agents carry explicit DNS.** Docker pins a network's DNS upstream when the
+network is created, and a host resolver mix that refuses docker subnets leaves
+every container green and offline. That is how the built-in browser shipped
+dead: the browser toolset fetches its engine from npm on first use, so with no
+external DNS it never installed, silently. The chassis now pins external
+resolvers per service (`AGENT_DNS_1` / `AGENT_DNS_2` in `fleet/.env`, defaults
+1.1.1.1 / 1.0.0.1), and the preflight's DNS probe turns a dead resolver into
+an alert.

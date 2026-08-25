@@ -35,12 +35,12 @@ confirm-send drafts), and `search_knowledge` (RAG). Same auth model throughout.
 ## Setup
 
 ```bash
-cd mcp && npm install && npm run build
+cd mcp && bun install && bun run build
 ```
 
 ### `mcp/dist` is the thing that runs, and it is gitignored
 
-`npm run build` compiles `src/index.ts` → `dist/index.js`. That file — not `src` —
+`bun run build` (tsc) compiles `src/index.ts` → `dist/index.js`. That file — not `src` —
 is what the app spawns (`ui/src/server/mcp-service.ts`) and what an agent's stdio
 config points at. `dist/` is in `.gitignore`, so **a commit cannot carry it**: a
 fresh clone has no toolkit at all until it is built, and an edit to `src` changes
@@ -62,7 +62,7 @@ Configure your agent's MCP client (stdio transport):
 {
   "mcpServers": {
     "talaria": {
-      "command": "node",
+      "command": "bun",
       "args": ["/path/to/talaria/mcp/dist/index.js"],
       "env": {
         "TALARIA_URL": "http://localhost:5273",

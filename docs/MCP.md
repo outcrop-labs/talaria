@@ -20,7 +20,9 @@ access rules. Four kinds of rows:
 ## Enforcement: the gateway
 
 Agents never see an upstream URL or credential. Their rendered configs point at
-`/api/mcp/gw/<server>`; the fleet key + agent name identify the caller, and the gateway:
+`host.docker.internal:<app port>/api/mcp/gw/<server>` — the app's own port (5273 by
+default), through the gateway in the app process, not the built-in toolkit's standalone
+listener on 5280. The fleet key + agent name identify the caller, and the gateway:
 
 - resolves **effective access** = the agent's assignment ∩ (for personal assistants) the owner's
   allowance;

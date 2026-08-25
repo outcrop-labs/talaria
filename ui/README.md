@@ -2,19 +2,19 @@
 
 Talaria's own front end: the multiplayer workspace where your people and your
 agents share the same boards, tickets, chats, channels, knowledge base, and
-artifacts. **Vite +
-TanStack Start** (React 19 + TypeScript). We picked the same stack hermes-workspace
-uses so we can lift its chat/agent components straight into our app with minimal
-friction. To be clear, we do not run hermes-workspace; it's a parts bin we pull
-from, and Talaria owns the whole surface and its own state.
+artifacts. **Vite + Svelte 5** (TypeScript): an SPA on the client with the API
+served from the same origin in dev and prod alike. We do not run
+hermes-workspace; it's a parts bin we pull from (the design tokens keep its
+contract), and Talaria owns the whole surface and its own state.
 
-- **Design system: Mercury.** A hand-rolled Tailwind v4 token system in the same
-  cyberpunk-HUD family as hermes-workspace (so lifted chat components drop in), but
-  Talaria's own identity: Mercury-the-planet neutrals (graphite / basalt / regolith)
-  with a violet-to-magenta neon accent. Two modes, `mercury` (dark) and
-  `mercury-light`. Tokens live in [`src/styles.css`](./src/styles.css); the
-  `--theme-*` variable names match hermes-workspace's contract on purpose, purely so
-  lifts are painless.
+- **Design system: Mercury.** A hand-rolled Tailwind v4 token system, Talaria's own
+  identity: near-black instrument surfaces, cream readout, one warm gold (`#c8b46c`)
+  for brand and action, safety orange reserved for failure/destructive only. Matte,
+  no glows. IBM Plex Mono is the chrome voice, IBM Plex Sans the reading voice. Two
+  modes, `mercury` (dark) and `mercury-light`. Tokens live in
+  [`src/styles.css`](./src/styles.css); the `--theme-*` variable names keep
+  hermes-workspace's contract so lifts are painless. Spec:
+  [`docs/design/mercury-spec.md`](../docs/design/mercury-spec.md).
 - **Auth: pluggable + independently toggleable.** Each provider is enabled only
   when its flag is on and its secrets are present. Google OAuth and
   username/password ship first; the registry ([`src/server/auth/config.ts`](./src/server/auth/config.ts))
@@ -24,8 +24,8 @@ from, and Talaria owns the whole surface and its own state.
 
 ```bash
 cp .env.example .env      # set AUTH_SECRET + enable a provider (Google first)
-npm install
-npm run dev               # http://localhost:5273
+bun install
+bun run dev               # http://localhost:5273
 ```
 
 For Google: create OAuth credentials, set the authorized redirect URI to
@@ -108,6 +108,8 @@ replacement**, per-agent encrypted secrets,
 native Hermes crons; souls, models, tiers, and MCP servers as immutable
 revertible versions; skills + memory in versioned diff-and-restore workspaces),
 personal assistants, the knowledge base, artifacts (incl. Google Drive export),
+per-person timezones (each brief opens and each digest arrives on that person's
+clock; autodetected at first sign-in, overridable in Settings),
 the QA judge + gateway confab guard, the priced token ledger (auto-fetched
 rates, local/cloud split, per-agent and per-ticket spend), and the ops surfaces
 (`/activity`, `/alerts`, `/inference`). Members see the Work surfaces +
