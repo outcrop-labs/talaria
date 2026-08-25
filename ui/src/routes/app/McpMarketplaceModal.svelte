@@ -84,7 +84,7 @@
       <Input
         autofocus
         bind:value={q}
-        placeholder="Search the official MCP registry — GitHub, Linear, Notion, Stripe, Vercel…"
+        placeholder="Search the official MCP registry: GitHub, Linear, Notion, Stripe, Vercel…"
         class="max-w-xl"
       />
       {#if resultsQuery.isFetching}<WaitingMark site="mcp/search" size={12} class="text-muted" />{/if}
@@ -96,7 +96,7 @@
     {#if !q.trim()}
       <div class="flex items-center gap-1.5">
         <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Featured</span>
-        <InfoTip text="Companies publishing their own MCP server on their own verified domain — the official integrations. Search reaches the whole registry, community servers included." />
+        <InfoTip text="Companies publishing their own MCP server on their own verified domain: the official integrations. Search reaches the whole registry, community servers included." />
       </div>
     {/if}
     {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
@@ -122,7 +122,7 @@
         <EmptyState
           icon="⌁"
           title="No hosted servers match"
-          hint="Only servers with a hosted endpoint appear — packages that need a local process can't be one-click added. Try the custom form for self-hosted servers."
+          hint="Only servers with a hosted endpoint appear; packages that need a local process can't be one-click added. Try the custom form for self-hosted servers."
         />
       {:else}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -154,7 +154,7 @@
                 {#if addedState === 'setup'}
                   <span
                     class="rounded border border-warning/40 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
-                    title="Added — this provider needs a one-time OAuth app setup on the MCP page before agents can connect"
+                    title="Added. This provider needs a one-time OAuth app setup on the MCP page before agents can connect"
                   >
                     needs setup
                   </span>

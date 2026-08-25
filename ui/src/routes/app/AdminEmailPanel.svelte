@@ -71,7 +71,7 @@
   <Panel class="mt-4">
     <SectionHeader
       title="Email"
-      info="Transactional email — invites today, more later. Bring your own SMTP (e.g. Google Workspace: smtp.gmail.com, port 587, an app password) or connect Resend. Secrets are stored encrypted and never shown again."
+      info="Transactional email: invites today, more later. Bring your own SMTP (e.g. Google Workspace: smtp.gmail.com, port 587, an app password) or connect Resend. Secrets are stored encrypted and never shown again."
     />
     <div class="space-y-3">
       <div class="flex items-center gap-3">
@@ -118,7 +118,7 @@
             size="sm"
             type="password"
             bind:value={secret}
-            placeholder={data.smtp.passSet ? 'password saved — type to replace' : 'password / app password'}
+            placeholder={data.smtp.passSet ? 'password saved (type to replace)' : 'password / app password'}
             autocomplete="off"
             class="w-56"
           />
@@ -142,7 +142,7 @@
             size="sm"
             type="password"
             bind:value={secret}
-            placeholder={data.resend.apiKeySet ? 'key saved — type to replace' : 're_…'}
+            placeholder={data.resend.apiKeySet ? 'key saved (type to replace)' : 're_…'}
             autocomplete="off"
             class="w-72"
           />
@@ -161,7 +161,7 @@
       {/if}
       {#if data.provider}
         <div class="flex items-center gap-2 border-t border-line-subtle pt-3">
-          <Button size="sm" disabled={busy} onclick={() => void post({ test: true }, 'test sent — check your inbox')}>
+          <Button size="sm" disabled={busy} onclick={() => void post({ test: true }, 'test sent, check your inbox')}>
             {busy ? 'Working' : 'Send me a test'}
           </Button>
           {#if notice}<span class="text-xs text-success">{notice}</span>{/if}

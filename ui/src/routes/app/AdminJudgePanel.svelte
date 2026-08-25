@@ -39,7 +39,7 @@
   <SectionHeader
     class="mb-4"
     title="QA judge"
-    info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Enforcing: bad submissions never sit in QA — revise verdicts bounce straight back to the agent with the issues (capped, then a human takes over). Advisory: verdicts only, the human decides. Pick a strong model for the sharpest review."
+    info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Enforcing: bad submissions never sit in QA. Revise verdicts bounce straight back to the agent with the issues (capped, then a human takes over). Advisory: verdicts only, the human decides. Pick a strong model for the sharpest review."
   />
   {#if query.isPending}
     <!-- The checkbox and model select seed from the query — hold the whole

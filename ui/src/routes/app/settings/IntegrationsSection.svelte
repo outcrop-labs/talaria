@@ -62,7 +62,7 @@
   <SectionHeader
     class="mb-4"
     title="Connected accounts"
-    info="Connect your Google Workspace account to give your assistant mail, calendar, and Drive access — acting as you, with outbound mail and invites held for your approval."
+    info="Connect your Google Workspace account to give your assistant mail, calendar, and Drive access. It acts as you, and outbound mail and invites wait for your approval."
   />
 
   {#if isLoading}
@@ -88,7 +88,7 @@
   {:else if !data.available}
     <!-- An unregistered client is the ADMIN's gap to close — the old copy
          dead-ended here with no hint of whose fix it was. -->
-    <div class="text-xs text-muted">Google isn’t set up on this server yet — ask an admin to register the Google client in Admin → Org.</div>
+    <div class="text-xs text-muted">Google isn’t set up on this server yet. Ask an admin to register the Google client in Admin → Org.</div>
   {:else}
     <div class="flex items-center gap-3 rounded-md border border-line p-4">
       <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">
@@ -102,7 +102,7 @@
         <div class="truncate font-mono text-[11px] text-muted">
           {data?.connected
             ? `Connected${data.email ? ` as ${data.email}` : ''}${data.connectedAt ? ` · ${relativeTime(data.connectedAt)}` : ''}`
-            : 'Gmail · Calendar · Drive — not connected'}
+            : 'Gmail · Calendar · Drive (not connected)'}
         </div>
       </div>
       {#if data?.connected}
@@ -116,7 +116,7 @@
       {/if}
     </div>
     <p class="mt-2 max-w-prose text-xs text-muted">
-      Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you — every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
+      Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you. Every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
     </p>
   {/if}
 

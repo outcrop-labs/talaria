@@ -133,7 +133,7 @@
           ? surgical
             ? 'How should this passage change?'
             : 'What about this passage? (it will guide a whole-doc draft)'
-          : 'Edit with Muse — describe the change, or select text for inline edits'}
+          : 'Edit with Muse: describe the change, or select text for inline edits'}
       class="max-h-32 text-sm"
     />
     <Button size="sm" class="shrink-0" onclick={() => void generate()} disabled={generating || !instruction.trim()}>

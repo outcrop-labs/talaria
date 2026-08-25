@@ -66,7 +66,7 @@
 <div bind:this={ref} class="relative inline-block">
   <button
     onclick={openPanel}
-    title="Columns — show, hide, reorder"
+    title="Columns: show, hide, reorder"
     aria-label="Configure columns"
     class={cn(
       'grid h-6 w-6 place-items-center rounded-md transition-colors',

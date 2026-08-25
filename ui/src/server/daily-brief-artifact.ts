@@ -61,7 +61,7 @@ export async function mirrorBriefArtifact(briefId: string, userId: string): Prom
     from daily_brief_entries where brief_id = ${briefId} order by seq asc
   `) as unknown as BriefEntry[]
 
-  const title = `Daily brief — ${row.briefDate}`
+  const title = `Daily brief: ${row.briefDate}`
   const actor = row.ownerEmail ?? row.ownerName ?? 'talaria'
   const body = renderBrief(entries, row)
   // Briefs file with the rest of the agent's output — Agents/<agent>/Briefs —
@@ -118,10 +118,10 @@ export function renderBrief(entries: BriefEntry[], row: Pick<MirrorRow, 'briefDa
     // its reader is checking what they missed.
     for (const update of [...updates].reverse()) {
       const at = new Date(update.at).toISOString().slice(11, 16)
-      out.push(`**${at}** — ${update.note ?? `${update.entries.length} update(s)`}`)
+      out.push(`**${at}**: ${update.note ?? `${update.entries.length} update(s)`}`)
       for (const entry of update.entries) {
         const verb = entry.kind === 'resolved' ? 'resolved' : entry.kind === 'change' ? 'changed' : 'new'
-        out.push(`- _${verb}_ — ${entry.title}`)
+        out.push(`- _${verb}_: ${entry.title}`)
       }
       out.push('')
     }

@@ -77,7 +77,7 @@
               }).then(async (r) => {
                 if (!r.ok) {
                   const e = ((await r.json().catch(() => ({}))) as { error?: string }).error
-                  void alert({ title: 'Could not share', message: e ?? 'share failed' })
+                  void alert({ title: 'Could not share', message: e ?? 'Something went wrong. Try again.' })
                 }
                 refresh()
               })

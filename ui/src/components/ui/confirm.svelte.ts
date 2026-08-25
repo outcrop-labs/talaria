@@ -75,7 +75,7 @@ export function prompt(opts: ConfirmOptions): Promise<string | null> {
 export function confirmDelete(opts: { what: string; name: string; detail: string }): Promise<boolean> {
   return confirm({
     title: `Delete ${opts.what}`,
-    message: `${opts.detail}\n\nThis cannot be undone — type “${opts.name}” to confirm.`,
+    message: `${opts.detail}\n\nThis cannot be undone. Type “${opts.name}” to confirm.`,
     confirmLabel: `Delete ${opts.what}`,
     danger: true,
     requireText: opts.name,

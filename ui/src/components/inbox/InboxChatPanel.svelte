@@ -619,7 +619,7 @@
           <div class="max-w-xs">
             <span class="mx-auto grid h-10 w-10 place-items-center rounded-full border border-line text-muted"><Bot size={16} /></span>
             <h2 class="mt-4 font-sans text-base font-medium text-fg">{focusMode ? `Work through Inbox with ${assistantName}` : `Talk with ${assistantName} about ${surfaceLabel}`}</h2>
-            <p class="mt-2 font-sans text-xs leading-5 text-muted">{focusMode ? 'The active decision is attached by default. Remove it to have a general, non-executing conversation.' : 'This conversation stays with you as you move through Talaria. Your assistant answers with its tools — reaching for the ones that match the view you are on first.'}</p>
+            <p class="mt-2 font-sans text-xs leading-5 text-muted">{focusMode ? 'The active decision is attached by default. Remove it to have a general, non-executing conversation.' : 'This conversation stays with you as you move through Talaria. Your assistant answers with its tools, reaching for the ones that match the view you are on first.'}</p>
           </div>
         </div>
       {:else}
@@ -664,7 +664,7 @@
         <div transition:slide|global={GROW_Y} class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2">
           <Paperclip size={12} class={attached ? 'text-accent' : 'text-ink-dim'} />
           <button type="button" onclick={toggleActiveDecisionAttachment} class="min-w-0 flex-1 truncate text-left font-sans text-[11px] text-muted">
-            {attached ? active.question : 'Decision detached — general conversation'}
+            {attached ? active.question : 'Decision detached; general conversation'}
           </button>
           <button type="button" onclick={toggleActiveDecisionAttachment} aria-label={attached ? 'Detach active decision' : 'Attach active decision'} class="grid h-6 w-6 place-items-center rounded text-ink-dim dither-fill hover:text-fg">
             {#if attached}<X size={12} />{:else}<Paperclip size={12} />{/if}

@@ -136,9 +136,9 @@
   const job = $derived(selectedConversationId ? planDraft(selectedConversationId) : undefined)
   const draftTitle = $derived(
     !selectedConversationId
-      ? 'Start a plan first — tickets draft from its conversation'
+      ? 'Start a plan first. Tickets draft from its conversation.'
       : job?.status === 'drafting'
-        ? 'Drafting continues in the background — reopen to watch'
+        ? 'Drafting continues in the background. Reopen to watch.'
         : job?.status === 'ready'
           ? 'The drafted tickets are waiting for your review'
           : 'Turn this plan into tickets to review',

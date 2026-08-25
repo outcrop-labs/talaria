@@ -72,7 +72,7 @@
       <!-- The one-time wall: a connection granted before the provisioning scopes
            existed. Re-consent (the connect flow upserts over the live row). -->
       <div class="rounded-md border border-danger/40 px-3 py-2 text-xs text-danger">
-        Reconnect once to grant provisioning scopes —
+        Reconnect once to grant provisioning scopes:
         <a href="/api/integrations/google/org/connect" class="text-accent hover:underline">reconnect the org account</a>
         and the calendar + shared Drive can be created here.
       </div>
@@ -90,7 +90,7 @@
           class="truncate font-mono text-muted hover:text-accent hover:underline"
         >{data.calendarId} ↗</a>
       {:else}
-        <span class="text-muted">not set up — everyone at the domain gets edit access</span>
+        <span class="text-muted">not set up (everyone at the domain gets edit access)</span>
       {/if}
       {#if data.readiness.connected}
         <span class="ml-auto shrink-0">
@@ -118,7 +118,7 @@
           class="truncate font-mono text-muted hover:text-accent hover:underline"
         >open ↗</a>
       {:else}
-        <span class="text-muted">not set up — team-owned files, domain-wide access</span>
+        <span class="text-muted">not set up (team-owned files, domain-wide access)</span>
       {/if}
       {#if data.readiness.connected}
         <span class="ml-auto shrink-0">
@@ -138,7 +138,7 @@
       <div class="pt-1">
         <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent addresses</span>
         <div class="mt-1 text-xs text-muted">
-          Org agents send from their own address{data.orgEmail ? ` — a plus-address of ${data.orgEmail}` : ''}; override per agent in its summary tab.
+          Org agents send from their own address{data.orgEmail ? ` (a plus-address of ${data.orgEmail})` : ''}; override per agent in its summary tab.
         </div>
         <div class="mt-1.5 space-y-0.5">
           {#each data.agents.slice(0, 6) as a (a.model)}

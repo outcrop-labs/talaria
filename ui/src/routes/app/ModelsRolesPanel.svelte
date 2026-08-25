@@ -64,37 +64,37 @@
     {
       id: 'research',
       label: 'Research',
-      blurb: 'The search stages behind every research run. Each stage needs a web-search-capable model — without live search a model answers from memory and the citations come out invented.',
+      blurb: 'The search stages behind every research run. Each stage needs a web-search-capable model; without live search it answers from memory and the citations come out invented.',
       ids: ['role:research-recon', 'role:research-brief', 'role:research-expedition'],
     },
     {
       id: 'workbench',
       label: 'Workbench',
-      blurb: 'The coding harness’s effort ladder. Agents pick the effort; these settings pick the model that runs it.',
+      blurb: 'The effort ladder for coding work. Agents pick the effort; these settings pick the model that runs it.',
       ids: ['role:code-light', 'role:code-standard', 'role:code-heavy'],
     },
     {
       id: 'chores',
       label: 'Chores',
-      blurb: 'The platform’s background upkeep — blurbs, titles, gists, digests. Everything here falls back to the Utility chain, so Utility is the one pick that moves them all.',
+      blurb: 'The platform’s background upkeep: blurbs, titles, gists, digests. Everything here falls back to the Utility chain, so Utility is the one pick that moves them all.',
       ids: ['role:utility', 'agent:blurb-writer', 'agent:titler', 'agent:summarizer', 'agent:librarian'],
     },
     {
       id: 'writing',
       label: 'Writing',
-      blurb: 'The Muse family — drafting and distillation that follows the requesting user’s muse, else the Utility chain.',
+      blurb: 'The Muse family: drafting and distillation that follows the requesting user’s muse, else the Utility chain.',
       ids: ['agent:muse', 'agent:distiller', 'agent:concluder', 'agent:briefer'],
     },
     {
       id: 'oversight',
       label: 'Oversight',
-      blurb: 'Judging agents’ reported ticket outcomes against the ask — verdicts and findings on boards with judging on.',
+      blurb: 'Judging agents’ reported ticket outcomes against the ask: verdicts and findings on boards with judging on.',
       ids: ['agent:judge'],
     },
     {
       id: 'reserved',
       label: 'Reserved',
-      blurb: 'Slots for surfaces that haven’t landed yet. Assign now — the pick takes effect the day the surface does.',
+      blurb: 'Slots for surfaces that haven’t landed yet. Assign now; the pick takes effect the day the surface does.',
       ids: ['role:vision', 'role:image-generation', 'role:embedding', 'role:reranker'],
     },
   ]
@@ -178,7 +178,7 @@
       <EmptyState
         icon="▤"
         title="Nothing selected"
-        hint={loadFailed ? 'The slot catalogs could not be loaded — retry on the left.' : 'Pick a category on the left to set its models.'}
+        hint={loadFailed ? 'The slot catalogs could not be loaded. Retry on the left.' : 'Pick a category on the left to set its models.'}
       />
     {/snippet}
 

@@ -42,7 +42,7 @@
   <p class="mb-3 text-xs text-muted">
     The business your agents work for. Baked into every agent's identity automatically. Generated souls anchor to
     this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
-    it's healthy), so the fleet speaks the new identity without interrupting anyone's conversation.
+    it's healthy), so your agents speak the new identity without interrupting anyone's conversation.
   </p>
   {#if query.isPending}
     <!-- Hold the form's footprint until settings land, so the fields never

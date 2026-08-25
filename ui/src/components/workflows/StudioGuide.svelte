@@ -237,7 +237,7 @@
           {#if step === 1}
             <div use:staggerIn class="space-y-4">
               <p class="text-sm text-muted">
-                How should Talaria recognize this work? Pick anything that applies — tickets matching it will carry your flow when an agent
+                How should Talaria recognize this work? Pick anything that applies; tickets matching it will carry your flow when an agent
                 picks them up. You can also skip this and just add the know-how to the library.
               </p>
               <div class="space-y-1.5">
@@ -272,7 +272,7 @@
           {#if step === 2}
             <div use:staggerIn class="space-y-3">
               <p class="text-sm text-muted">
-                Explain how this work should be done, like you would to a new teammate — what matters, what order, what “done” looks like.
+                Explain how this work should be done, like you would to a new teammate: what matters, what order, what “done” looks like.
                 Muse turns it into a skill your agents follow.
               </p>
               <Textarea
@@ -317,13 +317,13 @@
               <p class="text-sm text-muted">Who should know this?</p>
               <div class="space-y-2">
                 {#if editable.some((o) => o.owner === 'shared')}
-                  <Radio name="owner" checked={owner === 'shared'} onChange={() => (ownerPick = 'shared')} label="Every agent — shared know-how" />
+                  <Radio name="owner" checked={owner === 'shared'} onChange={() => (ownerPick = 'shared')} label="Every agent; shared know-how" />
                 {/if}
                 {#each editable.filter((o) => o.owner !== 'shared') as o (o.owner)}
                   <Radio name="owner" checked={owner === o.owner} onChange={() => (ownerPick = o.owner)} label={`Just ${o.label}`} />
                 {/each}
                 {#if editable.length === 0}
-                  <p class="text-xs text-warning">You don’t have edit access to any agent’s skills — ask an admin for access.</p>
+                  <p class="text-xs text-warning">You don’t have edit access to any agent’s skills; ask an admin for access.</p>
                 {/if}
               </div>
               <p class="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>

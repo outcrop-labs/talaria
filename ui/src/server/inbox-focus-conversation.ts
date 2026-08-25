@@ -252,7 +252,7 @@ async function validatedEffort(model: string | null, effort: string | null | und
   const efforts = await effortsForModel(model)
   if (!efforts.includes(effort)) {
     throw new Error(
-      `That effort ("${effort}") is not available on ${model}${efforts.length ? ` — offered: ${efforts.join(', ')}` : ''}.`,
+      `That effort ("${effort}") is not available on ${model}${efforts.length ? ` (offered: ${efforts.join(', ')})` : ''}.`,
     )
   }
   return effort

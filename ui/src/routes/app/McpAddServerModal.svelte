@@ -88,7 +88,7 @@
     <div>
       <label class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         Server URL
-        <InfoTip text="The MCP endpoint (streamable HTTP). Agents never see this address — they go through Talaria's gateway, which enforces the access rules you set here." />
+        <InfoTip text="The MCP endpoint (streamable HTTP). Agents never see this address; they go through Talaria's gateway, which enforces the access rules you set here." />
       </label>
       <Input bind:value={url} onkeydown={onEnter} placeholder="https://mcp.example.com/mcp" />
     </div>
@@ -117,7 +117,7 @@
         <div>
           <label class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             Value
-            <InfoTip text="Stored on the server row and spoken only by the gateway — never rendered into an agent config, never echoed back to this UI." />
+            <InfoTip text="Stored on the server row and spoken only by the gateway; never rendered into an agent config, never echoed back to this UI." />
           </label>
           <Input type="password" bind:value={headerVal} onkeydown={onEnter} placeholder="Bearer …" autocomplete="off" />
         </div>

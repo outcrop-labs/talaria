@@ -88,7 +88,7 @@
   <p class="font-sans text-xs text-muted">
     Columns and their meaning. <strong>Category</strong> drives the workflow: intake statuses receive new tickets,
     review is where agent work lands for sign-off, done completes. <strong>Agent start</strong> marks the columns
-    where assignment counts as approval — agents only pick up work sitting there. Blocked is always present.
+    where assignment counts as approval: agents only pick up work sitting there. Blocked is always present.
   </p>
   <!-- The one rule that is not visible from the controls: a review column is
        the agent hand-off target, so it is required only while agents are

@@ -94,7 +94,7 @@
               <a
                 href={p('/mcp')}
                 class="shrink-0 rounded border border-accent/50 bg-accent/10 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:bg-accent/15"
-                title="Attached from the org MCP registry — assignment, tool subsets, and credentials are managed on the MCP page"
+                title="Attached from the org MCP registry; assignment, tool subsets, and credentials are managed on the MCP page"
               >
                 org registry
               </a>

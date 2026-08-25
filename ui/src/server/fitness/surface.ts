@@ -832,7 +832,7 @@ export async function estimateRun(req: EstimateRequest, deps?: Partial<SurfaceDe
       note:
         (est?.known ?? 0) > 0
           ? `${est?.known} capability(ies) were already measured on this endpoint and are reused, not re-bought. Tick "re-measure capabilities" to pay for them again.`
-          : 'Fixed prompts, so this is exact — except the long-context probe, which is sized from the model’s own advertised window.',
+          : 'Fixed prompts, so this is exact, except the long-context probe, which is sized from the model’s own advertised window.',
     })
   }
 
@@ -1607,7 +1607,7 @@ export async function fitnessRuns(deps?: Partial<SurfaceDeps>): Promise<FitnessR
   // `stopFitnessRun` does the writing, and it does it because somebody asked.
   const now = Date.parse(d.nowIso())
   const runs = Object.values(statuses)
-    .map((s) => (staleRun(s, now) ? { ...s, state: 'error' as const, error: 'interrupted — the server restarted or the run died' } : s))
+    .map((s) => (staleRun(s, now) ? { ...s, state: 'error' as const, error: 'interrupted: the server restarted or the run died' } : s))
     .map((s) => statusView(s, sweeps))
     // Running first, then most recently started — an admin watching three
     // sweeps wants the live ones at the top, not whichever id sorts first.
@@ -2038,7 +2038,7 @@ export async function stopFitnessRun(
       ...row,
       state: 'error',
       phase: null,
-      error: 'interrupted — the server restarted or the run died',
+      error: 'interrupted: the server restarted or the run died',
       finishedAt: d.nowIso(),
     }).catch(() => {})
     // The note is pointless now, and left behind it would stop the NEXT run on

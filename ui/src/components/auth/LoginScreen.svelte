@@ -83,7 +83,7 @@
         <Brand showTag size={40} class="flex-col" />
       </div>
 
-      <p class="mb-6 text-center text-sm text-muted">Sign in to command your fleet.</p>
+      <p class="mb-6 text-center text-sm text-muted">Sign in and get to work.</p>
 
       {#if error && ERROR_COPY[error]}
         <!-- Failure speaks safety-orange as an outline, never a fill (spec §8). -->

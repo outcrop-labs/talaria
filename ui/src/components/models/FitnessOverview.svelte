@@ -184,7 +184,7 @@
         {:else}
           <div class="mt-1 font-sans text-sm text-fg">{probes.yes} present · {probes.no} absent</div>
           <p class="mt-1 font-sans text-xs text-muted">
-            {#if probes.unmeasured > 0}{probes.unmeasured} unmeasured (skipped or errored — not a no).{/if}
+            {#if probes.unmeasured > 0}{probes.unmeasured} unmeasured (skipped or errored, not a no).{/if}
             {#if probes.reused > 0}
               {probes.reused} reused from an earlier run rather than re-bought.
             {/if}
@@ -213,7 +213,7 @@
               Every fixture that ran held its contract and passed its check.
             {/if}
             {#if fixtures.timedOut > 0}<span class="text-warning"> {fixtures.timedOut} timed out.</span>{/if}
-            {#if fixtures.gaps > 0}<span class="text-warning"> {fixtures.gaps} could not be asked fairly — our gap.</span>{/if}
+            {#if fixtures.gaps > 0}<span class="text-warning"> {fixtures.gaps} could not be asked fairly; our gap.</span>{/if}
           </p>
         {/if}
       </button>

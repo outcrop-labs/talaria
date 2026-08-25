@@ -83,7 +83,7 @@
           ? `Added ${p.label}, but its models could not be registered: ${patched.error}`
           : `${p.label} added with ${avail.models.length} model${avail.models.length === 1 ? '' : 's'}. Curate them on Models.`
       } else {
-        msg = `${p.label} added, but it returned no models${avail.note ? ` — ${avail.note}` : ''}. Check the key on Models.`
+        msg = `${p.label} added, but it returned no models${avail.note ? ` (${avail.note})` : ''}. Check the key on Models.`
       }
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['gateway-models'] }),
@@ -102,7 +102,7 @@
     <p class="mb-1 text-sm text-fg">No model is configured yet.</p>
     <p class="mb-3 text-xs leading-relaxed text-muted">
       {isAdmin
-        ? 'Chat, Plan and Research all route through a provider. Add a key and this instance can answer — everything else keeps working either way.'
+        ? 'Chat, Plan and Research all route through a provider. Add a key and this instance can answer; everything else keeps working either way.'
         : 'Chat, Plan and Research need a model provider. An admin can add one on Models; the rest of Talaria works without it.'}
     </p>
     {#if isAdmin}

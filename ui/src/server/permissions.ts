@@ -38,7 +38,7 @@ export const PERMISSIONS: Array<{
   {
     id: 'agents.manage',
     label: 'Manage agents',
-    hint: 'Hire, retire, and configure org agents — souls, skills, crons, start/stop. Fleet secrets and infrastructure stay admin-only.',
+    hint: 'Hire, retire, and configure org agents: souls, skills, crons, start/stop. Agent secrets and infrastructure stay admin-only.',
     group: 'Agents',
     memberDefault: false,
   },

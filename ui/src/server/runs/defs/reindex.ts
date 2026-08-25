@@ -416,7 +416,7 @@ export async function stepBackfill(
       return {
         kind: 'retry',
         after: SERVICES_DOWN_RETRY_MS,
-        reason: `waiting for retrieval (qdrant: ${health.qdrant ? 'up' : 'down'}, embeddings: ${health.embeddings ? 'up' : 'down'}) — resumes at ${SOURCE_LABEL[cp.source]}`,
+        reason: `waiting for retrieval (qdrant: ${health.qdrant ? 'up' : 'down'}, embeddings: ${health.embeddings ? 'up' : 'down'}); resumes at ${SOURCE_LABEL[cp.source]}`,
       }
     }
   }
@@ -426,7 +426,7 @@ export async function stepBackfill(
     return {
       kind: 'next',
       checkpoint: { source: cp.source, cursor: page.cursor, counts: page.counts },
-      phase: `${SOURCE_LABEL[cp.source]} — ${Object.values(page.counts).reduce((n, v) => n + v, 0)} indexed`,
+      phase: `${SOURCE_LABEL[cp.source]}: ${Object.values(page.counts).reduce((n, v) => n + v, 0)} indexed`,
     }
   }
 

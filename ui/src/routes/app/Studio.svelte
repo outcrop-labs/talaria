@@ -83,10 +83,10 @@
   const agentsData = $derived(agentsQuery.data)
   const boards = $derived(boardsQuery.data ?? [])
   const sideReads: Array<{ key: string; title: string; query: { isError: boolean; error: unknown; refetch: () => unknown } }> = [
-    { key: 'workflows', title: 'Could not load workflows — “Routed here” is incomplete', query: workflowsQuery },
-    { key: 'gaps', title: 'Could not load suggestions — what the agents asked for is missing', query: gapsQuery },
-    { key: 'agents', title: 'Could not load the fleet — agent roles fall back to model ids', query: agentsQuery },
-    { key: 'boards', title: 'Could not load boards — workflow rules name board ids instead', query: boardsQuery },
+    { key: 'workflows', title: 'Could not load workflows: “Routed here” is incomplete', query: workflowsQuery },
+    { key: 'gaps', title: 'Could not load suggestions: what the agents asked for is missing', query: gapsQuery },
+    { key: 'agents', title: 'Could not load your agents: their roles fall back to model ids', query: agentsQuery },
+    { key: 'boards', title: 'Could not load boards: workflow rules name board ids instead', query: boardsQuery },
   ]
   const sideFailures = $derived(sideReads.filter((r) => r.query.isError))
   const sessionQuery = useSession()
@@ -228,7 +228,7 @@
                 <h2 class="truncate text-xl font-semibold text-fg">{selected.owner === 'shared' ? 'Every agent' : selected.label}</h2>
                 <p class="truncate text-sm text-muted">
                   {selected.owner === 'shared'
-                    ? 'Know-how every agent in the fleet carries.'
+                    ? 'Know-how every agent on the team carries.'
                     : (agentMeta(selected)?.role ?? selected.model ?? '')}
                 </p>
               </div>
@@ -244,7 +244,7 @@
               <section>
                 <SectionTitle
                   title={selected.owner === 'shared' ? 'Agents asked for help with' : `${firstName(selected)} asked for help with`}
-                  hint="Work it hit and couldn't do properly — build the know-how and it won't happen again."
+                  hint="Work it hit and couldn't do properly. Build the know-how and it won't happen again."
                 />
                 <div class="space-y-2">
                   {#each ownerGaps(selected) as g (g.id)}
@@ -295,7 +295,7 @@
               {/snippet}
               <SectionTitle
                 title={selected.owner === 'shared' ? 'Everyone knows' : `${firstName(selected)} knows`}
-                hint="Skills — the how. Agents read these live; edits apply on their next run."
+                hint="Skills: the how. Agents read these live; edits apply on their next run."
                 action={selected.canEdit ? addSkillAction : undefined}
               />
               {#if selected.skills.length === 0 && (selected.owner === 'shared' || sharedSkills.size === 0)}
@@ -304,7 +304,7 @@
                   <EmptyState
                     icon="✦"
                     title="Nothing yet"
-                    hint={selected.canEdit ? '“Teach” walks you through the first one — name the work, explain it in plain words, Muse drafts the skill.' : 'Nothing taught yet.'}
+                    hint={selected.canEdit ? '“Teach” walks you through the first one: name the work, explain it in plain words, Muse drafts the skill.' : 'Nothing taught yet.'}
                   />
                 </Panel>
               {:else}
@@ -340,7 +340,7 @@
             <section>
               <SectionTitle
                 title={selected.owner === 'shared' ? 'Routing everyone can serve' : `Work routed to ${firstName(selected)}`}
-                hint="Workflows — the which. When a ticket matches, its skills ride along on dispatch."
+                hint="Workflows: the which. When a ticket matches, its skills ride along on dispatch."
               />
               {#if routedTo(selected).length === 0}
                 <Panel>
@@ -378,7 +378,7 @@
             onRetry={() => void libraryQuery.refetch()}
           />
         {:else}
-          <EmptyState icon="◍" title="No agents yet" hint="The Studio lights up once the fleet has agents." />
+          <EmptyState icon="◍" title="No agents yet" hint="The Studio lights up once you have agents." />
         {/if}
       </div>
     </div>

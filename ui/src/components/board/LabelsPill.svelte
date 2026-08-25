@@ -73,7 +73,7 @@
     {/snippet}
     {#snippet footer(close)}
       <input
-        placeholder="New label — Enter creates"
+        placeholder="New label; Enter creates"
         onkeydown={(e) => {
           if (e.key !== 'Enter') return
           const name = (e.target as HTMLInputElement).value.trim()

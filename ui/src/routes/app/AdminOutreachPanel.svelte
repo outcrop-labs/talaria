@@ -43,7 +43,7 @@
   <SectionHeader
     class="mb-4"
     title="Proactive outreach"
-    info="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools — a ticket comment, a channel post, or a direct message to your inbox. Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default."
+    info="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools (a ticket comment, a channel post, or a direct message to your inbox). Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default."
   />
   {#if query.isPending}
     <!-- Controls, agent chips, and the recent list all seed from the query —

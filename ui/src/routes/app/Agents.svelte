@@ -130,7 +130,7 @@
         {:else if fleetQuery.isError}
           <!-- Missing totals with no explanation read as "nothing is running". -->
           <span class="text-danger" title={errorMessage(fleetQuery.error)}>
-            Fleet status unavailable
+            Agent status unavailable
           </span>
         {:else if fleetQuery.isLoading}
           <!-- Hold the slot so the toolbar doesn't jog when the totals land. -->
@@ -230,7 +230,7 @@
       <Panel class="p-0">
                 <EmptyState
                   title="Roster not available to you"
-                  hint="Agent definitions are served to accounts that manage the fleet — ask an admin for access."
+                  hint="Only accounts that manage agents can see agent definitions. Ask an admin for access."
                 />
               </Panel>
             {/snippet}

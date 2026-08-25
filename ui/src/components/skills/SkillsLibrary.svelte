@@ -137,7 +137,7 @@
 
   const museContext = $derived(
     owner === 'shared'
-      ? 'A shared skill available to every agent in the fleet. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.'
+      ? 'A shared skill every agent on the team can use. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.'
       : `A skill for the "${ownerLabel}" agent. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.`,
   )
 </script>
@@ -168,7 +168,7 @@
       icon="✦"
       title="No skills yet"
       hint={canEdit
-        ? 'A skill is a playbook for a recurring job — name one to teach it.'
+        ? 'A skill is a playbook for a recurring job. Name one to teach it.'
         : `${ownerLabel} has not been taught anything yet.`}
     />
   {/snippet}
@@ -191,7 +191,7 @@
               kind="skill"
               title={selected}
               meta={ownerLabel}
-              subtitle={canEdit ? 'Read live; agents pick up edits on their next run.' : 'Read-only here — this record is maintained elsewhere.'}
+              subtitle={canEdit ? 'Read live; agents pick up edits on their next run.' : 'Read-only here; this record is maintained elsewhere.'}
               fieldsDirty={canEdit ? skillName(name) !== selected : false}
               onDelete={canEdit ? () => void remove() : undefined}
               doc={{

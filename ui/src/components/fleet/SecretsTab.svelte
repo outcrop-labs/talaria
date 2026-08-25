@@ -118,7 +118,7 @@
       <p class="font-sans text-sm text-fg">Credentials it can spend, without ever seeing them</p>
     </div>
     <p class="font-sans text-xs leading-relaxed text-muted">
-      {agentLabel} is given a handle. Talaria substitutes the real value at the boundary that spends it — a tool call, a push — so the
+      {agentLabel} is given a handle. Talaria substitutes the real value at the boundary that spends it (a tool call, a push), so the
       value never enters its context and never reaches a provider. Prefer this whenever the credential only has to be USED.
     </p>
 
@@ -173,8 +173,8 @@
   </div>
   <p class="font-sans text-xs leading-relaxed text-muted">
     <span class="inline-flex items-center gap-1 text-warning"><AlertTriangle size={12} aria-hidden="true" /> {agentLabel} can read these.</span>
-    They are written into its container as plaintext and loaded as env vars, so anything running in there — including the shell its harness
-    uses — can print them. Use one only when a process inside the container reads the variable itself; if the credential merely needs to be
+    They are written into its container as plaintext and loaded as env vars, so anything running in there, including the shell its harness
+    uses, can print them. Use one only when a process inside the container reads the variable itself; if the credential merely needs to be
     spent through a tool, grant a handle above instead.
   </p>
   <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">

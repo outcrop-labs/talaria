@@ -70,7 +70,7 @@
             <span class={cn('w-32 shrink-0 truncate font-sans text-[12px]', m.unread ? 'font-semibold text-fg' : 'text-muted')}>{fromName(m.from)}</span>
             <span class="min-w-0 flex-1 truncate font-sans text-sm">
               <span class={m.unread ? 'font-medium text-fg' : 'text-fg'}>{m.subject}</span>
-              <span class="text-muted"> — {m.snippet}</span>
+              <span class="text-muted"> · {m.snippet}</span>
             </span>
             <span class="shrink-0 font-mono text-[11px] text-muted">{m.date ? relativeTime(m.date) : ''}</span>
           </a>

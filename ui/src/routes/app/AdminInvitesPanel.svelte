@@ -70,7 +70,7 @@
 <Panel class="mb-4">
   <SectionHeader
     title="Invites"
-    info="Invite by email — they get a join link and are admitted the moment they sign in with Google on that address. Invites expire after two weeks; re-inviting re-issues a fresh link; revoking shuts the door instantly. Needs the Email provider on the Org tab."
+    info="Invite by email: they get a join link and are admitted the moment they sign in with Google on that address. Invites expire after two weeks; re-inviting re-issues a fresh link; revoking shuts the door instantly. Needs the Email provider on the Org tab."
   />
   <!-- Said before the send, not after it fails: an invite that goes nowhere
        reads as a bug in invites rather than a missing transport. -->
@@ -115,7 +115,7 @@
           {#if st === 'pending'}
             <button
               type="button"
-              title="Revoke — the link stops working immediately"
+              title="Revoke (the link stops working immediately)"
               onclick={async () => {
                 await fetch('/api/admin/invites', {
                   method: 'DELETE',

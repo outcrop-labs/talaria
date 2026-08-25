@@ -49,7 +49,7 @@
 <div>
   <div class="mb-1 flex items-center gap-1.5">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Workbench</span>
-    <InfoTip text="A sandboxed runtime scoped to this agent's role — tools, harnesses, and creds it can execute real work with. Auto attaches the profile that fits (department/role); On forces one; Off disables it." />
+    <InfoTip text="A sandboxed runtime scoped to this agent's role: tools, harnesses, and creds it can execute real work with. Auto attaches the profile that fits (department/role); On forces one; Off disables it." />
   </div>
   {#if isAdmin}
     <div class="flex flex-wrap items-center gap-2">
@@ -83,7 +83,7 @@
               ? '→ checking'
               : resolved
                 ? `→ ${resolved.name}${resolved.harnesses.length ? ` (${resolved.harnesses.join(', ')})` : ''}`
-                : '→ nothing fits — no sandbox'}
+                : '→ nothing fits; no sandbox'}
       </span>
     </div>
   {:else}

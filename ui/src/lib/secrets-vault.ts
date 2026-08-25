@@ -167,9 +167,9 @@ export const matchesSecret = (s: WorkingSecret, needle: string): boolean => {
  *  reason so it can stay a stable API; the sentence belongs here. */
 export const REVEAL_ERROR: Record<string, string> = {
   unknown: 'That secret no longer exists.',
-  'not-revealable': 'This is an agent credential — nobody can read it, by design.',
+  'not-revealable': 'This is an agent credential. Nobody can read it, by design.',
   'not-shared': 'This has not been shared with you.',
   expired: 'This secret has expired.',
   'no-such-entry': 'That entry is not in this secret.',
-  destroyed: 'This was a one-shot and has already been used — the value is gone.',
+  destroyed: 'This was a one-shot and has already been used. The value is gone.',
 }

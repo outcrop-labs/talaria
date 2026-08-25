@@ -105,7 +105,7 @@
         title: 'Turn on email for this whole instance',
         message:
           'Talaria will start sending notification and digest email to every user in this workspace, ' +
-          'following each person’s own settings — including people who have never opened this page. ' +
+          'following each person’s own settings, including people who have never opened this page. ' +
           'Check the provider, the From address and the sending domain under Admin → Org → Email first.',
         confirmLabel: 'Turn email on',
       }))
@@ -173,7 +173,7 @@
             </div>
             <p class="mt-1 font-sans text-xs text-muted">
               {emailOn
-                ? 'Every setting below can send mail. Switching this off stops all notification and digest email for everyone in this workspace immediately — including mail already queued and the daily digest.'
+                ? 'Every setting below can send mail. Switching this off stops all notification and digest email for everyone in this workspace immediately, including mail already queued and the daily digest.'
                 : 'Nothing below sends mail. Notifications and the daily digest still land in the in-app inbox; none of them leave the building.'}
             </p>
             {#if data.canSetDelivery}
@@ -216,7 +216,7 @@
         <div class="min-w-0 flex-1">
           <div class="text-sm text-fg">Daily digest</div>
           <div class="font-sans text-xs text-muted">
-            One email a day listing what is waiting on you — approvals, tickets in review, blocked and to triage.
+            One email a day listing what is waiting on you: approvals, tickets in review, blocked and to triage.
             Never sent on a day when nothing is waiting.
           </div>
         </div>

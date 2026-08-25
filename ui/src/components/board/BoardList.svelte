@@ -384,7 +384,7 @@
         title={statusesQuery.isError
           ? 'Statuses may be out of date'
           : labelsQuery.data === undefined
-            ? 'Could not load labels — the pills below show names without their colours'
+            ? 'Could not load labels, so the pills below show names without their colours'
             : 'Labels may be out of date'}
         error={statusesQuery.isError ? statusesQuery.error : labelsQuery.error}
         onRetry={() => {

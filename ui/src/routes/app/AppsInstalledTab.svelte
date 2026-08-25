@@ -66,7 +66,7 @@
     {#if surfaces.work}<Chip title={`Work view: ${surfaces.work}`}>work</Chip>{/if}
     {#if surfaces.manage}<Chip title={`Manage view: ${surfaces.manage}`}>manage</Chip>{/if}
     {#if surfaces.settings}<Chip title={`Settings panel: ${surfaces.settings}`}>settings</Chip>{/if}
-    {#if mcp}<Chip title="Publishes MCP tools for agents — govern access in Manage → MCP">mcp</Chip>{/if}
+    {#if mcp}<Chip title="Publishes MCP tools for agents. Govern access in Manage → MCP">mcp</Chip>{/if}
   </span>
 {/snippet}
 
@@ -81,7 +81,7 @@
   <EmptyState
     icon="⬡"
     title="No apps installed"
-    hint="Discover community and official apps in the next tab, or drop a codebase into apps/ — see apps/README.md for building your own"
+    hint="Discover community and official apps in the next tab, or drop a codebase into apps/ (see apps/README.md for building your own)"
   />
 {:else}
   <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
@@ -124,7 +124,7 @@
         <div class="min-w-0 flex-1">
           <div class="font-sans text-sm font-medium text-fg">{slug}</div>
           <div class="font-sans text-xs text-muted">
-            Installed on disk but not compiled into this build yet — reload the dev server or rebuild the deployment to activate.
+            Installed on disk but not compiled into this build yet. Reload the dev server or rebuild the deployment to activate.
           </div>
         </div>
         <Chip>awaiting build</Chip>

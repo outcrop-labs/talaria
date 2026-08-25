@@ -553,7 +553,7 @@ export async function drive(runId: string, deps: Partial<RunDeps> = {}): Promise
         // blowing it is a bug, and a visible error row is how a bug gets fixed.
         const message =
           e instanceof StepInterrupted
-            ? `step exceeded maxStepMs (${def.maxStepMs}ms) at phase "${phase}" — the step may still be running; it will not be retried`
+            ? `step exceeded maxStepMs (${def.maxStepMs}ms) at phase "${phase}". The step may still be running; it will not be retried.`
             : errLine(e)
         if (!(e instanceof StepInterrupted)) console.error(`${LOG} ${runId} (${row.kind}) step threw at phase "${phase}":`, errText(e))
         else console.error(`${LOG} ${runId} (${row.kind}): ${message}`)

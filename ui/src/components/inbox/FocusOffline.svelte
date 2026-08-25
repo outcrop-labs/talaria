@@ -20,8 +20,8 @@
       {onRetry}
     />
     <p class="mx-auto mt-3 font-sans text-sm text-muted">
-      This is not an empty inbox. Approvals, blocked agents and tickets waiting on you may be queued behind this —
-      they stay queued, and nothing was actioned.
+      This is not an empty inbox. Approvals, blocked agents and tickets waiting on you may be queued behind this.
+      They stay queued, and nothing was actioned.
     </p>
     <Button class="mt-5" size="sm" variant="outline" onclick={onRetry}>Retry</Button>
   </div>

@@ -171,7 +171,7 @@ export async function searchReachable(deps?: Partial<SearchDeps>): Promise<{ ok:
       return {
         ok: false,
         url,
-        error: `the search service at ${url} answered but found nothing, which usually means every engine is refusing it. Ask it which: \`curl -s '${url}/search?q=test&format=json' | jq .unresponsive_engines\` — a fresh SearXNG defaults to engines that CAPTCHA a self-hosted instance.`,
+        error: `the search service at ${url} answered but found nothing, which usually means every engine is refusing it. Ask it which: \`curl -s '${url}/search?q=test&format=json' | jq .unresponsive_engines\` (a fresh SearXNG defaults to engines that CAPTCHA a self-hosted instance).`,
       }
     }
     return { ok: true, url, error: null }

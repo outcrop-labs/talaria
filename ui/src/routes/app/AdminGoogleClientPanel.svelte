@@ -119,7 +119,7 @@
   <Panel class="mt-4">
     <SectionHeader
       title="Google Workspace · OAuth client"
-      info="The one credential every Google surface runs on — workspace connect (Drive, Docs, Calendar, Gmail) and, when enabled, Google login. Register it here instead of editing ui/.env; the secret is stored encrypted and never shown again."
+      info="The one credential every Google surface runs on: workspace connect (Drive, Docs, Calendar, Gmail) and, when enabled, Google login. Register it here instead of editing ui/.env; the secret is stored encrypted and never shown again."
     />
     <div class="space-y-4">
       <!-- Status -->
@@ -189,7 +189,7 @@
             size="sm"
             type="password"
             bind:value={secret}
-            placeholder={data.status.secretSet && data.status.source === 'admin' ? 'stored — paste to rotate' : 'GOCSPX-…'}
+            placeholder={data.status.secretSet && data.status.source === 'admin' ? 'stored (paste to rotate)' : 'GOCSPX-…'}
             autocomplete="off"
             class="w-full"
           />

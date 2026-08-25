@@ -117,7 +117,7 @@
 <div class="space-y-4">
   <div class="flex items-center gap-1.5">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Schedules</span>
-    <InfoTip text="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down." />
+    <InfoTip text="Recurring jobs the agent runs on its own native scheduler; they keep firing even when Talaria is down." />
   </div>
   <!-- Skeleton → content as one motion: row-shaped skeletons materialize into
        the job rows. QueryState keeps owning ERROR and EMPTY; the bordered

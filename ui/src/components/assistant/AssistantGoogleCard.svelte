@@ -45,7 +45,7 @@
       return
     error = null
     const r = await fetch('/api/integrations/google', { method: 'DELETE', credentials: 'same-origin' })
-    if (!r.ok) error = 'could not disconnect — try again'
+    if (!r.ok) error = 'could not disconnect; try again'
     await qc.invalidateQueries({ queryKey: ['integration-google'] })
   }
 </script>
@@ -70,7 +70,7 @@
     <!-- An admin hasn't registered the OAuth client — the fix is theirs, and
          the sentence says whose it is rather than dead-ending. -->
     <div class="text-xs text-muted">
-      Google isn’t set up on this server yet — ask an admin to register the Google client in Admin → Org.
+      Google isn’t set up on this server yet. Ask an admin to register the Google client in Admin → Org.
     </div>
   {:else}
     <div class="flex items-center gap-3 rounded-md border border-line p-4">
@@ -96,7 +96,7 @@
     </div>
     <p class="mt-2 max-w-prose text-xs text-muted">
       {data.connected
-        ? 'Your assistant reads your mail and calendar live. Emails and invites it drafts wait in your Inbox for your approval — nothing sends without you.'
+        ? 'Your assistant reads your mail and calendar live. Emails and invites it drafts wait in your Inbox for your approval. Nothing sends without you.'
         : 'Connect your account and your assistant can read your mail and calendar, find Drive files, and draft emails and events for you. Every send waits for your approval in the Inbox.'}
     </p>
   {/if}

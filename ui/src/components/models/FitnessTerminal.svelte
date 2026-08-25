@@ -213,7 +213,7 @@
                   {#if t.content.trim()}
                     <div class="whitespace-pre-wrap break-words text-muted">{t.content}</div>
                   {:else}
-                    <div class="text-ink-dim">(no prose — the turn was tool calls)</div>
+                    <div class="text-ink-dim">(no prose; the turn was tool calls)</div>
                   {/if}
                 </li>
               {/each}
@@ -259,7 +259,7 @@
           </div>
         {/each}
         <div class="mt-1 text-ink-dim">
-          {#if live?.state === 'running'}<span class="animate-pulse">▊</span>{:else}— run {live?.state ?? 'finished'} —{/if}
+          {#if live?.state === 'running'}<span class="animate-pulse">▊</span>{:else}(run {live?.state ?? 'finished'}){/if}
         </div>
       {/if}
     </div>

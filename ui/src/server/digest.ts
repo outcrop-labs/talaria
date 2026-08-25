@@ -759,7 +759,7 @@ function whyUnreachable(approval: PendingApproval): string {
     case 'admin':
       return approval.authority.onBoard
         ? 'Any admin can decide it, but it quotes work on a board none of this workspace’s admins is a member of, so it ' +
-            'cannot be shown to anybody as it stands. Add an admin to that board to read it — or decide it from Admin → ' +
+            'cannot be shown to anybody as it stands. Add an admin to that board to read it, or decide it from Admin → ' +
             'Agents, where admin-only queues live.'
         : 'It needs an admin, and this workspace has none.'
     default:
@@ -899,7 +899,7 @@ export async function runApprovalEscalation(now = new Date()): Promise<Escalatio
           `This has been waiting ${waitedFor(age)} and nobody has decided it. ` +
           (others.length
             ? 'Everyone who can approve or reject it has now been told; whoever gets there first can decide it.'
-            : 'You are the only person who can decide it — nothing else will pick it up.'),
+            : 'You are the only person who can decide it. Nothing else will pick it up.'),
         href: approval.href,
       })
       // Marked only when somebody was actually told. A run where every
@@ -937,7 +937,7 @@ export async function runApprovalEscalation(now = new Date()): Promise<Escalatio
           `${approval.detail}\n\nIt has been waiting ${waitedFor(age)}. ` +
           (wider
             ? `If it is not yours to decide, everyone else who can decide it is told in ${waitedFor(Math.max(0, config.escalateAfterMinutes - age))}.`
-            : 'Nobody else can decide this one — it stays blocked until you do.'),
+            : 'Nobody else can decide this one; it stays blocked until you do.'),
         href: approval.href,
       })
       // Same rule as above: a nag nobody received is not a nag.

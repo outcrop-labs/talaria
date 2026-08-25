@@ -49,7 +49,7 @@
   const cellTitle = (entry: FitnessIndexEntry | undefined, slot: SlotView): string => {
     const band = bandOf(entry, slot.key)
     const reason = reasonOf(entry, slot.key)
-    return `${slot.label} — ${BAND_META[band].label}\n${reason ?? BAND_META[band].blurb}`
+    return `${slot.label}: ${BAND_META[band].label}\n${reason ?? BAND_META[band].blurb}`
   }
 </script>
 
@@ -96,7 +96,7 @@
               // The seam between "about the model" and "about a slot".
               i === 0 && 'border-l-line-strong',
             )}
-            title="{slot.label} — {slot.hint}{slot.requires.length ? `\nNeeds: ${slot.requires.join(', ')}` : ''}"
+            title="{slot.label}: {slot.hint}{slot.requires.length ? `\nNeeds: ${slot.requires.join(', ')}` : ''}"
           >
             <!-- Vertical column heads: 15 horizontal labels would set the
                  table's width from its header text rather than its data.
@@ -162,7 +162,7 @@
             <button
               type="button"
               onclick={() => onSelect(m.id)}
-              title="Open {m.id} — per-slot verdicts, capabilities and every failing fixture"
+              title="Open {m.id} for per-slot verdicts, capabilities and every failing fixture"
               class={cn('group/row flex w-full max-w-[22rem] cursor-pointer flex-col items-start gap-0.5 px-3 py-1.5 text-left', focusGold)}
             >
               <span class="flex min-w-0 items-baseline gap-1.5">
@@ -186,7 +186,7 @@
                   <span
                     class="font-mono text-[10px] {BAND_TEXT[entry.safety.band]}"
                     title="Adversarial (tier 3): {SAFETY_META[entry.safety.band].label}. {SAFETY_META[entry.safety.band]
-                      .blurb} This is the MODEL ALONE — Talaria's guardrails are a second layer that runs on top of it in production, and the adversarial pane shows what they would have caught."
+                      .blurb} This is the MODEL ALONE; Talaria's guardrails are a second layer that runs on top of it in production, and the adversarial pane shows what they would have caught."
                   >
                     · safety {SAFETY_META[entry.safety.band].label.toLowerCase()}{entry.safety.resistance === null
                       ? ''
@@ -232,7 +232,7 @@
                 type="button"
                 onclick={() => onSelect(m.id)}
                 title={cellTitle(entry, slot)}
-                aria-label="{m.id} — {slot.label}: {BAND_META[band].label}"
+                aria-label="{m.id}, {slot.label}: {BAND_META[band].label}"
                 class={cn('h-5 w-5 rounded text-[13px] leading-5 transition-colors hover:bg-raised', BAND_TEXT[band], focusGold)}
               >
                 {BAND_META[band].glyph}

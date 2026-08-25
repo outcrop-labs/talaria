@@ -308,7 +308,7 @@
             }}
             placeholder={proposal !== null
               ? 'Refine the proposal, e.g. “shorter, and add a step for weekends”'
-              : `Describe the ${formMuse.label} you want — it fills every field; nothing is written until you save`}
+              : `Describe the ${formMuse.label} you want. It fills every field; nothing is written until you save`}
             class="max-h-44 pr-12 text-sm"
             autofocus
           />

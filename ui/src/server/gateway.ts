@@ -154,7 +154,7 @@ export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number; s
 function unavailableChatStream(payload: ChatPayload): Response {
   const who = describeAgent(payload.model).label
   return cannedChatStream(
-    `${who} is restarting (or down) and didn't come back within two minutes — your message is saved; send it again in a moment.`,
+    `${who} is restarting (or down) and didn't come back within two minutes. Your message is saved; send it again in a moment.`,
     'unavailable',
   )
 }
@@ -163,7 +163,7 @@ function unavailableChatStream(payload: ChatPayload): Response {
 function mockChatStream(payload: ChatPayload): Response {
   const who = describeAgent(payload.model).label
   return cannedChatStream(
-    `Hi — this is ${who} (mock mode: the fleet isn't rendered yet). Create and start an agent to chat for real.`,
+    `Hi, this is ${who} (mock mode: no agents are rendered yet). Create and start an agent to chat for real.`,
     'mock',
   )
 }

@@ -234,7 +234,7 @@ export async function concludeRelay(channelId: string, byUserId: string, channel
       .map((m) => `${m.authorType === 'agent' ? describeAgent(m.author).label : m.author}: ${m.content}`)
       .join('\n\n'),
   )
-  if (!transcript.trim()) throw new Error('nothing to conclude — the relay has no messages')
+  if (!transcript.trim()) throw new Error('nothing to conclude: the relay has no messages')
 
   // The model chain and the empty-reply check moved into
   // harness/defs/concluder.ts. The failures are still mapped BY HAND rather than
@@ -244,7 +244,7 @@ export async function concludeRelay(channelId: string, byUserId: string, channel
   // — so the other half of this note is gone: the runner no longer returns for
   // an unresolved chain under that policy.)
   const run = await runHarness(concluderHarness, { channelName, transcript }, { caller: `platform:concluder:${byUserId}`, userId: byUserId })
-  if (!run.model) throw new Error('no model configured to summarize with — add an endpoint on /models')
+  if (!run.model) throw new Error('no model configured to summarize with. Add an endpoint on /models.')
   // THREE outcomes, not two. `runHarness` also returns for a transport failure,
   // and folding that into "came back empty" told a user whose provider was rate
   // limiting to try again — into the same rate limit — while the only sentence
@@ -255,13 +255,13 @@ export async function concludeRelay(channelId: string, byUserId: string, channel
   // drill-down field pressed into service as a control-flow test and which reads
   // a stream that died after three tokens as a model that answered.
   if (!run.answered && run.error) throw new Error(run.error)
-  if (run.value === null) throw new Error('the summary came back empty — try again')
+  if (run.value === null) throw new Error('the summary came back empty. Try again.')
   const text = run.value
 
   // The summary is the relay's last word: posted into history (visible if the
   // relay is ever revisited) and indexed for retrieval (channel-membership ACL).
   const agents = await listChannelAgents(channelId)
-  await insertChannelMessage(channelId, 'agent', agents[0] ?? 'talaria', `**Relay concluded** — summary:\n\n${text}`)
+  await insertChannelMessage(channelId, 'agent', agents[0] ?? 'talaria', `**Relay concluded**. Summary:\n\n${text}`)
   await indexActivity({
     sourceType: 'relay-summary',
     sourceId: channelId,

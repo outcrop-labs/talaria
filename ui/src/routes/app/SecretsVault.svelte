@@ -127,7 +127,7 @@
       // tidied a label would be an unforgivable way to lose them.
       message:
         f.count > 0
-          ? `The ${f.count} secret${f.count === 1 ? '' : 's'} in it are NOT deleted — they move back to the top level. Anyone this folder was shared with loses access to them.`
+          ? `The ${f.count} secret${f.count === 1 ? '' : 's'} in it are NOT deleted; they move back to the top level. Anyone this folder was shared with loses access to them.`
           : 'This folder is empty.',
       confirmLabel: 'Delete folder',
       danger: true,
@@ -191,7 +191,7 @@
       return
     }
     await navigator.clipboard.writeText(r.value).catch(() => {
-      msg = 'clipboard refused — reveal it and copy by hand'
+      msg = 'clipboard refused; reveal it and copy by hand'
     })
     copied = `${s.name}/${key}`
     setTimeout(() => (copied = null), 1500)
@@ -237,7 +237,7 @@
       title: `Delete ${s.title}?`,
       message:
         `This deletes the value and every share on it. ${s.readers.length > 0 ? `${s.readers.length} ${s.readers.length === 1 ? 'person' : 'people'} will lose access. ` : ''}` +
-        'There is no undo and no copy — if you need it again, save it again.',
+        'There is no undo and no copy. If you need it again, save it again.',
       confirmLabel: 'Delete',
       danger: true,
     })
@@ -285,7 +285,7 @@
       {/each}
     </div>
     <p class="mt-1 max-w-2xl font-sans text-xs text-muted">
-      Credentials you are working with — a staging key, a test token. Sealed here, shared deliberately, and every reveal is recorded. Share with a
+      Credentials you are working with: a staging key, a test token. Sealed here, shared deliberately, and every reveal is recorded. Share with a
       teammate and they can read it; grant it to an agent and it can <em>use</em> it without ever seeing the value.
     </p>
   </div>
@@ -294,7 +294,7 @@
     <Search size={13} class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-dim" aria-hidden="true" />
     <input
       bind:value={needle}
-      placeholder="Search secrets by name, note or entry — never by value"
+      placeholder="Search secrets by name, note or entry, never by value"
       class="w-full rounded-md border border-line bg-panel py-1.5 pl-7 pr-2 font-sans text-xs text-fg"
     />
   </label>
@@ -382,8 +382,8 @@
         variant="compact"
         title={searching ? 'Nothing matches' : folderId ? 'Nothing filed here' : 'No secrets yet'}
         hint={searching
-          ? 'Search looks at names, notes and entry labels — never at values.'
-          : 'Save one instead of pasting it into chat — a key in a message is in the transcript, the database, and every later prompt.'}
+          ? 'Search looks at names, notes and entry labels, never at values.'
+          : 'Save one instead of pasting it into chat: a key in a message is in the transcript, the database, and every later prompt.'}
       />
     {:else}
       {#if searching}
@@ -423,7 +423,7 @@
                   </button>
                   <button
                     type="button"
-                    title={shown[id] ? 'Hide' : 'Reveal — this is recorded'}
+                    title={shown[id] ? 'Hide' : 'Reveal (this is recorded)'}
                     onclick={() => void reveal(s, e.key)}
                     class="text-muted hover:text-fg"
                   >
@@ -490,13 +490,13 @@
           </label>
           <label class="mt-2 block font-sans text-xs text-muted">
             Note (optional)
-            <input bind:value={note} placeholder="For the checkout rewrite — rotate after launch" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
+            <input bind:value={note} placeholder="For the checkout rewrite (rotate after launch)" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
           </label>
 
           <SecretEntriesEditor bind:entries valuePlaceholder="value" />
 
           <label class="mt-3 block font-sans text-xs text-muted">
-            Spendable at (optional) — hosts, space or comma separated
+            Spendable at (optional): hosts, space or comma separated
             <input bind:value={hosts} placeholder="api.stripe.com" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg" />
             <span class="mt-1 block text-[11px] text-ink-dim">
               Only matters once an agent can spend it: Talaria then refuses to substitute it into anything bound elsewhere.

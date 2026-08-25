@@ -38,7 +38,7 @@
     entries = $bindable(),
     keyPlaceholder = 'secret_key',
     labelPlaceholder = 'Secret key',
-    valuePlaceholder = 'value — stored sealed, never shown again',
+    valuePlaceholder = 'value (stored sealed, never shown again)',
   }: {
     entries: SecretEntry[]
     keyPlaceholder?: string

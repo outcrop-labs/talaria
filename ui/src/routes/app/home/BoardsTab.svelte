@@ -43,7 +43,7 @@
           {:else}
             <!-- A failed /api/home must not read as "0 waiting for you". -->
             <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">
-              {home.data ? home.data.queues[k].count : '—'}
+              {home.data ? home.data.queues[k].count : '…'}
             </span>
           {/if}
         </button>

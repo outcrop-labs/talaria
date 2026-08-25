@@ -165,7 +165,7 @@ export const SECTION_HINT: Record<string, string> = {
   action: 'Work that has stopped and is waiting on a decision from you.',
   schedule: 'Your calendar for today.',
   comms: 'People who asked you something and have not heard back.',
-  highlights: 'Nothing is blocked on these — they are just worth knowing.',
+  highlights: 'Nothing is blocked on these; they are just worth knowing.',
 }
 
 /** A local time-of-day label. Mono chrome, so it stays short. */

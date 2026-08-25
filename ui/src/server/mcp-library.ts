@@ -172,7 +172,7 @@ const KNOWN_ENDPOINTS: Record<string, { title: string; url: string; description:
   'github.com': {
     title: 'GitHub',
     url: 'https://api.githubcopilot.com/mcp/',
-    description: "GitHub's official MCP server — repos, issues, PRs, actions — via OAuth.",
+    description: "GitHub's official MCP server: repos, issues, PRs, actions, via OAuth.",
   },
 }
 

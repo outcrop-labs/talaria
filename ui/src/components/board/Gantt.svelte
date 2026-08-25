@@ -236,7 +236,7 @@
       variant="inline"
       class="border-b border-line-subtle px-4 py-2"
       title={statusesQuery.data === undefined
-        ? 'Could not load this board’s statuses — bar colours and overdue marks are guesses'
+        ? 'Could not load this board’s statuses; bar colours and overdue marks are guesses'
         : 'Statuses may be out of date'}
       error={statusesQuery.error}
       onRetry={() => void statusesQuery.refetch()}
@@ -301,7 +301,7 @@
 
         {#if spans.length === 0}
           <div class="px-6 py-10 font-sans text-sm text-muted">
-            Nothing scheduled yet — set start/due dates, or drag a ticket up from the list below and drop it on a day.
+            Nothing scheduled yet. Set start/due dates, or drag a ticket up from the list below and drop it on a day.
           </div>
         {/if}
         {#each spans as r (r.task.id)}
@@ -338,7 +338,7 @@
                   }
                   onOpen(r.task.id)
                 }}
-                title={`${r.task.title} — drag to reschedule`}
+                title={`${r.task.title} (drag to reschedule)`}
                 class={cn('absolute top-2 flex h-8 touch-none select-none items-center gap-1 rounded-md border px-2.5 font-sans text-[11px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-danger')}
                 style="left: {x(s)}px; width: {Math.max(dayW, x(e) - x(s) + dayW)}px; background: color-mix(in srgb, {c} {r.task.color ? 30 : 22}%, transparent); border-color: color-mix(in srgb, {c} {r.task.color ? 70 : 55}%, transparent)"
               >

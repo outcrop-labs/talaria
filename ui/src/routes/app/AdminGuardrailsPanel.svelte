@@ -95,7 +95,7 @@
       </label>
       <Checkbox
         class="gap-2"
-        title="Repeated findings become templated behavioral notes in the agent's rendered soul (counts + advice only, never the flagged content). Applies on the next fleet render."
+        title="Repeated findings become templated behavioral notes in the agent's rendered soul (counts + advice only, never the flagged content). Applies the next time your agents are rendered."
         checked={cfg?.coach ?? false}
         disabled={cfg?.mode === 'off'}
         onChange={(checked) => void save({ coach: checked })}

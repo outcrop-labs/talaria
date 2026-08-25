@@ -49,7 +49,7 @@ async function probe(service: GoogleApiService, name: string, consoleUrl: string
     return { service, name, consoleUrl, state: 'disabled', detail: 'Not enabled in this Google Cloud project.' }
   }
   if (res.status === 401) {
-    return { service, name, consoleUrl, state: 'error', detail: 'Google rejected the access token — reconnect the org account.' }
+    return { service, name, consoleUrl, state: 'error', detail: 'Google rejected the access token. Reconnect the org account.' }
   }
   return {
     service,

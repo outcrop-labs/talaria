@@ -77,12 +77,12 @@
     if (!record) return out
     if (record.sweep.state === 'stopped' || (record.sweep.total > 0 && record.sweep.done < record.sweep.total)) {
       out.push(
-        `This sweep covered ${record.sweep.done} of ${record.sweep.total} fixtures. Everything it did not reach is Untested, not passing — start it again and it resumes where it stopped.`,
+        `This sweep covered ${record.sweep.done} of ${record.sweep.total} fixtures. Everything it did not reach is Untested, not passing. Start it again and it resumes where it stopped.`,
       )
     }
     if (!record.report.guarded) {
       out.push(
-        'The guard was off for this run, so every guard rate below is zero because nothing was checked — not because nothing was found. No slot can be called Ready on that evidence.',
+        'The guard was off for this run, so every guard rate below is zero because nothing was checked, not because nothing was found. No slot can be called Ready on that evidence.',
       )
     }
     // THE DEPLOYMENT COULD NOT REACH THE MODEL, said at the top rather than left
@@ -90,7 +90,7 @@
     // or credential fact about the install and reads as a broken model unless it
     // is spelled out.
     if (record.sweep.error) {
-      out.push(`${record.sweep.error} Nothing below was measured about the model itself — fix the routing or the credential and run it again.`)
+      out.push(`${record.sweep.error} Nothing below was measured about the model itself. Fix the routing or the credential and run it again.`)
     }
     // THE SWEEP NARROWED ITSELF. A fact about the deployment, in the frame,
     // because the alternative is an admin reading the rate-limit errors it
@@ -104,18 +104,18 @@
       // Asked for one, still throttled: there was nothing to give up, which is
       // worth saying more loudly than a narrowing would have been.
       out.push(
-        `The provider rate-limited this sweep even one fixture at a time — "${c.narrowedBecause}". Cases were retried and any that never got an answer are marked unmeasured rather than failed. Nothing here is a verdict on the model until the deployment is quieter.`,
+        `The provider rate-limited this sweep even one fixture at a time ("${c.narrowedBecause}"). Cases were retried and any that never got an answer are marked unmeasured rather than failed. Nothing here is a verdict on the model until the deployment is quieter.`,
       )
     } else if (c.narrowedBecause && c.ended < c.requested) {
       out.push(
-        `This sweep started ${c.requested} fixtures wide and was down to ${c.ended} when it finished, after the provider pushed back — "${c.narrowedBecause}". That is your deployment's ceiling, not a property of this model. Re-run at ${c.ended} or lower for a clean read.`,
+        `This sweep started ${c.requested} fixtures wide and was down to ${c.ended} when it finished, after the provider pushed back ("${c.narrowedBecause}"). That is your deployment's ceiling, not a property of this model. Re-run at ${c.ended} or lower for a clean read.`,
       )
     } else if (c.narrowedBecause) {
       // Narrowed and recovered. Said anyway, briefly: the timings in this run
       // include a stretch at a lower width, and an admin comparing them against
       // another model's needs to know that before trusting the difference.
       out.push(
-        `The provider pushed back partway through — "${c.narrowedBecause}" — so this sweep dropped to ${c.low} fixtures in flight and climbed back to ${c.ended}. Nothing was scored against the model for it, but the timings cover both stretches.`,
+        `The provider pushed back partway through ("${c.narrowedBecause}"), so this sweep dropped to ${c.low} fixtures in flight and climbed back to ${c.ended}. Nothing was scored against the model for it, but the timings cover both stretches.`,
       )
     }
     return out
@@ -196,7 +196,7 @@
         {#if gapCases > 0}
           <Chip
             tone="warn"
-            title="Fixtures that could not fairly ask their question — the run was never given what the assertion demanded. A bug report about our harness, not a score about this model."
+            title="Fixtures that could not fairly ask their question; the run was never given what the assertion demanded. A bug report about our harness, not a score about this model."
           >
             {gapCases} harness gap{gapCases === 1 ? '' : 's'}
           </Chip>
@@ -289,7 +289,7 @@
                 variant="compact"
                 icon="◇"
                 title="Nothing has failed yet"
-                hint="Failures open here with the full transcript — what the model did, every tool call, and the assertion that judged it."
+                hint="Failures open here with the full transcript: what the model did, every tool call, and the assertion that judged it."
               />
             {/if}
           </div>
@@ -305,13 +305,13 @@
             icon="◇"
             title={live ? 'This is the first run for this model' : 'No run on record for this model'}
             hint={live
-              ? 'The strip above is that run as it happens. A full report — per-slot verdicts, capabilities, the adversarial tier — is archived when it finishes.'
+              ? 'The strip above is that run as it happens. A full report (per-slot verdicts, capabilities, the adversarial tier) is archived when it finishes.'
               : 'Run the probes to fill in what this model can do, and the harness tier to fill in the matrix.'}
           />
         {:else}
           <SectionHeader
             title="Per slot"
-            info="One verdict per assignable slot. The reason names the harness and the assertion that decided it — a score on its own is not something an admin can act on."
+            info="One verdict per assignable slot. The reason names the harness and the assertion that decided it; a score on its own is not something an admin can act on."
           />
           <ul class="divide-y divide-line">
             {#each slots as s (`${s.slot.kind}:${s.slot.id}`)}
@@ -328,7 +328,7 @@
                 {#each s.reasons as reason, i (i)}
                   <p class={cn('mt-1 max-w-prose font-sans text-xs', BAND_TEXT[reason.band])}>
                     {reason.detail}
-                    {#if reason.assertion}<span class="text-muted"> — {reason.assertion}</span>{/if}
+                    {#if reason.assertion}<span class="text-muted"> ({reason.assertion})</span>{/if}
                   </p>
                 {/each}
               </li>
@@ -364,7 +364,7 @@
       {:else if pane === 'capabilities' && record?.probes}
         <SectionHeader
           title="Capabilities"
-          info="Tier 1 — model-level facts, measured against fixed prompts. These are what the capability tags everywhere else in Models are made of, and what a role assignment is checked against."
+          info="Tier 1: model-level facts, measured against fixed prompts. These are what the capability tags everywhere else in Models are made of, and what a role assignment is checked against."
         />
         {#if record.probes.ambiguous}
           <p class="mb-2 max-w-prose font-sans text-xs text-warning">
@@ -389,7 +389,7 @@
                 </Chip>
                 <span class="min-w-0 flex-1 font-sans text-xs text-muted">
                   {r.outcome.verdict.detail}
-                  <span class="text-ink-dim"> — measured {new Date(r.outcome.at).toLocaleDateString()}, not re-run.</span>
+                  <span class="text-ink-dim"> (measured {new Date(r.outcome.at).toLocaleDateString()}, not re-run)</span>
                 </span>
               {:else if r.outcome.kind === 'skipped'}
                 <!-- Skipped writes NOTHING. Not a pass and not a failure — the
@@ -398,7 +398,7 @@
                 <span class="min-w-0 flex-1 font-sans text-xs text-muted">{r.outcome.reason}</span>
               {:else}
                 <Chip tone="warn">errored</Chip>
-                <span class="min-w-0 flex-1 font-sans text-xs text-muted">{r.outcome.reason} — that is the deployment, not the model.</span>
+                <span class="min-w-0 flex-1 font-sans text-xs text-muted">{r.outcome.reason}; that is the deployment, not the model.</span>
               {/if}
             </li>
           {/each}
@@ -416,7 +416,7 @@
         {@const adv = record.adversarial}
         <SectionHeader
           title="Adversarial"
-          info="Tier 3 — safety provocations, scored TWICE. `resistance` is the model on its own, with the guard's grounding deliberately omitted; `after guardrails` is what production would actually have filed, because Talaria runs guardrails.ts over every harness that declares them. The seeds are built to be hard and strong models land in the eighties on the first number — the gap between the two is the layer the platform adds."
+          info="Tier 3: safety provocations, scored TWICE. `resistance` is the model on its own, with the guard's grounding deliberately omitted; `after guardrails` is what production would actually have filed, because Talaria runs guardrails.ts over every harness that declares them. The seeds are built to be hard and strong models land in the eighties on the first number; the gap between the two is the layer the platform adds."
         />
         <div class="mb-3 flex flex-wrap items-center gap-2">
           <!-- Tier 3 bands are a SUBSET of the matrix's bands, not a second
@@ -435,16 +435,16 @@
               adversary {adv.escalation.adversary}: {adv.escalation.written}/{adv.escalation.attempted} turns written, {adv.escalation.fell} landed
             </span>
           {:else}
-            <span class="font-sans text-xs text-muted">Seed corpus only — no escalation round ran.</span>
+            <span class="font-sans text-xs text-muted">Seed corpus only; no escalation round ran.</span>
           {/if}
         </div>
         <!-- SAID IN WORDS, ONCE, because the two percentages above are the whole
              point of this pane and a reader who takes the first for the answer
              comes away with the wrong conclusion about every model on the page. -->
         <p class="mb-3 max-w-prose font-sans text-xs text-muted">
-          {SAFETY_META[adv.band].blurb} These provocations score the MODEL, with the guard's grounding deliberately off — it is what the weights do with nothing behind them.
+          {SAFETY_META[adv.band].blurb} These provocations score the MODEL, with the guard's grounding deliberately off. It is what the weights do with nothing behind them.
           <strong class="text-fg">After guardrails</strong> is the same run as production would have recorded it, and it moves in both directions: grounding drops a hit where the
-          provocation planted the span in the prompt, and adds one where a claim is ungrounded against real sources. Neither number is the other's correction — the first is about
+          provocation planted the span in the prompt, and adds one where a claim is ungrounded against real sources. Neither number is the other's correction: the first is about
           the model, the second is about this deployment.
         </p>
         <ul class="space-y-1">

@@ -213,7 +213,7 @@ export const SAFETY_META: Record<'ready' | 'workable' | 'unfit', { label: string
   workable: {
     label: 'Guard-dependent',
     tone: 'warn',
-    blurb: 'Took at least one bait unaided. Usable with the guard on — which is how it runs — and the specific weakness is named below.',
+    blurb: 'Took at least one bait unaided. Usable with the guard on (which is how it runs), and the specific weakness is named below.',
   },
   unfit: {
     label: 'Low confidence',
@@ -233,7 +233,7 @@ export const BAND_META: Record<FitnessBand, { label: string; tone: ChipTone; gly
     label: 'Workable',
     tone: 'warn',
     glyph: '◐',
-    blurb: 'Usable, with a named weakness — often a contract that only holds after the repair turn, or a capability nothing has measured.',
+    blurb: 'Usable, with a named weakness: often a contract that only holds after the repair turn, or a capability nothing has measured.',
   },
   unfit: {
     label: 'Not a fit',
@@ -354,7 +354,7 @@ export function tagTitle(view: CapabilityView): string {
     return `This model cannot ${word} itself, but this deployment can: ${via} supplies it. Assignments that need ${word} will work here and would not on an install without that tool.`
   }
   if (view.state === 'unknown') {
-    return view.detail ?? `Nobody has measured whether this model can ${word}. Unknown is not a no — run the probes to find out.`
+    return view.detail ?? `Nobody has measured whether this model can ${word}. Unknown is not a no; run the probes to find out.`
   }
   const verdict = view.state === 'yes' ? `Measured: this model can ${word}.` : `Measured: this model cannot ${word}.`
   const how =
@@ -364,7 +364,7 @@ export function tagTitle(view: CapabilityView): string {
         ? 'Learned from what the provider rejected'
         : 'Declared by an admin or a model catalog'
   const score = view.score === null ? '' : ` (${Math.round(view.score * 100)}% of trials)`
-  return `${verdict} ${how}${score}${view.detail ? ` — ${view.detail}` : ''}.`
+  return `${verdict} ${how}${score}${view.detail ? `: ${view.detail}` : ''}.`
 }
 
 /** Tags worth showing next to a model chip. An all-unknown model would print
@@ -404,8 +404,8 @@ export function assignmentNotice(args: {
   return {
     band,
     text: reason
-      ? `${reason} You can still assign it — this is what the last test found, not a rule.`
-      : 'This model tested Not a fit for this slot. You can still assign it — this is what the last test found, not a rule.',
+      ? `${reason} You can still assign it; this is what the last test found, not a rule.`
+      : 'This model tested Not a fit for this slot. You can still assign it; this is what the last test found, not a rule.',
   }
 }
 
@@ -481,15 +481,15 @@ export function ms(n: number): string {
  *  A column that let an admin compare them silently would be the most
  *  confidently wrong number on the page. */
 export function speedTitle(s: SpeedReading | null): string {
-  if (!s) return 'Not measured — tier 2 did not run on this model.'
+  if (!s) return 'Not measured; tier 2 did not run on this model.'
   return [
     s.tokensPerSecond === null
       ? 'No completion was long enough to measure a rate.'
-      : `${s.tokensPerSecond} output tokens per second, median over ${s.sample} fixture(s) — the rate the model generates at, which is comparable between models that ran different fixtures.`,
+      : `${s.tokensPerSecond} output tokens per second, median over ${s.sample} fixture(s): the rate the model generates at, which is comparable between models that ran different fixtures.`,
     `Median ${ms(s.p50)} per fixture, p95 ${ms(s.p95)}.`,
     s.elapsedMs > 0 ? `The sweep took ${ms(s.elapsedMs)} at ${s.perMinute} fixtures a minute.` : '',
     s.concurrency > 1
-      ? `Measured with ${s.concurrency} fixtures in flight, so it includes queueing at the provider — only comparable to another row measured at ${s.concurrency}.`
+      ? `Measured with ${s.concurrency} fixtures in flight, so it includes queueing at the provider; only comparable to another row measured at ${s.concurrency}.`
       : 'Measured one fixture at a time, so this is what a single call costs.',
   ]
     .filter(Boolean)
@@ -566,14 +566,14 @@ export function perDay(n: number): string {
  *  decision. */
 export function workloadSentence(w: Workload): string {
   if (w.basis === 'uniform') {
-    return `No production runs recorded yet, so this weighs every harness equally — one run of each, ${w.harnesses} in all. Once your fleet has run for a few days these become your actual volumes.`
+    return `No production runs recorded yet, so this weighs every harness equally: one run of each, ${w.harnesses} in all. Once your agents have run for a few days these become your actual volumes.`
   }
   const runs = `${perDay(w.perDay)} harness runs a day across ${w.harnesses} harnesses`
   const hole =
     w.unfixturedPerDay > 0
       ? ` ${perDay(w.unfixturedPerDay)} of them a day run on harnesses with no fixtures, so no test can speak for that share.`
       : ''
-  return `Weighted by what your fleet actually did over the last ${w.windowDays} days: ${runs}.${hole}`
+  return `Weighted by what your agents actually did over the last ${w.windowDays} days: ${runs}.${hole}`
 }
 
 /** How much of the cost figure to believe. Kept separate from the workload
@@ -583,7 +583,7 @@ export function costCaveat(v: ModelValue, unmeasured: number): string | null {
   if (v.usdPerDay === null) return 'Nothing on this install prices this model.'
   const parts: string[] = []
   if (v.costCoverage < 0.999) {
-    parts.push(`covers ${pct(v.costCoverage)} of your daily runs — the rest has never been measured, so this is a floor`)
+    parts.push(`covers ${pct(v.costCoverage)} of your daily runs; the rest has never been measured, so this is a floor`)
   } else if (unmeasured > 0) {
     parts.push('a floor: some harnesses carrying volume have never been measured')
   }
@@ -599,7 +599,7 @@ export function costCaveat(v: ModelValue, unmeasured: number): string | null {
 export function estimateSentence(est: RunEstimate | null): string {
   if (!est) return 'Pricing this run'
   const calls = `${est.calls} call${est.calls === 1 ? '' : 's'}`
-  if (!est.priced) return `${calls}. Nothing on this install prices ${est.model}, so there is no dollar figure — the call count is exact.`
+  if (!est.priced) return `${calls}. Nothing on this install prices ${est.model}, so there is no dollar figure; the call count is exact.`
   if (est.usd === null) return `${calls}. Part of this run could not be priced, so no total is shown.`
   const floor = est.unmeasuredHarnesses > 0 ? ' at least' : ' about'
   return `${calls}, costing${floor} ${usd(est.usd)}.`

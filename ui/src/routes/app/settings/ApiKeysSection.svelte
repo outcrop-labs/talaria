@@ -46,7 +46,7 @@
     }).catch(() => null)
     const j = (await r?.json().catch(() => null)) as { secret?: string; error?: string } | null
     if (!r?.ok || !j?.secret) {
-      err = j?.error ?? 'could not mint a key'
+      err = j?.error ?? 'Could not create the key. Try again.'
       return
     }
     minted = j.secret
@@ -126,7 +126,7 @@
   {/if}
   {#if minted}
     <div transition:slide={{ duration: 150 }} class="mt-3 rounded-md border border-accent/40 bg-raised p-3">
-      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Copy it now — it won't be shown again</div>
+      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Copy it now: it won't be shown again</div>
       <code class="break-all font-mono text-xs text-fg">{minted}</code>
     </div>
   {/if}

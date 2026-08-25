@@ -56,7 +56,7 @@
   {/if}
   <div class="flex items-center gap-1.5 pb-2.5">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</span>
-    <InfoTip text="Reverting never destroys anything — the old content is published as a NEW version on top." />
+    <InfoTip text="Reverting never destroys anything: the old content is published as a NEW version on top." />
     <Button variant="outline" size="sm" class="ml-auto" onclick={() => (configOpen = true)}>
       Config history
     </Button>

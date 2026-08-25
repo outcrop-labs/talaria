@@ -48,7 +48,7 @@
               <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{r.question}</span>
               <Chip>{r.mode}</Chip>
               {#if r.status === 'error'}
-                <span class="shrink-0 font-sans text-xs text-danger">failed — open to re-run →</span>
+                <span class="shrink-0 font-sans text-xs text-danger">failed: open to re-run →</span>
               {:else}
                 <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{r.status}</span>
               {/if}

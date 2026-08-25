@@ -87,7 +87,7 @@
               {#if !t}<Chip
                   class="ml-1.5"
                   title={skipOf.get(id) ??
-                    'Production runs this harness and the last bench did not cover it — either it declares no fixtures, or the sweep did not reach it.'}
+                    'Production runs this harness and the last bench did not cover it; either it declares no fixtures, or the sweep did not reach it.'}
                 >{skipOf.has(id) ? 'not testable here' : 'unbenched'}</Chip
                 >{/if}
             </td>
@@ -111,7 +111,7 @@
     <p class="mt-2 max-w-prose font-sans text-xs text-muted">
       Across all harnesses in the last {thresholds.observedWindowDays} days this model ran {observedModel.harnessRuns} time(s) at
       {observedModel.harnessFindingsPerRun.toFixed(2)} findings per run, and the guard filed {observedModel.guardFindings} finding(s) against it
-      overall — {observedModel.confabulation} of which were the model inventing something rather than repeating something it should not have.
+      overall; {observedModel.confabulation} of which were the model inventing something rather than repeating something it should not have.
     </p>
   {/if}
 {/if}

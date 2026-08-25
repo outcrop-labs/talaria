@@ -60,7 +60,7 @@ export const PLACES: { id: Place; label: string; glyph: string; empty: string; h
   // unauthenticated at /api/artifacts/public/$slug. A credential must never
   // reach any of that, so it is never an artifact row — the cabinet is shared,
   // the store is not.
-  { id: 'secrets', label: 'Secrets', glyph: '⚿', empty: 'No secrets yet.', hint: 'Credentials you are working with — sealed, shared deliberately, every reveal recorded.' },
+  { id: 'secrets', label: 'Secrets', glyph: '⚿', empty: 'No secrets yet.', hint: 'Credentials you are working with: sealed, shared deliberately, every reveal recorded.' },
 ]
 
 /** How each general-access tier reads to a person, not to the schema. Shared

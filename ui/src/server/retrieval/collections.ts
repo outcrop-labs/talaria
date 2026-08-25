@@ -36,7 +36,7 @@ export interface AccessBinding {
 
 const AUTO: Array<{ name: string; kind: CollectionKind; qdrantName: string; description: string }> = [
   { name: 'Workspace activity', kind: 'activity', qdrantName: 'talaria_activity', description: 'Ambient index of chats, channels, plans, research, and ticket discussion. Searched on demand.' },
-  { name: 'Organization knowledge', kind: 'org-kb', qdrantName: 'talaria_org_kb', description: 'The curated knowledgebase — official docs and artifacts. Grounds agents by default.' },
+  { name: 'Organization knowledge', kind: 'org-kb', qdrantName: 'talaria_org_kb', description: 'The curated knowledgebase: official docs and artifacts. Grounds agents by default.' },
 ]
 
 /** Create the two auto collections + their Qdrant collections if missing.
@@ -157,7 +157,7 @@ export async function ensurePersonalCollection(userId: string, opts: { name?: st
   await ensureHybridCollection(qdrantName, dim)
   const rows = (await sql`
     insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, owner_user_id, schema_version)
-    values (${opts.name ?? 'My knowledge'}, 'personal', ${qdrantName}, 'Your private docs — visible only to you and your personal assistant.', false, ${dim}, ${userId}, ${userId}, 2)
+    values (${opts.name ?? 'My knowledge'}, 'personal', ${qdrantName}, 'Your private docs, visible only to you and your personal assistant.', false, ${dim}, ${userId}, ${userId}, 2)
     returning id, name, kind, qdrant_name as "qdrantName", description, auto, created_by as "createdBy", created_at as "createdAt", schema_version as "schemaVersion"
   `) as unknown as RagCollection[]
   const col = rows[0]!

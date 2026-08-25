@@ -45,7 +45,7 @@
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
         <span class="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
-        <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here — stored encrypted, spoken only during the OAuth flow." />
+        <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here. They're stored encrypted and spoken only during the OAuth flow." />
       </div>
       {#if link}
         <a href={link} target="_blank" rel="noreferrer" class="mt-0.5 inline-block text-xs text-accent hover:underline">

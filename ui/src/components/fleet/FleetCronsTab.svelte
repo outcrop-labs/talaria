@@ -99,7 +99,7 @@
 {#snippet title()}
   <span class="flex items-center gap-1.5">
     Schedules
-    <InfoTip text="Jobs run inside each agent's own scheduler and keep firing even if Talaria is down. Fixed-time jobs created here are staggered 2 minutes per agent so the fleet doesn't hit the models at once." />
+    <InfoTip text="Jobs run inside each agent's own scheduler and keep firing even if Talaria is down. Fixed-time jobs created here are staggered 2 minutes per agent so they don't all hit the models at once." />
   </span>
 {/snippet}
 

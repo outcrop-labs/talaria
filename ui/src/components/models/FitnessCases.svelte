@@ -112,7 +112,7 @@
   const filterOptions = $derived(
     [
       { id: 'failing' as const, label: `Failing ${counts.failing}`, title: 'The contract broke, the fixture rejected the value, the case timed out, or a guard rule fired.' },
-      { id: 'gaps' as const, label: `Our gap ${counts.gaps}`, title: 'The fixture could not fairly ask its question — the run was never given what the assertion demanded. A bug report about the harness, not a score about the model.' },
+      { id: 'gaps' as const, label: `Our gap ${counts.gaps}`, title: 'The fixture could not fairly ask its question; the run was never given what the assertion demanded. A bug report about the harness, not a score about the model.' },
       { id: 'passing' as const, label: `Passed ${counts.passing}`, title: 'The contract held and the fixture accepted the value.' },
       { id: 'skipped' as const, label: `Not run ${counts.skipped}`, title: 'The sweep never called the model. Not a pass.' },
       { id: 'all' as const, label: `All ${inTab.length}` },
@@ -195,7 +195,7 @@
                 {#if c.timedOut}<Chip tone="warn">timed out</Chip>{/if}
                 {#if c.skipped === null && !c.answered}<Chip
                     tone="neutral"
-                    title="No reply to apply the contract to — a refused capability floor, a chain that routed nothing, or a transport that died. That is the run, not the model."
+                    title="No reply to apply the contract to: a refused capability floor, a chain that routed nothing, or a transport that died. That is the run, not the model."
                     >no answer</Chip
                   >{/if}
                 {#if c.answered && !c.contractHeld}<Chip tone="danger">contract failed</Chip>{/if}
@@ -239,7 +239,7 @@
                    written rather than summarized into a rate. -->
               {#if c.gap}
                 <p class="max-w-prose font-sans text-xs text-warning">
-                  <span class="font-mono text-[10px] uppercase tracking-[0.08em]">our gap</span> — {c.gap}
+                  <span class="font-mono text-[10px] uppercase tracking-[0.08em]">our gap</span>: {c.gap}
                 </p>
               {/if}
               {#if c.taskError}
@@ -265,7 +265,7 @@
                         <span class="text-ink-dim">{i + 1}</span>
                         <span class={!u.settled ? 'text-warning' : u.error ? 'text-danger' : 'text-muted'}>{u.ms}ms</span>
                         {#if !u.settled}
-                          <span class="text-warning">no reply — still open when the case was killed</span>
+                          <span class="text-warning">no reply; still open when the case was killed</span>
                         {:else if u.error}
                           <span class="min-w-0 flex-1 break-words text-danger">{u.error}</span>
                         {:else}
@@ -277,7 +277,7 @@
                 </div>
               {:else if c.timedOut}
                 <p class="max-w-prose font-sans text-xs text-warning">
-                  This case timed out having made no upstream call at all — the time went somewhere before the request reached the provider.
+                  This case timed out having made no upstream call at all; the time went somewhere before the request reached the provider.
                 </p>
               {/if}
 
@@ -295,7 +295,7 @@
                         <div class="flex flex-wrap items-baseline gap-2">
                           <span class="font-mono text-[10px] text-ink-dim">{i + 1}</span>
                           <span class={cn('font-mono text-[11px]', call.error ? 'text-danger' : 'text-fg')}>{call.tool}</span>
-                          {#if call.error}<Chip tone="danger" title="The tool refused, exactly as production would. A refusal is a real event — the fixture may require one.">refused</Chip>{/if}
+                          {#if call.error}<Chip tone="danger" title="The tool refused, exactly as production would. A refusal is a real event; the fixture may require one.">refused</Chip>{/if}
                         </div>
                         <pre class="mt-1 overflow-x-auto font-mono text-[10px] leading-4 text-muted">{pretty(call.args)}</pre>
                         {#if call.error}
@@ -331,7 +331,7 @@
                           <!-- A turn that only calls tools says nothing, and that
                                is normal — labelling it makes the transcript read
                                as the tool conversation it was. -->
-                          <p class="font-sans text-[11px] text-ink-dim">(no prose — the turn was tool calls)</p>
+                          <p class="font-sans text-[11px] text-ink-dim">(no prose; the turn was tool calls)</p>
                         {/if}
                       </li>
                     {/each}
@@ -354,7 +354,7 @@
                 <p class="font-sans text-xs text-muted">No transcript was kept for this case.</p>
               {:else if c.task === 'pass'}
                 <p class="font-sans text-xs text-muted">
-                  Transcripts are kept for cases that failed something — seventy passing ones in a settings row is an archive, not telemetry. What
+                  Transcripts are kept for cases that failed something; seventy passing ones in a settings row is an archive, not telemetry. What
                   it DID is above.
                 </p>
               {/if}
@@ -367,7 +367,7 @@
     </div>
     {#if dropped > 0}
       <p class={cn('font-sans text-xs text-muted', fill && 'shrink-0')}>
-        {dropped} further case{dropped === 1 ? '' : 's'} were not kept — transcripts are bounded so the archive stays a drill-down rather than a
+        {dropped} further case{dropped === 1 ? '' : 's'} were not kept; transcripts are bounded so the archive stays a drill-down rather than a
         log. Re-run this harness alone to see them.
       </p>
     {/if}

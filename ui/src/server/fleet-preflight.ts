@@ -95,8 +95,8 @@ async function firewallRemedy(): Promise<string> {
     cmd = `admit ${bridges} to tcp/${port} on the INPUT chain, however this host manages it`
   }
   return (
-    `Admit the docker bridges to the host: ${cmd} — and the same for the toolkit port. ` +
-    `Or remove the host from the path entirely by running Talaria on the fleet network and setting ` +
+    `Admit the docker bridges to the host: ${cmd}. Do the same for the toolkit port. ` +
+    `Or remove the host from the path entirely by running Talaria on the agents' network and setting ` +
     `TALARIA_GATEWAY_SELF_URL to its service DNS, which is container→container and needs no firewall rule.`
   )
 }
@@ -202,7 +202,7 @@ export async function runFleetPreflight(): Promise<PreflightResult> {
         // Talaria.
         parts.push(
           `a container on the "${network}" network cannot reach ${dead}. Agents are running but cannot call a single tool. ` +
-          `Container→host traffic goes through the host's INPUT chain, which Docker does NOT manage — so a default-deny ` +
+          `Container→host traffic goes through the host's INPUT chain, which Docker does NOT manage, so a default-deny ` +
           `firewall blocks it while every Docker rule still looks correct. ${remedy}`,
         )
       }

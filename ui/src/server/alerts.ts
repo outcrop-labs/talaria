@@ -97,7 +97,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
           alerts.push({
             severity: 'critical',
             title: `${m.displayName} is down`,
-            detail: st ? `container ${st.name} is ${st.state} (${st.status})` : 'no managed container exists — render + up from /agents',
+            detail: st ? `container ${st.name} is ${st.state} (${st.status})` : 'no managed container exists. Render + up from /agents.',
             href: '/agents',
           })
         } else if (/unhealthy/i.test(st.status)) {
@@ -121,7 +121,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     alerts.push({
       severity: 'critical',
       title: 'Gateway plane unreachable',
-      detail: 'No rendered fleet manifest — Talaria has no agent url or key to reach, so chat and channel replies will fail. Render the fleet from /agents.',
+      detail: 'No rendered agent manifest. Talaria has no agent url or key to reach, so chat and channel replies will fail. Render your agents from /agents.',
       href: '/agents',
     })
   }
@@ -149,7 +149,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     alerts.push({
       severity: 'critical',
       title: 'Agent toolkit (MCP) unreachable',
-      detail: `The fleet toolkit endpoint on :${MCP_PORT()} is not answering — every agent's Talaria tools (knowledge, tickets, documents, research) are failing. It respawns on the next comms read; if this persists, check the app logs.`,
+      detail: `The agent toolkit endpoint on :${MCP_PORT()} is not answering, so every agent's Talaria tools (knowledge, tickets, documents, research) are failing. It respawns on the next comms read; if this persists, check the app logs.`,
       href: '/agents',
     })
   }
@@ -162,7 +162,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     alerts.push({
       severity: 'critical',
       title: 'Retrieval plane down',
-      detail: `${down} unreachable — nothing new is being indexed and agent knowledge search fails. Start the services (docker/dev-compose.yml), then run the backfill in Admin → Retrieval.`,
+      detail: `${down} unreachable, so nothing new is being indexed and agent knowledge search fails. Start the services (docker/dev-compose.yml), then run the backfill in Admin → Retrieval.`,
       href: '/admin',
     })
   } else {
@@ -173,8 +173,8 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
       const bad = upgrade.collections.filter((c) => c.dimMismatch).map((c) => c.name).join(', ')
       alerts.push({
         severity: 'critical',
-        title: 'Embedding model changed — brains need a rebuild',
-        detail: `The embedding service now serves ${upgrade.embed?.modelId} (${upgrade.embed?.dim}d) but ${bad} ${upgrade.collections.filter((c) => c.dimMismatch).length === 1 ? 'is' : 'are'} built at a different dimension — indexing and search against ${upgrade.collections.filter((c) => c.dimMismatch).length === 1 ? 'it' : 'them'} are failing. Run the rebuild in Admin → Retrieval.`,
+        title: 'Embedding model changed: brains need a rebuild',
+        detail: `The embedding service now serves ${upgrade.embed?.modelId} (${upgrade.embed?.dim}d) but ${bad} ${upgrade.collections.filter((c) => c.dimMismatch).length === 1 ? 'is' : 'are'} built at a different dimension, so indexing and search against ${upgrade.collections.filter((c) => c.dimMismatch).length === 1 ? 'it' : 'them'} are failing. Run the rebuild in Admin → Retrieval.`,
         href: '/admin',
       })
     }
@@ -190,8 +190,8 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         severity: 'critical',
         title: `${b.displayName}'s brain is unroutable`,
         detail: badMain
-          ? `${badMain.endpoint}/${badMain.model}: ${badMain.reason} — chats will hang. Fix the model on /models or repoint the agent.`
-          : 'no main model configured — the agent has nothing to think with',
+          ? `${badMain.endpoint}/${badMain.model}: ${badMain.reason}. Chats will hang. Fix the model on /models or repoint the agent.`
+          : 'no main model configured, so the agent has nothing to think with',
         href: '/agents',
       })
     } else {
@@ -243,7 +243,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
       title: 'No background jobs are registered on this instance',
       detail:
         'The scheduler has an empty registry, so the daily digest, the approval SLA, comms decay and the' +
-        ' notification mail drain are all not running — and none of them will report a failure, because none of' +
+        ' notification mail drain are all not running, and none of them will report a failure, because none of' +
         ' them exists. Their modules were never imported by this build.',
       href: '/observability',
     })
@@ -260,7 +260,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
       detail:
         `${unarmed.map((j) => `"${j.name}"`).join(', ')} registered after the scheduler started, so ${
           unarmed.length === 1 ? 'it is' : 'they are'
-        } timed by nothing and will never run. A job's module has to be in the runtime graph before startScheduler() — imported from the server entry, not lazily from a route.`,
+        } timed by nothing and will never run. A job's module has to be in the runtime graph before startScheduler(): imported from the server entry, not lazily from a route.`,
       href: '/observability',
     })
   } else if (unarmed.length === jobs.length) {
@@ -275,7 +275,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         `${jobs.length} job(s) are registered and not one of them has been armed, so nothing is timing them:` +
         ' no digest, no approval escalation, no comms decay, no notification mail.' +
         (inProduction
-          ? ' Either TALARIA_SCHEDULER=off, or server-entry.js could not find the scheduler handle at boot — the' +
+          ? ' Either TALARIA_SCHEDULER=off, or server-entry.js could not find the scheduler handle at boot. The' +
             ' startup log says which.'
           : ' Normal under `vite dev`, which does not run server-entry.js on purpose.'),
       href: '/observability',
@@ -306,7 +306,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
           ? 'Nothing is queued this second, but nothing queued before it closes will be attempted either.'
           : `${mail.queued} mail(s) are queued${
               mail.oldestQueuedMs === null ? '' : `, the oldest waiting ${minutes(mail.oldestQueuedMs)} minute(s)`
-            }. Every one of them is still in its recipient’s in-app inbox — only the email is late.`) +
+            }. Every one of them is still in its recipient’s in-app inbox. Only the email is late.`) +
         ' Check the mail provider (Admin → Org → Email).',
       href: '/observability',
     })
@@ -329,7 +329,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
       title: 'Notification email queue is filling up',
       detail:
         `${mail.queued} of a possible ${mail.capacity} mail(s) are queued. Past ${mail.capacity} new mail is refused` +
-        ' at the door — the notification still lands in the app, the email does not.',
+        ' at the door: the notification still lands in the app, the email does not.',
       href: '/observability',
     })
   }
@@ -345,7 +345,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     alerts.push({
       severity: 'warning',
       title: 'Notification emails have been lost since boot',
-      detail: `${lost}. Each one is still unread in its recipient’s in-app inbox — the email was lost, the notification was not.`,
+      detail: `${lost}. Each one is still unread in its recipient’s in-app inbox: the email was lost, the notification was not.`,
       href: '/observability',
     })
   }
@@ -356,7 +356,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
       alerts.push({
         severity: 'warning',
         title: 'Unpriced cloud usage',
-        detail: `${fmt(cost.totals.unpricedCloudTokens)} cloud tokens (30d) have no rate — spend is understated. Set prices on /models.`,
+        detail: `${fmt(cost.totals.unpricedCloudTokens)} cloud tokens (30d) have no rate, so spend is understated. Set prices on /models.`,
         href: '/models',
       })
     }
@@ -377,13 +377,13 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         ? {
             severity: 'warning',
             title: `Failed: ${t.title}`,
-            detail: `on ${t.board} — needs a human decision`,
+            detail: `on ${t.board}: needs a human decision`,
             href: `/boards/${t.board_id}/${t.id}`,
           }
         : {
             severity: 'info',
             title: `Blocked ${t.days}d: ${t.title}`,
-            detail: `on ${t.board} — blocked for ${t.days} days`,
+            detail: `on ${t.board}: blocked for ${t.days} days`,
             href: `/boards/${t.board_id}/${t.id}`,
           },
     )

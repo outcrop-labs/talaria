@@ -100,14 +100,14 @@
         {#if s.builtin}
           <Chip
             class="shrink-0"
-            title="Talaria's own toolkit — every agent carries it. Govern who may use which tools below; identity and lifecycle are managed by the platform."
+            title="Talaria's own toolkit: every agent carries it. Govern who may use which tools below; the platform manages its identity and lifecycle."
           >
             built-in
           </Chip>
         {:else if s.appSlug}
           <Chip
             class="shrink-0"
-            title={`Published by the "${s.appSlug}" app — tools dispatch inside this deployment. Govern access below; lifecycle follows the app (Manage → Apps).`}
+            title={`Published by the "${s.appSlug}" app; its tools run inside this deployment. Govern access below; lifecycle follows the app (Manage → Apps).`}
           >
             app
           </Chip>
@@ -128,7 +128,7 @@
         variant="accent-soft"
         class="shrink-0"
         onclick={() => void connectPopup(s.id, 'org')}
-        title="This server authenticates with OAuth — connect the org account so agents can use it"
+        title="This server authenticates with OAuth. Connect the org account so agents can use it"
       >
         Connect
       </Button>

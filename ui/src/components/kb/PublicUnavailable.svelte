@@ -15,7 +15,7 @@
   <div class="py-16 text-center">
     <div class="mb-2 text-2xl font-semibold text-fg">This page isn’t loading right now</div>
     <p class="text-sm text-muted">
-      The link is fine — the server didn’t answer. Try again in a moment.
+      The link is fine; the server didn’t answer. Try again in a moment.
     </p>
     {#if detail}<p class="mt-2 text-xs text-muted">{detail}</p>{/if}
     {#if onRetry}

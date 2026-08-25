@@ -77,7 +77,7 @@
     />
   {/if}
   <p class="mt-1 text-xs text-muted">
-    When your daily brief opens and your digest arrives. Detected: {detected ?? '—'}
+    When your daily brief opens and your digest arrives. Detected: {detected ?? 'none'}
     {#if savedFlash.saved && !error}<span class="ml-2 text-success">Saved</span>{/if}
     {#if error}<span class="ml-2 text-danger">{error}</span>{/if}
   </p>

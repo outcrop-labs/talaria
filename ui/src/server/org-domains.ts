@@ -69,7 +69,7 @@ export async function verifyOrgDomain(id: string): Promise<{ verified: boolean; 
   }
   return {
     verified: false,
-    error: `TXT record not found — add "${row.verificationToken}" as a TXT record on _talaria-verify.${row.domain} (or on ${row.domain} itself) and try again`,
+    error: `TXT record not found. Add "${row.verificationToken}" as a TXT record on _talaria-verify.${row.domain} (or on ${row.domain} itself) and try again`,
   }
 }
 

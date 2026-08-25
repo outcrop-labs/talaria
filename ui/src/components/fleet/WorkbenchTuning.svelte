@@ -56,7 +56,7 @@
       <QueryError
         variant="inline"
         error={registryQuery.error}
-        title="Harness names unavailable — showing raw slugs"
+        title="Harness names unavailable; showing raw slugs"
         onRetry={() => void registryQuery.refetch()}
       />
     </div>

@@ -91,13 +91,13 @@
               />
             </div>
           {/each}
-          {#if rows.length === 0}<p class="text-xs text-muted">No repositories reachable yet — finish the install on GitHub.</p>{/if}
+          {#if rows.length === 0}<p class="text-xs text-muted">No repositories reachable yet. Finish the install on GitHub.</p>{/if}
         </div>
       </div>
     </div>
     <p class="text-[11px] text-muted">
-      <span class="text-fg">PRs land on</span> — the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch.{' '}
-      <span class="text-fg">Testing branch</span> — optional integration branch a feature can be merged into (from the ticket or by the agent) before its PR ships; blank disables it. Testing merges never replace review — the PR still lands normally.
+      <span class="text-fg">PRs land on</span>: the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch.{' '}
+      <span class="text-fg">Testing branch</span>: optional integration branch a feature can be merged into (from the ticket or by the agent) before its PR ships; blank disables it. Testing merges never replace review; the PR still lands normally.
     </p>
   </div>
 {/if}

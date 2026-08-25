@@ -45,7 +45,7 @@
   </div>
 
   <p class="text-center font-sans text-xs text-muted">
-    You can close this and keep working — drafts stay paired to the plan.
+    You can close this and keep working; drafts stay paired to the plan.
   </p>
 </div>
 

@@ -63,7 +63,7 @@
   <Panel as="section" class="mt-4">
     <SectionHeader
       title="Tool accounts"
-      info="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time — the server drops off your assistant on the next config render."
+      info="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time; the server drops off your assistant on the next config render."
     />
     {#if isPending}
       <SkeletonRows rows={2} />
@@ -89,7 +89,7 @@
               {:else if s.authKind === 'oauth'}
                 <Button
                   size="sm"
-                  title="Sign in with the provider — your assistant then acts as you on this server"
+                  title="Sign in with the provider. Your assistant then acts as you on this server."
                   onclick={() => void window.open(`/api/mcp/oauth/start?server=${s.id}&scope=me`, 'talaria-mcp-oauth', 'width=620,height=780')}
                 >
                   Connect

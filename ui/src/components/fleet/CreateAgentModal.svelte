@@ -215,7 +215,7 @@
             Start from a role
           </label>
           <Select id="role-template" bind:value={roleSlug} onchange={() => applyRole(roleSlug)} class="w-full">
-            <option value="">Blank — fill it in myself</option>
+            <option value="">Blank; fill it in myself</option>
             {#if roleTemplates.some((t) => !t.builtIn)}
               <optgroup label="Your organization">
                 {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}

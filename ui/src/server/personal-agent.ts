@@ -261,7 +261,7 @@ export async function updatePersonalAgent(
     enabled: boolean
   }>
   const def = rows[0]
-  if (!def) throw new Error('no assistant yet — create one first')
+  if (!def) throw new Error('no assistant yet. Create one first.')
 
   const newName = patch.name?.trim()
   const renamed = !!newName && newName !== def.displayName

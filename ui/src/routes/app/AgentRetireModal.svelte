@@ -15,7 +15,7 @@
 <Modal open {onClose} title={`Retire ${d.displayName}?`} width="max-w-md">
   <div class="space-y-4">
     <p class="text-sm text-muted">
-      The running container is removed and <span class="text-fg">{d.displayName}</span> leaves the fleet. Its state
+      The running container is removed and <span class="text-fg">{d.displayName}</span> leaves the team. Its state
       volume (memories, plans) and version history are kept, so it can be brought back later.
     </p>
     <div>

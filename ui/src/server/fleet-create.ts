@@ -88,7 +88,7 @@ export async function createAgent(input: {
     // Platform defaults: main model from the first local endpoint (else any).
     const eps = await listEndpoints()
     const ep = eps.find((e) => e.class === 'local' && e.models.length > 0) ?? eps.find((e) => e.models.length > 0)
-    if (!ep) throw new Error('no models configured — add an LLM endpoint first')
+    if (!ep) throw new Error('no models configured. Add an LLM endpoint first.')
     const main = {
       endpoint: ep.name,
       model: ep.models[0]!,
@@ -125,7 +125,7 @@ export async function deleteAgentForever(defId: string): Promise<{ removedVolume
   `) as unknown as Array<{ slug: string; department: string; source: string; enabled: boolean }>
   const def = rows[0]
   if (!def) throw new Error('not found')
-  if (def.enabled) throw new Error('retire the agent first — delete is for retired agents only')
+  if (def.enabled) throw new Error('retire the agent first. Delete is for retired agents only.')
 
   const { removeContainerByName, slotContainer } = await import('./fleet-docker')
   const { renderFleet, FLEET_DIR } = await import('./fleet-render')

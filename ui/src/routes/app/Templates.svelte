@@ -84,7 +84,7 @@
       !(await confirmDelete({
         what: 'template',
         name: t.name,
-        detail: `Deleting “${t.name}” (${t.kind}) cannot be undone — boards and agents bound to it fall back down the template chain.`,
+        detail: `Deleting “${t.name}” (${t.kind}) cannot be undone. Boards and agents bound to it fall back down the template chain.`,
       }))
     )
       return
@@ -105,7 +105,7 @@
   const tabItems = $derived(
     TEMPLATE_TABS.map((t) => ({
       id: t.id,
-      label: tabLabel(t.label, isLoading || failed ? '—' : String(templates.filter((x) => x.kind === t.id).length)),
+      label: tabLabel(t.label, isLoading || failed ? '…' : String(templates.filter((x) => x.kind === t.id).length)),
     })),
   )
 </script>
@@ -150,7 +150,7 @@
               icon="▣"
               title={`No ${tab} template selected`}
               hint={failed
-                ? 'The template list could not be loaded — retry on the left.'
+                ? 'The template list could not be loaded. Retry on the left.'
                 : list.length
                   ? 'Pick one on the left, or create a new one.'
                   : 'Create the first one on the left.'}

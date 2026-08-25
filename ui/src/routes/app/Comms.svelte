@@ -613,7 +613,7 @@
       <EmptyState
         icon="◈"
         title="All your conversations, one place"
-        hint="Channels for ambient talk, relays for getting something decided with people and agents, DMs for everyone, human or agent."
+        hint="Channels for ambient talk, relays for deciding things with people and agents, DMs for anyone, human or agent."
       />
     {/if}
   </main>

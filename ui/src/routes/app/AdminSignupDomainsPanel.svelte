@@ -72,7 +72,7 @@
 <Panel class="mt-4">
   <SectionHeader
     title="Email sign-up domains"
-    info="The domain after the @ in your team's EMAIL addresses — not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically — no invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed."
+    info="The domain after the @ in your team's EMAIL addresses, not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically. No invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed."
   />
   {#if query.isPending}
     <SkeletonRows rows={2} />
@@ -102,7 +102,7 @@
             {#if d.verified}
               <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
                 <span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
-                verified — self-joins open
+                verified · self-joins open
               </span>
             {:else}
               <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
@@ -118,7 +118,7 @@
             {/if}
             <button
               type="button"
-              title="Remove — self-joins from this domain stop immediately"
+              title="Remove: self-joins from this domain stop immediately"
               onclick={async () => {
                 if (!(await confirm({ title: 'Remove domain', message: `Remove ${d.domain}? New self-joins stop; existing members keep their accounts.`, confirmLabel: 'Remove' }))) return
                 await fetch('/api/admin/domains', {
@@ -148,7 +148,7 @@
           size="sm"
           bind:value={draft}
           onkeydown={(e) => e.key === 'Enter' && void add()}
-          placeholder="yourcompany.com — your email domain"
+          placeholder="yourcompany.com (your email domain)"
           class="w-72"
         />
         <Button size="sm" onclick={() => void add()} disabled={!draft.trim()}>

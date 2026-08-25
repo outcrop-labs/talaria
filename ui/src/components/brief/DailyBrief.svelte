@@ -124,7 +124,7 @@
           variant="inline"
           class="mb-5 rounded-lg border border-[color:var(--theme-danger)]/40 bg-[color:var(--theme-danger)]/5 px-4 py-2.5"
           error={query.error}
-          title="This brief may be out of date — the last refresh failed"
+          title="This brief may be out of date; the last refresh failed"
           onRetry={() => void query.refetch()}
         />
       {/if}

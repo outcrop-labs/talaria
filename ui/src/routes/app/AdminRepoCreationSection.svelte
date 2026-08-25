@@ -83,7 +83,7 @@
     <div class="flex items-center gap-2 rounded-md border border-warning/30 px-3 py-2 text-sm">
       <span class="min-w-0 flex-1 truncate">
         <span class="font-mono text-[13px] text-fg">{r.org}/{r.name}</span>
-        <span class="text-muted"> — {r.agentModel}: {r.why}</span>
+        <span class="text-muted"> · {r.agentModel}: {r.why}</span>
       </span>
       <Button size="sm" onclick={() => void decide(r.id, 'approve')}>Create + grant</Button>
       <Button size="sm" variant="ghost" onclick={() => void decide(r.id, 'reject')}>Reject</Button>

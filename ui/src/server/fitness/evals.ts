@@ -1251,7 +1251,7 @@ function timeoutDetail(caseMs: number, calls: readonly UpstreamAttempt[]): strin
     // The case never got a request out. That is not the model: it is route
     // resolution, the capability floor, key resolution or the provider catalog
     // — all of which happen before a token is spent and all of which can block.
-    return `the case did not finish inside ${caseMs}ms and never made an upstream call at all — the time went somewhere before the request (route resolution, the endpoint key, or the provider catalog), not to the model`
+    return `the case did not finish inside ${caseMs}ms and never made an upstream call at all; the time went somewhere before the request (route resolution, the endpoint key, or the provider catalog), not to the model`
   }
   const open = calls.filter((c) => !c.settled)
   const done = calls.filter((c) => c.settled)
@@ -2005,7 +2005,7 @@ export async function runEvalSweep(model: string, opts: EvalOptions = {}): Promi
     // The run's own headline when it gave up: a routing or credential fact, said
     // ONCE — in the status row AND on the returned sweep, because the archive
     // reads one and the caller reads the other.
-    const gaveUp = unreachableRun >= UNREACHABLE_STREAK ? `the deployment could not reach this model — ${unreachableWhy}` : null
+    const gaveUp = unreachableRun >= UNREACHABLE_STREAK ? `the deployment could not reach this model: ${unreachableWhy}` : null
     await write(state, null, gaveUp)
     return sweepOf(
       { state, model, startedAt, finishedAt: iso(deps.now()), done: cases.length, total, harness: null, error: gaveUp, cases },
@@ -2121,7 +2121,7 @@ export const worthRetrying = (c: EvalCaseScore): boolean => !(c.skipped === null
 function unreachableCase(score: EvalCaseScore): EvalCaseScore {
   return {
     ...score,
-    skipped: `the deployment could not reach this model — ${(score.error ?? '').slice(0, 200)}. Nothing here was measured about the model itself.`,
+    skipped: `the deployment could not reach this model: ${(score.error ?? '').slice(0, 200)}. Nothing here was measured about the model itself.`,
     contractHeld: false,
     firstPass: false,
     answered: false,
@@ -2141,8 +2141,8 @@ function rateLimitedCase(score: EvalCaseScore): EvalCaseScore {
   return {
     ...score,
     skipped: score.timedOut
-      ? `the request was issued and never answered, on ${TIMEOUT_RETRIES + 1} attempts, each abandoned after the case budget — this case measured nothing about the model. The provider dropped the call; re-run it when the deployment is healthier.`
-      : `the provider answered with rate limits on every attempt (${PRESSURE_RETRIES + 1} tries) — this case measured nothing about the model. Re-run it, narrower, when the deployment is quieter.`,
+      ? `the request was issued and never answered, on ${TIMEOUT_RETRIES + 1} attempts, each abandoned after the case budget. This case measured nothing about the model. The provider dropped the call; re-run it when the deployment is healthier.`
+      : `the provider answered with rate limits on every attempt (${PRESSURE_RETRIES + 1} tries). This case measured nothing about the model. Re-run it, narrower, when the deployment is quieter.`,
     contractHeld: false,
     firstPass: false,
     answered: false,

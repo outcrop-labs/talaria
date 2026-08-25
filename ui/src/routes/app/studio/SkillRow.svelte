@@ -29,7 +29,7 @@
   const fail = (e: unknown) => void confirm({ title: 'That didn’t work', message: (e as Error).message, confirmLabel: 'OK' })
 
   const doRename = async () => {
-    const to = await prompt({ title: 'Rename skill', message: 'Lowercase, dashes for spaces — agents load it by this name.', confirmLabel: 'Rename' })
+    const to = await prompt({ title: 'Rename skill', message: 'Lowercase, with dashes for spaces. Agents load it by this name.', confirmLabel: 'Rename' })
     const name = to?.trim().toLowerCase().replace(/\s+/g, '-')
     if (!name || name === skill.name) return
     await renameSkill(owner, skill.name, name).then(refresh).catch(fail)
@@ -45,7 +45,7 @@
     <span class="flex items-center gap-2">
       <span class="truncate text-sm font-medium text-fg">{skill.name}</span>
       {#if skill.platform}
-        <Chip title="Platform skill — essential plumbing, admins only" class="shrink-0">
+        <Chip title="Platform skill (essential plumbing, admins only)" class="shrink-0">
           <Lock size={9} class="mr-0.5 inline" />
           platform
         </Chip>

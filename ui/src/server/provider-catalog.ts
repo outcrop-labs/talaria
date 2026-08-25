@@ -135,7 +135,7 @@ async function perplexityModels(): Promise<string[]> {
   if (!r.ok) throw new Error(`the Perplexity docs answered ${r.status}`)
   const ids = [...(await r.text()).matchAll(/\/docs\/sonar\/models\/([a-z0-9][a-z0-9.-]*)/g)].map((m) => m[1]!)
   const unique = [...new Set(ids)]
-  if (unique.length === 0) throw new Error('could not read the model list from the Perplexity docs — type an id manually')
+  if (unique.length === 0) throw new Error('could not read the model list from the Perplexity docs. Type an id manually.')
   return unique
 }
 
@@ -277,9 +277,9 @@ export async function catalogModels(ep: LlmEndpoint): Promise<CatalogModel[]> {
     if (!r.ok) {
       const hint =
         r.status === 401
-          ? ' — check the API key env'
+          ? ': check the API key env'
           : r.status === 404
-            ? " — this provider doesn't publish a model catalog; type model ids from its docs"
+            ? ": this provider doesn't publish a model catalog; type model ids from its docs"
             : ''
       throw new Error(`provider answered ${r.status}${hint}`)
     }

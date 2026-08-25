@@ -35,8 +35,8 @@
         void alert({ title: 'Install failed', message: r.error })
       } else {
         notice = r.pendingBuild
-          ? `Installed apps/${r.slug}. It compiles into the next build — reload the dev server (or rebuild) then enable it under Installed.`
-          : `Installed apps/${r.slug} — enable it under Installed.`
+          ? `Installed apps/${r.slug}. It compiles into the next build; reload the dev server (or rebuild), then enable it under Installed.`
+          : `Installed apps/${r.slug}. Enable it under Installed.`
         gitUrl = ''
         await qc.invalidateQueries({ queryKey: ['admin-apps'] })
         await qc.invalidateQueries({ queryKey: ['admin-apps-catalog'] })
@@ -53,7 +53,7 @@
   <div class="flex items-center justify-between">
     <div class="font-sans text-xs text-muted">
       Community and official apps from the marketplace index.
-      <InfoTip text="Installing an app clones its repository into this deployment and its code runs fully trusted, like the platform itself. Install only apps you trust — official apps are maintained by Outcrop Labs." />
+      <InfoTip text="Installing an app clones its repository into this deployment and its code runs fully trusted, like the platform itself. Install only apps you trust. Official apps are maintained by Outcrop Labs." />
     </div>
     <button
       onclick={() => void query.refetch()}
@@ -77,7 +77,7 @@
     <EmptyState
       icon="◎"
       title="Marketplace unreachable"
-      hint={catalog?.error ? `${catalog.error} — you can still install any app from its git URL below` : 'No apps in the catalog yet — install from a git URL below'}
+      hint={catalog?.error ? `${catalog.error}. You can still install any app from its git URL below` : 'No apps in the catalog yet. Install from a git URL below'}
     />
   {:else}
     <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
@@ -118,7 +118,7 @@
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Install from Git</div>
       <p class="mb-3 font-sans text-xs text-muted">
         Any https git repository with a <code class="text-fg">talaria.json</code> at its root. The code becomes part of this
-        deployment and runs fully trusted — install only repositories you trust.
+        deployment and runs fully trusted, so install only repositories you trust.
       </p>
       <div class="flex gap-2">
         <Input

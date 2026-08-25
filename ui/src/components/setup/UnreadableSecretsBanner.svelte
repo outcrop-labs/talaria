@@ -49,7 +49,7 @@
     </span>
     <span class="min-w-0 flex-1 text-xs text-muted">
       {data.root.state === 'absent'
-        ? 'TALARIA_SECRET_KEY is not set, so nothing new can be sealed — provider keys and connections cannot be saved.'
+        ? 'TALARIA_SECRET_KEY is not set, so nothing new can be sealed; provider keys and connections cannot be saved.'
         : data.root.state === 'unreadable'
           ? `This instance cannot unwrap its data key, so ${data.counts.unreadable} stored secret${data.counts.unreadable === 1 ? '' : 's'} cannot be read. Restoring the original root secret recovers them.`
           : `${data.counts.unreadable} stored secret${data.counts.unreadable === 1 ? ' is' : 's are'} sealed with a key this instance no longer has.`}

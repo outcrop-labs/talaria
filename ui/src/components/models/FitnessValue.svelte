@@ -28,7 +28,7 @@
   let sort = $state<Sort>('value')
 
   const SORTS: Array<{ id: Sort; label: string; hint: string }> = [
-    { id: 'value', label: 'Best value', hint: 'Cost per run the model is actually Ready for — the price-to-performance number.' },
+    { id: 'value', label: 'Best value', hint: 'Cost per run the model is actually Ready for: the price-to-performance number.' },
     { id: 'cost', label: 'Cheapest day', hint: 'What your measured workload costs on this model, regardless of how much of it the model can carry.' },
     { id: 'coverage', label: 'Most coverage', hint: 'Share of your daily runs the model is Ready for, regardless of price.' },
   ]
@@ -190,8 +190,8 @@
       <thead>
         <tr class="border-b border-line font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
           <th class="px-3 py-2 font-normal">Model</th>
-          <th class="px-3 py-2 text-right font-normal" title="What the provider charges per million tokens, in and out. Sticker price — it is not comparable across models on its own, which is what the next column is for.">$/MTok</th>
-          <th class="px-3 py-2 text-right font-normal" title="Your measured workload — the runs your fleet actually did — priced on this model.">Your day</th>
+          <th class="px-3 py-2 text-right font-normal" title="What the provider charges per million tokens, in and out. Sticker price; it is not comparable across models on its own, which is what the next column is for.">$/MTok</th>
+          <th class="px-3 py-2 text-right font-normal" title="Your measured workload: the runs your agents actually did, priced on this model.">Your day</th>
           <th class="px-3 py-2 text-right font-normal" title="Cost divided by the runs this model is Ready for. The price-to-performance number: a cheap model that can only carry a tenth of your day is not cheap.">Per ready run</th>
           <th class="px-3 py-2 font-normal" title="Share of your daily runs by verdict. Grey is never-measured, which is not a pass.">Coverage of your day</th>
         </tr>
@@ -207,7 +207,7 @@
               <button
                 type="button"
                 onclick={() => onSelect(m.model)}
-                title="Open {m.model} — per-slot verdicts, capabilities and every failing fixture"
+                title="Open {m.model} for per-slot verdicts, capabilities and every failing fixture"
                 class={cn('group/row flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-left', focusGold)}
               >
                 <span class="flex min-w-0 items-baseline gap-1.5">
@@ -245,7 +245,7 @@
                     <span
                       class={BAND_BG[band]}
                       style:width="{m.shares[band] * 100}%"
-                      title="{pct(m.shares[band])} of your daily runs — {BAND_META[band].label}"
+                      title="{pct(m.shares[band])} of your daily runs: {BAND_META[band].label}"
                     ></span>
                   {/if}
                 {/each}
@@ -267,7 +267,7 @@
 
   {#if rows.some((m) => costCaveat(m, data.unmeasured.length) !== null)}
     <p class="mt-2 max-w-prose font-sans text-[11px] text-muted">
-      <span class="text-warning">*</span> a floor, not a total — hover the figure for what is missing from it.
+      <span class="text-warning">*</span> a floor, not a total; hover the figure for what is missing from it.
       {#if data.unmeasured.length > 0}
         {data.unmeasured.length} harness{data.unmeasured.length === 1 ? '' : 'es'} carrying real traffic
         ({data.unmeasured.slice(0, 4).join(', ')}{data.unmeasured.length > 4 ? ', …' : ''}) have never had their tokens measured, so no
@@ -287,9 +287,9 @@
         <thead>
           <tr class="border-b border-line font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             <th class="px-3 py-2 font-normal">Slot</th>
-            <th class="px-3 py-2 text-right font-normal" title="Runs a day across the harnesses bound to this slot. A harness serving two slots counts in both — this is demand per slot, not a partition of your day.">Runs/day</th>
+            <th class="px-3 py-2 text-right font-normal" title="Runs a day across the harnesses bound to this slot. A harness serving two slots counts in both; this is demand per slot, not a partition of your day.">Runs/day</th>
             <th class="px-3 py-2 font-normal">Cheapest Ready</th>
-            <th class="px-3 py-2 text-right font-normal" title="What this slot's own harnesses cost per day on that model — not the model's whole-workload bill.">This slot costs</th>
+            <th class="px-3 py-2 text-right font-normal" title="What this slot's own harnesses cost per day on that model, not the model's whole-workload bill.">This slot costs</th>
             <th class="px-3 py-2 font-normal">Also clears it</th>
           </tr>
         </thead>
@@ -307,7 +307,7 @@
                     {best.model}
                   </button>
                 {:else}
-                  <span class="font-mono text-[11px] text-ink-dim" title="Nothing tested reaches Ready here. That is a finding, not a gap — test another model, or read the reason in the matrix above.">
+                  <span class="font-mono text-[11px] text-ink-dim" title="Nothing tested reaches Ready here. That is a finding, not a gap; test another model, or read the reason in the matrix above.">
                     nothing tested is Ready
                   </span>
                 {/if}
@@ -320,7 +320,7 @@
                   {#each slot.candidates.filter((c) => c.model !== slot.best).slice(0, 3) as c (c.model)}
                     <Chip
                       tone={BAND_META[c.band].tone}
-                      title="{c.model} — {BAND_META[c.band].label}. This slot would cost {usdRate(c.usdPerDay, 'day')} on it."
+                      title="{c.model}: {BAND_META[c.band].label}. This slot would cost {usdRate(c.usdPerDay, 'day')} on it."
                     >
                       {c.model.split('/').at(-1)}
                     </Chip>

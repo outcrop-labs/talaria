@@ -521,7 +521,7 @@ export async function startResearch(input: {
 }): Promise<ResearchRun> {
   const search = await searchModelFor(input.mode)
   if (!search) {
-    throw new Error('no search-capable model on the gateway — register a Perplexity sonar model on /models first')
+    throw new Error('no search-capable model on the gateway. Register a Perplexity sonar model on /models first.')
   }
   const id = randomUUID()
   const runInput: ResearchInput = {

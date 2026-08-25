@@ -281,7 +281,7 @@
       {#if presence.length > 1}
         <div class="flex shrink-0 -space-x-1.5">
           {#each presence.slice(0, 5) as p (p.userId)}
-            <span class="relative" title={`${p.name}${p.mode === 'edit' ? ' — editing' : ''}`}>
+            <span class="relative" title={`${p.name}${p.mode === 'edit' ? ' (editing)' : ''}`}>
               <Avatar
                 name={p.name}
                 class={cn('h-6 w-6 text-[10px] ring-2 ring-surface', p.mode === 'edit' && 'ring-success')}
@@ -296,7 +296,7 @@
       {#if mode === 'edit' && otherEditors.length > 0}
         <span
           class="shrink-0 rounded-md bg-warning/15 px-2 py-0.5 text-[11px] text-warning"
-          title="Someone else is editing too — last save wins, so coordinate or take turns"
+          title="Someone else is editing too. Last save wins, so coordinate or take turns"
         >
           also editing: {otherEditors.map((p) => p.name).join(', ')}
         </span>
@@ -328,7 +328,7 @@
         <KbVisibilityIcon v={doc.visibility} /> <span class="ml-1.5 capitalize">{doc.visibility}</span>
       </Button>
       {#if doc.official}
-        <Button variant="ghost" size="xs" class="shrink-0 gap-1 border border-warning/50 bg-warning/10 px-2.5 py-1 text-warning hover:bg-warning/20" title="Official — grounds every agent via the org brain. Click to demote (double confirm)."
+        <Button variant="ghost" size="xs" class="shrink-0 gap-1 border border-warning/50 bg-warning/10 px-2.5 py-1 text-warning hover:bg-warning/20" title="Official: grounds every agent via the org brain. Click to demote (double confirm)."
           onclick={async () => {
             if (!(await confirm({ title: 'Demote from official?', message: `“${doc.title}” currently grounds every agent through the org brain. Demoting removes it from retrieval.`, confirmLabel: 'Continue' }))) return
             if (!(await confirm({ title: 'Really demote?', message: 'Agents stop grounding on this document immediately. This is the final confirmation.', confirmLabel: 'Demote', danger: true }))) return
@@ -341,7 +341,7 @@
           variant="ghost"
           size="sm"
           class="shrink-0"
-          title="Promote to official — indexed into the organization brain agents ground on"
+          title="Promote to official: indexed into the org brain your agents ground on"
           onclick={async () => {
             if (await confirm({ title: 'Promote to official?', message: `“${doc.title}” will be indexed into the org brain and ground every agent's answers.`, confirmLabel: 'Promote' })) {
               void save({ official: true })
@@ -657,7 +657,7 @@
     </div>
 
     {#if okfOpen && doc.okf}
-      <Modal open onClose={() => (okfOpen = false)} title="OKF — agent-facing summary">
+      <Modal open onClose={() => (okfOpen = false)} title="OKF: agent-facing summary">
         <div class="space-y-3">
           <p class="font-sans text-xs text-muted">
             What agents read instead of the full document: an Open Knowledge Format concept the Librarian maintains from the

@@ -58,7 +58,7 @@
       of them agreed.
       {#if data.models.length < 2}
         <span class="text-warning">
-          Only one model has been tested, so nothing here can be attributed yet — a fixture is only suspicious when a second, unrelated model fails
+          Only one model has been tested, so nothing here can be attributed yet; a fixture is only suspicious when a second, unrelated model fails
           it the same way.
         </span>
       {/if}

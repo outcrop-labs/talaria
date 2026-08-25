@@ -50,7 +50,7 @@
 <Panel class="mt-4">
   <SectionHeader
     title="Instance domain"
-    info="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com) — separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it."
+    info="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com), separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it."
   />
   {#if query.isPending}
     <SkeletonRows rows={1} />
@@ -67,7 +67,7 @@
       {#if data.verified}
         <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
           <span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
-          verified — routes to this instance
+          verified · routes to this instance
         </span>
       {:else}
         <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
@@ -96,7 +96,7 @@
         size="sm"
         bind:value={draft}
         onkeydown={(e) => e.key === 'Enter' && draft.trim() && void post({ domain: draft.trim() })}
-        placeholder="talaria.yourcompany.com — where this instance is hosted"
+        placeholder="talaria.yourcompany.com (where this instance is hosted)"
         class="w-96"
       />
       <Button size="sm" disabled={!draft.trim() || busy} onclick={() => void post({ domain: draft.trim() })}>

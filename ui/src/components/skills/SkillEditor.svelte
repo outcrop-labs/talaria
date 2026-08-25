@@ -88,7 +88,7 @@
 
   const museContext = $derived(
     owner === 'shared'
-      ? 'A shared skill available to every agent in the fleet. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.'
+      ? 'A shared skill every agent on the team can use. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.'
       : `A skill for the "${ownerLabel}" agent. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.`,
   )
 </script>

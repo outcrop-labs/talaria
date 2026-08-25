@@ -70,7 +70,7 @@ export function mountError(mount: string): string | null {
   if (DENIED_SOURCES.some((d) => path === d || path.startsWith(`${d}/`))) return `${path} would hand the container the host`
   const roots = MOUNT_ROOTS()
   if (!roots.some((r) => path === r || path.startsWith(`${r}/`))) {
-    return `${path} is outside the allowed mount roots (${roots.join(', ')}) — widen with TALARIA_WORKBENCH_MOUNT_ROOTS`
+    return `${path} is outside the allowed mount roots (${roots.join(', ')}). Widen them with TALARIA_WORKBENCH_MOUNT_ROOTS.`
   }
   return null
 }

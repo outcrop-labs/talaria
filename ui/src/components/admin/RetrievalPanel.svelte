@@ -107,11 +107,11 @@
     >
       <div class="min-w-0 flex-1 text-xs">
         <div class="font-semibold text-fg">
-          {rag.upgrade.dimMismatch ? 'Embedding model changed — brains need a rebuild' : 'Hybrid keyword search available'}
+          {rag.upgrade.dimMismatch ? 'Embedding model changed; brains need a rebuild' : 'Hybrid keyword search available'}
         </div>
         <div class="mt-0.5 text-muted">
           {rag.upgrade.dimMismatch
-            ? `${rag.upgrade.collections.filter((c) => c.dimMismatch).map((c) => c.name).join(', ')} no longer match the ${rag.upgrade.embed?.dim}d model — indexing and search against them are failing.`
+            ? `${rag.upgrade.collections.filter((c) => c.dimMismatch).map((c) => c.name).join(', ')} no longer match the ${rag.upgrade.embed?.dim}d model, so indexing and search against them are failing.`
             : 'These brains predate keyword+semantic search; a rebuild upgrades them so exact names, env vars, and error strings rank alongside meaning.'}
           Rebuilding recreates each brain and refills it from the workspace's own records; knowledge search runs thin until the refill finishes.
         </div>

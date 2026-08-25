@@ -76,7 +76,7 @@
        cleared cache) — hold the skeleton rather than judging the app missing. -->
   {@render surfaceSkeleton()}
 {:else if !app || !app.surfaces[surface]}
-  <EmptyState title="App not available" hint="It may be disabled, not installed, or awaiting a rebuild — check Manage → Apps" />
+  <EmptyState title="App not available" hint="It may be disabled, not installed, or awaiting a rebuild. Check Manage → Apps" />
 {:else if !compPromise}
   <EmptyState title="App code not in this build" hint="The app is installed but needs a dev-server reload or a rebuild to load" />
 {:else}

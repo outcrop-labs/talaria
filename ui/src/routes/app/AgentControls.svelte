@@ -51,12 +51,12 @@
     {#if running}
       <AgentIconBtn title="Stop" onClick={() => void controls.act('stop', 'stopping')}><Square size={14} fill="currentColor" /></AgentIconBtn>
       <AgentIconBtn
-        title="Restart (quick bounce — drops any in-flight reply)"
+        title="Restart (quick bounce; drops any in-flight reply)"
         onClick={() => void controls.act('restart', 'restarting', RESTART_CONFIRM)}
       ><RotateCw size={14} /></AgentIconBtn>
       {#if isAdmin}
         <AgentIconBtn
-          title="Roll (zero-downtime replacement — fresh container, old one finishes its replies)"
+          title="Roll (zero-downtime replacement: fresh container, old one finishes its replies)"
           onClick={() => void controls.act('roll', 'rolling')}
         ><Repeat size={14} /></AgentIconBtn>
       {/if}

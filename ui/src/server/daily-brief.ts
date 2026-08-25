@@ -234,7 +234,7 @@ async function calendarEntries(userId: string, zone: string): Promise<NewEntry[]
         statusLabel: 'CALENDAR',
         badge: { label: 'UNREADABLE', tone: 'warn' },
         title: 'Your calendar could not be read this morning',
-        body: `Google Calendar returned: ${events.slice(0, 300)}. Nothing else in this brief is affected — but today's schedule is missing from it.`,
+        body: `Google Calendar returned: ${events.slice(0, 300)}. Nothing else in this brief is affected, but today's schedule is missing from it.`,
       },
     ]
   }
@@ -737,7 +737,7 @@ export async function openBrief(
     {
       kind: 'lede',
       section: 'action',
-      title: `Daily brief — ${date}`,
+      title: `Daily brief: ${date}`,
       body: lede ?? fallbackLede(items),
     },
     ...items,
@@ -1138,7 +1138,7 @@ registerJob({
     // per-user error is already logged with its id; this is what makes the
     // pattern — "it has been failing for six people since Tuesday" — reach an
     // operator instead of scrolling past in a log.
-    if (r.failed) throw new Error(`${line} — and FAILED for ${r.failed} user(s); see the [daily-brief] errors above`)
+    if (r.failed) throw new Error(`${line}; FAILED for ${r.failed} user(s); see the [daily-brief] errors above`)
     return line
   },
 })

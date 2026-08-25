@@ -76,7 +76,7 @@
   <SectionHeader
     class="mb-4"
     title="Organization Google account"
-    info={"A single shared Google account the fleet builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner’s own connected Google."}
+    info={"A single shared Google account the team builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner’s own connected Google."}
   />
   {#if query.isPending}
     <!-- Never show "Not connected" + Connect while the status is in flight —

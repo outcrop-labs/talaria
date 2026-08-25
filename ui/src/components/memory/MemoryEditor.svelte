@@ -146,7 +146,7 @@
             size="sm"
             bind:value={fact}
             onkeydown={(e) => e.key === 'Enter' && void remember()}
-            placeholder="Remember something — one fact the agent should keep"
+            placeholder="Remember something: one fact the agent should keep"
             disabled={remembering}
             class="flex-1"
           />

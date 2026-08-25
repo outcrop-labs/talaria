@@ -432,9 +432,9 @@ describe('when nothing citable comes back', () => {
       { answer: (q) => ({ key: q.key, optionId: 'stop', answeredBy: 'user-1', answeredAt: 'now' }) },
     )
     expect(out.stop).toBe('error')
-    expect(out.error).toBe('no sources found — search returned nothing citable')
+    expect(out.error).toBe('no sources found. Search returned nothing citable.')
     // And the domain record carries it, so the question can be asked again.
-    expect(w.failed).toEqual(['no sources found — search returned nothing citable'])
+    expect(w.failed).toEqual(['no sources found. Search returned nothing citable.'])
   })
 
   it('one dead query costs one angle, not the run', async () => {

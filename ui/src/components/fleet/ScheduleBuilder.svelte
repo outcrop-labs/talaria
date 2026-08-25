@@ -46,7 +46,7 @@
     {#if value.mode === 'custom'}
       <Input size="sm" value={value.custom} oninput={(e) => set({ custom: e.currentTarget.value })} placeholder="0 9 * * 1-5" class="w-44 font-mono" />
     {/if}
-    <InfoTip text="Times are the agent's clock (UTC). Underneath this compiles to standard cron syntax — Custom accepts any 5-field expression or an interval like 'every 2h'." />
+    <InfoTip text="Times are the agent's clock (UTC). Underneath this compiles to standard cron syntax: Custom accepts any 5-field expression or an interval like 'every 2h'." />
   </div>
   <div class="text-xs text-muted">
     → <span class="font-sans text-fg">{describeSchedule(schedToString(value)) || '…'}</span>

@@ -57,7 +57,7 @@
       title: `Clear ${rows.length} unreadable secret${rows.length === 1 ? '' : 's'}?`,
       // Naming them is the whole point: "clear all" without a list is how an
       // operator ends up destroying something they could still have recovered.
-      message: `These will be deleted:\n\n${rows.map((r) => `· ${r.label}${r.owner ? ` (${r.owner})` : ''} — re-enter in ${r.surface}`).join('\n')}\n\nEverything readable is left alone. If you still have the original root secret anywhere, restoring it recovers these instead.`,
+      message: `These will be deleted:\n\n${rows.map((r) => `· ${r.label}${r.owner ? ` (${r.owner})` : ''}: re-enter in ${r.surface}`).join('\n')}\n\nEverything readable is left alone. If you still have the original root secret anywhere, restoring it recovers these instead.`,
       confirmLabel: 'Clear them',
     })
     if (!ok) return
@@ -78,7 +78,7 @@
   <SectionHeader
     class="mb-4"
     title="Secrets"
-    info="Every credential this instance holds, wherever it was entered. Values are never shown — sealed secrets cannot be read back, only replaced. Each row says what it unlocks and whether this instance can still decrypt it."
+    info="Every credential this instance holds, wherever it was entered. Values are never shown: sealed secrets cannot be read back, only replaced. Each row says what it unlocks and whether this instance can still decrypt it."
   />
 
   {#if isPending}
@@ -114,7 +114,7 @@
           </div>
           <p class="mb-3 text-xs leading-relaxed text-muted">
             These were sealed with a key this instance no longer has. If you still have the original root secret
-            anywhere, restore it — that recovers them. Clearing deletes them so the value can be entered again;
+            anywhere, restoring it recovers them. Clearing deletes them so the value can be entered again;
             everything readable is left alone.
           </p>
           <Button size="sm" variant="danger" onclick={() => void clearAllUnreadable()} disabled={busy}>
@@ -143,7 +143,7 @@
 
       {#if !data.rows.length}
         <p class="text-xs text-muted">
-          Nothing configured yet. Secrets appear here as you add them — a provider key on Models, an integration,
+          Nothing configured yet. Secrets appear here as you add them: a provider key on Models, an integration,
           an agent secret.
         </p>
       {/if}

@@ -156,7 +156,7 @@
     const ok = await confirm({
       title: model ? `Clear recorded results for ${model}` : 'Clear every recorded result',
       message: model
-        ? `The archived report, its place in the matrix, the resume ledger and the stored transcripts for ${model} are deleted, so the next run starts from nothing. Measured capabilities are KEPT — this is not Forget.`
+        ? `The archived report, its place in the matrix, the resume ledger and the stored transcripts for ${model} are deleted, so the next run starts from nothing. Measured capabilities are KEPT; this is not Forget.`
         : 'Every tested model loses its archived report, its matrix row, its resume ledger and its stored transcripts. Measured capabilities are kept. Use this when a fixture change makes the recorded numbers meaningless.',
       confirmLabel: 'Clear results',
       danger: true,
@@ -169,7 +169,7 @@
     // results an admin paid for, not just the gateway's learned guesses.
     const ok = await confirm({
       title: 'Forget what we know about this model',
-      message: `Every recorded capability for ${model} is deleted — probe results, what the gateway learned from a rejected parameter, and anything declared. Talaria keeps running it; it just stops claiming to know what it can do. Use this when a model id has been re-pointed at different weights.`,
+      message: `Every recorded capability for ${model} is deleted: probe results, what the gateway learned from a rejected parameter, and anything declared. Talaria keeps running it; it just stops claiming to know what it can do. Use this when a model id has been re-pointed at different weights.`,
       confirmLabel: 'Forget',
       danger: true,
     })
@@ -196,7 +196,7 @@
     <Panel>
       <SectionHeader
         title="Model fitness"
-        info="One run fills both views. The matrix says whether a model holds a slot; cost says what holding it would cost you, weighed on the work your fleet actually does. Grey means nothing has measured it — which is not a pass."
+        info="One run fills both views. The matrix says whether a model holds a slot; cost says what holding it would cost you, weighed on the work your agents actually do. Grey means nothing has measured it, which is not a pass."
         action={`${data.registry.harnesses} harnesses · ${data.registry.fixtures} fixtures · ${data.registry.provocations} provocations`}
       />
 
@@ -215,7 +215,7 @@
             <button
               type="button"
               onclick={() => run.model && select(run.model)}
-              title="Open {run.model} — the live console, and failures as they land"
+              title="Open {run.model}: the live console, and failures as they land"
               class={cn(
                 'group/run flex items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg',
                 focusGold,
@@ -240,7 +240,7 @@
               size="sm"
               variant="outline"
               aria-label="Stop testing {run.model}"
-              title="Stop testing {run.model} — honored at a case boundary; the sweep resumes where it stopped."
+              title="Stop testing {run.model}: honored at a case boundary; the sweep resumes where it stopped."
               onclick={() => void post({ action: 'stop', model: run.model })}
             >
               <Square size={12} fill="currentColor" />
@@ -290,7 +290,7 @@
             size="sm"
             onclick={() => openRun(selected ?? data.models[0]?.id ?? '')}
             disabled={data.models.length === 0 || full}
-            title={full ? `Already testing ${data.max} models — stop one, or wait for it to finish.` : undefined}
+            title={full ? `Already testing ${data.max} models. Stop one, or wait for it to finish.` : undefined}
           >
             Test a model
           </Button>
@@ -449,7 +449,7 @@
             title={live.some((r) => r.model === selected)
               ? 'This model is being tested right now.'
               : full
-                ? `Already testing ${data.max} models — stop one, or wait for it to finish.`
+                ? `Already testing ${data.max} models. Stop one, or wait for it to finish.`
                 : undefined}
           >
             Test this model

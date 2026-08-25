@@ -128,7 +128,7 @@
     <SectionHeader
       class="mb-4"
       title="Storage"
-      info="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service — AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy."
+      info="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service (AWS S3, Backblaze B2, Cloudflare R2, MinIO). Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy."
     />
 
     <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3 text-xs text-muted">
@@ -162,7 +162,7 @@
       {#if cfg.mode === 'internal'}
         <div class="self-end pb-1 text-xs text-muted">
           <span class="font-mono text-[11px]">{d.internal.endpoint}</span> · bucket <span class="font-mono text-[11px] text-fg">{d.internal.bucket}</span>
-          <span class="opacity-70"> — creds via TALARIA_S3_* env; bucket auto-created</span>
+          <span class="opacity-70"> (creds via TALARIA_S3_* env; bucket auto-created)</span>
         </div>
       {/if}
       {#if external}<TargetFields t={cfg} {secret} onChange={set} onSecret={(v) => (secret = v)} />{/if}
@@ -176,7 +176,7 @@
       </label>
       <p class="mt-1 text-xs text-muted">
         New uploads are mirrored as they land (an outage never blocks an upload); "Sync all" copies
-        everything already stored — disk, built-in, or external — into the replica bucket.
+        everything already stored (disk, built-in, or external) into the replica bucket.
       </p>
       {#if cfg.replica.enabled}
         <div transition:slide={{ duration: 150 }} class="mt-2 grid gap-2 sm:grid-cols-2">

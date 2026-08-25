@@ -13,9 +13,9 @@
   {#each days as d (d.day)}
     {@const v = d.prompt + d.completion}
     {@const other = Math.max(v - d.local - d.cloud, 0)}
-    {@const title = `${d.day}: ${formatTokens(v)} tokens — ${formatTokens(d.local)} local, ${formatTokens(d.cloud)} cloud${
+    {@const title = `${d.day}: ${formatTokens(v)} tokens (${formatTokens(d.local)} local, ${formatTokens(d.cloud)} cloud${
       other ? `, ${formatTokens(other)} unattributed` : ''
-    } (${d.generations} generations)`}
+    }, ${d.generations} generations)`}
     <div class="group flex h-full min-w-0 flex-1 flex-col justify-end text-center" {title}>
       {#if other > 0}
         <div class="mx-auto w-full max-w-7 rounded-t opacity-40" style:height={px(other)} style:background="var(--theme-chart-1)"></div>

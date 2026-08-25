@@ -157,10 +157,10 @@
         <Undo2 size={13} />
       </IconButton>
     {:else if onMark}
-      <IconButton size="sm" title="Check this off — you have handled it" disabled={marking} onclick={() => void mark('check')}>
+      <IconButton size="sm" title="Check this off; you have handled it" disabled={marking} onclick={() => void mark('check')}>
         <Check size={13} />
       </IconButton>
-      <IconButton size="sm" title="Dismiss — this does not need doing" disabled={marking} onclick={() => void mark('dismiss')}>
+      <IconButton size="sm" title="Dismiss; this does not need doing" disabled={marking} onclick={() => void mark('dismiss')}>
         <X size={13} />
       </IconButton>
     {/if}

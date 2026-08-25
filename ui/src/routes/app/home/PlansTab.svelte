@@ -52,7 +52,7 @@
             >
               {#if c.working}<StatusDot status="accent" pulse />{/if}
               <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{c.title || 'Untitled plan'}</span>
-              {#if c.failed}<span class="shrink-0 font-sans text-xs text-danger">failed — open to retry →</span>{/if}
+              {#if c.failed}<span class="shrink-0 font-sans text-xs text-danger">failed: open to retry →</span>{/if}
               {#if c.role === 'collaborator' && c.ownerLabel}
                 <span class="shrink-0 font-sans text-[11px] text-muted">shared by {c.ownerLabel}</span>
               {/if}

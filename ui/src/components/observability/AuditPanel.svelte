@@ -26,10 +26,10 @@
   }
 
   const KIND_META: Record<Kind, { label: string; icon: string; blurb: string }> = {
-    ticket: { label: 'Tickets', icon: '⧉', blurb: 'Board activity — status moves, dispatches, comments, gaps.' },
+    ticket: { label: 'Tickets', icon: '⧉', blurb: 'Board activity: status moves, dispatches, comments, gaps.' },
     channel: { label: 'Channels', icon: '⋕', blurb: 'Messages in channels you belong to.' },
     fleet: { label: 'Fleet', icon: '◍', blurb: 'Agent configuration versions.' },
-    audit: { label: 'Governance', icon: '⛨', blurb: 'Admin actions — settings, permissions, renders, deletions.' },
+    audit: { label: 'Governance', icon: '⛨', blurb: 'Admin actions: settings, permissions, renders, deletions.' },
   }
 
   // The event's own type — the second-level answer to "where did this come
@@ -127,7 +127,7 @@
         <EmptyState
           icon="☰"
           title="Nothing yet"
-          hint="Ticket updates, channel messages, agent config changes — and for admins, governance actions — land here."
+          hint="Ticket updates, channel messages, agent config changes, and (for admins) governance actions land here."
         />
       </div>
     {:else}

@@ -176,7 +176,7 @@
       </li>
     {/each}
     {#if readers.length === 0}
-      <li class="px-2 font-sans text-xs text-muted">Nobody else — only you.</li>
+      <li class="px-2 font-sans text-xs text-muted">Nobody else, just you.</li>
     {/if}
   </ul>
 
@@ -217,7 +217,7 @@
     <!-- SAID OUT LOUD, because it is the one way this dialog differs from the
          file one and an absence is not a statement. -->
     <p class="font-sans text-xs text-muted">
-      Named people and agents only — a secret is never workspace-wide and never public.
+      Named people and agents only. A secret is never workspace-wide and never public.
       {#if !canManage}<span class="text-warning"> You can use this one, but only its owner can change who else has it.</span>{/if}
     </p>
   {/snippet}

@@ -24,7 +24,7 @@
   )
   const body = $derived(
     root.state === 'ok'
-      ? 'Every secret below is sealed with a data key wrapped by this value. Back it up with the database — a dump restored without it restores an instance that cannot read its own secrets.'
+      ? 'Every secret below is sealed with a data key wrapped by this value. Back it up with the database. A dump restored without it gives an instance that cannot read its own secrets.'
       : root.state === 'fallback'
         ? 'TALARIA_SECRET_KEY is not set, so AUTH_SECRET is doing this job. Rotating AUTH_SECRET would make every secret below unrecoverable. Set TALARIA_SECRET_KEY to the current AUTH_SECRET value to pin it.'
         : root.state === 'absent'

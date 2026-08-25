@@ -104,7 +104,7 @@
        colleague that the owner never saw. -->
   {#if comms.delegated}
     <Button size="xs" variant="ghost" onclick={() => onDelegate(comms.channelId, false)}>
-      <UserCheck size={12} /> Assistant handles this — stop
+      <UserCheck size={12} /> Assistant handles this (stop)
     </Button>
   {:else}
     <Button size="xs" variant="ghost" onclick={() => onDelegate(comms.channelId, true)}>

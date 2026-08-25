@@ -766,7 +766,7 @@ export async function personaProbeTurn(
   const canned = upstream.headers.get(CANNED_STREAM_HEADER)
   if (canned) {
     await upstream.body.cancel().catch(() => {})
-    throw new Error(`"${model}" is not a rendered agent (the fleet answered in mock mode)`)
+    throw new Error(`"${model}" is not a rendered agent (the agents service answered in mock mode)`)
   }
   return pumpPersonaStream(upstream.body)
 }
@@ -877,7 +877,7 @@ async function personaTurn(req: TransportRequest, emit?: (delta: string) => void
   const canned = upstream.headers.get(CANNED_STREAM_HEADER)
   if (canned) {
     await upstream.body.cancel().catch(() => {})
-    throw new Error(canned === 'mock' ? `"${req.model}" is not a rendered agent (the fleet answered in mock mode)` : `persona "${req.model}" did not come back within the hold window`)
+    throw new Error(canned === 'mock' ? `"${req.model}" is not a rendered agent (the agents service answered in mock mode)` : `persona "${req.model}" did not come back within the hold window`)
   }
   const turn = await pumpPersonaStream(upstream.body, emit)
   await meterPersonaTurn(req, turn)

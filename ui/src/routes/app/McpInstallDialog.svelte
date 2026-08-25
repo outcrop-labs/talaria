@@ -85,7 +85,7 @@
             {#if h.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{h.description}</div>{/if}
           </div>
         {/each}
-        <div class="font-sans text-[11px] text-muted/80">Spoken only by Talaria's gateway — never rendered into an agent config.</div>
+        <div class="font-sans text-[11px] text-muted/80">Spoken only by Talaria's gateway; never rendered into an agent config.</div>
       </div>
     {/if}
     {#if authMode === 'per-user'}

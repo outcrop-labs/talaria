@@ -92,7 +92,7 @@ function pinTo(serverUrl: string): (url: string, what: string) => string {
       throw new Error(`${what} is not a valid URL`)
     }
     if (!allowed.has(registrableDomain(host))) {
-      throw new Error(`${what} points at ${host}, which is outside this server's own domain (${base}) — refusing`)
+      throw new Error(`${what} points at ${host}, which is outside this server's own domain (${base}), so it is refused`)
     }
     return url
   }
@@ -212,7 +212,7 @@ async function ensureClient(
     return { id: config.client.id, secret: config.client.secretEnc ? open(config.client.secretEnc) : null }
   }
   if (!config.registrationEndpoint) {
-    throw new Error('this provider requires a pre-registered OAuth app — add its client credentials on the server card')
+    throw new Error('this provider requires a pre-registered OAuth app. Add its client credentials on the server card.')
   }
   // Re-pinned at use time: the stored config may predate the pinning rule, or
   // the server row may have been repointed since discovery.

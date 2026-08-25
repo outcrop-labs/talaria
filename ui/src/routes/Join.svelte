@@ -65,14 +65,14 @@
       <h1 class="mb-2 font-sans text-lg font-semibold text-fg">Could not check your invite</h1>
       <p class="mb-1 font-sans text-sm text-muted">{errorMessage(query.error)}</p>
       <p class="mb-5 font-sans text-sm text-muted">
-        Your invite is most likely fine — this is a problem reaching the server, not a problem with your link.
+        Your invite is most likely fine. This is a problem reaching the server, not a problem with your link.
       </p>
       <Button variant="outline" size="sm" onclick={() => void query.refetch()}>
         Try again
       </Button>
     {:else if !query.data}
       <h1 class="mb-2 font-sans text-lg font-semibold text-fg">This invite is no longer valid</h1>
-      <p class="font-sans text-sm text-muted">It may have expired or been revoked — ask your admin for a fresh one.</p>
+      <p class="font-sans text-sm text-muted">It may have expired or been revoked. Ask your admin for a fresh one.</p>
     {:else}
       <h1 class="mb-2 font-sans text-lg font-semibold text-fg">Join {query.data.orgName}</h1>
       <p class="mb-6 font-sans text-sm text-muted">
@@ -83,7 +83,7 @@
         Continue with Google
       </a>
       <p class="mt-4 font-sans text-[11px] text-muted/80">
-        The invite is bound to the email address — signing in with a different account won't use it.
+        The invite is bound to the email address, so signing in with a different account won't use it.
       </p>
     {/if}
   </Panel>

@@ -46,7 +46,7 @@
   <p class="mb-4 font-sans text-xs text-muted">
     {formatTokens(split.local)} on your own hardware · {formatTokens(split.cloud)} on cloud APIs{split.other > 0
       ? ` · ${formatTokens(split.other)} unattributed`
-      : ''}{attributed > 0 ? ` — ${Math.round((split.local / total) * 100)}% self-hosted` : ''}
+      : ''}{attributed > 0 ? ` · ${Math.round((split.local / total) * 100)}% self-hosted` : ''}
   </p>
   <div class="flex h-3 gap-0.5 overflow-hidden rounded-full" role="img" aria-label="Token share by serving model">
     {#each segments as s (s.label)}

@@ -114,7 +114,7 @@
   <div class="mb-4">
     <div class="mb-1 flex items-center gap-1.5">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skills</span>
-      <InfoTip text="The flow lives in Hermes skills — the same library the agents already mount, edited on the agent view. The workflow only names which ones this kind of work follows; dispatch tells the agent to load them." />
+      <InfoTip text="The flow lives in Hermes skills, the same library the agents already mount, edited on the agent view. The workflow only names which ones this kind of work follows; dispatch tells the agent to load them." />
     </div>
     <div class="space-y-2 rounded-lg border border-line bg-card/40 px-4 py-3">
       {#each skillOwners as o (o.owner)}
@@ -151,7 +151,7 @@
       {/if}
       {#if libraryList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...libraryList.notice} /></div>{/if}
       {#if !libraryList.failed && !libraryList.pending && skillOwners.every((o) => !o.skills.length) && !workflow.skills.length}
-        <span class="text-xs text-muted">No skills in the library yet — create them on an agent's manage view.</span>
+        <span class="text-xs text-muted">No skills in the library yet; create them on an agent's manage view.</span>
       {/if}
     </div>
   </div>
@@ -159,7 +159,7 @@
   <div>
     <div class="mb-1 flex items-center gap-1.5">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Toolkits</span>
-      <InfoTip text="MCP servers (optionally: specific tools) this work expects, one per line — 'github: create_pr, get_diff'. Declarative; access is still granted in the MCP registry." />
+      <InfoTip text="MCP servers (optionally: specific tools) this work expects, one per line, like 'github: create_pr, get_diff'. Declarative; access is still granted in the MCP registry." />
     </div>
     <Textarea autoGrow rows={2} bind:value={toolkitsText} onblur={saveToolkits} class="max-h-40 font-mono text-xs" placeholder={'github: create_pr, get_diff\nsandbox'} />
   </div>

@@ -388,7 +388,7 @@ export function divergences(
         delta,
         worse,
         observedRuns: live.runs,
-        note: `${score.label} benched ${what} at ${show(testedValue)} and production is running at ${show(observedValue)} over ${live.runs} run(s) — ${worse ? 'worse than the bench' : 'better than the bench'}.`,
+        note: `${score.label} benched ${what} at ${show(testedValue)} and production is running at ${show(observedValue)} over ${live.runs} run(s): ${worse ? 'worse than the bench' : 'better than the bench'}.`,
       })
     }
     const asPct = (n: number): string => `${Math.round(n * 100)}%`

@@ -246,7 +246,7 @@
               onRetry={() => void editors.refetch()}
             />
             <p class="mt-2 text-[11px] text-muted">
-              Sharing can’t be saved until this loads — saving now would write an empty list over the real one.
+              Sharing can’t be saved until this loads; saving now would write an empty list over the real one.
             </p>
           </div>
         {:else if principalsLoading || !known}
@@ -356,7 +356,7 @@
           size="sm"
           onclick={() => void save()}
           disabled={saving || !canSave}
-          title={canSave ? undefined : 'Waiting for the current access list — saving now could overwrite it.'}
+          title={canSave ? undefined : 'Waiting for the current access list; saving now could overwrite it.'}
         >
           {saving ? 'Saving' : 'Save'}
         </Button>

@@ -1666,7 +1666,7 @@ export function probeLine(r: ProbeResult, ms: number): EvalLogLine {
     o.kind === 'skipped'
       ? o.reason
       : o.kind === 'known'
-        ? `already measured (${o.verdict.value ? 'yes' : 'no'}) — no call made`
+        ? `already measured (${o.verdict.value ? 'yes' : 'no'}); no call made`
         : o.kind === 'errored'
           ? o.reason
           : o.verdict.detail

@@ -43,7 +43,7 @@ export const PLATFORM_AGENTS: Array<{
   {
     id: 'concluder',
     label: 'Concluder',
-    job: 'Writes the closing summary when a relay concludes — decisions, deliverables, follow-ups.',
+    job: 'Writes the closing summary when a relay concludes: decisions, deliverables, follow-ups.',
     skills: ['multi-party synthesis', 'action-item extraction'],
     auto: "the concluding user's muse (their preference, else the Utility role chain)",
     assignable: true,
@@ -61,7 +61,7 @@ export const PLATFORM_AGENTS: Array<{
     label: 'Titler',
     job: 'Names things as they take shape: chats and plans after their first exchange, research runs from their question.',
     skills: ['concise naming', 'never clobbers user-chosen names'],
-    auto: 'the Utility role chain — a fast, cheap model is ideal',
+    auto: 'the Utility role chain (a fast, cheap model is ideal)',
     assignable: true,
   },
   {
@@ -69,13 +69,13 @@ export const PLATFORM_AGENTS: Array<{
     label: 'Summarizer',
     job: 'Keeps the Studio readable: one plain line per skill saying what it teaches, regenerated only when the skill changes.',
     skills: ['one-line gist extraction', 'content-hash change detection'],
-    auto: 'the Utility role chain — a fast, cheap model is ideal',
+    auto: 'the Utility role chain (a fast, cheap model is ideal)',
     assignable: true,
   },
   {
     id: 'librarian',
     label: 'Librarian',
-    job: 'Maintains each knowledge space’s OKF digest — summaries and links of the promoted documents, regenerated as promotions change.',
+    job: 'Maintains each knowledge space’s OKF digest: summaries and links of the promoted documents, regenerated as promotions change.',
     skills: ['knowledge digestion', 'summaries with links', 'autonomous upkeep'],
     auto: 'the Utility role chain',
     assignable: true,
@@ -83,7 +83,7 @@ export const PLATFORM_AGENTS: Array<{
   {
     id: 'judge',
     label: 'Judge',
-    job: 'Reviews agents’ reported ticket outcomes against the ask — verdicts and findings on boards with judging on.',
+    job: 'Reviews agents’ reported ticket outcomes against the ask: verdicts and findings on boards with judging on.',
     skills: ['outcome verification', 'structured verdicts'],
     auto: 'pl-main when judging is enabled without a pick',
     assignable: true,
@@ -93,7 +93,7 @@ export const PLATFORM_AGENTS: Array<{
     label: 'Briefer',
     job: 'Writes your daily brief every morning and follows it through the day as it moves.',
     skills: ['scope-aware summarizing', 'the append-only document contract'],
-    auto: 'always the user’s personal assistant — its persona and privacy are the point',
+    auto: 'always the user’s personal assistant; its persona and privacy are the point',
     assignable: false,
   },
 ]

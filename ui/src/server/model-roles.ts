@@ -66,7 +66,7 @@ export const MODEL_ROLES: Array<{
   {
     role: 'research-expedition',
     label: 'Research · Expedition',
-    hint: 'Search stages for deep Expedition runs. Auto: sonar-pro. Assigning a deep-research-class model (e.g. sonar-deep-research) makes each stage a full sweep — the engine runs fewer, bigger queries.',
+    hint: 'Search stages for deep Expedition runs. Auto: sonar-pro. Assigning a deep-research-class model (e.g. sonar-deep-research) makes each stage a full sweep: the engine runs fewer, bigger queries.',
     wired: true,
     requires: ['search'],
   },
@@ -86,7 +86,7 @@ export const MODEL_ROLES: Array<{
   {
     role: 'code-light',
     label: 'Workbench · Light effort',
-    hint: 'Coding-harness runs for quick fixes and mechanical changes — agents pick the effort, this picks the model. A fast, cheap coder is ideal. Auto: utility chain.',
+    hint: 'Coding-harness runs for quick fixes and mechanical changes: agents pick the effort, this picks the model. A fast, cheap coder is ideal. Auto: utility chain.',
     wired: true,
     // `tools` is the load-bearing one and it is not a quality bar: the model
     // named here drives a CLI coding harness that reads and edits files through
@@ -106,7 +106,7 @@ export const MODEL_ROLES: Array<{
   {
     role: 'code-heavy',
     label: 'Workbench · Heavy effort',
-    hint: 'The strongest coder for hard, cross-cutting work — used sparingly by design. Auto: the standard model.',
+    hint: 'The strongest coder for hard, cross-cutting work, used sparingly by design. Auto: the standard model.',
     wired: true,
     requires: ['code', 'tools'],
   },
@@ -140,7 +140,7 @@ export const MODEL_ROLES: Array<{
   {
     role: 'reranker',
     label: 'Reranker',
-    hint: 'Rerank providers (self-hosted TEI, Voyage, Together, NVIDIA, Pinecone, ) are configured in Admin → Retrieval — provider APIs, not gateway models.',
+    hint: 'Rerank providers (self-hosted TEI, Voyage, Together, NVIDIA, Pinecone, ) are configured in Admin → Retrieval: provider APIs, not gateway models.',
     wired: false,
     requires: [],
   },

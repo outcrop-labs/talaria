@@ -25,7 +25,7 @@
     <ViewHeader
       class="mb-6"
       title="Apps"
-      info="Self-contained apps that compile into this deployment and render as native Talaria surfaces — built by your team, the community, or Outcrop. They run under each signed-in user's session, so platform permissions apply unchanged."
+      info="Self-contained apps that compile into this deployment and render as native Talaria surfaces. Built by your team, the community, or Outcrop. They run under each signed-in user's session, so platform permissions apply unchanged."
     >
       {#snippet blurb()}
         Extend Talaria with new work and manage views. Apps live in the <code class="text-fg">apps/</code> directory and become part of the deployment.

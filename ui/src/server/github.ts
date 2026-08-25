@@ -301,7 +301,7 @@ export async function mergeInto(repo: string, targetBranch: string, head: string
   })
   if (res.status === 201) return { merged: true }
   if (res.status === 204) return { merged: true, reason: 'already up to date' }
-  if (res.status === 409) return { merged: false, reason: 'merge conflict — resolve on the branch first' }
+  if (res.status === 409) return { merged: false, reason: 'merge conflict. Resolve on the branch first' }
   return { merged: false, reason: `GitHub merge failed (${res.status})` }
 }
 
@@ -320,7 +320,7 @@ export async function createRepo(org: string, name: string, description: string)
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, description: description.slice(0, 300), private: true, auto_init: true }),
   })
-  if (res.status === 403) throw new Error("the App lacks the org's Administration permission — grant it in the App settings, then re-approve")
+  if (res.status === 403) throw new Error("the App lacks the org's Administration permission. Grant it in the App settings, then re-approve.")
   if (!res.ok) throw new Error(`GitHub repo creation failed (${res.status}): ${(await res.text()).slice(0, 200)}`)
   const j = (await res.json()) as { full_name: string; html_url: string }
   repoInstallCache = null // pool changed

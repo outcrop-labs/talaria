@@ -100,7 +100,7 @@
   <div use:staggerIn class="space-y-6">
     <ViewHeader
       title="MCP"
-      info="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it — down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory."
+      info="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it, down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory."
     >
       {#snippet actions()}
         <!-- Adding only ever means adding an EXTERNAL server: the internal ones
@@ -164,7 +164,7 @@
             <EmptyState
               icon="⌁"
               title="Built-in tools unavailable"
-              hint="Talaria's own toolkit should always be registered here. If this persists, check the app logs — the MCP service may not have started."
+              hint="Talaria's own toolkit should always be registered here. If this persists, check the app logs. The MCP service may not have started."
             />
           {/if}
         {/snippet}

@@ -62,7 +62,7 @@
       onRetry={() => void jobsQuery.refetch()}
     />
     <p class="mt-1 text-xs text-muted">
-      If an agent is waiting on a plan approval here, it stays blocked until this loads — don't read the ticket as idle.
+      If an agent is waiting on a plan approval here, it stays blocked until this loads. Don't read the ticket as idle.
     </p>
   </div>
 {:else if jobs !== undefined && live.length}
@@ -76,7 +76,7 @@
       >
         <div class="flex items-center gap-2">
           <span class="font-sans text-fg">
-            {#if j.status === 'awaiting_approval'}{`${j.agentModel} plans ${j.effort}-effort work on ${j.repo} — approve to build`}{/if}
+            {#if j.status === 'awaiting_approval'}{`${j.agentModel} plans ${j.effort}-effort work on ${j.repo}; approve to build`}{/if}
             {#if j.status === 'started'}{`${j.agentModel} is building on ${j.repo} @ ${j.branch}`}{/if}
             {#if j.status === 'pr_open'}{`${j.agentModel} opened a PR from ${j.branch}`}{/if}
           </span>

@@ -109,7 +109,7 @@
       {#if row?.pooled}
         <p class="mt-2 max-w-prose font-sans text-xs text-warning">
           This id is served by {row.endpoints.length} endpoints, and what a model can do is a property of the endpoint serving it. The run
-          will happen, but no capability facts get recorded — pick one of the <span class="font-mono">endpoint/model</span> ids to record them.
+          will happen, but no capability facts get recorded; pick one of the <span class="font-mono">endpoint/model</span> ids to record them.
         </p>
       {/if}
     </div>
@@ -143,7 +143,7 @@
                   {:else if (estimate?.tiers.find((t) => t.tier === 'probes')?.calls ?? 0) === 0 && estimateQuery.data}
                     Every capability was already measured on this endpoint, so tier 1 will make no calls at all.
                   {:else}
-                    Capabilities an earlier run already established are reused, not re-bought — a probe fact belongs to the endpoint serving this
+                    Capabilities an earlier run already established are reused, not re-bought; a probe fact belongs to the endpoint serving this
                     model and does not go stale on its own.
                   {/if}
                 </p>
@@ -171,7 +171,7 @@
           {#if concurrency === 1}
             One at a time. Slow, and the only setting where p50 latency means what a single call costs.
           {:else}
-            The sweep halves this by itself if the provider answers with rate limits, and the report says it did — a 429 is a fact about your
+            The sweep halves this by itself if the provider answers with rate limits, and the report says it did; a 429 is a fact about your
             deployment, never about the model. Latency is reported alongside the width it was measured at.
           {/if}
         </p>
@@ -244,7 +244,7 @@
       <!-- Armed only once the estimate is on screen: that is the confirmation
            step for an action that spends real money. -->
       <Button size="sm" onclick={() => void start()} disabled={starting || !estimate || tiers.length === 0}>
-        {estimate ? `Start — ${estimate.calls} calls, ${usd(estimate.usd)}` : 'Start'}
+        {estimate ? `Start: ${estimate.calls} calls, ${usd(estimate.usd)}` : 'Start'}
       </Button>
     </div>
   {/snippet}

@@ -129,9 +129,9 @@ export const RESEARCH_RUN_KIND = 'research'
 /** Depth budget + search model preference per mode. Query counts bound each
  *  round; rounds bound the expedition loop. Overridable for tests via env. */
 const MODES: Record<ResearchDepth, { rounds: number; queries: number; search: string[]; blurb: string }> = {
-  recon: { rounds: 1, queries: 1, search: ['sonar', 'sonar-pro'], blurb: 'one fast pass — a cited answer in minutes' },
-  brief: { rounds: 1, queries: 3, search: ['sonar-pro', 'sonar'], blurb: 'planned angles, one synthesis — a briefing' },
-  expedition: { rounds: 3, queries: 4, search: ['sonar-pro', 'sonar-reasoning-pro', 'sonar'], blurb: 'iterative deep dive — a full report' },
+  recon: { rounds: 1, queries: 1, search: ['sonar', 'sonar-pro'], blurb: 'one fast pass: a cited answer in minutes' },
+  brief: { rounds: 1, queries: 3, search: ['sonar-pro', 'sonar'], blurb: 'planned angles, one synthesis: a briefing' },
+  expedition: { rounds: 3, queries: 4, search: ['sonar-pro', 'sonar-reasoning-pro', 'sonar'], blurb: 'iterative deep dive: a full report' },
 }
 
 export function budgetFor(mode: ResearchDepth): { rounds: number; queries: number; search: string[]; blurb: string } {
@@ -166,7 +166,7 @@ export interface SearchPlan {
 /** THE REASON A RUN CANNOT START, phrased for the person who can fix it.
  *  Exported so the route and the MCP tool report the same sentence. */
 export const NO_SEARCH_REASON =
-  'this workspace cannot search yet — either connect a search backend (Settings → Search, e.g. a self-hosted SearXNG) so any model can research through it, or register a model with native web search and assign it to the research role'
+  'this workspace cannot search yet. Either connect a search backend (Settings → Search, e.g. a self-hosted SearXNG) so any model can research through it, or register a model with native web search and assign it to the research role'
 
 export async function planSearch(mode: ResearchDepth, deps?: { models?: () => Promise<Array<{ id: string }>> }): Promise<SearchPlan | null> {
   const pathOf = async (model: string): Promise<SearchPlan | null> => {
@@ -642,7 +642,7 @@ export const REAL_RESEARCH_DEPS: ResearchRunDeps = {
     await addNotification(ownerUserId, {
       kind: 'research',
       title: `Research ready: ${title.slice(0, 120)}`,
-      body: `${agentLabel} finished ${mode === 'recon' ? 'a recon' : mode === 'brief' ? 'a brief' : 'an expedition'} — ${sources} sources`,
+      body: `${agentLabel} finished ${mode === 'recon' ? 'a recon' : mode === 'brief' ? 'a brief' : 'an expedition'}: ${sources} sources`,
       href: `/research?r=${runId}`,
     })
   },
@@ -656,7 +656,7 @@ type Result = StepResult<ResearchCheckpoint>
 /** The sentence a run with nothing citable ends on, when the owner says stop or
  *  has already been asked. Unchanged from the version that used to be thrown
  *  the moment the loop ended. */
-const NO_SOURCES = 'no sources found — search returned nothing citable'
+const NO_SOURCES = 'no sources found. Search returned nothing citable.'
 
 /** How many times the owner may be asked to search again before the run gives
  *  up on its own. Two asks: the transient outage, and the one after it. */
@@ -670,7 +670,7 @@ const noSourceKey = (attempt: number) => `no-sources:attempt-${attempt}`
  *  flight. Called before every outward call so the abandoned copy stops
  *  spending rather than racing its successor to the same checkpoint. */
 function stopIfAbandoned(ctx: Ctx): void {
-  if (ctx.signal.aborted) throw new Error('the driver abandoned this step — another instance resumes from the last checkpoint')
+  if (ctx.signal.aborted) throw new Error('the driver abandoned this step; another instance resumes from the last checkpoint')
 }
 
 /** How round one starts, in one place because it happens twice: at `begin`, and
@@ -699,7 +699,7 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
     // The same refusal `startResearch` makes up front, restated here because a
     // reclaimed run is entered without going through it — and a gateway that
     // lost its sonar model between the click and the resume is a real state.
-    if (!searchModel) throw new Error('no search-capable model on the gateway — register a Perplexity sonar model on /models first')
+    if (!searchModel) throw new Error('no search-capable model on the gateway. Register a Perplexity sonar model on /models first.')
     const budget = adaptBudget(budgetFor(input.mode), searchModel)
     // A FOLLOW-UP CONTINUES ITS PARENT'S NUMBERING. Seeded here, into the
     // checkpoint, so [1]..[n] keep meaning what the parent's already-written
@@ -836,7 +836,7 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
             // rather than inheriting the first one's mark.
             key: noSourceKey(cp.retries),
             question: `No sources came back for "${input.question.slice(0, 120)}". Search again?`,
-            detail: `${cp.queriesRun} search(es) ran and none of them returned anything citable${cp.searchFailed ? ' — at least one failed outright' : ''}. Nothing is lost either way: the run keeps what it has.`,
+            detail: `${cp.queriesRun} search(es) ran and none of them returned anything citable${cp.searchFailed ? ' (at least one failed outright)' : ''}. Nothing is lost either way: the run keeps what it has.`,
             options: [
               { id: 'search-again', label: 'Search again', detail: 'Re-plan the angles and run the searches again.' },
               { id: 'stop', label: 'Stop', detail: 'End the run without a report.' },
@@ -881,7 +881,7 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
           ...cp,
           stage: 'artifact',
           report: {
-            title: cleaned.match(/^# (.+)$/m)?.[1]?.trim() ?? `Research — ${input.question.slice(0, 80)}`,
+            title: cleaned.match(/^# (.+)$/m)?.[1]?.trim() ?? `Research: ${input.question.slice(0, 80)}`,
             body: `${cleaned}\n\n## Sources\n\n${sourcesMd}\n`,
             cited: cited.size,
             dropped,

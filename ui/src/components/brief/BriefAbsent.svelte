@@ -38,7 +38,7 @@
   <EmptyState
     icon={sparkle}
     title="You don’t have a personal assistant yet"
-    hint="Your daily brief is written by your own assistant, and by nothing else — it reads your private work, so it never runs on a model somebody else picked. Set one up and your first brief opens tomorrow morning."
+    hint="Your daily brief is written by your own assistant, and by nothing else: it reads your private work, so it never runs on a model somebody else picked. Set one up and your first brief opens tomorrow morning."
     action={setup}
   />
 {:else if state.absent === 'writing'}
@@ -49,7 +49,7 @@
   <EmptyState
     icon={pen}
     title="{state.agent.name ?? 'Your assistant'} is writing today’s brief"
-    hint="The lede, your calendar, what needs you and who is waiting — it takes a few seconds, and the page fills itself in the moment it lands."
+    hint="The lede, your calendar, what needs you and who is waiting. It takes a few seconds, and the page fills itself in the moment it lands."
     action={writing}
   />
 {:else}

@@ -85,8 +85,8 @@
             <p class="text-sm leading-relaxed text-muted">
               Point at a Hermes-format directory on the server (<code class="text-fg">agents.yaml</code> roster,
               each agent's <code class="text-fg">SOUL.md</code> + <code class="text-fg">config.yaml</code>).
-              Each agent is recreated <em>natively</em>: Talaria's chassis and orchestration, a fresh key and state
-              volume, models mapped into the registry, skills carried over. The source directory is never referenced
+              Each agent is recreated <em>natively</em>: it runs on Talaria itself, with a fresh key and state
+              volume, models mapped into the registry, and its skills carried over. The source directory is never referenced
               again. Agents whose handle already exists are skipped.
             </p>
             <div>

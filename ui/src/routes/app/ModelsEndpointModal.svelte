@@ -236,7 +236,7 @@
     {#if ep.class === 'cloud'}<ModelsPrivacyRow {ep} {run} />{/if}
 
     {#if cascading}
-      <Generating site="models/endpoint-remove" label="Removing across the fleet: new agent versions, re-render, rolling the affected agents" lines={2} />
+      <Generating site="models/endpoint-remove" label="Removing from every agent: new agent versions, re-render, restarting the affected agents" lines={2} />
     {/if}
     {#if err}<div class="text-xs text-danger">{err}</div>{/if}
 

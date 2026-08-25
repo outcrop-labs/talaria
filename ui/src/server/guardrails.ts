@@ -664,7 +664,7 @@ export const RULES: Rule[] = [
       // one the user typed.
       const ungrounded = ungroundedRefs(ctx.answer, `${tr.resultsText}\n${groundingInput(ctx)}`, ctx.policedHosts)
       return ungrounded.length
-        ? { message: 'Cites link(s)/id(s) that did not appear in any tool result this turn — may be fabricated.', snippet: ungrounded.slice(0, 8).join(', '), confidence: 0.7 }
+        ? { message: 'Cites link(s)/id(s) that did not appear in any tool result this turn. They may be fabricated.', snippet: ungrounded.slice(0, 8).join(', '), confidence: 0.7 }
         : null
     },
   },
@@ -841,7 +841,7 @@ export function caveatFor(findings: Finding[]): string {
   const shown = findings.filter((f) => !f.grounded)
   if (!shown.length) return ''
   const lines = shown.map((f) => `- **${f.check.replace(/_/g, ' ')}:** ${f.message}${f.snippet ? ` (${f.snippet})` : ''}`)
-  return `\n\n---\n⚠️ **Unverified — confab guard flagged this response:**\n${lines.join('\n')}\nVerify before relying on it.`
+  return `\n\n---\n⚠️ **Unverified: confab guard flagged this response:**\n${lines.join('\n')}\nVerify before relying on it.`
 }
 
 // ── Findings store + observability ───────────────────────────────────────────

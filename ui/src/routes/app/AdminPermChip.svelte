@@ -21,7 +21,7 @@
 
 <button
   type="button"
-  title={`${entry.hint}${overridden ? ' (overridden — click twice to return to default)' : ''}`}
+  title={`${entry.hint}${overridden ? ' (overridden; click twice to return to default)' : ''}`}
   onclick={onToggle}
   class={cn(
     'flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',

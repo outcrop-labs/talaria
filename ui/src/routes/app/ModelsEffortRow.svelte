@@ -58,7 +58,7 @@
   {:else if catalogEfforts}
     <span class="shrink-0 text-muted" title="What the provider's catalog publishes right now">catalog: {catalogEfforts.join(' · ')}</span>
   {:else}
-    <span class="shrink-0 text-muted" title="This provider publishes no ladder for the model — declare one if the model takes one">catalog silent</span>
+    <span class="shrink-0 text-muted" title="This provider publishes no ladder for the model. Declare one if the model takes one">catalog silent</span>
   {/if}
   <Input
     size="sm"

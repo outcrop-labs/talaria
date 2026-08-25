@@ -96,7 +96,7 @@
       title: `Delete ${s.title}?`,
       message:
         `This deletes the stored value and every grant on it. ${s.grants.length > 0 ? `${s.grants.length} agent${s.grants.length === 1 ? '' : 's'} will stop being able to use it.` : 'No agent has been granted it.'} ` +
-        'There is no undo and no copy — if you need it again, enter the value again.',
+        'There is no undo and no copy. If you need it again, enter the value again.',
       confirmLabel: 'Delete',
       danger: true,
     })
@@ -118,7 +118,7 @@
 <Panel>
   <SectionHeader
     title="Agent credentials"
-    info="Credentials an agent can USE without ever reading one. The value is sealed here and substituted at the boundary that spends it — a tool call, a push — so it never enters a model's context and never reaches a provider. Values are write-only: nothing on this page, and no API, can show one again."
+    info="Credentials an agent can USE without ever reading one. The value is sealed here and substituted at the boundary that spends it (a tool call, a push), so it never enters a model's context and never reaches a provider. Values are write-only: nothing on this page, and no API, can show one again."
   />
 
   {#if query.isPending}
@@ -185,7 +185,7 @@
             <div class="mt-2 flex flex-wrap items-center gap-1.5">
               <span class="font-mono text-[10px] text-ink-dim">granted to</span>
               {#if s.grants.length === 0}
-                <span class="font-sans text-xs text-warning">nobody — this credential is inert until an agent is granted it</span>
+                <span class="font-sans text-xs text-warning">nobody; this credential does nothing until an agent is granted it</span>
               {:else}
                 {#each s.grants as g (g)}
                   <button
@@ -244,7 +244,7 @@
           <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" />
 
           <label class="mt-3 block font-sans text-xs text-muted">
-            Spendable at (optional) — hosts, space or comma separated
+            Spendable at (optional): hosts, space or comma separated
             <input
               bind:value={hosts}
               placeholder="github.com  registry.outcrop.dev"
@@ -252,7 +252,7 @@
             />
             <span class="mt-1 block text-[11px] text-ink-dim">
               {#if hosts.trim()}
-                Talaria refuses to substitute this credential into anything bound elsewhere — including a call whose destination it cannot read.
+                Talaria refuses to substitute this credential into anything bound elsewhere, including a call whose destination it cannot read.
               {:else}
                 Leave empty and this credential can be spent against any destination an agent is talked into.
               {/if}
@@ -261,7 +261,7 @@
 
           <label class="mt-3 flex items-center gap-2 font-sans text-xs text-muted">
             <input type="checkbox" bind:checked={relay} />
-            One-shot — spent the first time an agent uses it
+            One-shot: spent the first time an agent uses it
           </label>
 
           <div class="mt-3 flex items-center gap-2">

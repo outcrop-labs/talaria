@@ -98,7 +98,7 @@ export type FleetSlotId = 'assistant' | 'agent'
 const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; requires: Capability[]; harnesses: string[] }> = [
   {
     id: 'assistant',
-    label: 'Fleet · Personal assistant',
+    label: 'Agents · Personal assistant',
     hint: "The model behind an owner's own assistant: reads their inbox, briefs them, drafts replies in their voice.",
     // It reads a whole inbox and a whole briefing window before it answers.
     requires: ['instruction-following', 'long-context'],
@@ -118,7 +118,7 @@ const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; require
   },
   {
     id: 'agent',
-    label: 'Fleet · Workspace agent',
+    label: 'Agents · Workspace agent',
     hint: 'The model behind a Hermes persona: works tickets, plans channels, and drives the workspace toolkit.',
     // The job IS the tool loop — see the Hermes harness family.
     requires: ['tools', 'tool-select'],
@@ -578,7 +578,7 @@ function harnessVerdict(args: {
       capability: cap,
       assertion: null,
       band: 'unfit',
-      detail: `${harness.label} needs '${cap}' and this deployment cannot reach it${reach[cap]?.detail ? ` — ${reach[cap]?.detail}` : capabilities[cap]?.detail ? ` (the model is recorded as not supporting it: ${capabilities[cap]?.detail})` : ''}.`,
+      detail: `${harness.label} needs '${cap}' and this deployment cannot reach it${reach[cap]?.detail ? ` (${reach[cap]?.detail})` : capabilities[cap]?.detail ? ` (the model is recorded as not supporting it: ${capabilities[cap]?.detail})` : ''}.`,
     })
   }
 
@@ -595,7 +595,7 @@ function harnessVerdict(args: {
         capability: cap,
         assertion: null,
         band: 'ready',
-        detail: `${harness.label} needs '${cap}', which this model does not do itself — it is supplied by the '${r.supplier.server}.${r.supplier.tool}' tool. Remove that server and this slot stops working.`,
+        detail: `${harness.label} needs '${cap}', which this model does not do itself. It is supplied by the '${r.supplier.server}.${r.supplier.tool}' tool. Remove that server and this slot stops working.`,
       })
     }
   }
@@ -622,7 +622,7 @@ function harnessVerdict(args: {
               capability: null,
               assertion: null,
               band: 'untested',
-              detail: `${harness.label} declares no eval fixtures, so tier 2 cannot say anything about it — not passing, not failing.`,
+              detail: `${harness.label} declares no eval fixtures, so tier 2 cannot say anything about it: not passing, not failing.`,
             }
           : {
               kind: 'not-swept',
@@ -659,7 +659,7 @@ function harnessVerdict(args: {
       capability: null,
       assertion: why,
       band: 'untested',
-      detail: `${harness.label} produced no reply on any of its ${score.cases} fixture(s)${why ? `: ${why}` : ''}. That is the run, not the model — unless a capability above says otherwise.`,
+      detail: `${harness.label} produced no reply on any of its ${score.cases} fixture(s)${why ? `: ${why}` : ''}. That is the run, not the model, unless a capability above says otherwise.`,
     })
     return { ...base, band: 'untested', reasons }
   }
@@ -736,7 +736,7 @@ function harnessVerdict(args: {
       capability: null,
       assertion: null,
       band: 'workable',
-      detail: `${harness.label} holds its contract ${pct(score.contractRate)} of the time first try and ${pct(score.repairRate)} after one repair — usable, but it is the repair turn carrying it.`,
+      detail: `${harness.label} holds its contract ${pct(score.contractRate)} of the time first try and ${pct(score.repairRate)} after one repair: usable, but it is the repair turn carrying it.`,
     })
   } else if (score.contractRate < CONTRACT_READY && score.contractRate >= CONTRACT_UNFIT) {
     reasons.push({
@@ -799,7 +799,7 @@ function weighted(cases: EvalCaseScore[], harnesses: number, of: (c: EvalCaseSco
     numerator: num,
     denominator: denom.length,
     harnesses,
-    label: `${what}: ${num}/${denom.length} cases across ${harnesses} harness${harnesses === 1 ? '' : 'es'}, weighted by case — comparable within a harness only`,
+    label: `${what}: ${num}/${denom.length} cases across ${harnesses} harness${harnesses === 1 ? '' : 'es'}, weighted by case (comparable within a harness only)`,
   }
 }
 
@@ -853,7 +853,7 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
           capability: cap,
           assertion: null,
           band: 'ready',
-          detail: `${binding.slot.label} needs '${cap}', which this model does not do itself — it is supplied by the '${reached.supplier.server}.${reached.supplier.tool}' tool.`,
+          detail: `${binding.slot.label} needs '${cap}', which this model does not do itself. It is supplied by the '${reached.supplier.server}.${reached.supplier.tool}' tool.`,
         })
       } else if (fact?.value === false) {
         slotCovered.add(cap)
@@ -863,7 +863,7 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
           capability: cap,
           assertion: null,
           band: 'unfit',
-          detail: `${binding.slot.label} needs '${cap}' and this deployment cannot reach it${reached?.detail ? ` — ${reached.detail}` : fact.detail ? ` (the model is recorded as not supporting it: ${fact.detail})` : ''}.`,
+          detail: `${binding.slot.label} needs '${cap}' and this deployment cannot reach it${reached?.detail ? ` (${reached.detail})` : fact.detail ? ` (the model is recorded as not supporting it: ${fact.detail})` : ''}.`,
         })
       } else if (reached?.reached) {
         // Reached natively and measured true — nothing to say.

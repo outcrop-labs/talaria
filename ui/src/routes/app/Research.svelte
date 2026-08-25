@@ -202,7 +202,7 @@
           variant="compact"
           icon="◎"
           title={`No runs by ${agentLabel} yet.`}
-          hint="Pick another agent above, or start one — it lands here."
+          hint="Pick another agent above, or start one. It lands here."
         />
       {:else}
         {#each visibleRuns as r (r.id)}

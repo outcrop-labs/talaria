@@ -41,7 +41,7 @@
   {#snippet skeleton()}<div class="mt-2"><SkeletonRows rows={1} /></div>{/snippet}
   {#snippet empty()}
     <p class="mt-1.5 text-xs text-muted">
-      No repositories reachable — connect GitHub under <a href={p('/admin')} class="text-accent hover:underline">Admin → Org</a> to grant repos.
+      No repositories reachable. Connect GitHub under <a href={p('/admin')} class="text-accent hover:underline">Admin → Org</a> to grant repos.
     </p>
   {/snippet}
   {#snippet children(d)}
@@ -56,7 +56,7 @@
           </Chip>
         {/each}
       </div>
-      {#if d.granted.length === 0}<p transition:slide={{ duration: 150 }} class="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>{/if}
+      {#if d.granted.length === 0}<p transition:slide={{ duration: 150 }} class="text-xs text-muted">Nothing granted yet, so the workbench can't touch any repo.</p>{/if}
     </div>
   {/snippet}
 </QueryState>

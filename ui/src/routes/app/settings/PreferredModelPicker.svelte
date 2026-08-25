@@ -116,7 +116,7 @@
       <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Default reasoning effort</label>
       <EffortPicker {efforts} value={effectiveEffort} onChange={(v) => void saveEffort(v)} />
       <p class="mt-1 text-xs text-muted">
-        Your starting pick wherever the model in play supports effort levels — agent chats and the assistant panel.
+        Your starting pick wherever the model in play supports effort levels: agent chats and the assistant panel.
         {#if effortFlash.saved && !effortError}<span class="ml-2 text-success">Saved</span>{/if}
         {#if effortError}<span class="ml-2 text-danger">{effortError}</span>{/if}
       </p>

@@ -53,7 +53,7 @@
 
 {#snippet title()}
   <span class="flex items-center gap-2">
-    Access — {s.label}
+    Access: {s.label}
     <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
   </span>
 {/snippet}
@@ -65,7 +65,7 @@
     <div class="flex items-center gap-3 pb-1">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agents</span>
       {#if s.builtin}
-        <span class="text-xs text-muted">every agent — rows below narrow individual agents</span>
+        <span class="text-xs text-muted">every agent; rows below narrow individual agents</span>
       {:else}
         <Checkbox
           checked={s.allAgents}
@@ -86,7 +86,7 @@
       <EmptyState
         variant="inline"
         class="px-1.5 py-1 text-muted/70"
-        title={s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet — add one, or check “all agents”.'}
+        title={s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet. Add one, or check “all agents”.'}
       />
     {:else}
       <div class="space-y-0.5">

@@ -30,6 +30,6 @@
   <WingMark {size} />
   <span class="sr-only">Talaria</span>
   {#if showTag}
-    <div class="theme-muted text-[11px] tracking-wide">the winged fleet cockpit</div>
+    <div class="theme-muted text-[11px] tracking-wide">get things done together</div>
   {/if}
 </div>

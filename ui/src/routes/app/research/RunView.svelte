@@ -114,7 +114,7 @@
              Plan surface pays its empty document pane. -->
         <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <p class="max-w-xs font-sans text-sm text-muted">
-            Ask {agentLabel} about this report, or bring a teammate in. It answers from what it found — and can go and look
+            Ask {agentLabel} about this report, or bring a teammate in. It answers from what it found, and can go and look
             again when the answer is not in there.
           </p>
           <Button size="sm" onclick={openThread} disabled={opening}>{opening ? 'Opening' : 'Start the discussion'}</Button>

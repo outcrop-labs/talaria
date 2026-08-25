@@ -185,7 +185,7 @@
       size="sm"
       bind:value={instruction}
       onkeydown={(e) => e.key === 'Enter' && void generate()}
-      placeholder={generating ? 'Muse is thinking' : 'Muse: "urgent, due friday" — or select text while editing to rewrite it'}
+      placeholder={generating ? 'Muse is thinking' : 'Muse: "urgent, due friday", or select text while editing to rewrite it'}
       disabled={generating}
       class="flex-1"
     />

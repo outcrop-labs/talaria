@@ -41,7 +41,7 @@
       </Chip>
     {/if}
     {#if !tags.anyMeasured}
-      <Chip title="Nothing has measured this model's capabilities. Unknown is not a no — Talaria will still run it, and the fitness probes are what turn this into facts.">
+      <Chip title="Nothing has measured this model's capabilities. Unknown is not a no: Talaria will still run it, and the fitness probes are what turn this into facts.">
         untested
       </Chip>
     {:else}

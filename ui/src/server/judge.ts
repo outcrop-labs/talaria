@@ -81,7 +81,7 @@ async function shouldJudge(boardId: string): Promise<{ run: boolean; model: stri
  *  wording is unchanged because it is already written on shipped review rows. */
 const UNPARSEABLE: JudgeVerdict = {
   verdict: 'escalate',
-  summary: 'Judge returned no parseable verdict — surfacing to a human.',
+  summary: 'Judge returned no parseable verdict. Surfacing to a human.',
   issues: [],
 }
 
@@ -142,7 +142,7 @@ async function tellHumansTheGateStopped(
         title: 'A QA gate stopped on a board nobody can act on',
         body:
           'The quality gate handed a ticket back to a person, and that board has no members who can ' +
-          'approve it, ask for changes or close it — so the work is parked indefinitely and the details ' +
+          'approve it, ask for changes or close it, so the work is parked indefinitely and the details ' +
           'are not shown here. Add an editor to the board and they will be able to see it and decide it.',
       }).catch((e: unknown) => console.error(`[judge] could not report a stalled escalation to ${userId}:`, e))
     }
@@ -280,10 +280,10 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
           .catch(() => false)
         const note = bounced
           ? `sent back for revision (${reviseCount}/${MAX_REVISIONS})`
-          : `could not send back for revision (${reviseCount}/${MAX_REVISIONS}) — left for a human`
+          : `could not send back for revision (${reviseCount}/${MAX_REVISIONS}); left for a human`
         await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'status', ${note})`
       } else {
-        await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${`revision limit reached (${MAX_REVISIONS}) — needs a human`})`
+        await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${`revision limit reached (${MAX_REVISIONS}); needs a human`})`
         // The loop has given up. The agent will not be asked again, the ticket
         // is parked in review, and the ONLY thing that changes it now is a
         // person — so a person is told, for the same reason as above.

@@ -113,7 +113,7 @@
   // Your own first, then what Talaria maintains — the org's roles are the ones
   // being worked on, and the built-ins are the shelf you take a copy from.
   const groups = $derived([
-    { label: 'Your organization', items: templates.filter((t) => !t.builtIn), empty: 'None yet — edit a common role to make one.' },
+    { label: 'Your organization', items: templates.filter((t) => !t.builtIn), empty: 'None yet; edit a common role to make one.' },
     { label: 'Common roles', items: templates.filter((t) => t.builtIn) },
   ])
 
@@ -157,7 +157,7 @@
   {#snippet empty()}
     <EmptyState
       title="Pick a role, or add one"
-      hint="Talaria maintains the common roles. Editing one saves YOUR version under the same name — yours is used from then on, and deleting it restores ours."
+      hint="Talaria maintains the common roles. Editing one saves YOUR version under the same name. Yours is used from then on, and deleting it restores ours."
     />
   {/snippet}
 
@@ -194,7 +194,7 @@
           <p class="mt-1.5 font-sans text-xs text-muted">
             Markdown. Keep the <span class="font-mono text-fg">## Who you are</span> /
             <span class="font-mono text-fg">## Voice &amp; personality</span> /
-            <span class="font-mono text-fg">## How you work</span> sections — the agent designer expects that shape.
+            <span class="font-mono text-fg">## How you work</span> sections. The agent designer expects that shape.
           </p>
         </div>
       </div>

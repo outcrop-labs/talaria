@@ -84,7 +84,7 @@
         variant="inline"
         class="mt-4 rounded-lg border border-[color:var(--theme-danger)]/40 bg-[color:var(--theme-danger)]/5 px-4 py-2.5"
         error={workspace.error}
-        title="This queue may be out of date — the last refresh failed"
+        title="This queue may be out of date; the last refresh failed"
         onRetry={() => void workspace.refetch()}
       />
     {/if}

@@ -77,7 +77,7 @@ export async function ensureBuiltinMcp(): Promise<void> {
   const { MCP_PORT } = await import('./mcp-service')
   await sql`
     insert into mcp_servers (name, label, description, url, all_agents, builtin, created_by)
-    values ('talaria', 'Talaria toolkit', 'Talaria''s own tools — tickets, documents, knowledge, channels, research, media.',
+    values ('talaria', 'Talaria toolkit', 'Talaria''s own tools: tickets, documents, knowledge, channels, research, media.',
             ${`http://127.0.0.1:${MCP_PORT()}/mcp`}, true, true, 'talaria')
     on conflict (name) do update set builtin = true, all_agents = true, enabled = true
   `
@@ -87,7 +87,7 @@ export async function ensureBuiltinMcp(): Promise<void> {
   const tools = WORKBENCH_TOOLS.map((t) => ({ name: t.name, description: t.description.slice(0, 300) }))
   await sql`
     insert into mcp_servers (name, label, description, url, all_agents, created_by, tools, tools_refreshed_at)
-    values ('workbench', 'Workbench', 'Sandboxed execution for granted agents — jobs, branches, and PRs under the platform-owned git flow.',
+    values ('workbench', 'Workbench', 'Sandboxed execution for granted agents: jobs, branches, and PRs under the platform-owned git flow.',
             'talaria-workbench://core', false, 'talaria', ${sql.json(tools)}, now())
     on conflict (name) do update set tools = ${sql.json(tools)}, tools_refreshed_at = now(), enabled = true
   `
@@ -165,7 +165,7 @@ export async function updateMcpServer(
     // App servers have no upstream to point elsewhere and follow the app's
     // lifecycle; allAgents/access stay governable like any server.
     for (const k of ['url', 'headers', 'enabled', 'authMode'] as const) {
-      if (patch[k] !== undefined) throw new Error('this server is published by an app — disable the app instead')
+      if (patch[k] !== undefined) throw new Error('this server is published by an app; disable the app instead')
     }
   }
   if (patch.label !== undefined) await sql`update mcp_servers set label = ${patch.label}, updated_at = now() where id = ${id}`
@@ -185,7 +185,7 @@ export async function deleteMcpServer(id: string): Promise<void> {
     appSlug: string | null
   }>
   if (row?.builtin) throw new Error('the built-in Talaria toolkit cannot be removed')
-  if (row?.appSlug) throw new Error('this server is published by an app — disable or uninstall the app instead')
+  if (row?.appSlug) throw new Error('this server is published by an app; disable or uninstall the app instead')
   await sql`delete from mcp_servers where id = ${id}` // assignments/access/credentials cascade
 }
 
@@ -328,7 +328,7 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
   if (!server) throw new Error(`MCP server "${serverName}" is not registered`)
   if (!server.enabled) throw new Error(`MCP server "${serverName}" is disabled`)
   if (server.authMode === 'per-user') {
-    throw new Error(`MCP server "${serverName}" authenticates per user, so a platform stage cannot call it — register an org-authenticated server for this`)
+    throw new Error(`MCP server "${serverName}" authenticates per user, so a platform stage cannot call it. Register an org-authenticated server for this.`)
   }
   if (server.appSlug) {
     // App servers dispatch IN PROCESS — no socket, no headers. `allowed: null`
@@ -403,7 +403,7 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
   if (server.builtin) {
     const { awaitMcpService } = await import('./mcp-service')
     if (!(await awaitMcpService())) {
-      return { error: 'the Talaria toolkit service did not start — check the app logs' }
+      return { error: 'the Talaria toolkit service did not start; check the app logs' }
     }
   }
   try {

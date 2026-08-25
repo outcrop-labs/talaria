@@ -66,7 +66,7 @@
      voice the app shell inherits from the base font. -->
 {#if variant === 'inline'}
   <div class={cn('font-sans text-xs text-muted', className)}>
-    {title}{hint ? ` — ${hint}` : ''}
+    {title}{hint ? `: ${hint}` : ''}
   </div>
 {:else}
   <!-- EDGE TO EDGE. The padding moved OFF this box and onto the content

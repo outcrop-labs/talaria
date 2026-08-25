@@ -123,7 +123,7 @@
       {:else}
         <div class="flex items-center gap-2 text-sm">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></span>
-          <span class="text-muted">Not connected — pick a method and follow the setup guide.</span>
+          <span class="text-muted">Not connected. Pick a method and follow the setup guide.</span>
         </div>
       {/if}
       {#if status?.error}<div class="text-xs text-warning">{status.error}</div>{/if}
@@ -140,7 +140,7 @@
             value={effMode === 'pat' ? 'pat' : 'app'}
             onChange={(m) => (mode = m)}
           />
-          {#if effMode === 'app'}<span class="text-xs text-muted">recommended — short-lived tokens, per-repo installs</span>{/if}
+          {#if effMode === 'app'}<span class="text-xs text-muted">recommended: short-lived tokens, per-repo installs</span>{/if}
         </div>
 
         <!-- Method switch = a tab pane: fields rise in (no exit) and the rows
@@ -154,7 +154,7 @@
             <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">App ID</label>
             <Input size="sm" bind:value={appId} placeholder={status?.app.appId || 'e.g. 1234567'} class="w-40" />
             <label class="ml-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key</label>
-            <Input size="sm" type="password" bind:value={privateKey} placeholder={status?.app.keySet ? 'set — paste .pem to replace' : 'paste the whole .pem'} class="min-w-0 flex-1" />
+            <Input size="sm" type="password" bind:value={privateKey} placeholder={status?.app.keySet ? 'set (paste .pem to replace)' : 'paste the whole .pem'} class="min-w-0 flex-1" />
             <Button
               size="sm"
               disabled={busy || (!appId.trim() && !privateKey.trim())}
@@ -202,7 +202,7 @@
                 />
               {/if}
               {#if status?.app.keySet && !installsFailed && installations.length === 0}
-                <span class="text-xs text-muted">install the app on GitHub first — the guide's step 3</span>
+                <span class="text-xs text-muted">install the app on GitHub first (the guide's step 3)</span>
               {/if}
               {#if !status?.app.keySet}<span class="text-xs text-muted">save the App ID + key first</span>{/if}
               {#if (status?.app.installationIds?.length ?? 0) > 1}<span class="text-xs text-muted">repos pool across all selected orgs</span>{/if}
@@ -211,7 +211,7 @@
         {:else}
           <div class="flex items-center gap-3">
             <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Token</label>
-            <Input size="sm" type="password" bind:value={pat} placeholder={status?.patSet ? '••••••••  set — paste to replace' : 'github_pat_…'} class="min-w-0 flex-1" />
+            <Input size="sm" type="password" bind:value={pat} placeholder={status?.patSet ? '••••••••  set (paste to replace)' : 'github_pat_…'} class="min-w-0 flex-1" />
             <Button size="sm" disabled={!pat.trim() || busy} onclick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => (pat = ''))}>
               Connect
             </Button>

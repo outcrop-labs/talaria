@@ -31,7 +31,7 @@
     <EmptyState
       icon="⧉"
       title="No boards yet"
-      hint="Create one from the sidebar to start assigning work to the fleet."
+      hint="Create one from the sidebar to start assigning work to your agents."
     />
   {/snippet}
   {#snippet children(_boards)}

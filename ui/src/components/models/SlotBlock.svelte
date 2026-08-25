@@ -68,7 +68,7 @@
   {#if slot.kind === 'role' && !slot.row.wired}
     <Chip class="shrink-0" tone="neutral" title="This slot takes effect when its surface lands.">reserved</Chip>
   {:else if slot.kind === 'agent' && !slot.row.assignable}
-    <Chip class="shrink-0" tone="neutral" title="Its persona and privacy are the point — not a slot.">fixed</Chip>
+    <Chip class="shrink-0" tone="neutral" title="Its persona and privacy are the point, not a slot.">fixed</Chip>
   {/if}
   <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">{slotState(slot, assigned)}</span>
 </div>
@@ -119,7 +119,7 @@
         {/each}
       </span>
     {:else}
-      <span class="font-sans text-xs text-muted">Nothing specific — a fast, cheap model is ideal.</span>
+      <span class="font-sans text-xs text-muted">Nothing specific; a fast, cheap model is ideal.</span>
     {/if}
   </div>
 {:else if slot.row.skills.length > 0}
@@ -148,6 +148,6 @@
   <p class="max-w-prose font-sans text-xs text-muted">Auto: {slot.row.auto}.</p>
 {:else if slot.kind === 'role'}
   <p class="max-w-prose font-sans text-xs text-muted">
-    Auto leaves this role on its documented fallback chain — assign a model to pin it.
+    Auto leaves this role on its documented fallback chain; assign a model to pin it.
   </p>
 {/if}

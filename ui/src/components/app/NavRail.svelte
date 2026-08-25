@@ -74,7 +74,7 @@
         : (inboxSummary.data?.count ?? 0),
   )
   const unreadLabel = $derived(unread === null ? '!' : String(unread))
-  const unreadTitle = $derived(unread === null ? 'Could not load what is waiting for you — open the Inbox' : undefined)
+  const unreadTitle = $derived(unread === null ? 'Could not load what is waiting for you; open the Inbox' : undefined)
   const showUnread = $derived(unread === null || unread > 0)
   // Enabled apps slot into the sections as if they shipped with the platform:
   // work surfaces under Work, manage surfaces under Manage (grant-gated like
@@ -223,11 +223,11 @@
            miniature: the surface is simply gone and nothing says why. The
            marker says the list is missing; clicking asks again. -->
       {#if appsBroken}
-        <RailTooltip label="App links unavailable — retry">
+        <RailTooltip label="App links unavailable; retry">
           <button
             type="button"
             onclick={() => void appsQuery.refetch()}
-            aria-label="App links unavailable — retry"
+            aria-label="App links unavailable; retry"
             class="grid h-9 w-9 place-items-center rounded-md text-danger transition-colors duration-[120ms] dither-fill"
           >
             <TriangleAlert size={16} strokeWidth={1.5} />

@@ -80,7 +80,7 @@
     busy = false
     const j = (await r?.json().catch(() => ({}))) as { handle?: string; error?: string }
     if (!r?.ok || !j.handle) {
-      error = j.error ?? 'could not hand that over — try again'
+      error = j.error ?? 'could not hand that over; try again'
       return
     }
     onMinted(j.handle)
@@ -97,7 +97,7 @@
 <div bind:this={wrapRef} class="relative">
   <button
     type="button"
-    title="Hand {agentLabel} a credential — one use, never in the transcript"
+    title="Hand {agentLabel} a credential: one use, never in the transcript"
     disabled={disabled || busy}
     onclick={() => (open ? close() : (open = true))}
     class={tileBase}
@@ -113,7 +113,7 @@
     <div in:pop={POPOVER} class={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-80 p-2.5')}>
       <p class="font-sans text-[13px] text-fg">Hand {agentLabel} a credential</p>
       <p class="mt-1 font-sans text-xs text-muted">
-        The value goes straight to the vault — it never enters this message, the transcript, or any model's context.
+        The value goes straight to the vault; it never enters this message, the transcript, or any model's context.
         {agentLabel} gets a handle it can spend <strong class="text-fg">once</strong>, within the hour{host.trim() ? ', and only at that host' : ''}.
       </p>
 
