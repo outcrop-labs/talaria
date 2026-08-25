@@ -8,6 +8,8 @@
   import NavRail from '@/components/app/NavRail.svelte'
   import { useNavCollapsed } from '@/components/app/nav-rail.svelte'
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
+  import NotificationToasts from '@/components/app/NotificationToasts.svelte'
+  import Toasts from '@/components/app/Toasts.svelte'
   import TopStrip from '@/components/app/TopStrip.svelte'
   import InboxFocusShell from '@/components/inbox/InboxFocusShell.svelte'
   import UnreadableSecretsBanner from '@/components/setup/UnreadableSecretsBanner.svelte'
@@ -232,5 +234,11 @@
         {@render children()}
       </div>
     </InboxFocusShell>
+    <!-- Tell-me-now lives in the shell, not in any view: the watcher turns
+         live notifications into toasts on every surface, and adds an OS
+         notification only when Talaria is not what the person is looking
+         at. The host renders the stack; the watcher renders nothing. -->
+    <NotificationToasts />
+    <Toasts />
   </div>
 {/if}

@@ -6,6 +6,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import BrowserNotifications from './BrowserNotifications.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { cn } from '@/lib/cn'
   import {
@@ -224,6 +225,10 @@
       </li>
     </ul>
   {/if}
+  <!-- The one destination the server can't see or route: the person's own
+       browser. Client-only, so it renders regardless of the server settings
+       above. -->
+  <BrowserNotifications />
   <p class="mt-3 text-xs text-muted">
     Every notification is kept in your inbox either way. “Email” means it arrives already read, so you aren’t chased
     twice for the same thing.
