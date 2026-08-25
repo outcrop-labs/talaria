@@ -37,7 +37,12 @@ export function detectedZone(): string | null {
 export function supportedTimeZones(): string[] {
   try {
     const zones = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.('timeZone')
-    return Array.isArray(zones) ? zones : []
+    if (!Array.isArray(zones) || zones.length === 0) return []
+    // Some runtimes resolve 'UTC' but leave it off the supported list — a
+    // headless box with no TZ set detects UTC and then can't pick it. The
+    // one zone every runtime honors is always on the menu. The list arrives
+    // alphabetical; keep it that way.
+    return zones.includes('UTC') ? zones : [...zones, 'UTC'].sort()
   } catch {
     return []
   }

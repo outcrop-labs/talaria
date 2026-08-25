@@ -39,6 +39,22 @@ describe('supportedTimeZones', () => {
       expect(zones).toContain(detected)
     }
   })
+
+  it('offers UTC even when the runtime leaves it off the supported list', () => {
+    // CI is the canonical case: no TZ set, so detection answers UTC while
+    // supportedValuesOf lists only geographic zones. The union must restore
+    // the one zone every runtime can honor, in the list's alphabetical order.
+    const intl = Intl as unknown as { supportedValuesOf?: (k: string) => string[] }
+    const original = intl.supportedValuesOf
+    try {
+      intl.supportedValuesOf = () => ['America/Denver', 'Asia/Kolkata']
+      expect(supportedTimeZones()).toEqual(['America/Denver', 'Asia/Kolkata', 'UTC'])
+    } finally {
+      // Restore the platform's own answer, not a saved clone of it.
+      if (original) intl.supportedValuesOf = original
+      else delete intl.supportedValuesOf
+    }
+  })
 })
 
 describe('zoneNowLabel', () => {
