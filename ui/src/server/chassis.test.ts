@@ -35,6 +35,7 @@ interface Service {
   user?: string
   healthcheck?: { test?: unknown }
   extra_hosts?: string[]
+  dns?: string[]
 }
 
 const chassis = parseYaml(readFileSync(TEMPLATE, 'utf8'), { merge: true, version: '1.1' }) as {
@@ -100,5 +101,22 @@ describe('the chassis template', () => {
     // the agent can actually reach the LLM and MCP gateways is a DEEPER question
     // and belongs to the roster, not to Docker's restart policy.
     expect(service.healthcheck?.test, 'no healthcheck — a dead agent looks identical to a live one').toBeDefined()
+  })
+
+  it('sets explicit external DNS — the host resolver cannot be trusted from a bridge', () => {
+    // THE SILENT ONE: docker points containers at whatever the host's
+    // /etc/resolv.conf named when the network was created. A loopback stub on
+    // the host becomes a bridge IP where nothing listens; plenty of LAN/router
+    // resolvers refuse queries from docker subnets. The fleet stays green and
+    // every external name dies with EAI_AGAIN/SERVFAIL — the built-in browser
+    // (which fetches its engine from npm on first use) shipped dead for exactly
+    // this reason while every agent reported healthy. Explicit resolvers route
+    // around the host entirely; AGENT_DNS_1/_2 override for locked-down nets.
+    const dns = (service.dns ?? []).map(String).filter(Boolean)
+    expect(
+      dns.length,
+      'no explicit dns: entries — external name resolution silently depends on ' +
+        'the host resolver the day the network was created',
+    ).toBeGreaterThanOrEqual(1)
   })
 })

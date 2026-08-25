@@ -132,6 +132,14 @@ services:
     image: docker.io/searxng/searxng:latest
     container_name: ${TALARIA_SEARCH_CONTAINER:-talaria-searxng-dev}
     restart: unless-stopped
+    # Explicit DNS, same reason as the agent chassis: a metasearch engine is
+    # nothing but external name lookups, and docker's default upstream is
+    # whatever the host's /etc/resolv.conf named when the network was created —
+    # a loopback stub or a LAN resolver that refuses docker subnets leaves this
+    # container "healthy" and unable to resolve a single engine host.
+    dns:
+      - ${TALARIA_DNS_1:-1.1.1.1}
+      - ${TALARIA_DNS_2:-1.0.0.1}
     ports:
       # LOOPBACK ONLY, like minio. This instance has no authentication of any
       # kind — that is the point of an internal metasearch — so the control that

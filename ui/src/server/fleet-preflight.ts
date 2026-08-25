@@ -24,10 +24,10 @@
 // poll. It runs when the fleet changes (render, up) and its verdict is cached
 // for the alerts panel to read.
 import { execFile } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { getSetting, setSetting } from './audit'
-import { fleetNetworkName } from './fleet-render'
-import { MCP_PORT } from './mcp-service'
+import { FLEET_ENV, fleetNetworkName, MCP_GW_BASE } from './fleet-render'
 
 const exec = promisify(execFile)
 
@@ -48,7 +48,19 @@ export interface PreflightResult {
  *  is what the chassis maps via `extra_hosts`, so the probe uses the same name a
  *  rendered agent does rather than an address that only works from here. */
 const appTarget = () => `host.docker.internal:${process.env.PORT ?? 5273}`
-const mcpTarget = () => `host.docker.internal:${MCP_PORT()}`
+
+/** Where the rendered agent config actually points its 'talaria' MCP server:
+ *  the UI server's /api/mcp/gw (MCP_GW_BASE), NOT the standalone toolkit port.
+ *  The probe once tested host.docker.internal:<toolkit port>, which was the
+ *  fleet path when this file was written — agents moved to the gateway URL on
+ *  the app port, and the old probe kept crying wolf on hosts whose firewall
+ *  admits the app port but not the toolkit's, while every agent called tools
+ *  fine. Stand where the agent stands: derive from the same base the renderer
+ *  stamps into config.yaml. */
+const mcpTarget = () => {
+  const url = new URL(MCP_GW_BASE())
+  return `${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`
+}
 
 /** THE REMEDY, in the syntax of whatever this host actually runs.
  *
@@ -113,42 +125,43 @@ async function reaches(network: string, target: string, timeoutSec = 5): Promise
   }
 }
 
-/** Ask, from the fleet network, whether Talaria is reachable. Never throws:
- *  a docker that will not run is its own alert elsewhere, and a preflight that
- *  takes the caller down with it is worse than no preflight. */
-export async function runFleetPreflight(): Promise<PreflightResult> {
-  const at = new Date().toISOString()
-  let result: PreflightResult
-  try {
-    const network = await fleetNetworkName()
-    const app = appTarget()
-    const mcp = mcpTarget()
-    const [appOk, mcpOk] = await Promise.all([reaches(network, app), reaches(network, mcp)])
-
-    if (appOk && mcpOk) {
-      result = { ok: true, target: app, detail: 'agents can reach the app and the toolkit', at }
-    } else {
-      const dead = [!appOk && `the app (${app})`, !mcpOk && `the toolkit (${mcp})`].filter(Boolean).join(' and ')
-      const remedy = await firewallRemedy()
-      result = {
-        ok: false,
-        target: app,
-        // Named concretely, because the generic version of this sentence is what
-        // cost a day: the failure is on the HOST, in a place Docker's own rules
-        // do not cover, and the fix is a firewall rule rather than anything in
-        // Talaria.
-        detail:
-          `a container on the "${network}" network cannot reach ${dead}. Agents are running but cannot call a single tool. ` +
-          `Container→host traffic goes through the host's INPUT chain, which Docker does NOT manage — so a default-deny ` +
-          `firewall blocks it while every Docker rule still looks correct. ${remedy}`,
-        at,
-      }
-    }
-  } catch (e) {
-    result = { ok: false, target: appTarget(), detail: `preflight could not run: ${(e as Error).message}`, at }
+/** THE RESOLVERS A RENDERED AGENT ACTUALLY USES — the chassis pins `dns:` per
+ *  service (see its "External DNS" block for why docker's inherited upstream
+ *  cannot be trusted), so the probe must carry the same config or it would test
+ *  a path no agent takes. AGENT_DNS_1/_2 live in fleet/.env; the defaults are
+ *  the chassis template's. */
+async function agentDns(): Promise<string[]> {
+  const pick = (key: string, fallback: string) => {
+    const m = envText.match(new RegExp(`^${key}=(\\S+)`, 'm'))
+    return m?.[1] ?? fallback
   }
-  await setSetting(KEY, result).catch(() => {})
-  return result
+  const envText = await readFile(FLEET_ENV(), 'utf8').catch(() => '')
+  return [pick('AGENT_DNS_1', '1.1.1.1'), pick('AGENT_DNS_2', '1.0.0.1')]
+}
+
+/** Can a container on the fleet network resolve an EXTERNAL name? THE SECOND
+ *  SILENT PATH: the browser toolset fetches its engine from npm on first use
+ *  and every web tool resolves remote hosts, so agents without external DNS
+ *  come up green and quietly lose their browser — which is exactly how the
+ *  built-in browser shipped dead while every health check passed. Probed with
+ *  the same explicit resolvers the chassis gives agents. */
+async function resolvesExternally(network: string, dns: string[], timeoutSec = 5): Promise<boolean> {
+  const [primary, secondary] = dns
+  if (!primary || !secondary) return false
+  try {
+    await exec(
+      'docker',
+      [
+        'run', '--rm', '--network', network,
+        '--dns', primary, '--dns', secondary,
+        PROBE_IMAGE, 'sh', '-c', 'nslookup registry.npmjs.org >/dev/null 2>&1',
+      ],
+      { timeout: (timeoutSec + 20) * 1000 },
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** The last verdict, for surfaces that must not start a container to render.
@@ -156,4 +169,59 @@ export async function runFleetPreflight(): Promise<PreflightResult> {
  *  must not be reported as one. */
 export async function lastFleetPreflight(): Promise<PreflightResult | null> {
   return (await getSetting<PreflightResult | null>(KEY, null).catch(() => null)) ?? null
+}
+
+/** Ask, from the fleet network, whether Talaria is reachable and the internet
+ *  resolvable. Never throws: a docker that will not run is its own alert
+ *  elsewhere, and a preflight that takes the caller down with it is worse than
+ *  no preflight. */
+export async function runFleetPreflight(): Promise<PreflightResult> {
+  const at = new Date().toISOString()
+  let result: PreflightResult
+  try {
+    const network = await fleetNetworkName()
+    const app = appTarget()
+    const mcp = mcpTarget()
+    const dns = await agentDns()
+    const [appOk, mcpOk, dnsOk] = await Promise.all([
+      reaches(network, app),
+      reaches(network, mcp),
+      resolvesExternally(network, dns),
+    ])
+
+    if (appOk && mcpOk && dnsOk) {
+      result = { ok: true, target: app, detail: 'agents can reach the app, the toolkit, and the internet', at }
+    } else {
+      const parts: string[] = []
+      if (!(appOk && mcpOk)) {
+        const dead = [!appOk && `the app (${app})`, !mcpOk && `the MCP gateway (${mcp})`].filter(Boolean).join(' and ')
+        const remedy = await firewallRemedy()
+        // Named concretely, because the generic version of this sentence is what
+        // cost a day: the failure is on the HOST, in a place Docker's own rules
+        // do not cover, and the fix is a firewall rule rather than anything in
+        // Talaria.
+        parts.push(
+          `a container on the "${network}" network cannot reach ${dead}. Agents are running but cannot call a single tool. ` +
+          `Container→host traffic goes through the host's INPUT chain, which Docker does NOT manage — so a default-deny ` +
+          `firewall blocks it while every Docker rule still looks correct. ${remedy}`,
+        )
+      }
+      if (!dnsOk) {
+        // The browser shipped dead exactly like this: every health check green,
+        // every external name EAI_AGAIN/SERVFAIL, no error anywhere a person
+        // would read.
+        parts.push(
+          `a container on the "${network}" network cannot resolve external names through ${dns.join(' / ')}. ` +
+          `Agents look healthy but the browser toolset (and every web lookup) is dead. ` +
+          `If this network blocks public resolvers, set AGENT_DNS_1/AGENT_DNS_2 in fleet/.env to one it can reach ` +
+          `(the host's upstream, or a corporate forwarder), then re-render and restart the agents.`,
+        )
+      }
+      result = { ok: false, target: app, detail: parts.join(' ALSO: '), at }
+    }
+  } catch (e) {
+    result = { ok: false, target: appTarget(), detail: `preflight could not run: ${(e as Error).message}`, at }
+  }
+  await setSetting(KEY, result).catch(() => {})
+  return result
 }

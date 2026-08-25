@@ -58,6 +58,22 @@ service:
   # service DNS instead.
   extra_hosts:
     - 'host.docker.internal:host-gateway'
+  # ── External DNS ───────────────────────────────────────────────────────────
+  # Agents need real internet name resolution: the browser toolset fetches its
+  # agent-browser engine from npm on first use, and the web tools resolve
+  # remote hosts. Docker's default upstream is whatever the HOST's
+  # /etc/resolv.conf pointed at when the network was created, which breaks
+  # silently in two common ways: a loopback stub resolver on the host (docker
+  # rewires containers to the bridge IP, where nothing listens) and a LAN/router
+  # resolver that refuses queries arriving from docker subnets. Either way the
+  # fleet comes up green and every external name dies with EAI_AGAIN/SERVFAIL —
+  # exactly how the built-in browser shipped dead while agents looked healthy.
+  # Explicit resolvers per service sidestep the host's resolver entirely; the
+  # embedded 127.0.0.11 resolver forwards to these. Override AGENT_DNS_1/_2 in
+  # fleet/.env where public resolvers are blocked (e.g. a corporate forwarder).
+  dns:
+    - ${AGENT_DNS_1:-1.1.1.1}
+    - ${AGENT_DNS_2:-1.0.0.1}
   healthcheck:
     test: ['CMD-SHELL', 'curl -sf http://localhost:8642/health || exit 1']
     interval: 15s

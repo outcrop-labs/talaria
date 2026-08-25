@@ -29,7 +29,7 @@ import { serversForAgent } from './mcp-registry'
 
 /** The MCP gateway base as fleet containers reach it — the UI server over the
  *  docker host bridge (same pattern as the talaria-mcp fleet URL). */
-const MCP_GW_BASE = () =>
+export const MCP_GW_BASE = () =>
   process.env.TALARIA_MCP_GW_URL ?? `http://host.docker.internal:${process.env.PORT ?? 5273}/api/mcp/gw`
 import { orgProfile, orgSoulHeader, toolkitSoulHeader, voiceSoulHeader } from './org'
 import { getGuardConfig, guardCoachingFor } from './guardrails'
