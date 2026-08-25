@@ -4,7 +4,6 @@
   import Tabs from '@/components/ui/Tabs.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import { useSession } from '@/lib/session'
   import { useChannels } from '@/lib/channels.svelte'
   import { useHome, type HomeTab } from './home'
 
@@ -21,8 +20,6 @@
   // by key, so this is one fetch either way.
   let { value }: { value: HomeTab } = $props()
 
-  const session = useSession()
-  const isAdmin = $derived(session.data?.role === 'admin')
   const home = useHome()
   // Feeds the Comms badge count. Defaulted, a failed read renders "no unread" —
   // the one thing a badge exists to deny. Suppressing the badge is only half the
@@ -47,7 +44,6 @@
     { id: 'plans', label: 'Plans' },
     { id: 'research', label: 'Research' },
     { id: 'docs', label: 'Docs' },
-    ...(isAdmin ? [{ id: 'fleet' as const, label: 'Fleet' }] : []),
   ])
 
   // Tab labels carry an optional badge — bridged into the zero-arg snippet

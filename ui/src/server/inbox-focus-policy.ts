@@ -388,7 +388,6 @@ const SURFACE_BRIEFS: Record<string, string> = {
   knowledge: 'Knowledge — the organization’s document base',
   artifacts: 'Files — stored artifacts, documents and spreadsheets',
   agents: 'Agents — the agent roster, and each agent’s soul, tools and secrets',
-  fleet: 'Fleet — the running agent containers and their live state',
   studio: 'Agent Studio — where agent behaviour and workflows are authored',
   templates: 'Templates — reusable board, ticket and document templates',
   models: 'Models — model endpoints, routing tiers and fitness runs',

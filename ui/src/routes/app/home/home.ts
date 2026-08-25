@@ -5,7 +5,7 @@ import { createQuery } from '@tanstack/svelte-query'
 import { getJson, readJson } from '@/lib/fetch-json'
 import type { DotStatus } from '@/components/ui/chip'
 
-export const HOME_TABS = ['inbox', 'boards', 'comms', 'plans', 'research', 'docs', 'fleet'] as const
+export const HOME_TABS = ['inbox', 'boards', 'comms', 'plans', 'research', 'docs'] as const
 export type HomeTab = (typeof HOME_TABS)[number]
 
 export interface WorkItem {
@@ -40,7 +40,6 @@ export interface HomeSummary {
   queues: { triage: Queue; review: Queue; blocked: Queue }
   unread: number
   boards: number
-  fleet: { online: number; total: number; down: string[] }
 }
 
 export const useHome = () =>

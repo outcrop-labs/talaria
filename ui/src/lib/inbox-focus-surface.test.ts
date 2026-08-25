@@ -35,7 +35,7 @@ test('an unknown route falls back instead of throwing', () => {
 test('every route in the app map resolves to a labelled surface', () => {
   const paths = [
     '/', '/chat', '/comms', '/channels', '/inbox', '/boards', '/plan', '/research',
-    '/knowledge', '/artifacts', '/agents', '/fleet', '/studio', '/templates',
+    '/knowledge', '/artifacts', '/agents', '/studio', '/templates',
     '/models', '/mcp', '/observability', '/apps', '/settings', '/admin',
   ]
   for (const path of paths) {

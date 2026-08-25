@@ -61,6 +61,18 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   Subject, and Body for an email; When, Where/who, and Notes for an event —
   so the human approves what will actually go out, not a summary of it.
 
+### Removed
+- **Fleet is gone from Home.** The Fleet tab (admin-only) and its pulse view
+  are deleted — Agents shows the same running state, and Observability owns
+  the deep view, so a third copy was overhead nobody normal asked for. The
+  home summary no longer computes fleet health (one fewer container status
+  pass on every load), and the assistant's surface map no longer knows a
+  Fleet destination. Old links keep working: `/fleet` redirects to /agents,
+  and `/home/fleet` falls back to the Inbox like any unknown tab. Verified
+  live: `/api/home` returns no `fleet` key, the Home tab strip renders
+  Boards/Comms/Plans/Research/Docs with no Fleet entry for an admin, and the
+  surface tests (including the `/home/fleet` fallback pin) pass.
+
 ### Fixed
 - **Agent helpdesk tickets file to a board everyone can actually see.**
   `report_problem` used to land on a personal helpdesk board only the

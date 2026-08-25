@@ -37,7 +37,6 @@ const SURFACES: Array<{ prefix: string; id: string; label: string }> = [
   { prefix: '/knowledge', id: 'knowledge', label: 'Knowledge' },
   { prefix: '/artifacts', id: 'artifacts', label: 'Files' },
   { prefix: '/agents', id: 'agents', label: 'Agents' },
-  { prefix: '/fleet', id: 'fleet', label: 'Fleet' },
   { prefix: '/studio', id: 'studio', label: 'Agent Studio' },
   { prefix: '/templates', id: 'templates', label: 'Templates' },
   { prefix: '/models', id: 'models', label: 'Models' },

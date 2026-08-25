@@ -1,11 +1,10 @@
 // The Home/Today summary — the seamless landing. In Talaria's guardrail model
 // a person's job is to triage, review, and unblock the agents' work, so Home
 // surfaces exactly those queues (scoped to boards the user can see) plus unread
-// mentions and a glance at fleet health. One round-trip, cheap aggregates.
+// mentions. One round-trip, cheap aggregates.
 import { db } from './db/pg'
 import { activityFeed, type ActivityEvent } from './activity-feed'
 import { computeAlerts } from './alerts'
-import { containerStatus } from './fleet-docker'
 import { orgProfile } from './org'
 import { costOverview } from './usage'
 
@@ -113,22 +112,11 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
     where (m.user_id is not null or tm.user_id is not null) and b.archived_at is null
   `) as unknown as [{ boards: number }]
 
-  // Fleet health glance — container reality for enabled managed agents (the
-  // same truth /alerts shows), so Home reflects what's actually running.
-  const managed = (await sql`
-    select department, display_name as "displayName" from agent_defs
-    where managed and enabled order by slug
-  `) as unknown as Array<{ department: string; displayName: string }>
-  const states = managed.length ? await containerStatus(managed.map((m) => m.department)).catch(() => null) : []
-  const down =
-    states === null
-      ? []
-      : managed
-          .filter((m) => states.find((s) => s.department === m.department)?.managed?.state !== 'running')
-          .map((m) => m.displayName)
-
   // The org half of the glance: name, an activity pulse everyone sees, and
   // (admins) live alerts + today's spend. Failures degrade to quiet, never 500.
+  // (Fleet health is NOT here: it left Home with the Fleet tab — Agents and
+  // Observability own that question, and a docker status call per home load
+  // was a tax every user paid for a glance only admins ever saw.)
   const isAdmin = role === 'admin'
   const [profile, activity, alertCount, cost] = await Promise.all([
     orgProfile().catch(() => ({ name: '', about: '' })),
@@ -149,6 +137,5 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
     queues,
     unread,
     boards,
-    fleet: { online: managed.length - down.length, total: managed.length, down },
   }
 }

@@ -1,7 +1,6 @@
 <script lang="ts">
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { fly, staggerIn } from '@/lib/motion'
-  import { useSession } from '@/lib/session'
   import { useHome, type HomeTab } from './home'
   import HomeTabs from './HomeTabs.svelte'
   import BoardsTab from './BoardsTab.svelte'
@@ -9,12 +8,9 @@
   import PlansTab from './PlansTab.svelte'
   import ResearchTab from './ResearchTab.svelte'
   import DocsTab from './DocsTab.svelte'
-  import FleetTab from './FleetTab.svelte'
 
   let { tab }: { tab: Exclude<HomeTab, 'inbox'> } = $props()
 
-  const session = useSession()
-  const isAdmin = $derived(session.data?.role === 'admin')
   const home = useHome()
 
   // No strip claim from the console: the strip's route fallback names each
@@ -39,7 +35,7 @@
          the tab needs `isError`/`refetch` to tell an empty queue from a
          queue it could not read. -->
     <!-- Tab-pane grammar: rise in on switch, no exit. These are dense work
-         queues (boards, comms, fleet) — no stagger, no AutoHeight. -->
+         queues (boards, comms) — no stagger, no AutoHeight. -->
     {#key tab}
       <div in:fly={{ y: 6, duration: 200 }}>
         {#if tab === 'boards'}<BoardsTab {home} />{/if}
@@ -47,7 +43,6 @@
         {#if tab === 'plans'}<PlansTab />{/if}
         {#if tab === 'research'}<ResearchTab />{/if}
         {#if tab === 'docs'}<DocsTab />{/if}
-        {#if tab === 'fleet' && isAdmin}<FleetTab {home} />{/if}
       </div>
     {/key}
   </div>
