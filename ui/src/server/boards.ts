@@ -223,6 +223,44 @@ export async function unshareBoard(boardId: string, userId: string): Promise<voi
   await sql`delete from board_members where board_id = ${boardId} and user_id = ${userId} and role <> 'owner'`
 }
 
+// ── Org-wide boards ──────────────────────────────────────────────────────────
+// The workspace's own surfaces — the Helpdesk agents file their problems on,
+// and anything else the system creates on everyone's behalf. `org_wide` is the
+// FLAG; ACCESS IS MATERIALIZED, NOT DERIVED. A dozen read paths (list, role,
+// activity, home, uploads, the approvals census) already speak `board_members`
+// and nothing else, so teaching each to also union the flag would be a sweep
+// with a missed-path bug at the end of it. Instead the grant is rows: everyone
+// who exists is joined when the board is ensured (`joinEveryoneToBoard`), and
+// everyone who arrives later is joined at sign-in (`joinOrgWideBoards`). One
+// currency, zero special cases — an org-wide board is simply a board everyone
+// is an editor of.
+//
+// Editor, deliberately: "everyone has access" on a helpdesk means anyone can
+// open the ticket and move it along, while owner powers (rename, share,
+// delete) stay with the owner the board was created under. An unshare of an
+// org-wide member is undone by the next sign-in grant — the flag says whose it
+// is; if that is ever wrong, the fix is the flag, not the member list.
+
+/** Sign-in grant: this user joins every org-wide board as an editor. */
+export async function joinOrgWideBoards(userId: string): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into board_members (board_id, user_id, role)
+    select b.id, ${userId}, 'editor' from boards b where b.org_wide
+    on conflict (board_id, user_id) do nothing
+  `
+}
+
+/** Ensure-time grant: everyone who exists joins this board as an editor. */
+export async function joinEveryoneToBoard(boardId: string): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into board_members (board_id, user_id, role)
+    select ${boardId}, u.id, 'editor' from users u
+    on conflict (board_id, user_id) do nothing
+  `
+}
+
 // ── Board-scoped agents ──────────────────────────────────────────────────────
 export interface BoardAgentConfig {
   allowAll: boolean

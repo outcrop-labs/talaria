@@ -2057,6 +2057,158 @@ const MIGRATIONS: string[] = [
   // which is why it is null for every row this migration touches.
   `alter table agent_defs add column if not exists email_alias text`,
 
+  // ── BRIEF MIRRORS INTO THE AGENT CABINETS ──────────────────────────────────
+  //
+  // Brief mirrors used to file at the root of My Files, where they piled up
+  // one "Daily brief — <date>" doc per day per person. They now file under
+  // Agents/<agent>/Briefs like every other agent output (see
+  // agentCategoryFolder), and the mirror self-heals the folder on any later
+  // append — but a finished day never appends again, so installs that already
+  // have briefs need the move done for them.
+  //
+  // Two statements, because the Agents root has to exist before anything can
+  // point at it. Both are no-ops on installs with no mirrored briefs (fresh
+  // ones included), and a brief someone already filed by hand keeps its
+  // folder — only rootless mirrors move.
+  //
+  // THE SECOND STATEMENT WAS REVISED IN PLACE after one dev database had
+  // already applied it — the boot-time checksum check refused the edit, which
+  // is exactly what it is for. The revision ships as its own statement at the
+  // END of this array instead (see "brief mirrors, take two"); this one stays
+  // byte-for-byte what that database recorded. Do not "fix" it to match.
+  `insert into artifact_folders (name, created_by)
+   select 'Agents', 'system'
+   where not exists (select 1 from artifact_folders where parent_id is null and name = 'Agents')
+     and exists (select 1 from daily_briefs where artifact_id is not null)`,
+  `with names as (
+     select distinct coalesce(b.agent_name, 'Your assistant') as name
+     from daily_briefs b
+     where b.artifact_id is not null
+   ),
+   root as (
+     select id from artifact_folders where parent_id is null and name = 'Agents' limit 1
+   ),
+   inserted as (
+     insert into artifact_folders (name, parent_id, created_by)
+     select n.name, r.id, 'system'
+     from names n cross join root r
+     where not exists (
+       select 1 from artifact_folders f where f.parent_id = r.id and f.name = n.name
+     )
+     returning id, name
+   ),
+   agent_folders as (
+     select id, name from inserted
+     union
+     select f.id, f.name
+     from artifact_folders f
+     cross join root r
+     join names n on f.name = n.name
+     where f.parent_id = r.id
+   ),
+   briefs as (
+     insert into artifact_folders (name, parent_id, created_by)
+     select 'Briefs', a.id, 'system'
+     from agent_folders a
+     where not exists (
+       select 1 from artifact_folders g where g.parent_id = a.id and g.name = 'Briefs'
+     )
+     returning id, parent_id
+   )
+   update artifacts art
+   set folder_id = (
+     select g.id
+     from briefs g
+     join agent_folders a on g.parent_id = a.id
+     join names n on a.name = n.name
+     join daily_briefs b on b.artifact_id = art.id and coalesce(b.agent_name, 'Your assistant') = n.name
+     limit 1
+   )
+   where art.folder_id is null
+     and exists (select 1 from daily_briefs b where b.artifact_id = art.id)`,
+
+  // ── ORG-WIDE BOARDS ────────────────────────────────────────────────────────
+  //
+  // The workspace's own surfaces (the Helpdesk — see server/boards.ts, "Org-wide
+  // boards"). The flag marks ownership; access is materialized as ordinary
+  // board_members rows by the ensure and sign-in grants there, so nothing about
+  // how boards are listed, shared, or authorized changes.
+  `alter table boards add column if not exists org_wide boolean not null default false`,
+
+  // ── BRIEF MIRRORS, TAKE TWO ────────────────────────────────────────────────
+  //
+  // The reparent above only points a mirror at a Briefs folder it CREATED —
+  // its `briefs` CTE is the bare insert. An agent whose Briefs folder the
+  // runtime code path had already built (daily-brief-artifact.ts creates it
+  // on append, so this is any HMR-order upgrade where a brief landed between
+  // the two boots) was missed: the folder existed, the insert created nothing,
+  // and that agent's rootless mirrors stayed at My Files forever — the exact
+  // install the migration was written for.
+  //
+  // This is the revision of that statement, with the union arm that also
+  // collects the pre-existing Briefs folders. It exists as its own entry, and
+  // not as an edit to the one above, because that one had already applied to
+  // a dev database when the gap was found — the append-only checksum check
+  // refused the in-place edit, correctly, so the fix appends. A no-op
+  // everywhere the earlier statement already covered every agent (the folders
+  // did not exist when it ran, so its insert covered them all).
+  `with names as (
+     select distinct coalesce(b.agent_name, 'Your assistant') as name
+     from daily_briefs b
+     where b.artifact_id is not null
+   ),
+   root as (
+     select id from artifact_folders where parent_id is null and name = 'Agents' limit 1
+   ),
+   inserted as (
+     insert into artifact_folders (name, parent_id, created_by)
+     select n.name, r.id, 'system'
+     from names n cross join root r
+     where not exists (
+       select 1 from artifact_folders f where f.parent_id = r.id and f.name = n.name
+     )
+     returning id, name
+   ),
+   agent_folders as (
+     select id, name from inserted
+     union
+     select f.id, f.name
+     from artifact_folders f
+     cross join root r
+     join names n on f.name = n.name
+     where f.parent_id = r.id
+   ),
+   briefs_new as (
+     insert into artifact_folders (name, parent_id, created_by)
+     select 'Briefs', a.id, 'system'
+     from agent_folders a
+     where not exists (
+       select 1 from artifact_folders g where g.parent_id = a.id and g.name = 'Briefs'
+     )
+     returning id, parent_id
+   ),
+   briefs as (
+     select id, parent_id from briefs_new
+     union
+     -- An agent whose Briefs folder the code path already built is not in the
+     -- insert above, but its mirrors still need to point at that folder.
+     select g.id, g.parent_id
+     from artifact_folders g
+     join agent_folders a on g.parent_id = a.id
+     where g.name = 'Briefs'
+   )
+   update artifacts art
+   set folder_id = (
+     select g.id
+     from briefs g
+     join agent_folders a on g.parent_id = a.id
+     join names n on a.name = n.name
+     join daily_briefs b on b.artifact_id = art.id and coalesce(b.agent_name, 'Your assistant') = n.name
+     limit 1
+   )
+   where art.folder_id is null
+     and exists (select 1 from daily_briefs b where b.artifact_id = art.id)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

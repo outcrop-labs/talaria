@@ -58,7 +58,17 @@ export async function upsertUser(identity: Identity): Promise<User> {
       role = case when ${role} = 'admin' then 'admin' else users.role end
     returning id, sub, email, name, picture, role
   `
-  return rows[0] as User
+  const user = rows[0] as User
+  // Org-wide boards (the workspace Helpdesk) are everyone's by definition, so
+  // a sign-in joins this user to any they lack. Dynamic import for the same
+  // reason as allManageRoutes below: boards.ts imports from this file, and a
+  // static cycle would rather be avoided than argued with. Never fatal — a
+  // user who could not be joined still signs in; the next login retries.
+  const { joinOrgWideBoards } = await import('./boards')
+  await joinOrgWideBoards(user.id).catch((e: unknown) =>
+    console.error(`[users] could not join ${user.id} to org-wide boards:`, e),
+  )
+  return user
 }
 
 /** Set a user's display name (profile setting). */

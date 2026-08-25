@@ -397,8 +397,16 @@ export function upgradeDitherSurfaces(root: HTMLElement): () => void {
     // and is deliberately held back — it is the third thing saying "this one".
     // On a segmented cell it is the ONLY thing, with nothing beside it to
     // carry the meaning, and at the same weight it was barely visible in
-    // either theme. Full weight and a denser field.
-    const QUIET = { density: 0.72, weight: 0.78, ink: 'text' as const }
+    // either theme. Full density in the reading tone.
+    //
+    // BUT THE WEIGHT STAYS HALVED, and this is the calibration that 0.78 got
+    // wrong: the selected cell's label is painted in `text-fg` — the same
+    // token the field is drawn in. At 0.78 the lit cells reach ~0.83 alpha,
+    // which is the label's own colour at the label's own strength, and the
+    // word dissolves into its own highlight. Half weight lifts the field to
+    // ~0.5 — clearly there against the tile, clearly UNDER the label — and
+    // the density is what keeps it reading as material rather than speckle.
+    const QUIET = { density: 0.72, weight: 0.5, ink: 'text' as const }
 
     if (el.classList.contains('dither-mark')) {
       return quiet

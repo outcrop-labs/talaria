@@ -116,9 +116,9 @@ export const AGENTS_ROOT = 'Agents'
 
 /** The agent's filing cabinet: "Agents/<Agent label>/<Category>", created on
  *  demand. Auto-created artifacts (plan docs, research reports, agent
- *  documents, media saves, chat summaries) file here instead of piling up at
- *  the root. Never throws — filing must not be able to kill the flow that
- *  creates the artifact; a null just means "root". */
+ *  documents, media saves, chat summaries, brief mirrors) file here instead of
+ *  piling up at the root. Never throws — filing must not be able to kill the
+ *  flow that creates the artifact; a null just means "root". */
 export async function agentCategoryFolder(agentLabel: string, category: string, createdBy: string): Promise<string | null> {
   try {
     const root = await findOrCreateFolder(AGENTS_ROOT, null, createdBy)
@@ -132,7 +132,7 @@ export async function agentCategoryFolder(agentLabel: string, category: string, 
 /** The category folders `agentCategoryFolder` writes. Exported because the
  *  migration that reparented pre-existing cabinets matches on them, and the
  *  browser marks the Agents root as fleet-owned rather than yours. */
-export const AGENT_CATEGORIES = ['Documents', 'Media', 'Chat summaries', 'Plans', 'Research'] as const
+export const AGENT_CATEGORIES = ['Documents', 'Media', 'Chat summaries', 'Plans', 'Research', 'Briefs'] as const
 
 export async function saveArtifact(
   id: string,

@@ -17,7 +17,7 @@
 // every body change, so the artifact's history is a rough record of how the day
 // accumulated — a second, human-shareable view of the same append-only shape.
 import { db } from './db/pg'
-import { createArtifact, saveArtifact } from './artifacts'
+import { agentCategoryFolder, createArtifact, saveArtifact } from './artifacts'
 import { foldEntries } from './daily-brief-fold'
 import type { BriefEntry } from './daily-brief-types'
 import { BRIEF_SECTIONS, type BriefLine, type BriefSection } from './daily-brief-types'
@@ -32,6 +32,7 @@ const SECTION_TITLE: Record<BriefSection, string> = {
 interface MirrorRow {
   briefDate: string
   artifactId: string | null
+  folderId: string | null
   readSeq: number
   agentName: string | null
   ownerEmail: string | null
@@ -43,9 +44,10 @@ export async function mirrorBriefArtifact(briefId: string, userId: string): Prom
   const sql = await db()
   const rows = (await sql`
     select to_char(b.brief_date, 'YYYY-MM-DD') as "briefDate", b.artifact_id as "artifactId",
-           b.read_seq as "readSeq", b.agent_name as "agentName",
+           a.folder_id as "folderId", b.read_seq as "readSeq", b.agent_name as "agentName",
            u.email as "ownerEmail", u.name as "ownerName"
     from daily_briefs b join users u on u.id = b.user_id
+    left join artifacts a on a.id = b.artifact_id
     where b.id = ${briefId} and b.user_id = ${userId}
   `) as unknown as MirrorRow[]
   const row = rows[0]
@@ -62,13 +64,18 @@ export async function mirrorBriefArtifact(briefId: string, userId: string): Prom
   const title = `Daily brief — ${row.briefDate}`
   const actor = row.ownerEmail ?? row.ownerName ?? 'talaria'
   const body = renderBrief(entries, row)
+  // Briefs file with the rest of the agent's output — Agents/<agent>/Briefs —
+  // not loose in the root of My Files. `agentCategoryFolder` never throws
+  // (null = root), so a cabinet that cannot be built costs the brief its
+  // folder, never its mirror.
+  const folderId = await agentCategoryFolder(row.agentName ?? 'Your assistant', 'Briefs', actor)
 
   if (!row.artifactId) {
     // PRIVATE, and left that way. A brief is one person's attention state —
     // their unread DMs, their approvals, their blocked work — so the only
     // acceptable default is the one that discloses nothing. `visibility` is the
     // owner's to change from the artifact surface, deliberately, by hand.
-    const created = await createArtifact({ kind: 'doc', title, createdBy: actor, ownerUserId: userId })
+    const created = await createArtifact({ kind: 'doc', title, createdBy: actor, ownerUserId: userId, folderId })
     await sql`update daily_briefs set artifact_id = ${created.id} where id = ${briefId} and artifact_id is null`
     // Re-read rather than trusting the insert: a concurrent append may have won
     // the race and created its own, in which case that one is the mirror and
@@ -79,7 +86,11 @@ export async function mirrorBriefArtifact(briefId: string, userId: string): Prom
     await saveArtifact(winner[0]?.artifactId ?? created.id, { body }, actor)
     return
   }
-  await saveArtifact(row.artifactId, { title, body }, actor)
+  // SELF-HEAL THE FOLDER, ONCE. A brief mirrored before cabinets existed sits
+  // at the root; any later append files it. `folderId ?? row.folderId` — never
+  // the reverse — so a person who deliberately moved their brief somewhere is
+  // not fought on every append.
+  await saveArtifact(row.artifactId, { title, body, folderId: row.folderId ?? folderId }, actor)
 }
 
 /** The log as markdown. Reads as the document does — lede, sections in document

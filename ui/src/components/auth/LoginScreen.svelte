@@ -31,12 +31,48 @@
 
   const hasGoogle = $derived(providers.some((p) => p.id === 'google'))
   const hasPassword = $derived(providers.some((p) => p.id === 'password'))
+
+  // When Google is connected it IS the sign-in: one button, nothing else on
+  // the card. The password route stays reachable for the default org admin —
+  // tucked into the bottom corner, disclosed on demand — because a workspace
+  // that has gone all-in on Google login still needs its break-glass account,
+  // and putting that form beside the button made every visitor read a second
+  // first-class way in that exactly one person uses.
+  let adminLogin = $state(false)
 </script>
+
+<svelte:window onkeydown={(e) => e.key === 'Escape' && (adminLogin = false)} />
 
 <div class="relative flex min-h-screen items-center justify-center px-4">
   <div class="absolute right-4 top-4">
     <ThemeToggle />
   </div>
+
+  {#if hasGoogle && hasPassword}
+    <!-- The password route's whole residence when Google owns the card: a
+         mono whisper in the corner, disclosing the form on demand. Escape or
+         the toggle itself puts it away. -->
+    <div class="absolute bottom-4 left-4 flex flex-col items-start gap-2">
+      {#if adminLogin}
+        <div
+          in:fly={{ y: 8, duration: 150 }}
+          out:fly={{ y: 8, duration: 150 }}
+          class="w-72 rounded-[10px] border border-line bg-panel p-4 shadow-[var(--theme-shadow-2)]"
+        >
+          <div class="mb-3 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Password sign-in</div>
+          <PasswordForm />
+        </div>
+      {/if}
+      <button
+        type="button"
+        aria-expanded={adminLogin}
+        onclick={() => (adminLogin = !adminLogin)}
+        class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors hover:text-fg"
+      >
+        {adminLogin ? 'Close' : 'Admin sign-in'}
+      </button>
+    </div>
+  {/if}
 
   <!-- |global: the card animates on COMPONENT mount (the route renders it
        unconditionally), so a local intro never plays. Hard page loads stay
@@ -88,15 +124,7 @@
       {:else}
         <div class="flex flex-col gap-3">
           {#if hasGoogle}<GoogleButton />{/if}
-          {#if hasGoogle && hasPassword}
-            <!-- Divider between the OAuth and password routes. -->
-            <div class="flex items-center gap-3">
-              <div class="h-px flex-1 border-t border-line"></div>
-              <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">or</span>
-              <div class="h-px flex-1 border-t border-line"></div>
-            </div>
-          {/if}
-          {#if hasPassword}<PasswordForm />{/if}
+          {#if !hasGoogle && hasPassword}<PasswordForm />{/if}
         </div>
       {/if}
     </Panel>

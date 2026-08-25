@@ -3,7 +3,8 @@ import { json } from '@/server/http'
 import { z } from 'zod'
 import { requireAgent } from '@/server/agent-auth'
 import { audienceFor } from '@/server/approvals'
-import { boardAllowsAgent, createBoard, listAllBoards, setBoardAgentConfig } from '@/server/boards'
+import { boardAllowsAgent, createBoard, joinEveryoneToBoard, listAllBoards, setBoardAgentConfig } from '@/server/boards'
+import { createTeam } from '@/server/teams'
 import { agentTicketRefusal, createTask, getTask } from '@/server/tasks'
 import { addNotification } from '@/server/notifications'
 import { agentTextAuthority, rememberTicketRefusal } from '@/server/gaps'
@@ -18,18 +19,33 @@ const Body = z.object({
 })
 
 const HELPDESK = 'Helpdesk'
+const TALARIA = 'Talaria'
 
-/** The Helpdesk board — find-or-create, owned by the earliest admin, open to
- *  every agent so any of them can file. */
+/** The workspace Helpdesk — "Talaria > Helpdesk", org-wide. Tickets agents file
+ *  about their own gaps land on ONE board the whole workspace can open, not a
+ *  private board owned by whichever admin happened to be earliest (the old
+ *  shape: find-or-create by name, owned by that admin, seen by nobody else —
+ *  "a personal helpdesk board", which is useless).
+ *
+ *  Every call runs the full idempotent ensure: claim the board for the
+ *  workspace (org_wide + under the Talaria team, so the nav groups it under
+ *  "Talaria"), join everyone who exists, and keep it open to every agent. That
+ *  last part is also the UPGRADE path — a Helpdesk board created by the old
+ *  code is found by name and claimed rather than left personal. */
 async function helpdeskBoard(): Promise<{ id: string } | null> {
-  const existing = (await listAllBoards()).find((b) => b.name.toLowerCase() === HELPDESK.toLowerCase())
-  if (existing) return { id: existing.id }
   const sql = await db()
   const [admin] = (await sql`
     select id from users order by (role = 'admin') desc, created_at asc limit 1
   `) as unknown as Array<{ id: string }>
   if (!admin) return null
-  const board = await createBoard(admin.id, HELPDESK, null)
+  // The Talaria team is the system's shelf — the group header these boards sit
+  // under in the nav. No unique constraint on teams.name, so find-then-create.
+  const [team] = (await sql`select id from teams where name = ${TALARIA} limit 1`) as unknown as Array<{ id: string }>
+  const teamId = team?.id ?? (await createTeam(admin.id, TALARIA)).id
+  const existing = (await listAllBoards()).find((b) => b.name.toLowerCase() === HELPDESK.toLowerCase())
+  const board = existing ?? (await createBoard(admin.id, HELPDESK, teamId))
+  await sql`update boards set org_wide = true, team_id = ${teamId} where id = ${board.id}`
+  await joinEveryoneToBoard(board.id)
   await setBoardAgentConfig(board.id, true, [])
   return { id: board.id }
 }
@@ -64,12 +80,12 @@ async function helpdeskBoard(): Promise<{ id: string } | null> {
 // on: grant the access, fix the credential, add themselves to the board.
 //
 // KNOWN RESIDUAL, stated rather than hidden: the Helpdesk ticket itself is not
-// scoped by the originating board, so an admin who is a member of the Helpdesk
-// board can read the details there. That is a PULL surface someone chose to
-// open — the same residual server/gaps.ts records for the Studio's Suggested
-// queue — not a push into an inbox and a mailbox. (In practice Helpdesk is
-// created with a single member, the earliest admin, which is narrower than the
-// notification ever was.)
+// scoped by the originating board, so anyone who can see the Helpdesk board —
+// which is now the whole workspace, by design — can read the details there.
+// That is a PULL surface someone chose to open — the same residual
+// server/gaps.ts records for the Studio's Suggested queue — not a push into an
+// inbox and a mailbox. (Before the org-wide Helpdesk it was one admin; the
+// workspace-visible board is the point of the change, residual and all.)
 export const Route = defineApi('/api/agent/problem', {
   POST: async ({ request }) => {
     const caller = await requireAgent(request)

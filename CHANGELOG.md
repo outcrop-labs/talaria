@@ -49,6 +49,34 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   so the human approves what will actually go out, not a summary of it.
 
 ### Fixed
+- **Agent helpdesk tickets file to a board everyone can actually see.**
+  `report_problem` used to land on a personal helpdesk board only the
+  reporting user could open — a helpdesk nobody staffs. Problems now file to
+  an org-wide Helpdesk board under the Talaria team: org-wide boards
+  materialize an editor membership for every user (at ensure-time and on
+  every sign-in), so the whole org sees the board the moment something files
+  to it. Verified live: a synthetic agent problem posted with a real
+  per-agent key found the board org-wide with all four users holding editor
+  seats, and the ticket renders on /boards under Talaria → Helpdesk.
+- **The default admin can still sign in when Google owns the login screen.**
+  With a Google client connected the login screen is now the clean
+  one-button experience it should be — Continue with Google centered, no
+  password card — and the fallback is a quiet "Admin sign-in" whisper in the
+  corner that unfolds a password card (Escape closes it). Verified live in
+  both themes: Google button centered, no centered password form, the corner
+  disclosure opens and closes, and the admin signs in through it.
+- **Daily briefs file under Agents → [agent] → Briefs, not My Files.** Brief
+  transcripts used to drop into the owner's root folder where nothing else
+  lives. The artifact writer now ensures the per-agent Briefs folder chain,
+  and a migration (two appended statements — the second catches mirrors whose
+  folder the code path had already built; the checksum ledger refused the
+  in-place edit exactly as designed) moves every existing mirror into place.
+  Verified live: brief mirrors sit under Agents → Gregosaurus → Briefs.
+- **The dithered selector on segmented controls no longer washes out its
+  label.** The quiet band's ink weight is halved (0.78 → 0.5): the selection
+  still reads unmistakably against the tile, but the label reads through it.
+  Verified live on /agents — the highlighted option's label is clearly
+  legible over the texture.
 - **A migration added while the dev server runs now applies on the next
   request.** The migration runner caches its "done" promise on globalThis so
   vite's SSR module reloads don't re-open the pool — but that also meant a
