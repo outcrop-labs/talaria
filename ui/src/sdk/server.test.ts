@@ -13,7 +13,19 @@ import { z } from 'zod'
 // VERBATIM, imported from `@talaria/sdk/server` exactly as the doc says to, and
 // run through the real runner against a recorded reply. A rename anywhere in the
 // contract now breaks the typecheck of the documentation itself.
-import { defineHarness, defineWorkbenchHarness, belowAnswerFloor, NO_TOOLS, type EvalCase, type HarnessDefinition, type ToolDefinition, type ToolCall } from './server'
+import {
+  defineHarness,
+  defineWorkbenchHarness,
+  belowAnswerFloor,
+  NO_TOOLS,
+  resolveHarnessModel,
+  runHarness as runHarnessFromSdk,
+  type EvalCase,
+  type HarnessDefinition,
+  type RunContext,
+  type ToolDefinition,
+  type ToolCall,
+} from './server'
 import { runHarness } from '@/server/harness/run'
 
 const TRIAGE = z.object({ severity: z.enum(['low', 'medium', 'high']), reason: z.string() })
@@ -117,6 +129,20 @@ describe('the rest of the exported surface, as SDK.md lists it', () => {
     ]
     const call: ToolCall = { name: 'get_weather', args: '{"city":"Lisbon"}' }
     expect(tools[0]?.name).toBe(call.name)
+  })
+
+  it('exports runHarness and resolveHarnessModel, so an app bridge can run its own harnesses', () => {
+    // The gap this closes: the registry runs app harnesses on the app's behalf,
+    // but a bridge (live-if-routable with an app-side fallback) is the app's OWN
+    // server code invoking them — and `@/server/harness/*` specifiers cannot
+    // resolve from apps/, where only the SDK ids reach. The bridge needs the
+    // same runner and the free probe, or it cannot exist outside the ui root.
+    // `RunContext` rides along: a bridge building its caller/signal apart from
+    // the call has no type to annotate the context with otherwise.
+    const ctx: RunContext = { caller: 'app:leadworks:intake' }
+    expect(typeof runHarnessFromSdk).toBe('function')
+    expect(typeof resolveHarnessModel).toBe('function')
+    expect(ctx.caller).toBe('app:leadworks:intake')
   })
 
   it('HarnessDefinition means the ACTIVITY contract and takes two type arguments', () => {

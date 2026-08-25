@@ -210,3 +210,28 @@ export function defineHarness(h: WorkbenchHarnessDefinition): WorkbenchHarnessDe
 export function defineHarness<T>(h: T): T {
   return h
 }
+
+// ── The runner, from app code ───────────────────────────────────────────────
+// The registry runs app harnesses on the app's behalf (fitness matrix, admin
+// panel) — but an app's OWN server code has a legitimate reason to invoke one
+// directly: the bridge pattern, where a route runs its harness live when a
+// model chain is routable and falls back to its own deterministic answer when
+// one isn't, journaling which answered. That code sits in apps/<slug>/, where
+// the tsconfig-paths plugin doesn't reach — `@/server/harness/run` cannot
+// resolve there BY DESIGN (the vite config extends only the SDK ids to app
+// files), so the SDK is the only road in and these two are app surface:
+//
+//   runHarness          — the one runner: resolve, floor, widen, render, call,
+//                         parse, repair, guard, redact, meter, `harness_runs`
+//                         row. Same function the registry uses; an app calling
+//                         it gets byte-identical accounting.
+//   resolveHarnessModel — the free probe (no model call): what chain would
+//                         carry a harness with this spec, or null. A bridge
+//                         labels itself honestly without spending a turn.
+//
+// `RunContext` rides along by the same argument as `ToolDefinition` above: a
+// bridge that builds its context apart from the call (caller now, signal from
+// the request) has no type to annotate it with otherwise.
+export { runHarness } from '@/server/harness/run'
+export type { RunContext } from '@/server/harness/run'
+export { resolveHarnessModel } from '@/server/harness/model'
