@@ -97,6 +97,20 @@ test('the kill switch wins over everything', async () => {
   assert.equal(r.started, false)
 })
 
+test('an apply on the latest rev is refused before anything is recorded', async () => {
+  process.env.TALARIA_RUNTIME = 'prod-server'
+  // origin/main points at HEAD: nothing to pull.
+  plant(['rev-parse', 'origin/main'], `${HEAD}\n`)
+  const r = await applyUpdate('manual')
+  assert.equal(r.started, false)
+  assert.match(r.error ?? '', /up to date/i)
+  // A refusal is not a run: lastRun must stay empty so the panel never shows
+  // an update that "happened" and did nothing.
+  const s = await updaterState()
+  assert.equal(s.lastRun, null)
+  assert.equal(s.history.length, 0)
+})
+
 test('a dirty checkout is refused, not pulled over', async () => {
   process.env.TALARIA_RUNTIME = 'prod-server'
   plant(['status', '--porcelain'], ' M ui/src/server/home.ts\n?? notes.txt\n')
