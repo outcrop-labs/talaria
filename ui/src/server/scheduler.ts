@@ -109,6 +109,12 @@ export type JobName =
   // REQUIRED_JOBS: its failure mode is a slower first marketplace load (the
   // request path resolves on demand), not work that silently never happens.
   | 'mcp-library-refresh'
+  // server/updater.ts — the auto-update check (does nothing unless an admin
+  // has switched auto-update on). NOT in REQUIRED_JOBS for the same reason
+  // as mcp-library-refresh: its failure mode is a stale "last checked" next
+  // to a switch the panel shows directly, not work that silently never
+  // happens.
+  | 'update-check'
 
 const REQUIRED_JOBS: JobName[] = [
   'comms-decay',

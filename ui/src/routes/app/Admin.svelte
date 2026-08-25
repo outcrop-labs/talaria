@@ -39,6 +39,7 @@
   import AdminOutreachPanel from './AdminOutreachPanel.svelte'
   import AdminSettingsPanel from './AdminSettingsPanel.svelte'
   import AdminSignupDomainsPanel from './AdminSignupDomainsPanel.svelte'
+  import AdminUpdatePanel from './AdminUpdatePanel.svelte'
   import AdminUserPermChips from './AdminUserPermChips.svelte'
   import { ADMIN_TABS, useAdminPermissions, useAdminUsers, type AdminTab } from './admin'
 
@@ -131,6 +132,7 @@
       {#if tab === 'security'}
         <AdminEncryptionPanel />
         <AdminSettingsPanel />
+        <AdminUpdatePanel />
       {/if}
       {#if tab === 'people'}<AdminInvitesPanel />{/if}
       {#if tab === 'people'}

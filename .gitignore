@@ -53,3 +53,8 @@ docker/searxng/settings.local.yml
 # Gitignore does not affect the build-time apps glob; the app compiles and runs
 # in dev while staying out of this repo's history.
 apps/leadworks/
+
+# The in-app updater: the restart helper lives and logs here.
+logs/
+ui/dist-next/
+ui/dist-prev/

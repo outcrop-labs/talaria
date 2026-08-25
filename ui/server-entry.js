@@ -46,6 +46,11 @@ function loadEnvFile() {
 const envLoaded = loadEnvFile()
 if (envLoaded) console.log(`[talaria-ui] loaded ${envLoaded} value(s) from ui/.env (existing environment left untouched)`)
 
+// Mark the runtime BEFORE the app graph loads: the in-app updater only runs
+// on a real server install, and this is how it tells one from `vite dev`
+// (which reloads on file change and must never pull the repo mid-session).
+process.env.TALARIA_RUNTIME = 'prod-server'
+
 // Fail the boot on a bad environment rather than the first request that touches
 // a missing value. env.ts is TypeScript, which Node executes directly from
 // v22.18 (unflagged type stripping) — on an older runtime we say so and carry

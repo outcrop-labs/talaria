@@ -29,6 +29,17 @@ Then:
    renders the fleet and brings it up under the `talaria-fleet` compose project; each agent's models
    route through Talaria's gateway.
 
+### Updating an install
+
+An install updates itself: `Admin → Security → Updates` shows the running commit, checks the
+remote, and `Update now` pulls, installs, builds into `dist-next`, swaps it for `dist` (the old
+build stays one generation as a manual rollback), and restarts the server through
+`scripts/update-restart.mjs`. Manual by default; the `Update automatically` toggle opts into a
+scheduled check every few hours. Dev installs never update (vite reloads on its own), a dirty
+checkout is refused rather than pulled over, and `TALARIA_UPDATER=off` is the kill switch for
+installs supervised some other way (systemd and friends, which own their own restarts). Logs land
+in `logs/talaria.log` and `logs/updater.log` at the repo root.
+
 ### Back up the root key
 
 `TALARIA_SECRET_KEY` lives in `ui/.env`. **Copy it somewhere a snapshot isn't.** Every stored
