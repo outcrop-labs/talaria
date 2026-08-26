@@ -42,6 +42,23 @@ as_user() {
   runuser -u "$APP_USER" -- env PATH="$BUN_BIN:/usr/local/bin:/usr/bin:/bin" HOME="$APP_HOME" "$@"
 }
 
+# ── This instance's name ──────────────────────────────────────────────────────
+# The template neutralizes its hostname at build time, and the cicustom
+# snippet replaces the user-data that would otherwise carry one — so every
+# clone would answer to "talaria-image" until something names it. The env var
+# is the per-instance channel: set it in the snippet and the box wears it.
+if [ -n "${TALARIA_HOSTNAME:-}" ]; then
+  if hostnamectl set-hostname "$TALARIA_HOSTNAME"; then
+    say "hostname: $TALARIA_HOSTNAME"
+    # sudo and friends resolve the bare hostname through hosts(5); the
+    # template ships no entry, so make one (idempotent: replace, not append).
+    sed -i '/^127\.0\.1\.1[[:space:]]/d' /etc/hosts
+    printf '127.0.1.1\t%s\n' "$TALARIA_HOSTNAME" >> /etc/hosts
+  else
+    warn "could not set hostname '$TALARIA_HOSTNAME' — continuing as $(hostname)"
+  fi
+fi
+
 # ── Tailnet ──────────────────────────────────────────────────────────────────
 # Non-fatal by design: an expired or typo'd key must not keep the box from
 # becoming a working LAN instance.
