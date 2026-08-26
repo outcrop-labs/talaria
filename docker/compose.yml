@@ -1,0 +1,278 @@
+# Talaria — one instance, whole stack. The app container (built from the root
+# Dockerfile) plus its stateful sidecars. Full story: docs/CONTAINER.md.
+#
+#   docker compose -f docker/compose.yml up -d --build
+#   (or: cd docker && docker compose up -d --build)
+#
+# Zero required env — every ${VAR:-default} below has one, and the app's
+# entrypoint generates the secrets the environment doesn't supply into the
+# persistent state dir. First-boot admin credentials print once in the logs:
+#
+#   docker compose -f docker/compose.yml logs talaria | grep -A2 'Sign in'
+#
+# Three load-bearing shapes (the WHY is in docs/CONTAINER.md — Networking):
+#   1. State is a HOST BIND mounted at the SAME path on both sides
+#      (${TALARIA_STATE_DIR:-/var/lib/talaria} on BOTH ends — any value keeps
+#      them equal): the fleet renderer bakes absolute host paths into agent
+#      bind mounts, and the HOST daemon resolves them — a named volume (or a
+#      bind that moves the container side) would be invisible to agents.
+#   2. The docker socket is mounted into the app: the fleet spawns agent
+#      containers as siblings on the host daemon. Socket = host root; the
+#      tradeoff and the socket-proxy alternative are in docs/CONTAINER.md.
+#   3. Two networks: `internal` (app + sidecars, nothing published) and the
+#      shared `talaria` fleet network — the app joins it so agent containers
+#      reach it container→container (no host firewall rule needed) and vice
+#      versa. Only the app is on it: agents can reach the app, never postgres.
+#
+# Multi-instance on one host: give each instance its own COMPOSE_PROJECT_NAME,
+# TALARIA_STATE_DIR, TALARIA_HTTP_PORT — and its own TALARIA_FLEET_NETWORK
+# (AND matching network.name in that instance's /var/lib/talaria/fleet/
+# chassis.yml), or docker DNS will round-robin instances sharing an alias.
+name: talaria
+
+x-talaria-build: &talaria-build
+  # Build at deploy time (repo checkout). When you adopt a registry, switch
+  # BOTH talaria and searxng-config to `image: ghcr.io/outcrop-labs/talaria:x`
+  # — the init service is the same image in a different role.
+  context: ..
+  dockerfile: Dockerfile
+
+services:
+  # One-shot init: generates first-boot secrets into the state dir (single
+  # writer — the app depends_on this completing) and renders SearXNG's
+  # settings, which that image reads only from a file, never the env. Runs as
+  # root so it can write the compose-created settings volume, then hands
+  # everything it made to the app's uid (10001).
+  searxng-config:
+    build: *talaria-build
+    # Same image in a different role — a `docker build -t talaria:latest .`
+    # satisfies both services (`up --no-build` skips rebuilding).
+    image: talaria:latest
+    user: '0:0'
+    restart: 'no'
+    command: [render-searxng]
+    environment:
+      TALARIA_STATE_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}
+      SEARXNG_SETTINGS_TARGET: /searxng/settings.yml
+    volumes:
+      - ${TALARIA_STATE_DIR:-/var/lib/talaria}:${TALARIA_STATE_DIR:-/var/lib/talaria}
+      - searxng-config:/searxng
+    networks: [internal]
+
+  talaria:
+    build: *talaria-build
+    image: talaria:latest
+    restart: unless-stopped
+    ports:
+      - '${TALARIA_HTTP_PORT:-5273}:5273'
+    volumes:
+      # SAME path on both sides, by construction: the fleet renderer bakes
+      # container-visible state paths into agent bind mounts that the HOST
+      # daemon resolves — an override that moved the container side would
+      # break every agent spawn.
+      - ${TALARIA_STATE_DIR:-/var/lib/talaria}:${TALARIA_STATE_DIR:-/var/lib/talaria}
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket's group on the HOST — find yours with:
+    #   DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+    group_add:
+      - '${DOCKER_GID:-999}'
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      searxng-config:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # /api/healthz flips ok only when the DB is migrated and reachable.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:5273/api/healthz >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    # Explicit upstream resolvers, same reason as the agent chassis and
+    # searxng: the app fetches external URLs (OAuth discovery, favicons,
+    # catalogs), and on hosts whose resolv.conf names a loopback stub
+    # (systemd-resolved, Tailscale MagicDNS) docker's embedded forwarder
+    # cannot resolve anything external. Service names (postgres, searxng…)
+    # still resolve — the embedded resolver answers those itself.
+    dns:
+      - ${TALARIA_DNS_1:-1.1.1.1}
+      - ${TALARIA_DNS_2:-1.0.0.1}
+    environment:
+      # The state tree, same-path inside the container (see volumes) — the
+      # entrypoint reads this, and the app's path overrides track it.
+      TALARIA_STATE_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}
+      TALARIA_UPLOADS_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/uploads
+      TALARIA_FLEET_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/fleet
+      TALARIA_APPS_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/apps
+      # Service DNS replaces every dev-loopback address. Password is the one
+      # knob — user/db names are fixed into the DATABASE_URL default.
+      DATABASE_URL: ${DATABASE_URL:-postgres://talaria:${POSTGRES_PASSWORD:-talaria}@postgres:5432/talaria}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      TALARIA_QDRANT_URL: ${TALARIA_QDRANT_URL:-http://qdrant:6333}
+      TALARIA_EMBED_URL: ${TALARIA_EMBED_URL:-http://embeddings:80}
+      # Built-in object storage: the same interpolated key pair configures the
+      # app AND the minio container below. The default is documented, not
+      # secret — set a real one (openssl rand -hex 24) for anything exposed.
+      TALARIA_S3_URL: ${TALARIA_S3_URL:-http://minio:9000}
+      TALARIA_S3_BUCKET: ${TALARIA_S3_BUCKET:-talaria}
+      TALARIA_S3_ACCESS_KEY: ${TALARIA_S3_ACCESS_KEY:-talaria}
+      TALARIA_S3_SECRET_KEY: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
+      # Container-mode fleet wiring: agents reach the app by its service name
+      # on the shared network, and the app dials agents by theirs
+      # (ui/src/server/fleet-render.ts writeFleetManifest).
+      TALARIA_MCP_GW_URL: ${TALARIA_MCP_GW_URL:-http://talaria:5273/api/mcp/gw}
+      TALARIA_GATEWAY_SELF_URL: ${TALARIA_GATEWAY_SELF_URL:-http://talaria:5273/api/llm/v1}
+      TALARIA_AGENT_DIAL: ${TALARIA_AGENT_DIAL:-container}
+      # Fronted by TLS (Dokploy/Traefik domain, or any reverse proxy)? Set
+      # these three through the environment instead — plain http is the
+      # default posture and browsers refuse Secure cookies over it:
+      #COOKIE_SECURE: '1'
+      #AUTH_PUBLIC_URL: https://talaria.example.com
+      #TALARIA_TRUST_PROXY: '1'
+    networks:
+      - internal
+      - talaria
+    # Resource ceilings are a per-deployment decision; these are the anchors
+    # the fleet's own chassis uses, offered as a starting point:
+    #deploy:
+    #  resources:
+    #    limits: { memory: 4g, cpus: '4' }
+    # Dokploy/Traefik domain routing (uncomment + edit, and add the
+    # dokploy-network to `networks:` above):
+    #labels:
+    #  - traefik.enable=true
+    #  - traefik.http.routers.talaria.rule=Host(`talaria.example.com`)
+    #  - traefik.http.routers.talaria.entrypoints=websecure
+    #  - traefik.http.services.talaria.loadbalancer.server.port=5273
+
+  # ── Sidecars (ported from docker/dev-compose.yml; healthchecks intact) ────
+  # No published ports anywhere: in-container DNS replaces the dev stack's
+  # loopback publishing, and nothing on the host network can reach any of
+  # these — several carry no authentication at all.
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: talaria
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-talaria}
+      POSTGRES_DB: talaria
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  qdrant:
+    image: docker.io/qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/6333"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [internal]
+
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    # TEI publishes amd64-only CPU images (see #151): on arm64 hosts this runs
+    # under emulation — fine for this small model, or point TALARIA_EMBED_URL
+    # at an external embeddings endpoint instead.
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ['--model-id', '${TALARIA_EMBED_MODEL:-BAAI/bge-small-en-v1.5}']
+    # TEI pulls its model on a fresh cache — explicit DNS for the same
+    # stub-resolver reason as the app service above.
+    dns:
+      - ${TALARIA_DNS_1:-1.1.1.1}
+      - ${TALARIA_DNS_2:-1.0.0.1}
+    volumes:
+      - tei-cache:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/80"']
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    networks: [internal]
+
+  minio:
+    image: docker.io/minio/minio:latest
+    restart: unless-stopped
+    command: ['server', '/data']
+    environment:
+      MINIO_ROOT_USER: ${TALARIA_S3_ACCESS_KEY:-talaria}
+      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [internal]
+
+  # AGPL separation, same as dev: SearXNG runs as its own unmodified upstream
+  # container reached over HTTP (see docker/dev-compose.yml for the licence
+  # reasoning). Settings come from the rendered file the init service wrote —
+  # mounted as a directory (the upstream-supported shape), read-only.
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    depends_on:
+      searxng-config:
+        condition: service_completed_successfully
+    dns:
+      - ${TALARIA_DNS_1:-1.1.1.1}
+      - ${TALARIA_DNS_2:-1.0.0.1}
+    environment:
+      # Must match how the app reaches it (service DNS) or result payloads
+      # carry links nothing can follow.
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      - searxng-config:/etc/searxng:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+networks:
+  internal: {}
+  # The fleet's shared network — agent containers attach to it (rendered
+  # compose declares it external) so app↔agent traffic is container→container.
+  # Compose-managed (not `external: true`) so the very first `up` on a fresh
+  # host creates it; `ensureFleetNetwork` adopts one that already exists.
+  # Per-instance rename via TALARIA_FLEET_NETWORK (see header note).
+  talaria:
+    name: ${TALARIA_FLEET_NETWORK:-talaria}
+    driver: bridge
+
+volumes:
+  pg-data: {}
+  redis-data: {}
+  qdrant-data: {}
+  tei-cache: {}
+  minio-data: {}
+  searxng-config: {}

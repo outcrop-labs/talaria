@@ -44,10 +44,16 @@ export interface PreflightResult {
   at: string
 }
 
-/** The host:port an agent is configured to reach Talaria on. `host.docker.internal`
- *  is what the chassis maps via `extra_hosts`, so the probe uses the same name a
- *  rendered agent does rather than an address that only works from here. */
-const appTarget = () => `host.docker.internal:${process.env.PORT ?? 5273}`
+/** The host:port an agent is configured to reach Talaria on. Derived from
+ *  MCP_GW_BASE — the same origin the renderer stamps into agent config — so
+ *  the probe stands where the agents stand. The hardcoded host.docker.internal
+ *  this replaces cried wolf on containerized instances (app on the fleet
+ *  network, maybe behind a proxy with no published host port): every agent
+ *  called tools fine while the preflight reported the app unreachable. */
+const appTarget = () => {
+  const url = new URL(MCP_GW_BASE())
+  return `${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`
+}
 
 /** Where the rendered agent config actually points its 'talaria' MCP server:
  *  the UI server's /api/mcp/gw (MCP_GW_BASE), NOT the standalone toolkit port.

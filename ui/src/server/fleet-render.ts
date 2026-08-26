@@ -807,11 +807,11 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
 async function writeFleetManifest(result: RenderResult): Promise<void> {
   const sql = await db()
   const defs = (await sql`
-    select d.slug, d.department, d.model, d.gateway_port as "gatewayPort", v.config
+    select d.slug, d.department, d.model, d.gateway_port as "gatewayPort", d.active_slot as "activeSlot", v.config
     from agent_defs d
     left join agent_versions v on v.agent_id = d.id and v.version = d.current_version
     where d.enabled order by d.slug
-  `) as unknown as Array<{ slug: string; department: string; model: string; gatewayPort: number | null; config: AgentConfig | null }>
+  `) as unknown as Array<{ slug: string; department: string; model: string; gatewayPort: number | null; activeSlot: string | null; config: AgentConfig | null }>
 
   const env = await readFile(FLEET_ENV(), 'utf8').catch(() => '')
   const keys = new Map<string, string>()
@@ -824,7 +824,16 @@ async function writeFleetManifest(result: RenderResult): Promise<void> {
     const key = keys.get(d.slug) ?? ''
     if (!key) result.warnings.push(`${d.slug}: no HERMES_KEY_${d.slug.toUpperCase()} in the fleet .env`)
     if (!d.gatewayPort) result.warnings.push(`${d.slug}: no gateway port assigned yet — render again`)
-    const url = `http://${AGENT_HOST()}:${d.gatewayPort ?? 0}`
+    // Container mode (TALARIA_AGENT_DIAL=container, set by docker/compose.yml):
+    // the app runs ON the fleet network, so it dials each agent's compose
+    // service name directly — the loopback-published ports above sit on the
+    // HOST's 127.0.0.1, which a container cannot reach. Slot-aware, same
+    // service-name expression the renderer itself uses; during a roll the DB's
+    // active_slot stays the source of truth and cutover re-renders.
+    const url =
+      process.env.TALARIA_AGENT_DIAL === 'container'
+        ? `http://agent-${d.department}${d.activeSlot === 'b' ? '-b' : ''}:8642`
+        : `http://${AGENT_HOST()}:${d.gatewayPort ?? 0}`
     return [
       { model: d.model, url, key },
       ...(d.config?.aliases ?? []).map((a) => ({ model: `${d.model}-${a.name}`, url, key })),
