@@ -1,5 +1,5 @@
 # One devbox: a toolchain container plus its private stateful sidecars. This
-# file is a TEMPLATE — scripts/devbox interpolates it with
+# file is a TEMPLATE — `talaria box new` interpolates it with
 # `--env-file <devboxes>/<name>/compose.env` and `-p devbox-<name>`. It is not
 # meant to be run by hand. Full story: docs/DEVBOX.md.
 #
@@ -52,8 +52,8 @@ services:
       - home:/home/dev
       - /var/run/docker.sock:/var/run/docker.sock
       - ${BOX_HOME}/.ssh:/home/dev/.ssh:ro
-    # The socket's group on the HOST: scripts/devbox lifts it with
-    # `stat -c %g /var/run/docker.sock`.
+    # The socket's group on the HOST: `talaria box new` lifts it with
+    # `statSync('/var/run/docker.sock').gid`.
     group_add:
       - '${DOCKER_GID:-999}'
     security_opt:
@@ -136,8 +136,8 @@ services:
     restart: unless-stopped
     command: ['server', '/data']
     environment:
-      # The app and this container share the pair; scripts/devbox lifts the
-      # values from the primary ui/.env so the seed mirror is pure bytes.
+      # The app and this container share the pair; `talaria box new` lifts
+      # the values from the primary ui/.env so the seed mirror is pure bytes.
       MINIO_ROOT_USER: ${BOX_S3_ACCESS_KEY:-talaria}
       MINIO_ROOT_PASSWORD: ${BOX_S3_SECRET_KEY:-talaria-dev-secret}
     volumes:

@@ -7,7 +7,7 @@ import { realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
-import { exec, pipe, run, type ExecOpts, type ExecResult } from './exec'
+import { exec, pipe, run, type ExecOpts, type ExecResult, type PipeOpts } from './exec'
 import { makeLog, type Log } from './ui'
 import { repoRoot } from './paths'
 
@@ -19,7 +19,7 @@ export type Ctx = {
   /** Inherit-stdio run; resolves the exit code. */
   run: (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<number>
   /** Streaming pipeline with pipefail semantics. */
-  pipe: (a: [string, string[]], b: [string, string[]], opts?: { cwd?: string }) => Promise<void>
+  pipe: (a: [string, string[]], b: [string, string[]], opts?: PipeOpts) => Promise<void>
   /** Interactive prompt (typed confirms). Reads stdin even without a tty. */
   readLine: (prompt: string) => Promise<string>
   env: Record<string, string | undefined>

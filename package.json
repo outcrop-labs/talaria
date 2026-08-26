@@ -7,7 +7,7 @@
   "scripts": {
     "talaria": "bun cli/bin/talaria.ts",
     "dev": "bun cli/bin/talaria.ts dev",
-    "devbox": "./scripts/devbox",
+    "devbox": "bun cli/bin/talaria.ts box",
     "build": "cd ui && bun run build",
     "start": "cd ui && bun run start",
     "test": "cd ui && bun run test",

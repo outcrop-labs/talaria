@@ -96,7 +96,7 @@ Spin up an **isolated** dev stack per branch instead of running two servers agai
 see [`docs/WORKTREES.md`](./docs/WORKTREES.md) (`./scripts/worktree.sh <name>`). For parallel
 *agent* sessions, the containerized alternative is a devbox — a full stack per
 task with the agent CLIs inside: [`docs/DEVBOX.md`](./docs/DEVBOX.md)
-(`./scripts/devbox new <name>`).
+(`bun talaria box new <name>`).
 
 ---
 

@@ -207,8 +207,14 @@ async function dispatchInner(ctx: Ctx, root: Group, argv: string[]): Promise<num
     throw new CliError(`unknown command \`${path.join(' ')} ${argv[i]}\``)
   }
   const rest = argv.slice(i)
-  const args = parseArgs(rest, node.flags ?? [], path.join(' '))
   const spec = node.positionals
+  // A `multiple` positional (`box enter <name> cmd…`) is a PASSTHROUGH: the
+  // rest of the argv belongs to the inner command — `-lc` is sh's, `--model`
+  // is claude's. Flag parsing stops at the command path; that's the bash
+  // `"$@"` contract the documented `enter demo sh -lc '…'` shape relies on.
+  const args: ParsedArgs = spec?.multiple
+    ? { positionals: rest, flags: {} }
+    : parseArgs(rest, node.flags ?? [], path.join(' '))
   if (spec) {
     if (spec.required && args.positionals.length === 0) {
       throw new CliError(`${path.join(' ')}: <${spec.name}> is required`)
