@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { db } from './db/pg'
-import { FLEET_DIR, FLEET_ENV, fleetNetworkName } from './fleet-render'
+import { FLEET_DIR, FLEET_ENV, fleetNetworkName, fleetProject } from './fleet-render'
 
 const run = promisify(execFile)
 
@@ -14,7 +14,7 @@ const run = promisify(execFile)
 // — and only the roll orchestration addresses a slot explicitly.
 export type Slot = 'a' | 'b'
 export const slotService = (department: string, slot: Slot) => `agent-${department}${slot === 'b' ? '-b' : ''}`
-export const slotContainer = (department: string, slot: Slot) => `talaria-fleet-${slotService(department, slot)}-1`
+export const slotContainer = (department: string, slot: Slot) => `${fleetProject()}-${slotService(department, slot)}-1`
 
 async function activeSlot(department: string): Promise<Slot> {
   const sql = await db()
@@ -55,7 +55,7 @@ async function ensureFleetNetwork(): Promise<void> {
 const composeArgs = (args: string[]) => [
   'compose',
   '-p',
-  'talaria-fleet',
+  fleetProject(),
   '-f',
   join(FLEET_DIR(), 'docker-compose.yml'),
   '--env-file',

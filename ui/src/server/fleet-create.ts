@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto'
 import { appendFile, chmod, readFile } from 'node:fs/promises'
 import { db } from './db/pg'
 import { addVersionIfChanged, applyConfigEdits, listEndpoints, listVersions, upsertAgentDef, type AgentConfig, type AgentDef } from './agent-defs'
-import { AGENT_KEY_VAR, FLEET_ENV } from './fleet-render'
+import { AGENT_KEY_VAR, FLEET_ENV, fleetProject } from './fleet-render'
 
 const SLUG_RE = /^[a-z][a-z0-9]{1,30}$/
 const DEPT_RE = /^[a-z][a-z0-9-]{1,40}$/
@@ -178,7 +178,7 @@ export async function deleteAgentForever(defId: string): Promise<{ removedVolume
   let removedVolume = false
   if (def.source === 'created') {
     removedVolume = await new Promise<boolean>((res) => {
-      execFile('docker', ['volume', 'rm', `talaria-fleet_hermes-${def.department}`], { timeout: 20_000 }, (err) => res(!err))
+      execFile('docker', ['volume', 'rm', `${fleetProject()}_hermes-${def.department}`], { timeout: 20_000 }, (err) => res(!err))
     })
   }
 

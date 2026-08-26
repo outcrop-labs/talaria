@@ -128,6 +128,11 @@ services:
       TALARIA_MCP_GW_URL: ${TALARIA_MCP_GW_URL:-http://talaria:5273/api/mcp/gw}
       TALARIA_GATEWAY_SELF_URL: ${TALARIA_GATEWAY_SELF_URL:-http://talaria:5273/api/llm/v1}
       TALARIA_AGENT_DIAL: ${TALARIA_AGENT_DIAL:-container}
+      # The fleet's compose project (container names, volumes, reconcile
+      # scope). Second instance on this host? It needs its own value here AND
+      # its own TALARIA_FLEET_NETWORK — or the two fleets reconcile each
+      # other's agents.
+      TALARIA_FLEET_PROJECT: ${TALARIA_FLEET_PROJECT:-talaria-fleet}
       # Fronted by TLS (Dokploy/Traefik domain, or any reverse proxy)? Set
       # these three through the environment instead — plain http is the
       # default posture and browsers refuse Secure cookies over it:
