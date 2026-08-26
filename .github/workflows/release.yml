@@ -1,0 +1,265 @@
+# Talaria release — build the image, push it to GHCR, open the GitHub Release.
+#
+# THE MODEL (RELEASING.md is the operator-facing half of this header):
+#   main                trunk, always shippable
+#   rc                  staging; moved ONLY by a human fast-forwarding main into it
+#   testing             nightly feed; same rule
+#   03:17 UTC daily     testing tip  → image `nightly` + `nightly-YYYYMMDD`, no Release
+#   push vX.Y.Z-rc.N    (tag on rc)  → image `X.Y.Z-rc.N` + moving `rc` + GitHub PRERELEASE
+#   push vX.Y.Z         (anywhere)   → image `X.Y.Z` + moving `latest` + GitHub Release
+#   dispatch            manual re-run of a channel (nightly from testing; `rc` pushes the
+#                       moving tag from the rc tip — a dispatch cannot invent a version,
+#                       only a tag carries one)
+#
+# WHY GIT IS THE AUTHORITY AND THE package.json FILES ARE NOT. Every version
+#   field in this repo says "0.1.0" decoratively and nothing reads them; the
+#   TAG is the version. The workflow never edits a file to release — there is
+#   no version-bump commit, no changelog commit, nothing to merge afterwards.
+#   A malformed tag (v1.0, v1.0.0-beta.1) fails loudly in `resolve` rather
+#   than falling through to `latest`, because a tag that silently published
+#   as stable is the one mistake here that cannot be undone by deleting it.
+#
+# WHY CI IS CALLED AND NOT COPIED. `resolve` hands the ref to ci.yml
+#   (workflow_call), so the jobs that gate a publish are the SAME jobs that
+#   gate a PR — one file, one list. A copy of them here would drift the first
+#   time someone edited ci.yml and not this file, and a publish gate weaker
+#   than the PR gate is a decision nobody made.
+#
+# WHY THE CONCURRENCY GROUP LIVES ON THE PUBLISH JOB AND DOES NOT CANCEL.
+#   The channel is only known after `resolve` runs, so the group must be
+#   built from its output; and cancelling a publish mid-push can leave
+#   `nightly-20260826` pushed while `nightly` still points at yesterday — a
+#   channel that lies about what it is. A queued run is cheap; a half-moved
+#   channel is not. (ci.yml's cancel-in-progress is about PR feedback
+#   latency, which does not apply to a 03:17 build.)
+#
+# WHY PLAIN `docker build` + `docker push`, NO build-push-action AND NO GHA
+#   LAYER CACHE. Same taste as ci.yml's "NO ACTIONS/CACHE": the build takes
+#   minutes and is not the bottleneck of anything a human waits on, and the
+#   Dockerfile already orders its layers so the two installs inside ONE
+#   build share bun's cache mount. If a nightly ever gets slow enough to
+#   matter, the upgrade is `docker buildx build --cache-from type=gha
+#   --cache-to type=gha,mode=max` — a builder change, not a redesign. (Docker
+#   layer cache is a different animal from the bun-install cache ci.yml
+#   refuses; refusing both is a taste call, and this file keeps the repo's.)
+#
+# WHY amd64 ONLY. The stack's own embeddings sidecar is amd64-pinned
+#   (docker/compose.yml, TEI), so an arm64 talaria image would boot a stack
+#   one of whose members runs under emulation anyway. Multi-arch is a real
+#   decision for the day a real arm64 user exists, not a default now.
+#
+# DELIBERATELY LEFT OUT (do not treat these as oversights):
+#   - Any automation that moves rc or testing. Those branches move by human
+#     fast-forward only; an automation that promoted code nobody had looked
+#     at would defeat the point of having a staging branch a person vouched
+#     for.
+#   - Nightly GitHub Releases. 365 prereleases a year is tag noise with no
+#     reader; the dated image tags carry the history, RELEASING.md says where
+#     the changelog lives.
+#   - Signed attestations, npm/PyPI publishing (nothing here is a package),
+#     nightly tag pruning (a dated tag is one manifest over shared blobs —
+#     growth is negligible).
+#
+# NOTES FOR WHOEVER TOUCHES THIS NEXT
+#   - A `schedule` event runs this file from the DEFAULT branch but builds
+#     `testing`: github.ref/github.sha are main's, which is why every ref
+#     flows through `resolve` and REVISION comes from the publish job's own
+#     checkout, never from github.sha.
+#   - A `push: tags:` event resolves THIS FILE at the tagged commit — so
+#     rc/testing branches must contain release.yml before any tag is cut on
+#     them (see RELEASING.md, the sequencing note).
+#   - GitHub disables schedules after 60 days of repo inactivity; if the
+#     nightly ever stops, that is the first thing to check.
+
+name: release
+
+on:
+  schedule:
+    # Off the top of the hour on purpose: GitHub's cron queue is busiest at
+    # :00 and delays there run to many minutes. 03:17 UTC is after the day's
+    # commits have landed for this repo's timezone and aligns with nothing.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'channel to publish (nightly from testing; rc pushes the moving tag from the rc tip)'
+        type: choice
+        options: [nightly, rc]
+        default: nightly
+  push:
+    # `v[0-9]*`, not `v*`: a tag like `vendor-drop` must not enter this
+    # pipeline even to be rejected by `resolve` below.
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read # escalated per-job in `publish` only
+
+jobs:
+  # Pure event→outputs math, no checkout. Everything downstream (which ref to
+  # test and build, which tags to push, whether a Release opens) is decided
+  # HERE, once, in one place a human can read.
+  resolve:
+    name: resolve channel
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      channel: ${{ steps.r.outputs.channel }}
+      ref: ${{ steps.r.outputs.ref }}
+      version: ${{ steps.r.outputs.version }}
+      tags: ${{ steps.r.outputs.tags }}
+      moving: ${{ steps.r.outputs.moving }}
+      release: ${{ steps.r.outputs.release }}
+      prerelease: ${{ steps.r.outputs.prerelease }}
+    steps:
+      - name: Work out what this run publishes
+        id: r
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -eu
+          case "$EVENT" in
+            schedule)
+              channel=nightly; ref=testing
+              version="nightly-$(date -u +%Y%m%d)"
+              tags=("$version" nightly); moving=nightly; release=false; prerelease=false ;;
+            workflow_dispatch)
+              if [ "$DISPATCH_CHANNEL" = rc ]; then
+                channel=rc; ref=rc
+                # A dispatch has no tag, so no version — but the label wants
+                # SOMETHING honest. The rc tip's SHA is only known after the
+                # publish job checks it out, so this marker is resolved there.
+                version='@tip'
+                tags=(rc); moving=rc; release=false; prerelease=false
+              else
+                channel=nightly; ref=testing
+                version="nightly-$(date -u +%Y%m%d)"
+                tags=("$version" nightly); moving=nightly; release=false; prerelease=false
+              fi ;;
+            push)
+              tag="$GITHUB_REF_NAME"
+              if   [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+                channel=rc; ref="$tag"; version="${tag#v}"
+                tags=("$version" rc); moving=rc; release=true; prerelease=true
+              elif [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                channel=stable; ref="$tag"; version="${tag#v}"
+                tags=("$version" latest); moving=latest; release=true; prerelease=false
+              else
+                echo "::error::$tag is neither vX.Y.Z nor vX.Y.Z-rc.N — refusing to publish. A malformed tag must fail loudly, not fall through to latest."
+                exit 1
+              fi ;;
+          esac
+          {
+            echo "channel=$channel"
+            echo "ref=$ref"
+            echo "version=$version"
+            echo "moving=$moving"
+            echo "release=$release"
+            echo "prerelease=$prerelease"
+            # Space-separated, IMMUTABLE-FIRST: publish pushes in this order,
+            # so a failure midway leaves the dated/versioned artifact up and
+            # the moving channel still pointing at yesterday's honest self.
+            printf 'tags=%s\n' "${tags[*]}"
+          } >> "$GITHUB_OUTPUT"
+          echo "publishing: channel=$channel ref=$ref version=$version tags=[${tags[*]}] release=$release"
+
+  # The same tripwire a PR gets, against the exact ref about to be published.
+  ci:
+    needs: [resolve]
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+
+  publish:
+    name: build + push ${{ needs.resolve.outputs.version }}
+    needs: [resolve, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # the GitHub Release (rc/stable tag runs only)
+      packages: write # the GHCR push
+    concurrency:
+      group: release-publish-${{ needs.resolve.outputs.channel }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      # The workflow's own token — no secret was provisioned for this. GHCR
+      # accepts GITHUB_TOKEN for push within the same repo/org.
+      - name: Log in to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # One build, every tag. REVISION comes from THIS checkout: under a
+      # schedule event github.sha is main's HEAD, not the testing tip we
+      # actually build.
+      - name: Build
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAGS: ${{ needs.resolve.outputs.tags }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -eu
+          version="$VERSION"
+          # A dispatched rc has no tag to name it; the tip just checked out
+          # is the honest version. Exported for the release-notes step.
+          if [ "$version" = '@tip' ]; then
+            version="rc-$(git rev-parse HEAD | cut -c1-12)"
+          fi
+          args=(--platform linux/amd64
+                --build-arg "VERSION=$version"
+                --build-arg "REVISION=$(git rev-parse HEAD)"
+                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          for t in $TAGS; do args+=( -t "$IMAGE:$t" ); done
+          docker build "${args[@]}" .
+          echo "version=$version" >> "$GITHUB_ENV"
+          echo "built $IMAGE for: $TAGS (version label: $version)"
+
+      # In resolve's order: dated/versioned first, moving channel second.
+      - name: Push
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAGS: ${{ needs.resolve.outputs.tags }}
+        run: |
+          set -eu
+          for t in $TAGS; do
+            echo "pushing $IMAGE:$t"
+            docker push "$IMAGE:$t"
+          done
+
+      # `gh` (preinstalled, GH_TOKEN) over a third-party release action: the
+      # pipeline's precedent is official tooling only, and this stays one.
+      # Idempotent for a re-run of the same tag: create if absent, refresh
+      # the notes if present. --verify-tag fails a typo'd tag instead of
+      # opening a release for a ref that isn't there. The notes body is a
+      # printf with pre-computed vars — single-quoted, so the markdown
+      # backticks are literal and no shell logic runs inside the string.
+      - name: GitHub Release
+        if: needs.resolve.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.ref }}
+          VERSION: ${{ env.version }}
+          MOVING: ${{ needs.resolve.outputs.moving }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          set -eu
+          notes=$(printf 'Talaria %s.
+
+          - Image: `ghcr.io/outcrop-labs/talaria:%s` (and the moving `%s` tag)
+          - What changed: [CHANGELOG.md](https://github.com/outcrop-labs/talaria/blob/main/CHANGELOG.md)
+          - Running it: [docs/CONTAINER.md](https://github.com/outcrop-labs/talaria/blob/main/docs/CONTAINER.md)
+
+          This body is a stub on purpose — the changelog is the record; the release is the artifact.' \
+            "$VERSION" "$VERSION" "$MOVING")
+          pre=()
+          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release for $TAG exists — refreshing notes (re-run of the same tag)"
+            gh release edit "$TAG" --title "$TAG" --notes "$notes" "${pre[@]}"
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" "${pre[@]}"
+          fi
