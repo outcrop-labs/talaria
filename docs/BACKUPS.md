@@ -3,16 +3,16 @@
 What a snapshot contains, how to take one on a schedule, and — the part that
 actually matters — how to put it back.
 
-Two scripts, no daemon:
+Two commands, no daemon:
 
 ```
-./scripts/backup.sh [dest-dir]                    # take a snapshot
-./scripts/restore.sh <snapshot-dir> [--target …]  # put one back
+bun talaria backup [dest-dir]                     # take a snapshot
+bun talaria restore <snapshot-dir> [--target …]   # put one back
 ```
 
-Neither schedules itself. Point cron or a systemd timer at `backup.sh`; the
-in-app scheduler (`server/scheduler.ts`) is a later milestone and will call the
-same script rather than reimplement it.
+Neither schedules itself. Point cron or a systemd timer at `backup`; the
+in-app scheduler (`server/scheduler.ts`) is a later milestone and will invoke
+the same command rather than reimplement it.
 
 ## What's in a snapshot
 
@@ -23,7 +23,7 @@ One directory per run, named for the UTC minute it started (`20260731T184421Z`):
 | `db.sql.gz` | `pg_dump` of the whole database — plain SQL, `--clean --if-exists --no-owner --no-privileges` |
 | `uploads.tar.gz` | every upload blob, flat, named `<upload-id><ext>` |
 | `manifest.txt` | when, from which database, which storage mode + bucket. Identifiers only, never credentials |
-| `SHA256SUMS` | checksums of the three above; `restore.sh` verifies them before touching anything |
+| `SHA256SUMS` | checksums of the three above; `talaria restore` verifies them before touching anything |
 
 The blob archive has the **same shape in every storage mode** — the filename is
 both what `uploads.ts` writes on local disk and the tail of every bucket key. So
@@ -60,7 +60,7 @@ never delete a good one in favour of a broken one.
 
 ## Requirements
 
-`pg_dump` and `psql` on `PATH`, **or** Docker — the scripts borrow the clients
+`pg_dump` and `psql` on `PATH`, **or** Docker — the CLI borrows the clients
 from a throwaway `postgres:16-alpine` container on the host network when the
 host has none. Bucket storage additionally needs `mc` or Docker
 (`minio/mc:latest`). Override the images with `TALARIA_PG_IMAGE` /
@@ -72,10 +72,10 @@ macOS/Windows install the Postgres client instead.
 
 ## Storage modes
 
-`backup.sh` reads `app_settings.storage_config` — the same row Admin → Storage
-writes — and handles whichever mode is configured:
+`talaria backup` reads `app_settings.storage_config` — the same row Admin →
+Storage writes — and handles whichever mode is configured:
 
-| Mode | Where the blobs are | What the script needs |
+| Mode | Where the blobs are | What the command needs |
 |---|---|---|
 | `local` | `TALARIA_UPLOADS_DIR` (default `ui/.uploads`) | nothing |
 | `internal` | the bundled MinIO container | `TALARIA_S3_*` from `ui/.env` — the same values the app uses |
@@ -98,30 +98,37 @@ Every knob is an environment variable; a value already exported always beats
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TALARIA_BACKUP_DIR` | `backups` (or `$1`) | where snapshots land. Created with a self-ignoring `.gitignore` |
-| `TALARIA_BACKUP_KEEP` | `7` | how many snapshots to keep; `0` disables pruning |
+| `TALARIA_BACKUP_DIR` | `backups` (or `[dest-dir]`) | where snapshots land. Created with a self-ignoring `.gitignore` |
+| `TALARIA_BACKUP_KEEP` | `7` | how many snapshots to keep; `0` disables pruning (same as `--keep 0`) |
 | `TALARIA_ENV_FILE` | `ui/.env` | which env file to read `DATABASE_URL` etc. from |
 | `TALARIA_BACKUP_S3_ACCESS_KEY` / `_SECRET_KEY` | — | external-bucket credentials (see above) |
 | `TALARIA_BACKUP_S3_ENDPOINT` / `_BUCKET` / `_PREFIX` | the manifest's | restore-time overrides — send a restore to a drill bucket or a new provider |
 
-Retention only ever removes directories that carry a `manifest.txt`; anything
-else you keep in the backup folder is left alone.
+Retention only ever considers directories that carry a `manifest.txt`; anything
+else you keep in the backup folder is left alone — and doesn't consume one of
+the keep slots, so a stray directory can't silently shrink how many real
+snapshots survive.
 
 ## Scheduling
 
 Daily at 03:15, keeping a fortnight:
 
 ```cron
-15 3 * * *  cd /srv/talaria && TALARIA_BACKUP_KEEP=14 ./scripts/backup.sh /var/backups/talaria >>/var/log/talaria-backup.log 2>&1
+15 3 * * *  cd /srv/talaria && TALARIA_BACKUP_KEEP=14 /home/you/.bun/bin/bun cli/bin/talaria.ts backup /var/backups/talaria >>/var/log/talaria-backup.log 2>&1
 ```
 
-`backup.sh` exits non-zero on any failure — including a dump that lost its
+Cron's `PATH` is minimal and `bun` usually lives outside it (`~/.bun/bin`), so
+spell the binary absolutely — or set `PATH=` at the top of the crontab. The
+`bun talaria` alias needs bun on `PATH` for the same reason; the absolute
+`cli/bin/talaria.ts` form is the one that always works.
+
+`backup` exits non-zero on any failure — including a dump that lost its
 connection half way, which is checked for explicitly — so a cron MAILTO or a
 systemd `OnFailure=` is a real alert.
 
 **The local copy is not the backup.** Copy the snapshot directory somewhere the
 machine can't reach (`rclone`/`rsync` to a different provider, or object-lock on
-the bucket you sync into). This script gives you the artifact; getting it
+the bucket you sync into). This command gives you the artifact; getting it
 offsite is still yours.
 
 ## Restoring
@@ -136,7 +143,7 @@ Restore is destructive: the dump drops and recreates every object it owns.
 3. **Run it.**
 
    ```sh
-   ./scripts/restore.sh backups/20260731T184421Z --target postgres://talaria:talaria@127.0.0.1:5544/talaria
+   bun talaria restore backups/20260731T184421Z --target postgres://talaria:talaria@127.0.0.1:5544/talaria
    ```
 
    It verifies `SHA256SUMS`, prints the target, and asks you to type `restore`
@@ -164,7 +171,7 @@ docker run -d --name talaria-restore-drill -e POSTGRES_USER=talaria \
 
 # 2. restore the newest snapshot's database half into it. --db-only, because the
 #    blob half would land in this instance's LIVE storage.
-./scripts/restore.sh "$(ls -d backups/*Z | tail -1)" \
+bun talaria restore "$(ls -d backups/*Z | tail -1)" \
   --target postgres://talaria:talaria@127.0.0.1:55999/talaria --db-only --yes
 
 # 3. does it hold the data you expect?
