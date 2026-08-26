@@ -5,6 +5,7 @@
   "description": "Talaria — the operations platform for companies that run on people and AI agents. This root package is the RUNNER HUB: every way to drive the repo, from one place, on Bun.",
   "packageManager": "bun@1.4.0",
   "scripts": {
+    "talaria": "bun cli/bin/talaria.ts",
     "dev": "./scripts/dev.sh",
     "devbox": "./scripts/devbox",
     "build": "cd ui && bun run build",

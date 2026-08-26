@@ -6,6 +6,7 @@
 #     cd ui && bun install && bun run test      (vitest)
 #     cd ui && bun run typecheck                (svelte-check)
 #     cd mcp && typecheck + build
+#     cd cli && typecheck + bun test            (the `talaria` CLI)
 #   That is the whole thing. It takes a couple of minutes.
 #
 # WHY IT IS THIS SHORT. It is a TRIPWIRE, not a pipeline. Every PR-numbered
@@ -212,3 +213,37 @@ jobs:
 
       - name: Verify build output
         run: test -s dist/index.js
+
+  # The `talaria` CLI is executable product now, not a script — it gets the
+  # same tripwire treatment. bun:test only (no node needed for the TESTS), but
+  # tsc carries a node shebang like every other toolchain binary, so node is
+  # installed for the typecheck step. No build: the bin runs as TypeScript
+  # under bun, which IS the product's execution path.
+  cli:
+    name: typecheck + test (cli)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        working-directory: cli
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test

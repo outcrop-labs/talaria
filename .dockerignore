@@ -32,5 +32,6 @@ docs
 playground
 .claude
 .inspect
+cli
 *.md
 LICENSE
