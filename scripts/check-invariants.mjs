@@ -58,8 +58,10 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
 /** Trees that hold hand-written source. Everything else (generated files, build
- *  output, deps) is skipped by SKIP below. */
-const SOURCE_DIRS = ['ui/src', 'mcp/src']
+ *  output, deps) is skipped by SKIP below. cli/src is the `talaria` CLI — its
+ *  commands carry the path/guard predicates (canonical roots, 0600 writes,
+ *  destructive-reset gates) that are exactly this file's bug class. */
+const SOURCE_DIRS = ['ui/src', 'mcp/src', 'cli/src']
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.output', '.vinxi', '.tanstack'])
 const SKIP_FILES = new Set(['routeTree.gen.ts'])
 // `.svelte` IS hand-written source, and leaving it out was not a small gap.
