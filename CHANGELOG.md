@@ -15,8 +15,13 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   → `talaria.service`), so the image can't ship a stale app. Per-instance
   configuration rides cloud-init snippets (`qm set --cicustom` →
   `/etc/talaria.env`): a handful of vars steer the bootstrap (tailnet key,
-  repo, ref) and everything else reaches the app process verbatim, winning
-  over `ui/.env` the way the environment always has. The install is
+  instance hostname, repo, ref) and everything else reaches the app process
+  verbatim, winning over `ui/.env` the way the environment always has.
+  `TALARIA_HOSTNAME` names the whole instance — system hostname via
+  hostnamectl plus a hosts(5) entry, not just the Tailscale node name —
+  because the cicustom snippet replaces the user-data that would otherwise
+  carry one, and every clone would answer to the template's neutral name.
+  The install is
   re-entrant — first boot retries converge instead of wedging on a
   half-installed `node_modules` (setup.sh's skip-if-exists can't heal that
   on its own), the app unit gates on Postgres readiness rather than losing

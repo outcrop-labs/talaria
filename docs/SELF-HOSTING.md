@@ -73,17 +73,21 @@ qm start 301
 First boot (watch `journalctl -u talaria-firstboot -f` via ssh, or give it
 10–20 minutes untouched):
 
-1. If `TS_AUTHKEY` is set: joins your tailnet as `TALARIA_HOSTNAME` (or the VM
-   hostname), then removes the spent key from the env file — auth keys are
-   single-use. Failure here is non-fatal: the box comes up LAN-only.
-2. Clones `TALARIA_REPO` at `TALARIA_REF` (defaults: this repo, `main`) to
+1. If `TALARIA_HOSTNAME` is set: the instance takes it as its system hostname
+   (shell prompt, logs, `tailscale status`) — the template itself ships a
+   neutral name, and the cicustom snippet replaces the user-data that would
+   otherwise carry one.
+2. If `TS_AUTHKEY` is set: joins your tailnet as `TALARIA_HOSTNAME` (or the
+   hostname above), then removes the spent key from the env file — auth keys
+   are single-use. Failure here is non-fatal: the box comes up LAN-only.
+3. Clones `TALARIA_REPO` at `TALARIA_REF` (defaults: this repo, `main`) to
    `~/talaria`.
-3. Runs `scripts/setup.sh` + infra containers + the production build — the
+4. Runs `scripts/setup.sh` + infra containers + the production build — the
    same steps as the manual runbook, with one addition: a re-entrancy check
    that repairs a half-installed `node_modules`, because `setup.sh` skips
    installs whose output directory merely exists and an interrupted first boot
    would otherwise poison every retry.
-4. Installs and starts `talaria.service`, then writes the done-marker.
+5. Installs and starts `talaria.service`, then writes the done-marker.
 
 The unit retries transient failures (network settling, docker warming up);
 every step is idempotent, so retries converge. When it's done, Talaria answers
@@ -122,7 +126,7 @@ Four variables steer the bootstrap itself:
 | Var | Default | Effect |
 |---|---|---|
 | `TS_AUTHKEY` | — | Join the tailnet on first boot. Use short-lived/ephemeral keys; the spent key is removed automatically. |
-| `TALARIA_HOSTNAME` | VM hostname | Tailscale node name. (The app itself doesn't read it.) |
+| `TALARIA_HOSTNAME` | `talaria-image` (the template's) | The instance's name: system hostname **and** Tailscale node name. (The app itself doesn't read it.) |
 | `TALARIA_REPO` | `https://github.com/outcrop-labs/talaria.git` | Clone source — a fork, a mirror, a private repo with a deploy key. |
 | `TALARIA_REF` | `main` | Branch, tag or commit sha to install. |
 
