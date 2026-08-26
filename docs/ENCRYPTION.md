@@ -83,7 +83,7 @@ encrypted column — **add new ones there** when you introduce a new secret.
 The KEK comes from `TALARIA_SECRET_KEY` (or `AUTH_SECRET`). **If it changes, the
 wrapped DEKs can't be unwrapped and every stored secret becomes unrecoverable.**
 
-- `setup.sh` generates a **dedicated, stable `TALARIA_SECRET_KEY`** (separate from
+- `talaria setup` generates a **dedicated, stable `TALARIA_SECRET_KEY`** (separate from
   the session-signing `AUTH_SECRET`, which is safe to rotate). Keep it constant.
 - Worktrees **copy** this value (`scripts/worktree.sh`) so a second stack can
   decrypt data seeded from the first. Never let a worktree mint its own.

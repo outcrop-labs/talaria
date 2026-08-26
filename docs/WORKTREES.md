@@ -13,7 +13,7 @@ docker compose -p talaria-wt-<name> down -v   # tear down when done
 git worktree remove ../talaria-<name> && git branch -D wt/<name>
 ```
 
-`setup.sh` registers `git wt` as the alias, and `dev.sh` **refuses to start** in a
+`talaria setup` registers `git wt` as the alias, and `talaria dev` **refuses to start** in a
 linked worktree that wasn't set up this way (see [Manual worktrees](#manual-worktrees))
 — so you can't accidentally point a second app at your main DB.
 
@@ -52,7 +52,7 @@ It prints the exact `bun run dev` command and the teardown steps.
   on purpose. If a worktree got its own fresh `AUTH_SECRET`/`TALARIA_SECRET_KEY`,
   it could not decrypt the seeded secrets — and if it then wrote to a *shared* DB
   it would orphan them. (This is exactly what broke the env once. The fix:
-  `setup.sh` now writes a dedicated, stable `TALARIA_SECRET_KEY`; keep it constant.)
+  `talaria setup` now writes a dedicated, stable `TALARIA_SECRET_KEY`; keep it constant.)
 - **The worktree's fleet is separate.** Fleet renders resolve to the worktree's
   own `fleet/` dir; a worktree does not manage your main agents.
 - **Agent LLM calls** still flow through the *main* gateway if you're testing chat
@@ -65,7 +65,7 @@ It prints the exact `bun run dev` command and the teardown steps.
 
 `worktree.sh` stamps `TALARIA_WORKTREE=<name>` in the worktree's `ui/.env`. If you
 make a worktree by hand (`git worktree add …`) instead, that marker is absent, so
-**`dev.sh` will refuse to start there** — because without its own stack it would
+**`talaria dev` will refuse to start there** — because without its own stack it would
 share the main DB. Either use `git wt <name>` / `worktree.sh`, or, if you know
 what you're doing, give the worktree its own `DATABASE_URL`/`REDIS_URL` and add
 `TALARIA_WORKTREE=<name>` to its `ui/.env` yourself.

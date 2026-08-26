@@ -21,8 +21,8 @@ The first public pre-alpha of Talaria: the operations platform for companies tha
 One machine with Docker gets you from zero to running:
 
 ```bash
-./scripts/setup.sh    # secrets, admin login, docker network, deps — prints your admin credentials
-./scripts/dev.sh      # postgres + redis + the app → http://localhost:5273
+bun talaria setup     # secrets, admin login, docker network, deps — prints your admin credentials
+bun talaria dev       # postgres + redis + the app → http://localhost:5273
 ```
 
 Sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your organization in Admin, and design your first agent on `/agents`. Back up `TALARIA_SECRET_KEY` from `ui/.env` somewhere a snapshot isn't — every stored secret is sealed with it.

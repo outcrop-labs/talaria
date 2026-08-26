@@ -17,8 +17,8 @@ plane, the `talaria` docker network, pulls infra images, installs deps, and prin
 login):
 
 ```bash
-./scripts/setup.sh         # first-run setup — prints your generated admin credentials
-./scripts/dev.sh           # postgres + redis + the app → http://localhost:5273
+bun talaria setup           # first-run setup — prints your generated admin credentials
+bun talaria dev             # postgres + redis + the app → http://localhost:5273
 ```
 
 Then:
@@ -64,7 +64,7 @@ App-level auth and data/infra details are in [`ui/README.md`](./ui/README.md).
 | [`mcp/`](./mcp) | **talaria-mcp** — the agent-facing MCP server: only the safe tools; guardrails hold at the protocol layer | `cd mcp && bun i && bun run build` |
 | [`plugin/talaria/`](./plugin/talaria) | **Hermes plugin** — rides on each agent: registers, heartbeats for work, reports up to `quality_review` | `python3 -m py_compile plugin/talaria/*.py` |
 | [`docker/dev-compose.yml`](./docker) | **dev infra** — Postgres + Redis. The app runs on the host; the fleet runs under its own compose project | `docker compose -f docker/dev-compose.yml config` |
-| [`scripts/setup.sh`](./scripts/setup.sh), [`scripts/dev.sh`](./scripts/dev.sh) | first-run setup + bring-up | `./scripts/setup.sh` then `./scripts/dev.sh` |
+| [`cli/`](./cli) | **the `talaria` CLI** — setup, dev, boxes, worktrees, resets, deploys, backups: every way to drive the repo | `bun talaria --help` |
 | [`package.json`](./package.json) | **the runner hub** — Bun is the installer and runner for the whole repo. From the root: `bun run dev` (full stack), `build`, `start` (production server), `test`, `typecheck`, `check` (invariants), `verify` (all of it) | `bun run verify` |
 
 The fleet itself is **rendered**, not hand-written: Talaria materializes `fleet/` (gitignored) from
@@ -75,7 +75,7 @@ one Talaria-owned chassis when you design an agent in the app. Don't edit it by 
 ## Dev loop
 
 1. Make the change, verify it: `bun run typecheck` in `ui/` (and `bun run build` where relevant).
-2. Exercise the affected path in the running app (`./scripts/dev.sh` → <http://localhost:5273>).
+2. Exercise the affected path in the running app (`bun talaria dev` → <http://localhost:5273>).
 3. Update `CHANGELOG.md` and include what you verified with the change
    ([`CONTRIBUTING.md`](./CONTRIBUTING.md)).
 

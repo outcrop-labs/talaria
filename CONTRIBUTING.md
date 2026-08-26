@@ -18,7 +18,7 @@ host-run app.
 | `mcp/` | `talaria-mcp` — the agent-facing MCP server | `cd mcp && bun i && bun run build` |
 | `plugin/talaria/` | per-agent Hermes plugin (register / heartbeat / report) | `python3 -m py_compile plugin/talaria/*.py` |
 | `docker/dev-compose.yml` | dev infra (Postgres + Redis) | `docker compose -f docker/dev-compose.yml config` |
-| `scripts/setup.sh`, `scripts/dev.sh` | first-run setup + bring-up | `./scripts/setup.sh` then `./scripts/dev.sh` |
+| `cli/` | the `talaria` CLI — every way to drive the repo | `bun talaria --help` |
 
 The fleet itself is **rendered**, not hand-written: Talaria materializes `fleet/` (gitignored —
 `docker-compose.yml`, `fleet.json`, per-agent config) from one Talaria-owned chassis when you design an
@@ -26,9 +26,9 @@ agent in the app.
 
 ## Dev loop
 
-1. `./scripts/setup.sh` once (generates `ui/.env`, the fleet config plane, the `talaria` network, pulls
+1. `bun talaria setup` once (generates `ui/.env`, the fleet config plane, the `talaria` network, pulls
    infra images, installs deps — prints your admin login).
-2. `./scripts/dev.sh` brings up Postgres + Redis and the app on <http://localhost:5273>.
+2. `bun talaria dev` brings up Postgres + Redis and the app on <http://localhost:5273>.
 3. Add an LLM endpoint on `/models` (your provider's key is stored **encrypted in the DB**), then design
    an agent on `/agents`. Talaria renders the fleet and brings it up under the `talaria-fleet` compose
    project; each agent's models route through Talaria's gateway.

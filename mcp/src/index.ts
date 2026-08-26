@@ -67,8 +67,8 @@
 //
 // BUILD: this compiles to mcp/dist, which is gitignored and which the app
 // SPAWNS (ui/src/server/mcp-service.ts). Nothing about editing this file makes
-// the running toolkit change — `npm run build` here does, and scripts/dev.sh +
-// scripts/setup.sh run it for you. A stale dist is silent: it serves last
+// the running toolkit change — `npm run build` here does, and `talaria dev` +
+// `talaria setup` run it for you. A stale dist is silent: it serves last
 // month's tool descriptions and last month's auth to the whole fleet.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'

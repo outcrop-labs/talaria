@@ -9,7 +9,7 @@
 // container boundary, and canonicalize (create + realpath) directories that
 // node will mkdir.
 
-import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import net from 'node:net'
 
@@ -77,4 +77,24 @@ export async function portSlot(
 export function isNewer(candidate: string, ref: string): boolean {
   if (!existsSync(candidate) || !existsSync(ref)) return false
   return statSync(candidate).mtimeMs > statSync(ref).mtimeMs
+}
+
+/** Does ANY file under `dir` (recursively) postdate `ref`? The
+ *  `find dir -newer ref -print -quit` staleness probe, first match wins.
+ *  `dir` missing simply means nothing is newer. */
+export function anyNewer(dir: string, ref: string): boolean {
+  if (!existsSync(dir) || !existsSync(ref)) return false
+  const refMs = statSync(ref).mtimeMs
+  const walk = (d: string): boolean => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name)
+      if (e.isDirectory()) {
+        if (walk(p)) return true
+      } else if (statSync(p).mtimeMs > refMs) {
+        return true
+      }
+    }
+    return false
+  }
+  return walk(dir)
 }
