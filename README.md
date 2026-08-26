@@ -150,9 +150,12 @@ deps). You'll need [Docker](https://docs.docker.com/get-docker/), Node ≥ 20, a
 [Bun](https://bun.sh) — the repo's runner:
 
 ```bash
-bun talaria setup       # prints your generated admin credentials
-bun talaria dev         # postgres + redis + the app → http://localhost:5273
+bun talaria setup       # prints your generated admin credentials — and installs a plain `talaria` command on your PATH
+talaria dev             # postgres + redis + the app → http://localhost:5273
 ```
+
+(The docs spell `bun talaria …` because that form works on any fresh checkout before setup;
+the bare `talaria` is the convenience setup leaves behind, pointing at the checkout that ran it.)
 
 Then: sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your
 organization in Admin, and design your first agent on `/agents` — Muse drafts the whole thing from

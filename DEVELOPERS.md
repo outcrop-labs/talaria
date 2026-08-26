@@ -18,8 +18,14 @@ login):
 
 ```bash
 bun talaria setup           # first-run setup — prints your generated admin credentials
-bun talaria dev             # postgres + redis + the app → http://localhost:5273
+talaria dev                 # postgres + redis + the app → http://localhost:5273
 ```
+
+Setup also puts a bare `talaria` command on your PATH — a two-line sh shim in bun's bin dir
+(`~/.local/bin` if bun's isn't there; `TALARIA_BIN_DIR` overrides) that runs this checkout's
+CLI from anywhere. It points at the checkout that most recently ran setup, so re-running
+setup elsewhere repoints it. The rest of this repo spells `bun talaria …` because that form
+works on any fresh checkout with no setup step.
 
 Then:
 
