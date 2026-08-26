@@ -3,7 +3,7 @@
 // Migrations run lazily on the first query (ui/src/server/db/pg.ts
 // ensureMigrated, advisory-locked), and while a failed attempt self-heals on
 // the next query, a boot that races Postgres spends its first minutes logging
-// scary connection errors. The golden-image unit gated on pg_isready for the
+// scary connection errors. Earlier deploy shapes gated on pg_isready for the
 // same reason; here the probe uses the app's own drivers, so the image needs
 // no postgres client.
 //

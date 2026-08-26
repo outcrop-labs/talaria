@@ -33,7 +33,7 @@ docker compose -f docker/dev-compose.yml up -d postgres redis qdrant minio
 # Talaria runs fine with search down — `web_search` reports that live search is
 # unavailable and models are told to say so rather than answer from memory.
 # The settings render (per-install secret into the mounted settings file) lives
-# in scripts/render-searxng.sh — shared with the golden-image bootstrap.
+# in scripts/render-searxng.sh; the container entrypoint renders its own copy.
 bash scripts/render-searxng.sh
 
 echo "▸ web search (SearXNG)"

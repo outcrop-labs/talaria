@@ -164,7 +164,6 @@ Full detail in [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) and
 | [`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) | How the UI is written |
 | [`docs/GOOGLE-WORKSPACE.md`](./docs/GOOGLE-WORKSPACE.md) | Google Workspace export |
 | [`docs/WORKTREES.md`](./docs/WORKTREES.md) | Parallel-branch dev stacks |
-| [`docs/SELF-HOSTING.md`](./docs/SELF-HOSTING.md) | The golden-image deploy: Proxmox template, per-instance env vars, firewall posture, updates |
 | [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, Dokploy |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
 | [`docs/AGENT-NETWORKING.md`](./docs/AGENT-NETWORKING.md) | How agents reach Talaria — and why that needed a firewall rule |

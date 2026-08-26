@@ -19,9 +19,9 @@ docker compose -f docker/compose.yml logs talaria | grep -A2 'Sign in'
 This is the deploy for a Docker host you point at once and drive afterwards
 through an orchestrator — [Dokploy](#dokploy-the-control-plane), Portainer,
 plain compose, anything that can run a compose file and set environment
-variables. The [golden image](./SELF-HOSTING.md) is the other self-hosting
-shape: a full VM per instance for Proxmox-first environments. Same app, same
-env-var contract, different box.
+variables. (An earlier golden-image flow — a full VM per instance for
+Proxmox-first environments — has been retired; the container deploy is the
+self-hosting path.)
 
 One habit worth forming immediately: any variable you override on the command
 line (`DOCKER_GID`, `TALARIA_STATE_DIR`, `TALARIA_HTTP_PORT`, …) belongs in a
@@ -159,8 +159,8 @@ note above about per-instance networks.
 - **The docker socket is host root.** The app container mounts
   `/var/run/docker.sock` because the fleet drives the host daemon — that is
   the documented tradeoff ([`AGENT-NETWORKING.md`](./AGENT-NETWORKING.md)),
-  accepted for v1 and identical to what the golden-image install grants the
-  app user (docker group). The narrowing path, when you want it: a socket
+  accepted for v1 — the same grant a docker-group app user would have. The
+  narrowing path, when you want it: a socket
   proxy (e.g. tecnativa/docker-socket-proxy) allowing only the endpoints the
   fleet touches (containers, images, networks, volumes), placed between the
   app and the socket.
@@ -200,7 +200,7 @@ own secrets ([`ENCRYPTION.md`](./ENCRYPTION.md)).
 
 Updates are a redeploy — `docker compose ... up -d --build`, or an API call
 through the orchestrator. Migrations run as the server boots (expect a minute
-of downtime on schema changes, same as the golden-image flow; the health
+of downtime on schema changes; the health
 check covers the window).
 
 Installing an app from the marketplace clones it into

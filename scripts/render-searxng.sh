@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Render docker/searxng/settings.local.yml from the template, substituting the
-# per-install secret from ui/.env. Shared by scripts/dev.sh and the golden-image
-# bootstrap (scripts/image/bootstrap.sh) so both stacks mount the same file.
+# per-install secret from ui/.env. Used by scripts/dev.sh; the container
+# entrypoint performs the same substitution for its stack
+# (docker/entrypoint.sh, render-searxng role).
 #
 # SearXNG reads its secret from settings.yml, not the environment, and the
 # image's own substitution would need the container to rewrite a mounted file.

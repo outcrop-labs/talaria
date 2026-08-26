@@ -97,8 +97,8 @@ COPY docker/searxng/settings.template.yml ./docker/searxng/
 RUN adduser -D -u 10001 talaria \
  && mkdir -p /var/lib/talaria && chown talaria:talaria /var/lib/talaria
 
-# The production posture of scripts/image/talaria.service, as env defaults the
-# operator can still override: PORT=5273 is the fleet contract (agents dial
+# The production posture as env defaults the operator can still override:
+# PORT=5273 is the fleet contract (agents dial
 # host.docker.internal:5273 / the app's network alias), COOKIE_SECURE=0 because
 # the default posture is plain http (browsers drop Secure cookies over http —
 # flip it behind TLS, see docs/CONTAINER.md), TALARIA_UPDATER=off because the
