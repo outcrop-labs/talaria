@@ -150,7 +150,7 @@ chown_state_if_root() {
 render_searxng() {
   target="${SEARXNG_SETTINGS_TARGET:-/etc/searxng/settings.yml}"
   mkdir -p "$(dirname "$target")"
-  # Same substitution scripts/render-searxng.sh performs for the dev stack;
+  # Same substitution the dev stack's renderer performs (cli/src/searxng.ts);
   # hex secrets cannot collide with the | delimiter. Always rendered (the
   # init runs once per `up` — cheaper than freshness bookkeeping).
   sed "s|__SEARXNG_SECRET__|${SEARXNG_SECRET:?SEARXNG_SECRET unset and not generated}|g" \

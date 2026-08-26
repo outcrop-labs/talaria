@@ -36,18 +36,22 @@ export function run(cmd: string, args: string[], opts: { cwd?: string } = {}): P
   })
 }
 
+export type PipeOpts = { cwd?: string; quietDst?: boolean }
+
 /** A shell pipeline without a shell: streams a's stdout into b's stdin.
  *  Rejects if EITHER side exits non-zero (pipefail semantics — a swallowed
  *  pg_dump failure would look like a successful seed). b's stdin EPIPE is
- *  expected when b dies first; it is silenced and b's own code reports why. */
+ *  expected when b dies first; it is silenced and b's own code reports why.
+ *  `quietDst` discards b's STDOUT (the `| psql >/dev/null` shape): restore
+ *  chatter is noise, while b's stderr still surfaces. */
 export function pipe(
   a: [string, string[]],
   b: [string, string[]],
-  opts: { cwd?: string } = {},
+  opts: PipeOpts = {},
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const src = spawn(a[0], a[1], { stdio: ['ignore', 'pipe', 'pipe'], cwd: opts.cwd })
-    const dst = spawn(b[0], b[1], { stdio: ['pipe', 'inherit', 'inherit'], cwd: opts.cwd })
+    const dst = spawn(b[0], b[1], { stdio: ['pipe', opts.quietDst ? 'ignore' : 'inherit', 'inherit'], cwd: opts.cwd })
     src.on('error', reject)
     dst.on('error', reject)
     dst.stdin.on('error', () => {}) // EPIPE when dst exits first — surfaced below

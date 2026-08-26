@@ -2,7 +2,7 @@
 # (Claude Code, opencode) and humans: one container per task, holding a repo
 # clone, the CLIs, and a docker-socket pass-through. Docs: docs/DEVBOX.md.
 #
-#   ./scripts/devbox build
+#   bun talaria box build
 #
 # (The wrapper passes --network=host: on hosts whose docker daemon has no
 # working upstream DNS, apt/npm inside the build otherwise resolve nothing —
@@ -42,7 +42,7 @@ COPY --from=docker.io/oven/bun:1.4.0 /usr/local/bin/bun /usr/local/bin/bunx /usr
 
 # The agent CLIs, pinned. DISABLE_AUTOUPDATER: a self-updating CLI rewrites
 # itself into the container's ephemeral writable layer — the version flaps and
-# is lost on recreate. Version bumps are image rebuilds (`./scripts/devbox build`).
+# is lost on recreate. Version bumps are image rebuilds (`bun talaria box build`).
 ENV DISABLE_AUTOUPDATER=1
 RUN npm install -g @anthropic-ai/claude-code@2.1.246 opencode-ai@1.18.23
 
@@ -63,5 +63,5 @@ USER dev
 ENV HOME=/home/dev
 WORKDIR /work/talaria
 # A shell host, not a process: the compose keeps it alive and everything
-# happens through `./scripts/devbox enter`.
+# happens through `bun talaria box enter`.
 CMD ["sleep", "infinity"]

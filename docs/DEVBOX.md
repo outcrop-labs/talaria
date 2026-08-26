@@ -4,10 +4,10 @@ One command, one disposable environment that owns its own repo clone, database,
 fleet, and agent CLIs:
 
 ```bash
-./scripts/devbox new demo          # clone + sidecars + seed + install
-./scripts/devbox enter demo        # bash inside
-./scripts/devbox enter demo claude # …or Claude Code
-./scripts/devbox enter demo opencode
+bun talaria box new demo          # clone + sidecars + seed + install
+bun talaria box enter demo        # bash inside
+bun talaria box enter demo claude # …or Claude Code
+bun talaria box enter demo opencode
 ```
 
 A devbox is the containerized alternative to a
@@ -26,7 +26,8 @@ branch on the host.
 ## What `new` actually does
 
 1. Ensures the primary dev stack is up (its Postgres is the seed source; the
-   shared embeddings/SearXNG are started non-fatally, the `dev.sh` posture).
+   shared embeddings/SearXNG are started non-fatally, the `talaria dev`
+   posture).
 2. Builds `talaria-devbox:latest` if missing (`docker/devbox.Dockerfile` —
    node 22 + bun + git + the docker CLI/compose + Claude Code + opencode).
 3. Clones the repo **locally** (hardlinked objects, near-free on btrfs) into
@@ -105,7 +106,7 @@ to the LAN. The shared-network shape is what the production container runs.
 ## The agent CLIs
 
 Claude Code and opencode are installed in the image (pinned; bump = rebuild
-via `./scripts/devbox build`). Their state lives in the box's **home volume**
+via `bun talaria box build`). Their state lives in the box's **home volume**
 (`/home/dev` — `~/.claude`, `~/.config/opencode`, the bun cache), so logins
 survive stop/start and are never shared with the host or other boxes.
 (Sharing a host `~/.claude` read-write across concurrent CLIs corrupts
@@ -113,7 +114,7 @@ survive stop/start and are never shared with the host or other boxes.
 
 Auth options:
 
-- **Interactive login** — `./scripts/devbox enter demo claude` and follow the
+- **Interactive login** — `bun talaria box enter demo claude` and follow the
   device flow; `enter demo opencode` has its own login. Per-box, isolated.
 - **GLM (or any Anthropic-compatible provider) via env** — no OAuth at all.
   Edit `<box>/compose.override.yml`:
@@ -127,17 +128,17 @@ Auth options:
         ANTHROPIC_MODEL: <model>
   ```
 
-  then `./scripts/devbox stop demo && ./scripts/devbox start demo`. The
+  then `bun talaria box stop demo && bun talaria box start demo`. The
   override file is the deliberate channel: unset vars stay truly absent (an
   empty `CLAUDE_CODE_OAUTH_TOKEN` would shadow real auth).
   **Never set `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` together.**
-- **Headless Claude token** — `./scripts/devbox new demo --claude-token <tok>`
+- **Headless Claude token** — `bun talaria box new demo --claude-token <tok>`
   writes the override for you (same file, same rule).
 
 ## Seeding
 
 `new` seeds starter data from the primary dev environment
-(`./scripts/devbox seed <name>` re-runs it; `--force` re-copies):
+(`bun talaria box seed <name>` re-runs it; `--force` re-copies):
 
 | What | Always? | How |
 |---|---|---|
@@ -170,7 +171,7 @@ dial compose service names on the box's fleet network.
 ## Merging and pushing
 
 ```bash
-./scripts/devbox enter demo
+bun talaria box enter demo
 git push -u origin agent/demo   # then open the PR
 ```
 
@@ -180,14 +181,14 @@ forwarded in (`/ssh-agent`) — `git push` just works. The repo also carries an
 agentless passphrase key that hangs non-interactive pushes: if a push stalls
 with no prompt, run it from a TTY.
 
-`./scripts/devbox rm demo` refuses while the clone has uncommitted changes or
+`bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
 box that can't be recreated.
 
 ## Troubleshooting
 
 - **Builds fail with `Temporary failure resolving…`** — the host daemon's DNS
-  config; `./scripts/devbox build` already passes `--network=host`, which is
+  config; `bun talaria box build` already passes `--network=host`, which is
   load-bearing on such hosts (see [`CONTAINER.md`](./CONTAINER.md),
   Troubleshooting). Running boxes pin their own resolvers and are unaffected.
 - **First `claude` in a box** — expect the login flow; credentials live in
@@ -195,6 +196,6 @@ box that can't be recreated.
 - **Stale `apps/leadworks` / deps** — snapshots from creation time; re-copy
   from the primary or `bun install` to reconcile the lockfile.
 - **A box's app won't start** — `docker logs devbox-<name>`, then
-  `./scripts/devbox enter demo sh -lc 'cd ui && bun run dev'` for the
-  foreground story. The box owns its infra; `dev.sh` inside detects
+  `bun talaria box enter demo sh -lc 'cd ui && bun run dev'` for the
+  foreground story. The box owns its infra; `talaria dev` inside detects
   `TALARIA_DEVBOX` and skips the primary bring-up.
