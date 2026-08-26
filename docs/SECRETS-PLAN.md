@@ -35,7 +35,7 @@ Three things follow from that spread, and all three bit this week:
 **Nobody can answer "what does this instance hold?"** Not the operator, not us when helping
 them. Diagnosing the incident meant querying nine tables by hand.
 
-**Recovery is all-or-nothing.** `scripts/reset.sh secrets` destroys every sealed value
+**Recovery is all-or-nothing.** `talaria reset secrets` destroys every sealed value
 because it has no way to know which ones are actually broken. An instance whose Google token
 predates a key change, but whose provider key was entered yesterday, loses both.
 
@@ -102,7 +102,7 @@ that is simple) and **Remove**.
 
 An `unreadable` row gets **Clear this** — which deletes that ciphertext and nothing else,
 naming exactly what stops working and what has to be re-entered. When several are unreadable,
-a **Clear all unreadable** that lists them first. Same guarantees as `reset.sh secrets` —
+a **Clear all unreadable** that lists them first. Same guarantees as `talaria reset secrets` —
 live counts, explicit confirmation — without a terminal.
 
 ### 3. Bumps — non-blocking, contextual
@@ -127,8 +127,8 @@ Smaller, but it is where the incident started.
   with the database backup**; a dump restored without it restores an instance that cannot
   read its own secrets.
 
-`scripts/reset.sh` stays. It is the right tool when the app will not start at all, and the
-UI cannot help there. The UI becomes the primary path; the script becomes the backstop.
+`talaria reset secrets` stays. It is the right tool when the app will not start at all, and
+the UI cannot help there. The UI becomes the primary path; the reset becomes the backstop.
 
 ---
 

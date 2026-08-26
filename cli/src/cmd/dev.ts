@@ -80,6 +80,28 @@ export async function runDev(ctx: Ctx): Promise<number> {
     return ctx.run('bun', ['run', 'dev'], { cwd: join(ctx.root, 'ui') })
   }
 
+  // A worktree (docs/WORKTREES.md) owns exactly two infra services — its own
+  // postgres + redis, created by `talaria worktree` under project
+  // talaria-wt-<name>. Aim every compose call and readiness probe at THEM:
+  // with the default project/container names this would instead adopt (or
+  // start!) the MAIN stack's containers from inside the worktree — the app
+  // still read the worktree's DB via ui/.env, but "stop my stack" and the
+  // health gates would have been reaching into main. Container names come from
+  // the marker, ports from the URLs `talaria worktree` wrote.
+  const worktree = envValue(uiEnv, 'TALARIA_WORKTREE')
+  if (worktree) {
+    ctx.env.TALARIA_PG_CONTAINER ??= `talaria-pg-${worktree}`
+    ctx.env.TALARIA_REDIS_CONTAINER ??= `talaria-redis-${worktree}`
+    const pgPort = portOf(envValue(uiEnv, 'DATABASE_URL'))
+    const redisPort = portOf(envValue(uiEnv, 'REDIS_URL'))
+    if (pgPort) ctx.env.TALARIA_PG_PORT ??= pgPort
+    if (redisPort) ctx.env.TALARIA_REDIS_PORT ??= redisPort
+    ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
+    const code = await compose(ctx, { files: [join(ctx.root, DEV_COMPOSE)], project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
+    if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
+    return await waitThenRunApp(ctx, uiEnv)
+  }
+
   // Built-in object storage creds: compose must match the app, so lift them
   // out of ui/.env for interpolation (both fall back to the same dev
   // defaults). Only if the shell hasn't already exported its own — the
@@ -117,6 +139,12 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.warn('Continuing without it; see docker/dev-compose.yml + issue #151.')
   }
 
+  return await waitThenRunApp(ctx, uiEnv)
+}
+
+/** The shared boot tail: infra readiness, deps, the fleet toolkit, then the
+ *  vite process (this function's return IS dev's exit code). */
+async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   ctx.log.say('waiting for postgres…')
   const pg = ctx.env.TALARIA_PG_CONTAINER ?? 'talaria-postgres-dev'
   const pgReady = await waitFor(
@@ -158,8 +186,25 @@ export async function runDev(ctx: Ctx): Promise<number> {
 
   await mcpToolkit(ctx)
 
-  ctx.log.say('app → http://localhost:5273')
-  return ctx.run('bun', ['run', 'dev'], { cwd: join(ctx.root, 'ui') })
+  // A worktree's ui/.env carries its own PORT (the allocated slot). vite's
+  // dev script hardcodes 5273, and a busy port makes vite silently bind the
+  // NEXT one — while the worktree's .env URLs keep claiming its own slot —
+  // so forward the flag explicitly and keep the two honest with each other.
+  const wtPort = envValue(uiEnv, 'TALARIA_WORKTREE') ? envValue(uiEnv, 'PORT') : undefined
+  const devArgs = wtPort ? ['run', 'dev', '--', '--port', wtPort] : ['run', 'dev']
+
+  ctx.log.say(`app → http://localhost:${wtPort ?? '5273'}`)
+  return ctx.run('bun', devArgs, { cwd: join(ctx.root, 'ui') })
+}
+
+/** Host port of a postgres:// or redis:// URL, or null when unparseable. */
+function portOf(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).port || null
+  } catch {
+    return null
+  }
 }
 
 function isFile(p: string): boolean {

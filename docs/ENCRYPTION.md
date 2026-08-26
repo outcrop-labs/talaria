@@ -85,7 +85,7 @@ wrapped DEKs can't be unwrapped and every stored secret becomes unrecoverable.**
 
 - `talaria setup` generates a **dedicated, stable `TALARIA_SECRET_KEY`** (separate from
   the session-signing `AUTH_SECRET`, which is safe to rotate). Keep it constant.
-- Worktrees **copy** this value (`scripts/worktree.sh`) so a second stack can
+- Worktrees **copy** this value (`talaria worktree`) so a second stack can
   decrypt data seeded from the first. Never let a worktree mint its own.
 - To move the root secret intentionally, use the rotation flow with a new root —
   it re-wraps everything so nothing is lost.
@@ -107,9 +107,9 @@ Recovery, in order of preference:
    all unreadable**, which names every value it will delete and leaves readable
    ones alone. This is the normal path: an instance whose Google token predates
    a key change but whose provider key was entered yesterday keeps the second.
-3. **`./scripts/reset.sh secrets`** — the backstop for an instance that will not
+3. **`bun talaria reset secrets`** — the backstop for an instance that will not
    start at all, where the UI cannot help. It clears *everything* sealed,
-   because a shell script cannot tell what is broken.
+   because the CLI cannot tell what is broken.
 
 After a clear, re-enter what was lost: provider keys on `/models`, Google and
 MCP accounts by reconnecting, and re-render the fleet so agents get fresh

@@ -9,8 +9,8 @@ import { logAudit } from '@/server/audit'
 // presence, provenance and readability, never the value itself. DELETE clears
 // one row's ciphertext, or every row that cannot be read.
 //
-// This is the in-app half of `scripts/reset.sh secrets`. The script clears
-// everything sealed because a shell script cannot tell what is broken; this
+// This is the in-app half of `talaria reset secrets`. The CLI clears
+// everything sealed because it cannot tell what is broken; this
 // can, so it clears only that.
 export const Route = defineApi('/api/admin/secrets', {
   GET: async ({ request }) => {

@@ -6,8 +6,8 @@ main dev environment.
 ## TL;DR
 
 ```bash
-git wt <name>                         # = ./scripts/worktree.sh <name> (alias set by setup.sh)
-cd ../talaria-<name>/ui && bun run dev -- --port <printed>
+git wt <name>                         # = bun talaria worktree <name> (alias set by setup)
+cd ../talaria-<name> && bun talaria dev
 # … hack away …
 docker compose -p talaria-wt-<name> down -v   # tear down when done
 git worktree remove ../talaria-<name> && git branch -D wt/<name>
@@ -31,7 +31,7 @@ and corrupt them for everyone (see [`ENCRYPTION.md`](./ENCRYPTION.md)). So a
 worktree gets its **own** database, seeded with a point-in-time copy of main's
 data so you still have realistic agents/boards/tickets to work against.
 
-## What `scripts/worktree.sh <name>` does
+## What `talaria worktree <name>` does
 
 1. `git worktree add ../talaria-<name> -b wt/<name>` off your current `HEAD`.
 2. Brings up an isolated Postgres + Redis under compose project `talaria-wt-<name>`
@@ -44,11 +44,11 @@ data so you still have realistic agents/boards/tickets to work against.
    shared, and it's a read-only root — see below.
 5. Symlinks `node_modules` from main (fast; no reinstall).
 
-It prints the exact `bun run dev` command and the teardown steps.
+It prints the exact `talaria dev` command and the teardown steps.
 
 ## Rules of the road
 
-- **Never regenerate the encryption root in a worktree.** `worktree.sh` copies it
+- **Never regenerate the encryption root in a worktree.** `talaria worktree` copies it
   on purpose. If a worktree got its own fresh `AUTH_SECRET`/`TALARIA_SECRET_KEY`,
   it could not decrypt the seeded secrets — and if it then wrote to a *shared* DB
   it would orphan them. (This is exactly what broke the env once. The fix:
@@ -63,9 +63,9 @@ It prints the exact `bun run dev` command and the teardown steps.
 
 ## Manual worktrees
 
-`worktree.sh` stamps `TALARIA_WORKTREE=<name>` in the worktree's `ui/.env`. If you
+`talaria worktree` stamps `TALARIA_WORKTREE=<name>` in the worktree's `ui/.env`. If you
 make a worktree by hand (`git worktree add …`) instead, that marker is absent, so
 **`talaria dev` will refuse to start there** — because without its own stack it would
-share the main DB. Either use `git wt <name>` / `worktree.sh`, or, if you know
+share the main DB. Either use `git wt <name>` / `bun talaria worktree`, or, if you know
 what you're doing, give the worktree its own `DATABASE_URL`/`REDIS_URL` and add
 `TALARIA_WORKTREE=<name>` to its `ui/.env` yourself.
