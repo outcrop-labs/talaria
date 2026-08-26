@@ -36,6 +36,13 @@ import { getGuardConfig, guardCoachingFor } from './guardrails'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
+/** The fleet's compose project. One fleet per project is the identity the
+ *  whole lifecycle assumes (container names, volume names, reconcile scope),
+ *  so anything sharing a docker host with agents — a second instance, a
+ *  devbox — must drive its own project or the two reconcile each other's
+ *  containers. Everything that names the project resolves through here (same
+ *  pattern as TALARIA_FLEET_NETWORK for the network). */
+export const fleetProject = () => process.env.TALARIA_FLEET_PROJECT ?? 'talaria-fleet'
 /** The fleet's env file (agent keys + compose interpolation) — Talaria-owned. */
 export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
 /** The chassis every agent renders from: one service block + per-slug extras.
@@ -588,8 +595,14 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     delete svc.profiles
     // Publish the persona gateway on a stable loopback port so the app reaches
     // this agent directly (no bridge/multiplexer). Loopback-only; the HERMES key
-    // still gates it.
-    svc.ports = [`127.0.0.1:${ports.get(def.slug)}:8642`]
+    // still gates it. Container-dial deployments skip publishing entirely — the
+    // manifest below dials the compose service name, so the published port is
+    // dead weight there, and every install sharing one docker host (second
+    // instance, devbox) allocates identical ports from the same seed data and
+    // would collide on the host.
+    if (process.env.TALARIA_AGENT_DIAL !== 'container') {
+      svc.ports = [`127.0.0.1:${ports.get(def.slug)}:8642`]
+    }
 
     const env = { ...((svc.environment ?? {}) as Record<string, unknown>), ...(extras?.environment ?? {}) }
     env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
@@ -772,7 +785,9 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // retires right after cutover + drain, so the overlap stays brief.
     if (opts.roll && opts.roll.slug === def.slug) {
       const incoming = JSON.parse(JSON.stringify(svc)) as ComposeService
-      incoming.ports = [`127.0.0.1:${opts.roll.port}:8642`]
+      if (process.env.TALARIA_AGENT_DIAL !== 'container') {
+        incoming.ports = [`127.0.0.1:${opts.roll.port}:8642`]
+      }
       services[`agent-${def.department}${opts.roll.slot === 'b' ? '-b' : ''}`] = incoming
     }
     result.agents.push(def.model)
@@ -781,7 +796,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   for (const m of remapped) result.warnings.push(`gateway: ${m} (register the provider on /models to restore this tier)`)
 
   const compose = {
-    name: 'talaria-fleet',
+    name: fleetProject(),
     services,
     volumes,
     ...(Object.keys(secrets).length ? { secrets } : {}),

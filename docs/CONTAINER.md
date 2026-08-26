@@ -111,8 +111,11 @@ Two docker networks, one socket — this is the "right shape"
 - **App → agents**: `TALARIA_AGENT_DIAL=container` makes the fleet manifest
   ([`fleet-render.ts`](../ui/src/server/fleet-render.ts)) dial agents by their
   compose service names (`agent-<dept>:8642`, slot-aware) instead of the
-  host-loopback ports those publish. Memory, media and crons go through
-  `docker exec` and never touched the network anyway.
+  host-loopback ports the dev stack publishes — and in this mode the renderer
+  doesn't publish those ports at all (the manifest never dials them, and
+  installs sharing a host would collide on the identical allocations).
+  Memory, media and crons go through `docker exec` and never touched the
+  network anyway.
 - **Isolation**: only the app joins the fleet network. Agent containers are
   model-driven and semi-trusted; they can reach the app, never postgres,
   redis, or minio.
@@ -123,7 +126,10 @@ The `talaria` network is compose-managed with a fixed name so a fresh host
 works on the first `up`; the fleet renderer adopts it as its external network.
 Running **more than one instance per host**: each needs its own
 `COMPOSE_PROJECT_NAME`, `TALARIA_STATE_DIR`, `TALARIA_HTTP_PORT`, *and*
-`TALARIA_FLEET_NETWORK` — plus a matching `network.name` in that instance's
+`TALARIA_FLEET_PROJECT` + `TALARIA_FLEET_NETWORK` — the fleet's compose
+project and network are how agents get container names and DNS aliases, so
+two instances sharing either would reconcile each other's agents into
+oblivion — plus a matching `network.name` in that instance's
 `fleet/chassis.yml` — or docker DNS will happily round-robin two apps sharing
 one alias.
 
