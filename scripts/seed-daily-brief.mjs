@@ -48,7 +48,7 @@ const { default: postgres } = await importFromUi('postgres')
 
 function databaseUrl() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL
-  // `ui/.env` is what `scripts/setup.sh` writes and what the dev server reads.
+  // `ui/.env` is what `talaria setup` writes and what the dev server reads.
   // Parsed rather than sourced so this script works from any shell.
   for (const candidate of [join(ROOT, 'ui/.env'), join(ROOT, '.env')]) {
     try {

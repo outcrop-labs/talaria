@@ -77,7 +77,7 @@ grep -n '^TALARIA_AGENT_KEY_LEGACY=' ui/.env || echo 'absent → on (the default
 If that prints `=off`, **stop** — set it back to `on` (or delete the line) before deploying, or every
 agent 401s the moment the build lands.
 
-**Take a snapshot.** `./scripts/backup.sh` ([BACKUPS.md](./BACKUPS.md)). The migration is additive,
+**Take a snapshot.** `bun talaria backup` ([BACKUPS.md](./BACKUPS.md)). The migration is additive,
 but the roll recreates containers.
 
 ## Step 1 — Migrate
@@ -283,7 +283,7 @@ chmod 600 fleet/agents/*/secrets.env 2>/dev/null   # only if any agent has secre
 
 Verify with `stat -c '%a %n' fleet fleet/.env` — you want `700` and `600`.
 
-> **Follow-up (not done here):** `scripts/setup.sh`, or the app at boot, should apply that chmod so a
+> **Follow-up (not done here):** `bun talaria setup`, or the app at boot, should apply that chmod so a
 > new install and an upgraded one converge without an operator remembering. Today the only thing that
 > locks these paths down is a render.
 

@@ -119,9 +119,9 @@ live counts, explicit confirmation — without a terminal.
 
 Smaller, but it is where the incident started.
 
-- `setup.sh` should verify what it generated actually boots, rather than assuming.
+- `talaria setup` should verify what it generated actually boots, rather than assuming.
 - The relationship between `AUTH_SECRET` and `TALARIA_SECRET_KEY` is now documented in
-  `.env.example` and pinned by `setup.sh` — check that a self-hoster following `README`
+  `.env.example` and pinned by `talaria setup` — check that a self-hoster following `README`
   rather than the script reaches the same place.
 - `docs/ENCRYPTION.md` should state the backup rule in one line: **the root secret belongs
   with the database backup**; a dump restored without it restores an instance that cannot

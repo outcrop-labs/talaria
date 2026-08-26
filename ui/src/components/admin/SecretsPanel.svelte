@@ -32,7 +32,7 @@
     const ok = await confirm({
       title: `Clear ${row.label}?`,
       // Every clear names the consequence and the way back. This is the same
-      // contract scripts/reset.sh keeps, at the granularity of one row.
+      // contract `talaria reset secrets` keeps, at the granularity of one row.
       message: `This deletes the stored value and nothing else. What stops working: ${row.unlocks}. To restore it, enter the value again in ${row.surface}.${
         row.id.startsWith('agent-key:')
           ? ' The agent will need a fleet re-render to get a new credential.'

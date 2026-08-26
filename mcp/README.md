@@ -49,8 +49,8 @@ keeps working, against last month's tool descriptions and last month's auth.
 
 Three things keep it current, and you should not need to run the build by hand:
 
-- `scripts/setup.sh` installs `mcp/`'s dependencies and builds it (fresh install).
-- `scripts/dev.sh` rebuilds whenever anything in `mcp/src` is newer than
+- `bun talaria setup` installs `mcp/`'s dependencies and builds it (fresh install).
+- `bun talaria dev` rebuilds whenever anything in `mcp/src` is newer than
   `mcp/dist/index.js`, and refuses to start the stack if that build fails
   (`TALARIA_SKIP_MCP_BUILD=1` overrides, and says that dist may be stale).
 - CI (`.github/workflows/ci.yml`, job `mcp`) typechecks and builds this package on

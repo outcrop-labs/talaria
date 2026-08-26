@@ -237,7 +237,7 @@ root) creates and chowns the tree to the app's uid; if you ever see the
 entrypoint's ownership error, the fix is the `mkdir` + `chown 10001:10001` it
 prints.
 
-[`scripts/backup.sh`](../scripts/backup.sh) and [`BACKUPS.md`](./BACKUPS.md)
+`bun talaria backup` / `bun talaria restore` and [`BACKUPS.md`](./BACKUPS.md)
 cover the database side. The rule that ruins days if skipped: a restored
 database without the `TALARIA_SECRET_KEY` it was sealed with cannot read its
 own secrets ([`ENCRYPTION.md`](./ENCRYPTION.md)).

@@ -93,6 +93,6 @@ service:
     TALARIA_HEARTBEAT_SECONDS: ${TALARIA_HEARTBEAT_SECONDS:-0}
   volumes: []
 
-# Fresh installs get their own fleet network (created by scripts/setup.sh).
+# Fresh installs get their own fleet network (created by `talaria setup`).
 network:
   name: talaria

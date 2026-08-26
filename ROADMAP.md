@@ -138,8 +138,8 @@ Roughly in the order we're chasing it. Full detail in
 
 ## Fleet engine (legacy Phase-1 origin)
 
-Talaria started life as a bridge in front of external tools, with milestones M0-M5 (verified live against
-`scripts/verify-stack.sh`). That scaffolding is where the fleet engine came from:
+Talaria started life as a bridge in front of external tools, with milestones M0-M5 (verified live at
+the time). That scaffolding is where the fleet engine came from:
 
 - **Gateway plane (fleet multiplexer)** ✅ → **retired**. The original bridge multiplexed the fleet on a
   single `:8642` endpoint. Once every agent routed its LLM and chat through Talaria's own gateway, the
