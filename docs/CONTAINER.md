@@ -30,6 +30,46 @@ line (`DOCKER_GID`, `TALARIA_STATE_DIR`, `TALARIA_HTTP_PORT`, …) belongs in a
 silently re-interpolates the defaults, republishing the default port and
 remounting the default state dir on a running instance.
 
+## The `talaria` CLI (optional convenience)
+
+Every command in this doc is plain docker compose on purpose — no lock-in,
+nothing to uninstall. The repo's [`talaria` CLI](../cli) wraps exactly those
+commands for a checkout-driven host (a checkout is required either way, since
+the image builds from the repo; bun is the only extra prerequisite):
+
+```bash
+bun talaria deploy up       # the one command at the top of this page
+bun talaria deploy update   # git pull --ff-only, then the same up -d --build
+bun talaria deploy down     # stop (--volumes also deletes the data — careful)
+bun talaria deploy logs     # follow every service's logs
+bun talaria deploy creds    # the 'Sign in' block from the logs
+bun talaria deploy status   # effective port/state/fleet + compose ps
+```
+
+Three things the wrappers add beyond typing the compose command yourself:
+
+- **Every command prints the exact `docker compose …` it is about to run,
+  before running it** — the output doubles as the copy-pasteable equivalent,
+  so nothing the CLI does is hidden and moving off it costs nothing.
+- **`DOCKER_GID` is resolved from the socket automatically** (the `stat -c %g`
+  half of the documented command). A value you exported, or one already in
+  `docker/.env`, always wins — the CLI only fills the gap.
+- **The drift trap above is detected**: any variable the compose file
+  interpolates that is exported in your shell but absent from `docker/.env`
+  gets a loud warning before anything runs. The CLI refuses to be the `up`
+  that silently strands your overrides.
+
+On a host without bun, build the CLI once from a machine that has it — it
+compiles to a standalone binary:
+
+```bash
+bun build --compile cli/bin/talaria.ts --outfile talaria
+./talaria deploy up
+```
+
+Plain compose remains the canonical path; the CLI is a convenience that
+always shows its work.
+
 ## The pieces
 
 | File | What |
@@ -204,7 +244,9 @@ own secrets ([`ENCRYPTION.md`](./ENCRYPTION.md)).
 
 ## Updating and installing apps
 
-Updates are a redeploy — `docker compose ... up -d --build`, or an API call
+Updates are a redeploy — `docker compose ... up -d --build`,
+`bun talaria deploy update` on a checkout host (it pulls with `--ff-only`
+first and prints each command it runs), or an API call
 through the orchestrator. Migrations run as the server boots (expect a minute
 of downtime on schema changes; the health
 check covers the window).
