@@ -1,13 +1,29 @@
 # Talaria CI — the invariant tripwire, the unit tests, and the typecheck.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main:
+#   On every pull request and every push to main, rc, or testing:
 #     bun scripts/check-invariants.mjs          (no install, seconds)
 #     cd ui && bun install && bun run test      (vitest)
 #     cd ui && bun run typecheck                (svelte-check)
 #     cd mcp && typecheck + build
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #   That is the whole thing. It takes a couple of minutes.
+#
+# WHY rc AND testing ARE IN THE PUSH LIST. They are the branches the release
+#   workflow builds FROM (nightly = testing tip, RCs = tags on rc), so a broken
+#   tip must fail HERE, in a push a human made minutes ago — not at 03:17 in a
+#   nightly publish with nobody watching.
+#
+# WHY THIS FILE IS CALLABLE (workflow_call). `release.yml` runs these exact
+#   jobs before every publish, passing the ref it is about to build (a
+#   `schedule` event's own ref is the DEFAULT branch, not the branch being
+#   built — so the ref must be handed in explicitly). The call is the only
+#   way "what gates a publish" and "what gates a PR" stay the same list; a
+#   copy of these jobs in release.yml would drift the first time someone
+#   edited one file and not the other, and a publish gate that is weaker
+#   than the PR gate is a decision nobody made. Standalone behavior is
+#   unchanged: `inputs` is empty outside workflow_call, so the checkout steps
+#   resolve to the triggering ref exactly as before.
 #
 # WHY IT IS THIS SHORT. It is a TRIPWIRE, not a pipeline. Every PR-numbered
 #   commit in this repo's history merged with nothing automated having run on
@@ -104,7 +120,19 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # rc/testing: the branches releases are built from — see the header's
+    # "WHY rc AND testing ARE IN THE PUSH LIST".
+    branches: [main, rc, testing]
+  # The release workflow calls this file (see its own header) so a publish is
+  # gated by exactly what gates a PR. The ref MUST be explicit when called:
+  # a schedule event's github.ref is the default branch, not the branch
+  # being built.
+  workflow_call:
+    inputs:
+      ref:
+        description: 'ref to check out (defaults to the triggering ref)'
+        type: string
+        required: false
 
 # A new push to the same PR/branch cancels the in-flight run. Keeps the queue
 # short and stops people waiting on results for a commit they already replaced.
@@ -126,6 +154,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Empty when run standalone (PR/push); the called ref (testing, a
+          # tag) when release.yml drives this file.
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -149,6 +181,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       # See "WHY BUN *AND* NODE" in the header: bun installs and drives, node
       # executes the toolchain shebangs.
@@ -189,6 +223,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -230,6 +266,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: oven-sh/setup-bun@v2
         with:
