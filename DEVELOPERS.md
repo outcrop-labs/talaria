@@ -93,7 +93,10 @@ recreate the agents to pick it up.
 ### Working in parallel
 
 Spin up an **isolated** dev stack per branch instead of running two servers against one database —
-see [`docs/WORKTREES.md`](./docs/WORKTREES.md) (`./scripts/worktree.sh <name>`).
+see [`docs/WORKTREES.md`](./docs/WORKTREES.md) (`./scripts/worktree.sh <name>`). For parallel
+*agent* sessions, the containerized alternative is a devbox — a full stack per
+task with the agent CLIs inside: [`docs/DEVBOX.md`](./docs/DEVBOX.md)
+(`./scripts/devbox new <name>`).
 
 ---
 
@@ -164,6 +167,7 @@ Full detail in [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) and
 | [`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) | How the UI is written |
 | [`docs/GOOGLE-WORKSPACE.md`](./docs/GOOGLE-WORKSPACE.md) | Google Workspace export |
 | [`docs/WORKTREES.md`](./docs/WORKTREES.md) | Parallel-branch dev stacks |
+| [`docs/DEVBOX.md`](./docs/DEVBOX.md) | Devboxes: a containerized dev environment per task, with the agent CLIs inside |
 | [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, Dokploy |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
 | [`docs/AGENT-NETWORKING.md`](./docs/AGENT-NETWORKING.md) | How agents reach Talaria — and why that needed a firewall rule |

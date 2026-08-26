@@ -18,6 +18,25 @@ if [ -f .git ] && ! grep -q '^TALARIA_WORKTREE=' ui/.env; then
   exit 1
 fi
 
+# Inside a devbox (docs/DEVBOX.md): the box compose owns the infra — sidecars
+# are up, healthy, and reachable by service DNS, and ui/.env already points at
+# them. Bringing up docker/dev-compose.yml through the mounted socket would
+# poke the PRIMARY stack, and its wait loops would block on the wrong
+# containers. Skip straight to what a box still needs: deps, toolkit, app.
+if [ -n "${TALARIA_DEVBOX:-}" ]; then
+  echo "▸ devbox mode (TALARIA_DEVBOX set) — infra owned by the box compose"
+  [ -d ui/node_modules ] || (cd ui && bun install)
+  if [ "${TALARIA_SKIP_MCP_BUILD:-0}" != "1" ]; then
+    [ -d mcp/node_modules ] || (cd mcp && bun install)
+    if [ ! -f mcp/dist/index.js ] || [ -n "$(find mcp/src -newer mcp/dist/index.js -print -quit)" ]; then
+      echo "▸ toolkit MCP → mcp/dist"
+      (cd mcp && bun run build) || { echo "✗ mcp/ failed to build" >&2; exit 1; }
+    fi
+  fi
+  echo "▸ app → http://127.0.0.1:${PORT:-5273} (published to the host by the box compose)"
+  cd ui && exec bun run dev
+fi
+
 # Built-in object storage creds: compose must match the app, so lift them out
 # of ui/.env for interpolation (both fall back to the same dev defaults).
 for var in TALARIA_S3_ACCESS_KEY TALARIA_S3_SECRET_KEY; do

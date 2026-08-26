@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# Devboxes — a containerized dev environment per task. Each box is a full
+# clone of the repo on its own branch, its own stateful sidecars seeded from
+# the primary dev environment, its own private fleet, and the agent CLIs
+# (Claude Code, opencode) inside. The containerized alternative to worktrees;
+# full story: docs/DEVBOX.md.
+#
+#   ./scripts/devbox new <name> [--branch <b>] [--from <ref>] [--no-install]
+#                                  [--claude-token <tok>] [--qdrant]
+#   ./scripts/devbox enter <name> [cmd…]      # default: bash; e.g. `enter
+#                                             # demo claude` / `enter demo
+#                                             # opencode`
+#   ./scripts/devbox ls | stop <n> | start <n> | seed <n> [--force] [--qdrant]
+#   ./scripts/devbox rm <name> [--force]      # refuses unpushed work
+#   ./scripts/devbox build [--no-cache]       # rebuild the toolchain image
+#
+# Boxes live in ../devboxes/<name>/ (override: TALARIA_DEVBOX_HOME):
+#   talaria/       the clone (branch agent/<name>), at /work/talaria in-box
+#   state/         fleet/apps/uploads — bind-mounted at the SAME path (the
+#                  fleet renderer bakes absolute host paths into agent binds)
+#   compose.env    per-box interpolation (ports, paths, creds) — 0600
+#   compose.override.yml  optional: extra env for the box (auth tokens, GLM
+#                  provider vars); merged when present
+#   box.env        the registry `ls` reads
+set -euo pipefail
+cd "$(dirname "$0")/.."
+# -P: the PHYSICAL root. If invoked through a symlinked path (this host keeps
+# /home/jon/Development → /mnt/data/Development), the logical pwd leaks the
+# symlink spelling into compose.env and the box ui/.env — and the same-path
+# state bind must be a path that exists identically INSIDE the box, where
+# /home/jon does not.
+ROOT="$(pwd -P)"
+
+# Canonical (no symlinks, no `..`): these paths land verbatim in compose.env
+# and the box ui/.env, and node's recursive mkdir walks RAW path segments —
+# a `..` makes it try to create the segment before it, which does not exist
+# inside the box (/mnt/…/talaria) and is not creatable there.
+mkdir -p "${TALARIA_DEVBOX_HOME:-$ROOT/../devboxes}" 2>/dev/null || true
+DEVBOXES="$(cd "${TALARIA_DEVBOX_HOME:-$ROOT/../devboxes}" && pwd -P)"
+IMAGE=talaria-devbox:latest
+COMPOSE_FILE=docker/devbox.compose.yml
+
+say(){ printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+ok(){ printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '  \033[33m⚠ %s\033[0m\n' "$*" >&2; }
+die(){ printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+box_dir(){ printf '%s/%s' "$DEVBOXES" "${1:?box name required}"; }
+
+# The repeated tuple: this template + this box's interpolation + its project.
+# compose.override.yml (auth/provider env) merges in when the box has one.
+compose_run(){ # <name> <compose args…>
+  local name="$1"; shift
+  local -a f=(-f "$COMPOSE_FILE")
+  [ -f "$(box_dir "$name")/compose.override.yml" ] && f+=(-f "$(box_dir "$name")/compose.override.yml")
+  docker compose "${f[@]}" -p "devbox-$name" --env-file "$(box_dir "$name")/compose.env" "$@"
+}
+
+require_box(){ [ -f "$(box_dir "$1")/box.env" ] || die "no devbox named '$1' (see: ./scripts/devbox ls)"; }
+
+env_value(){ grep -E "^$1=" "$2" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+
+# ── build ────────────────────────────────────────────────────────────────────
+cmd_build(){
+  local -a nc=()
+  [ "${1:-}" = "--no-cache" ] && nc=(--no-cache)
+  say "Building $IMAGE (context: repo root — the Dockerfile COPYs nothing from it)"
+  # --network=host is load-bearing on hosts whose daemon has no working
+  # upstream DNS: apt/npm inside the build otherwise resolve nothing
+  # (docs/CONTAINER.md, Troubleshooting).
+  docker build --network=host "${nc[@]}" -f docker/devbox.Dockerfile -t "$IMAGE" .
+  ok "built"
+}
+
+# ── new ──────────────────────────────────────────────────────────────────────
+cmd_new(){
+  local NAME="" BRANCH="" FROM="HEAD" NO_INSTALL=0 TOKEN="" QDRANT=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch) BRANCH="${2:?}"; shift 2 ;;
+      --from) FROM="${2:?}"; shift 2 ;;
+      --no-install) NO_INSTALL=1; shift ;;
+      --claude-token) TOKEN="${2:?}"; shift 2 ;;
+      --qdrant) QDRANT=1; shift ;;
+      *) [ -z "$NAME" ] && NAME="$1" || die "unexpected arg: $1"; shift ;;
+    esac
+  done
+  [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "name must be lowercase-kebab (a-z0-9-)"
+  command -v docker >/dev/null || die "docker required"
+  [ -f ui/.env ] || die "run ./scripts/setup.sh in the primary checkout first (need ui/.env)"
+  [ ! -e "$(box_dir "$NAME")" ] || die "$(box_dir "$NAME") already exists"
+
+  say "Primary dev stack (seed source + shared TEI/SearXNG)"
+  docker compose -f docker/dev-compose.yml up -d postgres || die "primary postgres won't start — it is the seed source"
+  bash scripts/render-searxng.sh || true
+  for svc in embeddings searxng; do
+    docker compose -f docker/dev-compose.yml up -d "$svc" 2>/dev/null \
+      || warn "$svc didn't start — the box will run degraded without it (same posture as dev.sh)"
+  done
+  docker inspect talaria-dev_default >/dev/null 2>&1 || die "primary dev network talaria-dev_default is missing — bring the stack up once"
+
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || cmd_build
+
+  # One host port per box, worktree.sh's slot scan.
+  port_free(){ ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+  local N=0 c
+  for c in $(seq 1 89); do port_free $((5300+c)) && { N=$c; break; }; done
+  [ "$N" -gt 0 ] || die "no free app port in 5301-5389 — tear down some devboxes"
+  local APP_PORT=$((5300+N))
+  local BOX; BOX="$(box_dir "$NAME")"
+  local STATE="$BOX/state"
+  local BR="${BRANCH:-agent/$NAME}"
+  local HOST_REPO; HOST_REPO="$BOX/talaria"
+
+  say "Repo clone → $HOST_REPO (branch $BR from $FROM)"
+  mkdir -p "$BOX"
+  # --local: hardlinked objects — near-free on btrfs and safe against a gc in
+  # the primary (git prune is hardlink-aware). Committed refs only: the
+  # primary's uncommitted work does NOT ride into a box.
+  git clone --quiet --local "$ROOT" "$HOST_REPO"
+  if git -C "$HOST_REPO" show-ref --verify --quiet "refs/heads/$BR"; then
+    git -C "$HOST_REPO" checkout --quiet "$BR" # existing branch, as-is
+  else
+    git -C "$HOST_REPO" checkout --quiet -b "$BR" "$FROM" \
+      || die "ref $FROM unusable (committed refs only — the primary's uncommitted work doesn't ride into boxes)"
+  fi
+  # Pushes leave the box: the local-clone origin points at this checkout.
+  git -C "$HOST_REPO" remote set-url origin "$(git -C "$ROOT" remote get-url origin)"
+  # apps/leadworks is a gitignored subrepo that's part of local builds — copy
+  # it or the box's builds silently differ from the primary's. Same for the
+  # installed node_modules (snapshot; bun install below reconciles lockfile
+  # drift). btrfs reflinks make these near-free.
+  for p in apps/leadworks ui/node_modules mcp/node_modules; do
+    [ -e "$ROOT/$p" ] && cp -a --reflink=auto "$ROOT/$p" "$HOST_REPO/$p"
+  done
+  ok "cloned $(git -C "$HOST_REPO" log --oneline -1 | cut -c1-60)"
+
+  say "Box compose env"
+  mkdir -p "$STATE/fleet" "$STATE/apps" "$STATE/uploads"
+  local S3_KEY S3_SECRET S3_BUCKET DOCKER_GID
+  S3_KEY=$(env_value TALARIA_S3_ACCESS_KEY ui/.env); S3_KEY="${S3_KEY:-talaria}"
+  S3_SECRET=$(env_value TALARIA_S3_SECRET_KEY ui/.env); S3_SECRET="${S3_SECRET:-talaria-dev-secret}"
+  S3_BUCKET=$(env_value TALARIA_S3_BUCKET ui/.env); S3_BUCKET="${S3_BUCKET:-talaria}"
+  DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+  (umask 077 && cat > "$BOX/compose.env" <<EOF
+BOX_NAME=$NAME
+BOX_APP_PORT=$APP_PORT
+BOX_HOST_REPO=$HOST_REPO
+BOX_HOST_STATE=$STATE
+BOX_HOME=$HOME
+DOCKER_GID=$DOCKER_GID
+BOX_S3_ACCESS_KEY=$S3_KEY
+BOX_S3_SECRET_KEY=$S3_SECRET
+EOF
+)
+  # Auth/provider env rides an override file so unset vars are truly absent
+  # (an empty CLAUDE_CODE_OAUTH_TOKEN would shadow real auth). GLM provider
+  # vars go here too — see docs/DEVBOX.md.
+  if [ -n "$TOKEN" ]; then
+    cat > "$BOX/compose.override.yml" <<EOF
+# Written by scripts/devbox new --claude-token. Manual edits welcome — this
+# file merges into the box compose whenever it exists. NEVER set
+# CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_AUTH_TOKEN together.
+services:
+  devbox:
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: '$TOKEN'
+EOF
+    chmod 600 "$BOX/compose.override.yml"
+  fi
+  # SSH agent forwarding, when the invoker has one: lets `git push` out of the
+  # box without copying keys (the key itself never enters the box).
+  if [ -n "${SSH_AUTH_SOCK:-}" ]; then
+    local OV="$BOX/compose.override.yml"
+    [ -f "$OV" ] || { printf 'services:\n  devbox:\n' > "$OV"; }
+    cat >> "$OV" <<EOF
+    volumes:
+      - ${SSH_AUTH_SOCK}:/ssh-agent
+    environment:
+      SSH_AUTH_SOCK: /ssh-agent
+EOF
+    chmod 600 "$OV"
+    ok "SSH agent forwarded"
+  fi
+  ok "compose.env written (app → 127.0.0.1:$APP_PORT)"
+
+  say "Box stack (devbox + postgres + redis + qdrant + minio)"
+  compose_run "$NAME" up -d --quiet-pull >/dev/null
+  local PGC="devbox-$NAME-postgres" REDISC="devbox-$NAME-redis" i
+  for i in $(seq 1 60); do docker exec "$PGC" pg_isready -U talaria -d talaria >/dev/null 2>&1 && break; sleep 1; done
+  docker exec "$PGC" pg_isready -U talaria -d talaria >/dev/null 2>&1 || die "box postgres never became ready"
+  for i in $(seq 1 20); do docker exec "$REDISC" redis-cli ping >/dev/null 2>&1 && break; sleep 1; done
+  ok "stack up (project devbox-$NAME)"
+
+  say "Box ui/.env (own services, shared encryption root)"
+  # Keep TALARIA_SECRET_KEY/AUTH_SECRET verbatim — sealed secrets from the
+  # seed must decrypt (the worktree.sh rule); keep AUTH_* so the primary
+  # login works unchanged.
+  grep -vE '^(DATABASE_URL|REDIS_URL|PORT|SEARXNG_URL|TALARIA_QDRANT_URL|TALARIA_EMBED_URL|TALARIA_S3_.*)=' ui/.env > "$HOST_REPO/ui/.env"
+  cat >> "$HOST_REPO/ui/.env" <<EOF
+
+# ── devbox "$NAME" (generated by scripts/devbox) ──
+# This marker tells dev.sh the box owns its infra — it must not try to bring
+# up the primary dev stack through the mounted docker socket.
+TALARIA_DEVBOX=$NAME
+DATABASE_URL=postgres://talaria:talaria@postgres:5432/talaria
+REDIS_URL=redis://redis:6379
+TALARIA_QDRANT_URL=http://qdrant:6333
+TALARIA_S3_URL=http://minio:9000
+TALARIA_S3_BUCKET=$S3_BUCKET
+TALARIA_S3_ACCESS_KEY=$S3_KEY
+TALARIA_S3_SECRET_KEY=$S3_SECRET
+TALARIA_EMBED_URL=http://talaria-embeddings-dev:80
+SEARXNG_URL=http://talaria-searxng-dev:8080
+TALARIA_MCP_GW_URL=http://devbox:5273/api/mcp/gw
+TALARIA_GATEWAY_SELF_URL=http://devbox:5273/api/llm/v1
+TALARIA_AGENT_DIAL=container
+TALARIA_FLEET_PROJECT=devbox-$NAME-fleet
+TALARIA_FLEET_DIR=$STATE/fleet
+TALARIA_APPS_DIR=$STATE/apps
+TALARIA_UPLOADS_DIR=$STATE/uploads
+PORT=5273
+EOF
+  ok "ui/.env written"
+
+  say "Seeding starter data from the primary dev environment"
+  local -a seedflags=(); [ "$QDRANT" -eq 1 ] && seedflags+=(--qdrant)
+  bash scripts/devbox-seed.sh "$NAME" "${seedflags[@]}"
+
+  if [ "$NO_INSTALL" -eq 0 ]; then
+    say "Dependencies + toolkit build (snapshot copies reconciled against the lockfile)"
+    docker exec devbox-"$NAME" sh -lc 'cd ui && bun install --frozen-lockfile && cd ../mcp && bun install --frozen-lockfile && bun run build' >/dev/null
+    ok "installed + mcp built"
+  fi
+
+  cat > "$BOX/box.env" <<EOF
+BOX_NAME=$NAME
+BRANCH=$BR
+BASE=$FROM
+APP_PORT=$APP_PORT
+PROJECT=devbox-$NAME
+FLEET_PROJECT=devbox-$NAME-fleet
+CREATED=$(date -Is)
+EOF
+
+  echo
+  printf '\033[1;32mDevbox "%s" ready.\033[0m\n\n' "$NAME"
+  echo "  Enter:      ./scripts/devbox enter $NAME            (bash)"
+  echo "              ./scripts/devbox enter $NAME claude     (Claude Code)"
+  echo "              ./scripts/devbox enter $NAME opencode"
+  echo "  Run the app (inside):  ./scripts/dev.sh   →  http://127.0.0.1:$APP_PORT"
+  echo "  Credentials: identical to the primary dev stack"
+  echo
+  echo "  Tear down when done:   ./scripts/devbox rm $NAME"
+}
+
+# ── ls ───────────────────────────────────────────────────────────────────────
+cmd_ls(){
+  local d name branch port status
+  printf '  %-18s %-28s %-7s %s\n' BOX BRANCH APP STATUS
+  for d in "$DEVBOXES"/*/; do
+    [ -f "$d/box.env" ] || continue
+    name=$(env_value BOX_NAME "$d/box.env")
+    port=$(env_value APP_PORT "$d/box.env")
+    branch=$(git -C "${d}talaria" branch --show-current 2>/dev/null || echo '?')
+    status=$(docker inspect -f '{{.State.Status}}' "devbox-$name" 2>/dev/null || echo gone)
+    printf '  %-18s %-28s %-7s %s\n' "$name" "$branch" "$port" "$status"
+  done
+  [ -d "$DEVBOXES" ] || echo "  (no devboxes yet — ./scripts/devbox new <name>)"
+}
+
+# ── enter ────────────────────────────────────────────────────────────────────
+cmd_enter(){
+  require_box "$1"
+  local name="$1"; shift || true
+  # -it only when there IS a tty: agents and scripts call enter without one,
+  # and docker exec refuses "cannot attach stdin to a TTY-enabled container".
+  local -a t=(-it); [ -t 0 ] || t=()
+  exec docker exec "${t[@]}" -w /work/talaria "devbox-$name" "${@:-bash}"
+}
+
+# ── stop / start ─────────────────────────────────────────────────────────────
+cmd_stop(){ require_box "$1"; compose_run "$1" stop; }
+cmd_start(){
+  require_box "$1"
+  # The shared stateless services are outside this project — nudge them (the
+  # box would run degraded without them, but that's the dev.sh posture).
+  for svc in embeddings searxng; do
+    docker compose -f docker/dev-compose.yml up -d "$svc" 2>/dev/null || warn "$svc didn't start — box runs degraded without it"
+  done
+  compose_run "$1" start
+}
+
+# ── seed ─────────────────────────────────────────────────────────────────────
+cmd_seed(){ local n="$1"; require_box "$n"; shift; bash scripts/devbox-seed.sh "$n" "$@"; }
+
+# ── rm ───────────────────────────────────────────────────────────────────────
+cmd_rm(){
+  local NAME="" FORCE=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) FORCE=1; shift ;;
+      *) [ -z "$NAME" ] && NAME="$1" || die "unexpected arg: $1"; shift ;;
+    esac
+  done
+  require_box "$NAME"
+  local BOX; BOX="$(box_dir "$NAME")"
+  # Protect the work: a dirty tree or commits no remote has are the only
+  # things in a box that can't be recreated.
+  if [ "$FORCE" -eq 0 ] && [ -d "$BOX/talaria/.git" ]; then
+    [ -z "$(git -C "$BOX/talaria" status --porcelain)" ] || die "clone has uncommitted changes — commit/stash them, or --force"
+    local unpushed
+    unpushed=$(git -C "$BOX/talaria" log --branches --not --remotes --oneline 2>/dev/null || true)
+    [ -z "$unpushed" ] || die "clone has commits no remote has:
+$unpushed
+push them (or --force to discard)"
+  fi
+  say "Tearing down devbox $NAME (project, volumes, fleet, directory)"
+  compose_run "$NAME" down -v --remove-orphans >/dev/null 2>&1 || true
+  docker compose -p "devbox-$NAME-fleet" down -v --remove-orphans >/dev/null 2>&1 || true
+  # The fleet network outlives both projects: the box project can't remove it
+  # while fleet containers hold endpoints on it, and the fleet compose declares
+  # it EXTERNAL (the renderer's shape) so its own `down` never touches it.
+  docker network rm "devbox-$NAME-fleet" >/dev/null 2>&1 || true
+  rm -rf "$BOX"
+  ok "gone"
+}
+
+case "${1:-}" in
+  build) shift; cmd_build "$@" ;;
+  new) shift; cmd_new "$@" ;;
+  ls) cmd_ls ;;
+  enter) shift; cmd_enter "$@" ;;
+  stop) shift; cmd_stop "$@" ;;
+  start) shift; cmd_start "$@" ;;
+  seed) shift; cmd_seed "$@" ;;
+  rm) shift; cmd_rm "$@" ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
