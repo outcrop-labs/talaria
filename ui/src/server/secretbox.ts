@@ -131,7 +131,7 @@ export async function initSecretbox(sql: Sql): Promise<void> {
     g.__sbActive = 1
     // Clear any recorded diagnosis: we just minted a key we can read, so the
     // old one is stale. Without this, an instance that failed to unwrap and then
-    // had its keys cleared (Admin → Secrets, or reset.sh) would keep throwing
+    // had its keys cleared (Admin → Secrets, or `talaria reset secrets`) would keep throwing
     // the previous boot's message at every seal() despite being healthy.
     g.__sbFailure = undefined
     return

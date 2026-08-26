@@ -79,9 +79,9 @@ one Talaria-owned chassis when you design an agent in the app. Don't edit it by 
 3. Update `CHANGELOG.md` and include what you verified with the change
    ([`CONTRIBUTING.md`](./CONTRIBUTING.md)).
 
-Reset or start over: [`scripts/reset.sh`](./scripts/reset.sh) tears the stack down; backups and
-restores are in [`scripts/backup.sh`](./scripts/backup.sh) /
-[`scripts/restore.sh`](./scripts/restore.sh) and [`docs/BACKUPS.md`](./docs/BACKUPS.md).
+Reset or start over: `bun talaria reset <mode>` clears a wedged stack (secrets, database, or
+fleet); backups and restores are `bun talaria backup` / `bun talaria restore` and
+[`docs/BACKUPS.md`](./docs/BACKUPS.md).
 
 ### Plugin distribution: "one dev instance, sync the rest"
 
@@ -93,7 +93,7 @@ recreate the agents to pick it up.
 ### Working in parallel
 
 Spin up an **isolated** dev stack per branch instead of running two servers against one database —
-see [`docs/WORKTREES.md`](./docs/WORKTREES.md) (`./scripts/worktree.sh <name>`). For parallel
+see [`docs/WORKTREES.md`](./docs/WORKTREES.md) (`bun talaria worktree <name>`). For parallel
 *agent* sessions, the containerized alternative is a devbox — a full stack per
 task with the agent CLIs inside: [`docs/DEVBOX.md`](./docs/DEVBOX.md)
 (`bun talaria box new <name>`).

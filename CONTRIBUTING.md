@@ -56,7 +56,7 @@ recreate the agents to pick it up.
 
 Spin up an **isolated** dev stack per branch instead of running two servers
 against one database — see [`docs/WORKTREES.md`](./docs/WORKTREES.md)
-(`./scripts/worktree.sh <name>`). How secrets are protected and the one rule that
+(`bun talaria worktree <name>`). How secrets are protected and the one rule that
 keeps them recoverable is in [`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md).
 
 ## Pull requests

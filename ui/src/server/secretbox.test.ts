@@ -136,7 +136,7 @@ describe('initSecretbox', () => {
 
   it('clears a recorded failure once a readable key exists', async () => {
     // Recovery path: unreadable keys, then the operator clears them (Admin →
-    // Secrets or reset.sh) and the next boot mints a fresh one. A stale
+    // Secrets or `talaria reset secrets`) and the next boot mints a fresh one. A stale
     // diagnosis surviving that would make a healthy instance keep refusing.
     vi.spyOn(console, 'error').mockImplementation(() => {})
     await sb.initSecretbox(fakeSql([rowFor(1, sb.newDek(), true, 'some-other-root')]))

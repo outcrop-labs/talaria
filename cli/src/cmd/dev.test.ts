@@ -105,6 +105,53 @@ describe('talaria dev — gates', () => {
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'compose')).toBe(true)
   })
 
+  test('worktree mode aims compose at its own project and probes its own containers', async () => {
+    const root = makeTree({
+      uiEnv:
+        'TALARIA_WORKTREE=demo\nDATABASE_URL=postgres://talaria:talaria@127.0.0.1:5601/talaria\nREDIS_URL=redis://127.0.0.1:6501\nPORT=5301\n',
+    })
+    writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    ctx.plant(['docker', ['exec', 'talaria-pg-demo', 'pg_isready', '-U', 'talaria', '-d', 'talaria']], '')
+    ctx.plant(['docker', ['exec', 'talaria-redis-demo', 'redis-cli', 'ping']], '')
+    await runDev(ctx)
+    // exactly one compose up — the worktree project, scoped to its two services
+    const ups = ctx.calls.filter((c) => c.args.includes('up'))
+    expect(ups).toHaveLength(1)
+    expect(ups[0].args).toContain('talaria-wt-demo')
+    expect(ups[0].args.slice(-2)).toEqual(['postgres', 'redis'])
+    // ports lifted from the URLs `talaria worktree` wrote
+    expect(ctx.env.TALARIA_PG_PORT).toBe('5601')
+    expect(ctx.env.TALARIA_REDIS_PORT).toBe('6501')
+    // readiness probes hit the worktree's containers — never main's, and no
+    // sidecar is brought up (they belong to the main stack)
+    expect(ctx.calls.some((c) => c.args[0] === 'exec' && c.args[1] === 'talaria-pg-demo')).toBe(true)
+    expect(ctx.calls.some((c) => c.args.includes('talaria-postgres-dev'))).toBe(false)
+    expect(ctx.calls.some((c) => c.args.includes('searxng'))).toBe(false)
+  })
+
+  test('a worktree\'s own PORT reaches vite (vite\'s script hardcodes 5273)', async () => {
+    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\nPORT=5310\n' })
+    writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    await runDev(ctx)
+    const dev = ctx.calls.find((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')!
+    expect(dev.args).toEqual(['run', 'dev', '--', '--port', '5310'])
+  })
+
+  test('the primary checkout does NOT get a port flag', async () => {
+    const root = makeTree({ uiEnv: 'DATABASE_URL=x\nREDIS_URL=y\nPORT=5273\n' })
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    await runDev(ctx)
+    const dev = ctx.calls.find((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')!
+    expect(dev.args).toEqual(['run', 'dev'])
+  })
+
   test('missing ui/.env dies pointing at setup', async () => {
     const ctx = fakeCtx()
     ctx.root = mkdtempSync(join(tmpdir(), 'talaria-empty-'))

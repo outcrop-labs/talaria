@@ -21,7 +21,7 @@ export type FakeCtx = Ctx & {
   plant: (cmdArgs: [string, string[]], out: string | Error) => void
 }
 
-export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean } = {}): FakeCtx {
+export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; reply?: string } = {}): FakeCtx {
   const calls: ExecCall[] = []
   const logLines: FakeCtx['logLines'] = []
   const answers = new Map<string, string | Error>()
@@ -63,7 +63,8 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean } 
       }
     },
     readLine: async () => {
-      throw new Error('fakeCtx.readLine: plant nothing — tests should not prompt')
+      if (init.reply !== undefined) return init.reply
+      throw new Error('fakeCtx.readLine: pass `reply` to fakeCtx — tests should not prompt otherwise')
     },
     env: { ...init.env },
     isTTY: init.isTTY ?? false,

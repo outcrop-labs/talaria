@@ -8,7 +8,7 @@
 //   encryption root changes, some of that ciphertext becomes unreadable and the
 //   only signal is a failure at use time — a chat that won't start, a Drive sync
 //   that stops, an SMTP send that silently doesn't. Diagnosing it meant querying
-//   eight tables by hand, and recovering meant `reset.sh secrets`, which
+//   eight tables by hand, and recovering meant `talaria reset secrets`, which
 //   destroys every sealed value including the ones that were fine.
 //
 //   Per-row health is what makes recovery proportionate: "these three are
@@ -529,7 +529,7 @@ export async function secretHealth(): Promise<SecretHealth> {
 }
 
 // ── Clearing ─────────────────────────────────────────────────────────────────
-// The in-app half of `scripts/reset.sh secrets`, scoped to one row. Clearing is
+// The in-app half of `talaria reset secrets`, scoped to one row. Clearing is
 // a DELETE of ciphertext and nothing else: the endpoint, the agent, the person
 // and the server all survive, missing a credential they can be given again.
 //

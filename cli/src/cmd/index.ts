@@ -5,11 +5,13 @@
 import type { Group } from '../cli'
 import { boxCommand } from './box'
 import { devCommand } from './dev'
+import { resetCommand } from './reset'
 import { setupCommand } from './setup'
+import { worktreeCommand } from './worktree'
 
 export const tree: Group = {
   kind: 'group',
   name: 'talaria',
   summary: 'Talaria — every way to drive the repo, from one place',
-  children: [setupCommand, devCommand, boxCommand],
+  children: [setupCommand, devCommand, worktreeCommand, resetCommand, boxCommand],
 }

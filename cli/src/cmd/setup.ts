@@ -205,8 +205,8 @@ LLM_MODEL=
   // Using this instead of a plain `git worktree add` keeps a second app off
   // your main DB.
   try {
-    await ctx.exec('git', ['config', 'alias.wt', '!bash scripts/worktree.sh'])
-    ctx.log.ok('git wt → scripts/worktree.sh')
+    await ctx.exec('git', ['config', 'alias.wt', '!bun cli/bin/talaria.ts worktree'])
+    ctx.log.ok('git wt → talaria worktree')
   } catch {
     ctx.log.skip('git alias')
   }
