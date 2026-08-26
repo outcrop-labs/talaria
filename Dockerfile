@@ -59,6 +59,28 @@ RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --pr
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM docker.io/library/alpine:3.21
 
+# Release identity, injected by the build (.github/workflows/release.yml).
+# Declared in THIS stage only: an ARG invalidates the build cache of every
+# layer after it, so keeping the identity at the tail preserves the expensive
+# install/build layers across version changes. The defaults matter as much
+# as the values: a plain `docker build .` — an operator's local build,
+# compose's deploy-time build, CI's chassis smoke — passes no args and must
+# keep working, and then the labels read "unknown", which is simply true of
+# a local build.
+ARG VERSION=unknown
+ARG REVISION=unknown
+ARG CREATED=unknown
+
+# OCI annotations: `docker inspect ghcr.io/outcrop-labs/talaria:nightly` is
+# how an operator answers "what am I actually running" without a git checkout.
+LABEL org.opencontainers.image.title="Talaria" \
+      org.opencontainers.image.description="The operations platform for companies that run on people and AI agents" \
+      org.opencontainers.image.source="https://github.com/outcrop-labs/talaria" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}"
+
 # docker CLI + compose v2: the app drives the host daemon through the mounted
 # socket (fleet render/up, docker exec for agent memory/media/crons).
 # git: app installs (git clone from the marketplace). tzdata: the app renders
@@ -112,7 +134,10 @@ ENV PORT=5273 \
     TALARIA_UPDATER=off \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
-    TALARIA_APPS_DIR=/var/lib/talaria/apps
+    TALARIA_APPS_DIR=/var/lib/talaria/apps \
+    # From ARG VERSION above: the LABEL carries it for `docker inspect`, this
+    # carries it for the process and `docker exec`.
+    TALARIA_VERSION=${VERSION}
 
 USER talaria
 WORKDIR /app/ui

@@ -1,0 +1,36 @@
+# Talaria — prebuilt-image override. Layer ON TOP of the base file:
+#
+#   docker compose -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
+#   docker compose -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
+#
+# WHY AN OVERRIDE AND NOT AN EDIT TO docker/compose.yml. The base file's
+# contract is "a checkout builds the image it runs", and that path stays
+# byte-identical — same anchor, same services, same argv. An override is a
+# file this repo reviews and an operator deletes, where a hand-edit of the
+# base is a standing local diff every future `git pull` asks them to resolve.
+#
+# WHY pull_policy: always — THE LOAD-BEARING LINE. Compose merges by SERVICE
+# KEY: an override REPLACES `image:` but never removes the base's `build:`
+# (the x-talaria-build anchor still resolves, inside the base file, to a
+# build spec). Compose's default pull policy is `missing`, and with `build:`
+# present "missing" means BUILD — on a host that never pulled this channel,
+# a plain `up -d` would quietly build the checkout and tag it as the registry
+# image. `always` makes the registry the only source; `--no-build` on the
+# documented command is the second, independent lock.
+#
+# WHY BOTH SERVICES. searxng-config is the same image in a different role
+# (one-shot render-searxng); leaving it on the base's local `talaria:latest`
+# would make `up --no-build` fail on a host with no local build.
+#
+# Channel via TALARIA_CHANNEL in docker/.env (compose reads it from the
+# project dir — the first -f file's directory — same as DOCKER_GID). What
+# the channels are and how they move: RELEASING.md.
+
+services:
+  talaria:
+    image: ghcr.io/outcrop-labs/talaria:${TALARIA_CHANNEL:-nightly}
+    pull_policy: always
+
+  searxng-config:
+    image: ghcr.io/outcrop-labs/talaria:${TALARIA_CHANNEL:-nightly}
+    pull_policy: always
