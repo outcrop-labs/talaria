@@ -1,0 +1,36 @@
+# Root build context — keep the image a build of the SOURCE, not the machine.
+# Deliberately NOT ignored: apps/ (apps compile into the bundle at build time,
+# including gitignored local apps that are part of local builds by design) and
+# scripts/ (fleet skills + chassis template ship into the runtime image).
+
+.git
+.git/**
+**/.git
+.github
+
+node_modules
+**/node_modules
+# …except an app's own: apps are self-contained codebases and compile into the
+# bundle as-is (apps/README.md) — their node_modules are source, not something
+# this image rebuilds (ui/ and mcp/ get fresh installs; apps/ don't).
+!apps/*/node_modules
+**/dist
+**/coverage
+
+# Instance state — never bake a machine's data or credentials into a layer.
+fleet
+stack
+logs
+**/.uploads
+ui/.env*
+docker/searxng/settings.local.yml
+**/.env
+!**/.env.example
+
+# Not part of any build.
+docs
+playground
+.claude
+.inspect
+*.md
+LICENSE
