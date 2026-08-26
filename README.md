@@ -161,10 +161,9 @@ a description.
 > Back up `TALARIA_SECRET_KEY` from `ui/.env` somewhere a snapshot isn't: every stored secret is
 > sealed with it, and a database restored without it cannot read its own secrets.
 
-Running more than one instance, or on Proxmox? There's a golden-image flow — an
-openSUSE MicroOS template with Docker/Tailscale/firewall baked in, instances
-that install current Talaria on first boot, env vars set per VM:
-[`docs/SELF-HOSTING.md`](./docs/SELF-HOSTING.md).
+Self-hosting? One command runs the whole stack as containers — zero required
+config, secrets generated on first boot, driven by env vars alone:
+[`docs/CONTAINER.md`](./docs/CONTAINER.md).
 
 Full setup detail, the dev loop, and the architecture under the hood:
 [`DEVELOPERS.md`](./DEVELOPERS.md).
