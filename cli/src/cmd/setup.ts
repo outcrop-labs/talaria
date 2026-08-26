@@ -2,9 +2,10 @@
 // stack. Idempotent: existing files are left alone; run it again any time.
 // Port of scripts/setup.sh. Follow it with `bun talaria dev`.
 
-import { accessSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, constants } from 'node:fs'
+import { accessSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, constants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { envValue } from '../envfile'
@@ -211,6 +212,18 @@ LLM_MODEL=
     ctx.log.skip('git alias')
   }
 
+  ctx.log.say('`talaria` on your PATH')
+  // The docs spell `bun talaria …` because that form works on any fresh
+  // checkout with no setup step; this shim is the convenience setup leaves
+  // behind — plain `talaria …` from anywhere. It points at THIS checkout
+  // (re-running setup elsewhere repoints it), and is a plain sh script so
+  // nothing about it needs bun to read.
+  const shim = installShim(ctx)
+  ctx.log.ok(shim)
+  if (!(ctx.env.PATH ?? '').split(':').includes(dirname(shim))) {
+    ctx.log.warn(`${dirname(shim)} is not on your PATH — add it, or set TALARIA_BIN_DIR and re-run`)
+  }
+
   // ── Verify what we just produced ─────────────────────────────────────────
   // This block exists because an install once shipped with a ui/.env that
   // LOOKED right and a database nothing could read. Every check here
@@ -261,7 +274,7 @@ LLM_MODEL=
 
   ctx.log.say('Setup complete.')
   ctx.log.raw(`
-  Start everything:   bun talaria dev
+  Start everything:   talaria dev           (or: bun talaria dev)
   App:                http://localhost:5273
   Sign in:            ${adminEmail}  /  ${adminPass}
 
@@ -273,6 +286,37 @@ LLM_MODEL=
   it cannot read its own secrets. Admin → Secrets shows what it holds.
 `)
   return 0
+}
+
+/** Where the `talaria` shim goes: an explicit override, else bun's own bin dir
+ *  (on PATH wherever bun itself was installed), else ~/.local/bin. */
+export function shimDir(ctx: Ctx): string {
+  if (ctx.env.TALARIA_BIN_DIR) return ctx.env.TALARIA_BIN_DIR
+  const home = ctx.env.HOME || homedir()
+  // An explicit BUN_INSTALL is trusted outright; the default ~/.bun/bin is
+  // only used when that dir actually exists (mise/homebrew installs don't
+  // create it — those land in ~/.local/bin instead, which is on PATH).
+  if (ctx.env.BUN_INSTALL) return join(ctx.env.BUN_INSTALL, 'bin')
+  return existsSync(join(home, '.bun/bin')) ? join(home, '.bun/bin') : join(home, '.local/bin')
+}
+
+/** Write the `talaria` command: a two-line sh shim that execs bun against
+ *  THIS checkout's CLI. Overwrites (repointing) on re-run by design. */
+export function installShim(ctx: Ctx): string {
+  const root = ctx.root
+  if (root.includes("'")) ctx.log.die(`refusing to write the PATH shim: repo path ${root} contains a single quote`)
+  const dir = shimDir(ctx)
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, 'talaria')
+  writeFileSync(
+    path,
+    `#!/bin/sh
+# Installed by \`talaria setup\`; re-run setup in a checkout to repoint it.
+exec bun '${root}/cli/bin/talaria.ts' "$@"
+`,
+  )
+  chmodSync(path, 0o755)
+  return path
 }
 
 /** An install that predates TALARIA_SECRET_KEY has been wrapping its secrets

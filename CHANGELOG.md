@@ -31,7 +31,11 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   asserts the argv is character-for-character identical, so the doc and
   the CLI cannot drift; it also resolves `DOCKER_GID` from the socket and
   warns when a shell export is missing from `docker/.env` (the drift trap
-  the doc warns about, detected before it bites). Legacy checkouts:
+  the doc warns about, detected before it bites). `setup` now also installs
+  a bare `talaria` command on your PATH — a two-line sh shim in bun's bin
+  dir that runs the invoking checkout's CLI from anywhere (re-running
+  setup elsewhere repoints it; `TALARIA_BIN_DIR` overrides the location),
+  with a warning when the target dir isn't on PATH. Legacy checkouts:
   re-run `bun talaria setup` to repoint the `git wt` alias at the CLI.
   The runtime-coupled scripts (`update-restart.mjs`, `chassis.template.yml`,
   `skills/`, the smoke/invariant checks) stay where they are — CI and the

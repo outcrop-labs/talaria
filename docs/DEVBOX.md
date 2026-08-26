@@ -196,6 +196,6 @@ box that can't be recreated.
 - **Stale `apps/leadworks` / deps** — snapshots from creation time; re-copy
   from the primary or `bun install` to reconcile the lockfile.
 - **A box's app won't start** — `docker logs devbox-<name>`, then
-  `bun talaria box enter demo sh -lc 'cd ui && bun run dev'` for the
-  foreground story. The box owns its infra; `talaria dev` inside detects
+  `bun talaria box enter demo` and run `bun talaria dev` inside for the
+  foreground story. The box owns its infra; `dev` inside detects
   `TALARIA_DEVBOX` and skips the primary bring-up.
