@@ -44,8 +44,8 @@ const DEFAULTS: StorageConfig = {
   replica: { enabled: false, ...EMPTY_TARGET },
 }
 
-/** The bundled MinIO container. Defaults match docker/dev-compose.yml; setup.sh
- *  writes a random secret into ui/.env and dev.sh exports it for both sides. */
+/** The bundled MinIO container. Defaults match docker/dev-compose.yml; `talaria setup`
+ *  writes a random secret into ui/.env and `talaria dev` exports it for both sides. */
 export function internalTarget(): BucketTarget {
   return {
     endpoint: process.env.TALARIA_S3_URL ?? `http://127.0.0.1:${process.env.TALARIA_MINIO_PORT ?? '9010'}`,

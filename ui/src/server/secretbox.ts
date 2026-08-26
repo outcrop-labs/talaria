@@ -110,7 +110,7 @@ export async function initSecretbox(sql: Sql): Promise<void> {
     //
     // It is also how the two run modes diverged: `vite dev` loads ui/.env and
     // sees TALARIA_SECRET_KEY, a bare `node server-entry.js` did not — and
-    // setup.sh generates the two secrets as separate randoms, so whichever
+    // `talaria setup` generates the two secrets as separate randoms, so whichever
     // happened to be visible when this row was written became the key. Refusing
     // here means a database can never be created under an accident.
     if (!explicitRoot()) {
@@ -142,7 +142,7 @@ export async function initSecretbox(sql: Sql): Promise<void> {
     console.warn(
       '[secretbox] this database is sealed with AUTH_SECRET because TALARIA_SECRET_KEY is not set. ' +
         'Rotating AUTH_SECRET will make every stored secret unrecoverable. ' +
-        'Pin it: set TALARIA_SECRET_KEY to the CURRENT AUTH_SECRET value (scripts/setup.sh does this for you).',
+        'Pin it: set TALARIA_SECRET_KEY to the CURRENT AUTH_SECRET value (`bun talaria setup` does this for you).',
     )
   }
   for (const r of rows) {

@@ -150,8 +150,8 @@ deps). You'll need [Docker](https://docs.docker.com/get-docker/), Node ≥ 20, a
 [Bun](https://bun.sh) — the repo's runner:
 
 ```bash
-./scripts/setup.sh         # prints your generated admin credentials
-./scripts/dev.sh           # postgres + redis + the app → http://localhost:5273
+bun talaria setup       # prints your generated admin credentials
+bun talaria dev         # postgres + redis + the app → http://localhost:5273
 ```
 
 Then: sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your

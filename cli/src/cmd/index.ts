@@ -3,10 +3,12 @@
 // port deletes its bash script in the same commit (docs/CHANGELOG follow).
 
 import type { Group } from '../cli'
+import { devCommand } from './dev'
+import { setupCommand } from './setup'
 
 export const tree: Group = {
   kind: 'group',
   name: 'talaria',
   summary: 'Talaria — every way to drive the repo, from one place',
-  children: [],
+  children: [setupCommand, devCommand],
 }

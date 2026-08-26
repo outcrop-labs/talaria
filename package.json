@@ -6,7 +6,7 @@
   "packageManager": "bun@1.4.0",
   "scripts": {
     "talaria": "bun cli/bin/talaria.ts",
-    "dev": "./scripts/dev.sh",
+    "dev": "bun cli/bin/talaria.ts dev",
     "devbox": "./scripts/devbox",
     "build": "cd ui && bun run build",
     "start": "cd ui && bun run start",

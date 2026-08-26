@@ -248,7 +248,7 @@ EOF
   echo "  Enter:      ./scripts/devbox enter $NAME            (bash)"
   echo "              ./scripts/devbox enter $NAME claude     (Claude Code)"
   echo "              ./scripts/devbox enter $NAME opencode"
-  echo "  Run the app (inside):  ./scripts/dev.sh   →  http://127.0.0.1:$APP_PORT"
+  echo "  Run the app (inside):  bun talaria dev        →  http://127.0.0.1:$APP_PORT"
   echo "  Credentials: identical to the primary dev stack"
   echo
   echo "  Tear down when done:   ./scripts/devbox rm $NAME"

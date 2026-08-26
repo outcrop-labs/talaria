@@ -1,7 +1,7 @@
 // In-app updates: the server pulls its own repo, rebuilds, and restarts.
 //
 // WHY THIS SHAPE. Production is a bare `bun server-entry.js` with no
-// supervisor (setup.sh installs, nothing watches), so "update the app" used
+// supervisor (`talaria setup` installs, nothing watches), so "update the app" used
 // to mean SSH in and pull. The updater moves that whole ritual behind an
 // admin button: fetch + ff-only pull, `bun install`, build into a SIBLING
 // directory and swap, then a detached helper boots the new server the moment

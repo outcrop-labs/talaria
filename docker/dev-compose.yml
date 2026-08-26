@@ -1,6 +1,6 @@
 # Talaria dev infrastructure — Postgres, Redis, and the retrieval plane
 # (Qdrant + a native CPU embedding model via TEI). The app itself runs on the
-# host (`scripts/dev.sh` → vite on :5273); agents render into fleet/ and run
+# host (`bun talaria dev` → vite on :5273); agents render into fleet/ and run
 # under the separate `talaria-fleet` compose project.
 #
 # Every published port binds 127.0.0.1 on purpose: these carry dev-default
@@ -157,7 +157,7 @@ services:
       # ignored and the JSON API kept answering 403. Everything this instance
       # needs — the JSON format above all — is in docker/searxng/settings.yml.
       # The RENDERED file (settings.local.yml), not the template: the secret is
-      # generated per install and substituted by scripts/dev.sh.
+      # generated per install and substituted by `talaria dev`.
       - ../docker/searxng/settings.local.yml:/etc/searxng/settings.yml:ro
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']

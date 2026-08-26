@@ -68,7 +68,7 @@ services:
       - ${TALARIA_DNS_2:-1.0.0.1}
     environment:
       HOME: /home/dev
-      # Tells scripts/dev.sh this container already owns its infra — it must
+      # Tells `talaria dev` this container already owns its infra — it must
       # NOT try to bring up (or wait on) the primary dev stack through the
       # mounted socket.
       TALARIA_DEVBOX: '1'

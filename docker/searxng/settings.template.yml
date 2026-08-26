@@ -1,6 +1,6 @@
 # Talaria's SearXNG instance — the engine behind the `web_search` tool.
 #
-# A TEMPLATE. `scripts/dev.sh` renders it to settings.local.yml (gitignored)
+# A TEMPLATE. `talaria dev` renders it to settings.local.yml (gitignored)
 # with __SEARXNG_SECRET__ replaced by the key in ui/.env, and compose mounts the
 # rendered file. It is done this way because SearXNG reads its secret from
 # settings.yml rather than the environment, and the image's own substitution
