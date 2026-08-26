@@ -31,9 +31,11 @@
 name: talaria
 
 x-talaria-build: &talaria-build
-  # Build at deploy time (repo checkout). When you adopt a registry, switch
-  # BOTH talaria and searxng-config to `image: ghcr.io/outcrop-labs/talaria:x`
-  # — the init service is the same image in a different role.
+  # Build at deploy time (repo checkout) — the default path, unchanged. To
+  # run a prebuilt image from the registry instead, layer the override file
+  # on top rather than editing this one:
+  #   docker/compose.registry.yml  (see docs/CONTAINER.md → Prebuilt images)
+  # The init service below is the same image in a different role.
   context: ..
   dockerfile: Dockerfile
 
