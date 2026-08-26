@@ -10,7 +10,7 @@
     "build": "tsc",
     "dev": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "//prepare": "dist/ is gitignored but IS what runs (the app spawns dist/index.js). Both npm and bun run `prepare` after an install here, so installing this package can never leave you without a dist — the last line of defence behind scripts/setup.sh, scripts/dev.sh and CI.",
+    "//prepare": "dist/ is gitignored but IS what runs (the app spawns dist/index.js). Both npm and bun run `prepare` after an install here, so installing this package can never leave you without a dist — the last line of defence behind `talaria setup`, `talaria dev` and CI.",
     "prepare": "tsc"
   },
   "engines": { "node": ">=20" },

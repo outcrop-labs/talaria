@@ -16,7 +16,7 @@
 #   than none because it reads as coverage.
 #
 # WHY BUN *AND* NODE ARE BOTH INSTALLED. Bun is the repo's runner and installer
-#   (root package.json, scripts/setup.sh, scripts/dev.sh), so CI installs and
+#   (root package.json, `bun talaria …`), so CI installs and
 #   drives everything through it — the same commands a developer runs. But the
 #   toolchain binaries (vite, vitest, svelte-check, tsc) carry `env node`
 #   shebangs, and `bun run <script>` executes those under Node. Dropping
@@ -205,7 +205,7 @@ jobs:
         run: bun run typecheck
 
       # Emit for real. `--noEmit` above proves the types; this proves the thing
-      # dev.sh and setup.sh actually run can produce mcp/dist/index.js, which is
+      # `talaria dev`/`setup` actually run can produce mcp/dist/index.js, which is
       # what the app spawns (`ui/src/server/mcp-service.ts`). The artifact is
       # thrown away — CI does not ship dist.
       - name: Build

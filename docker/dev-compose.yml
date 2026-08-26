@@ -85,7 +85,7 @@ services:
   # S3-compatible bucket with no cloud account (Admin → Storage → "Built-in
   # bucket"). The same panel can replicate every blob to an external provider
   # (AWS/Backblaze/R2/...). Creds must match the app's TALARIA_S3_* env — both
-  # default to the same dev values; setup.sh generates a random secret.
+  # default to the same dev values; `talaria setup` generates a random secret.
   minio:
     image: docker.io/minio/minio:latest
     container_name: ${TALARIA_MINIO_CONTAINER:-talaria-minio-dev}

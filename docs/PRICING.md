@@ -36,9 +36,9 @@ have context. Self-hosting is free forever regardless of anything here._
 | Enterprise | custom | custom | custom | Multi-instance / multitenancy, or supported deployment on their infra |
 
 **\* Not sellable yet — what's still missing before either tier ships:**
-- **Backups.** The artifact and the way back both exist now: `scripts/backup.sh` dumps Postgres and
+- **Backups.** The artifact and the way back both exist now: `bun talaria backup` dumps Postgres and
   every upload blob in all three storage modes, verifies the dump (`gzip -t` plus the `pg_dump`
-  completion trailer) and writes `SHA256SUMS`; `scripts/restore.sh` verifies those checksums before
+  completion trailer) and writes `SHA256SUMS`; `bun talaria restore` verifies those checksums before
   touching anything. Redis is a *deliberate* exclusion, not a gap — sessions and ephemeral state,
   blast radius is everyone signs out ([BACKUPS.md](./BACKUPS.md)). What's left for the Starter claim
   of *automated daily backups with a documented restore*: (1) **nothing schedules it** — cron or a

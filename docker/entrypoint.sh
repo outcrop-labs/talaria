@@ -67,7 +67,7 @@ mkdir_state() {
 # ── Secrets bootstrap ────────────────────────────────────────────────────────
 # For each var: real env wins (nothing generated); else an existing
 # generated.env line wins (persistence across container recreation); else
-# generate and append. Same lengths as scripts/setup.sh so a container
+# generate and append. Same lengths as `talaria setup` so a container
 # instance and a host install hold interchangeable secrets.
 bootstrap_secrets() {
   if [ ! -f "$GEN_ENV" ]; then
@@ -79,7 +79,7 @@ bootstrap_secrets() {
   ensure_secret SEARXNG_SECRET 32       # rendered into the searxng settings
   ensure_secret TALARIA_AGENT_KEY 32    # app's hop to the toolkit service
 
-  # First-boot admin: same shape setup.sh mints (admin@talaria.local + random
+  # First-boot admin: same shape `talaria setup` mints (admin@talaria.local + random
   # password), logged once below. Supplied env (Dokploy panel, orchestration
   # agent) replaces the whole mechanism.
   if ! printenv AUTH_USERS >/dev/null 2>&1 && ! grep -q '^AUTH_USERS=' "$GEN_ENV"; then
