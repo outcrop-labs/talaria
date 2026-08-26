@@ -264,6 +264,45 @@ reference **host** paths — the rendered fleet compose resolves them on the
 host, so anything an agent mounts must live somewhere host-visible, not inside
 the app container's filesystem.
 
+## Prebuilt images
+
+The path above builds from a checkout — zero prerequisites beyond git and
+Docker, and still the default. Prebuilt images are the alternative: every
+channel this repo publishes lands on `ghcr.io/outcrop-labs/talaria`.
+
+| Image tag | What it is | How it moves |
+|---|---|---|
+| `nightly` | testing branch, built daily 03:17 UTC | automatic, nightly |
+| `nightly-YYYYMMDD` | that day's nightly, frozen | automatic, daily; never rewritten |
+| `X.Y.Z-rc.N` | a release candidate | a `vX.Y.Z-rc.N` tag on `rc` |
+| `rc` | whatever RC was cut last | with each RC |
+| `X.Y.Z` | a stable release | a `vX.Y.Z` tag |
+| `latest` | whatever stable shipped last | with each stable release |
+
+Pin anything you care about to the dated/versioned column — the moving tags
+are pointers, rewritten by design.
+
+Running one is an override file layered on the base compose (the base stays
+checkout-build; this never edits it):
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
+docker compose -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
+```
+
+Pin the channel in `docker/.env` (`TALARIA_CHANNEL=0.2.0-rc.1`; unset means
+`nightly`). The `pull` step is deliberate: a registry problem should report
+as a pull failure, not as a boot timeout. `pull_policy: always` in the
+override makes the registry the only image source even if a checkout is
+present. Updating is the same two commands again.
+
+`docker inspect` on a pulled image answers "what exactly is this" without a
+checkout: the OCI labels carry the version, the revision, and the build time.
+
+How the tags get made, how to cut an RC, and the branch model behind them:
+[`RELEASING.md`](../RELEASING.md) (repo root). The `bun talaria deploy`
+wrappers stay checkout-build — this path is plain compose.
+
 ## Troubleshooting
 
 **Build fails with `no such package` on every apk package, or `bun install`

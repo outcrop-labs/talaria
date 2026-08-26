@@ -166,7 +166,9 @@ a description.
 
 Self-hosting? One command runs the whole stack as containers — zero required
 config, secrets generated on first boot, driven by env vars alone:
-[`docs/CONTAINER.md`](./docs/CONTAINER.md).
+[`docs/CONTAINER.md`](./docs/CONTAINER.md). Prebuilt channel images (`nightly`,
+`rc`, versioned) are published to GHCR — see
+[`RELEASING.md`](./RELEASING.md).
 
 Full setup detail, the dev loop, and the architecture under the hood:
 [`DEVELOPERS.md`](./DEVELOPERS.md).
