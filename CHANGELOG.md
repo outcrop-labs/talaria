@@ -25,11 +25,20 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   restarts, so the in-app updater stands down (`TALARIA_UPDATER=off`) and
   updates are a one-liner. The SearXNG settings render moved from dev.sh
   into a shared `scripts/render-searxng.sh` so the bootstrap and the dev
-  loop mount the same file. Full runbook: docs/SELF-HOSTING.md. Verified
-  repo-side: `bash -n` on every new script, and the generated cloud-init
-  snippet round-trips its four embedded files byte-for-byte under YAML
-  literal-block indentation; the image build itself runs on the Proxmox
-  host per SELF-HOSTING.md (not exercisable from this tree).
+  loop mount the same file. `build.sh` assumes nothing about the host it
+  runs on: it prompts for the VM-disk storage (from live `pvesm` output)
+  and the snippet storage (offering to enable snippets on `local` by
+  *merging* content types — `pvesm set --content` replaces the list), and
+  when the host has no SSH public keys it generates and names a keypair to
+  inject; the same choices exist as flags for non-interactive runs, and
+  `--dry-run` prints the resolved plan. Full runbook:
+  docs/SELF-HOSTING.md. Verified repo-side: `bash -n` on every new script,
+  the generated cloud-init snippet round-trips its four embedded files
+  byte-for-byte under YAML literal-block indentation, and the build.sh
+  resolution/prompt/keygen flows pass a stubbed-host test matrix
+  (`pvesm`/`qm` stubs, pty-driven prompts, dry-run assertions); the image
+  build itself runs on the Proxmox host per SELF-HOSTING.md (not
+  exercisable from this tree).
 - **Apps get their own place in the sidebar.** The rail now separates enabled
   apps from Work: Work stays Talaria's own surfaces (Inbox, Comms, Boards, and
   the rest), and each app's work surface sits under a new Apps heading of its

@@ -27,14 +27,21 @@ current and the image only goes stale when the base OS or system packages do.
 Once, on the Proxmox host (as root, from a repo checkout):
 
 ```bash
-pvesm set local --content snippets    # one-time; build.sh refuses to guess this for you
 git clone https://github.com/outcrop-labs/talaria
 cd talaria && sudo ./scripts/image/build.sh
 ```
 
-Defaults: VMID 9000, `local-lvm` storage, `vmbr0` bridge, 4 cores / 16 GB /
-100 GB — override with `--vmid --storage --bridge --cores --memory --disk`, and
-`--sshkeys ~/.ssh/id_ed25519.pub` to log into the build VM while it runs.
+Nothing is silently assumed. The script asks which storage holds the VM disks
+(listing what `pvesm` actually offers, with types and free space), where
+cloud-init snippets live (offering to enable them on `local` — merging content
+types, never replacing them), and which SSH public key to inject into the
+image — **generating and naming a new keypair** if the host has none. Every
+prompt has a flag for non-interactive runs (`--storage --snippet-storage
+--sshkeys`), and `--dry-run` prints the resolved plan without touching
+anything.
+
+Defaults behind the prompts: VMID 9000, `vmbr0` bridge, 4 cores / 16 GB /
+100 GB — override with `--vmid --bridge --cores --memory --disk`.
 
 Inside, the VM adds Tailscale's signed openSUSE repo, installs docker + compose
 v2 + tailscale + firewalld into a new transactional snapshot, reboots into it,
@@ -57,7 +64,7 @@ model.
 
 ```bash
 qm clone 9000 301 --name tal-eu-1 --full
-qm set 301 --sshkeys ~/.ssh/id_ed25519.pub
+qm set 301 --sshkeys <the key from the build step>
 # optional but usual — per-instance env vars, next section:
 qm set 301 --cicustom user=local:snippets/tal-eu-1.yml
 qm start 301
