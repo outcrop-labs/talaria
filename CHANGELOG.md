@@ -5,6 +5,31 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 ## [Unreleased]
 
 ### Added
+
+- **A golden-image deploy for Proxmox.** `scripts/image/` builds an openSUSE
+  MicroOS template with the system half of an install baked in — Docker +
+  compose v2 (podman stays unused), Tailscale, firewalld rules for the
+  agent→app path from AGENT-NETWORKING.md, Bun, the guest agent — and no
+  Talaria in it at all: every instance cloned from the template installs
+  *current* Talaria on its own first boot (clone → setup.sh → infra → build
+  → `talaria.service`), so the image can't ship a stale app. Per-instance
+  configuration rides cloud-init snippets (`qm set --cicustom` →
+  `/etc/talaria.env`): a handful of vars steer the bootstrap (tailnet key,
+  repo, ref) and everything else reaches the app process verbatim, winning
+  over `ui/.env` the way the environment always has. The install is
+  re-entrant — first boot retries converge instead of wedging on a
+  half-installed `node_modules` (setup.sh's skip-if-exists can't heal that
+  on its own), the app unit gates on Postgres readiness rather than losing
+  the boot race to a cached failed migration, and a re-run never deletes the
+  checkout, where uploads and fleet state live outside git. systemd owns
+  restarts, so the in-app updater stands down (`TALARIA_UPDATER=off`) and
+  updates are a one-liner. The SearXNG settings render moved from dev.sh
+  into a shared `scripts/render-searxng.sh` so the bootstrap and the dev
+  loop mount the same file. Full runbook: docs/SELF-HOSTING.md. Verified
+  repo-side: `bash -n` on every new script, and the generated cloud-init
+  snippet round-trips its four embedded files byte-for-byte under YAML
+  literal-block indentation; the image build itself runs on the Proxmox
+  host per SELF-HOSTING.md (not exercisable from this tree).
 - **Apps get their own place in the sidebar.** The rail now separates enabled
   apps from Work: Work stays Talaria's own surfaces (Inbox, Comms, Boards, and
   the rest), and each app's work surface sits under a new Apps heading of its

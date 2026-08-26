@@ -1,0 +1,62 @@
+# The app under systemd. Installed by /etc/talaria/firstboot.sh from the
+# checkout it just cloned (cp scripts/image/talaria.service), so the unit and
+# the code it runs always come from the same commit.
+#
+# PORT must be set HERE, not left to /etc/talaria.env or ui/.env: the server
+# defaults to 3000 (ui/server-entry.js), and the rendered fleet dials
+# host.docker.internal:5273 — an instance without the env set would come up
+# green and unreachable to its own agents.
+
+[Unit]
+Description=Talaria
+Documentation=https://github.com/outcrop-labs/talaria
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+# Never park the app in failed over slow docker starts or long first-boot
+# migrations — the gates below make late starts correct, and a burst limit
+# would turn a slow morning into a manual restart.
+StartLimitIntervalSec=0
+
+[Service]
+User=talaria
+# systemd runs initgroups() for User=, so the docker group applies with no
+# SupplementaryGroups= needed — the fleet renderer drives `docker` from PATH
+# (ui/src/server/fleet-docker.ts) and has no DOCKER_HOST support.
+WorkingDirectory=/home/talaria/talaria/ui
+Environment=PORT=5273
+Environment=HOST=0.0.0.0
+# NODE_ENV=production makes session cookies `Secure` (ui/src/server/auth/
+# session.ts), which browsers refuse over plain http — the default posture
+# (LAN + tailnet, no TLS yet) would silently break login. COOKIE_SECURE=0
+# opts back out; flip BOTH when a TLS proxy fronts the instance
+# (docs/SELF-HOSTING.md → "TLS").
+Environment=NODE_ENV=production
+Environment=COOKIE_SECURE=0
+# systemd owns restarts on this box; the in-app updater's restart helper
+# would fight it. TALARIA_UPDATER=off is the documented kill switch for
+# installs supervised some other way (DEVELOPERS.md → Updating an install).
+Environment=TALARIA_UPDATER=off
+# Whatever Proxmox injected at clone time. Real environment wins over ui/.env
+# (server-entry.js loadEnvFile skips keys already in process.env), so this is
+# the override channel. The "-" keeps snippet-less instances booting.
+EnvironmentFile=-/etc/talaria.env
+# Best-effort container wake (restart: unless-stopped normally has them up;
+# the leading "-" keeps an unpullable-optional container from blocking boot —
+# the gates below are the real checks). A boot race with Postgres makes the
+# app cache a failed migration and 500 every request until restarted: it
+# stays "up", so Restart= never fires. We wait instead.
+ExecStartPre=-/usr/bin/docker start talaria-postgres-dev talaria-redis-dev talaria-qdrant-dev talaria-minio-dev talaria-searxng-dev
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 60); do docker exec talaria-postgres-dev pg_isready -U talaria -d talaria >/dev/null 2>&1 && exit 0; sleep 1; done; echo "postgres never became ready" >&2; exit 1'
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 30); do docker exec talaria-redis-dev redis-cli ping >/dev/null 2>&1 && exit 0; sleep 1; done; echo "redis never became ready" >&2; exit 1'
+# Absolute path on purpose: PATH for a User= unit does not include ~/.bun/bin.
+ExecStart=/home/talaria/.bun/bin/bun server-entry.js
+Restart=on-failure
+RestartSec=5
+# A release that touches the DB applies migrations before it listens — minutes,
+# not seconds, on a full schema. The 90s default would kill it mid-migration
+# and leave the update half-applied.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

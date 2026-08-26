@@ -1,0 +1,25 @@
+# Runs inside the BUILD VM only — enabled --now by the build's cloud-init
+# runcmd, drives scripts/image/provision.sh across the transactional-update
+# reboot (an enabled oneshot starts at every boot; the markers in
+# /var/lib/talaria pick the stage), and disables itself when provisioning
+# completes. Clones never see it run: the unit's Condition fails against the
+# provision-done marker the last stage writes.
+
+[Unit]
+Description=Talaria golden-image provisioning (build VM only)
+After=network-online.target cloud-final.service
+Wants=network-online.target
+ConditionPathExists=!/var/lib/talaria/provision-done
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /etc/talaria/provision.sh
+# Package installs are slow; the 90s oneshot default would kill the
+# transaction mid-download. No Restart: a failed build must STOP and be read
+# (build.sh reports it via the serial console and its timeout), not be
+# retried into a half-built template.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
