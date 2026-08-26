@@ -1,0 +1,171 @@
+# One devbox: a toolchain container plus its private stateful sidecars. This
+# file is a TEMPLATE — scripts/devbox interpolates it with
+# `--env-file <devboxes>/<name>/compose.env` and `-p devbox-<name>`. It is not
+# meant to be run by hand. Full story: docs/DEVBOX.md.
+#
+# Three networks, the production shape (docker/compose.yml) applied to dev:
+#   default (this project's own)  devbox + postgres + redis + qdrant + minio;
+#                                 nothing published; the app reaches its
+#                                 sidecars by service DNS.
+#   talaradev (external)          the primary dev stack's TEI embeddings +
+#                                 SearXNG — stateless, shared by every box.
+#   fleet                         this box's PRIVATE agent network (fixed
+#                                 name): spawned agents attach to it (the
+#                                 rendered fleet compose declares it external)
+#                                 and reach the app container-to-container by
+#                                 its service name `devbox`. Per-box on
+#                                 purpose: agent container names and DNS
+#                                 aliases are project-scoped, and fleets that
+#                                 share a project reconcile each other into
+#                                 oblivion (TALARIA_FLEET_PROJECT).
+#
+# Load-bearing mounts:
+#   /work/talaria      the repo clone — the fixed path the image's WORKDIR and
+#                      .gitconfig assume.
+#   ${BOX_HOST_STATE}  state (fleet renders, apps, uploads) at the SAME path
+#                      on both sides: the fleet renderer bakes absolute paths
+#                      into agent bind mounts that the HOST daemon resolves.
+#   docker socket      the app drives the host daemon — the same accepted
+#                      tradeoff as the production container.
+#   home volume        per-box ~/.claude / ~/.config/opencode / bun cache;
+#                      agent-CLI auth is never shared with the host or other
+#                      boxes (concurrent writes to a shared ~/.claude.json
+#                      corrupt it).
+
+services:
+  devbox:
+    image: talaria-devbox:latest
+    container_name: devbox-${BOX_NAME}
+    restart: unless-stopped
+    command: ['sleep', 'infinity']
+    tty: true
+    stdin_open: true
+    working_dir: /work/talaria
+    ports:
+      # The ONE host port: the human's browser. Everything else moves
+      # container-to-container. Loopback-only, like every dev publish — this
+      # app carries dev-default credentials.
+      - '127.0.0.1:${BOX_APP_PORT}:5273'
+    volumes:
+      - ${BOX_HOST_REPO}:/work/talaria
+      - ${BOX_HOST_STATE}:${BOX_HOST_STATE}
+      - home:/home/dev
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${BOX_HOME}/.ssh:/home/dev/.ssh:ro
+    # The socket's group on the HOST: scripts/devbox lifts it with
+    # `stat -c %g /var/run/docker.sock`.
+    group_add:
+      - '${DOCKER_GID:-999}'
+    security_opt:
+      - no-new-privileges:true
+    # Explicit upstream resolvers — the same host quirk the production compose
+    # guards against: when the host's resolv.conf names a loopback stub, the
+    # daemon's embedded forwarder can't resolve anything external, and a devbox
+    # is nothing but external lookups (npm, github, OAuth). Service names still
+    # resolve; the embedded resolver answers those itself.
+    dns:
+      - ${TALARIA_DNS_1:-1.1.1.1}
+      - ${TALARIA_DNS_2:-1.0.0.1}
+    environment:
+      HOME: /home/dev
+      # Tells scripts/dev.sh this container already owns its infra — it must
+      # NOT try to bring up (or wait on) the primary dev stack through the
+      # mounted socket.
+      TALARIA_DEVBOX: '1'
+    networks:
+      - default
+      - talaradev
+      - fleet
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ── Sidecars: the stateful plane, ported from docker/dev-compose.yml with
+  # healthchecks intact and published ports REMOVED — in-container DNS replaces
+  # the dev stack's loopback publishing, and several of these (qdrant, minio)
+  # are unauthenticated; the box network is the boundary.
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: devbox-${BOX_NAME}-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: talaria
+      POSTGRES_PASSWORD: talaria
+      POSTGRES_DB: talaria
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: devbox-${BOX_NAME}-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: docker.io/qdrant/qdrant:latest
+    container_name: devbox-${BOX_NAME}-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/6333"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: devbox-${BOX_NAME}-minio
+    restart: unless-stopped
+    command: ['server', '/data']
+    environment:
+      # The app and this container share the pair; scripts/devbox lifts the
+      # values from the primary ui/.env so the seed mirror is pure bytes.
+      MINIO_ROOT_USER: ${BOX_S3_ACCESS_KEY:-talaria}
+      MINIO_ROOT_PASSWORD: ${BOX_S3_SECRET_KEY:-talaria-dev-secret}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+networks:
+  # The primary dev stack's network, joined read-only in spirit: boxes only
+  # ever dial the two stateless services on it (talaria-embeddings-dev,
+  # talaria-searxng-dev). The `devbox` service alias is therefore shared by
+  # every box on this network (round-robin if dialled) — nothing dials it from
+  # here today; agents live on the box's own fleet network instead.
+  talaradev:
+    external: true
+    name: talaria-dev_default
+  # Compose-managed (not external) so the very first `up` creates it; the
+  # fleet renderer's ensureFleetNetwork adopts one that already exists.
+  fleet:
+    name: devbox-${BOX_NAME}-fleet
+    driver: bridge
+
+volumes:
+  home: {}
+  pg-data: {}
+  redis-data: {}
+  qdrant-data: {}
+  minio-data: {}
