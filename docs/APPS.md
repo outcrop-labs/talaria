@@ -13,30 +13,17 @@ and the community. Core ships with none enabled.
 ```
 apps/<slug>/
   talaria.json   manifest — name, icon, version, description, surfaces
-  app.tsx        UI surfaces (React) — default-exports defineApp({...})
+  app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...})
+  *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
-  ...            anything else (components, lib, assets)
+  harness.ts     optional workbench harness — defineWorkbenchHarness({...})
+  harnesses/     optional activity harnesses — one defineHarness per file
 ```
 
-```json
-{
-  "name": "Contacts",
-  "icon": "☏",
-  "version": "0.1.0",
-  "description": "Lightweight CRM — people, companies, stages, notes.",
-  "surfaces": { "work": "Contacts", "manage": "Contacts data", "settings": "Contacts" }
-}
-```
-
-| surface    | where it appears                       | access                                 |
-|------------|-----------------------------------------|----------------------------------------|
-| `work`     | Work section of the nav → `/x/<slug>`   | admins; members need an explicit grant |
-| `manage`   | Manage section → `/x/<slug>/manage`     | admins; members need an explicit grant |
-| `settings` | a Settings tab (for people with access) | follows the work-view grant            |
-
-The programming model — `defineApp`, the app server, the document store, MCP tools — is documented
-in [SDK.md](./SDK.md).
+The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
+is the [SDK docset](./sdk/README.md); the worked example is [`apps/contacts`](../apps/) in the
+repo.
 
 ## Lifecycle
 
@@ -63,7 +50,8 @@ gracefully — install-from-git always works.
 
 **Trust:** installing an app adds code to your deployment that runs fully trusted, like the
 platform itself. Install only apps you trust; the UI says this wherever code enters the system.
-The runtime safety boundary is the user session — see [SDK.md § Security model](./SDK.md).
+The runtime safety boundary is the user session — see the
+[security model](./sdk/README.md#security-model).
 
 ## Publishing an app
 
@@ -84,43 +72,20 @@ rebuilding (managed update flows are on the roadmap).
 - Everything an app's users do runs under their own session: platform permissions, resource ACLs,
   and the audit log apply exactly as in core surfaces.
 
-
 ## Shipping a harness
 
-Talaria has **two** things called a harness and they are not specializations of each other. This
-section is the **workbench** one — the sandboxed execution layer Hermes agents drive real work
-through. For an **activity** harness (a model call Talaria makes on your app's behalf, shipped at
-`apps/<slug>/harnesses/*.ts`), see [`SDK.md`](./SDK.md) and [`HARNESSES.md`](./HARNESSES.md).
+Talaria has **two** things called a harness and they are not specializations of each other:
 
-Apps extend the workbench by shipping a harness definition:
+- a **workbench harness** (`apps/<slug>/harness.ts`) — a coding CLI agents drive in the sandbox:
+  [workbench-harnesses.md](./sdk/workbench-harnesses.md), deep contract in
+  [WORKBENCH.md](./WORKBENCH.md);
+- an **activity harness** (`apps/<slug>/harnesses/*.ts`) — a model call Talaria runs on your app's
+  behalf, with evals that earn a column in the org's model-fitness matrix:
+  [harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
 
-```
-apps/<slug>/harness.ts
-```
-
-```ts
-import { defineWorkbenchHarness } from '@talaria/sdk/server'
-
-export default defineWorkbenchHarness({
-  slug: 'aider',
-  label: 'Aider',
-  auth: 'gateway', // OpenAI-compatible → pointed at Talaria's gateway (metered, attributed)
-  invoke: 'aider --model <model> --message "<task>"',
-  jsonInvoke: 'aider --model <model> --message "<task>" --yes --no-pretty',
-  mcpConfig: { format: 'claude-json', filename: 'aider-mcp.json' },
-  guide: 'Aider works in git-aware sessions; read its structured output and verify diffs yourself.',
-  install: { commands: ['pip install aider-chat'] },
-})
-```
-
-The definition is **declarative — no host code runs from it**. The host merges harnesses from three layers by slug (later wins): Talaria's builtins (opencode, Claude Code, Codex CLI, Oh My Pi) ← app-shipped (enabled apps only) ← admin-registered custom JSON (`PUT /api/workbench/harnesses`, `agents.manage`).
-
-A registered harness plugs into the whole workbench machinery automatically:
-
-- selectable per agent (the Harness dropdown on the agent's Workbench control), effort→model routing included, with the model rendered in the harness's own syntax (`modelPrefix`);
-- `auth: 'gateway'` provisions Talaria's gateway env into the sandbox; `auth: { provider, envVar }` interpolates that provider's key from the org's endpoint registry — scoped, never pasted;
-- `mcpConfig` gets the agent's existing MCP grants written in the harness's native config format at render time (zero in-sandbox reconnection);
-- `mcpServe` registers the harness as a stdio MCP server on the agent's own Hermes config once the workbench image carries its binary — agents drive it with tools, not stdout;
-- `install` hints feed the workbench image pipeline; `probe` (a cheap version command) is surfaced by the workbench **doctor** tool so agents can self-verify your harness runs;
-- need a config format the built-ins don't cover? Set `mcpConfig.format: 'custom'` and export `renderMcpConfig(ctx)` — you get the agent's granted servers as per-agent gateway endpoints plus the API-key env var, and you return the JSON your harness reads, in your own env-substitution syntax (app-shipped harnesses only — admin JSON definitions can't carry code);
-- jobs, branches, PRs, plan gates, per-job workspaces, and shared session history all behave identically — the harness is just the tool inside the flow.
+The host merges definitions from three layers by slug/id (later wins): Talaria's builtins ←
+app-shipped (enabled apps only) ← admin-registered custom JSON (`PUT /api/workbench/harnesses`,
+`agents.manage`). A registered harness plugs into the whole workbench machinery automatically —
+selectable per agent, auth and MCP grants provisioned at render time, probe surfaced by the
+workbench doctor — and jobs, branches, PRs, plan gates, per-job workspaces, and shared session
+history all behave identically: the harness is just the tool inside the flow.
