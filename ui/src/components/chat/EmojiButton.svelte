@@ -7,7 +7,8 @@
   // (ui/EmojiPicker: the full ~1900-glyph searchable set over the §7 shell,
   // dataset lazy-loaded on first open). There used to be a second, hand-rolled
   // ~100-glyph grid here; one picker, one dataset. Shortcodes (:smile:) still
-  // work straight from the keyboard (emoji.svelte.ts).
+  // work straight from the keyboard — `emojify` (lib/emoji.ts) expands them
+  // when the composer submits.
   let { onPick, disabled }: { onPick: (ch: string) => void; disabled?: boolean } = $props()
 </script>
 

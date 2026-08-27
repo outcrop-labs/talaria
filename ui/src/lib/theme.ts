@@ -27,11 +27,11 @@ export const THEMES: Array<{
 const STORAGE_KEY = 'talaria-theme'
 export const DEFAULT_THEME: ThemeId = 'mercury'
 
-export function isDarkTheme(theme: ThemeId): boolean {
+function isDarkTheme(theme: ThemeId): boolean {
   return theme === 'mercury'
 }
 
-export function isValidTheme(value: string | null | undefined): value is ThemeId {
+function isValidTheme(value: string | null | undefined): value is ThemeId {
   return value === 'mercury' || value === 'mercury-light'
 }
 

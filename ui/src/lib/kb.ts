@@ -124,7 +124,7 @@ export const updateSpace = (
  *
  *  A 200 whose `editors` key is missing is a broken contract, not "nobody at
  *  all" — `getList` rejects that too, for the same reason. */
-export const fetchEditors = (kind: PermKind, id: string): Promise<KbEditor[]> =>
+const fetchEditors = (kind: PermKind, id: string): Promise<KbEditor[]> =>
   getList<KbEditor>(
     kind === 'artifacts' ? `/api/artifacts/${id}`
     : kind === 'artifact-folders' ? `/api/artifact-folders/${id}`
@@ -184,7 +184,7 @@ export interface KbSearchHit {
 /** KB search, honestly: a failed search REJECTS, so "nothing matched" and "the
  *  search broke" are different answers. This is the only function in the app
  *  that talks to /api/kb/search — reach for it, do not re-derive it. */
-export const searchKbHits = (q: string): Promise<KbSearchHit[]> =>
+const searchKbHits = (q: string): Promise<KbSearchHit[]> =>
   getList<KbSearchHit>(`/api/kb/search?q=${encodeURIComponent(q)}`, 'hits')
 
 /** @deprecated Swallows failures as an empty result — use `searchKbHits` and

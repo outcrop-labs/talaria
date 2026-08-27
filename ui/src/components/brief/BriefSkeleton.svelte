@@ -5,11 +5,11 @@
   /**
    * The brief's own loading shape — hero, then two sections of rows.
    *
-   * ITS OWN FILE, rather than a reuse of `FocusLoading`, because the surfaces
-   * are different shapes: the focus queue was one big card over a short list,
-   * and a brief is a wide header over several titled groups. A skeleton that
-   * does not match what replaces it makes the swap jump, which is the one thing
-   * a skeleton exists to prevent.
+   * ITS OWN FILE, not a shared skeleton, because the surfaces are different
+   * shapes: the old focus queue was one big card over a short list, and a brief
+   * is a wide header over several titled groups. A skeleton that does not match
+   * what replaces it makes the swap jump, which is the one thing a skeleton
+   * exists to prevent.
    *
    * No stagger and no delay: static has no direction, and a sweep would imply a
    * completion the fetch cannot promise (docs/UI-CONVENTIONS.md, Loading).

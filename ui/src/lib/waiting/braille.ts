@@ -32,7 +32,7 @@ export interface Cell {
   alpha: number
 }
 
-export const cellChar = (mask: number): string => String.fromCharCode(BRAILLE_BASE + mask)
+const cellChar = (mask: number): string => String.fromCharCode(BRAILLE_BASE + mask)
 
 /**
  * Rasterise a field into `cols` braille characters at phase `p`.

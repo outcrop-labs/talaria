@@ -1,5 +1,5 @@
 // The user's notification inbox — polled here (30s), made live by the SSE
-// subscription in NotificationsPanel; refetches also piggyback on route changes.
+// subscription in NotificationToasts; refetches also piggyback on route changes.
 //
 // The routing/digest vocabulary lives in `lib/notify-classes.ts` (framework-
 // free, shared with the server) and is re-exported here so client call sites

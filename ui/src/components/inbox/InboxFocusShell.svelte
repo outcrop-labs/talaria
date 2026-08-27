@@ -317,7 +317,7 @@
     void performAction(item, entry.actionId)
   }
 
-  // The context value the workspace surfaces read (FocusInbox et al). Getters
+  // The context value the workspace surfaces under this shell read. Getters
   // keep every field reactive — consumers must not destructure it.
   setContext<InboxFocusWorkspaceValue>(INBOX_FOCUS_WORKSPACE_KEY, {
     get data() {

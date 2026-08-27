@@ -9,7 +9,7 @@ import { managedContainer } from './fleet-docker'
 
 const run = promisify(execFile)
 
-export const IMAGE_TYPES: Record<string, string> = {
+const IMAGE_TYPES: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',

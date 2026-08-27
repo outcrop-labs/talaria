@@ -131,7 +131,7 @@ async function prefsBlob(userId: string): Promise<unknown> {
  *  for every class they never touched. Never throws for a missing user — an
  *  unknown id gets the defaults, and the caller's own query is what will fail
  *  if the user really doesn't exist. */
-export async function getNotifyPrefs(userId: string): Promise<NotifyPrefs> {
+async function getNotifyPrefs(userId: string): Promise<NotifyPrefs> {
   return resolveNotifyPrefs(await prefsBlob(userId))
 }
 

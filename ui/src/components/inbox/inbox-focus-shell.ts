@@ -1,6 +1,8 @@
 // Typed context key + accessor for the Inbox focus workspace. The provider
-// lives in InboxFocusShell.svelte; anything under it (FocusInbox, AppLayout's
-// inbox surfaces) reads the workspace through `useInboxFocusWorkspace()`.
+// lives in InboxFocusShell.svelte; any surface mounted inside the shell reads
+// the workspace through `useInboxFocusWorkspace()`. (The standalone focus-inbox
+// page was the last reader; the accessor remains the door for surfaces the
+// shell hosts later.)
 import { getContext } from 'svelte'
 import type { FocusAction, FocusItem, FocusQueue } from '@/lib/inbox-focus.svelte'
 

@@ -3,6 +3,8 @@
 The first public pre-alpha of Talaria: the operations platform for companies that run on people **and** AI agents. One workspace where your team and your AI agents share the same boards, conversations, plans, and documents, in real time — and every agent is a full Hermes agent with memory, skills, and its own run loop.
 
 > ⚠️ **Pre-alpha. Not production ready.** Expect breaking changes, schema migrations, and surfaces that get renamed anywhere between now and 1.0. Kick the tires and file issues, but don't run your business on it yet.
+>
+> 📝 **Working draft.** These notes are written ahead of the build they describe — expect them to keep changing until the pre-alpha is actually cut.
 
 ## What's in this build
 
