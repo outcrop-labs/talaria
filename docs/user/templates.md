@@ -51,12 +51,5 @@ The page shows **Admins only** to anyone without the admin role. Editing needs t
 from") — admins switch it on per person in **Admin → People**. Every template picker in the
 app reads the same library, so a granted member's templates show up everywhere.
 
-## Words Templates uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Skeleton** | The markdown body of the template — the part that seeds tickets and plans |
-| **Agent guidance** | Prompt-only instructions that ride along with the skeleton |
-| **Binding** | A board's or agent's standing pick of a template; an agent's binding beats the board's default |
-| **Freeform** | No template at all — you write from scratch |
-| **Role templates** | A different thing: starter personas for *agents* on the Agents page. Nothing to do with this library |
+Don't confuse these with **role templates** — the starter personas new *agents* are hired
+from on the Agents page. Same word, different library, nothing to do with each other.

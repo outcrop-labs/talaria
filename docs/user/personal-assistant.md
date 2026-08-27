@@ -37,11 +37,14 @@ for you rather than the other way around.
 | **Start / Stop** | The container beneath it |
 | **Open chat →** | A straight line to it |
 
-Below the settings, its working parts: **Schedules** (recurring jobs it runs on its own
-scheduler — they keep firing even when Talaria is down; describe one like *"every weekday
-morning, summarize my inbox into a brief"* and it's drafted for you), **Skills**, and
-**Memory** (add *"remember something: one fact the agent should keep"*; it's MEMORY.md, with
-version history).
+Below the settings, its working parts:
+
+- **Schedules** — recurring jobs on the assistant's own scheduler; they keep firing even
+  when Talaria is down. Describe one — *"every weekday morning, summarize my inbox into a
+  brief"* — and it's drafted for you.
+- **Skills** — what it knows how to do.
+- **Memory** — add *"remember something: one fact the agent should keep"*. It's MEMORY.md,
+  with version history.
 
 ## What it does for you
 
@@ -78,12 +81,6 @@ tier for routine work and escalates deliberately.
 Admins can mark their own assistant **elevated** (their People row in Admin) to widen its
 view org-wide.
 
-## Words your assistant uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Brief** | The morning document it writes — see [Your day](./your-day.md) |
-| **Digest** | The separate one-email-a-day summary (Settings → Notifications) |
-| **Delegation** | Letting the assistant answer one conversation for you, in its own name |
-| **Tool account** | An MCP server connected as you, for your assistant to use |
-| **Memory** | MEMORY.md — the facts it keeps, versioned |
+Two words that sound alike and aren't: the **brief** is the morning document your assistant
+writes; the **digest** is the separate one-email-a-day summary you tune in
+Settings → Notifications.

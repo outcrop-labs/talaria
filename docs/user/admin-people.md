@@ -32,9 +32,9 @@ person produced stay.
 
 ## What each person may do
 
-On each member's row: the mono word **can**, followed by one chip per permission. A filled
-chip is effectively allowed; a dot marks one you've overridden from the default; clicking a
-chip twice returns it to the default. Hover any chip for its one-line hint.
+On each member's row, the mono word **can** is followed by one chip per permission. A
+filled chip means allowed; a dot marks one you've overridden from the default — click a
+chip twice to put it back. Hover any chip for its one-line hint.
 
 **Member defaults** (top of the tab) sets the org-wide baseline — what every plain member may
 do out of the box. The chips group by area (Agents, Work, Comms, Content, Models); a dot
@@ -73,12 +73,3 @@ app view appears here and is allowed per person. Admins always have full access.
 
 The **agent access** box on the row bounds which agents the member can work with
 (**All agents** if empty).
-
-## Words People uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Permission** | What a person may *do* on a surface they can reach |
-| **View** | Whether a person can *reach* a surface at all |
-| **Member defaults** | The org-wide baseline of member permissions |
-| **Pinned admin** | An admin fixed by the `AUTH_ADMIN_EMAILS` environment setting |

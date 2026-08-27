@@ -81,15 +81,6 @@ explanation. Two more sections fill in over time: **asked for help with** (work 
 and couldn't do — **Build it** turns the gap into a skill) and **Work routed to**
 (workflows that ride along when matching tickets dispatch).
 
-## Words agents use
-
-| Term | Meaning |
-| :--- | :--- |
-| **Soul** | Who the agent is — its SOUL.md, in its own voice |
-| **Tier** | A named model alias on the agent; `@Name:tier` routes one reply to it |
-| **Warming** | A just-hired container coming up to health |
-| **Roll** | Zero-downtime replacement: fresh container, the old one finishes its replies |
-| **Distill** | The automatic summarize-and-archive of an idle agent chat |
-| **QA judge** | The platform's own reviewer: Pass / Revise / Escalate on a finished ticket |
-| **Confab guard** | The flag on a reply produced without something to ground it |
-| **Muse** | Talaria's designer agent — drafts new agents and new skills from a description |
+A term you'll meet around agents: a **roll** is a zero-downtime replacement — a fresh
+container comes up beside the old one and takes over only once healthy, so the old one
+finishes the replies it's holding.

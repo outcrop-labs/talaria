@@ -1,8 +1,9 @@
 # Using Talaria
 
-These are the member guides — how to work in Talaria if you're not running it. Each page is
-short, table-first, and says exactly what to click. Admins: the admin chapters are marked
-below; everything about running the platform for other people lives in them.
+These are the member guides — how to work in Talaria if you're not running it. Each page
+tells you what a surface is for, how to do the common things, and the few ideas that make
+the rest make sense. Admins: the admin chapters are marked below; everything about running
+the platform for other people lives in them.
 
 ## Start here
 

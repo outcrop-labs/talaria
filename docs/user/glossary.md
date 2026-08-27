@@ -23,7 +23,7 @@ bold throughout the guides resolve here.
 | **Delegation** | Letting your assistant answer one conversation for you — in its own name | [Your assistant](./personal-assistant.md) |
 | **Depth** | Research effort: Recon (~1 min), Brief (a few), Expedition (10 min+) | [Research](./research.md) |
 | **Digest (daily)** | The one-email-a-day summary of what waits — never sent when nothing does | [Your day](./your-day.md) |
-| **Distill** | The automatic summarize-and-archive of an idle agent chat | [Comms](./comms.md) |
+| **Distill** | The automatic summarize-and-archive of an idle agent chat — the summary lands in Files | [Comms](./comms.md) |
 | **Draft job** | The server-side run that reads a plan or conversation and proposes tickets | [Plan](./plan.md) |
 | **Effort / Estimate** | A ticket's t-shirt size (XS–XL) and hours | [Boards](./boards.md) |
 | **Explicit grant** | The default-deny rule for Manage views and app views — allowed per person | [Admin: People](./admin-people.md) |

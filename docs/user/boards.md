@@ -57,11 +57,11 @@ tells you exactly what's stuck and how to fix it.
 
 ## Ticket details
 
-Open a ticket (click a card) for the full detail: description, attachments, comments with
-`@`mentions (mentioned people get an inbox item), and the properties rail — status, priority,
-color, assignees, effort, estimate, time spent, tokens (what the agent's work cost), dates,
-parent/sub-tasks, dependencies (**Blocked by / Blocks**), labels, and watchers (**Watch** to
-follow a ticket).
+Open a ticket (click a card) for the full detail: description, attachments, and comments
+with `@`mentions — mentioned people get an inbox item. The properties rail carries the rest:
+status, priority, color, assignees, effort, estimate, time spent, tokens (what the agent's
+work cost), dates, parent/sub-tasks, dependencies (**Blocked by / Blocks**), labels, and
+watchers (**Watch** to follow a ticket).
 
 Right-click any ticket for the fast lane: move, priority, color, due date, assign to me,
 archive.
@@ -104,13 +104,4 @@ The full agent side of this — mentions, chats, credential handoff, the review 
 Sharing a board requires the person to have signed in once already. Team boards: team members
 are editors, team owners own the board.
 
-## Words Boards uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Ticket** | A unit of work. (Developers meet the same thing as "task" in the API.) |
-| **Reference** | Short code on every card, minted from the board's name — e.g. `QL-14` |
-| **View** (saved) | A named filter+layout preset, shared with the board — a tab |
-| **Status / column** | One step of the workflow; its category gives it meaning |
-| **Effort / Estimate** | T-shirt size (XS–XL) and hours |
-| **Watcher** | Someone following a ticket without being assigned |
+One naming note: what the UI calls a ticket, the API calls a task — same thing, two words.

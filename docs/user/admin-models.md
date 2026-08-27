@@ -54,10 +54,11 @@ slots run `auto`. Unfit assignments surface as warnings — they report, never b
 
 The **Fitness** tab measures whether a model holds a slot, and what holding it costs.
 Grey means nothing has measured it — **which is not a pass**. **Test a model**: pick a
-candidate and the tiers to probe (optionally re-measuring capabilities already probed), and
-the footer shows the bill before you start — *Start: 42 calls, $0.31*. The run charges your
-provider; the long tier can be stopped at any case boundary and resumes where it left off.
-The cost figure is a floor, not a total.
+candidate and the tiers to probe — the capability bands fitness sorts models into, a
+different sense of "tier" than an agent's model aliases — and the footer shows the bill
+before you start: *Start: 42 calls, $0.31*. The run charges your provider; the long tier
+can be stopped at any case boundary and resumes where it left off. The cost figure is a
+floor, not a total.
 
 ## Access: what members may pick
 
@@ -70,13 +71,3 @@ brains are set per agent and unaffected.
 Members granted **Mint API keys** can mint personal LLM-gateway keys in
 **Settings → API keys** — an OpenAI-compatible base URL and model list drawn from this page —
 for external tools. Keys are scoped to the models allowed here.
-
-## Words Models uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Provider** | A model backend — cloud API or self-hosted server |
-| **Slot** | One job a model can hold (research-brief, judge, muse…) |
-| **Tier** | A probed capability band from fitness runs |
-| **`auto`** | No assignment or no price — Talaria picks, or the cost goes unattributed |
-| **Gateway** | This instance's OpenAI-compatible endpoint that minted keys point at |

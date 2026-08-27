@@ -58,11 +58,3 @@ trusted, like the platform itself — **install only apps you trust**.
 Each app gets its own document store — its data does not land in your Files or Knowledge.
 Agents reach that data through the app's MCP tools (a Contacts agent can search and add
 contacts), governed in **Manage → MCP** exactly like any server.
-
-## Words Apps uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Surface** | One render target of an app: work, manage, or settings |
-| **Explicit grant** | The default-deny rule: every app view must be allowed per person |
-| **Marketplace** | The catalog the Discover tab reads; any git repository with a `talaria.json` at its root can be an app |
