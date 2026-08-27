@@ -5,6 +5,7 @@
 // here. No hop, no credentials, and the tool list the registry caches comes
 // straight from the module.
 import { storeFor } from './app-store'
+import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
 import type { AppMcp, AppMcpTool } from '@/sdk/server'
 
 const MCP_MODS = import.meta.glob('../../../apps/*/mcp.ts') as Record<string, () => Promise<unknown>>
@@ -56,7 +57,7 @@ export async function dispatchAppMcp(
       return {
         status: 200,
         body: result(rpc.id, {
-          protocolVersion: (rpc.params?.protocolVersion as string) ?? '2025-03-26',
+          protocolVersion: (rpc.params?.protocolVersion as string) ?? MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
           serverInfo: { name: `talaria-app-${slug}`, version: '1.0' },
         }),

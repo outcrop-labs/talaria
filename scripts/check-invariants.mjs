@@ -427,25 +427,36 @@ const CENSUS = [
       'agent touch this board", and `agentTicketRefusal` builds the ticket-level answer on it.',
       '',
       'SET-SCOPING is the legitimate exception: a JOIN that filters MANY boards at once cannot',
-      'call a per-row JS predicate without an N+1. Those are on the census below — and they',
-      'have already drifted from the predicate they copy:',
-      '',
-      '  boards.ts `listBoardsForAgent`   filters `b.archived_at is null`   ✔ agrees',
-      '  uploads.ts `canAccessUpload`     does NOT filter archived          ✘ diverges',
-      '  retrieval/index.ts `activityScope` does NOT filter archived        ✘ diverges',
-      '',
-      'So an agent cannot GET a ticket on an archived board and cannot list the board, but can',
-      'still fetch its attachments and retrieve its content into an answer. Fixing that means',
-      'ONE shared SQL fragment (the shape `statusCategorySql` already uses in server/statuses.ts),',
-      'not a third hand-written `and b.archived_at is null`. Owned by a later round; listed here',
-      'so it is on every CI run instead of being rediscovered.',
+      'call a per-row JS predicate without an N+1. That exception now has ONE shape —',
+      '`agentBoardPolicySql(sql, model)` in server/boards.ts — which bakes in the `archived_at`',
+      'filter the three hand-written copies once disagreed on (two omitted it, so an agent',
+      'could not list an archived board but could still fetch its attachments and retrieve',
+      'its content). Any NEW match here is a fourth hand-rolled copy, not a set-scoping need.',
     ],
     sites: {
-      'ui/src/server/boards.ts': 3, // getBoardAgentConfig, setBoardAgentConfig, listBoardsForAgent
+      // The two single-board config reads/writes and the shared fragment itself.
+      'ui/src/server/boards.ts': 3, // getBoardAgentConfig, setBoardAgentConfig, agentBoardPolicySql
       'ui/src/server/db/pg.ts': 1, // the column DDL
-      // ── Known divergence, owned by a later round (see `fix` above) ──────────
-      'ui/src/server/uploads.ts': 1, // canAccessUpload — no archival clause
-      'ui/src/server/retrieval/index.ts': 1, // activityScope — no archival clause
+    },
+  },
+  {
+    id: 'board-members-visibility-join',
+    // A `left join board_members` in a query — the user-side board visibility
+    // check, hand-rolled instead of the shared fragment.
+    pattern: /left join board_members/g,
+    what: 'a hand-rolled board-membership visibility join',
+    fix: [
+      'Filter with the fragment: `where ${boardVisibilitySql(sql, userId)}` from server/boards.ts —',
+      'direct member or owning-team member, with the `archived_at` filter baked in.',
+      '',
+      'THE DRIFT THIS CLOSES: nine hand-written joins, three of which forgot `archived_at`, so',
+      'an archived board stayed reachable through the activity feed, retrieval scopes and',
+      'upload reach checks after it had vanished from every list. The one survivor below is',
+      'listBoards, which needs the join to SELECT the member role and passes',
+      '`{ includeArchived: true }` so it can state its own archival view.',
+    ],
+    sites: {
+      'ui/src/server/boards.ts': 1, // listBoards — role selection, predicate via boardVisibilitySql
     },
   },
   {
@@ -1001,14 +1012,16 @@ for (const rule of CENSUS) {
       )
     }
   }
-  // The board-policy census carries a KNOWN DIVERGENCE, not just duplication —
-  // say so on every run, or "all clean" reads as "and they agree".
+  // The board-policy census used to carry a KNOWN DIVERGENCE (two SQL copies
+  // skipped the archived filter). Both sides now route through the shared
+  // fragments in server/boards.ts — `boardVisibilitySql` (user) and
+  // `agentBoardPolicySql` (agent) — and this note is what keeps a clean run
+  // from reading as "and they always agreed".
   if (rule.id === 'board-agent-policy-in-sql') {
     notes.push(
-      'ui/src/server/uploads.ts and ui/src/server/retrieval/index.ts scope agent access by board ' +
-        'policy in SQL and do NOT filter archived boards, while boards.ts `listBoardsForAgent` does. ' +
-        'An agent can still fetch attachments from, and retrieve content out of, a board it cannot ' +
-        'otherwise see. On the census in scripts/check-invariants.mjs; owned by a later round.',
+      'Agent-side board scoping in SQL goes through `agentBoardPolicySql` (server/boards.ts), ' +
+        'which bakes in the archived filter the hand-written copies once disagreed on. ' +
+        'A new `allow_all_agents` match outside the two config reads and the fragment is a regression.',
     )
   }
   // Any admin-list site that is not one of the two DECLARED ones is a file still

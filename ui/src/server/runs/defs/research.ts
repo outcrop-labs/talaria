@@ -99,6 +99,7 @@ import {
   type SearchSource,
 } from '../../harness/defs/research'
 import { runHarness } from '../../harness/run'
+import { SourceRegistry, type ResearchSource } from '../../source-registry'
 import { setEditors } from '../../kb-perms'
 import { gatewayModels } from '../../llm-gateway'
 import { resolveRoleModel } from '../../model-roles'
@@ -238,65 +239,18 @@ export function adaptBudget(budget: ReturnType<typeof budgetFor>, searchModel: s
 }
 
 // ── The citation registry ────────────────────────────────────────────────────
-
-/** One source as the CHECKPOINT carries it. The registry is rebuilt from this
- *  list at the top of every step, which is the difference between a resumable
- *  run and a run that renumbers its citations from 1 the moment it restarts. */
-export interface RegistrySource {
-  idx: number
-  url: string
-  title: string | null
-  snippet: string | null
-}
+// Not declared here any more: the registry is shared with the in-process
+// pipeline, so it lives in `server/source-registry.ts` — the one leaf both
+// hosts can import, because this module cannot import `server/research.ts`
+// (the domain module imports IT). The twin this file used to carry allocated
+// `size + 1` where the canonical allocates HIGHEST + 1: a run seeded from a
+// parent whose source list has a gap re-aimed an existing citation at a
+// brand-new URL. `ResearchSource` (the checkpoint's source shape) comes from
+// the same leaf; this file's old local spelling `RegistrySource` is gone.
 
 interface SearchHit {
   content: string
   sources: SearchSource[]
-}
-
-export class SourceRegistry {
-  private byUrl = new Map<string, { idx: number; title: string | null; snippet: string | null }>()
-
-  /** Rehydrate from a checkpoint. Insertion order IS the numbering, so the
-   *  entries go back in ascending `idx` — a registry rebuilt in a different
-   *  order would hand out the same numbers to different documents. */
-  static from(sources: readonly RegistrySource[]): SourceRegistry {
-    const reg = new SourceRegistry()
-    for (const s of [...sources].sort((a, b) => a.idx - b.idx)) reg.byUrl.set(s.url, { idx: s.idx, title: s.title, snippet: s.snippet })
-    return reg
-  }
-
-  add(s: { url: string; title: string | null; snippet: string | null }): number {
-    const existing = this.byUrl.get(s.url)
-    if (existing) {
-      if (!existing.title && s.title) existing.title = s.title
-      return existing.idx
-    }
-    // `size + 1` and not "the highest idx + 1" only because the map is the
-    // whole registry: rehydration above preserves both the entries and their
-    // numbers, so the two are the same number.
-    const idx = this.byUrl.size + 1
-    this.byUrl.set(s.url, { idx, title: s.title, snippet: s.snippet })
-    return idx
-  }
-
-  /** Rewrite one search hit's LOCAL [n] markers onto global numbering. */
-  renumber(hit: SearchHit): string {
-    const map = new Map<number, number>()
-    hit.sources.forEach((s, i) => map.set(i + 1, this.add(s)))
-    return hit.content.replace(/\[(\d{1,2})\]/g, (m, n) => {
-      const g = map.get(Number(n))
-      return g ? `[${g}]` : m
-    })
-  }
-
-  list(): RegistrySource[] {
-    return [...this.byUrl.entries()].map(([url, s]) => ({ idx: s.idx, url, title: s.title, snippet: s.snippet }))
-  }
-
-  get size(): number {
-    return this.byUrl.size
-  }
 }
 
 // ── Input and checkpoint ─────────────────────────────────────────────────────
@@ -350,7 +304,7 @@ export interface ResearchCheckpoint {
   queriesRun: number
   /** One markdown note per query that has run, in order. */
   findings: string[]
-  sources: RegistrySource[]
+  sources: ResearchSource[]
   /** Any query threw. Goes to the synthesis harness, which grounds against it. */
   searchFailed: boolean
   /** How many times the owner has said "search again" after a round that found
@@ -390,13 +344,13 @@ export interface ResearchRunDeps {
   ensureRow: (runId: string, input: ResearchInput) => Promise<void>
   /** The parent report's numbered sources, for a follow-up. Injected like every
    *  other read so the seeding is testable without a database. */
-  sourcesOf: (runId: string) => Promise<RegistrySource[]>
+  sourcesOf: (runId: string) => Promise<ResearchSource[]>
   /** Is the domain record still there? DELETE /api/research/:id removes it, and
    *  that is the product's "stop this" — a run that kept spending after it
    *  would be billing a person for a thing they threw away. */
   rowExists: (runId: string) => Promise<boolean>
   memberIds: (runId: string) => Promise<string[]>
-  saveSources: (runId: string, sources: RegistrySource[]) => Promise<void>
+  saveSources: (runId: string, sources: ResearchSource[]) => Promise<void>
   finishRow: (args: { runId: string; artifactId: string; stats: Record<string, number> }) => Promise<void>
   /** Mirror a failure onto the domain record. See `mirrorFailure`. */
   failRow: (runId: string, error: string) => Promise<void>
@@ -538,7 +492,7 @@ export const REAL_RESEARCH_DEPS: ResearchRunDeps = {
     const sql = await db()
     return (await sql`
       select idx, url, title, snippet from research_sources where run_id = ${runId} order by idx asc
-    `) as unknown as RegistrySource[]
+    `) as unknown as ResearchSource[]
   },
 
   async rowExists(runId) {

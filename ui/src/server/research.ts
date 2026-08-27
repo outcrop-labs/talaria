@@ -41,10 +41,16 @@ import { createConversation } from './conversations'
 import { randomUUID } from 'node:crypto'
 import { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, researchRun, searchModelFor, type ResearchInput, type SearchPlan } from './runs/defs/research'
 import { cancelRun, drive, enqueue } from './runs/run'
+import { MARKER_RE, SourceRegistry, type ResearchSource } from './source-registry'
 // RE-EXPORTED, not re-declared. `planSearch` and its two companions moved into
 // the run definition with the pipeline they belong to; every caller — the route,
 // the MCP tool, research-plan.test.ts — keeps the import it already had.
 export { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, searchModelFor, type SearchPlan }
+// Likewise the citation registry: it lives in `source-registry.ts`, the one
+// leaf both hosts can share — this module imports the run definition, so the
+// run definition cannot import this one back. Re-exported so every caller and
+// both marker test files keep the import they already had.
+export { SourceRegistry, type ResearchSource }
 
 /** Unchanged as a public name and as a type — `ResearchDepth` is declared in
  *  the harness definition because that module cannot import this one, and this
@@ -77,13 +83,6 @@ export interface ResearchRun {
   completedAt: string | null
 }
 
-export interface ResearchSource {
-  idx: number
-  url: string
-  title: string | null
-  snippet: string | null
-}
-
 
 
 
@@ -98,35 +97,10 @@ export interface ResearchSource {
 
 
 // ── The citation registry ─────────────────────────────────────────────────────
-
-/** A CITATION MARKER, AND IT IS NOT TWO DIGITS.
- *
- *  `\d{1,2}` was correct for exactly as long as research meant Perplexity: sonar
- *  answers with a handful of pre-ranked sources, so a registry never approached
- *  [99]. Research is model-agnostic now and the tool path is the common one — an
- *  expedition is up to twelve queries against a web-search tool, each returning
- *  a page of results, with every distinct URL numbered. Three figures is
- *  ordinary there.
- *
- *  WHERE IT ACTUALLY BROKE, which is narrower than it first looks and is worth
- *  writing down because the first version of this comment got it wrong. Both
- *  failures are on the REPORT, whose markers are global:
- *
- *    · AN INVENTED [150] SURVIVED. `finishRun` strips markers the registry does
- *      not know; a three-digit one was not matched, so it was neither counted
- *      as dropped nor removed, and it reached the saved document looking exactly
- *      like a real citation.
- *    · THE CITED COUNT UNDERCOUNTED, so a thorough report scored as a thin one,
- *      and `reportProblem` read an all-three-digit report as citing NOTHING.
- *
- *  `SourceRegistry.renumber` was NOT affected and never could be: the markers it
- *  rewrites are LOCAL to one search hit — [1], [2], [3] — and it is the OUTPUT
- *  that carries the global number. Stated because the mutation test that proved
- *  it is easy to read as redundant.
- *
- *  Bounded at three digits rather than left open: `[2024]` in prose is a year,
- *  and matching it would strip dates out of reports. */
-const MARKER_RE = /\[(\d{1,3})\]/g
+// The registry itself (`SourceRegistry`, `MARKER_RE`, `ResearchSource`) is in
+// `source-registry.ts`, shared with the durable run definition — see the
+// re-export note at the top of this file. What stays here is the report-side
+// machinery that consumes it.
 
 /** Exported for its own test. The renumbering it does is one of the three
  *  places two-digit markers failed silently, and it is not reachable through
@@ -203,60 +177,6 @@ export function stripUnknownMarkers(doc: string, knownIdx: readonly number[]): {
   const cited = new Set([...cleaned.matchAll(MARKER_RE)].map((m) => Number(m[1])))
   return { cleaned, dropped, cited }
 }
-
-export class SourceRegistry {
-  private byUrl = new Map<string, { idx: number; title: string | null; snippet: string | null }>()
-
-  /** SEED FROM A REPORT ALREADY WRITTEN, so a follow-up continues its numbering
-   *  instead of starting again at [1].
-   *
-   *  THIS IS WHAT KEEPS THE OLD TEXT TRUE. Every [n] in the parent's prose
-   *  points at a row in its source list; renumbering — or reusing [3] for a new
-   *  URL — would silently re-aim citations that a human already read and
-   *  believed. So the parent's indices are taken verbatim and new sources
-   *  continue from the highest, whatever gaps that leaves. */
-  static from(sources: readonly ResearchSource[]): SourceRegistry {
-    const reg = new SourceRegistry()
-    for (const s of sources) reg.byUrl.set(s.url, { idx: s.idx, title: s.title, snippet: s.snippet })
-    return reg
-  }
-  add(s: { url: string; title: string | null; snippet: string | null }): number {
-    const existing = this.byUrl.get(s.url)
-    if (existing) {
-      if (!existing.title && s.title) existing.title = s.title
-      return existing.idx
-    }
-    // HIGHEST + 1, not size + 1. A seeded registry can carry gaps — a parent
-    // whose source [4] was deleted leaves size 3 and a highest of 5 — and
-    // `size + 1` would hand [4] to a brand new URL, quietly re-aiming every
-    // citation the parent's text makes to [4].
-    const idx = Math.max(0, ...[...this.byUrl.values()].map((v) => v.idx)) + 1
-    this.byUrl.set(s.url, { idx, title: s.title, snippet: s.snippet })
-    return idx
-  }
-  /** Rewrite one search hit's LOCAL [n] markers onto global numbering.
-   *
-   *  The hit SHAPE is declared here rather than imported from the run
-   *  definition: the pipeline depends on this module, so importing back the
-   *  other way would close a cycle for the sake of two fields. */
-  renumber(hit: { content: string; sources: Array<{ url: string; title: string | null; snippet: string | null }> }): string {
-    const map = new Map<number, number>()
-    hit.sources.forEach((s, i) => map.set(i + 1, this.add(s)))
-    return hit.content.replace(MARKER_RE, (m, n) => {
-      const g = map.get(Number(n))
-      return g ? `[${g}]` : m
-    })
-  }
-  list(): ResearchSource[] {
-    return [...this.byUrl.entries()].map(([url, s]) => ({ idx: s.idx, url, title: s.title, snippet: s.snippet }))
-  }
-  get size(): number {
-    return this.byUrl.size
-  }
-}
-
-
-
 
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 

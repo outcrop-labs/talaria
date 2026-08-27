@@ -6,6 +6,7 @@
 //     is shared infrastructure; /agents itself isn't admin-gated)
 // No new tables — this is a read model over what the app already records.
 import { db } from './db/pg'
+import { boardVisibilitySql } from './boards'
 
 export type ActivityKind = 'ticket' | 'channel' | 'fleet' | 'audit'
 
@@ -45,9 +46,7 @@ export async function activityFeed(
           from task_activity a
           join tasks t on t.id = a.task_id
           join boards b on b.id = t.board_id
-          left join board_members m on m.board_id = b.id and m.user_id = ${userId}
-          left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
-          where m.user_id is not null or tm.user_id is not null
+          where ${boardVisibilitySql(sql, userId)}
           order by a.created_at desc limit ${per}
         `
       : Promise.resolve([]),
