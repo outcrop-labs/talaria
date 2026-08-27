@@ -242,4 +242,4 @@ values), creates of durable org content. Chatter (messages, reactions, presence)
 ## App servers
 
 Third-party app routes get the same treatment for free: the host gateway authenticates and
-view-checks before dispatch ([SDK.md](./SDK.md)); inside handlers, follow the shapes above.
+view-checks before dispatch ([docs/sdk](./sdk/server.md)); inside handlers, follow the shapes above.

@@ -536,7 +536,7 @@ without a note, or ships no eval fixtures.
 **Shipping one from an app** is the same contract in a different home: `apps/<slug>/harnesses/*.ts`,
 one harness per file, default-exported, loaded for enabled apps only and checked structurally before
 it joins the registry — a broken app is a logged skip, never an empty admin page. See
-[`SDK.md`](./SDK.md). The third layer, admin-custom, is deliberately empty: a workbench harness is
+[`docs/sdk/harnesses.md`](./sdk/harnesses.md). The third layer, admin-custom, is deliberately empty: a workbench harness is
 declarative and can live as a JSON row, but an activity harness carries code (`render`, `verify`,
 `check`), and Talaria does not run code out of a database row. What an admin *can* customize is the
 model each harness runs on.
@@ -871,7 +871,7 @@ being compared against.
 
 - [`AUDIT-HARNESS-2026-08-06.md`](./history/AUDIT-HARNESS-2026-08-06.md) — the audit this layer answers, with
   the reproductions behind every claim above.
-- [`SDK.md`](./SDK.md) — the app-developer surface.
+- [`docs/sdk/`](./sdk/README.md) — the app-developer surface.
 - [`API-CONVENTIONS.md`](./API-CONVENTIONS.md) — the route dialect, and the other invariants CI holds.
 - [`WORKBENCH.md`](./WORKBENCH.md) — **workbench** harnesses, which are a different contract with a
   similar name: a coding CLI an agent drives inside a sandbox, declared as shell templates and env.

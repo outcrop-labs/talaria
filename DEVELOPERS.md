@@ -168,7 +168,7 @@ Full detail in [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) and
 | [`docs/PRODUCT.md`](./docs/PRODUCT.md) | The product definition: problem, answer, surfaces, defensible differences |
 | [`docs/TODO.md`](./docs/history/TODO-2026-07-09.md) | The living backlog |
 | [`docs/APPS.md`](./docs/APPS.md) | Building apps: anatomy, lifecycle, marketplace, publishing |
-| [`docs/SDK.md`](./docs/SDK.md) | The complete `@talaria/sdk` reference |
+| [`docs/sdk/`](./docs/sdk/README.md) | The complete `@talaria/sdk` docset |
 | [`docs/WORKBENCH.md`](./docs/WORKBENCH.md) | The Workbench: execution in role-scoped sandboxes |
 | [`docs/HARNESSES.md`](./docs/HARNESSES.md) | Coding harnesses and model fitness |
 | [`docs/MCP.md`](./docs/MCP.md) | Organizational MCP governance |

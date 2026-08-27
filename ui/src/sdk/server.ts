@@ -160,9 +160,13 @@ export const defineWorkbenchHarness = (h: WorkbenchHarnessDefinition): Workbench
 // `defineHarness` still accepts either (see the overloads below), because a call
 // in an app's `harness.ts` has to keep building.
 export type { HarnessDefinition, EvalCase, EvalBand, EvalContext, RoleFloor, RenderContext, Message, Grounding, Verify } from '@/server/harness/define'
+export type { CheckResult } from '@/server/harness/define'
 export type { Capability } from '@/server/harness/capability'
 export type { ModelSpec } from '@/server/harness/model'
-export type { HarnessResult } from '@/server/harness/run'
+// The chain vocabulary and its resolution — referenced by `ModelSpec`/`HarnessResult`;
+// a bridge author labeling WHICH step answered has no word for it otherwise.
+export type { ModelChainStep, ResolvedHarnessModel } from '@/server/harness/model'
+export type { HarnessResult, RunLedger } from '@/server/harness/run'
 // `toolDefs` is a field on the definition above, so its element type has to be
 // nameable out here or the field is only usable as an inline literal — an author
 // who factors four tools into a `const TOOLS = [...]` has no type to annotate it
@@ -173,7 +177,7 @@ export type { HarnessResult } from '@/server/harness/run'
 // NOT the MCP `AppMcpTool` above, which is a different system's tool with a
 // different envelope (`inputSchema`, a handler Talaria dispatches in-process).
 // This one is the OpenAI wire shape, offered on ONE turn, executed by nobody.
-export type { ToolDefinition, ToolCall } from '@/server/harness/transport'
+export type { ToolDefinition, ToolCall, ToolPolicy } from '@/server/harness/transport'
 
 /** THE FLOOR EVERY ONE-SIDED TEXT FIXTURE NEEDS, exported because an app
  *  author writing `evals` for a text harness walks into the exact trap it was

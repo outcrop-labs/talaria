@@ -16,8 +16,6 @@
 // same-document #anchors (heading ids are the renderer's business). A link that resolves to a
 // file whose CONTENT is wrong is the reader's — and the docset's — problem, not this check's.
 //
-// PR C of the docs overhaul adds the second tripwire here: the SDK export coverage diff
-// against docs/sdk/reference.md.
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
@@ -76,9 +74,72 @@ for (const file of files) {
   }
 }
 
+
+// ── Tripwire 2: SDK export coverage ─────────────────────────────────────────
+// docs/sdk/reference.md claims to list EVERY export from both SDK entry points.
+// This doc once listed exports that didn't exist (KeyHint) and missed ones that
+// did (runHarness) for months. So the exports are parsed from the two source
+// files and diffed both directions against the backticked identifiers in the
+// reference — a missing export means "add a row", a documented-but-nonexistent
+// one means "the docs lie".
+
+/** Every name a module exports, from the declaration spellings used in
+ *  ui/src/sdk/index.ts and server.ts: `export const/function/interface NAME`,
+ *  `export type NAME =`, and `export { … }` clauses (with `as` aliases and
+ *  per-item `type` prefixes, default-as-X re-exports). */
+export function sdkExportNames(src) {
+  const names = new Set()
+  const id = '[A-Za-z_$][\\w$]*'
+  for (const m of src.matchAll(new RegExp(`export\\s+(?:async\\s+)?(?:function|const)\\s+(${id})`, 'g'))) names.add(m[1])
+  for (const m of src.matchAll(new RegExp(`export\\s+interface\\s+(${id})`, 'g'))) names.add(m[1])
+  for (const m of src.matchAll(new RegExp(`export\\s+type\\s+(${id})\\s*=`, 'g'))) names.add(m[1])
+  for (const m of src.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const piece of m[1].split(',')) {
+      const t = piece.trim().replace(/^type\s+/, '')
+      if (!t) continue
+      const as = new RegExp(`^${id}\\s+as\\s+(${id})$`).exec(t)
+      if (as) names.add(as[1])
+      else if (new RegExp(`^${id}$`).test(t)) names.add(t)
+    }
+  }
+  return names
+}
+
+const SDK_CLIENT = readFileSync(join(ROOT, 'ui/src/sdk/index.ts'), 'utf8')
+const SDK_SERVER = readFileSync(join(ROOT, 'ui/src/sdk/server.ts'), 'utf8')
+const SDK_REFERENCE = join(ROOT, 'docs/sdk/reference.md')
+
+const sdkExports = sdkExportNames(SDK_CLIENT + '\n' + SDK_SERVER)
+const sdkDocNames = existsSync(SDK_REFERENCE) ? new Set([...readFileSync(SDK_REFERENCE, 'utf8').matchAll(/`([A-Za-z_$][\w$]*)`/g)].map((m) => m[1])) : new Set()
+
+const sdkMissing = [...sdkExports].filter((n) => !sdkDocNames.has(n)).sort()
+const sdkGhosts = [...sdkDocNames].filter((n) => !sdkExports.has(n)).sort()
+
 // ── Report (the check-invariants.mjs shape) ──────────────────────────────────
 
 const BAR = '─'.repeat(78)
+const report = (id, what, hits, instead) => {
+  console.error(`\n${BAR}\nFAIL  ${id}\n${BAR}`)
+  console.error(`  ${what}:\n`)
+  for (const h of hits) console.error(`    ${h}`)
+  console.error('')
+  console.error('  WHAT TO DO INSTEAD:')
+  for (const l of instead) console.error('    ' + l)
+}
+
+if (sdkMissing.length || sdkGhosts.length) {
+  if (sdkMissing.length)
+    report('sdk-export-not-documented', 'exports with no row in docs/sdk/reference.md', sdkMissing, [
+      'Add a row to docs/sdk/reference.md — the file claims completeness.',
+    ])
+  if (sdkGhosts.length)
+    report('sdk-doc-not-an-export', 'backticked identifiers in docs/sdk/reference.md that are not exported', sdkGhosts, [
+      'The docs name something neither SDK entry point exports. Fix the row (or the',
+      'docs) — this is how KeyHint survived for months.',
+    ])
+  process.exitCode = 1
+}
+
 if (failures.length) {
   console.error(`\n${BAR}\nFAIL  doc-link-target-missing\n${BAR}`)
   console.error('  markdown links that point at files that do not exist:\n')

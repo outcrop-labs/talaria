@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
-// THE DOCUMENTED SNIPPET, COMPILED AND RUN.
+// THE DOCUMENTED SNIPPETS, COMPILED AND RUN.
 //
 // `docs/SDK.md` described a React SDK for months after the tree stopped having
 // one, and nothing failed — a document is not a build target. The activity
-// harness surface is a brand new extension point with the same exposure, and
-// the cost of a wrong line here lands on a third-party app author who cannot
-// tell whether the mistake is theirs.
+// harness surface and the bridge pattern are extension points with the same
+// exposure, and the cost of a wrong line here lands on a third-party app author
+// who cannot tell whether the mistake is theirs.
 //
-// So the example in SDK.md's "Activity harnesses" section is transcribed here
+// So the examples in `docs/sdk/harnesses.md` — the triage harness and the
+// bridge that runs it live with an app-side fallback — are transcribed here
 // VERBATIM, imported from `@talaria/sdk/server` exactly as the doc says to, and
-// run through the real runner against a recorded reply. A rename anywhere in the
-// contract now breaks the typecheck of the documentation itself.
+// run through the real runner against recorded replies. A rename anywhere in
+// the contract now breaks the typecheck of the documentation itself.
 import {
   defineHarness,
   defineWorkbenchHarness,
@@ -100,7 +101,30 @@ describe("SDK.md's activity-harness example", () => {
   })
 })
 
-describe('the rest of the exported surface, as SDK.md lists it', () => {
+describe("docs/sdk/harnesses.md's bridge example", () => {
+  // The bridge's core, transcribed: probe, run, label. The fetch plumbing
+  // around it (path check, request.json) is not executable without a request;
+  // these expressions are the doc's, verbatim.
+  it('labels the run model-vs-fallback exactly as the doc does', async () => {
+    const good = await runHarnessFromSdk(
+      triage,
+      { subject: 'Checkout is down', body: 'Every card declined since 09:00.' },
+      answer('{"severity":"high","reason":"total checkout outage"}'),
+    )
+    expect(good.value?.severity).toBe('high')
+    expect(good.value ? `model:${good.model}` : 'fallback').toBe('model:qwen3-14b')
+
+    const prose = await runHarnessFromSdk(triage, { subject: 'hi', body: 'hello' }, answer('I would say this is probably medium?'))
+    expect(prose.value).toBeNull()
+    expect(prose.value ? `model:${prose.model}` : 'fallback').toBe('fallback')
+  })
+
+  // The doc's probe (`resolveHarnessModel(triage.model)`) reads the org's model
+  // settings, so it is exercised only as a shape in the exports test below —
+  // here it would need a database. The bridge's null branch is its behavior.
+})
+
+describe('the rest of the exported surface, as the docs list it', () => {
   it('exports EvalCase for a fixture written apart from its harness', () => {
     const apart: EvalCase<TriageInput, Triage> = {
       name: 'apart from the harness',
