@@ -137,10 +137,11 @@ services:
       TALARIA_FLEET_PROJECT: ${TALARIA_FLEET_PROJECT:-talaria-fleet}
       # Fronted by TLS (Dokploy/Traefik domain, or any reverse proxy)? Set
       # these three through the environment instead — plain http is the
-      # default posture and browsers refuse Secure cookies over it:
-      #COOKIE_SECURE: '1'
-      #AUTH_PUBLIC_URL: https://talaria.example.com
-      #TALARIA_TRUST_PROXY: '1'
+      # default posture and browsers refuse Secure cookies over it. Empty
+      # (the default) means unset to the app.
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      AUTH_PUBLIC_URL: ${AUTH_PUBLIC_URL:-}
+      TALARIA_TRUST_PROXY: ${TALARIA_TRUST_PROXY:-}
     networks:
       - internal
       - talaria
