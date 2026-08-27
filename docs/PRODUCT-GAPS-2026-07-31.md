@@ -34,7 +34,7 @@ the code, but not leaving as-is:
 |---|---|
 | "you know exactly what your AI workforce costs **and what it shipped**" (README:35) | Cost side ships. Shipped side does not exist. [verified] |
 | PRICING.md sells SSO at the Business tier | Auth is password + Google OAuth only. [verified] |
-| PRICING.md sells "daily backups" at Starter | Backup + verified restore now ship (`scripts/backup.sh`, `scripts/restore.sh`, `docs/BACKUPS.md`). Still not *daily*: nothing schedules the script, and the documented restore drill has never been run. [verified] |
+| PRICING.md sells "daily backups" at Starter | Backup + verified restore now ship (`bun talaria backup` / `bun talaria restore`, `docs/BACKUPS.md`). Still not *daily*: nothing schedules the command, and the documented restore drill has never been run. [verified] |
 
 ---
 

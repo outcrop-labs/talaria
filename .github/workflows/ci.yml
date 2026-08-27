@@ -72,7 +72,7 @@
 #     gets disabled. Not this file's problem.
 #   - Build (`vite build`) and any deploy. `svelte-check` already covers the
 #     type surface; a full build roughly triples the runtime for a weaker signal.
-#   - `adapter/` and `plugin/` — no build or typecheck to run at all. `scripts/`
+#   - `plugin/` — no build or typecheck to run at all. `scripts/`
 #     is not typechecked either; it is EXECUTED, by the invariants job.
 #   - `paths:` filters. Tempting (a docs-only push does not need this), but a
 #     required status check that is skipped by a path filter reports "pending"

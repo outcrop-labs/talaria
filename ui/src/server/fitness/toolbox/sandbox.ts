@@ -28,8 +28,8 @@
 //
 // WHOSE TOOLS THESE ARE. Every backend here answers for a HERMES AGENT'S MCP
 // surface — see the header of `talaria-tools.ts` for the split against the
-// platform's own native surface (`native-tools.ts`). A model measured in here is
-// being asked "could you be a fleet agent", not "could you be the Muse".
+// platform's own native surface. A model measured in here is being asked
+// "could you be a fleet agent", not "could you be the Muse".
 //
 // ISOLATION IS TOTAL AND IS THE POINT. No database, no HTTP, no MCP server, no
 // clock, no randomness: a `Sandbox` is a plain object, one per case, discarded

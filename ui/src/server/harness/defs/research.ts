@@ -551,16 +551,16 @@ export function searchTransport(runId: string, sink: SearchSource[]): Transport 
  *  is not asking the model to master a vendor's parameter surface, only to say
  *  what it wants to look up. Everything else about the call (which server, which
  *  credentials, how many results) is the org's configuration. */
-export const SEARCH_TOOL_SCHEMA = {
+const SEARCH_TOOL_SCHEMA = {
   type: 'object',
   properties: { query: { type: 'string', description: 'What to look up on the live web.' } },
   required: ['query'],
 } as const
 
-/** Exported for the same reason the schema is: `fitness/toolbox/native-tools.ts`
- *  enumerates the platform's own tool surface, and a surface nothing can
- *  enumerate is a surface nobody can test. */
-export const SEARCH_TOOL_DESCRIPTION = 'Search the live web and return passages with their source URLs.'
+/** The description shown beside the tool name when the search tool is handed to
+ *  the model. Local to this module since the fitness toolbox's native-surface
+ *  enumeration was removed — nothing outside research.ts reads it. */
+const SEARCH_TOOL_DESCRIPTION = 'Search the live web and return passages with their source URLs.'
 
 /** PAGES THAT CANNOT BE A SOURCE FOR ANYTHING.
  *

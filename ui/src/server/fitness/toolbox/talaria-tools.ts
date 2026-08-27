@@ -5,14 +5,15 @@
 // MCP from inside a Hermes agent container. A fleet agent holds them; a native
 // platform harness — the Muse, the librarian, the briefer's structured turns —
 // does not, and cannot, because nothing in the UI process speaks MCP to itself.
-// The platform's own tool surface is a different, much smaller thing and lives
-// in `native-tools.ts`. Conflating the two is the mistake this header exists to
+// The platform's own tool surface is a different, much smaller thing — one
+// tool, `web_search`, held out by the research harness (`harness/defs/research.ts`
+// owns its schema). Conflating the two is the mistake this header exists to
 // prevent: a fitness report that says "this model can use Talaria's tools" has
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
 //     hermes      44 tools, over MCP, inside the agent container   THIS FILE
-//     platform     handed to a model by a harness via `toolDefs`   native-tools.ts
+//     platform     handed to a model by a harness via `toolDefs`   research.ts (search)
 //
 // WHY A COPY AND NOT AN IMPORT. The real registrations live in `mcp/src/index.ts`,
 // a separate package whose module body STARTS AN MCP SERVER and whose every
@@ -52,7 +53,8 @@ import type { ToolDefinition } from '../../harness/transport'
 
 /** WHERE A TOOL IS CALLED FROM. One value today and that is the finding, not an
  *  oversight: every tool below is MCP, and Talaria's own harnesses hold almost
- *  nothing. See `native-tools.ts` for the other side of the split. */
+ *  nothing. The platform's own native surface is the research harness's single
+ *  `web_search` tool (`harness/defs/research.ts`). */
 export type ToolCaller = 'hermes'
 
 /** What the tool is FOR — the axis an admin reads a fitness report along, and

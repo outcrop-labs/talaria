@@ -5,7 +5,7 @@
 import { addNotification } from './notifications'
 
 /** Tokens a person answers to: email localpart, dashed full name, first name. */
-export function userMentionTokens(name: string | null, email: string | null): string[] {
+function userMentionTokens(name: string | null, email: string | null): string[] {
   const tokens = new Set<string>()
   const local = email?.split('@')[0]?.toLowerCase()
   if (local) tokens.add(local)
@@ -18,7 +18,7 @@ export function userMentionTokens(name: string | null, email: string | null): st
 }
 
 /** The @tokens present in a body (lowercased, without the leading @). */
-export function mentionTokens(content: string): Set<string> {
+function mentionTokens(content: string): Set<string> {
   return new Set([...content.matchAll(/@([a-z0-9][a-z0-9-]*)/gi)].map((m) => m[1]!.toLowerCase()))
 }
 

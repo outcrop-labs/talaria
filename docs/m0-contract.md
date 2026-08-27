@@ -122,7 +122,8 @@ mirrors `claude-sdk.ts`. MC even ships a nascent `/api/hermes` hook integration
 | **hermes-workspace** | `ghcr.io/outsourc-e/hermes-workspace:latest` ✅ published | `3000` | `HERMES_API_URL`, `HERMES_DASHBOARD_URL`, `HERMES_API_TOKEN`, `HERMES_PASSWORD` (required if non-loopback), `HERMES_HOME`, `HERMES_WORKSPACE_DIR` | vols `.hermes`, `/workspace` |
 | **mission-control** | ⚠️ **no published image**, builds locally (`mission-control:latest`) | `3000` | `PORT`, `API_KEY` (auto-gen), `AUTH_SECRET` (auto-gen), `OPENCLAW_GATEWAY_HOST/PORT` | SQLite `/app/.data/mission-control.db`, vol `mc-data:/app/.data`; read-only rootfs + cap_drop hardening |
 
-Stack compose updated to match (`../stack/docker-compose.yml`): workspace uses the real ghcr image;
+Stack compose (in the `stack/` directory, since removed from the repo) was updated to match:
+workspace uses the real ghcr image;
 mission-control switched to a **build context** (must `git clone builderz-labs/mission-control` +
 `docker build`, vendoring TBD) with its real env + data volume.
 
@@ -145,7 +146,7 @@ Source-read 2026-06-30 (shallow clones in scratch; not vendored):
   created mission-control task `id:1` `TASK-001` (title=name, description=prompt, `metadata.talaria`
   stamped); bridge returned `{id, name, session_id:"TASK-001"}`. Single mission round-trips to the board.
 
-  *How it was verified:* `talaria/stack` brought up on the `edge` net (bridge → live `kanban-dashboard`
+  *How it was verified:* the `stack/` compose (since removed from the repo) brought up on the `edge` net (bridge → live `kanban-dashboard`
   pass-through; workspace → bridge; mission-control built from `talaria/vendor/mission-control`). Auth:
   bridge + mission-control share `MISSION_CONTROL_API_KEY` (`x-api-key`).
 - **M3 poll/cancel ✅ (verified live 2026-07-01):** `GET /api/conductor/missions/{id}` returns the

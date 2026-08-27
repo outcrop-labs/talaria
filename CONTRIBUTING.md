@@ -6,7 +6,8 @@ human-in-the-loop guardrails. The product is Talaria's own app in [`ui/`](./ui) 
 backed by its own Postgres/Redis. Underneath the app sits the fleet: a set of Hermes agent containers
 that Talaria renders and manages. Every agent routes its LLM **and** its persona chat through Talaria's
 own gateway — Talaria reaches each agent directly on its published port, so there's no separate
-multiplexer. The Python Hermes **plugin** rides on each agent (register / heartbeat / report). The whole
+multiplexer. The Python Hermes **plugin** (register / heartbeat / report) lives in the repo but is
+dormant — nothing mounts it. The whole
 thing runs on one `talaria` docker network with **no Dockerfiles** — official/published images plus the
 host-run app.
 
@@ -16,7 +17,7 @@ host-run app.
 |---|---|---|
 | `ui/` | the Talaria app (product + LLM gateway + fleet renderer) | `cd ui && bun i && bun run dev`; `bun run typecheck` |
 | `mcp/` | `talaria-mcp` — the agent-facing MCP server | `cd mcp && bun i && bun run build` |
-| `plugin/talaria/` | per-agent Hermes plugin (register / heartbeat / report) | `python3 -m py_compile plugin/talaria/*.py` |
+| `plugin/talaria/` | Hermes plugin (register / heartbeat / report) — dormant, mounted by hand | `python3 -m py_compile plugin/talaria/*.py` |
 | `docker/dev-compose.yml` | dev infra (Postgres + Redis) | `docker compose -f docker/dev-compose.yml config` |
 | `cli/` | the `talaria` CLI — every way to drive the repo | `bun talaria --help` |
 
@@ -34,12 +35,12 @@ agent in the app.
    project; each agent's models route through Talaria's gateway.
 4. Verify your change: `bun run typecheck` in `ui/` (svelte-check), and exercise the affected path in the running app.
 
-### Plugin distribution: "one dev instance, sync the rest"
+### Plugin: dormant, mounted by hand
 
-The plugin lives once in this repo (`plugin/talaria/`). Each Hermes agent bind-mounts that *same*
-directory read-only into `/opt/data/plugins/talaria` and opts in via `plugins.enabled: [talaria]`,
-so there is a single source of truth and N synced mounts (no copy step). Edit the one directory;
-recreate the agents to pick it up.
+The plugin lives once in this repo (`plugin/talaria/`), but it is **dormant**: nothing in the
+fleet render mounts or enables it, and it still targets the legacy mission-control integration.
+There is no distribution wiring — running it anywhere is a manual mount into
+`/opt/data/plugins/talaria` plus `plugins.enabled: [talaria]` on that agent.
 
 ## Conventions
 

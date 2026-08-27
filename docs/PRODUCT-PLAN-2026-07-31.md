@@ -47,7 +47,7 @@ what is done. Row by row, against the table above:
 | **16** metering | **partly shipped** | the dispatch turn's `recordUsage` call in `work-dispatch.ts` now passes `taskId` as well as `refId`, so dispatch turns reach the ticket's cost rollup. Workbench harness runs are metered — they hold their own `workbench-gateway` key and only the persona key is in `gateway_unmetered_keys` (`fleet-brain.ts:175-191`). **Hermes crons remain unmetered: zero usage rows**, and it is not fixable from the cron surface (`agent-crons.ts:7-16` — a cron turn is byte-identical to a persona turn at the gateway; closing it means Talaria drives the schedule through `proxyChat`). |
 | **10** per-agent credentials | **shipped for the API surface, deploy is ordered** | `agent-auth.ts` resolves identity from the agent's own `tak_` credential. Deploying it is **not** a restart: migrate → render → roll → *then* flip `TALARIA_AGENT_KEY_LEGACY=off`, and a personal/elevated assistant is refused outright between deploy and roll. Runbook: [AGENT-KEY-MIGRATION.md](./AGENT-KEY-MIGRATION.md). |
 | **per-agent gateway keys** | **still unbuilt — unchanged** | See below. |
-| **37** backups | **shipped, not scheduled** | `scripts/backup.sh` / `scripts/restore.sh` / [BACKUPS.md](./BACKUPS.md). Nothing schedules it (cron is the operator's job until M1's scheduler), and the restore drill has never actually been run — both called out in `PRICING.md`. |
+| **37** backups | **shipped, not scheduled** | `bun talaria backup` / `bun talaria restore` / [BACKUPS.md](./BACKUPS.md). Nothing schedules it (cron is the operator's job until M1's scheduler), and the restore drill has never actually been run — both called out in `PRICING.md`. |
 | **M0** truth in copy | **shipped** | `README.md` no longer claims "and what it shipped"; `PRICING.md` marks backups and SSO as not-yet-sellable with the specific gaps. |
 
 **Audit task 11 took six rounds, and the sixth was self-inflicted. Worth recording, because the
@@ -140,7 +140,7 @@ Three claims outran the code. All three are now fixed in the working tree:
 - `docs/PRICING.md:35` — SSO at Business tier now carries the `*` that points at the
   "Not sellable yet" block. Un-star it at M11.
 - `docs/PRICING.md:33` — backups at Starter, same treatment: starred, with the specific gap named
-  (nothing schedules `scripts/backup.sh`, and the restore drill has never been run).
+  (nothing schedules `bun talaria backup`, and the restore drill has never been run).
 
 Cheap, and it removes the worst failure mode for a pre-revenue product: a prospect discovering the
 gap themselves. **The standing rule is the deliverable:** a tier feature gets a `*` and a named gap

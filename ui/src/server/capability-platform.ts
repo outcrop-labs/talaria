@@ -91,9 +91,8 @@ export async function platformSupply(deps?: Partial<PlatformSupplyDeps>): Promis
   const d = { ...REAL, ...deps }
   const [searchOk, visionModel] = await Promise.all([d.searchOk().catch(() => false), d.visionModel().catch(() => null)])
   const out: PlatformSupply[] = []
-  // `web_search` is the one tool on Talaria's native surface (see
-  // `fitness/toolbox/native-tools.ts`), and `research-search` is the harness
-  // that offers it.
+  // `web_search` is the one tool on Talaria's native surface, and
+  // `research-search` is the harness that offers it.
   if (searchOk) out.push({ capability: 'search', server: PLATFORM_SERVER, tool: 'web_search' })
   // `describe_image` reads an image with the ROLE model, so the role being
   // filled is exactly the condition — see `vision.ts`, whose floor refuses

@@ -2,6 +2,7 @@
 // The host has already authenticated the user and checked access; this file
 // only decides what the app itself allows (e.g. wipe is admin-only).
 import { defineAppServer, json, parseBody, z, type AppRequestContext } from '@talaria/sdk/server'
+import { contactMatches } from './search'
 
 interface Contact extends Record<string, unknown> {
   name: string
@@ -48,9 +49,7 @@ export default defineAppServer({
     if (path === 'contacts' && method === 'GET') {
       const q = ctx.url.searchParams.get('q')?.toLowerCase() ?? ''
       const all = await store.list<Contact>('contacts', { limit: 500 })
-      const hit = (c: Contact) =>
-        !q || [c.name, c.company, c.email, c.notes].some((v) => v?.toLowerCase().includes(q))
-      return json({ contacts: all.filter((d) => hit(d.data)) })
+      return json({ contacts: all.filter((d) => contactMatches(d.data, q)) })
     }
 
     if (path === 'contacts' && method === 'POST') {

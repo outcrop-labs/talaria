@@ -372,7 +372,7 @@ export async function recordGoogleExport(id: string, fileId: string, url: string
 }
 
 /** Keep the KB mirror fresh when an already-official artifact's content changes. */
-export async function remirrorIfOfficial(id: string, actor: string): Promise<void> {
+async function remirrorIfOfficial(id: string, actor: string): Promise<void> {
   const a = await getArtifact(id)
   if (a?.official && a.kbDocId) await saveDoc(a.kbDocId, { title: a.title, body: artifactToMarkdown(a) }, actor).catch(() => {})
 }

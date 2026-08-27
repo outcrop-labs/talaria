@@ -6,10 +6,10 @@ import MentionList from './MentionList.svelte'
 import type { Mentionable } from '@/components/chat/mentions.svelte'
 
 // "@" people-mention autocomplete for RichEditor — the TipTap counterpart of
-// the textarea composers' useMentions/MentionMenu (chat/mentions). Picks
-// insert PLAIN TEXT "@token " (the exact grammar the server notifies on and
-// the Markdown renderer highlights) — no special node, so the markdown
-// round-trip is untouched. Modeled on slash-commands.ts.
+// the old textarea composers' mention menu. Picks insert PLAIN TEXT "@token "
+// (the exact grammar the server notifies on and the Markdown renderer
+// highlights) — no special node, so the markdown round-trip is untouched.
+// Modeled on slash-commands.ts.
 
 function filterMentions(items: Mentionable[], query: string): Mentionable[] {
   const q = query.trim().toLowerCase()

@@ -52,7 +52,7 @@ const KEY = 'model_catalog'
  *  models continuously and change a model's advertised window almost never, so
  *  a shorter TTL buys nothing but request volume against four hundred rows. The
  *  admin-facing refresh button exists for the case where it matters. */
-export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000
+const CATALOG_TTL_MS = 24 * 60 * 60 * 1000
 
 export interface CatalogDeps {
   endpoints: () => Promise<LlmEndpoint[]>

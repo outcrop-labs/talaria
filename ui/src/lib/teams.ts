@@ -1,5 +1,5 @@
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, errorMessage, getList, postJson } from '@/lib/fetch-json'
+import { delJson, errorMessage, getList, patchJson, postJson } from '@/lib/fetch-json'
 import { pushToast } from '@/lib/toast.svelte'
 
 export type TeamRole = 'owner' | 'member'
@@ -49,3 +49,6 @@ export const removeTeamMember = (teamId: string, userId: string) =>
   delJson<{ ok: true }>(`/api/teams/${teamId}/members`, { userId }).catch((e: unknown) =>
     pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
   )
+export const renameTeam = (teamId: string, name: string) =>
+  patchJson<{ ok: true }>(`/api/teams/${teamId}`, { name })
+export const deleteTeam = (teamId: string) => delJson<{ ok: true }>(`/api/teams/${teamId}`)
