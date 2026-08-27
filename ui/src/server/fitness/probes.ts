@@ -91,6 +91,7 @@ import {
   type Transport,
 } from '../harness/run'
 import { gatewayPulse, routingFor, type GatewayPulse } from '../llm-gateway'
+import { safeFetch } from '../safe-fetch'
 import { advertisedWindow } from '../model-catalog'
 import { estimateTokens } from '../usage'
 import { noteLive } from './live-feed'
@@ -1054,13 +1055,18 @@ async function priceFor(model: string): Promise<{ in: number; out: number } | nu
 
 /** A cited page, as text. Never throws, never blocks for long, and answers null
  *  for anything that is not a plainly readable 2xx — every one of which makes
- *  the trial inconclusive rather than failed. */
+ *  the trial inconclusive rather than failed. The URL is MODEL-SUPPLIED (it
+ *  rides in a probe reply), so this goes through safeFetch like every other
+ *  agent-influenced fetch — a citation pointing at the metadata service or an
+ *  internal host is refused, not fetched. A refusal is indistinguishable from
+ *  an unreachable page: the trial reads inconclusive, which is the honest
+ *  verdict for a citation we would not follow in production either. */
 async function fetchCitedPage(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(10_000) })
+    const res = await safeFetch(url, { timeoutMs: 10_000, maxBytes: 400_000 })
     if (!res.ok) return null
     const body = await res.text()
-    return body.length > 0 ? body.slice(0, 400_000) : null
+    return body.length > 0 ? body : null
   } catch {
     return null
   }

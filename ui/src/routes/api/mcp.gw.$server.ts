@@ -2,6 +2,7 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { presentedCredential, requireAgent } from '@/server/agent-auth'
 import { effectiveMcpFor, parseMcpResponse } from '@/server/mcp-registry'
+import { assertFetchableUrl } from '@/server/safe-fetch'
 
 // The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
 // upstream URL or credential: their configs point here, the agent's own
@@ -84,6 +85,21 @@ export const Route = defineApi('/api/mcp/gw/$server', {
       return r.body === null ? new Response(null, { status: r.status }) : json(r.body, { status: r.status })
     }
 
+    // Upstream URLs are admin-entered, not first-party: validate the hop
+    // through the same door every other registry URL walks (mcp-registry's
+    // session path uses safeFetch). The relay itself stays a raw pass-through
+    // fetch — a streamable-HTTP response can be an endless SSE stream, which
+    // safeFetch's response cap would buffer and kill — so the URL is checked
+    // BEFORE the hop and the response streamed as before. The BUILTIN toolkit
+    // is this process's own loopback listener and skips the check (loopback is
+    // exactly what it refuses).
+    if (!eff.server.builtin) {
+      try {
+        await assertFetchableUrl(eff.server.url)
+      } catch {
+        return json({ error: 'upstream URL refused (not a reachable external address)' }, { status: 502 })
+      }
+    }
     const upstream = await fetch(eff.server.url, {
       method: 'POST',
       headers: {
@@ -149,6 +165,15 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
     // App servers have no notification stream — decline politely.
     if (eff.server.appSlug) return new Response(null, { status: 405 })
+    // Same rule as POST: validate a non-builtin upstream URL before the hop;
+    // the response is a live SSE relay, so the fetch itself stays raw.
+    if (!eff.server.builtin) {
+      try {
+        await assertFetchableUrl(eff.server.url)
+      } catch {
+        return json({ error: 'upstream URL refused (not a reachable external address)' }, { status: 502 })
+      }
+    }
     const upstream = await fetch(eff.server.url, {
       method: 'GET',
       headers: {

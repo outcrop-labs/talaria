@@ -167,3 +167,18 @@ export function inventedHandles(text: string, vault: SecretVault): string[] {
 export function sealMessages<T extends { content: string }>(messages: readonly T[], vault: SecretVault): T[] {
   return messages.map((m) => (typeof m.content === 'string' && m.content ? { ...m, content: sealText(m.content, vault) } : m))
 }
+
+/** Seal one message's content WHATEVER shape it is. A `string` is the prose
+ *  turn, but an image-carrying turn is an array of OpenAI parts — and its
+ *  `{type:'text'}` part is exactly as likely to hold a credential as a
+ *  prose-only turn (channel replies and harness turns build exactly that
+ *  shape). Image/data parts and anything unrecognized pass through untouched. */
+export function sealContent(content: unknown, vault: SecretVault): unknown {
+  if (typeof content === 'string') return sealText(content, vault)
+  if (!Array.isArray(content)) return content
+  return content.map((part) =>
+    part && typeof part === 'object' && (part as { type?: unknown }).type === 'text' && typeof (part as { text?: unknown }).text === 'string'
+      ? { ...(part as Record<string, unknown>), text: sealText((part as { text: string }).text, vault) }
+      : part,
+  )
+}

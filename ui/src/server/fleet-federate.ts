@@ -9,7 +9,7 @@ import { cp, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { db } from './db/pg'
-import { addVersionIfChanged, ensureEndpoint, addEndpointModels, upsertAgentDef, type AgentConfig, type ModelTarget } from './agent-defs'
+import { addVersionIfChanged, ensureEndpoint, addEndpointModels, upsertAgentDef, DEPT_RE, SLUG_RE, type AgentConfig, type ModelTarget } from './agent-defs'
 import { ensureAgentKey } from './fleet-create'
 import { FLEET_DIR } from './fleet-render'
 
@@ -92,6 +92,13 @@ export async function federateFromDir(dir: string, actor: string): Promise<Feder
     const slug = entry.slug?.trim()
     const department = entry.department?.trim()
     if (!slug || !department) continue
+    // Same alphabet the interactive path (createAgent) enforces, checked BEFORE
+    // these strings reach an .env line (ensureAgentKey), a path join, or a
+    // RegExp — an imported roster is third-party input, not operator typing.
+    if (!SLUG_RE.test(slug) || !DEPT_RE.test(department)) {
+      result.errors.push(`${slug || '(unnamed)'}: slug must be lowercase alphanumeric and department lowercase-kebab (e.g. "analyst" / "research")`)
+      continue
+    }
     try {
       const exists = await sql`select 1 from agent_defs where slug = ${slug}`
       if (exists.length) {

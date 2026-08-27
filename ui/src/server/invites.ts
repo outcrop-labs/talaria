@@ -8,6 +8,7 @@ import { db } from './db/pg'
 import { emailShell, sendEmail } from './email'
 import { orgProfile } from './org'
 import { instanceBaseUrl } from './instance'
+import { escapeHtml } from './html'
 
 export interface Invite {
   id: string
@@ -33,17 +34,21 @@ async function sendInviteEmail(email: string, token: string, invitedBy: string, 
   const base = (await instanceBaseUrl()) ?? origin
   const orgName = org.name?.trim() || 'the team'
   const link = base ? `${base}/join?token=${token}` : null
+  // Every interpolation is operator- or user-sourced and the invite email
+  // regex permits quotes and angle brackets — escape all of it. The text
+  // alternative below needs no escaping.
+  const esc = escapeHtml
   const r = await sendEmail({
     to: email,
     subject: `${invitedBy} invited you to join ${orgName} on Talaria`,
     html: emailShell(
-      `Join ${orgName}`,
-      `<p><strong>${invitedBy}</strong> invited you to ${orgName}'s Talaria workspace — where the team and its AI agents work together.</p>` +
+      `Join ${esc(orgName)}`,
+      `<p><strong>${esc(invitedBy)}</strong> invited you to ${esc(orgName)}'s Talaria workspace — where the team and its AI agents work together.</p>` +
         (link
-          ? `<p style="margin:24px 0"><a href="${link}" style="background:#1a1a18;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;font-size:14px">Accept the invite</a></p>` +
-            `<p style="font-size:12px;color:#8a8a84">Or open ${link} — then sign in with Google using this address (${email}).</p>`
-          : `<p>Sign in with Google using this address (${email}) at your team's Talaria instance to join.</p>`),
-      `Sent by Talaria for ${orgName}`,
+          ? `<p style="margin:24px 0"><a href="${esc(link)}" style="background:#1a1a18;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;font-size:14px">Accept the invite</a></p>` +
+            `<p style="font-size:12px;color:#8a8a84">Or open ${esc(link)} — then sign in with Google using this address (${esc(email)}).</p>`
+          : `<p>Sign in with Google using this address (${esc(email)}) at your team's Talaria instance to join.</p>`),
+      `Sent by Talaria for ${esc(orgName)}`,
     ),
     text: `${invitedBy} invited you to join ${orgName} on Talaria.${link ? ` Accept: ${link}` : ''} Sign in with Google using ${email}.`,
   })

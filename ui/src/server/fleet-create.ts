@@ -6,11 +6,8 @@
 import { randomBytes } from 'node:crypto'
 import { appendFile, chmod, readFile } from 'node:fs/promises'
 import { db } from './db/pg'
-import { addVersionIfChanged, applyConfigEdits, listEndpoints, listVersions, upsertAgentDef, type AgentConfig, type AgentDef } from './agent-defs'
+import { addVersionIfChanged, applyConfigEdits, listEndpoints, listVersions, upsertAgentDef, DEPT_RE, SLUG_RE, type AgentConfig, type AgentDef } from './agent-defs'
 import { AGENT_KEY_VAR, FLEET_ENV, fleetProject } from './fleet-render'
-
-const SLUG_RE = /^[a-z][a-z0-9]{1,30}$/
-const DEPT_RE = /^[a-z][a-z0-9-]{1,40}$/
 
 /** Re-stamp identity: replace a slug in every string value of the raw config
  *  (X-Agent-Name headers, hook args like "outline_org_gate.py sam"). Used for
