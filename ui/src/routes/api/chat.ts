@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { proxyChat } from '@/server/gateway'
 import { routedModelFor } from '@/server/fleet-agents'
 import { effortsForModel } from '@/server/model-efforts'
@@ -31,7 +32,7 @@ import { HANDLE_TURN_NOTE, mentionsHandle } from '@/server/workspace-secrets'
 
 const Body = z.object({
   model: z.string().min(1),
-  conversationId: z.string().uuid().optional(),
+  conversationId: Uuid.optional(),
   // Content may be empty when the turn is attachments-only.
   content: z.string().max(100_000).default(''),
   /** Model tier (alias name) to route this turn to; omit for the main model. */
@@ -42,16 +43,16 @@ const Body = z.object({
    *  metadata the composer's picker lists, so a mismatch is a stale client or
    *  a hand-built request — answered like the tier check below, not ignored. */
   effort: z.string().max(24).optional(),
-  attachmentIds: z.array(z.string().uuid()).max(10).optional(),
+  attachmentIds: z.array(Uuid).max(10).optional(),
   /** Knowledge docs / artifacts attached as references (ACL-checked). */
-  refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
+  refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional(),
   /** New conversations are 'chat' unless started from the Plan surface. */
   /** 'research' is a conversation ABOUT a report, on the Research surface —
    *  same multiplayer shape as a plan, shared through the RUN's members. */
   kind: z.enum(['chat', 'plan', 'research']).optional(),
   /** Explicit plan template pick (plan surface, new plan only); server ignores
    *  it for chats and for turns on an existing conversation. */
-  templateId: z.string().uuid().nullish(),
+  templateId: Uuid.nullish(),
   /** Sent while a reply streams: queue into history, never interrupt. */
   queue: z.boolean().optional(),
 })

@@ -86,6 +86,7 @@
 //   TALARIA_SCHEDULER=off to get the same silence in production — the kill
 //   switch to deploy behind if a job ever misbehaves.
 import { acquireLease, demoteLease, instanceId, keepLeaseAlive, leaseHolder, leaseKey, type LeaseHeartbeat, type LeaseToken } from './runs/lease'
+import { errLine, errText } from './errors'
 
 /** Every job this deployment expects to be running. Adding a name here and
  *  nowhere else fails the boot check below, which is the point: a job whose
@@ -243,9 +244,6 @@ const jobs: Map<JobName, JobState> = (g.__talariaJobs ??= new Map())
 
 let started = false
 let stopping = false
-
-const errText = (e: unknown) => (e instanceof Error ? (e.stack ?? e.message) : String(e))
-const errLine = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 /** Declare a periodic job. Called at module load by the module that owns the
  *  work — the cadence lives next to the thing being scheduled, and the import

@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid, Email } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import {
   addResearchMember,
@@ -40,7 +41,7 @@ export const Route = defineApi('/api/research/$id/members', {
     if ((await researchRole(user.id, params.id)) !== 'owner') {
       return json({ error: 'only the research owner can share it' }, { status: 403 })
     }
-    const body = await parseBody(request, z.object({ email: z.string().email() }))
+    const body = await parseBody(request, z.object({ email: Email }))
     if (body instanceof Response) return body
     const sql = await db()
     const rows = (await sql`select id from users where lower(email) = ${body.email.toLowerCase()}`) as unknown as Array<{ id: string }>
@@ -61,7 +62,7 @@ export const Route = defineApi('/api/research/$id/members', {
     const user = await requireUser(request)
     if (user instanceof Response) return user
     const role = await researchRole(user.id, params.id)
-    const body = await parseBody(request, z.object({ userId: z.string().uuid() }))
+    const body = await parseBody(request, z.object({ userId: Uuid }))
     if (body instanceof Response) return body
     if (role !== 'owner' && !(role === 'member' && body.userId === user.id)) {
       return json({ error: 'forbidden' }, { status: 403 })

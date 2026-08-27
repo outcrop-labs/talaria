@@ -6,6 +6,7 @@
 // records where each blob actually lives (`s3://bucket/key` vs a filesystem
 // path), so flipping the mode never strands existing files.
 import { createHash, createHmac } from 'node:crypto'
+import { DEV_S3_SECRET } from './env'
 import { getSetting, setSetting } from './audit'
 import { seal, open } from './secretbox'
 
@@ -52,9 +53,24 @@ export function internalTarget(): BucketTarget {
     region: 'us-east-1',
     bucket: process.env.TALARIA_S3_BUCKET ?? 'talaria',
     accessKeyId: process.env.TALARIA_S3_ACCESS_KEY ?? 'talaria',
-    secretAccessKey: process.env.TALARIA_S3_SECRET_KEY ?? 'talaria-dev-secret',
+    secretAccessKey: process.env.TALARIA_S3_SECRET_KEY ?? DEV_S3_SECRET,
     pathStyle: true,
     prefix: '',
+  }
+}
+
+/** Production never speaks the published dev password to a bucket. validateEnv()
+ *  blocks the explicitly-set case at boot; this catches the UNSET case, which
+ *  only matters once someone actually uses the internal mode — so the refusal
+ *  sits at the use-time doors (activeTarget, the admin test action) and a
+ *  prod instance on local disk never sees it. Reads by recorded path
+ *  (readBlob) stay unguarded: refusing them would brick blobs already stored. */
+export function refuseDevSecret(t: BucketTarget): void {
+  if (process.env.NODE_ENV === 'production' && t.secretAccessKey === DEV_S3_SECRET) {
+    throw new Error(
+      'internal storage refused: TALARIA_S3_SECRET_KEY is unset in production, and the fallback is the published ' +
+        'dev password. Set a real secret (openssl rand -hex 24) and update the minio container to match.',
+    )
   }
 }
 
@@ -105,6 +121,7 @@ export function targetReady(t: BucketTarget): boolean {
 export async function activeTarget(cfg: StorageConfig): Promise<{ target: BucketTarget; internal: boolean } | null> {
   if (cfg.mode === 'internal') {
     const target = internalTarget()
+    refuseDevSecret(target)
     await ensureBucket(target)
     return { target, internal: true }
   }

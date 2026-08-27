@@ -1,20 +1,10 @@
 // Google Calendar service — read the connected user's upcoming agenda and
 // create events, acting strictly as that user (per-user OAuth).
 
-import { getAccessToken } from './connections'
+import { requireToken } from './connections'
 
 const eventsUrl = (calendarId = 'primary') =>
   `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId || 'primary')}/events`
-
-async function requireToken(userId: string, nowMs: number): Promise<string> {
-  const token = await getAccessToken(userId, nowMs)
-  if (!token) {
-    const err = new Error('not_connected')
-    err.name = 'GoogleNotConnected'
-    throw err
-  }
-  return token
-}
 
 export interface CalendarEvent {
   id: string

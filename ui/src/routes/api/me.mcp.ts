@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasUserCredentials, listMcpServers, setUserCredentials } from '@/server/mcp-registry'
 import { dropOauthTokens, hasOauthTokens } from '@/server/mcp-oauth'
@@ -37,7 +38,7 @@ export const Route = defineApi('/api/me/mcp', {
     if (user instanceof Response) return user
     const body = await parseBody(
       request,
-      z.object({ serverId: z.string().uuid(), headers: z.record(z.string(), z.string().max(4000)).nullable() }),
+      z.object({ serverId: Uuid, headers: z.record(z.string(), z.string().max(4000)).nullable() }),
     )
     if (body instanceof Response) return body
     await setUserCredentials(body.serverId, user.id, body.headers)

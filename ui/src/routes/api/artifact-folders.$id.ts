@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { deleteFolder, getFolder, guardedFolder, updateFolder } from '@/server/artifacts'
@@ -9,7 +10,7 @@ import { canEditHuman, canGovern, canRead, listEditors, setEditors } from '@/ser
 const Patch = z.object({
   name: z.string().min(1).max(80).optional(),
   icon: z.string().max(16).nullish(),
-  parentId: z.string().uuid().nullish(),
+  parentId: Uuid.nullish(),
   visibility: z.enum(['private', 'org', 'public']).optional(),
   editPolicy: z.enum(['owner', 'org', 'restricted']).optional(),
   editors: z

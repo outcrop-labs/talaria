@@ -15,6 +15,7 @@
 // the workspace default, and `server/digest.ts` does the same through its own
 // `recipientZone`.
 import { getSetting, setSetting } from './audit'
+import { localMoment } from './tz'
 
 export interface BriefConfig {
   /** Local hour (0-23) the workday is considered to start. */
@@ -108,31 +109,10 @@ export function localHour(zone: string, at: Date): number {
   return localMoment(zone, at).hour
 }
 
-/** Local hour and calendar date in a zone. Same contract (and the same DST and
- *  bad-zone care) as `localMoment` in server/digest.ts; duplicated rather than
- *  imported because importing digest.ts here would pull the mail transport and
- *  its `registerJob` calls into the brief's module graph. */
-export function localMoment(zone: string, at: Date): { hour: number; date: string; zone: string } {
-  const read = (tz: string): { hour: number; date: string; zone: string } => {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: tz,
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-    }).formatToParts(at)
-    const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? ''
-    // 'en-CA' with hour12:false yields 24 for midnight in some ICU versions.
-    return { hour: Number(get('hour')) % 24, date: `${get('year')}-${get('month')}-${get('day')}`, zone: tz }
-  }
-  try {
-    return read(zone)
-  } catch {
-    console.warn(`[daily-brief] unknown time zone "${zone}" in ${BRIEF_CONFIG_KEY} — falling back to UTC`)
-    return read('UTC')
-  }
-}
+// Re-exported from the leaf so this module's importers (daily-brief.ts, its
+// test) keep their imports. It used to be a deliberate byte-for-byte duplicate
+// of digest.ts's copy — see server/tz.ts for why sharing it needed a leaf.
+export { localMoment } from './tz'
 
 /** Which workday a brief opened at `at` is FOR, and whether it is due yet.
  *

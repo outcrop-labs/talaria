@@ -2,13 +2,24 @@
 // user record lives in Redis under `sess:<sid>` with a TTL. Logout deletes it.
 // (OAuth state stays a short signed-free double-submit cookie — no server state.)
 
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { getRedis } from '../db/redis'
 import type { ProviderId } from './config'
 import type { Role } from '../users'
 
 export const SESSION_COOKIE = 'talaria_session'
 export const STATE_COOKIE = 'talaria_oauth_state'
+
+/** Constant-time compare for the OAuth state cookie — no early exit on the
+ *  first differing byte. (Length equality is checked first; that leaks only
+ *  the length, which the attacker already knows: they carried the cookie
+ *  here.) The compare lives with the cookie it guards, next to the OAuth
+ *  flows that all read it. */
+export function stateMatches(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8')
+  const bb = Buffer.from(b, 'utf8')
+  return ab.length === bb.length && timingSafeEqual(ab, bb)
+}
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7 // 7 days
 
 export interface SessionUser {

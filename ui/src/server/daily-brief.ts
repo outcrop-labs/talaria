@@ -41,7 +41,7 @@ import type { SessionUser } from './api-guard'
 import { approvalItems, notificationItems, taskItems } from './inbox-focus-sources'
 import { commsLines, type CommsLine } from './daily-brief-comms'
 import { draftReply, releaseDrafts } from './daily-brief-delegation'
-import { dedupeItems, sortItems } from './inbox-focus-policy'
+import { dedupeItems, nullableIso, sortItems } from './inbox-focus-policy'
 import type { RawFocusItem } from './inbox-focus-types'
 import { listUpcomingEvents } from './google/calendar'
 import { briefConfig, briefWindow, localMoment, nextBriefAt, zoneFor, type BriefConfig } from './daily-brief-config'
@@ -103,9 +103,6 @@ export interface NewEntry {
   body?: string
   evidence?: BriefEvidence[]
 }
-
-const asIso = (value: string | Date | null): string | null =>
-  value === null ? null : value instanceof Date ? value.toISOString() : new Date(value).toISOString()
 
 // ── The assistant ────────────────────────────────────────────────────────────
 
@@ -352,7 +349,7 @@ function view(row: BriefRow, entries: BriefEntry[], agent: BriefAssistant, comms
     id: row.id,
     date: row.briefDate,
     zone: row.zone,
-    openedAt: asIso(row.createdAt)!,
+    openedAt: nullableIso(row.createdAt)!,
     lede: lede?.body ?? '',
     agent,
     artifactId: row.artifactId,
@@ -362,7 +359,7 @@ function view(row: BriefRow, entries: BriefEntry[], agent: BriefAssistant, comms
     lastSeq: row.lastSeq,
     readSeq: row.readSeq,
     unseenCount: entries.filter((e) => e.seq > row.readSeq && e.kind !== 'lede').length,
-    lastSweptAt: asIso(row.lastSweptAt),
+    lastSweptAt: nullableIso(row.lastSweptAt),
   }
 }
 

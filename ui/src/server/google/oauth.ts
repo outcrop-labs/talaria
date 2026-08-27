@@ -1,18 +1,44 @@
-// Google connect flow — DISTINCT from google login (server/auth/google.ts).
+// Google OAuth — the ONE leaf both flows build on.
 //
-// Login proves who you are (access_type=online, no stored token). Connecting
-// grants Talaria durable, offline access to your Drive/Docs (access_type=offline,
-// prompt=consent → a refresh token we store encrypted). Separate redirect URI so
-// the two flows never cross-wire.
+// Two flows share this machinery and differ only in policy:
+//   CONNECT (this file)   durable, offline access to Drive/Docs/Calendar/Mail
+//                         (access_type=offline, prompt=consent → a refresh
+//                         token we store encrypted), per-user or shared-org.
+//   LOGIN (server/auth/google.ts)  proves who you are (access_type=online, no
+//                         stored token). That file keeps the login POLICY —
+//                         the domain gate, the doors, identity shaping — and
+//                         exchanges its code through `exchangeGoogleTokens`
+//                         here. Separate redirect URIs so the flows never
+//                         cross-wire; one exchange, one userinfo shape, one
+//                         set of endpoints.
+//
+// Until this consolidation, the endpoints, the token-exchange fetch, and the
+// userinfo fetch lived twice (once per flow) under two UserInfo types for one
+// endpoint, and the two connect callbacks carried the same body verbatim.
 
-import { resolveOrigin } from '../auth/google'
+import { getAuthConfig } from '../auth/config'
+import { clearStateCookie, getSessionUser, parseCookies, stateMatches, STATE_COOKIE } from '../auth/session'
 import { resolveGoogleClient, type GoogleClient } from './client-config'
 import { saveConnection } from './connections'
 import { saveOrgConnection } from './org-connection'
 
-const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
+// Exported for the login flow's consent URL; the token/userinfo endpoints are
+// leaf-internal (every caller goes through exchangeGoogleTokens).
+export const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo'
+
+/** External origin for redirect URIs: AUTH_PUBLIC_URL, else derived from the
+ *  request. Lives in this leaf (not auth/google.ts, where it was born) so the
+ *  login module can import the exchange without closing a cycle. */
+export function resolveOrigin(request: Request): string {
+  const configured = getAuthConfig().publicUrl
+  if (configured) return configured
+  const url = new URL(request.url)
+  const proto = request.headers.get('x-forwarded-proto') ?? url.protocol.replace(':', '')
+  const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? url.host
+  return `${proto}://${host}`
+}
 
 // Least-privilege for export/import: drive.file grants access only to files the
 // app itself creates or the user explicitly opens with it — not the whole Drive.
@@ -84,9 +110,16 @@ export async function googleConnectUrl(redirectUri: string, state: string, scope
   return `${AUTH_ENDPOINT}?${params.toString()}`
 }
 
-interface UserInfo {
+/** The ONE userinfo shape — one endpoint, one type. The login flow reads
+ *  name/picture/hd from it; the connect flows read sub/email. The old two
+ *  spellings (`UserInfo`, `GoogleUserInfo`) described the same response. */
+export interface GoogleUserInfo {
   sub: string
   email?: string
+  email_verified?: boolean
+  name?: string
+  picture?: string
+  hd?: string
 }
 
 interface ExchangedTokens {
@@ -96,10 +129,10 @@ interface ExchangedTokens {
   scope?: string
 }
 
-/** Exchange an auth code for tokens + the Google identity. Shared by the
- *  per-user and org connect flows. Throws when no client is configured —
- *  callers gate on `googleIntegrationEnabled` first. */
-async function exchangeConnectCode(code: string, redirectUri: string): Promise<{ tokens: ExchangedTokens; info: UserInfo }> {
+/** Exchange an auth code for tokens + the Google identity — the fetch BOTH
+ *  flows run (login shapes the identity, connect stores the tokens). Throws
+ *  when no client is configured; callers gate on the enabled checks first. */
+export async function exchangeGoogleTokens(code: string, redirectUri: string): Promise<{ tokens: ExchangedTokens; info: GoogleUserInfo }> {
   const cfg = (await resolveGoogleClient()) as GoogleClient
   const tokenRes = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',
@@ -113,14 +146,14 @@ async function exchangeConnectCode(code: string, redirectUri: string): Promise<{
     }),
   })
   if (!tokenRes.ok) {
-    throw new Error(`google connect token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`)
+    throw new Error(`google token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`)
   }
   const tokens = (await tokenRes.json()) as ExchangedTokens
-  if (!tokens.access_token) throw new Error('google connect: no access_token')
+  if (!tokens.access_token) throw new Error('google token exchange: no access_token')
 
   const infoRes = await fetch(USERINFO_ENDPOINT, { headers: { Authorization: `Bearer ${tokens.access_token}` } })
   if (!infoRes.ok) throw new Error(`google userinfo failed: ${infoRes.status}`)
-  return { tokens, info: (await infoRes.json()) as UserInfo }
+  return { tokens, info: (await infoRes.json()) as GoogleUserInfo }
 }
 
 /** Exchange the connect code and store the connection (encrypted) for a user. */
@@ -130,7 +163,7 @@ export async function completeGoogleConnect(
   redirectUri: string,
   nowMs: number,
 ): Promise<{ email: string | null }> {
-  const { tokens, info } = await exchangeConnectCode(code, redirectUri)
+  const { tokens, info } = await exchangeGoogleTokens(code, redirectUri)
   await saveConnection(userId, {
     googleSub: info.sub,
     email: info.email ?? null,
@@ -150,7 +183,7 @@ export async function completeGoogleOrgConnect(
   redirectUri: string,
   nowMs: number,
 ): Promise<{ email: string | null }> {
-  const { tokens, info } = await exchangeConnectCode(code, redirectUri)
+  const { tokens, info } = await exchangeGoogleTokens(code, redirectUri)
   await saveOrgConnection({
     googleSub: info.sub,
     email: info.email ?? null,
@@ -162,4 +195,48 @@ export async function completeGoogleOrgConnect(
     nowMs,
   })
   return { email: info.email ?? null }
+}
+
+/** The connect flows' shared callback body: gate on the integration, require
+ *  a session (the org flavor adds admin), verify the state cookie, exchange +
+ *  store, and bounce back with a status flag. The two routes differ only in
+ *  what a stored connection MEANS (whose Drive/calendar/mail) and where the
+ *  human lands — everything else was verbatim. */
+export async function handleConnectCallback(
+  request: Request,
+  opts: {
+    complete: (userId: string, code: string, redirectUri: string, nowMs: number) => Promise<unknown>
+    redirectUri: string
+    /** Status → landing path (e.g. `/settings/connections?google=`). */
+    landing: (status: string) => string
+    logTag: string
+    adminOnly?: boolean
+  },
+): Promise<Response> {
+  const back = (status: string): Response =>
+    new Response(null, {
+      status: 302,
+      headers: { Location: opts.landing(status), 'Set-Cookie': clearStateCookie() },
+    })
+
+  if (!(await googleIntegrationEnabled())) return back('disabled')
+  const user = await getSessionUser(request)
+  if (!user) return new Response(null, { status: 302, headers: { Location: '/login' } })
+  if (opts.adminOnly && user.role !== 'admin') return back('forbidden')
+
+  const url = new URL(request.url)
+  const code = url.searchParams.get('code')
+  const state = url.searchParams.get('state')
+  const cookieState = parseCookies(request)[STATE_COOKIE]
+
+  if (url.searchParams.get('error')) return back('denied')
+  if (!code || !state || !cookieState || !stateMatches(state, cookieState)) return back('bad_state')
+
+  try {
+    await opts.complete(user.id, code, opts.redirectUri, Date.now())
+  } catch (err) {
+    if (import.meta.env.DEV) console.error(`[${opts.logTag}] connect failed:`, err)
+    return back('exchange_failed')
+  }
+  return back('connected')
 }

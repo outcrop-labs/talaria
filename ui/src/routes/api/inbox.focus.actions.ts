@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { runFocusAction } from '@/server/inbox-focus'
 import { acquireInboxFocusLock, attachTimelineToActionResult } from '@/server/inbox-focus-conversation'
@@ -9,11 +10,11 @@ const Body = z.object({
   key: z.string().min(1).max(600).optional(),
   actionId: z.string().min(1).max(100).optional(),
   payload: z.unknown().optional(),
-  commandDecisionId: z.string().uuid().optional(),
-  decisionId: z.string().uuid().optional(),
+  commandDecisionId: Uuid.optional(),
+  decisionId: Uuid.optional(),
   confirmationToken: z.string().min(20).max(200).optional(),
-  cancelDecisionId: z.string().uuid().optional(),
-  undoDecisionId: z.string().uuid().optional(),
+  cancelDecisionId: Uuid.optional(),
+  undoDecisionId: Uuid.optional(),
 })
 
 export const Route = defineApi('/api/inbox/focus/actions', {

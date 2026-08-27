@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { getSessionUser } from '@/server/auth/session'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
@@ -72,7 +73,7 @@ export const Route = defineApi('/api/tasks/$id/comments', {
 
     const parsed = await parseBody(
       request,
-      z.object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() }),
+      z.object({ content: z.string().min(1).max(20_000), parentId: Uuid.optional() }),
     )
     if (parsed instanceof Response) return parsed
     const comment = await addComment(params.id, author, parsed.content, parsed.parentId)

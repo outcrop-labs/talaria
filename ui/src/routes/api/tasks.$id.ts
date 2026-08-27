@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { TICKET_COLORS } from '@/lib/task-const'
 import { statusMeta } from '@/server/statuses'
 import { parseBody, requireUser, type SessionUser } from '@/server/api-guard'
@@ -38,12 +39,12 @@ const Patch = z.object({
   errorMessage: z.string().max(50_000).nullish(),
   archived: z.boolean().optional(),
   estimatedHours: z.number().min(0).max(999).nullish(),
-  parentId: z.string().uuid().nullish(),
+  parentId: Uuid.nullish(),
   addTimeSpentSeconds: z.number().min(0).max(86_400 * 30).optional(),
   // Full replacement list, same contract as chat messages: upload ids +
   // knowledge/artifact refs. Omit both to leave attachments unchanged.
-  attachmentIds: z.array(z.string().uuid()).max(20).optional(),
-  refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
+  attachmentIds: z.array(Uuid).max(20).optional(),
+  refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional(),
 })
 
 export const Route = defineApi('/api/tasks/$id', {

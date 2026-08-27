@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
@@ -19,7 +20,7 @@ const Patch = z.object({
   editPolicy: z.enum(['owner', 'org', 'restricted']).optional(),
   editors: z.array(Editor).max(200).optional(),
   permsInherited: z.boolean().optional(),
-  parentId: z.string().uuid().nullish(),
+  parentId: Uuid.nullish(),
   official: z.boolean().optional(),
   regenerateOkf: z.boolean().optional(),
   /** RAG routing: 'auto' | 'none' | a custom brain id. Owner-only. */

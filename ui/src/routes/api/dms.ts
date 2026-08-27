@@ -1,10 +1,11 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { ensureDm } from '@/server/channels'
 
-const Post = z.object({ userId: z.string().uuid() })
+const Post = z.object({ userId: Uuid })
 
 // POST { userId } → find-or-create the DM with that person (rides the channel
 // machinery: same messages, SSE feed, and composer as everything else).

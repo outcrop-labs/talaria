@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
@@ -60,7 +61,7 @@ export const Route = defineApi('/api/boards/$id/tasks', {
         startDate: z.string().datetime().nullish(),
         color: z.enum(TICKET_COLORS).nullish(),
         estimatedHours: z.number().min(0).max(999).nullish(),
-        parentId: z.string().uuid().nullish(),
+        parentId: Uuid.nullish(),
         tags: z.array(z.string().max(40)).max(20).optional(),
       }),
     )

@@ -1,13 +1,14 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import { effectiveDocPerms, getDoc, moveDoc } from '@/server/kb'
 import { canEditHuman } from '@/server/kb-perms'
 
 const Body = z.object({
-  parentId: z.string().uuid().nullable(),
+  parentId: Uuid.nullable(),
   sort: z.number().int().default(0),
 })
 

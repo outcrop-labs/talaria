@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { archiveBoard, boardRole, deleteBoard, renameBoard, setBoardJudgeMode, setBoardTeam } from '@/server/boards'
 import { db } from '@/server/db/pg'
@@ -12,7 +13,7 @@ const Patch = z.object({
   archived: z.boolean().optional(),
   judgeMode: z.enum(['inherit', 'off', 'advisory', 'enforcing']).optional(),
   /** Move between teams (null → personal). Owner only — it changes who can see the board. */
-  teamId: z.string().uuid().nullable().optional(),
+  teamId: Uuid.nullable().optional(),
   /** Team by NAME (assistant-friendly): "personal" / "" / null → no team. */
   teamName: z.string().max(120).nullish(),
 })

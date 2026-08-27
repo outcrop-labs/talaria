@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import {
   deleteMcpServer,
@@ -29,7 +30,7 @@ const Patch = z.object({
   assign: z.object({ agentModel: z.string().min(1).max(200), tools: z.array(z.string().max(120)).nullable() }).optional(),
   unassign: z.string().min(1).max(200).optional(),
   userAccess: z
-    .object({ userId: z.string().uuid(), allowed: z.boolean().nullable(), tools: z.array(z.string().max(120)).nullable() })
+    .object({ userId: Uuid, allowed: z.boolean().nullable(), tools: z.array(z.string().max(120)).nullable() })
     .optional(),
   /** Pre-registered OAuth app credentials (providers without dynamic registration). */
   oauthClient: z.object({ clientId: z.string().min(1).max(200), clientSecret: z.string().max(500).nullable() }).optional(),

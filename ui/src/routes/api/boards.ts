@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
@@ -45,7 +46,7 @@ export const Route = defineApi('/api/boards', {
     if (!(await hasPerm(user, 'boards.create'))) return json({ error: 'no permission to create boards' }, { status: 403 })
     const body = await parseBody(
       request,
-      z.object({ name: z.string().min(1).max(120), teamId: z.string().uuid().nullish() }),
+      z.object({ name: z.string().min(1).max(120), teamId: Uuid.nullish() }),
     )
     if (body instanceof Response) return body
     // Team boards require membership in that team.

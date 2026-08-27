@@ -25,6 +25,8 @@
  * resampling, so the dots stay exactly as crisp as an SVG tile's.
  */
 
+import { clamp01 } from '@/lib/waiting/field'
+
 /** CSS px per dither cell. The house lattice — see `lib/dither.ts`. */
 export const CELL = 2
 
@@ -44,8 +46,6 @@ const BAYER4 = [
   [3, 11, 1, 9],
   [15, 7, 13, 5],
 ].map((row) => row.map((v) => (v + 0.5) / 16))
-
-const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 /**
  * Stable per-cell value, for scattering the threshold.

@@ -20,12 +20,11 @@ import type { ChipTone } from '@/components/ui/chip'
 import type { Capability } from '@/server/harness/capability'
 import type { FitnessBand, FitnessReport } from '@/server/fitness/score'
 import type { EvalCaseScore, HarnessScore, InFlightCase, SweepConcurrency } from '@/server/fitness/evals'
-import type { SpeedReading } from '@/server/fitness/surface'
+import type { EvalLogLine, LiveRun, MatrixView, SpeedReading } from '@/server/fitness/surface'
 import type { FixtureHealth, HealthSummary, Suspicion } from '@/server/fitness/health'
 import type { AdversarialReport, ProvocationScore } from '@/server/fitness/adversarial'
 import type { ProbeReport } from '@/server/fitness/probes'
 import type { Divergence, ObservedHarness, ObservedModel } from '@/server/fitness/observed'
-import type { EvalLogLine } from '@/server/fitness/surface'
 import type { ModelValue, SlotValue, ValueView, Workload } from '@/server/fitness/value'
 import type {
   CapabilityState,
@@ -75,6 +74,7 @@ export type {
   HarnessScore,
   HealthSummary,
   InFlightCase,
+  LiveRun,
   ModelRow,
   ModelValue,
   ObservedHarness,
@@ -112,33 +112,7 @@ export interface SlotView {
   taskFloor: number
 }
 
-export type RunView = FitnessRunStatus & { done: number; total: number; harness: string | null; sweepState: string }
-
-export interface MatrixPayload {
-  slots: SlotView[]
-  models: ModelRow[]
-  index: Record<string, FitnessIndexEntry>
-  /** Every run, running first. Up to `max` candidates are tested at once. */
-  runs: RunView[]
-  max: number
-  /** True when a further Start would be refused. */
-  full: boolean
-  thresholds: Thresholds
-  registry: { harnesses: number; fixtures: number; provocations: number; unfixtured: string[] }
-}
-
-/** A run in flight, as the drill-down shows it. See `LiveRun` in surface.ts. */
-export interface LiveRun {
-  state: string
-  phase: TierId | 'scoring' | null
-  done: number
-  total: number
-  harness: string | null
-  cases: EvalCaseScore[]
-  dropped: number
-  log: EvalLogLine[]
-  current: InFlightCase[]
-}
+export type MatrixPayload = MatrixView
 
 export interface DetailPayload {
   model: string
@@ -146,6 +120,12 @@ export interface DetailPayload {
   live: LiveRun | null
   /** The run's console, which outlives the run — see `DetailView` in surface.ts. */
   consoleLog: EvalLogLine[]
+  /** A hand-kept copy of `FitnessRecord` (surface.ts) MINUS its `tierAt` —
+   *  when each tier was last measured — which no panel here reads. That is a
+   *  real gap, not a reason: this interface is why DetailPayload is NOT an
+   *  alias of DetailView. The day the drill-down shows tier freshness, import
+   *  FitnessRecord and the whole payload can follow LiveRun and MatrixPayload
+   *  to the server's types. */
   record: {
     model: string
     at: string

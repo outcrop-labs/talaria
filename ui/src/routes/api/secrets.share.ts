@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import { getSecretDoc, grantSecret, revokeSecret, shareSecretWith, unshareSecretFrom } from '@/server/workspace-secrets'
@@ -25,8 +26,8 @@ import { getSecretDoc, grantSecret, revokeSecret, shareSecretWith, unshareSecret
 // widen the circle turns sharing into forwarding, and the person who put the key
 // in no longer knows who has it.
 const Body = z.union([
-  z.object({ action: z.literal('share'), name: z.string().max(80), userId: z.string().uuid() }),
-  z.object({ action: z.literal('unshare'), name: z.string().max(80), userId: z.string().uuid() }),
+  z.object({ action: z.literal('share'), name: z.string().max(80), userId: Uuid }),
+  z.object({ action: z.literal('unshare'), name: z.string().max(80), userId: Uuid }),
   z.object({ action: z.literal('grant'), name: z.string().max(80), agentModel: z.string().min(1).max(120) }),
   z.object({ action: z.literal('revoke'), name: z.string().max(80), agentModel: z.string().min(1).max(120) }),
 ])

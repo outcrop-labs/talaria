@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser, actorOf } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { db } from '@/server/db/pg'
@@ -32,7 +33,7 @@ export const Route = defineApi('/api/workbench/jobs', {
   PUT: async ({ request }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user
-    const body = await parseBody(request, z.object({ jobId: z.string().uuid(), action: z.enum(['approve', 'reject', 'merge_testing']), note: z.string().max(500).optional() }))
+    const body = await parseBody(request, z.object({ jobId: Uuid, action: z.enum(['approve', 'reject', 'merge_testing']), note: z.string().max(500).optional() }))
     if (body instanceof Response) return body
     const sql = await db()
     const [job] = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1`, [body.jobId])) as unknown as Array<{

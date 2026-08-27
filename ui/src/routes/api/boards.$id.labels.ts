@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { createLabel, deleteLabel, listLabels, updateLabel } from '@/server/labels'
@@ -33,7 +34,7 @@ export const Route = defineApi('/api/boards/$id/labels', {
     if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
     const body = await parseBody(
       request,
-      z.object({ labelId: z.string().uuid(), name: z.string().min(1).max(40).optional(), color: z.string().max(20).optional() }),
+      z.object({ labelId: Uuid, name: z.string().min(1).max(40).optional(), color: z.string().max(20).optional() }),
     )
     if (body instanceof Response) return body
     try {
@@ -47,7 +48,7 @@ export const Route = defineApi('/api/boards/$id/labels', {
     const user = await requireUser(request)
     if (user instanceof Response) return user
     if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-    const body = await parseBody(request, z.object({ labelId: z.string().uuid() }))
+    const body = await parseBody(request, z.object({ labelId: Uuid }))
     if (body instanceof Response) return body
     await deleteLabel(params.id, body.labelId)
     return json({ ok: true })

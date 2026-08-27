@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { assistantOwnerFor } from '@/server/users'
@@ -10,7 +11,7 @@ import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   title: z.string().max(200).optional(),
-  parentId: z.string().uuid().nullish(),
+  parentId: Uuid.nullish(),
   kind: z.enum(['human', 'agent']).optional(),
   /** Initial markdown body (the MCP create_kb_doc path sets it in one shot). */
   body: z.string().max(500_000).optional(),

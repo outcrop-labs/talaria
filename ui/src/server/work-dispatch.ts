@@ -28,11 +28,10 @@
 import { enqueue, pgRunStore } from './runs/run'
 import { isTerminal, type RunRow } from './runs/define'
 import { sessionRunId, workSessionRun, type WorkSessionInput } from './runs/defs/work-session'
+import { errText } from './errors'
 import type { Task } from '@/lib/task-const'
 
 const LOG = '[work-dispatch]'
-
-const errText = (e: unknown): string => (e instanceof Error ? (e.stack ?? e.message) : String(e))
 
 /** How many sessions one ticket+agent pair may ever have.
  *

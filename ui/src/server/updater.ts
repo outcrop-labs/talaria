@@ -48,6 +48,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getSetting, setSetting } from './audit'
 import { registerJob } from './scheduler'
+import { errLine } from './errors'
 
 type ExecResult = { stdout: string; stderr: string }
 
@@ -60,8 +61,6 @@ function exec(cmd: string, args: string[], opts: { cwd?: string; timeoutMs?: num
     })
   })
 }
-
-const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 // ── Where am I? ──────────────────────────────────────────────────────────────
 
@@ -185,7 +184,7 @@ export async function checkForUpdate(): Promise<CheckResult> {
   try {
     await exec('git', ['-C', root, 'fetch', 'origin', branch], { timeoutMs: 60_000 })
   } catch (e) {
-    throw new Error(`Could not reach the remote: ${errText(e)}`)
+    throw new Error(`Could not reach the remote: ${errLine(e)}`)
   }
   const current = await revInfo(root, 'HEAD')
   const latest = await revInfo(root, `origin/${branch}`)
@@ -262,7 +261,7 @@ export async function applyUpdate(by: 'manual' | 'auto'): Promise<{ started: boo
     setTimeout(() => process.kill(self, 'SIGTERM'), 1_500).unref()
     return { started: true }
   } catch (e) {
-    return fail(`Update failed: ${errText(e)}`)
+    return fail(`Update failed: ${errLine(e)}`)
   }
 }
 

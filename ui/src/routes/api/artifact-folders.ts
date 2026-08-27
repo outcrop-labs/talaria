@@ -1,13 +1,14 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { createFolder, guardedFolder, listFolders } from '@/server/artifacts'
 import { canRead, grantedItemIds } from '@/server/kb-perms'
 
 const Body = z.object({
   name: z.string().min(1).max(80),
-  parentId: z.string().uuid().nullish(),
+  parentId: Uuid.nullish(),
   /** Omitted = private: a folder you make in My Files is yours until you
    *  share it. Callers wanting the old org-wide default pass it explicitly. */
   visibility: z.enum(['private', 'org', 'public']).optional(),

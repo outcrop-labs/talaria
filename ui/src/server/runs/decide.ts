@@ -58,13 +58,12 @@
 // so decide.test.ts drives both halves with no database, no Redis and no clock.
 import { announceApproval, audienceFor, mayDecide, runDecisionApproval, type Disclosure, type PendingApproval } from '../approvals'
 import { markBriefStale } from '../daily-brief-stale'
+import { errText } from '../errors'
 import { runDefinition, type AnyRunDefinition, type DecisionAnswer, type DecisionRequest, type RunRow, type RunState } from './define'
 import { drive, publishRunEvent, type RunDeps } from './run'
 import { pgRunStore, type RunStore } from './store'
 
 const LOG = '[runs]'
-
-const errText = (e: unknown) => (e instanceof Error ? (e.stack ?? e.message) : String(e))
 
 /** The approvals key for a parked run, derived from the run and the question
  *  and nothing else.

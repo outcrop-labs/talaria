@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { searchForPrincipal } from '@/server/retrieval'
@@ -8,7 +9,7 @@ import { searchForPrincipal } from '@/server/retrieval'
 const Body = z.object({
   query: z.string().min(1).max(2000),
   limit: z.number().int().min(1).max(20).optional(),
-  collectionIds: z.array(z.string().uuid()).max(20).optional(),
+  collectionIds: z.array(Uuid).max(20).optional(),
 })
 
 // Ranked retrieval across the caller's accessible collections. Works for a

@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { db } from '@/server/db/pg'
@@ -54,7 +55,7 @@ export const Route = defineApi('/api/boards/$id/views', {
     if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
     const body = await parseBody(
       request,
-      z.object({ viewId: z.string().uuid(), name: z.string().min(1).max(60).optional(), config: Config.optional() }),
+      z.object({ viewId: Uuid, name: z.string().min(1).max(60).optional(), config: Config.optional() }),
     )
     if (body instanceof Response) return body
     const sql = await db()
@@ -68,7 +69,7 @@ export const Route = defineApi('/api/boards/$id/views', {
     const user = await requireUser(request)
     if (user instanceof Response) return user
     if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-    const body = await parseBody(request, z.object({ viewId: z.string().uuid() }))
+    const body = await parseBody(request, z.object({ viewId: Uuid }))
     if (body instanceof Response) return body
     const sql = await db()
     await sql`delete from board_views where id = ${body.viewId} and board_id = ${params.id}`

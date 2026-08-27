@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { getAgentDef, updateAgentMeta } from '@/server/agent-defs'
 import { setAgentWorkbench, setAgentWorkbenchTuning } from '@/server/workbench'
@@ -21,8 +22,8 @@ const Body = z.object({
     .refine((v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), 'not an email address')
     .nullish(),
   /** Template overrides: uuid binds, null clears, omitted leaves unchanged. */
-  ticketTemplateId: z.string().uuid().nullable().optional(),
-  planTemplateId: z.string().uuid().nullable().optional(),
+  ticketTemplateId: Uuid.nullable().optional(),
+  planTemplateId: Uuid.nullable().optional(),
   workbench: z.enum(['off', 'auto', 'on']).optional(),
   workbenchProfile: z.string().max(40).nullable().optional(),
   workbenchHarness: z.string().max(40).nullable().optional(),

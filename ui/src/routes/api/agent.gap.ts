@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody } from '@/server/api-guard'
 import { requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent } from '@/server/boards'
@@ -11,7 +12,7 @@ const Body = z.object({
   kind: z.string().min(2).max(80),
   missing: z.string().min(5).max(300),
   needs: z.string().max(5000).optional(),
-  taskId: z.string().uuid().optional(),
+  taskId: Uuid.optional(),
 })
 
 // POST — an agent reports a capability gap (the honesty loop). Deduped by

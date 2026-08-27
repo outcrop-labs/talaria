@@ -1,12 +1,13 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller, type AgentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
 import { addDependency, agentTicketRefusal, getTask, HumanApprovalRequired, removeDependency } from '@/server/tasks'
 
-const Body = z.object({ dependsOnId: z.string().uuid() })
+const Body = z.object({ dependsOnId: Uuid })
 
 // POST { dependsOnId } → this ticket is blocked by another. DELETE → remove.
 // Editors or board-allowed agents may add (part of triage); removal is human-only.

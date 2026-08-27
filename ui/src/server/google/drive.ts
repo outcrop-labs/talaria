@@ -5,7 +5,7 @@
 
 import { getUpload, saveUpload } from '../uploads'
 import type { Artifact, ArtifactKind } from '../artifacts'
-import { getAccessToken } from './connections'
+import { requireToken } from './connections'
 
 // supportsAllDrives lets us create into a Shared Drive (team-owned files).
 const UPLOAD_ENDPOINT =
@@ -120,17 +120,6 @@ export async function exportArtifactWithToken(token: string, artifact: Artifact,
     name: file.name ?? metadata.name,
     mimeType: file.mimeType ?? mapped.targetMime,
   }
-}
-
-/** A valid access token, or throw the caller-friendly GoogleNotConnected. */
-async function requireToken(userId: string, nowMs: number): Promise<string> {
-  const token = await getAccessToken(userId, nowMs)
-  if (!token) {
-    const err = new Error('not_connected')
-    err.name = 'GoogleNotConnected'
-    throw err
-  }
-  return token
 }
 
 // ── Browse + import ──────────────────────────────────────────────────────────

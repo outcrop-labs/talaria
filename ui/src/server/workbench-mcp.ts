@@ -24,7 +24,7 @@
 // ever carried was wrong within a round, because the doors were hand-written
 // copies. These are not copies, so there is nothing to count.
 import { subjectModel, type AgentSubject } from './agent-auth'
-import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
+import { dispatchJsonRpc, type Rpc } from './mcp-jsonrpc'
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
@@ -652,17 +652,7 @@ export async function mergeJobToTesting(
   return { ok: true, testingBranch: flow.testingBranch }
 }
 
-// ── JSON-RPC surface (same shape as the app dispatcher) ──────────────────────
-
-interface Rpc {
-  jsonrpc?: string
-  id?: unknown
-  method?: string
-  params?: { name?: string; arguments?: Record<string, unknown>; [k: string]: unknown }
-}
-
-const result = (id: unknown, res: unknown) => ({ jsonrpc: '2.0', id: id ?? null, result: res })
-const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } })
+// ── JSON-RPC surface (the shared dispatcher; this surface's tools + call) ────
 
 /** `agent` takes the resolved AgentCaller where the caller has one — a bare
  *  model string still works (and is read as proven, which a legacy caller
@@ -675,38 +665,12 @@ export async function dispatchWorkbenchMcp(
   allowed: string[] | null,
 ): Promise<{ status: number; body: unknown | null }> {
   const tools = WORKBENCH_TOOLS.filter((t) => allowed === null || allowed.includes(t.name))
-  switch (rpc.method) {
-    case 'initialize':
-      return {
-        status: 200,
-        body: result(rpc.id, {
-          protocolVersion: (rpc.params?.protocolVersion as string) ?? MCP_PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo: { name: 'talaria-workbench', version: '1.0' },
-        }),
-      }
-    case 'notifications/initialized':
-      return { status: 202, body: null }
-    case 'ping':
-      return { status: 200, body: result(rpc.id, {}) }
-    case 'tools/list':
-      return { status: 200, body: result(rpc.id, { tools }) }
-    case 'tools/call': {
-      const tool = tools.find((t) => t.name === rpc.params?.name)
-      if (!tool) return { status: 200, body: rpcError(rpc.id, -32602, `tool "${rpc.params?.name}" is not available here`) }
-      try {
-        const r = await callTool(agent, tool.name, rpc.params?.arguments ?? {})
-        return {
-          status: 200,
-          body: result(rpc.id, {
-            content: [{ type: 'text', text: r.ok ? JSON.stringify(r.value) : `Error: ${r.error}` }],
-            isError: !r.ok,
-          }),
-        }
-      } catch (e) {
-        return { status: 200, body: result(rpc.id, { content: [{ type: 'text', text: `Error: ${(e as Error).message}` }], isError: true }) }
-      }
-    }
-  }
-  return { status: 200, body: rpcError(rpc.id, -32601, `method "${rpc.method}" not supported`) }
+  return dispatchJsonRpc(rpc, tools, {
+    serverName: 'talaria-workbench',
+    listEntry: (t) => t,
+    call: async (tool, args) => {
+      const r = await callTool(agent, tool.name, args)
+      return r.ok ? { text: JSON.stringify(r.value) } : { text: `Error: ${r.error}`, isError: true }
+    },
+  })
 }

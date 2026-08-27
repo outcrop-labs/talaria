@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, getChannelMessage, insertChannelMessage, listChannelMessages, listThreadMessages } from '@/server/channels'
@@ -48,9 +49,9 @@ export const Route = defineApi('/api/channels/$id/messages', {
       request,
       z.object({
         content: z.string().max(20_000).default(''),
-        attachmentIds: z.array(z.string().uuid()).max(10).optional(),
-        refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
-        threadRootId: z.string().uuid().nullish(),
+        attachmentIds: z.array(Uuid).max(10).optional(),
+        refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional(),
+        threadRootId: Uuid.nullish(),
       }),
     )
     if (body instanceof Response) return body
