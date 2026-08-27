@@ -160,7 +160,7 @@ deps). You'll need [Docker](https://docs.docker.com/get-docker/), Node ≥ 20, a
 
 ```bash
 bun talaria setup       # prints your generated admin credentials, and installs a plain `talaria` command on your PATH
-talaria dev             # postgres + redis + the app → http://localhost:5273
+talaria dev             # dev infra + the app → http://localhost:5273
 ```
 
 Then: sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your
@@ -198,8 +198,9 @@ One repo: the app ([`ui/`](./ui), Vite + Svelte 5 + strict TypeScript), the agen
 ([`mcp/`](./mcp)), the app platform and reference apps ([`apps/`](./apps)), the CLI
 ([`cli/`](./cli)), and the per-agent plugin ([`plugin/talaria/`](./plugin/talaria), currently
 dormant). Setup, architecture, conventions, and a link to every doc:
-[`DEVELOPERS.md`](./DEVELOPERS.md). New contributors start with [`HANDOFF.md`](./HANDOFF.md)
-and [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+[`DEVELOPERS.md`](./DEVELOPERS.md). How the platform works:
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). New contributors start with
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## License
 
