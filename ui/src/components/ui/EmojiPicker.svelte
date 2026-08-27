@@ -2,7 +2,7 @@
   import Button from '@/components/ui/Button.svelte'
   // A full, searchable emoji picker. The ~1900-emoji dataset (@emoji-mart/data) is
   // lazy-loaded on first open so it never weighs down the initial bundle. Renders
-  // as a click-away popover (§7 popover shell); the caller positions the trigger.
+  // in the §7 popover shell (ui/Popover.svelte); the caller supplies the trigger.
 
   interface EmojiEntry {
     id: string
@@ -52,34 +52,43 @@
 </script>
 
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import Input from '@/components/ui/Input.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
-  import { popHeader, popPanel } from '@/components/chat/chat-chrome'
+  import { listStagger } from '@/lib/motion'
+  import { popHeader } from '@/components/chat/chat-chrome'
+  import Popover from '@/components/ui/Popover.svelte'
 
   let {
+    trigger,
     onPick,
     onClear,
-    onClose,
     align = 'left',
+    up = false,
   }: {
+    /** The icon button that opens the picker — Popover owns its toggle. */
+    trigger: Snippet<[boolean]>
     onPick: (emoji: string) => void
     onClear?: () => void
-    onClose: () => void
     align?: 'left' | 'right'
+    /** Open upward — triggers docked at the bottom of the viewport (the chat
+     *  composer's smiley tile), where a downward panel would fly off-screen. */
+    up?: boolean
   } = $props()
 
-  let el = $state<HTMLDivElement | null>(null)
+  let open = $state(false)
   let all = $state<EmojiEntry[]>(CACHE ?? [])
   let q = $state('')
 
+  // The shell keeps this component mounted, so "first open" is a state change,
+  // not a mount: the dataset import stays off the initial bundle.
   $effect(() => {
-    if (!CACHE) void loadEmoji().then((v) => (all = v))
+    if (open && !CACHE) void loadEmoji().then((v) => (all = v))
   })
-
-  function onDocMousedown(e: MouseEvent) {
-    if (el && !el.contains(e.target as Node)) onClose()
-  }
+  // The panel used to unmount on close, which reset the search for free.
+  $effect(() => {
+    if (!open) q = ''
+  })
 
   const byId = $derived(new Map(all.map((e) => [e.id, e])))
   const results = $derived.by(() => {
@@ -95,55 +104,44 @@
   }
 </script>
 
-{#snippet grid(entries: EmojiEntry[])}
+{#snippet grid(entries: EmojiEntry[], close: () => void)}
   <div class="grid grid-cols-8 gap-0.5" use:listStagger>
     {#each entries as e (e.id)}
-      <button type="button" title={e.name} onclick={() => onPick(e.native)} class="grid h-8 select-none place-items-center rounded-md text-lg transition-colors dither-fill">
+      <button type="button" title={e.name} onclick={() => { close(); onPick(e.native) }} class="grid h-8 select-none place-items-center rounded-md text-lg transition-colors dither-fill">
         {e.native}
       </button>
     {/each}
   </div>
 {/snippet}
 
-<svelte:document onmousedown={onDocMousedown} />
-
-<!-- |global: the panel IS the component root — call sites render
-     {#if open}<EmojiPicker/>, so local legs never play (ANIMATIONS.md). -->
-<div
-  bind:this={el}
-  in:pop|global={POPOVER}
-  out:fade|global={QUICK}
-  class={cn(
-    popPanel,
-    'absolute top-full z-30 mt-1 w-72 p-2',
-    align === 'right' ? 'right-0 origin-top-right' : 'left-0 origin-top-left',
-  )}
->
-  <Input autofocus size="sm" bind:value={q} placeholder="Search emoji" class="mb-2" />
-  <div class="max-h-64 overflow-y-auto">
-    {#if all.length === 0}
-      <div class="py-8 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Loading</div>
-    {:else if results}
-      {#if results.length === 0}
-        <div class="py-8 text-center text-xs text-muted">No emoji found.</div>
-      {:else}
-        {@render grid(results)}
-      {/if}
-    {:else}
-      {#each CATEGORIES as cat (cat.id)}
-        {@const entries = categoryEntries(cat.ids)}
-        {#if entries.length > 0}
-          <div class="mb-1">
-            <div class={cn(popHeader, 'px-1 py-1')}>{cat.label}</div>
-            {@render grid(entries)}
-          </div>
+<Popover bind:open {trigger} {align} {up} class="w-72 p-2">
+  {#snippet content(close)}
+    <Input autofocus size="sm" bind:value={q} placeholder="Search emoji" class="mb-2" />
+    <div class="max-h-64 overflow-y-auto">
+      {#if all.length === 0}
+        <div class="py-8 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Loading</div>
+      {:else if results}
+        {#if results.length === 0}
+          <div class="py-8 text-center text-xs text-muted">No emoji found.</div>
+        {:else}
+          {@render grid(results, close)}
         {/if}
-      {/each}
+      {:else}
+        {#each CATEGORIES as cat (cat.id)}
+          {@const entries = categoryEntries(cat.ids)}
+          {#if entries.length > 0}
+            <div class="mb-1">
+              <div class={cn(popHeader, 'px-1 py-1')}>{cat.label}</div>
+              {@render grid(entries, close)}
+            </div>
+          {/if}
+        {/each}
+      {/if}
+    </div>
+    {#if onClear}
+      <Button variant="ghost" size="xs" class="mt-1 w-full py-1" onclick={() => { close(); onClear?.() }}>
+        Remove icon
+      </Button>
     {/if}
-  </div>
-  {#if onClear}
-    <Button variant="ghost" size="xs" class="mt-1 w-full py-1" onclick={onClear}>
-      Remove icon
-    </Button>
-  {/if}
-</div>
+  {/snippet}
+</Popover>

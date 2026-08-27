@@ -16,6 +16,7 @@
 <script lang="ts">
   import { Plus, X } from '@lucide/svelte'
   import Button from './Button.svelte'
+  import Input from './Input.svelte'
 
   // THE ENTRIES OF A SECRET, edited in place.
   //
@@ -45,22 +46,21 @@
     labelPlaceholder?: string
     valuePlaceholder?: string
   } = $props()
-
-  const field = 'rounded border border-line bg-panel px-2 py-1 text-xs text-fg'
 </script>
 
 <p class="mt-3 font-mono text-[10px] text-ink-dim">entries</p>
 {#each entries as e, i (i)}
   <div class="mt-1 grid gap-1 sm:grid-cols-[1fr_1fr_2fr_auto]">
-    <input bind:value={e.key} placeholder={keyPlaceholder} aria-label="Handle" class="{field} font-mono" />
-    <input bind:value={e.label} placeholder={labelPlaceholder} aria-label="Label" class="{field} font-sans" />
-    <input
+    <Input bind:value={e.key} placeholder={keyPlaceholder} aria-label="Handle" size="sm" class="font-[var(--font-mono)]" />
+    <Input bind:value={e.label} placeholder={labelPlaceholder} aria-label="Label" size="sm" />
+    <Input
       bind:value={e.value}
       type="password"
       autocomplete="off"
       placeholder={valuePlaceholder}
       aria-label="Value"
-      class="{field} font-mono"
+      size="sm"
+      class="font-[var(--font-mono)]"
     />
     <Button
       size="sm"

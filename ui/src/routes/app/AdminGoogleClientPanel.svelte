@@ -7,6 +7,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -121,7 +122,7 @@
       <!-- Status -->
       {#if data.status.configured}
         <div class="flex items-center gap-2 text-sm">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
+          <StatusDot status="ok" />
           <span class="text-fg">Client configured</span>
           <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
             via {data.status.source === 'admin' ? 'Admin UI' : 'ui/.env'}

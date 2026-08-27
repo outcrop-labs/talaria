@@ -16,6 +16,8 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import Input from '@/components/ui/Input.svelte'
   import SecretEntriesEditor, { emptySecretEntry, type SecretEntry } from '@/components/ui/SecretEntriesEditor.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -229,27 +231,23 @@
           <div class="grid gap-2 sm:grid-cols-2">
             <label class="font-sans text-xs text-muted">
               Handle name
-              <input bind:value={name} placeholder="deploy" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg" />
+              <Input bind:value={name} placeholder="deploy" size="sm" class="mt-1 font-[var(--font-mono)]" />
             </label>
             <label class="font-sans text-xs text-muted">
               Title
-              <input bind:value={title} placeholder="Deploy credentials" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
+              <Input bind:value={title} placeholder="Deploy credentials" size="sm" class="mt-1" />
             </label>
           </div>
           <label class="mt-2 block font-sans text-xs text-muted">
             What it is for
-            <input bind:value={note} placeholder="Pushing to the release repo" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
+            <Input bind:value={note} placeholder="Pushing to the release repo" size="sm" class="mt-1" />
           </label>
 
           <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" />
 
           <label class="mt-3 block font-sans text-xs text-muted">
             Spendable at (optional): hosts, space or comma separated
-            <input
-              bind:value={hosts}
-              placeholder="github.com  registry.outcrop.dev"
-              class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
-            />
+            <Input bind:value={hosts} placeholder="github.com  registry.outcrop.dev" size="sm" class="mt-1 font-[var(--font-mono)]" />
             <span class="mt-1 block text-[11px] text-ink-dim">
               {#if hosts.trim()}
                 Talaria refuses to substitute this credential into anything bound elsewhere, including a call whose destination it cannot read.
@@ -259,10 +257,7 @@
             </span>
           </label>
 
-          <label class="mt-3 flex items-center gap-2 font-sans text-xs text-muted">
-            <input type="checkbox" bind:checked={relay} />
-            One-shot: spent the first time an agent uses it
-          </label>
+          <Checkbox class="mt-3 gap-2 font-sans" checked={relay} onChange={(checked) => (relay = checked)} label="One-shot: spent the first time an agent uses it" />
 
           <div class="mt-3 flex items-center gap-2">
             <Button size="sm" onclick={create} disabled={busy || !name.trim() || !entries.some((e) => e.key.trim() && e.value)}>Store</Button>

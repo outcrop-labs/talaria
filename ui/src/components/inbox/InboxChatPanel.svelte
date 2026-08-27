@@ -16,6 +16,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
   import CollapsePane from '@/components/ui/CollapsePane.svelte'
+  import Popover from '@/components/ui/Popover.svelte'
   import { fade, listStagger, slide, GROW_Y, QUICK } from '@/lib/motion'
   import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
   import { mergeInboxTimelinePages } from '@/lib/inbox-focus-timeline'
@@ -544,33 +545,34 @@
            to; which conversation instance is the switchable thing, so it sits
            underneath as the picker. The old layout led with the thread and
            buried the assistant in the fine print. -->
-      <div class="relative min-w-0 flex-1">
+      <div class="min-w-0 flex-1">
         <div class="truncate font-sans text-[13px] font-medium leading-tight text-fg">{assistantName}</div>
-        <button
-          type="button"
-          onclick={() => (menuOpen = !menuOpen)}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          title="Switch conversation"
-          class="-ml-1.5 mt-0.5 flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left transition-colors duration-[120ms] dither-fill hover:bg-raised"
-        >
-          <span class="truncate font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">
-            {currentChat?.preview?.trim() || 'New conversation'}
-          </span>
-          <ChevronDown size={11} class="shrink-0 text-ink-dim" />
-        </button>
-        {#if menuOpen}
-          <!-- fixed, not absolute: the menu has to close from a click anywhere,
-               including outside the panel. -->
-          <button type="button" tabindex="-1" aria-label="Close menu" onclick={() => (menuOpen = false)} class="fixed inset-0 z-40 cursor-default"></button>
-          <div role="menu" class="absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-88px)] rounded-lg border border-line bg-sidebar p-1 shadow-[var(--theme-shadow-3)]">
+        <!-- Conversation switcher in the §7 popover shell. The rows are
+             two-line (preview + age), so this is a content panel, not
+             DropdownMenu's item grammar; `menuOpen` stays bound so
+             startNewChat/archiveCurrentChat can close it themselves. -->
+        <Popover bind:open={menuOpen} class="w-72 max-w-[calc(100vw-88px)]">
+          {#snippet trigger(open)}
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={open}
+              title="Switch conversation"
+              class="-ml-1.5 mt-0.5 flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left transition-colors duration-[120ms] dither-fill hover:bg-raised"
+            >
+              <span class="truncate font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">
+                {currentChat?.preview?.trim() || 'New conversation'}
+              </span>
+              <ChevronDown size={11} class="shrink-0 text-ink-dim" />
+            </button>
+          {/snippet}
+          {#snippet content(close)}
             {#each chatList as c (c.id)}
               <button
                 type="button"
-                role="menuitem"
                 onclick={() => {
                   writeSelectedChatId(c.id)
-                  menuOpen = false
+                  close()
                 }}
                 class={cn('flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-[120ms] dither-fill hover:bg-raised', c.id === chatId && 'bg-raised')}
               >
@@ -581,18 +583,18 @@
               </button>
             {/each}
             {#if chatList.length > 0}<div class="my-1 h-px bg-line"></div>{/if}
-            <button type="button" role="menuitem" onclick={() => void startNewChat()} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-[120ms] dither-fill hover:bg-raised">
+            <button type="button" onclick={() => void startNewChat()} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-[120ms] dither-fill hover:bg-raised">
               <Plus size={12} class="text-ink-dim" />
               <span class="font-sans text-[12px] text-fg">New chat</span>
             </button>
             {#if currentChat}
-              <button type="button" role="menuitem" onclick={() => void archiveCurrentChat()} disabled={busy} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-[120ms] dither-fill hover:bg-raised disabled:opacity-50">
+              <button type="button" onclick={() => void archiveCurrentChat()} disabled={busy} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-[120ms] dither-fill hover:bg-raised disabled:opacity-50">
                 <Archive size={12} class="text-ink-dim" />
                 <span class="font-sans text-[12px] text-fg">Archive this chat</span>
               </button>
             {/if}
-          </div>
-        {/if}
+          {/snippet}
+        </Popover>
       </div>
       <span class={cn('h-1.5 w-1.5 rounded-full', busy || conversation.data?.pages[0]?.working ? 'animate-pulse bg-success' : 'bg-line-strong')} aria-hidden="true"></span>
       <button type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted dither-fill hover:text-fg">

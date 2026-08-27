@@ -1,10 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { Plus } from '@lucide/svelte'
-  import { cn } from '@/lib/cn'
-  import { focusGold } from '@/components/chat/chat-chrome'
   import { listStagger, slide } from '@/lib/motion'
   import Input from '@/components/ui/Input.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
 
   // Sidebar section: the create affordance is a small "+" IN the heading (Slack-
@@ -51,17 +50,14 @@
     <span class="ml-auto"></span>
     {#if meta}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">{meta}</span>{/if}
     {#if onCreate}
-      <button
-        type="button"
+      <IconButton
+        size="sm"
+        class="h-5 w-5"
         title={`New ${label.toLowerCase().replace(/s$/, '')}`}
         onclick={() => (creating = true)}
-        class={cn(
-          'grid h-5 w-5 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg',
-          focusGold,
-        )}
       >
         <Plus size={13} />
-      </button>
+      </IconButton>
     {/if}
   </div>
   {#if creating}

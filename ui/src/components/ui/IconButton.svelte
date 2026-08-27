@@ -12,7 +12,10 @@
     title: string
     active?: boolean
     danger?: boolean
-    size?: 'sm' | 'md'
+    /** `tile` is the 36px Bordered square (chat-chrome's old `tileBase` recipe):
+     *  composer-dock actions — attach `+`, emoji, stop — that read as a
+     *  control surface rather than a hover glyph. */
+    size?: 'sm' | 'md' | 'tile'
     /** bind:ref for imperative focus/measure at call sites that need it. */
     ref?: HTMLButtonElement | null
     /** The dither bloom on approach. On by default, as on Button — an icon
@@ -58,7 +61,7 @@
       wantsBloom && 'dither-fill',
     'grid shrink-0 select-none place-items-center rounded-md transition-colors disabled:opacity-40',
       focusRing,
-      size === 'sm' ? 'h-7 w-7' : 'h-8 w-8',
+      size === 'sm' ? 'h-7 w-7' : size === 'tile' ? 'h-9 w-9 border border-line text-muted hover:bg-hover hover:text-fg' : 'h-8 w-8',
       active ? 'bg-raised text-fg' : 'text-muted dither-fill',
       danger ? 'hover:text-danger' : 'hover:text-fg',
       className,

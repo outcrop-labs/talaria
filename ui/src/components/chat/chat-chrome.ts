@@ -22,12 +22,6 @@ export const chipPrimary = cn(chipBase, 'border-line-strong text-fg hover:bg-hov
 /** Secondary chips: hairline border + muted text → readout on hover. */
 export const chipSecondary = cn(chipBase, 'border-line text-muted hover:bg-hover hover:text-fg')
 
-/** 36×36 radius-6 icon tile (attach `+`, emoji, stop). */
-export const tileBase = cn(
-  'grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-40',
-  focusGold,
-)
-
 /** Picker popover panel (model-menu pattern, `3Q-0`). Entrance lives at each
  *  use site as `in:pop={POPOVER}` from @/lib/motion (reduced-motion aware via
  *  the JS wrappers) — exits stay quick fades, i.e. shorter. */

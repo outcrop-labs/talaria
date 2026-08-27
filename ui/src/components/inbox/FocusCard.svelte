@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronRight, Clock3, ExternalLink } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
@@ -93,9 +94,16 @@
     {/if}
     <div class="flex items-center rounded-md border border-line bg-raised">
       <label class="sr-only" for="focus-snooze">Snooze duration</label>
-      <select id="focus-snooze" value={snoozeMs} onchange={(event) => onSnoozeMs(Number(event.currentTarget.value))} class="h-8 bg-transparent pl-2 font-mono text-[10px] uppercase tracking-[0.04em] text-muted outline-none">
+      <!-- Chrome-less inside the composite: the wrapper supplies border/bg and
+           the clock button; only the type, spacing and casing are the select's. -->
+      <Select
+        id="focus-snooze"
+        value={snoozeMs}
+        onchange={(event) => onSnoozeMs(Number(event.currentTarget.value))}
+        class="h-8 border-0 bg-transparent pl-2 pr-0 font-mono text-[10px] uppercase tracking-[0.04em] text-muted"
+      >
         {#each INBOX_SNOOZE_OPTIONS as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
-      </select>
+      </Select>
       <button type="button" onclick={onSnooze} disabled={busyAction !== null} class="grid h-8 w-8 place-items-center text-muted hover:text-fg disabled:opacity-50" aria-label="Snooze item">
         <Clock3 size={12} />
       </button>

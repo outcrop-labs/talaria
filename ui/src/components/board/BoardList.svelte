@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
@@ -402,12 +403,11 @@
             <tr>
               <th class="w-7 py-2 pl-2">
                 {#if canEdit}
-                  <input
-                    type="checkbox"
+                  <Checkbox
+                    bare
                     title="Select all"
                     checked={sorted.length > 0 && sorted.every((t) => sel.has(t.id))}
-                    onchange={(e) => (sel = e.currentTarget.checked ? new Set(sorted.map((t) => t.id)) : new Set())}
-                    class="accent-[var(--theme-accent)]"
+                    onChange={(checked) => (sel = checked ? new Set(sorted.map((t) => t.id)) : new Set())}
                   />
                 {/if}
               </th>
@@ -502,11 +502,12 @@
                     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                     <td class="pl-2" onclick={(e) => e.stopPropagation()}>
                       {#if canEdit}
-                        <input
-                          type="checkbox"
+                        <Checkbox
+                          bare
+                          title="Select task"
                           checked={sel.has(t.id)}
-                          onchange={() => toggleSel(t.id)}
-                          class={cn('accent-[var(--theme-accent)] transition-opacity', sel.size === 0 && 'opacity-0 group-hover:opacity-100')}
+                          onChange={() => toggleSel(t.id)}
+                          class={cn('transition-opacity', sel.size === 0 && 'opacity-0 group-hover:opacity-100')}
                         />
                       {:else}
                         <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} class="opacity-0 group-hover:opacity-100" />

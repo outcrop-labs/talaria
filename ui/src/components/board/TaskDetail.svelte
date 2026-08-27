@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Archive, ArchiveRestore, Trash2 } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -555,10 +556,7 @@
               <div class="space-y-1" use:listStagger>
                 {#each subTasks as st (st.id)}
                   <div class="flex items-center gap-1.5 text-xs">
-                    <span
-                      class="h-1.5 w-1.5 shrink-0 rounded-full"
-                      style:background={st.status === 'done' ? 'var(--theme-success)' : 'var(--theme-line)'}
-                    ></span>
+                    <StatusDot status={st.status === 'done' ? 'ok' : 'idle'} />
                     <button
                       onclick={() => openTask(st.id)}
                       class={cn('min-w-0 flex-1 truncate text-left transition-colors hover:text-fg', st.status === 'done' ? 'text-muted line-through' : 'text-muted')}

@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { pushToast } from '@/lib/toast.svelte'
@@ -82,7 +83,7 @@
               </div>
               {#if s.connected}
                 <span class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
-                  <span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-success"></span>
+                  <StatusDot status="ok" />
                   connected
                 </span>
                 <Button size="sm" variant="danger-outline" onclick={() => void put(s.id, null)}>

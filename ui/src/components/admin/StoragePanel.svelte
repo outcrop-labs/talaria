@@ -5,6 +5,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Select from '@/components/ui/Select.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -172,10 +173,7 @@
 
     <!-- Replica — mirror every blob to a second provider -->
     <div class="mt-4 rounded-md border border-line p-3">
-      <label class="flex items-center gap-2 text-xs font-medium text-fg">
-        <input type="checkbox" checked={cfg.replica.enabled} onchange={(e) => setReplica({ enabled: e.currentTarget.checked })} class="accent-accent" />
-        Replicate to a second provider
-      </label>
+      <Checkbox checked={cfg.replica.enabled} onChange={(checked) => setReplica({ enabled: checked })} label="Replicate to a second provider" class="gap-2 font-medium text-fg" />
       <p class="mt-1 text-xs text-muted">
         New uploads are mirrored as they land (an outage never blocks an upload); "Sync all" copies
         everything already stored (disk, built-in, or external) into the replica bucket.

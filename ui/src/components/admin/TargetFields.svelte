@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import type { TargetConfig } from './storage'
 
@@ -35,7 +36,8 @@
   <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Secret access key</span>
   <Input type="password" value={secret} oninput={(e) => onSecret(e.currentTarget.value)} placeholder={t.hasSecret ? '•••••••• (saved)' : ''} class="mt-1 w-full" />
 </label>
-<label class="flex items-center gap-2 text-xs text-muted sm:col-span-2">
-  <input type="checkbox" checked={t.pathStyle} onchange={(e) => onChange({ pathStyle: e.currentTarget.checked })} class="accent-accent" />
-  Path-style requests <span class="opacity-70">(works everywhere; uncheck only for virtual-host buckets)</span>
-</label>
+<Checkbox checked={t.pathStyle} onChange={(checked) => onChange({ pathStyle: checked })} class="gap-2 sm:col-span-2">
+  {#snippet label()}
+    Path-style requests <span class="opacity-70">(works everywhere; uncheck only for virtual-host buckets)</span>
+  {/snippet}
+</Checkbox>

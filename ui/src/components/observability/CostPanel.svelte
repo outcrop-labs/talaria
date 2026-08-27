@@ -2,6 +2,7 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -147,10 +148,10 @@
           <SectionHeader title="Tokens per day · last 14 days">
             {#snippet action()}
               <span class="inline-flex items-center gap-1.5">
-                <span class="h-2 w-2 rounded-full" style:background="var(--theme-success)"></span> self-hosted
+                <StatusDot status="ok" class="h-2 w-2" /> self-hosted
               </span>
               <span class="inline-flex items-center gap-1.5">
-                <span class="h-2 w-2 rounded-full" style:background="var(--theme-chart-1)"></span> cloud
+                <StatusDot color="var(--theme-chart-1)" class="h-2 w-2" /> cloud
               </span>
             {/snippet}
           </SectionHeader>

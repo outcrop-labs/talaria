@@ -1,6 +1,7 @@
 <script lang="ts">
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { formatCost, formatTokens, type CostOverview } from '@/lib/cost.svelte'
 
   /** Segment colors: hue family = class (green local, chart-blue cloud — gold
@@ -61,7 +62,7 @@
   <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 font-mono text-[11px] text-muted">
     {#each segments as s (s.label)}
       <span class="inline-flex items-center gap-1.5">
-        <span class="h-2 w-2 shrink-0 rounded-full" style:background={s.color}></span>
+        <StatusDot color={s.color} class="h-2 w-2" />
         <span class="text-fg">{s.label}</span>
         <span>
           {formatTokens(s.tokens)} · {s.endpointClass ?? 'unattributed'}{s.endpointClass === 'cloud'

@@ -2,8 +2,11 @@
   import type { HTMLAttributes } from 'svelte/elements'
 
   export type PanelProps = HTMLAttributes<HTMLElement> & {
-    /** Semantic element — `section` for page sections, default `div`. */
-    as?: 'div' | 'section' | 'article' | 'aside'
+    /** Semantic element — `section` for page sections, default `div`.
+     *  `a` turns the card itself into a link (see StatCard's `href`). */
+    as?: 'div' | 'section' | 'article' | 'aside' | 'a'
+    /** Link destination — only meaningful with `as="a"`. */
+    href?: string
     /**
      * A dithered corridor along the top edge.
      *

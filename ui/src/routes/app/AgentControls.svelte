@@ -3,7 +3,7 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { useSession } from '@/lib/session'
   import type { AgentDef } from '@/lib/fleet-defs'
-  import AgentIconBtn from './AgentIconBtn.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import AgentRetireModal from './AgentRetireModal.svelte'
   import { deleteForeverConfirm, RESTART_CONFIRM, useAgentControls } from './agents.svelte'
 
@@ -27,21 +27,21 @@
   <!-- Retired agents: re-hire (re-enable + start), duplicate as a template, or
        delete forever (admin) — the only truly destructive lifecycle action. -->
   <div class="flex items-center">
-    <AgentIconBtn title="Duplicate to a new agent" onClick={onDuplicate}><Copy size={15} /></AgentIconBtn>
-    <AgentIconBtn title="Re-hire" onClick={() => void controls.act('unretire', 're-hiring')}><UserPlus size={15} /></AgentIconBtn>
+    <IconButton title="Duplicate to a new agent" onclick={onDuplicate}><Copy size={15} /></IconButton>
+    <IconButton title="Re-hire" onclick={() => void controls.act('unretire', 're-hiring')}><UserPlus size={15} /></IconButton>
     {#if isAdmin}
-      <AgentIconBtn
+      <IconButton
         title="Delete forever"
         danger
-        onClick={() => void controls.act('delete', 'Delete forever', deleteForeverConfirm(d))}
-      ><Trash2 size={15} /></AgentIconBtn>
+        onclick={() => void controls.act('delete', 'Delete forever', deleteForeverConfirm(d))}
+      ><Trash2 size={15} /></IconButton>
     {/if}
   </div>
 {:else}
   <div class="flex items-center">
-    <AgentIconBtn title="Duplicate to a new agent" onClick={onDuplicate}><Copy size={15} /></AgentIconBtn>
-    <AgentIconBtn title="Manage" onClick={onManage}><SlidersHorizontal size={15} /></AgentIconBtn>
-    <AgentIconBtn title="Retire" danger onClick={() => (retiring = true)}><Archive size={15} /></AgentIconBtn>
+    <IconButton title="Duplicate to a new agent" onclick={onDuplicate}><Copy size={15} /></IconButton>
+    <IconButton title="Manage" onclick={onManage}><SlidersHorizontal size={15} /></IconButton>
+    <IconButton title="Retire" danger onclick={() => (retiring = true)}><Archive size={15} /></IconButton>
     {#if retiring}
       <AgentRetireModal def={d} onClose={() => (retiring = false)} onConfirm={() => void controls.act('retire', 'retiring')} />
     {/if}
@@ -49,19 +49,19 @@
          not another management action. Filled glyphs so they read at 14px. -->
     <span aria-hidden="true" class="mx-1.5 h-4 w-px bg-line"></span>
     {#if running}
-      <AgentIconBtn title="Stop" onClick={() => void controls.act('stop', 'stopping')}><Square size={14} fill="currentColor" /></AgentIconBtn>
-      <AgentIconBtn
+      <IconButton title="Stop" onclick={() => void controls.act('stop', 'stopping')}><Square size={14} fill="currentColor" /></IconButton>
+      <IconButton
         title="Restart (quick bounce; drops any in-flight reply)"
-        onClick={() => void controls.act('restart', 'restarting', RESTART_CONFIRM)}
-      ><RotateCw size={14} /></AgentIconBtn>
+        onclick={() => void controls.act('restart', 'restarting', RESTART_CONFIRM)}
+      ><RotateCw size={14} /></IconButton>
       {#if isAdmin}
-        <AgentIconBtn
+        <IconButton
           title="Roll (zero-downtime replacement: fresh container, old one finishes its replies)"
-          onClick={() => void controls.act('roll', 'rolling')}
-        ><Repeat size={14} /></AgentIconBtn>
+          onclick={() => void controls.act('roll', 'rolling')}
+        ><Repeat size={14} /></IconButton>
       {/if}
     {:else}
-      <AgentIconBtn title="Start" onClick={() => void controls.act('up', 'starting')}><Play size={14} fill="currentColor" /></AgentIconBtn>
+      <IconButton title="Start" onclick={() => void controls.act('up', 'starting')}><Play size={14} fill="currentColor" /></IconButton>
     {/if}
   </div>
 {/if}

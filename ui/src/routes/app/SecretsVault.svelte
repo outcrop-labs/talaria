@@ -15,8 +15,10 @@
   // them as one list of names would be lying about what it just did.
   import { onDestroy } from 'svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Input from '@/components/ui/Input.svelte'
   import SecretEntriesEditor, { emptySecretEntry, type SecretEntry } from '@/components/ui/SecretEntriesEditor.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -326,14 +328,9 @@
               {#if f.ownerUserId !== meId}<span class="font-mono text-[10px] text-ink-dim">shared with you</span>{/if}
             </button>
             {#if f.ownerUserId === meId}
-              <button
-                type="button"
-                title="More"
-                onclick={(e) => folderMenu(e, f)}
-                class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-              >
+              <IconButton size="sm" title="More" onclick={(e) => folderMenu(e, f)}>
                 <MoreHorizontal size={14} aria-hidden="true" />
-              </button>
+              </IconButton>
             {/if}
           </li>
         {/each}
@@ -460,14 +457,9 @@
                    around it. Row actions belong in the menu idiom the rest of
                    the app already uses, and right-clicking the row opens the
                    same items. -->
-              <button
-                type="button"
-                title="More"
-                onclick={(e) => rowMenu(e, s)}
-                class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-              >
+              <IconButton size="sm" class="ml-auto" title="More" onclick={(e) => rowMenu(e, s)}>
                 <MoreHorizontal size={14} aria-hidden="true" />
-              </button>
+              </IconButton>
               </div>
             </li>
             {/each}
@@ -486,18 +478,18 @@
         <div class="rounded-md border border-line p-3" transition:slide>
           <label class="block font-sans text-xs text-muted">
             What is it
-            <input bind:value={title} placeholder="Staging Stripe key" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
+            <Input bind:value={title} placeholder="Staging Stripe key" size="sm" class="mt-1" />
           </label>
           <label class="mt-2 block font-sans text-xs text-muted">
             Note (optional)
-            <input bind:value={note} placeholder="For the checkout rewrite (rotate after launch)" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg" />
+            <Input bind:value={note} placeholder="For the checkout rewrite (rotate after launch)" size="sm" class="mt-1" />
           </label>
 
           <SecretEntriesEditor bind:entries valuePlaceholder="value" />
 
           <label class="mt-3 block font-sans text-xs text-muted">
             Spendable at (optional): hosts, space or comma separated
-            <input bind:value={hosts} placeholder="api.stripe.com" class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg" />
+            <Input bind:value={hosts} placeholder="api.stripe.com" size="sm" class="mt-1 font-[var(--font-mono)]" />
             <span class="mt-1 block text-[11px] text-ink-dim">
               Only matters once an agent can spend it: Talaria then refuses to substitute it into anything bound elsewhere.
             </span>

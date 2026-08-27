@@ -17,11 +17,10 @@
   // On success it is stored; on failure it is a credential sitting in a browser
   // tab, and retyping is a better outcome than leaving it there.
   import { KeyRound } from '@lucide/svelte'
-  import { cn } from '@/lib/cn'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import { popPanel, tileBase } from '@/components/chat/chat-chrome'
-  import { pop, POPOVER } from '@/lib/motion'
+  import IconButton from '@/components/ui/IconButton.svelte'
+  import Popover from '@/components/ui/Popover.svelte'
 
   let {
     agentModel,
@@ -40,7 +39,6 @@
     disabled?: boolean
   } = $props()
 
-  let wrapRef = $state<HTMLDivElement | null>(null)
   let open = $state(false)
   let busy = $state(false)
   let error = $state<string | null>(null)
@@ -48,13 +46,17 @@
   let value = $state('')
   let host = $state('')
 
-  const close = () => {
-    open = false
-    error = null
-    label = ''
-    value = ''
-    host = ''
-  }
+  // The §7 shell (ui/Popover) owns outside-click/Esc/scroll; whatever path
+  // closed the panel, the form clears with it — a closed popover must never
+  // sit on a live credential.
+  $effect(() => {
+    if (!open) {
+      error = null
+      label = ''
+      value = ''
+      host = ''
+    }
+  })
 
   const mint = async () => {
     if (!label.trim() || !value) return
@@ -76,7 +78,7 @@
       const j = await postJson<{ handle?: string }>('/api/secrets/relay', body)
       if (!j.handle) throw new Error('could not hand that over; try again')
       onMinted(j.handle)
-      close()
+      open = false
     } catch (e) {
       error = errorMessage(e)
     } finally {
@@ -85,84 +87,71 @@
   }
 </script>
 
-<svelte:document
-  onmousedown={(e) => {
-    if (open && !wrapRef?.contains(e.target as Node)) close()
-  }}
-/>
+<Popover bind:open follow up offset={6} class="w-80 p-2.5">
+  {#snippet trigger()}
+    <IconButton title="Hand {agentLabel} a credential: one use, never in the transcript" size="tile" disabled={disabled || busy}>
+      {#if busy}
+        <WaitingMark site="chat/relay" size={12} />
+      {:else}
+        <KeyRound size={14} aria-hidden="true" />
+      {/if}
+    </IconButton>
+  {/snippet}
+  {#snippet content(close)}
+    <p class="font-sans text-[13px] text-fg">Hand {agentLabel} a credential</p>
+    <p class="mt-1 font-sans text-xs text-muted">
+      The value goes straight to the vault; it never enters this message, the transcript, or any model's context.
+      {agentLabel} gets a handle it can spend <strong class="text-fg">once</strong>, within the hour{host.trim() ? ', and only at that host' : ''}.
+    </p>
 
-<div bind:this={wrapRef} class="relative">
-  <button
-    type="button"
-    title="Hand {agentLabel} a credential: one use, never in the transcript"
-    disabled={disabled || busy}
-    onclick={() => (open ? close() : (open = true))}
-    class={tileBase}
-  >
-    {#if busy}
-      <WaitingMark site="chat/relay" size={12} />
-    {:else}
-      <KeyRound size={14} aria-hidden="true" />
-    {/if}
-  </button>
+    <label class="mt-2.5 block font-sans text-xs text-muted">
+      What is it
+      <input
+        bind:value={label}
+        placeholder="Stripe test key"
+        class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg"
+      />
+    </label>
+    <label class="mt-2 block font-sans text-xs text-muted">
+      Value
+      <input
+        bind:value
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="paste it here, not in the message"
+        onkeydown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            void mint()
+          }
+        }}
+        class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
+      />
+    </label>
 
-  {#if open}
-    <div in:pop={POPOVER} class={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-80 p-2.5')}>
-      <p class="font-sans text-[13px] text-fg">Hand {agentLabel} a credential</p>
-      <p class="mt-1 font-sans text-xs text-muted">
-        The value goes straight to the vault; it never enters this message, the transcript, or any model's context.
-        {agentLabel} gets a handle it can spend <strong class="text-fg">once</strong>, within the hour{host.trim() ? ', and only at that host' : ''}.
-      </p>
+    <label class="mt-2 block font-sans text-xs text-muted">
+      Only for (optional)
+      <input
+        bind:value={host}
+        placeholder="api.stripe.com"
+        spellcheck="false"
+        class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
+      />
+    </label>
 
-      <label class="mt-2.5 block font-sans text-xs text-muted">
-        What is it
-        <input
-          bind:value={label}
-          placeholder="Stripe test key"
-          class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg"
-        />
-      </label>
-      <label class="mt-2 block font-sans text-xs text-muted">
-        Value
-        <input
-          bind:value
-          type="password"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="paste it here, not in the message"
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              void mint()
-            }
-          }}
-          class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
-        />
-      </label>
-
-      <label class="mt-2 block font-sans text-xs text-muted">
-        Only for (optional)
-        <input
-          bind:value={host}
-          placeholder="api.stripe.com"
-          spellcheck="false"
-          class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
-        />
-      </label>
-
-      <div class="mt-2.5 flex items-center gap-2">
-        <button
-          type="button"
-          disabled={busy || !label.trim() || !value}
-          onclick={() => void mint()}
-          class="rounded-md border border-line-strong px-2.5 py-1 font-sans text-xs text-fg transition-colors dither-fill disabled:opacity-40"
-        >
-          Hand it over
-        </button>
-        <button type="button" onclick={close} class="rounded-md px-2 py-1 font-sans text-xs text-muted transition-colors hover:text-fg">Cancel</button>
-      </div>
-
-      {#if error}<p class="mt-2 font-sans text-xs text-danger">{error}</p>{/if}
+    <div class="mt-2.5 flex items-center gap-2">
+      <button
+        type="button"
+        disabled={busy || !label.trim() || !value}
+        onclick={() => void mint()}
+        class="rounded-md border border-line-strong px-2.5 py-1 font-sans text-xs text-fg transition-colors dither-fill disabled:opacity-40"
+      >
+        Hand it over
+      </button>
+      <button type="button" onclick={close} class="rounded-md px-2 py-1 font-sans text-xs text-muted transition-colors hover:text-fg">Cancel</button>
     </div>
-  {/if}
-</div>
+
+    {#if error}<p class="mt-2 font-sans text-xs text-danger">{error}</p>{/if}
+  {/snippet}
+</Popover>

@@ -20,6 +20,7 @@
   import Input from '@/components/ui/Input.svelte'
   import FieldPill from '@/components/ui/FieldPill.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import Segmented from '@/components/ui/Segmented.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { staggerIn } from '@/lib/motion'
@@ -346,12 +347,6 @@
     if (saved === 'list' || saved === 'gantt') setSearch({ view: saved }, true)
   })
 
-  const toggleCls = (active: boolean) =>
-    cn(
-      'grid h-7 w-7 place-items-center rounded-md transition-colors',
-      focusGold,
-      active ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
-    )
   // Opening a ticket keeps the CURRENT view/filter state — the overlay sits
   // on top of whatever view you were in, and closing returns you to it.
   const openTicket = (taskId: string) =>
@@ -374,6 +369,10 @@
 </script>
 
 {#snippet groupByIcon()}<Layers size={12} />{/snippet}
+
+{#snippet boardIcon()}<LayoutGrid size={14} />{/snippet}
+{#snippet listIcon()}<List size={14} />{/snippet}
+{#snippet ganttIcon()}<CalendarRange size={14} />{/snippet}
 
 <!-- One continuous skeleton across the serial load (boards → tasks): the board
      must not paint with empty columns while its tasks are still in flight.
@@ -416,32 +415,17 @@
          settings gear on the right. The board's own name lives in the top
          strip now. -->
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-2">
-      <div class="flex rounded-md border border-line p-0.5">
-        <button
-          class={toggleCls(view === 'board')}
-          onclick={() => setView('board')}
-          title="Board view"
-          aria-label="Board view"
-        >
-          <LayoutGrid size={15} />
-        </button>
-        <button
-          class={toggleCls(view === 'list')}
-          onclick={() => setView('list')}
-          title="List view"
-          aria-label="List view"
-        >
-          <List size={15} />
-        </button>
-        <button
-          class={toggleCls(view === 'gantt')}
-          onclick={() => setView('gantt')}
-          title="Gantt view"
-          aria-label="Gantt view"
-        >
-          <CalendarRange size={15} />
-        </button>
-      </div>
+      <!-- The §8 segmented tile group — same icon-only form as Agents' grid/list
+           pair (icon snippets as labels; Segmented owns the group chrome). -->
+      <Segmented
+        options={[
+          { id: 'board', label: boardIcon, title: 'Board view' },
+          { id: 'list', label: listIcon, title: 'List view' },
+          { id: 'gantt', label: ganttIcon, title: 'Gantt view' },
+        ]}
+        value={view}
+        onChange={setView}
+      />
       {#if viewsList.notice}<QueryError {...viewsList.notice} />{/if}
       {#if savedViews.length > 0}<div class="h-5 w-px bg-line-subtle"></div>{/if}
       {#each savedViews as sv (sv.id)}
