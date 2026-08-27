@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🪽 Talaria
+<img src="assets/logomark.svg" width="64" alt="" />
+
+# Talaria
 
 **The operations platform for companies that run on people *and* agents.**
 
