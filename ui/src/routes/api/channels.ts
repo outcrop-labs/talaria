@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
 import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
@@ -23,8 +23,8 @@ export const Route = defineApi('/api/channels', {
       // legacy flag away and hand org-wide reach to an asserted identity.
       return json({ channels: await listChannelsForAgent(caller) })
     }
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
     // Comms decay and the outreach sweep used to be kicked from here. They
     // are jobs on `server/scheduler.ts` now — timed by the process, not by
     // whether anyone happened to open comms. The three below are still
@@ -38,20 +38,21 @@ export const Route = defineApi('/api/channels', {
     return json({ channels: await listChannels(user.id) })
   },
   POST: async ({ request }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-    const parsed = z
-      .object({
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(
+      request,
+      z.object({
         name: z.string().min(1).max(80),
         topic: z.string().max(300).nullish(),
         kind: z.enum(['channel', 'group']).optional(),
-      })
-      .safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    const needed = (parsed.data.kind ?? 'channel') === 'group' ? 'comms.relays' : 'comms.channels'
+      }),
+    )
+    if (body instanceof Response) return body
+    const needed = (body.kind ?? 'channel') === 'group' ? 'comms.relays' : 'comms.channels'
     if (!(await hasPerm(user, needed))) return json({ error: `no permission to create ${needed === 'comms.relays' ? 'relays' : 'channels'}` }, { status: 403 })
     return json({
-      channel: await createChannel(user.id, parsed.data.name, parsed.data.topic ?? null, parsed.data.kind ?? 'channel'),
+      channel: await createChannel(user.id, body.name, body.topic ?? null, body.kind ?? 'channel'),
     })
   },
 })

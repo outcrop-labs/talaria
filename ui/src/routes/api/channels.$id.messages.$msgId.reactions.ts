@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, getChannelMessage, toggleReaction } from '@/server/channels'
 
@@ -9,10 +9,8 @@ import { agentMayAccessChannel, channelRole, getChannelMessage, toggleReaction }
 // their own identity — one of our twists on the Slack shape.
 export const Route = defineApi('/api/channels/$id/messages/$msgId/reactions', {
   POST: async ({ request, params }) => {
-    const parsed = z
-      .object({ emoji: z.string().min(1).max(16) })
-      .safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const body = await parseBody(request, z.object({ emoji: z.string().min(1).max(16) }))
+    if (body instanceof Response) return body
     if (!(await getChannelMessage(params.id, params.msgId))) return json({ error: 'not found' }, { status: 404 })
 
     const agent = await agentCaller(request)
@@ -21,13 +19,13 @@ export const Route = defineApi('/api/channels/$id/messages/$msgId/reactions', {
       const name = agent.model
       // The CALLER, not `name`: elevation buys org-wide channel reach.
       if (!(await agentMayAccessChannel(params.id, agent))) return json({ error: 'forbidden' }, { status: 403 })
-      await toggleReaction(params.id, params.msgId, parsed.data.emoji, name, 'agent')
+      await toggleReaction(params.id, params.msgId, body.emoji, name, 'agent')
       return json({ ok: true })
     }
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
     if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-    await toggleReaction(params.id, params.msgId, parsed.data.emoji, user.email ?? user.name ?? 'user', 'user')
+    await toggleReaction(params.id, params.msgId, body.emoji, user.email ?? user.name ?? 'user', 'user')
     return json({ ok: true })
   },
 })

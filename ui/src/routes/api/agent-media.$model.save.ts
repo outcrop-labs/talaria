@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { assistantOwnerFor, canUseAgentModel } from '@/server/users'
 import { isMediaError, readAgentImage } from '@/server/agent-media'
@@ -41,34 +41,35 @@ export const Route = defineApi('/api/agent-media/$model/save', {
       // proven identity, not an asserted one.
       ownerUserId = await assistantOwnerFor(agent)
     } else {
-      const user = await getSessionUser(request)
-      if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      const user = gate
       if (!(await canUseAgentModel(user.id, user.role, params.model))) {
         return json({ error: 'forbidden' }, { status: 403 })
       }
       actor = user.email ?? user.name ?? 'user'
       ownerUserId = user.id
     }
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
 
-    const media = await readAgentImage(params.model, parsed.data.path)
+    const media = await readAgentImage(params.model, body.path)
     if (isMediaError(media)) return json({ error: media.error }, { status: media.status })
 
     // Folder by name: find-or-create (case-insensitive) — "Memes" just works.
     // With no folder given, media files under the agent's own cabinet.
-    let folderId = parsed.data.folderId ?? null
-    if (!folderId && parsed.data.folder) {
-      const existing = (await listFolders()).find((f) => f.name.toLowerCase() === parsed.data.folder!.toLowerCase())
-      folderId = existing?.id ?? (await createFolder({ name: parsed.data.folder, createdBy: actor })).id
+    let folderId = body.folderId ?? null
+    if (!folderId && body.folder) {
+      const existing = (await listFolders()).find((f) => f.name.toLowerCase() === body.folder!.toLowerCase())
+      folderId = existing?.id ?? (await createFolder({ name: body.folder, createdBy: actor })).id
     }
     if (!folderId) folderId = await agentCategoryFolder(describeAgent(params.model).label, 'Media', actor)
 
-    const filename = parsed.data.path.split('/').pop() ?? 'image'
+    const filename = body.path.split('/').pop() ?? 'image'
     const upload = await saveUpload({ filename, mime: media.mime, bytes: media.bytes, userId: ownerUserId })
     const created = await createArtifact({
       kind: 'file',
-      title: parsed.data.title?.trim() || filename,
+      title: body.title?.trim() || filename,
       createdBy: actor,
       ownerUserId,
     })

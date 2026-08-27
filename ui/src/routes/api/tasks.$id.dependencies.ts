@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller, type AgentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
 import { addDependency, agentTicketRefusal, getTask, HumanApprovalRequired, removeDependency } from '@/server/tasks'
@@ -36,13 +36,15 @@ export const Route = defineApi('/api/tasks/$id/dependencies', {
       actor = caller.model
       agent = caller
     } else {
-      const user = await getSessionUser(request)
-      if (!user || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      const user = gate
+      if (!canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
       actor = user.email ?? user.name ?? 'user'
     }
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    const dep = await getTask(parsed.data.dependsOnId)
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
+    const dep = await getTask(parsed.dependsOnId)
     if (!dep || dep.boardId !== task.boardId) return json({ error: 'must be a ticket on this board' }, { status: 400 })
     // The edge lands on BOTH tickets (it shows in the target's "blocks"
     // list), so the rule applies to the target too.
@@ -58,7 +60,7 @@ export const Route = defineApi('/api/tasks/$id/dependencies', {
     // is 403, a request that cannot be satisfied is 400, and both carry the
     // sentence that says why.
     try {
-      await addDependency(params.id, parsed.data.dependsOnId, actor)
+      await addDependency(params.id, parsed.dependsOnId, actor)
     } catch (e) {
       if (e instanceof HumanApprovalRequired) return json({ error: e.message }, { status: 403 })
       return json({ error: (e as Error).message }, { status: 400 })
@@ -66,13 +68,14 @@ export const Route = defineApi('/api/tasks/$id/dependencies', {
     return json({ ok: true })
   },
   DELETE: async ({ request, params }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     const task = await getTask(params.id)
     if (!task || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    await removeDependency(params.id, parsed.data.dependsOnId)
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
+    await removeDependency(params.id, parsed.dependsOnId)
     return json({ ok: true })
   },
 })

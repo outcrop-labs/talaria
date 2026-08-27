@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
 import { listResearchRuns, RESEARCH_MODES, researchRunForConversation, startResearch } from '@/server/research'
@@ -33,13 +33,14 @@ export const Route = defineApi('/api/research', {
       const owner = await assistantOwnerFor(viewer)
       return json({ runs: await listResearchRuns(owner), modes: RESEARCH_MODES })
     }
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     return json({ runs: await listResearchRuns(user.id), modes: RESEARCH_MODES })
   },
   POST: async ({ request }) => {
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
 
     let agentModel: string
     let ownerUserId: string | null
@@ -52,11 +53,12 @@ export const Route = defineApi('/api/research', {
       ownerUserId = await assistantOwnerFor(caller)
       requestedBy = name
     } else {
-      const user = await getSessionUser(request)
-      if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      const user = gate
       if (!(await hasPerm(user, 'research.run'))) return json({ error: 'no permission to run research' }, { status: 403 })
-      if (!parsed.data.agentModel) return json({ error: 'agentModel required' }, { status: 400 })
-      agentModel = parsed.data.agentModel
+      if (!body.agentModel) return json({ error: 'agentModel required' }, { status: 400 })
+      agentModel = body.agentModel
       if (!(await canUseAgentModel(user.id, user.role, agentModel))) {
         return json({ error: 'forbidden: no access to this agent' }, { status: 403 })
       }
@@ -68,7 +70,7 @@ export const Route = defineApi('/api/research', {
     const sql = await db()
     const dupe = await sql`
       select id from research_runs
-      where question = ${parsed.data.question} and status in ('queued','running') limit 1
+      where question = ${body.question} and status in ('queued','running') limit 1
     `
     if (dupe[0]) return json({ run: null, duplicateOf: (dupe[0] as { id: string }).id }, { status: 409 })
 
@@ -89,8 +91,8 @@ export const Route = defineApi('/api/research', {
 
     try {
       const run = await startResearch({
-        question: parsed.data.question,
-        mode: parsed.data.mode,
+        question: body.question,
+        mode: body.mode,
         agentModel,
         ownerUserId,
         requestedBy,

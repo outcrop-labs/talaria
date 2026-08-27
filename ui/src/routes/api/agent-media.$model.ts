@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { canUseAgentModel } from '@/server/users'
 import { isMediaError, readAgentImage } from '@/server/agent-media'
 
@@ -9,8 +9,9 @@ import { isMediaError, readAgentImage } from '@/server/agent-media'
 // Access + path/type guardrails live in server/agent-media.
 export const Route = defineApi('/api/agent-media/$model', {
   GET: async ({ request, params }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     if (!(await canUseAgentModel(user.id, user.role, params.model))) {
       return json({ error: 'forbidden' }, { status: 403 })
     }

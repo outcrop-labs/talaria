@@ -2,6 +2,7 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, listMembers } from '@/server/boards'
 import { addComment, agentTicketRefusal, getTask, listComments, type AgentWriteTarget } from '@/server/tasks'
@@ -21,8 +22,10 @@ async function commentReader(request: Request, boardId: string): Promise<string 
     if (!(await boardAllowsAgent(boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
     return caller.model
   }
-  const user = await getSessionUser(request)
-  if (!user || !(await boardRole(user.id, boardId))) return json({ error: 'forbidden' }, { status: 403 })
+  const gate = await requireUser(request)
+  if (gate instanceof Response) return gate
+  const user = gate
+  if (!(await boardRole(user.id, boardId))) return json({ error: 'forbidden' }, { status: 403 })
   return user.email ?? user.name ?? 'user'
 }
 
@@ -44,8 +47,10 @@ async function commentAuthor(request: Request, task: AgentWriteTarget): Promise<
     if (shut) return json({ error: shut }, { status: 403 })
     return caller.model
   }
-  const user = await getSessionUser(request)
-  if (!user || !(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+  const gate = await requireUser(request)
+  if (gate instanceof Response) return gate
+  const user = gate
+  if (!(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
   return user.email ?? user.name ?? 'user'
 }
 
@@ -65,11 +70,12 @@ export const Route = defineApi('/api/tasks/$id/comments', {
     const author = await commentAuthor(request, task)
     if (author instanceof Response) return author
 
-    const parsed = z
-      .object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() })
-      .safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    const comment = await addComment(params.id, author, parsed.data.content, parsed.data.parentId)
+    const parsed = await parseBody(
+      request,
+      z.object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() }),
+    )
+    if (parsed instanceof Response) return parsed
+    const comment = await addComment(params.id, author, parsed.content, parsed.parentId)
 
     // Index into the ambient activity brain (board-scoped).
     void indexTicketComment({

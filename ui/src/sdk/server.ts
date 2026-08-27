@@ -11,6 +11,15 @@ import type { AppStore } from '@/server/app-store'
 import type { HarnessDefinition } from '@/server/harness/define'
 
 export { json }
+// The same validation door the host's own routes use: a zod schema in, the
+// validated data or the standard 400 (first issue message) out. Without it,
+// every app hand-rolls its own body checks with their own shapes — the
+// reference app had three spellings across four endpoints. `z` rides along
+// because apps can't import zod themselves: `apps/` sits outside `ui/`, so
+// the package's node_modules is not on their resolution path (the same
+// reason the SDK exists at all).
+export { parseBody } from '@/server/api-guard'
+export { z } from 'zod'
 export type { SessionUser, AppStore }
 export type { AppDoc } from '@/server/app-store'
 

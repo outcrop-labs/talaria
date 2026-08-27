@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { parseBody } from '@/server/api-guard'
 import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
 import { verifyPasswordLogin } from '@/server/auth/password'
 import { createSession, sessionCookie } from '@/server/auth/session'
@@ -30,16 +31,14 @@ export const Route = defineApi('/api/auth/password', {
   POST: async ({ request }) => {
     const cfg = getAuthConfig()
     if (!cfg.password.enabled) {
-      return json({ ok: false, error: 'Password login is disabled' }, { status: 400 })
+      return json({ error: 'Password login is disabled' }, { status: 400 })
     }
 
     // Parse first: the username is what the primary counter keys on.
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) {
-      return json({ ok: false, error: 'Invalid request' }, { status: 400 })
-    }
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
 
-    const userKey = `login:user:${parsed.data.username.trim().toLowerCase()}`
+    const userKey = `login:user:${parsed.username.trim().toLowerCase()}`
     const ipKey = `login:ip:${clientIp(request)}`
     const [byUser, byIp] = await Promise.all([
       rateLimit(userKey, USER_LIMIT, WINDOW_SECONDS),
@@ -48,16 +47,16 @@ export const Route = defineApi('/api/auth/password', {
     const limited = !byUser.ok ? byUser : !byIp.ok ? byIp : null
     if (limited) {
       return json(
-        { ok: false, error: 'Too many attempts, try again shortly' },
+        { error: 'Too many attempts, try again shortly' },
         { status: 429, headers: { 'Retry-After': String(limited.retryAfter) } },
       )
     }
 
-    const identity = verifyPasswordLogin(parsed.data.username, parsed.data.password)
+    const identity = verifyPasswordLogin(parsed.username, parsed.password)
     if (!identity || !isEmailAllowed(identity.email, cfg)) {
       // Slow the failure path a touch to blunt brute force.
       await new Promise((r) => setTimeout(r, 400))
-      return json({ ok: false, error: 'Invalid credentials' }, { status: 401 })
+      return json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
     // A real login clears the budget so a fat-fingered morning doesn't lock

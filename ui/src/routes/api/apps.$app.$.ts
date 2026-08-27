@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { appServerModule, enabledAppSlugs } from '@/server/apps'
 import { storeFor } from '@/server/app-store'
 import { deniedViews } from '@/server/users'
@@ -11,8 +11,9 @@ import type { AppServer } from '@/sdk/server'
 // not view-denied — then hands the app a context (user, sub-path, namespaced
 // store). Apps never see raw cookies or other apps' data.
 const dispatch = async ({ request, params }: { request: Request; params: { app: string; _splat?: string } }) => {
-  const user = await getSessionUser(request)
-  if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+  const gate = await requireUser(request)
+  if (gate instanceof Response) return gate
+  const user = gate
   const app = params.app
   if (!(await enabledAppSlugs()).includes(app)) return json({ error: 'no such app' }, { status: 404 })
   const denied = await deniedViews(user.id, user.role)

@@ -1,4 +1,5 @@
 import { defineApi } from '@/server/api-route'
+import { parseBody } from '@/server/api-guard'
 import { json } from '@/server/http'
 import { z } from 'zod'
 import { refuseLegacy, requireAgent } from '@/server/agent-auth'
@@ -30,10 +31,10 @@ export const Route = defineApi('/api/integrations/google/agent/gmail/organize', 
     if (denied) return denied
     const google = await resolveAgentGoogle(caller.model, Date.now())
     if (!google) return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
     try {
-      const { updated } = await organizeEmailsWithToken(google.token, parsed.data)
+      const { updated } = await organizeEmailsWithToken(google.token, parsed)
       return json({
         updated,
         note: 'filed — labels applied and archived mail stays in All Mail; nothing was deleted or sent',

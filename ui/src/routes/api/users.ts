@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { listUsers } from '@/server/users'
 
@@ -12,7 +12,10 @@ export const Route = defineApi('/api/users', {
   GET: async ({ request }) => {
     const agent = await agentCaller(request)
     if (agent instanceof Response) return agent
-    if (!agent && !(await getSessionUser(request))) return json({ error: 'unauthorized' }, { status: 401 })
+    if (!agent) {
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+    }
     return json({ users: await listUsers() })
   },
 })

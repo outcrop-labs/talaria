@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { parseBody } from '@/server/api-guard'
 import { requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent } from '@/server/boards'
 import { rememberTicketRefusal, reportGap } from '@/server/gaps'
@@ -21,9 +22,8 @@ export const Route = defineApi('/api/agent/gap', {
     const caller = await requireAgent(request)
     if (caller instanceof Response) return caller
     const agent = caller.model
-    const body = await parseJson(request)
-    const parsed = Body.safeParse(body)
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
     // `taskId` arrives from the agent, so it is AUTHORISED, never taken on
     // faith: the ticket gets an audit line and the gap row is bound to that
     // ticket's board. Without this an agent forges activity on any ticket
@@ -47,14 +47,14 @@ export const Route = defineApi('/api/agent/gap', {
     // authority each case resolves to; an agent that names no ticket and was
     // refused nothing is making a genuinely org-wide claim ("I cannot send
     // email at all") and is unaffected.
-    const task = parsed.data.taskId ? await getTask(parsed.data.taskId) : null
-    if (parsed.data.taskId) {
+    const task = body.taskId ? await getTask(body.taskId) : null
+    if (body.taskId) {
       // Unknown and not-allowed refuse identically — a distinct 404 would be
       // a ticket enumeration oracle.
       const refuse = json(
         {
           error: 'forbidden',
-          message: `taskId "${parsed.data.taskId}" is not a ticket you may write to. Ask for access to its board, then report the gap against the ticket.`,
+          message: `taskId "${body.taskId}" is not a ticket you may write to. Ask for access to its board, then report the gap against the ticket.`,
         },
         { status: 403 },
       )
@@ -86,9 +86,9 @@ export const Route = defineApi('/api/agent/gap', {
     }
     const gap = await reportGap({
       agentModel: agent,
-      kind: parsed.data.kind,
-      missing: parsed.data.missing,
-      needs: parsed.data.needs,
+      kind: body.kind,
+      missing: body.missing,
+      needs: body.needs,
       boardId: task?.boardId ?? null,
       taskId: task?.id ?? null,
     })
@@ -97,7 +97,7 @@ export const Route = defineApi('/api/agent/gap', {
         task.id,
         agent,
         'gap',
-        `reported a capability gap (${parsed.data.kind}${gap.seenCount > 1 ? `, seen ${gap.seenCount}×` : ''}): ${parsed.data.missing.slice(0, 200)}`,
+        `reported a capability gap (${body.kind}${gap.seenCount > 1 ? `, seen ${gap.seenCount}×` : ''}): ${body.missing.slice(0, 200)}`,
       ).catch(() => {})
     }
     return json({
@@ -109,7 +109,3 @@ export const Route = defineApi('/api/agent/gap', {
     })
   },
 })
-
-async function parseJson(request: Request): Promise<unknown> {
-  return request.json().catch(() => null)
-}

@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { parseBody } from '@/server/api-guard'
 import { requireAgent } from '@/server/agent-auth'
 import { audienceFor } from '@/server/approvals'
 import { boardAllowsAgent, createBoard, joinEveryoneToBoard, listAllBoards, setBoardAgentConfig } from '@/server/boards'
@@ -91,19 +92,19 @@ export const Route = defineApi('/api/agent/problem', {
     const caller = await requireAgent(request)
     if (caller instanceof Response) return caller
     const agent = caller.model
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
     const label = describeAgent(agent).label
 
     // NEVER tell a refused agent to drop `taskId` and retry, and do not
     // leave the retry working in silence either: each refusal is remembered
     // against the caller and `agentTextAuthority` reads that memo below.
-    const task = parsed.data.taskId ? await getTask(parsed.data.taskId) : null
-    if (parsed.data.taskId) {
+    const task = body.taskId ? await getTask(body.taskId) : null
+    if (body.taskId) {
       const refuse = json(
         {
           error: 'forbidden',
-          message: `taskId "${parsed.data.taskId}" is not a ticket you may write to. Ask for access to its board, then report the problem against the ticket.`,
+          message: `taskId "${body.taskId}" is not a ticket you may write to. Ask for access to its board, then report the problem against the ticket.`,
         },
         { status: 403 },
       )
@@ -131,12 +132,12 @@ export const Route = defineApi('/api/agent/problem', {
     if (board) {
       const filed = await createTask({
         boardId: board.id,
-        title: `[${label}] ${parsed.data.summary}`,
+        title: `[${label}] ${body.summary}`,
         description:
           `**Reported by agent:** ${label} (${agent})\n\n` +
-          (parsed.data.context ? `**While:** ${parsed.data.context}\n\n` : '') +
+          (body.context ? `**While:** ${body.context}\n\n` : '') +
           (task ? `**On ticket:** [${task.title}](/boards/${task.boardId}/${task.id})\n\n` : '') +
-          `**Technical details:**\n\n${parsed.data.details ?? '(none provided)'}`,
+          `**Technical details:**\n\n${body.details ?? '(none provided)'}`,
         priority: 'high',
         createdBy: agent,
       })
@@ -162,8 +163,8 @@ export const Route = defineApi('/api/agent/problem', {
     for (const userId of who.content) {
       await addNotification(userId, {
         kind: 'agent-problem',
-        title: `${label} hit a problem: ${parsed.data.summary}`,
-        body: parsed.data.context ?? '',
+        title: `${label} hit a problem: ${body.summary}`,
+        body: body.context ?? '',
         href,
       }).catch((e: unknown) => console.error(`[agent-problem] could not notify ${userId}:`, e))
     }

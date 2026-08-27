@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller, requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole } from '@/server/boards'
 import { agentTicketRefusal, getTask, logActivity } from '@/server/tasks'
@@ -34,8 +34,9 @@ export const Route = defineApi('/api/tasks/$id/usage', {
       // is org-wide reach, and a legacy caller only asserted its name.
       if (!(await boardAllowsAgent(task.boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
     } else {
-      const user = await getSessionUser(request)
-      if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      const user = gate
       if (!(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
     }
     return json(await taskUsage(params.id))
@@ -61,13 +62,13 @@ export const Route = defineApi('/api/tasks/$id/usage', {
     if (shut) {
       return json({ error: `${shut}. No further spend attaches to it.` }, { status: 403 })
     }
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
     // A tier must be one of the agent's real alias names — reject typos and
     // routed-model ids loudly instead of silently recording an
     // unattributable (and therefore unpriceable) row.
-    if (parsed.data.tier && !(await routedModelFor(name, parsed.data.tier).catch(() => null))) {
-      return json({ error: `unknown tier "${parsed.data.tier}" for ${name} — use an alias name or omit` }, { status: 400 })
+    if (parsed.tier && !(await routedModelFor(name, parsed.tier).catch(() => null))) {
+      return json({ error: `unknown tier "${parsed.tier}" for ${name} — use an alias name or omit` }, { status: 400 })
     }
 
     await recordUsage({
@@ -75,12 +76,12 @@ export const Route = defineApi('/api/tasks/$id/usage', {
       source: 'ticket',
       refId: params.id,
       taskId: params.id,
-      tier: parsed.data.tier ?? null,
-      promptTokens: parsed.data.promptTokens,
-      completionTokens: parsed.data.completionTokens,
-      estimated: parsed.data.estimated ?? false,
+      tier: parsed.tier ?? null,
+      promptTokens: parsed.promptTokens,
+      completionTokens: parsed.completionTokens,
+      estimated: parsed.estimated ?? false,
     })
-    const total = parsed.data.promptTokens + parsed.data.completionTokens
+    const total = parsed.promptTokens + parsed.completionTokens
     await logActivity(params.id, name, 'usage', `logged ${total.toLocaleString('en-US')} tokens`)
     return json({ ok: true })
   },

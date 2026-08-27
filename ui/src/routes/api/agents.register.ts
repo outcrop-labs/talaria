@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { parseBody } from '@/server/api-guard'
 import { checkFleetKey } from '@/server/agent-auth'
 import { registerAgent } from '@/server/agents-registry'
 
@@ -18,9 +19,9 @@ export const Route = defineApi('/api/agents/register', {
     // Fleet-plane: the registration body names the subject, and an agent
     // registers BEFORE it has a credential of its own.
     if (!(await checkFleetKey(request))) return json({ error: 'unauthorized' }, { status: 401 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    const agent = await registerAgent(parsed.data)
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const agent = await registerAgent(body)
     return json({ agent, registered: true })
   },
 })

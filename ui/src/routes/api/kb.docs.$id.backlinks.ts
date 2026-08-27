@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { getBacklinks, getDoc, effectiveDocPerms } from '@/server/kb'
 import { canRead } from '@/server/kb-perms'
 
@@ -9,8 +9,9 @@ import { canRead } from '@/server/kb-perms'
 // SAME per-doc ACL as reading the doc — backlink titles leak content.
 export const Route = defineApi('/api/kb/docs/$id/backlinks', {
   GET: async ({ request, params }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     const doc = await getDoc(params.id)
     if (!doc) return json({ error: 'not found' }, { status: 404 })
     const { perms, grants } = await effectiveDocPerms(doc)
