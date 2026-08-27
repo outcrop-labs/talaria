@@ -4,6 +4,52 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 
 ## [Unreleased]
 
+### Security
+
+- **2026-08-26 audit remediation** (full work order: `docs/AUDIT-2026-08-26.md`, PR series
+  #257–#265). The one real vulnerability: both bytes routes served uploader-declared MIME inline —
+  `text/html`/`image/svg+xml` executed same-origin with the viewer's session. `serveUpload()` is
+  now the single disposition decision (raster + PDF inline; everything else attachment + nosniff +
+  sandbox CSP). Also: credential sealing now walks array-content turns (image turns traveled whole
+  — the exact case the adversarial tier measures); the one raw fetch on a model-supplied URL goes
+  through safe-fetch; federation imports validate slug/department alphabets (newline → `.env`
+  injection, `../` → traversal); invite email HTML escaped; timing-safe OAuth state compare; MCP
+  gateway validates non-builtin upstream URLs; `/api/join` rate-limited. Deferred hardening filed
+  as issues: llm.v1 per-key spend caps, stream-based upload size rejection, compose first-boot
+  secret generation, upstream-error-text sanitizer pass, Google `email_verified` enforcement.
+
+### Breaking (external SDK consumers only)
+
+- API renames: `/api/plan/:id/doc|draft` → `/api/plans/…`; singular
+  `/api/inbox/focus/conversation` folded into `/api/inbox/focus/conversations/$id` (with `current`
+  sentinel); `/api/profile` → `/api/me`. Validation-failure bodies are now zod-issue 400s across
+  ~90 routes (was a mix of 400/422/custom); 401/403 split fixed on four task endpoints; 500s no
+  longer echo `e.message`.
+
+### Changed
+
+- **One owner per duplicated helper** (the audit's recurring failure mode): Google OAuth built once
+  (`server/google/oauth.ts`), JSON-RPC envelope once (`mcp-jsonrpc.ts`), `errText`/`errLine`,
+  `tz.ts`, `docker-exec.ts`, `asIso`, shared zod schemas (`lib/api-schema.ts`); `localMoment`,
+  board-visibility SQL, MCP protocol pin consolidated. Client mutations all through
+  `fetch-json.ts` (`postJson`/`putJson`/`patchJson`/`delJson`) — and the `credentials:
+  'same-origin'` stanza is now census-enforced to live only there.
+- **UI primitives close their gaps**: new `Popover` shell (nine hand-rolled engines deleted onto
+  it), `IconButton size="tile"`, `Checkbox bare`, `StatCard href`, `StatusDot color`, Board's view
+  toggle on `Segmented`; one emoji picker (chat's hand-rolled grid deleted); ~80 icon-button,
+  checkbox, dot and input sites adopted. `SaveButton` deleted (0 uses; `useSavedFlash` stays — it
+  has 8 importers).
+- **Teams**: `renameTeam`/`deleteTeam` landed — owner-gated route + minimal UI + the functions'
+  first tests.
+- **Dead code out**: `adapter/`, `stack/`, the unreachable focus-inbox cluster (11 files),
+  `MentionMenu`, `EmojiShortcodeMenu`, `NotificationsPanel` (live toasts are `NotificationToasts`),
+  `native-tools.ts` — every deletion grep-verified. Docs now say what's real: the plugin is
+  dormant/manual, backup is `bun talaria backup`, the work order lives in `docs/AUDIT-2026-08-26.md`.
+- **Storage**: production refuses the published dev S3 password at the internal-mode use-time
+  doors (env.ts promised this guard; it didn't exist until now).
+- check-invariants grew three tripwires: inline-serving only via `serveUpload`, same-origin-fetch
+  census at zero, popover census.
+
 ### Added
 
 - **Release channels: nightly, RC, and stable images on GHCR.** A `rc`
