@@ -3,7 +3,7 @@
 _The positioning document: what Talaria is, who it's for, and what makes it different. Derived from
 the README's marketing surface; this is the internal source of truth for how we talk about the
 product (site copy, launch posts, and the cloud offering draw from here). Technical architecture
-lives in [`HANDOFF.md`](../HANDOFF.md); status in [`ROADMAP.md`](../ROADMAP.md)._
+lives in [`ARCHITECTURE.md`](./ARCHITECTURE.md); status in [`ROADMAP.md`](../ROADMAP.md)._
 
 ## One sentence
 

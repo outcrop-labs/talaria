@@ -1,65 +1,40 @@
 # Contributing to Talaria
 
-Talaria is MIT-licensed. It's a multiplayer-first agentic business platform: one workspace where your
-people and your AI agents share boards, chats, plans, and more, and run the business together with
-human-in-the-loop guardrails. The product is Talaria's own app in [`ui/`](./ui) (Vite + Svelte 5),
-backed by its own Postgres/Redis. Underneath the app sits the fleet: a set of Hermes agent containers
-that Talaria renders and manages. Every agent routes its LLM **and** its persona chat through Talaria's
-own gateway — Talaria reaches each agent directly on its published port, so there's no separate
-multiplexer. The Python Hermes **plugin** (register / heartbeat / report) lives in the repo but is
-dormant — nothing mounts it. The whole
-thing runs on one `talaria` docker network with **no Dockerfiles** — official/published images plus the
-host-run app.
+Talaria is MIT-licensed — issues and pull requests are the whole idea. The on-ramp:
+[`DEVELOPERS.md`](./DEVELOPERS.md) (setup, repo map, every doc),
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (how it works), and
+[`README.md`](./README.md) (what it is).
 
-## Layout
+## Before you send a PR
 
-| Path | What | Build / test |
-|---|---|---|
-| `ui/` | the Talaria app (product + LLM gateway + fleet renderer) | `cd ui && bun i && bun run dev`; `bun run typecheck` |
-| `mcp/` | `talaria-mcp` — the agent-facing MCP server | `cd mcp && bun i && bun run build` |
-| `plugin/talaria/` | Hermes plugin (register / heartbeat / report) — dormant, mounted by hand | `python3 -m py_compile plugin/talaria/*.py` |
-| `docker/dev-compose.yml` | dev infra (Postgres + Redis) | `docker compose -f docker/dev-compose.yml config` |
-| `cli/` | the `talaria` CLI — every way to drive the repo | `bun talaria --help` |
+1. **Verify.** `bun run verify` from the repo root (typecheck + tests + invariants + the docs
+   and generated-reference drift checks). Green before you push, every time.
+2. **Exercise the path you changed** in the running app (`bun talaria dev` →
+   <http://localhost:5273>) — typecheck alone doesn't prove a surface works.
+3. **Update [`CHANGELOG.md`](./CHANGELOG.md)** with what changed and what you verified.
 
-The fleet itself is **rendered**, not hand-written: Talaria materializes `fleet/` (gitignored —
-`docker-compose.yml`, `fleet.json`, per-agent config) from one Talaria-owned chassis when you design an
-agent in the app.
+## The rules that aren't style
 
-## Dev loop
+- **Everything through Talaria.** Agent LLM and persona chat route through the gateway —
+  guarded, metered, observable. Don't wire agents at raw provider endpoints.
+- **Secrets in the DB, never in configs.** Envelope-encrypted in Postgres; a config file
+  never holds a live credential ([`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md)).
+- **Keep the guardrails.** Agents create and triage, but they can't self-assign or
+  self-complete; the final sign-off is a human's call. Never force a `done` transition.
+- **Reuse the primitives.** Build on `ui/src/components/ui/`; don't recreate them.
+- **Docs are generated where they can drift.** API and CLI references come from
+  `bun run check`'s generator — don't hand-edit [`docs/api/`](./docs/api/README.md) or
+  [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md); change the source and regenerate.
 
-1. `bun talaria setup` once (generates `ui/.env`, the fleet config plane, the `talaria` network, pulls
-   infra images, installs deps — prints your admin login).
-2. `bun talaria dev` brings up Postgres + Redis and the app on <http://localhost:5273>.
-3. Add an LLM endpoint on `/models` (your provider's key is stored **encrypted in the DB**), then design
-   an agent on `/agents`. Talaria renders the fleet and brings it up under the `talaria-fleet` compose
-   project; each agent's models route through Talaria's gateway.
-4. Verify your change: `bun run typecheck` in `ui/` (svelte-check), and exercise the affected path in the running app.
+## Style
 
-### Plugin: dormant, mounted by hand
-
-The plugin lives once in this repo (`plugin/talaria/`), but it is **dormant**: nothing in the
-fleet render mounts or enables it, and it still targets the legacy mission-control integration.
-There is no distribution wiring — running it anywhere is a manual mount into
-`/opt/data/plugins/talaria` plus `plugins.enabled: [talaria]` on that agent.
-
-## Conventions
-
-- **Everything through Talaria.** Agent LLM and persona chat route through Talaria's gateway, so calls
-  are guarded, metered, and observable in one place. Don't wire agents at raw provider endpoints.
-- **Secrets in the DB, never in configs.** Provider keys and tokens are sealed (AES-256-GCM envelope
-  encryption) in Postgres; a config file never holds a live credential.
-- **Keep the guardrails.** Agents create and triage, but they can't self-assign or self-complete. Never
-  force a `done` transition; the final sign-off is a human's call.
-- **Reuse the primitives.** Build on the components in `ui/src/components/ui/`; don't recreate them.
-- Match surrounding style; the app is strict TypeScript, the plugin is stdlib-only Python.
+Match the surrounding code. The app is strict TypeScript (Svelte 5 runes); the Hermes plugin
+is stdlib-only Python. Full conventions:
+[`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) ·
+[`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md).
 
 ## Working in parallel
 
-Spin up an **isolated** dev stack per branch instead of running two servers
-against one database — see [`docs/WORKTREES.md`](./docs/WORKTREES.md)
-(`bun talaria worktree <name>`). How secrets are protected and the one rule that
-keeps them recoverable is in [`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md).
-
-## Pull requests
-
-Include what you verified (typecheck + the exercised path) and update `CHANGELOG.md`.
+One dev stack per branch, not two servers against one database:
+[`docs/WORKTREES.md`](./docs/WORKTREES.md) (`bun talaria worktree <name>`), or a
+containerized devbox per task: [`docs/DEVBOX.md`](./docs/DEVBOX.md).

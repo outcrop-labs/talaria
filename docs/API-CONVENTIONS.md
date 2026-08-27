@@ -1,12 +1,13 @@
 # API conventions — one dialect for every route
 
 The contract that keeps 214 routes predictable. Swept across the whole tree (2026-07); new routes
-follow it from day one. Routes live in `ui/src/routes/api/` — **file-based routes**, where a dot in
-the filename is a path separator (`admin.model-fitness.ts` serves `/api/admin/model-fitness`). Server
-logic in `ui/src/server/`.
+follow it from day one. Routes live in `ui/src/routes/api/`. A route's path is the string in its
+`defineApi('…')` call — the filename is convention that mirrors it (`admin.model-fitness.ts`
+declares `defineApi('/api/admin/model-fitness')`). Server logic in `ui/src/server/`.
 
-That dot rule is also why `vitest.config.ts` excludes `src/routes/**`: `routes/api/foo.test.ts` is
-the handler for `/api/foo/test`, not a suite. **Nothing under `routes/` can be unit tested**, so a
+File placement is also why `vitest.config.ts` excludes `src/routes/**`: every module under
+`routes/api/` that exports `Route` goes live — `mcp.test.ts` really serves `/api/mcp/test`, the
+glob has no test exclusion. **Nothing under `routes/` can be unit tested**, so a
 route parses the request, calls ONE function in `src/server/*`, and serializes the result. A decision
 that lives in a route is a decision with no test — `routes/api/admin.model-fitness.ts` carried ~920
 lines of them until they moved to `server/fitness/surface.ts`.

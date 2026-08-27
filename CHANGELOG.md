@@ -6,7 +6,7 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
-- **2026-08-26 audit remediation** (full work order: `docs/AUDIT-2026-08-26.md`, PR series
+- **2026-08-26 audit remediation** (full work order: `docs/history/AUDIT-2026-08-26.md`, PR series
   #257–#265). The one real vulnerability: both bytes routes served uploader-declared MIME inline —
   `text/html`/`image/svg+xml` executed same-origin with the viewer's session. `serveUpload()` is
   now the single disposition decision (raster + PDF inline; everything else attachment + nosniff +
@@ -44,7 +44,7 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 - **Dead code out**: `adapter/`, `stack/`, the unreachable focus-inbox cluster (11 files),
   `MentionMenu`, `EmojiShortcodeMenu`, `NotificationsPanel` (live toasts are `NotificationToasts`),
   `native-tools.ts` — every deletion grep-verified. Docs now say what's real: the plugin is
-  dormant/manual, backup is `bun talaria backup`, the work order lives in `docs/AUDIT-2026-08-26.md`.
+  dormant/manual, backup is `bun talaria backup`, the work order lives in `docs/history/AUDIT-2026-08-26.md`.
 - **Storage**: production refuses the published dev S3 password at the internal-mode use-time
   doors (env.ts promised this guard; it didn't exist until now).
 - check-invariants grew three tripwires: inline-serving only via `serveUpload`, same-origin-fetch
@@ -123,6 +123,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   point into working-with-agents, and getting-started's read-next covers the whole set. The
   permission table is verified id-for-id against `server/permissions.ts` (13 permissions,
   same order, same member defaults).
+
+- **Docs overhaul, closeout — the developer hub.** New `docs/ARCHITECTURE.md`: the two planes
+  (one app process + the stateless MCP proxy) with the port table, the request lifecycle
+  (including the honest note that CSRF protection is SameSite=Lax + OAuth state, not
+  middleware), the auth stack (sessions, `tak_` agent keys, the legacy-key refusal, `tlk_`
+  bearer keys), the data layer (append-only checksummed migrations, envelope-encrypted
+  secrets, numerics-as-strings), the realtime bus and its "says what changed, never what it
+  says" rule, rendered fleet + blue/green rolls, the 51-tool MCP plane and its server-side
+  guardrails, the gateway as the single enforcement point, compile-in apps, and the
+  prod-only scheduler. `DEVELOPERS.md` rewritten as the complete hub — every doc in the repo
+  listed and grouped, nothing orphaned; `CONTRIBUTING.md` slimmed to the rules that aren't
+  style; the old `HANDOFF.md` moved to `docs/history/` behind a stub, and the completed
+  2026-08-26 audit with it. Truth fixes the pass surfaced on the way out: routing is the
+  `defineApi('…')` literal, not the filename (API-CONVENTIONS said the dot rule was
+  load-bearing; it's convention); dev infra is six services, not two (Postgres, Redis,
+  Qdrant, TEI, MinIO, SearXNG); `mcp/`'s guardrail described as what it actually is — no
+  assignee writes, no terminal status moves.
 
 ### Added
 
