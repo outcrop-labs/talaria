@@ -54,12 +54,14 @@ export function useInboxFocusSummary(options: MaybeGetter<{ enabled?: boolean }>
 }
 
 /** One conversation instance's timeline. Keyed by instance id so switching the
- *  panel's chat picker swaps the cached thread rather than merging two. */
+ *  panel's chat picker swaps the cached thread rather than merging two. A null
+ *  id asks for `current` — the server resolves the caller's own latest
+ *  instance, which is what the panel's first load wants. */
 export function useInboxFocusConversation(conversationId: string | null, options: MaybeGetter<{ enabled?: boolean }> = {}) {
   return createInfiniteQuery(() => ({
     queryKey: ['inbox-focus-conversation', conversationId],
     queryFn: ({ pageParam, signal }: { pageParam: string; signal: AbortSignal }) => getJson<InboxConversationPage>(
-      `/api/inbox/focus/conversation?conversationId=${encodeURIComponent(conversationId ?? '')}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
+      `${conversationId ? `/api/inbox/focus/conversations/${encodeURIComponent(conversationId)}` : '/api/inbox/focus/conversations/current'}${pageParam ? `?cursor=${encodeURIComponent(pageParam)}` : ''}`,
       { signal: requestSignal(signal) },
     ),
     initialPageParam: '' as string,

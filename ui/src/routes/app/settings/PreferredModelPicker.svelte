@@ -21,7 +21,7 @@
 
   const qc = useQueryClient()
   // Both queries are KEPT, not flattened: a failed /api/models renders as one
-  // option called "Default", and a failed /api/profile renders the saved pick
+  // option called "Default", and a failed /api/me renders the saved pick
   // as "Default" too. Either one is this control lying about what is set, so
   // the failure gets the region instead of the combobox.
   const catalogQuery = useModels()

@@ -15,7 +15,7 @@ import { isValidTimeZone } from '@/lib/timezone'
 // platform-default reasoning effort (null clears → every model's own
 // default), and/or their IANA zone (null clears → follow the workspace
 // zone).
-export const Route = defineApi('/api/profile', {
+export const Route = defineApi('/api/me', {
   GET: async ({ request }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user

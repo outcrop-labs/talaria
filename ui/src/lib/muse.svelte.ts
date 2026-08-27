@@ -120,7 +120,7 @@ export interface ProfilePrefs {
 export function useProfilePrefs() {
   return createQuery(() => ({
     queryKey: ['profile-prefs'],
-    queryFn: (): Promise<ProfilePrefs> => getJson<ProfilePrefs>('/api/profile'),
+    queryFn: (): Promise<ProfilePrefs> => getJson<ProfilePrefs>('/api/me'),
   }))
 }
 
@@ -128,7 +128,7 @@ export function useProfilePrefs() {
 // in-band `.error` field instead of catching, so they resolve-only through the
 // door: rejections fold into the same `{ error }` shape.
 const savePref = (body: Record<string, unknown>): Promise<{ error?: string }> =>
-  putJson<{ ok: true }>('/api/profile', body)
+  putJson<{ ok: true }>('/api/me', body)
     .then(() => ({}))
     .catch((e: unknown) => ({ error: errorMessage(e) }))
 
