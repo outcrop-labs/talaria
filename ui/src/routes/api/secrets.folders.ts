@@ -43,6 +43,9 @@ const Post = z.union([
     agentModel: z.string().max(120).optional(),
   }),
 ])
+// doc: Secret folders: list / create / rename / delete. Folder membership
+// doc: gates what GET /api/secrets shows.
+
 
 export const Route = defineApi('/api/secrets/folders', {
   GET: async ({ request }) => {

@@ -46,6 +46,10 @@ const Patch = z.object({
   attachmentIds: z.array(Uuid).max(20).optional(),
   refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional(),
 })
+// doc: One ticket. GET → full detail (task, comments, attachments, refs,
+// doc: workflows). PUT → update; agents may triage but cannot self-assign or
+// doc: move to done (coerced to quality_review). DELETE → owner/editor.
+
 
 export const Route = defineApi('/api/tasks/$id', {
   GET: async ({ request, params }) => {

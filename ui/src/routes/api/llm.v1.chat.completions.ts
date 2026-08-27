@@ -16,6 +16,9 @@ import { getSetting } from '@/server/audit'
 // lists, and any other key — an operator's own — is metered and annotated.
 const PERSONA_KEY = 'fleet-gateway'
 const WORKBENCH_KEY = 'workbench-gateway'
+// doc: OpenAI-compatible chat completions — the wire external tools speak.
+// doc: Auth is a personal gateway API key (Bearer), not a session.
+
 
 export const Route = defineApi('/api/llm/v1/chat/completions', {
   POST: async ({ request }) => {

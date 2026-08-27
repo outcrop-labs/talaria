@@ -28,6 +28,9 @@ const Body = z.object({
     id: Uuid,
   })).max(6).default([]),
 })
+// doc: Run one instruction from the focus inbox panel through the assistant
+// doc: (normal / fast / plan mode, optional model overrides).
+
 
 export const Route = defineApi('/api/inbox/focus/command', {
   POST: async ({ request }) => {

@@ -18,6 +18,9 @@ const Body = z.object({
  *  Scoped to the caller's own brief inside `markBriefItem` — there is no route
  *  that takes a user id, so a key belonging to somebody else's day resolves to
  *  no line rather than to theirs. */
+// doc: Check off, dismiss, or restore one brief item. The reader's timezone
+// doc: rides along so the change lands on the brief they are looking at.
+
 export const Route = defineApi('/api/brief/item', {
   POST: async ({ request }) => {
     const user = await requireUser(request)

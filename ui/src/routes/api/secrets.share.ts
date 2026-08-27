@@ -31,6 +31,10 @@ const Body = z.union([
   z.object({ action: z.literal('grant'), name: z.string().max(80), agentModel: z.string().min(1).max(120) }),
   z.object({ action: z.literal('revoke'), name: z.string().max(80), agentModel: z.string().min(1).max(120) }),
 ])
+// doc: Share a sealed secret with a person (share / unshare) or grant an
+// doc: agent access to it (grant / revoke). Values stay sealed; shares gate
+// doc: visibility.
+
 
 export const Route = defineApi('/api/secrets/share', {
   POST: async ({ request }) => {

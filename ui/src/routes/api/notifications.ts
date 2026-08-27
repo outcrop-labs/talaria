@@ -72,6 +72,9 @@ const PrefsPatch = z
  *  read, the honest answer for a switch that defaults to off is off, and the
  *  inbox still renders. */
 const deliveryOrOff = () => getNotifyDelivery().catch(() => ({ emailEnabled: false }))
+// doc: The caller's notifications: list, unread count, mark-read, and their
+// doc: settings. Delivery-channel config is admin-gated.
+
 
 export const Route = defineApi('/api/notifications', {
   GET: async ({ request }) => {

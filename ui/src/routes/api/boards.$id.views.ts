@@ -23,6 +23,10 @@ const Config = z.object({
 
 const ROW = `id, board_id as "boardId", name, config, created_by as "createdBy", position,
   created_at as "createdAt", updated_at as "updatedAt"`
+// doc: Saved board views — named filter/layout presets shared with the board.
+// doc: GET → list (any member); POST/PUT/DELETE → owner/editor. Config is the
+// doc: board URL's search state verbatim; the client owns its meaning.
+
 
 export const Route = defineApi('/api/boards/$id/views', {
   GET: async ({ request, params }) => {

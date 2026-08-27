@@ -12,7 +12,8 @@
     "start": "cd ui && bun run start",
     "test": "cd ui && bun run test",
     "typecheck": "cd ui && bun run typecheck && cd ../mcp && bun run typecheck",
-    "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs",
+    "docs:api": "bun scripts/gen-docs.mjs",
+    "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs && bun scripts/gen-docs.mjs --check",
     "verify": "bun run check && bun run typecheck && bun run test"
   }
 }

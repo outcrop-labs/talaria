@@ -167,8 +167,11 @@ jobs:
       # Reads ui/src and mcp/src. Every failure names the file, the line, and
       # the thing to write instead; if you think a match is a false positive,
       # argue it in the PR rather than widening the pattern.
-      - name: Check invariants
-        run: bun scripts/check-invariants.mjs
+      - name: Check invariants + docs
+        # `bun run check` — the full gate chain (invariants, doc links, generated
+        # references). Calling a script directly here would silently skip every
+        # gate added to the chain after this line was written.
+        run: bun run check
 
   ui:
     name: test + typecheck (ui)

@@ -13,6 +13,9 @@ import { inviteByToken } from '@/server/invites'
 const IP_LIMIT = 120 // page loads per window per client — generous: a NAT'd office shares one counter
 const TOKEN_LIMIT = 20 // lookups against any one token
 const WINDOW_SECONDS = 15 * 60
+// doc: Public invite lookup for the /join page: token → who's invited, by whom,
+// doc: to which org. Rate-limited; expired/revoked/accepted tokens read as gone.
+
 
 export const Route = defineApi('/api/join', {
   GET: async ({ request }) => {
