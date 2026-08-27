@@ -94,13 +94,3 @@ Three panels in the Admin area's **Agents** tab govern every agent at once:
 | **QA judge** | Run the judge on quality review, **Enforcing** or **Advisory**; each board can override (enforcing / advisory / off), and boards on "inherit" follow this stance |
 | **Confab guard** | Mode — `Off` / `Observe` / `Annotate` / `Strict` — plus minimum confidence, coaching agents from findings, and the findings feed |
 | **Proactive outreach** | Periodic check-ins (every N minutes), a DM cap per day, and which agents are proactive |
-
-## Words Agents uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Soul** | The agent's SOUL.md — who it is, in its own voice |
-| **Tier** | A named model alias on the agent; `@Name:tier` routes one reply to it |
-| **Roll** | The safe deploy: new container beside the old, health check, cutover |
-| **Muse** | Talaria's designer agent that drafts new agents from a job description |
-| **Federate** | Pulling an agent that lives outside Talaria into the roster |

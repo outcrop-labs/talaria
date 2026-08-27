@@ -69,13 +69,3 @@ The admin actions on **Manage → Apps** — install (marketplace or any git rep
 `talaria.json`), enable, uninstall — and the grant: each app view is allowed per person in
 Admin → People. The full lifecycle and the member experience:
 [Apps](./apps.md).
-
-## Words these surfaces use
-
-| Term | Meaning |
-| :--- | :--- |
-| **Gateway** | Talaria's MCP gateway — the only door agents reach tool servers through |
-| **Tool override** | A per-agent tool subset, narrower than the server default |
-| **Per-user auth** | A server mode where each person connects their own account |
-| **Ledger** | The priced token record behind the Cost tab |
-| **Governance** | The audit kind covering admin actions |

@@ -14,7 +14,7 @@ Open: **Work → Comms** in the sidebar. Admins can hide Comms from individual p
 | :--- | :--- | :--- | :--- |
 | **Channel** | `#` | Persistent, ambient talk | Stays |
 | **Relay** | `⇄` | People + agents gathered around one purpose | **Conclude**: a summary is posted, indexed, and the relay archives |
-| **Teammate DM** | | One-to-one with a person | Stays |
+| **Teammate DM** | — | One-to-one with a person | Stays |
 | **Agent chat** | `◍` | Working sessions with one agent — a **new thread per topic**, so context stays bounded | Idle threads distill into a summary document and archive |
 
 ## To…
@@ -69,13 +69,7 @@ Anyone in a channel can post, add people and agents, and conclude a relay. Only 
 messages. Creating channels and starting relays are permissions your admin can switch off —
 without them the `+` buttons don't appear.
 
-## Words Comms uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Relay** | A gathering that concludes: summary posted and indexed, then archived |
-| **Conclude** | That summarize-and-archive action |
-| **Distill** | The automatic version for idle agent chats — the thread archives and a "Distilled: …" document lands in Files |
-| **Thread** | Replies hanging off one root message; an agent @mentioned there replies in the thread, with the thread as its context |
-| **Tier mention** | `@Name:tier` — routes that one reply to a model tier |
-| **Confab guard** | A flag on a reply the model produced without something to ground it: "Unverified · confab guard flagged this reply" |
+Idle agent chats don't rot: they **distill** on their own — the thread archives and a
+"Distilled: …" summary document lands in Files. If a reply arrives flagged **Unverified ·
+confab guard flagged this reply**, the model produced it without something to ground it;
+treat it accordingly.

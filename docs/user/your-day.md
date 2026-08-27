@@ -29,7 +29,7 @@ calendar, not part of the brief. **Open in Files** opens the brief itself as a d
 No assistant yet? The brief says so, with a **Set up your assistant** button — see
 [getting started](./getting-started.md).
 
-## The tabs below
+## Below the brief: your queues
 
 | Tab | What it shows |
 | :--- | :--- |
@@ -70,11 +70,3 @@ class (**Settings → Notifications**):
 
 **Daily digest**: one email a day listing what's waiting — never sent on a day when
 nothing is.
-
-## Words your day uses
-
-| Term | Meaning |
-| :--- | :--- |
-| **Brief** | The assistant-written morning document — appended to, never rewritten |
-| **Attached decision** | The queue item your drawer instruction will act on |
-| **Digest** | The one-email-a-day summary of what waits |
