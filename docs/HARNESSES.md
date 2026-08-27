@@ -8,7 +8,7 @@ Before the harness layer there were five ways to reach a model (`proxyChat`, `co
 `buildUpstream` + `fetchUpstream`, the `/api/llm` route, and one feature's private `requestJson*`
 pair), and every place that wanted structured output picked one and then wrote its own prompt, its
 own parser, its own fallback chain and its own failure behavior. The 2026-08-06 audit
-([`AUDIT-HARNESS-2026-08-06.md`](./AUDIT-HARNESS-2026-08-06.md)) counted what that arrangement had
+([`AUDIT-HARNESS-2026-08-06.md`](./history/AUDIT-HARNESS-2026-08-06.md)) counted what that arrangement had
 produced:
 
 - **six** structured-output extractors, three of which failed by execution on ordinary small-model
@@ -869,7 +869,7 @@ being compared against.
 
 ## Related
 
-- [`AUDIT-HARNESS-2026-08-06.md`](./AUDIT-HARNESS-2026-08-06.md) — the audit this layer answers, with
+- [`AUDIT-HARNESS-2026-08-06.md`](./history/AUDIT-HARNESS-2026-08-06.md) — the audit this layer answers, with
   the reproductions behind every claim above.
 - [`SDK.md`](./SDK.md) — the app-developer surface.
 - [`API-CONVENTIONS.md`](./API-CONVENTIONS.md) — the route dialect, and the other invariants CI holds.

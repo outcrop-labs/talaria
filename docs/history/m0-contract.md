@@ -3,16 +3,16 @@
 > **Heads up: this documents the legacy Phase-1 fleet engine.** This is the M0 spike contract for the
 > Phase-1 bridge/dashboard allowlist, the seam Talaria used to front hermes-workspace +
 > mission-control. That scaffolding is kept for reference, but it is not the product. Talaria's own app
-> lives in [`ui/`](../ui), backed by its own Postgres/Redis; we lifted mission-control's capabilities
+> lives in [`ui/`](../../ui), backed by its own Postgres/Redis; we lifted mission-control's capabilities
 > in rather than proxying a running copy, and the current fleet engine is just the gateway plane
 > (model-routed chat on `:8642`). The technical contract below is accurate as written for the Phase-1
 > bridge; read it as the legacy engine, not Talaria's current shape. See the
-> [top-level README](../README.md) for where things stand.
+> [top-level README](../../README.md) for where things stand.
 
 > **Verdict: weekend to first working round-trip (M2); about 2 to 3 weeks to full Conductor parity
 > (M3).** The intercept surface is 3 routes; translation is straight field-mapping; pass-through is a
 > stock reverse proxy (already built). Source-read from the three upstreams on 2026-06-30, see
-> [Sources](#sources). This supersedes the "unverified bodies" caveat in [`../PLAN.md`](../PLAN.md).
+> [Sources](#sources). This supersedes the "unverified bodies" caveat in [`../PLAN.md`](./PLAN-design-notes.md).
 
 ## The key architectural correction
 
@@ -113,7 +113,7 @@ create/report needs `operator+`. `src/lib/auth.ts:580`.
 MC already defines `FrameworkAdapter` (`src/lib/adapters/adapter.ts:56`): `register` / `heartbeat` /
 `reportTask` / `getAssignments` / `disconnect`, each broadcasting via `eventBus`. A `hermes` adapter
 mirrors `claude-sdk.ts`. MC even ships a nascent `/api/hermes` hook integration
-(`.hermes/hooks/mission-control/`). Clean upstream PR, see [`../adapter/README.md`](../adapter/README.md).
+(`.hermes/hooks/mission-control/`). Clean upstream PR, see `../adapter/README.md` (deleted with the adapter; this link kept as text).
 
 ## Deploy facts (corrects the stack, M5)
 

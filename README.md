@@ -186,7 +186,7 @@ audit surfaces.
 surfaces · connectors (Slack, accounting, HR) · business multitenancy · the managed cloud.
 
 Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · living backlog
-[`docs/TODO.md`](./docs/TODO.md) · [`CHANGELOG.md`](./CHANGELOG.md).
+[`CHANGELOG.md`](./CHANGELOG.md).
 
 ## For developers
 

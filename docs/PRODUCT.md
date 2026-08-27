@@ -66,7 +66,7 @@ Talaria makes agents teammates, with everything that word implies:
 - **Next:** the same companies as they grow: permissions, SSO, compliance retention, multitenancy.
 - **The cloud customer:** wants the product without running servers; gets a dedicated private
   instance, agents priced like hires, and a personal assistant for every seat (see
-  [`PRICING.md`](./PRICING.md)).
+  [`PRICING.md`](./history/PRICING.md)).
 
 ## Principles that shape decisions
 

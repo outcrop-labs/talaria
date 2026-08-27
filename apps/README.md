@@ -9,6 +9,10 @@ Apps are self-contained codebases that compile **into** the Talaria deployment a
 webhooks: your code becomes part of the product, and integrates with anything the signed-in user
 could already do.
 
+Apps are **Svelte 5** (runes) with `@tanstack/svelte-query` for data, like the host. Shared
+dependencies (svelte, svelte-query, zod, lucide icons) resolve from the host — apps install
+nothing, there is exactly one copy of each in the deployment.
+
 Each directory here is one app. Drop a codebase in (or install one from **Manage → Apps**, which
 git-clones it here), reload the dev server (or rebuild in production), then enable it in
 **Manage → Apps**.
@@ -18,7 +22,8 @@ git-clones it here), reload the dev server (or rebuild in production), then enab
 ```
 apps/<slug>/
   talaria.json   manifest — name, icon, version, description, surfaces
-  app.tsx        UI surfaces (React) — default-exports defineApp({...})
+  app.ts         UI surfaces — default-exports defineApp({...})
+  *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — default-exports defineAppServer({...})
   mcp.ts         optional MCP tools for AGENTS — default-exports defineAppMcp({...})
   ...            anything else your app needs (components, lib, assets)
@@ -32,11 +37,7 @@ apps/<slug>/
   "icon": "☏",
   "version": "0.1.0",
   "description": "Lightweight CRM — people, companies, stages, notes.",
-  "surfaces": {
-    "work": "Contacts",
-    "manage": "Contacts data",
-    "settings": "Contacts"
-  }
+  "surfaces": { "work": "Contacts", "manage": "Contacts data", "settings": "Contacts" }
 }
 ```
 
@@ -52,35 +53,51 @@ Apps are **explicit-grant**: enabling one gives members nothing until an admin a
 person in **Admin → People** — the same checklist that governs core Manage views. The app API
 gateway enforces the grant server-side.
 
-### app.tsx
+### app.ts + a surface
 
-```tsx
-import { defineApp, useMe, Button } from '@talaria/sdk'
-
-function Work() {
-  const { data: me } = useMe()
-  return <div className="p-8">Hello {me?.name} <Button>Do it</Button></div>
-}
-
+```svelte
+<!-- app.ts -->
+import { defineApp } from '@talaria/sdk'
+import Work from './Work.svelte'
 export default defineApp({ work: Work })
 ```
 
+```svelte
+<!-- Work.svelte -->
+<script lang="ts">
+  import { Button, useAppQuery } from '@talaria/sdk'
+  const things = useAppQuery('my-app', 'things')
+</script>
+
+{#each things.data ?? [] as t (t.id)}
+  <div>{t.data.name}</div>
+{/each}
+<Button>Add one</Button>
+```
+
 `@talaria/sdk` re-exports the Mercury UI kit (Button, Input, Select, Modal, Chip, EmptyState,
-Skeleton, confirm/alert, context menus, `cn`, …), session hooks (`useMe`, `useHasPerm`), react-query
-(`useQuery`, `useMutation`, …), and fetch helpers. Import `react` freely — shared dependencies
-(react, react-dom, @tanstack/react-query, @tanstack/react-router, lucide-react) resolve from the
-host, so there is exactly one copy of each in the deployment.
+Skeleton, confirm/alert, context menus, `cn`, …), session hooks (`useMe`, `useHasPerm`,
+`useIsAdmin`), svelte-query primitives (`createQuery`, `createMutation`, `useQueryClient`,
+`keepPreviousData`), motion presets (`fade`, `fly`, `QUICK`, …), and the fetch helpers below.
+Icons come from `@lucide/svelte`.
 
 ### server.ts
 
 ```ts
-import { defineAppServer, json } from '@talaria/sdk/server'
+import { defineAppServer, json, parseBody, z } from '@talaria/sdk/server'
+
+const Body = z.object({ name: z.string().min(1) })
 
 export default defineAppServer({
   async fetch(request, ctx) {
     // ctx.user   the signed-in user (id, name, email, role) — already authenticated
     // ctx.path   the part after /api/apps/<slug>/
     // ctx.store  a namespaced document store (Postgres JSON, no migrations)
+    if (ctx.path === 'things' && request.method === 'POST') {
+      const body = await parseBody(request, Body)
+      if (body instanceof Response) return body // the standard 400
+      return json({ thing: await ctx.store.insert('things', body) })
+    }
     if (ctx.path === 'things' && request.method === 'GET') {
       return json({ things: await ctx.store.list('things') })
     }
@@ -144,4 +161,4 @@ it from **Manage → Apps → Discover → Install from Git**. To be listed in t
 to the catalog index (`outcrop-labs/talaria-apps`).
 
 The `contacts/` app in this directory is the working reference — three surfaces, an app server,
-and the store, in ~2 files.
+MCP tools, and the store, in a handful of small files.

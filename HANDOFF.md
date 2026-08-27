@@ -3,14 +3,14 @@
 _Pointers updated 2026-08-26; the phase log below is current to 2026-07-09. Scope: Talaria as the
 fleet's harness + product UI. This file is a fast on-ramp, not the source of truth: [`README.md`](./README.md)
 is canonical for what the product is and what's shipped, [`ROADMAP.md`](./ROADMAP.md) for status
-detail, [`docs/TODO.md`](./docs/TODO.md) for the living backlog, and
+detail, [`docs/TODO.md`](./docs/history/TODO-2026-07-09.md) for the living backlog, and
 [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) +
 [`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) for how code here is written. Before changing
 anything, read the current work order: [`docs/AUDIT-2026-08-26.md`](./docs/AUDIT-2026-08-26.md)
 (quality & consistency, with the PR-series remediation plan). The July rounds it builds on —
-[`AUDIT-2026-07-30.md`](./docs/AUDIT-2026-07-30.md),
-[`PRODUCT-GAPS-2026-07-31.md`](./docs/PRODUCT-GAPS-2026-07-31.md), and
-[`PRODUCT-PLAN-2026-07-31.md`](./docs/PRODUCT-PLAN-2026-07-31.md) — are historical now._
+[`AUDIT-2026-07-30.md`](./docs/history/AUDIT-2026-07-30.md),
+[`PRODUCT-GAPS-2026-07-31.md`](./docs/history/PRODUCT-GAPS-2026-07-31.md), and
+[`PRODUCT-PLAN-2026-07-31.md`](./docs/history/PRODUCT-PLAN-2026-07-31.md) — are historical now._
 
 > ⚠️ **The phase-by-phase sections below are a historical record, not current status.** They explain how
 > each subsystem came to be; plenty has shipped since (the Plan view is multiplayer now, and Knowledge,
@@ -421,7 +421,7 @@ Full project-management suite, all live in `ui/`:
 
 ## Next up
 
-The living backlog is [`docs/TODO.md`](./docs/TODO.md) — much of the old list here
+The living backlog is [`docs/TODO.md`](./docs/history/TODO-2026-07-09.md) — much of the old list here
 shipped (artifacts incl. file uploads, @mentions, the per-agent Talaria toolkit,
 QA judge with template rubric, Talaria-native confab guard, Google Workspace,
 personal assistants with identity proxy + admin elevation, Muse, native crons,

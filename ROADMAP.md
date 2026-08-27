@@ -94,7 +94,7 @@ The project management suite, the fleet engine, and auth are live and running:
 ## Next / planned
 
 Roughly in the order we're chasing it. Full detail in
-[`docs/TODO.md`](./docs/TODO.md).
+[`docs/TODO.md`](./docs/history/TODO-2026-07-09.md).
 
 - **Design and creative** 🔭. Agents and humans making creative work side by side.
 - **Finance** 🔭. Agent and human finance that plugs into the big accounting and HR platforms.
@@ -151,5 +151,5 @@ the time). That scaffolding is where the fleet engine came from:
   runs hermes-workspace or proxies a live mission-control (we lifted those capabilities into our own
   Postgres/Redis), so this bridge is kept for reference but is not Talaria's architecture or identity.
 
-The M0-M5 detail and the two-plane bridge design live on in [`docs/m0-contract.md`](./docs/m0-contract.md)
+The M0-M5 detail and the two-plane bridge design live on in [`docs/m0-contract.md`](./docs/history/m0-contract.md)
 and the surrounding [`docs/`](./docs). For where the product is headed, see [`README.md`](./README.md).

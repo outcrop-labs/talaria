@@ -3,8 +3,8 @@
 > *Talaria: the winged sandals of Hermes, the thing that carries him between worlds.*
 
 > ⚠️ **Work in progress, not production ready.** This is an internal design and rationale doc. For the
-> current product vision, positioning, and feature status (with ✅/🚧/🔭 markers), [`README.md`](./README.md)
-> is the canonical source of truth. The product itself, the app in [`ui/`](./ui), is where the active work
+> current product vision, positioning, and feature status (with ✅/🚧/🔭 markers), [`README.md`](../../README.md)
+> is the canonical source of truth. The product itself, the app in [`ui/`](../../ui), is where the active work
 > lives; read this doc for the design thinking behind the fleet engine underneath it. Parts of this doc
 > describe Phase-1 scaffolding that is now legacy, clearly marked as such below.
 
@@ -66,7 +66,7 @@ the other way, through Talaria's gateway, so the fleet has exactly one upstream.
 
 This is the piece that is shipped and running today, alongside the product surfaces — the PM suite, Comms,
 the multiplayer Plan view, Knowledge/Artifacts, versioned agent internals, personal assistants, and auth.
-See [`README.md`](./README.md) and [`ROADMAP.md`](./ROADMAP.md) for current status; finance, design, and
+See [`README.md`](../../README.md) and [`ROADMAP.md`](../../ROADMAP.md) for current status; finance, design, and
 in-app coding are still ahead of us.
 
 ---

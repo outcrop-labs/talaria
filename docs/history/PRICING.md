@@ -40,7 +40,7 @@ have context. Self-hosting is free forever regardless of anything here._
   every upload blob in all three storage modes, verifies the dump (`gzip -t` plus the `pg_dump`
   completion trailer) and writes `SHA256SUMS`; `bun talaria restore` verifies those checksums before
   touching anything. Redis is a *deliberate* exclusion, not a gap — sessions and ephemeral state,
-  blast radius is everyone signs out ([BACKUPS.md](./BACKUPS.md)). What's left for the Starter claim
+  blast radius is everyone signs out ([BACKUPS.md](../BACKUPS.md)). What's left for the Starter claim
   of *automated daily backups with a documented restore*: (1) **nothing schedules it** — cron or a
   systemd timer is the operator's job today, and the in-app scheduler is a later milestone; (2) **the
   restore drill has never actually been run** — BACKUPS.md documents one, but a backup nobody has
