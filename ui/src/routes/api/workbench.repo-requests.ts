@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createRepo, setGrantedRepos, grantedRepos } from '@/server/github'
 import { db } from '@/server/db/pg'
@@ -23,7 +24,7 @@ export const Route = defineApi('/api/workbench/repo-requests', {
   PUT: async ({ request }) => {
     const user = await requireAdmin(request)
     if (user instanceof Response) return user
-    const body = await parseBody(request, z.object({ id: z.string().uuid(), action: z.enum(['approve', 'reject']) }))
+    const body = await parseBody(request, z.object({ id: Uuid, action: z.enum(['approve', 'reject']) }))
     if (body instanceof Response) return body
     const sql = await db()
     const [req] = (await sql.unsafe(`select ${ROW} from workbench_repo_requests where id = $1 and status = 'pending'`, [body.id])) as unknown as Array<{

@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { updateSessionsForUser } from '@/server/auth/session'
 import { listUsersAdmin, setAssistantElevated, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole, setAllowedManageViews } from '@/server/users'
@@ -20,7 +21,7 @@ export const Route = defineApi('/api/admin/users', {
     const body = await parseBody(
       request,
       z.object({
-        userId: z.string().uuid(),
+        userId: Uuid,
         role: z.enum(['admin', 'member']).optional(),
         agentModels: z.array(z.string().max(200)).max(100).optional(),
         canMintKeys: z.boolean().optional(),

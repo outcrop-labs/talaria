@@ -8,6 +8,7 @@ import {
   getStorageConfig,
   internalTarget,
   publicStorageConfig,
+  refuseDevSecret,
   replicaTarget,
   setStorageConfig,
   testStorage,
@@ -85,6 +86,7 @@ export const Route = defineApi('/api/admin/storage', {
         // Test what the current mode would actually use.
         if (cfg.mode === 'internal') {
           const t = internalTarget()
+          refuseDevSecret(t)
           await ensureBucket(t)
           return json(await testStorage(t))
         }

@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody } from '@/server/api-guard'
 import { requireAgent } from '@/server/agent-auth'
 import { audienceFor } from '@/server/approvals'
@@ -16,7 +17,7 @@ const Body = z.object({
   summary: z.string().min(5).max(300),
   details: z.string().max(20_000).optional(),
   context: z.string().max(500).optional().describe('what the agent was trying to do'),
-  taskId: z.string().uuid().optional().describe('the ticket the agent was working when it broke'),
+  taskId: Uuid.optional().describe('the ticket the agent was working when it broke'),
 })
 
 const HELPDESK = 'Helpdesk'

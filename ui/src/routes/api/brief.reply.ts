@@ -1,10 +1,11 @@
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { decideDraft } from '@/server/daily-brief-delegation'
 
-const Body = z.object({ draftId: z.string().uuid(), decision: z.enum(['approve', 'reject']) })
+const Body = z.object({ draftId: Uuid, decision: z.enum(['approve', 'reject']) })
 
 /** Send or discard a reply the assistant drafted.
  *

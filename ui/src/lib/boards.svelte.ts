@@ -287,6 +287,14 @@ export const addDependency = (taskId: string, dependsOnId: string) =>
 export const removeDependency = (taskId: string, dependsOnId: string) =>
   delJson<{ ok: true }>(`/api/tasks/${taskId}/dependencies`, { dependsOnId })
 
+// The patch literal below is the WIRE BODY — the shape routes/api/tasks.$id.ts
+// validates with zod — and not server TaskPatch, deliberately. The two have
+// drifted apart in both directions and each difference is load-bearing:
+// `attachmentIds`/`refs` are what THIS UI sends, and the route resolves them
+// (ACL-checked, never trusted from a client) into TaskPatch's `attachments`;
+// TaskPatch's `statusNote` and `attachments` are server-internal and the wire
+// schema strips them. Importing TaskPatch here would either drop the two
+// fields the attachments UI sends or advertise two that silently do nothing.
 export const updateTask = (
   taskId: string,
   patch: {

@@ -1,12 +1,13 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid, Email } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import { addTeamMember, listTeamMembers, removeTeamMember, teamRole } from '@/server/teams'
 
-const Post = z.object({ email: z.string().email(), role: z.enum(['owner', 'member']).default('member') })
-const Delete = z.object({ userId: z.string().uuid() })
+const Post = z.object({ email: Email, role: z.enum(['owner', 'member']).default('member') })
+const Delete = z.object({ userId: Uuid })
 
 // GET → members (any member). POST { email, role } → add (owner). DELETE { userId } → remove (owner).
 export const Route = defineApi('/api/teams/$id/members', {

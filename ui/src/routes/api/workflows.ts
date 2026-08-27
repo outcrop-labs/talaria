@@ -1,12 +1,13 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { createWorkflow, listWorkflows } from '@/server/workflows'
 
 const Match = z.object({
   labels: z.array(z.string().min(1).max(60)).max(30).optional(),
-  boards: z.array(z.string().uuid()).max(30).optional(),
+  boards: z.array(Uuid).max(30).optional(),
   keywords: z.array(z.string().min(1).max(80)).max(30).optional(),
 })
 const Toolkit = z.object({ server: z.string().min(1).max(80), tools: z.array(z.string().min(1).max(120)).max(60).optional() })

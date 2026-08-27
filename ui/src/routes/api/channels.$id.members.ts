@@ -1,11 +1,12 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid, Email } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { addChannelMember, channelRole, removeChannelMember } from '@/server/channels'
 
-const Post = z.object({ email: z.string().email() })
-const Delete = z.object({ userId: z.string().uuid() })
+const Post = z.object({ email: Email })
+const Delete = z.object({ userId: Uuid })
 
 // POST { email } → add a member (any member can invite).
 // DELETE { userId } → remove a member (owner, or yourself to leave).

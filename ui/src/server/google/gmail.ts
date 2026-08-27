@@ -1,7 +1,7 @@
 // Gmail service — read the connected user's recent mail (metadata + snippets)
 // and send mail on their behalf, acting strictly as that user (per-user OAuth).
 
-import { getAccessToken } from './connections'
+import { requireToken } from './connections'
 
 const GMAIL_BASE = 'https://www.googleapis.com/gmail/v1/users/me'
 const LABELS_ENDPOINT = `${GMAIL_BASE}/labels`
@@ -95,16 +95,6 @@ async function labelNameMap(token: string, labelIds: string[]): Promise<Map<stri
   if (!unique.length) return new Map()
   const labels = await listLabelsWithToken(token)
   return new Map(labels.map((l) => [l.id, l.name]))
-}
-
-async function requireToken(userId: string, nowMs: number): Promise<string> {
-  const token = await getAccessToken(userId, nowMs)
-  if (!token) {
-    const err = new Error('not_connected')
-    err.name = 'GoogleNotConnected'
-    throw err
-  }
-  return token
 }
 
 export interface MailSummary {

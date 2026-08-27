@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { acquireInboxFocusLock, runInboxConversationCommand } from '@/server/inbox-focus-conversation'
 
@@ -16,15 +17,15 @@ const Body = z.object({
   /** Which conversation instance (the panel's chat picker). Validated against
    *  the owner's live inbox conversations; stale ids fall back to their most
    *  recent instance rather than failing the command. */
-  conversationId: z.string().uuid().nullable().optional(),
+  conversationId: Uuid.nullable().optional(),
   /** Reasoning effort for the reply, from the levels the answering model's
    *  metadata vouches for; omitted = the model's default. Validated server-side
    *  against the same metadata the composer's picker lists. */
   effort: z.string().max(24).nullable().optional(),
-  attachmentIds: z.array(z.string().uuid()).max(12).default([]),
+  attachmentIds: z.array(Uuid).max(12).default([]),
   refs: z.array(z.object({
     type: z.enum(['kb-doc', 'artifact']),
-    id: z.string().uuid(),
+    id: Uuid,
   })).max(6).default([]),
 })
 

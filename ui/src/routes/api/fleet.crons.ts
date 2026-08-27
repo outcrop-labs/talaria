@@ -1,12 +1,13 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createFleetCrons, listFleetCrons } from '@/server/agent-crons'
 import { logAudit } from '@/server/audit'
 
 const Body = z.object({
-  agentIds: z.array(z.string().uuid()).min(1).max(64),
+  agentIds: z.array(Uuid).min(1).max(64),
   name: z.string().trim().min(1).max(80),
   schedule: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(20_000),

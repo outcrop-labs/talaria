@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import {
   PERMISSIONS,
@@ -42,7 +43,7 @@ export const Route = defineApi('/api/admin/permissions', {
       request,
       z.union([
         z.object({
-          userId: z.string().uuid(),
+          userId: Uuid,
           perm: z.enum(PERM_IDS as [Perm, ...Perm[]]),
           allowed: z.boolean().nullable(),
         }),

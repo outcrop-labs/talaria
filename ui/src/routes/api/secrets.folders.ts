@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import {
@@ -32,13 +33,13 @@ import {
 // everywhere else in this feature, for the same reason.
 const Post = z.union([
   z.object({ action: z.literal('create'), name: z.string().min(1).max(60) }),
-  z.object({ action: z.literal('rename'), id: z.string().uuid(), name: z.string().min(1).max(60) }),
-  z.object({ action: z.literal('delete'), id: z.string().uuid() }),
+  z.object({ action: z.literal('rename'), id: Uuid, name: z.string().min(1).max(60) }),
+  z.object({ action: z.literal('delete'), id: Uuid }),
   z.object({
     action: z.literal('share'),
-    id: z.string().uuid(),
+    id: Uuid,
     on: z.boolean(),
-    userId: z.string().uuid().optional(),
+    userId: Uuid.optional(),
     agentModel: z.string().max(120).optional(),
   }),
 ])

@@ -1,13 +1,14 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { boardTemplates, setBoardTemplates } from '@/server/templates'
 
 const Put = z.object({
-  templateIds: z.array(z.string().uuid()).max(50),
-  defaultId: z.string().uuid().nullable(),
+  templateIds: z.array(Uuid).max(50),
+  defaultId: Uuid.nullable(),
 })
 
 // The ticket templates a board uses. GET → bindings. PUT { templateIds,

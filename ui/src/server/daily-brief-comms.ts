@@ -26,7 +26,7 @@
 // does not do is pretend you wrote it: `answeredBy` carries which of the two it
 // was, all the way to the words on the line.
 import { db } from './db/pg'
-import { fingerprint, keyOf } from './inbox-focus-policy'
+import { asIso, fingerprint, keyOf } from './inbox-focus-policy'
 import type { BriefBadge, BriefPriority } from './daily-brief-types'
 
 export type AnsweredBy = 'you' | 'assistant' | null
@@ -204,5 +204,3 @@ function label(unread: number, answeredBy: AnsweredBy, draft: CommsLine['draft']
   // this line is the fix.
   return 'READ, NOT ANSWERED'
 }
-
-const asIso = (value: string | null): string => (value ? new Date(value).toISOString() : new Date(0).toISOString())

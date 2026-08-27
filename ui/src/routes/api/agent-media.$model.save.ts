@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { assistantOwnerFor, canUseAgentModel } from '@/server/users'
@@ -12,7 +13,7 @@ import { saveUpload } from '@/server/uploads'
 const Body = z.object({
   path: z.string().min(1).max(1000),
   title: z.string().trim().max(200).optional(),
-  folderId: z.string().uuid().nullish(),
+  folderId: Uuid.nullish(),
   /** Folder by NAME (find-or-create) — the agent-friendly spelling. */
   folder: z.string().trim().max(120).optional(),
 })

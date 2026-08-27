@@ -194,6 +194,10 @@ const BLOCKED_NAMES = ['localhost', 'ip6-localhost', 'ip6-loopback']
 let allowCache: { spec: string; hosts: string[]; suffixes: string[]; nets: Cidr[] } | null = null
 
 const allowList = () => {
+  // Read per call, not from a validated snapshot: the cache keys on the raw
+  // spec so an edited/overridden value takes effect on the next fetch (tests
+  // rely on exactly that). The key itself is validated and documented in
+  // server/env.ts's schema, which runs once at boot.
   const spec = process.env.TALARIA_FETCH_ALLOW_HOSTS ?? ''
   if (allowCache?.spec === spec) return allowCache
   const hosts: string[] = []

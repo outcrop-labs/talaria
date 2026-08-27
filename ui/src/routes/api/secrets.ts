@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import { createSecretDoc, deleteSecretDoc, getSecretDoc, listSecretsForUser, moveSecretToFolder } from '@/server/workspace-secrets'
@@ -43,9 +44,9 @@ const Create = z.object({
   title: z.string().min(1).max(80),
   entries: z.array(Entry).min(1).max(20),
   note: z.string().max(400).nullish(),
-  folderId: z.string().uuid().nullish(),
+  folderId: Uuid.nullish(),
   /** User ids to share with at creation. The owner is always implicit. */
-  readers: z.array(z.string().uuid()).max(50).optional(),
+  readers: z.array(Uuid).max(50).optional(),
   /** Agents that may SPEND it — handle only; being shared never means readable
    *  for an agent. See the note on `grantTo` below. */
   grantTo: z.array(z.string().max(120)).max(50).optional(),
@@ -118,7 +119,7 @@ export const Route = defineApi('/api/secrets', {
   PATCH: async ({ request }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user
-    const body = await parseBody(request, z.object({ name: z.string().max(80), folderId: z.string().uuid().nullable() }))
+    const body = await parseBody(request, z.object({ name: z.string().max(80), folderId: Uuid.nullable() }))
     if (body instanceof Response) return body
     if (!(await moveSecretToFolder(body.name, body.folderId, user.id))) return json({ error: 'not yours to move' }, { status: 403 })
     void logAudit({ actor: actorOf(user), action: 'secrets.move', targetType: 'secret', targetId: body.name, after: { folderId: body.folderId } })

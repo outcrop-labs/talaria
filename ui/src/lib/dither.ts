@@ -16,6 +16,10 @@
  * hardcoded, so the same field reads correctly in both modes.
  */
 
+// clamp01 is the waiting field's, not a local copy — the bodies were identical.
+// (`hash01` stays per-engine on purpose; see the NOTE in that file.)
+import { clamp01 } from '@/lib/waiting/field'
+
 export type DitherTone = 'neutral' | 'accent' | 'success' | 'danger' | 'surface'
 
 interface SourceBase {
@@ -180,8 +184,6 @@ export const BAYER = [
   15, 47,  7, 39, 13, 45,  5, 37,
   63, 31, 55, 23, 61, 29, 53, 21,
 ]
-
-const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 /**
  * Where a canvas sits on the PAGE-WIDE dot lattice.

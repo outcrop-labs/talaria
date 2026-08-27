@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid, Email } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardAllowsAgent, boardRole, canEdit, listMembers, shareBoard, unshareBoard } from '@/server/boards'
 import { db } from '@/server/db/pg'
@@ -35,7 +36,7 @@ export const Route = defineApi('/api/boards/$id/members', {
     if (!canEdit(await boardRole(user.id, params.id)) && !user.elevated) return json({ error: 'forbidden' }, { status: 403 })
     const body = await parseBody(
       request,
-      z.object({ email: z.string().email(), role: z.enum(['editor', 'viewer']).default('editor') }),
+      z.object({ email: Email, role: z.enum(['editor', 'viewer']).default('editor') }),
     )
     if (body instanceof Response) return body
     const result = await shareBoard(params.id, body.email, body.role)
@@ -56,7 +57,7 @@ export const Route = defineApi('/api/boards/$id/members', {
     const body = await parseBody(
       request,
       z
-        .object({ userId: z.string().uuid().optional(), email: z.string().email().optional() })
+        .object({ userId: Uuid.optional(), email: Email.optional() })
         .refine((b) => b.userId || b.email, { message: 'userId or email required' }),
     )
     if (body instanceof Response) return body

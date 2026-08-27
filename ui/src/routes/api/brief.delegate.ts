@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { parseBody, requireUser } from '@/server/api-guard'
@@ -6,7 +7,7 @@ import { grantReply, listGrants, releaseDrafts, revokeReply } from '@/server/dai
 
 const Body = z.object({
   /** Null grants across every conversation; an id grants one thread. */
-  channelId: z.string().uuid().nullable(),
+  channelId: Uuid.nullable(),
   granted: z.boolean(),
 })
 

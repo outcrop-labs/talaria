@@ -2,24 +2,11 @@
 // the hermes-<dept> volume) — the agent curates it itself at runtime. Talaria
 // reads and writes it through the running managed container (docker exec), so
 // there's no second copy to drift. Requires the container to be up.
-import { execFile } from 'node:child_process'
 import { db } from './db/pg'
-import { managedContainer } from './fleet-docker'
+import { agentContainer, dockerExec } from './docker-exec'
 import { snapshot } from './internal-history'
 
 const MEMORY_PATH = '/opt/data/memories/MEMORY.md'
-
-function exec(args: string[], input?: string): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((res, rej) => {
-    const child = execFile('docker', args, { timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) =>
-      err ? rej(new Error(stderr.trim() || err.message)) : res({ stdout, stderr }),
-    )
-    if (input !== undefined) {
-      child.stdin?.write(input)
-      child.stdin?.end()
-    }
-  })
-}
 
 async function departmentFor(defId: string): Promise<{ department: string; displayName: string }> {
   const sql = await db()
@@ -30,13 +17,10 @@ async function departmentFor(defId: string): Promise<{ department: string; displ
   return rows[0]
 }
 
-// Slot-aware: a rolled agent lives in the '-b' service until its next roll.
-const container = (department: string) => managedContainer(department)
-
 export async function readMemory(defId: string): Promise<{ content: string; container: string }> {
   const { department } = await departmentFor(defId)
-  const name = await container(department)
-  const { stdout } = await exec(['exec', name, 'cat', MEMORY_PATH]).catch((e: Error) => {
+  const name = await agentContainer(department)
+  const { stdout } = await dockerExec(name, ['cat', MEMORY_PATH], { timeoutMs: 20_000 }).catch((e: Error) => {
     if (/no such file/i.test(e.message)) return { stdout: '', stderr: '' }
     throw new Error(`cannot read memory from ${name}: ${e.message}`)
   })
@@ -48,8 +32,8 @@ export async function readMemory(defId: string): Promise<{ content: string; cont
  *  is snapshotted so any prior memory is recoverable. */
 export async function writeMemory(defId: string, content: string, author?: string | null): Promise<void> {
   const { department } = await departmentFor(defId)
-  const name = await container(department)
-  await exec(['exec', '-i', name, 'sh', '-c', `cat > ${MEMORY_PATH}`], content).catch((e: Error) => {
+  const name = await agentContainer(department)
+  await dockerExec(name, ['sh', '-c', `cat > ${MEMORY_PATH}`], { timeoutMs: 20_000, input: content }).catch((e: Error) => {
     throw new Error(`cannot write memory in ${name}: ${e.message}`)
   })
   await snapshot('memory', defId, content, author ?? null).catch(() => {})

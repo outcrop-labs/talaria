@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import {
@@ -89,7 +90,7 @@ export const Route = defineApi('/api/notifications', {
   PUT: async ({ request }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user
-    const body = await parseBody(request, z.object({ ids: z.array(z.string().uuid()).max(200).optional() }))
+    const body = await parseBody(request, z.object({ ids: z.array(Uuid).max(200).optional() }))
     if (body instanceof Response) return body
     await markNotificationsRead(user.id, body.ids)
     return json({ ok: true })

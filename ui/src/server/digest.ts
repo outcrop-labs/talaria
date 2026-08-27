@@ -56,6 +56,7 @@ import { getSetting, setSetting } from './audit'
 // already depends on (unlike daily-brief.ts itself, which would drag the
 // brief's module graph along).
 import { zoneFor } from './daily-brief-config'
+import { localMoment } from './tz'
 import { emailButton, emailEscape, emailShell } from './email'
 import { homeQueues, type WorkItem } from './home'
 import { instanceBaseUrl } from './instance'
@@ -169,32 +170,10 @@ export function recipientZone(user: Recipient, config: DigestConfig): string {
   return zoneFor(user.timezone, config)
 }
 
-/** Local hour and calendar date in a zone. An invalid zone must not take the
- *  whole job down — a typo in a settings row would otherwise silence the
- *  digest for everyone, which is precisely the failure mode this file exists
- *  to end — so it falls back to UTC and says so. */
-export function localMoment(timeZone: string, at: Date): { hour: number; date: string; zone: string } {
-  const read = (zone: string) => {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: zone,
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-    }).formatToParts(at)
-    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
-    // 'en-CA' + hour12:false yields 24 for midnight in some ICU versions.
-    const hour = Number(get('hour')) % 24
-    return { hour, date: `${get('year')}-${get('month')}-${get('day')}`, zone }
-  }
-  try {
-    return read(timeZone)
-  } catch {
-    console.warn(`[digest] unknown time zone "${timeZone}" in ${CONFIG_KEY} — falling back to UTC`)
-    return read('UTC')
-  }
-}
+// Re-exported (not re-declared) from the leaf so anything that ever imported
+// `localMoment` from digest keeps its import — the implementation and its
+// doc comment live in server/tz.ts.
+export { localMoment } from './tz'
 
 // ── The digest content ───────────────────────────────────────────────────────
 

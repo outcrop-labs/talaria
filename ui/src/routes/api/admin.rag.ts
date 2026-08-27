@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { backfillAll, backfillStatus, ragHealth } from '@/server/retrieval/backfill'
 import { reindexAll, reindexStatus, retrievalUpgradeStatus } from '@/server/retrieval/migrate'
@@ -29,7 +30,7 @@ const Put = z.object({
     .optional(),
   /** Bind a KB space to a brain (custom collection); null unbinds. Existing
    *  docs re-route immediately. */
-  spaceBrain: z.object({ spaceId: z.string().uuid(), collectionId: z.string().uuid().nullable() }).optional(),
+  spaceBrain: z.object({ spaceId: Uuid, collectionId: Uuid.nullable() }).optional(),
 })
 
 const Post = z.union([

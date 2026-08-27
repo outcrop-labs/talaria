@@ -1,10 +1,11 @@
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { markBriefRead } from '@/server/daily-brief'
 
-const Body = z.object({ briefId: z.string().uuid(), seq: z.number().int().min(0) })
+const Body = z.object({ briefId: Uuid, seq: z.number().int().min(0) })
 
 /** Move the reader's cursor. The ONLY mutation this feature exposes — there is
  *  no edit, no dismiss and no delete, because the document is append-only and

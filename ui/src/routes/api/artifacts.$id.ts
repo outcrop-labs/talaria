@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
@@ -16,9 +17,9 @@ const Patch = z.object({
   title: z.string().max(200).optional(),
   body: z.string().max(2_000_000).optional(),
   icon: z.string().max(16).nullish(),
-  storageRef: z.string().uuid().nullish(),
+  storageRef: Uuid.nullish(),
   contentType: z.string().max(200).nullish(),
-  folderId: z.string().uuid().nullish(),
+  folderId: Uuid.nullish(),
   visibility: z.enum(['private', 'org', 'public']).optional(),
   editPolicy: z.enum(['owner', 'org', 'restricted']).optional(),
   editors: z.array(Editor).max(200).optional(),

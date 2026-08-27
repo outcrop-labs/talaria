@@ -2,6 +2,7 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { presentedCredential, requireAgent } from '@/server/agent-auth'
 import { effectiveMcpFor, parseMcpResponse } from '@/server/mcp-registry'
+import { rpcError, type Rpc } from '@/server/mcp-jsonrpc'
 import { assertFetchableUrl } from '@/server/safe-fetch'
 
 // The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
@@ -27,11 +28,6 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
 
     let bodyText = await request.text()
-    interface Rpc {
-      id?: unknown
-      method?: string
-      params?: { name?: string; arguments?: Record<string, unknown> }
-    }
     let rpc: Rpc | null = null
     try {
       rpc = JSON.parse(bodyText) as Rpc
@@ -43,11 +39,7 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     // hears about them.
     if (rpc?.method === 'tools/call' && eff.tools !== null && !eff.tools.includes(rpc.params?.name ?? '')) {
       return json(
-        {
-          jsonrpc: '2.0',
-          id: rpc.id ?? null,
-          error: { code: -32602, message: `tool "${rpc.params?.name}" is not available here` },
-        },
+        rpcError(rpc.id, -32602, `tool "${rpc.params?.name}" is not available here`),
         { status: 200 },
       )
     }

@@ -51,13 +51,12 @@
 // field on `ReclaimDeps` defaulted to the real thing, so reclaim.test.ts drives
 // the whole sweeper with no database, no Redis and no clock.
 import { registerJob, type JobSpec, type JobName } from '../scheduler'
+import { errText } from '../errors'
 import { DEFAULT_MAX_ATTEMPTS, isDrivable, runDefinition, type AnyRunDefinition, type RunRow } from './define'
 import { drive, type DriveResult } from './run'
 import { pgRunStore } from './store'
 
 const LOG = '[runs/reclaim]'
-
-const errText = (e: unknown) => (e instanceof Error ? (e.stack ?? e.message) : String(e))
 
 /** Operator-facing durations. Say seconds when it is seconds: "0 minutes" for a
  *  twenty-second-old lease is the kind of rounding that makes somebody stop

@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { IdBody } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createInvite, listInvites, revokeInvite } from '@/server/invites'
 import { logAudit } from '@/server/audit'
@@ -30,7 +31,7 @@ export const Route = defineApi('/api/admin/invites', {
   DELETE: async ({ request }) => {
     const user = await requireAdmin(request)
     if (user instanceof Response) return user
-    const body = await parseBody(request, z.object({ id: z.string().uuid() }))
+    const body = await parseBody(request, IdBody)
     if (body instanceof Response) return body
     await revokeInvite(body.id)
     void logAudit({ actor: actorOf(user), action: 'invite.revoke', targetType: 'invite', targetId: body.id })

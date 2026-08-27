@@ -14,19 +14,10 @@
 // turn. Closing it needs the schedule DRIVEN by Talaria (dispatch the prompt
 // through gateway.ts's proxyChat like any other turn, which meters and
 // attributes it for free) instead of by the agent's own ticker.
-import { execFile } from 'node:child_process'
 import { db } from './db/pg'
-import { managedContainer } from './fleet-docker'
+import { agentContainer, dockerExec } from './docker-exec'
 
 const JOBS_PATH = '/opt/data/cron/jobs.json'
-
-function exec(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((res, rej) => {
-    execFile('docker', args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) =>
-      err ? rej(new Error(stderr.trim() || err.message)) : res({ stdout, stderr }),
-    )
-  })
-}
 
 async function agentFor(defId: string): Promise<{ department: string; slug: string }> {
   const sql = await db()
@@ -36,9 +27,6 @@ async function agentFor(defId: string): Promise<{ department: string; slug: stri
   if (!rows[0]) throw new Error('not a running managed agent')
   return rows[0]
 }
-
-// Slot-aware: a rolled agent lives in the '-b' service until its next roll.
-const container = (department: string) => managedContainer(department)
 
 export interface CronJob {
   id: string
@@ -70,8 +58,8 @@ interface RawJob {
 
 export async function listCronJobs(defId: string): Promise<CronJob[]> {
   const { department } = await agentFor(defId)
-  const name = await container(department)
-  const { stdout } = await exec(['exec', name, 'cat', JOBS_PATH]).catch((e: Error) => {
+  const name = await agentContainer(department)
+  const { stdout } = await dockerExec(name, ['cat', JOBS_PATH]).catch((e: Error) => {
     if (/no such file/i.test(e.message)) return { stdout: '{"jobs":[]}', stderr: '' }
     throw new Error(`cannot read crons from ${name}: ${e.message}`)
   })
@@ -109,9 +97,7 @@ export async function createCronJob(
   assertSafe(name, 'name')
   assertSafe(schedule, 'schedule')
   if (prompt.startsWith('-')) throw new Error('prompt cannot start with "-"')
-  const { stdout } = await exec([
-    'exec',
-    await container(department),
+  const { stdout } = await dockerExec(await agentContainer(department), [
     'hermes',
     'cron',
     'create',
@@ -135,7 +121,7 @@ export async function editCronJob(
 ): Promise<void> {
   if (!JOB_ID.test(jobId)) throw new Error('bad job id')
   const { department } = await agentFor(defId)
-  const args = ['exec', await container(department), 'hermes', 'cron', 'edit', jobId]
+  const args = ['hermes', 'cron', 'edit', jobId]
   if (input.name !== undefined) {
     assertSafe(input.name, 'name')
     args.push('--name', input.name.trim())
@@ -148,14 +134,14 @@ export async function editCronJob(
     if (input.prompt.startsWith('-')) throw new Error('prompt cannot start with "-"')
     args.push('--prompt', input.prompt.trim())
   }
-  if (args.length === 6) throw new Error('nothing to edit')
-  await exec(args)
+  if (args.length === 4) throw new Error('nothing to edit')
+  await dockerExec(await agentContainer(department), args)
 }
 
 async function jobAction(defId: string, jobId: string, action: 'remove' | 'pause' | 'resume' | 'run'): Promise<void> {
   if (!JOB_ID.test(jobId)) throw new Error('bad job id')
   const { department } = await agentFor(defId)
-  await exec(['exec', await container(department), 'hermes', 'cron', action, jobId])
+  await dockerExec(await agentContainer(department), ['hermes', 'cron', action, jobId])
 }
 
 export const removeCronJob = (defId: string, jobId: string) => jobAction(defId, jobId, 'remove')

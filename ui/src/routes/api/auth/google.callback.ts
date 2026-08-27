@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'node:crypto'
 import { defineApi } from '@/server/api-route'
 import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
 import { googleLoginEnabled } from '@/server/google/client-config'
@@ -8,6 +7,7 @@ import {
   createSession,
   parseCookies,
   sessionCookie,
+  stateMatches,
   STATE_COOKIE,
 } from '@/server/auth/session'
 import { upsertUser } from '@/server/users'
@@ -24,15 +24,6 @@ function loginError(reason: string, extra: Record<string, string> = {}): Respons
     status: 302,
     headers: { Location: `/login?${params.toString()}`, 'Set-Cookie': clearStateCookie() },
   })
-}
-
-// Constant-time state compare — no early exit on the first differing byte.
-// (Length equality is checked first; that leaks only the length, which the
-// attacker already knows: they carried the cookie here.)
-function stateMatches(a: string, b: string): boolean {
-  const ab = Buffer.from(a, 'utf8')
-  const bb = Buffer.from(b, 'utf8')
-  return ab.length === bb.length && timingSafeEqual(ab, bb)
 }
 
 // GET /api/auth/google/callback → verify state, exchange the code, mint the

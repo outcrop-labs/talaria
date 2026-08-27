@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import {
@@ -52,9 +53,9 @@ const Post = z.union([
   // Folders, for grouping credentials and granting a whole set to an agent at
   // once — the same argument that made folder sharing worth building for people.
   z.object({ action: z.literal('folder-create'), name: z.string().min(1).max(60) }),
-  z.object({ action: z.literal('folder-delete'), id: z.string().uuid() }),
-  z.object({ action: z.literal('folder-grant'), id: z.string().uuid(), agentModel: z.string().min(1).max(120), on: z.boolean() }),
-  z.object({ action: z.literal('file'), name: z.string().max(40), folderId: z.string().uuid().nullable() }),
+  z.object({ action: z.literal('folder-delete'), id: Uuid }),
+  z.object({ action: z.literal('folder-grant'), id: Uuid, agentModel: z.string().min(1).max(120), on: z.boolean() }),
+  z.object({ action: z.literal('file'), name: z.string().max(40), folderId: Uuid.nullable() }),
 ])
 
 // WORKSPACE SECRETS — the credentials agents may USE without ever reading one.

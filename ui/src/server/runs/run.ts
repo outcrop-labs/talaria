@@ -47,6 +47,7 @@
 import { randomUUID } from 'node:crypto'
 import { audienceFor, type Authority, type Disclosure } from '../approvals'
 import { publishRun as publishRunTopic, publishUser } from '../realtime'
+import { errLine, errText } from '../errors'
 import type { PauseResult } from './decide'
 import { acquireRunLease, releaseRunLease, renewLease, runLeaseKey, type LeaseToken } from './lease'
 import {
@@ -65,9 +66,6 @@ import {
 import { pgRunStore, type RunStore } from './store'
 
 const LOG = '[runs]'
-
-const errText = (e: unknown) => (e instanceof Error ? (e.stack ?? e.message) : String(e))
-const errLine = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 // ── The lease, as the driver needs it ────────────────────────────────────────
 //

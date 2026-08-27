@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { addComment, canDiscussDoc, listComments } from '@/server/kb-comments'
 
@@ -24,7 +25,7 @@ export const Route = defineApi('/api/kb/docs/$id/comments', {
       request,
       z.object({
         content: z.string().trim().min(1).max(8_000),
-        parentId: z.string().uuid().nullish(),
+        parentId: Uuid.nullish(),
         quote: z.string().trim().max(500).nullish(),
       }),
     )

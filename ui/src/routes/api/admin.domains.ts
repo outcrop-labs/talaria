@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid, IdBody } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { addOrgDomain, listOrgDomains, removeOrgDomain, verifyOrgDomain } from '@/server/org-domains'
 import { logAudit } from '@/server/audit'
@@ -20,7 +21,7 @@ export const Route = defineApi('/api/admin/domains', {
     const actor = user.email ?? user.name ?? 'admin'
     const body = await parseBody(
       request,
-      z.union([z.object({ domain: z.string().min(3).max(253) }), z.object({ verifyId: z.string().uuid() })]),
+      z.union([z.object({ domain: z.string().min(3).max(253) }), z.object({ verifyId: Uuid })]),
     )
     if (body instanceof Response) return body
     if ('verifyId' in body) {
@@ -41,7 +42,7 @@ export const Route = defineApi('/api/admin/domains', {
   DELETE: async ({ request }) => {
     const user = await requireAdmin(request)
     if (user instanceof Response) return user
-    const body = await parseBody(request, z.object({ id: z.string().uuid() }))
+    const body = await parseBody(request, IdBody)
     if (body instanceof Response) return body
     await removeOrgDomain(body.id)
     void logAudit({

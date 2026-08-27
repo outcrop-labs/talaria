@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid, Email } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { addPlanMember, listPlanMembers, planRole, removePlanMember } from '@/server/conversations'
 import { planDocFor } from '@/server/plan-doc'
@@ -44,7 +45,7 @@ export const Route = defineApi('/api/plans/$id/members', {
     if ((await planRole(user.id, params.id)) !== 'owner') {
       return json({ error: 'only the plan owner can share it' }, { status: 403 })
     }
-    const body = await parseBody(request, z.object({ email: z.string().email() }))
+    const body = await parseBody(request, z.object({ email: Email }))
     if (body instanceof Response) return body
     const sql = await db()
     const rows = (await sql`select id from users where lower(email) = ${body.email.toLowerCase()}`) as unknown as Array<{ id: string }>
@@ -65,7 +66,7 @@ export const Route = defineApi('/api/plans/$id/members', {
     const user = await requireUser(request)
     if (user instanceof Response) return user
     const role = await planRole(user.id, params.id)
-    const body = await parseBody(request, z.object({ userId: z.string().uuid() }))
+    const body = await parseBody(request, z.object({ userId: Uuid }))
     if (body instanceof Response) return body
     // Owner removes anyone; a collaborator may remove only themself (leave).
     if (role !== 'owner' && !(role === 'collaborator' && body.userId === user.id)) {

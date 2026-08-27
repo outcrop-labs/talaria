@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { Uuid } from '@/lib/api-schema'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { channelRole, listChannelAgents } from '@/server/channels'
 import { routedModelFor } from '@/server/fleet-agents'
@@ -11,9 +12,9 @@ const Start = z.object({
   agentModel: z.string().min(1).max(200),
   tier: z.string().max(60).nullish(),
   /** Where the tickets will land — lets the board's default template apply. */
-  boardId: z.string().uuid().nullish(),
+  boardId: Uuid.nullish(),
   /** Explicit template pick (overrides agent/board resolution). */
-  templateId: z.string().uuid().nullish(),
+  templateId: Uuid.nullish(),
 })
 
 // The review walk's writes: the full batch, already normalized. Narrow on
