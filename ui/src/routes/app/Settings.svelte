@@ -88,7 +88,7 @@
     if (!n || n === user?.name) return
     busy = true
     try {
-      await putJson<{ ok: true }>('/api/profile', { name: n })
+      await putJson<{ ok: true }>(`/api/me`, { name: n })
       await qc.invalidateQueries({ queryKey: ['session'] })
       await qc.invalidateQueries({ queryKey: ['users'] })
       savedFlash.flash()

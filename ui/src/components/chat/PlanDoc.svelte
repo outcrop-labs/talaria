@@ -22,7 +22,7 @@
     docId = null
     error = null
     let cancelled = false
-    void getJson<{ artifact: { id: string } }>(`/api/plan/${planId}/doc`)
+    void getJson<{ artifact: { id: string } }>(`/api/plans/${planId}/doc`)
       .then((j) => {
         if (!cancelled) docId = j.artifact.id
       })

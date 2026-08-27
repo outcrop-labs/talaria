@@ -14,7 +14,7 @@ const Body = z.object({ tier: z.string().max(60).nullish() })
 // agent rewrites it from the conversation so far. Owner or plan collaborator;
 // the document is always OWNED by the plan's owner regardless of who touched
 // it first.
-export const Route = defineApi('/api/plan/$id/doc', {
+export const Route = defineApi('/api/plans/$id/doc', {
   GET: async ({ request, params }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user

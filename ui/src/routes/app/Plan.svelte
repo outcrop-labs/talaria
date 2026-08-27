@@ -161,7 +161,7 @@
   $effect(() => {
     const id = selectedConversationId
     if (!id) return
-    void hydratePlanDraft(id, `/api/plan/${id}/draft`)
+    void hydratePlanDraft(id, `/api/plans/${id}/draft`)
   })
 </script>
 
@@ -331,7 +331,7 @@
       open={planOpen}
       onClose={() => (planOpen = false)}
       planId={selectedConversationId}
-      draftUrl={`/api/plan/${selectedConversationId}/draft`}
+      draftUrl={`/api/plans/${selectedConversationId}/draft`}
       agents={[current]}
     />
   {/if}

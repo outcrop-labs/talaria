@@ -45,7 +45,7 @@
     syncing = true
     syncErr = null
     try {
-      await postJson(`/api/plan/${planId}/doc`, {})
+      await postJson(`/api/plans/${planId}/doc`, {})
       await qc.invalidateQueries({ queryKey: ['artifact', id] })
       syncNonce += 1
     } catch (e) {

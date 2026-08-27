@@ -41,7 +41,7 @@ const Save = z.object({
 // draft; PATCH persists the walk's edits; DELETE drops a consumed or
 // discarded batch. Nothing is created by any of this — the human reviews and
 // creates via the boards API (PlanModal).
-export const Route = defineApi('/api/plan/$id/draft', {
+export const Route = defineApi('/api/plans/$id/draft', {
   GET: async ({ request, params }) => {
     const user = await requireUser(request)
     if (user instanceof Response) return user
