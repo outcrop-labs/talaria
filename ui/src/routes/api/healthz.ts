@@ -50,6 +50,10 @@ async function timed(name: string, ping: () => Promise<unknown>): Promise<Check>
     return { ok: false, latencyMs: null, error: safeCode(e) }
   }
 }
+// doc: Liveness/readiness — SQL and Redis round-trips. PUBLIC BY DESIGN: no
+// doc: session guard, because a health check that needs a session tells you
+// doc: nothing exactly when you need it.
+
 
 export const Route = defineApi('/api/healthz', {
   GET: async () => {

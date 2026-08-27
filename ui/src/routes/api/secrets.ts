@@ -66,6 +66,9 @@ const slugFor = (title: string): string =>
       .replace(/^-+|-+$/g, '')
       .slice(0, 24) || 'secret'
   }-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`
+// doc: The sealed-secrets vault. GET → the secrets the caller can see
+// doc: (metadata only — values never leave the vault); POST → seal a new one.
+
 
 export const Route = defineApi('/api/secrets', {
   // Mine, plus what has been shared with me. Keys and labels; no values — a

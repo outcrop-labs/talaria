@@ -18,6 +18,10 @@ const Body = z.object({
  *  `grantReply` re-checks channel membership rather than trusting this handler,
  *  because a grant on a conversation the owner is not in would let an agent
  *  speak in a room its owner cannot read. */
+// doc: Grant or revoke the assistant's reply-without-asking privilege, org-wide
+// doc: (null) or for one channel. Owner-only by construction: not a Perm, and no
+// doc: route takes a user id — nobody can grant it on somebody else's behalf.
+
 export const Route = defineApi('/api/brief/delegate', {
   GET: async ({ request }) => {
     const user = await requireUser(request)

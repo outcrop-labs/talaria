@@ -14,6 +14,8 @@ const Body = z.object({ draftId: Uuid, decision: z.enum(['approve', 'reject']) }
  *  authority check lives in `decideDraft`, scoped to the caller's own drafts,
  *  rather than here: a second copy of that rule beside the first is how the
  *  two come to disagree. */
+// doc: Approve or reject a reply the assistant drafted — send it, or discard it.
+
 export const Route = defineApi('/api/brief/reply', {
   POST: async ({ request }) => {
     const user = await requireUser(request)

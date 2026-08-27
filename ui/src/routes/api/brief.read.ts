@@ -10,6 +10,8 @@ const Body = z.object({ briefId: Uuid, seq: z.number().int().min(0) })
 /** Move the reader's cursor. The ONLY mutation this feature exposes — there is
  *  no edit, no dismiss and no delete, because the document is append-only and
  *  every one of those would be a rewrite wearing a different name. */
+// doc: Move the brief reader's cursor — the only mutation this surface exposes.
+
 export const Route = defineApi('/api/brief/read', {
   POST: async ({ request }) => {
     const user = await requireUser(request)

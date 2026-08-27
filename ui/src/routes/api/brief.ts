@@ -2,6 +2,9 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { requireUser } from '@/server/api-guard'
 import { getBrief, sweepIfDue } from '@/server/daily-brief'
+// doc: The caller's daily brief — the assistant-assembled digest of what needs
+// doc: them. GET sweeps-if-due, then returns the current brief.
+
 
 export const Route = defineApi('/api/brief', {
   GET: async ({ request }) => {

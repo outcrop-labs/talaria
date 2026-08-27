@@ -13,6 +13,8 @@ const Body = z
     viewed: z.boolean().optional(),
   })
   .refine((body) => body.snoozedUntil !== undefined || body.viewed, 'state change required')
+// doc: Mark a focus item viewed, or snooze it until a time.
+
 
 export const Route = defineApi('/api/inbox/focus/state', {
   PUT: async ({ request }) => {

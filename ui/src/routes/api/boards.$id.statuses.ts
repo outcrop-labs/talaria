@@ -56,6 +56,9 @@ async function humanGateConflict(
   // is never agent-start, so the cast can only see a real workflow category.
   return agentStartConflict(category as z.infer<typeof Category>, agentStart)
 }
+// doc: A board's custom statuses and the diagnostics that explain whether
+// doc: agents may start/stop work on each. Writes are owner/editor.
+
 
 export const Route = defineApi('/api/boards/$id/statuses', {
   GET: async ({ request, params }) => {

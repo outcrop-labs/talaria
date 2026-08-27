@@ -69,6 +69,9 @@ type VersionKind = (typeof VERSION_KINDS)[number]
 
 const versionContent = (kind: VersionKind, v: { soul: string; config: unknown }): string =>
   kind === 'soul' ? v.soul : kind === 'config' ? stringifyYaml(v.config ?? {}) : (personalityOf(v.soul) ?? '')
+// doc: Version history for agent internals (one API over two stores), KB docs,
+// doc: artifacts, and agent-def versions. GET lists; ?id= returns one revision.
+
 
 export const Route = defineApi('/api/history', {
   GET: async ({ request }) => {

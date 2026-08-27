@@ -1,6 +1,6 @@
 # API conventions — one dialect for every route
 
-The contract that keeps 160+ routes predictable. Swept across the whole tree (2026-07); new routes
+The contract that keeps 214 routes predictable. Swept across the whole tree (2026-07); new routes
 follow it from day one. Routes live in `ui/src/routes/api/` — **file-based routes**, where a dot in
 the filename is a path separator (`admin.model-fitness.ts` serves `/api/admin/model-fitness`). Server
 logic in `ui/src/server/`.
@@ -10,6 +10,10 @@ the handler for `/api/foo/test`, not a suite. **Nothing under `routes/` can be u
 route parses the request, calls ONE function in `src/server/*`, and serializes the result. A decision
 that lives in a route is a decision with no test — `routes/api/admin.model-fitness.ts` carried ~920
 lines of them until they moved to `server/fitness/surface.ts`.
+
+The full per-route reference — path, method, auth class, body fields, statuses —
+is generated from the route sources: [`api/`](./api/README.md). Nothing here
+repeats it; this page is the dialect, that one is the dictionary.
 
 ## Guards — `server/api-guard.ts`
 
@@ -154,7 +158,7 @@ the two ever disagree. The fix is one line — make that file import the shared 
 cross-check then finds nothing to compare and retires itself.
 
 On the client the matching question — "is this ticket finished **on this board**?" — is
-`isClosedStatus(key, statuses)` in `components/board/field-pills.tsx`. It is board-aware, so it is
+`isClosedStatus(key, statuses)` in `components/board/field-pills.ts`. It is board-aware, so it is
 the only correct answer once custom statuses exist: a board whose done column is `shipped` has no
 `done` key at all, and `t.status === 'done'` is then permanently false. Import it rather than
 comparing to a literal.

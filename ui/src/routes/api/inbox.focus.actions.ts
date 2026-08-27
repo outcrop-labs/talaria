@@ -16,6 +16,9 @@ const Body = z.object({
   cancelDecisionId: Uuid.optional(),
   undoDecisionId: Uuid.optional(),
 })
+// doc: Execute a focus-inbox action: fire an action, confirm or cancel a
+// doc: pending decision, undo the last one.
+
 
 export const Route = defineApi('/api/inbox/focus/actions', {
   POST: async ({ request }) => {
