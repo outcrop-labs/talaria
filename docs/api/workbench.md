@@ -10,6 +10,7 @@
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/workbench`](#apiworkbench) | GET | `session` + `perm:agents.manage` |
+| [`/api/workbench`](#apiworkbench) | PUT | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | GET | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | PUT | `session` + `perm:agents.manage` |
 | [`/api/workbench/github`](#apiworkbenchgithub) | GET | `admin` |
@@ -36,9 +37,10 @@ Source: [`ui/src/routes/api/workbench.ts`](../../ui/src/routes/api/workbench.ts)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | [body](#get-apiworkbench-body) | `{profiles}` | 200, 400, 403, 404 | audit |
+| GET | `session` + `perm:agents.manage` | — | `{profiles}` | 200 | — |
+| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkbench-body) | `{ok}` | 200, 400, 403, 404 | audit |
 
-### GET `/api/workbench` body
+### PUT `/api/workbench` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -49,7 +51,8 @@ Source: [`ui/src/routes/api/workbench.ts`](../../ui/src/routes/api/workbench.ts)
 | `harnesses` | `z.array(z.string().max(40)).max(20).optional()` |  |
 | `autoAttach` | `z.object({ departments: z.array(z.string().max(60)).max(20).optional(), roles: z.array(z.string().max(60)).max(20).optional() }).optional()` |  |
 | `enabled` | `z.boolean().optional()` |  |
-| `mounts` | `z.array(z.string().max(300)).max(20).optional()` | ── admin-only below: these two reach the host, not just the sandbox ── |
+| `image` | `z.string().max(200).optional()` |  |
+| `mounts` | `z.array(z.string().max(300)).max(20).optional()` |  |
 
 ## `/api/workbench/flow`
 

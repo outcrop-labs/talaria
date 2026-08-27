@@ -12,10 +12,13 @@
 | [`/api/integrations/google`](#apiintegrationsgoogle) | GET | `session` |
 | [`/api/integrations/google`](#apiintegrationsgoogle) | DELETE | `session` |
 | [`/api/integrations/google/agent/calendar`](#apiintegrationsgoogleagentcalendar) | GET | `agent` |
+| [`/api/integrations/google/agent/calendar`](#apiintegrationsgoogleagentcalendar) | POST | `agent` |
 | [`/api/integrations/google/agent/drive`](#apiintegrationsgoogleagentdrive) | GET | `agent` |
 | [`/api/integrations/google/agent/gmail`](#apiintegrationsgoogleagentgmail) | GET | `agent` |
+| [`/api/integrations/google/agent/gmail`](#apiintegrationsgoogleagentgmail) | POST | `agent` |
 | [`/api/integrations/google/agent/gmail/{id}`](#apiintegrationsgoogleagentgmailid) | GET | `agent` |
 | [`/api/integrations/google/agent/gmail/labels`](#apiintegrationsgoogleagentgmaillabels) | GET | `agent` |
+| [`/api/integrations/google/agent/gmail/labels`](#apiintegrationsgoogleagentgmaillabels) | POST | `agent` |
 | [`/api/integrations/google/agent/gmail/organize`](#apiintegrationsgoogleagentgmailorganize) | POST | `agent` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | GET | `session` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | POST | `session` |
@@ -59,9 +62,10 @@ Source: [`ui/src/routes/api/integrations/google.agent.calendar.ts`](../../ui/src
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `agent` | [body](#get-apiintegrationsgoogleagentcalendar-body) | `{error, message}` | 200, 409 + varies | — |
+| GET | `agent` | — | `{error, message}` | 200, 409 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentcalendar-body) | `{pending, message}` | 200 + varies | — |
 
-### GET `/api/integrations/google/agent/calendar` body
+### POST `/api/integrations/google/agent/calendar` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -97,9 +101,10 @@ Source: [`ui/src/routes/api/integrations/google.agent.gmail.ts`](../../ui/src/ro
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `agent` | [body](#get-apiintegrationsgoogleagentgmail-body) | `{error, message}` | 200, 409 + varies | — |
+| GET | `agent` | — | `{error, message}` | 200, 409 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentgmail-body) | `{pending, message}` | 200 + varies | — |
 
-### GET `/api/integrations/google/agent/gmail` body
+### POST `/api/integrations/google/agent/gmail` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -135,9 +140,10 @@ Source: [`ui/src/routes/api/integrations/google.agent.gmail.labels.ts`](../../ui
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `agent` | [body](#get-apiintegrationsgoogleagentgmaillabels-body) | `{error, message}` | 200, 409 | — |
+| GET | `agent` | — | `{error, message}` | 200, 409 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentgmaillabels-body) | `{error, message}` | 200, 409 | — |
 
-### GET `/api/integrations/google/agent/gmail/labels` body
+### POST `/api/integrations/google/agent/gmail/labels` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |

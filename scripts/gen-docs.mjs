@@ -100,14 +100,45 @@ function matchDelim(text, openIdx) {
   return -1
 }
 
-/** Strip line comments and block comments — signal detection must not be
- *  fooled by a guard named inside a comment. (String contents can still
- *  contain these shapes; that has not bitten and the check is a tripwire,
- *  not a proof.) */
+/** Strip comments, LENGTH-PRESERVING — every comment character becomes a
+ *  space (newlines kept), so offsets and line numbers into the original text
+ *  stay valid. Signal detection must not be fooled by a guard named inside a
+ *  comment, and the method-span scanner must not be fooled by the backticks
+ *  and apostrophes comments contain: a scanner that skips strings reads
+ *  `` `channels.ts`'s `` as one backticked string plus a stray `'` that
+ *  opens a phantom string and swallows a handler. String literals pass
+ *  through verbatim (a `//` inside one is not a comment). */
 function stripComments(text) {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1 ')
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]
+    if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') { out += ' '; i++ }
+    } else if (c === '/' && text[i + 1] === '*') {
+      out += '  '
+      i += 2
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) {
+        out += text[i] === '\n' ? '\n' : ' '
+        i++
+      }
+      if (i < text.length) { out += '  '; i += 2 }
+    } else if (c === "'" || c === '`' || c === '"') {
+      const q = c
+      out += c
+      i++
+      while (i < text.length) {
+        if (text[i] === '\\' && i + 1 < text.length) { out += text[i] + text[i + 1]; i += 2; continue }
+        out += text[i]
+        if (text[i] === q) { i++; break }
+        i++
+      }
+    } else {
+      out += c
+      i++
+    }
+  }
+  return out
 }
 
 /** Collapse whitespace and cap length — zod expressions render verbatim but
@@ -182,11 +213,16 @@ function extractRoute(file) {
   if (!pathMatch) throw new Error(`no defineApi('…') literal in ${relative(ROOT, file)}`)
   const path = pathMatch[1]
 
+  // Handlers are scanned on the comment-stripped text (same length as `raw`,
+  // so offsets carry over): comments inside a handler carry backticks and
+  // apostrophes that a string-skipping scanner misreads. `lines` stays raw —
+  // the `// doc:` notes ARE comments.
+  const sraw = stripComments(raw)
   // The handlers object: first { after the defineApi( open paren.
-  const openParen = raw.indexOf('(', pathMatch.index)
-  const objOpen = raw.indexOf('{', openParen)
-  const objClose = matchDelim(raw, objOpen)
-  const handlers = raw.slice(objOpen + 1, objClose)
+  const openParen = sraw.indexOf('(', pathMatch.index)
+  const objOpen = sraw.indexOf('{', openParen)
+  const objClose = matchDelim(sraw, objOpen)
+  const handlers = sraw.slice(objOpen + 1, objClose)
 
   // Top-level method keys inside the handlers object. Depth is tracked from
   // the object interior; a method key at any other depth is not a handler.
@@ -266,7 +302,7 @@ function extractRoute(file) {
     return {
       method: span.method,
       ...authClass(valueClean, valueRaw),
-      body: bodySchema(valueRaw, raw),
+      body: bodySchema(valueRaw, sraw),
       returns: returnsShape(valueRaw),
       statuses: statusList(valueRaw, valueClean),
       sse: valueRaw.includes('text/event-stream'),

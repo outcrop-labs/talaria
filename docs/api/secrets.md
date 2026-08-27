@@ -42,6 +42,8 @@ Source: [`ui/src/routes/api/secrets.ts`](../../ui/src/routes/api/secrets.ts)
 | `entries` | `z.array(Entry).min(1).max(20)` |  |
 | `note` | `z.string().max(400).nullish()` |  |
 | `folderId` | `Uuid.nullish()` |  |
+| `readers` | `z.array(Uuid).max(50).optional()` |  |
+| `grantTo` | `z.array(z.string().max(120)).max(50).optional()` |  |
 | `allowedHosts` | `z.array(z.string().max(253)).max(30).optional()` |  |
 | `expiresAt` | `z.string().max(40).nullish()` |  |
 
@@ -142,6 +144,11 @@ Source: [`ui/src/routes/api/secrets.relay.ts`](../../ui/src/routes/api/secrets.r
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `agentModel` | `z.string().min(1).max(120)` |  |
+| `label` | `z.string().min(1).max(60)` |  |
+| `value` | `z.string().min(1).max(20_000)` |  |
+| `note` | `z.string().max(400).nullish()` |  |
+| `allowedHosts` | `z.array(z.string().max(253)).max(10).optional()` |  |
 
 ## `/api/secrets/reveal`
 

@@ -13,6 +13,7 @@
 | [`/api/kb/comments/{id}`](#apikbcommentsid) | DELETE | `session` |
 | [`/api/kb/docs/{id}`](#apikbdocsid) | GET | `dual` |
 | [`/api/kb/docs/{id}`](#apikbdocsid) | PUT | `dual` |
+| [`/api/kb/docs/{id}`](#apikbdocsid) | DELETE | `session` |
 | [`/api/kb/docs/{id}/backlinks`](#apikbdocsidbacklinks) | GET | `session` |
 | [`/api/kb/docs/{id}/comments`](#apikbdocsidcomments) | GET | `session` |
 | [`/api/kb/docs/{id}/comments`](#apikbdocsidcomments) | POST | `session` |
@@ -23,12 +24,14 @@
 | [`/api/kb/public/space/{slug}`](#apikbpublicspaceslug) | GET | `public` |
 | [`/api/kb/search`](#apikbsearch) | GET | `session` |
 | [`/api/kb/spaces`](#apikbspaces) | GET | `dual` |
+| [`/api/kb/spaces`](#apikbspaces) | POST | `dual` |
 | [`/api/kb/spaces/{id}`](#apikbspacesid) | GET | `session` |
 | [`/api/kb/spaces/{id}`](#apikbspacesid) | PUT | `session` |
 | [`/api/kb/spaces/{id}`](#apikbspacesid) | DELETE | `session` |
 | [`/api/kb/spaces/{id}/docs`](#apikbspacesiddocs) | GET | `dual` |
 | [`/api/kb/spaces/{id}/docs`](#apikbspacesiddocs) | POST | `dual` |
 | [`/api/memory/{id}`](#apimemoryid) | GET | `session` |
+| [`/api/memory/{id}`](#apimemoryid) | PUT | `session` |
 | [`/api/rag/collections`](#apiragcollections) | GET | `session` |
 | [`/api/rag/collections`](#apiragcollections) | POST | `admin` |
 | [`/api/rag/collections/{id}`](#apiragcollectionsid) | PUT | `admin` |
@@ -70,6 +73,7 @@ Source: [`ui/src/routes/api/kb.docs.$id.ts`](../../ui/src/routes/api/kb.docs.$id
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{doc, editors}` | 200, 403, 404 | — |
 | PUT | `dual` | [body](#put-apikbdocsid-body) | `{doc, editors}` | 200, 400, 403, 404 | audit |
+| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 
 ### PUT `/api/kb/docs/{id}` body
 
@@ -85,6 +89,7 @@ Source: [`ui/src/routes/api/kb.docs.$id.ts`](../../ui/src/routes/api/kb.docs.$id
 | `parentId` | `Uuid.nullish()` |  |
 | `official` | `z.boolean().optional()` |  |
 | `regenerateOkf` | `z.boolean().optional()` |  |
+| `ragRouting` | `z.string().max(60).optional()` |  |
 
 ## `/api/kb/docs/{id}/backlinks`
 
@@ -197,9 +202,10 @@ Source: [`ui/src/routes/api/kb.spaces.ts`](../../ui/src/routes/api/kb.spaces.ts)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | [body](#get-apikbspaces-body) | `{space}` | 200 | audit |
+| GET | `dual` | — | `…` | 200 | — |
+| POST | `dual` | [body](#post-apikbspaces-body) | `{space}` | 200 | audit |
 
-### GET `/api/kb/spaces` body
+### POST `/api/kb/spaces` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -250,6 +256,7 @@ Source: [`ui/src/routes/api/kb.spaces.$id.docs.ts`](../../ui/src/routes/api/kb.s
 | `title` | `z.string().max(200).optional()` |  |
 | `parentId` | `Uuid.nullish()` |  |
 | `kind` | `z.enum(['human', 'agent']).optional()` |  |
+| `body` | `z.string().max(500_000).optional()` |  |
 
 ## `/api/memory/{id}`
 
@@ -260,9 +267,10 @@ Source: [`ui/src/routes/api/memory.$id.ts`](../../ui/src/routes/api/memory.$id.t
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | [body](#get-apimemoryid-body) | `{ok}` | 200, 400, 403 | — |
+| GET | `session` | — | `…` | 200, 400, 403 | — |
+| PUT | `session` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400, 403 | — |
 
-### GET `/api/memory/{id}` body
+### PUT `/api/memory/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |

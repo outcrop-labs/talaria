@@ -37,11 +37,13 @@
 | [`/api/admin/model-fitness`](#apiadminmodel-fitness) | GET | `admin` |
 | [`/api/admin/model-fitness`](#apiadminmodel-fitness) | POST | `admin` |
 | [`/api/admin/model-roles`](#apiadminmodel-roles) | GET | `admin` |
+| [`/api/admin/model-roles`](#apiadminmodel-roles) | PUT | `admin` |
 | [`/api/admin/outreach`](#apiadminoutreach) | GET | `admin` |
 | [`/api/admin/outreach`](#apiadminoutreach) | PUT | `admin` |
 | [`/api/admin/permissions`](#apiadminpermissions) | GET | `admin` |
 | [`/api/admin/permissions`](#apiadminpermissions) | PUT | `admin` |
 | [`/api/admin/platform-agents`](#apiadminplatform-agents) | GET | `admin` |
+| [`/api/admin/platform-agents`](#apiadminplatform-agents) | PUT | `admin` |
 | [`/api/admin/rag`](#apiadminrag) | GET | `admin` |
 | [`/api/admin/rag`](#apiadminrag) | PUT | `admin` |
 | [`/api/admin/rag`](#apiadminrag) | POST | `admin` |
@@ -60,6 +62,7 @@
 | [`/api/admin/users`](#apiadminusers) | GET | `admin` |
 | [`/api/admin/users`](#apiadminusers) | PUT | `admin` |
 | [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | GET | `admin` |
+| [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | POST | `admin` |
 
 ## `/api/admin/apps`
 
@@ -200,6 +203,8 @@ Source: [`ui/src/routes/api/admin.google-client.ts`](../../ui/src/routes/api/adm
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `clientId` | `z.string().min(1).max(200)` |  |
+| `clientSecret` | `z.string().max(400).nullable().optional()` |  |
+| `hd` | `z.string().max(200).nullable().optional()` |  |
 
 ## `/api/admin/guardrails`
 
@@ -317,10 +322,17 @@ Source: [`ui/src/routes/api/admin.model-fitness.ts`](../../ui/src/routes/api/adm
 | `adversaryModel` | `z.string().max(200).nullish()` |  |
 | `only` | `z.array(z.string().max(120)).max(64).optional()` |  |
 | `restart` | `z.boolean().optional()` |  |
+| `reprobe` | `z.boolean().optional()` |  |
+| `concurrency` | `z.number().int().min(1).max(8).optional()` |  |
+| `retryFailed` | `z.boolean().optional()` |  |
+| `supplement` | `z.boolean().optional()` |  |
 
 ### POST `/api/admin/model-fitness` body — variant 2
 
-Schema not a literal object in the route file (// A model stops ONE run; omitted stops every run in flight. z.object({ action: z.literal('stop'), model: z.string().max(200).nullish() })) — see the route source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `z.literal('stop')` |  |
+| `model` | `z.string().max(200).nullish()` |  |
 
 ### POST `/api/admin/model-fitness` body — variant 3
 
@@ -331,11 +343,10 @@ Schema not a literal object in the route file (// A model stops ONE run; omitted
 
 ### POST `/api/admin/model-fitness` body — variant 4
 
-Schema not a literal object in the route file (// CLEAR is not FORGET. Forget drops what a model CAN DO (probe facts, paid // for once and true until the id is re-pointed); this drops wh…) — see the route source.
-
-### POST `/api/admin/model-fitness` body — variant 5
-
-Schema not a literal object in the route file (// so a candidate can be swept again from nothing. `model: null` clears every // tested candidate. z.object({ action: z.literal('clear'), m…) — see the route source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `z.literal('clear')` |  |
+| `model` | `z.string().max(200).nullish()` |  |
 
 ## `/api/admin/model-roles`
 
@@ -349,14 +360,16 @@ Source: [`ui/src/routes/api/admin.model-roles.ts`](../../ui/src/routes/api/admin
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | [body](#get-apiadminmodel-roles-body) | `{roles, assignments, models, issues}` | 200, 400 | audit |
+| GET | `admin` | — | `{roles, assignments, models, issues}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminmodel-roles-body) | `{assignments, issues}` | 200, 400 | audit |
 
-### GET `/api/admin/model-roles` body
+### PUT `/api/admin/model-roles` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `role` | `z.enum(ROLES as [string,...string[]])` |  |
 | `model` | `z.string().max(200).nullable().optional()` |  |
+| `effort` | `z.string().min(1).max(24).nullable().optional()` |  |
 
 ## `/api/admin/outreach`
 
@@ -377,6 +390,7 @@ Source: [`ui/src/routes/api/admin.outreach.ts`](../../ui/src/routes/api/admin.ou
 | `enabled` | `z.boolean()` |  |
 | `intervalMinutes` | `z.number().int().min(15).max(24 * 60)` |  |
 | `dailyDmCap` | `z.number().int().min(1).max(20)` |  |
+| `proactiveAgents` | `z.array(z.string()).max(100)` |  |
 
 ## `/api/admin/permissions`
 
@@ -419,14 +433,16 @@ Source: [`ui/src/routes/api/admin.platform-agents.ts`](../../ui/src/routes/api/a
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | [body](#get-apiadminplatform-agents-body) | `{agents, models}` | 200, 400 | audit |
+| GET | `admin` | — | `{agents, models}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminplatform-agents-body) | `{ok}` | 200, 400 | audit |
 
-### GET `/api/admin/platform-agents` body
+### PUT `/api/admin/platform-agents` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `id` | `z.enum(IDS as [PlatformAgentId,...PlatformAgentId[]])` |  |
 | `model` | `z.string().max(200).nullable().optional()` |  |
+| `effort` | `z.string().min(1).max(24).nullable().optional()` |  |
 
 ## `/api/admin/rag`
 
@@ -448,6 +464,7 @@ Source: [`ui/src/routes/api/admin.rag.ts`](../../ui/src/routes/api/admin.rag.ts)
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `reranker` | `z.object({ provider: z.enum(PROVIDER_IDS).optional(), url: z.string().max(500).nullish(), model: z.string().max(200).nullish(), apiKey: z.s…` |  |
+| `spaceBrain` | `z.object({ spaceId: Uuid, collectionId: Uuid.nullable() }).optional()` |  |
 
 ### POST `/api/admin/rag` body — variant 1
 
@@ -457,11 +474,10 @@ Source: [`ui/src/routes/api/admin.rag.ts`](../../ui/src/routes/api/admin.rag.ts)
 
 ### POST `/api/admin/rag` body — variant 2
 
-Schema not a literal object in the route file (// Model catalog for the picker. The candidate API key travels in a POST // body — NEVER a query string) — see the route source.
-
-### POST `/api/admin/rag` body — variant 3
-
-Schema not a literal object in the route file (where it would land in access/proxy logs. z.object({ models: z.string().min(1).max(40), key: z.string().max(500).nullish() })) — see the route source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `models` | `z.string().min(1).max(40)` |  |
+| `key` | `z.string().max(500).nullish()` |  |
 
 ## `/api/admin/search`
 
@@ -475,13 +491,14 @@ Source: [`ui/src/routes/api/admin.search.ts`](../../ui/src/routes/api/admin.sear
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{url, reachable, error}` | 200 | — |
-| PUT | `admin` | [body](#put-apiadminsearch-body) | `{url, reachable, error}` | 200, 400 | audit |
+| GET | `admin` | — | `{url, fromEnv, reachable, error}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminsearch-body) | `{url, reachable, error}` | 200 | audit |
 
 ### PUT `/api/admin/search` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `url` | `z.string().max(300)` |  |
 
 ## `/api/admin/secrets`
 
@@ -528,6 +545,7 @@ Source: [`ui/src/routes/api/admin.settings.ts`](../../ui/src/routes/api/admin.se
 | :--- | :--- | :--- |
 | `auditRetentionDays` | `z.number().int().min(0).max(3650).optional()` |  |
 | `org` | `z.object({ name: z.string().max(120).optional(), about: z.string().max(2000).optional() }).optional()` |  |
+| `memberModels` | `z.array(z.string().min(1).max(200)).max(200).optional()` |  |
 
 ## `/api/admin/storage`
 
@@ -607,6 +625,7 @@ Source: [`ui/src/routes/api/admin.users.ts`](../../ui/src/routes/api/admin.users
 | `canMintKeys` | `z.boolean().optional()` |  |
 | `deniedViews` | `z.array(z.string().max(60)).max(40).optional()` |  |
 | `allowedManageViews` | `z.array(z.string().max(60)).max(10).optional()` |  |
+| `assistantElevated` | `z.boolean().optional()` |  |
 
 ## `/api/admin/workspace-secrets`
 
@@ -620,9 +639,10 @@ Source: [`ui/src/routes/api/admin.workspace-secrets.ts`](../../ui/src/routes/api
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | [body](#get-apiadminworkspace-secrets-body) | `{held}` | 200, 400, 404 | audit |
+| GET | `admin` | — | `{held}` | 200 | — |
+| POST | `admin` | [body](#post-apiadminworkspace-secrets-body) | `{secret}` | 200, 400, 404 | audit |
 
-### GET `/api/admin/workspace-secrets` body — variant 1
+### POST `/api/admin/workspace-secrets` body — variant 1
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -635,8 +655,9 @@ Source: [`ui/src/routes/api/admin.workspace-secrets.ts`](../../ui/src/routes/api
 | `expiresAt` | `z.string().max(40).nullish()` |  |
 | `uses` | `z.number().int().min(1).max(1000).nullish()` |  |
 | `grantTo` | `z.array(z.string().max(120)).max(50).optional()` |  |
+| `allowedHosts` | `z.array(z.string().max(253)).max(30).optional()` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 2
+### POST `/api/admin/workspace-secrets` body — variant 2
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -644,7 +665,7 @@ Source: [`ui/src/routes/api/admin.workspace-secrets.ts`](../../ui/src/routes/api
 | `name` | `z.string().max(40)` |  |
 | `agentModel` | `z.string().min(1).max(120)` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 3
+### POST `/api/admin/workspace-secrets` body — variant 3
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -652,29 +673,28 @@ Source: [`ui/src/routes/api/admin.workspace-secrets.ts`](../../ui/src/routes/api
 | `name` | `z.string().max(40)` |  |
 | `agentModel` | `z.string().min(1).max(120)` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 4
+### POST `/api/admin/workspace-secrets` body — variant 4
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `action` | `z.literal('delete')` |  |
 | `name` | `z.string().max(40)` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 5
+### POST `/api/admin/workspace-secrets` body — variant 5
 
-Schema not a literal object in the route file (// Folders) — see the route source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `z.literal('folder-create')` |  |
+| `name` | `z.string().min(1).max(60)` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 6
-
-Schema not a literal object in the route file (for grouping credentials and granting a whole set to an agent at // once — the same argument that made folder sharing worth building for pe…) — see the route source.
-
-### GET `/api/admin/workspace-secrets` body — variant 7
+### POST `/api/admin/workspace-secrets` body — variant 6
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `action` | `z.literal('folder-delete')` |  |
 | `id` | `Uuid` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 8
+### POST `/api/admin/workspace-secrets` body — variant 7
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -683,7 +703,7 @@ Schema not a literal object in the route file (for grouping credentials and gran
 | `agentModel` | `z.string().min(1).max(120)` |  |
 | `on` | `z.boolean()` |  |
 
-### GET `/api/admin/workspace-secrets` body — variant 9
+### POST `/api/admin/workspace-secrets` body — variant 8
 
 | field | schema | notes |
 | :--- | :--- | :--- |

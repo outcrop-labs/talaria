@@ -11,6 +11,7 @@
 | :--- | :--- | :--- |
 | [`/api/mcp`](#apimcp) | GET | `session` |
 | [`/api/mcp/gw/{server}`](#apimcpgwserver) | POST | `agent` |
+| [`/api/mcp/gw/{server}`](#apimcpgwserver) | GET | `agent` |
 | [`/api/mcp/icon`](#apimcpicon) | GET | `session` |
 | [`/api/mcp/library`](#apimcplibrary) | GET | `session` + `perm:agents.manage` |
 | [`/api/mcp/oauth/callback`](#apimcpoauthcallback) | GET | `public` |
@@ -47,7 +48,8 @@ Source: [`ui/src/routes/api/mcp.gw.$server.ts`](../../ui/src/routes/api/mcp.gw.$
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `agent` | — | `…` | 200, 403, 405, 502 + varies | SSE |
+| POST | `agent` | — | `…` | 200, 403, 502 + varies | SSE |
+| GET | `agent` | — | `…` | 200, 403, 405, 502 + varies | SSE |
 
 ## `/api/mcp/icon`
 
@@ -151,6 +153,7 @@ Source: [`ui/src/routes/api/mcp.servers.$id.ts`](../../ui/src/routes/api/mcp.ser
 | `assign` | `z.object({ agentModel: z.string().min(1).max(200), tools: z.array(z.string().max(120)).nullable() }).optional()` |  |
 | `unassign` | `z.string().min(1).max(200).optional()` |  |
 | `userAccess` | `z.object({ userId: Uuid, allowed: z.boolean().nullable(), tools: z.array(z.string().max(120)).nullable() }).optional()` |  |
+| `oauthClient` | `z.object({ clientId: z.string().min(1).max(200), clientSecret: z.string().max(500).nullable() }).optional()` |  |
 
 ## `/api/mcp/test`
 
@@ -168,4 +171,5 @@ Source: [`ui/src/routes/api/mcp.test.ts`](../../ui/src/routes/api/mcp.test.ts)
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `url` | `z.string().url().max(300)` |  |
+| `agentSlug` | `z.string().max(80).optional()` |  |
 

@@ -69,10 +69,15 @@ Source: [`ui/src/routes/api/inbox.focus.command.ts`](../../ui/src/routes/api/inb
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `key` | `z.string().min(1).max(600).nullable().optional()` |  |
+| `surface` | `z.string().max(40).nullable().optional()` |  |
 | `instruction` | `z.string().trim().min(1).max(20_000)` |  |
 | `delegateModel` | `z.string().max(300).nullable().optional()` |  |
 | `responseModel` | `z.string().max(300).nullable().optional()` |  |
 | `mode` | `z.enum(['normal', 'fast', 'plan']).default('normal')` |  |
+| `conversationId` | `Uuid.nullable().optional()` |  |
+| `effort` | `z.string().max(24).nullable().optional()` |  |
+| `attachmentIds` | `z.array(Uuid).max(12).default([])` |  |
+| `refs` | `z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid, })).max(6).default([])` |  |
 
 ## `/api/inbox/focus/conversations`
 

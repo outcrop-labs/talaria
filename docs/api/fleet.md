@@ -175,6 +175,10 @@ Source: [`ui/src/routes/api/fleet.create.ts`](../../ui/src/routes/api/fleet.crea
 | `department` | `z.string().min(2).max(40)` |  |
 | `displayName` | `z.string().min(1).max(60)` |  |
 | `role` | `z.string().max(80).nullish()` |  |
+| `templateId` | `Uuid.optional()` |  |
+| `soul` | `z.string().max(200_000).optional()` |  |
+| `skills` | `z.array(z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/), content: z.string().max(100_000) })).max(5).optional()` |  |
+| `start` | `z.boolean().optional()` |  |
 
 ## `/api/fleet/crons`
 
@@ -227,6 +231,13 @@ Source: [`ui/src/routes/api/fleet.defs.$id.ts`](../../ui/src/routes/api/fleet.de
 | :--- | :--- | :--- |
 | `role` | `z.string().max(80).nullish()` |  |
 | `displayName` | `z.string().min(1).max(80).optional()` |  |
+| `emailAlias` | `z.string().trim().max(320).refine((v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), 'not an email address').nullish()` |  |
+| `ticketTemplateId` | `Uuid.nullable().optional()` |  |
+| `planTemplateId` | `Uuid.nullable().optional()` |  |
+| `workbench` | `z.enum(['off', 'auto', 'on']).optional()` |  |
+| `workbenchProfile` | `z.string().max(40).nullable().optional()` |  |
+| `workbenchHarness` | `z.string().max(40).nullable().optional()` |  |
+| `workbenchModels` | `z.object({ light: z.string().max(200).nullable().optional(), standard: z.string().max(200).nullable().optional(), heavy: z.string().max(200…` |  |
 
 ## `/api/fleet/defs/{id}/edit`
 
@@ -249,6 +260,7 @@ Source: [`ui/src/routes/api/fleet.defs.$id.edit.ts`](../../ui/src/routes/api/fle
 | `aliases` | `z.array(Target.extend({ name: z.string().min(1).max(60) })).max(20)` |  |
 | `fallbacks` | `z.array(Target).max(10)` |  |
 | `note` | `z.string().max(300).optional()` |  |
+| `apply` | `z.boolean().optional()` |  |
 
 ## `/api/fleet/defs/{id}/mcp`
 
@@ -307,7 +319,9 @@ Source: [`ui/src/routes/api/fleet.endpoints.ts`](../../ui/src/routes/api/fleet.e
 | `provider` | `z.string().min(2).max(40)` |  |
 | `baseUrl` | `z.string().url().max(300).nullish()` |  |
 | `class` | `z.enum(['local', 'cloud'])` |  |
-| `models` | `z.array(z.string().min(1).max(120)).max(100).optional()` | Raw provider API key — sealed (secretbox) server-side, never stored or returned in the clear. |
+| `apiKeyEnv` | `z.string().regex(/^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/).max(80).nullish()` |  |
+| `apiKey` | `z.string().max(400).nullish()` |  |
+| `models` | `z.array(z.string().min(1).max(120)).max(100).optional()` |  |
 | `modelPrices` | `z.record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() })).optional()` |  |
 
 ## `/api/fleet/endpoints/{id}`
@@ -334,6 +348,10 @@ Source: [`ui/src/routes/api/fleet.endpoints.$id.ts`](../../ui/src/routes/api/fle
 | `priceOutPerMtok` | `z.number().nonnegative().nullish()` |  |
 | `models` | `z.array(z.string().min(1).max(120)).max(100).optional()` |  |
 | `modelPrices` | `z.record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() })).optional()` |  |
+| `modelEfforts` | `z.record(z.string().max(120), z.array(z.string().min(1).max(24)).min(1).max(12)).optional()` |  |
+| `requestDefaults` | `z.record(z.string().max(120), z.unknown()).optional()` |  |
+| `apiKey` | `z.string().max(400).nullish()` |  |
+| `force` | `z.boolean().optional()` |  |
 
 ## `/api/fleet/endpoints/{id}/available`
 
@@ -365,6 +383,7 @@ Source: [`ui/src/routes/api/fleet.federate.ts`](../../ui/src/routes/api/fleet.fe
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `dir` | `z.string().trim().min(1).max(500)` |  |
 
 ## `/api/fleet/reconcile`
 
