@@ -21,7 +21,7 @@ admin.
 Your assistant is yours alone — its own memory, skills, and private knowledge, running on a
 model nobody else picked, because it reads your private work.
 
-1. **Settings → Assistant** (or **Set up your assistant** on your first Inbox) opens the wizard.
+1. **Set up your assistant** — the card at the top of your sidebar, or **Settings → Assistant**.
 2. **Name** it and give it a **handle** — the handle is how agents and integrations refer to
    it, and can't be changed later.
 3. Pick a personality preset (Warm & proactive · Concise & professional · Playful & curious)
@@ -60,6 +60,10 @@ and outbound mail and invites always wait for your approval.
 
 ## Where to read next
 
-- [Your day](./your-day.md) — the daily brief and your assistant
+- [Your day](./your-day.md) — the daily brief and your assistant ·
+  [Your assistant](./personal-assistant.md) — set up and tuning
+- [Working with agents](./working-with-agents.md) — mentions, tickets, review and sign-off
 - [Comms](./comms.md) · [Boards](./boards.md) · [Plan](./plan.md) ·
-  [Research](./research.md) · [Knowledge](./knowledge.md) · [Files](./files.md)
+  [Research](./research.md) · [Knowledge](./knowledge.md) · [Files](./files.md) ·
+  [Templates](./templates.md) · [Apps](./apps.md)
+- Running the place? Start with [Admin: People](./admin-people.md)
