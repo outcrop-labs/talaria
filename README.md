@@ -173,6 +173,8 @@ Running it for real? One command runs the whole stack as containers, zero requir
 secrets generated on first boot: [`docs/CONTAINER.md`](./docs/CONTAINER.md). Prebuilt images
 (`nightly`, `rc`, versioned) are published to GHCR, see [`RELEASING.md`](./RELEASING.md).
 Full setup detail, the dev loop, and the architecture: [`DEVELOPERS.md`](./DEVELOPERS.md).
+Just using Talaria, no interest in running it? The member guides live in
+[`docs/user/`](./docs/user/README.md).
 
 ## Status & roadmap
 
