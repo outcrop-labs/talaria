@@ -24,6 +24,7 @@
 // ever carried was wrong within a round, because the doors were hand-written
 // copies. These are not copies, so there is nothing to count.
 import { subjectModel, type AgentSubject } from './agent-auth'
+import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
@@ -679,7 +680,7 @@ export async function dispatchWorkbenchMcp(
       return {
         status: 200,
         body: result(rpc.id, {
-          protocolVersion: (rpc.params?.protocolVersion as string) ?? '2025-03-26',
+          protocolVersion: (rpc.params?.protocolVersion as string) ?? MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
           serverInfo: { name: 'talaria-workbench', version: '1.0' },
         }),

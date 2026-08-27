@@ -1,5 +1,6 @@
 // Boards — user-owned kanban boards, shareable across the team. Membership is
 // the share mechanism (role: owner | editor | viewer).
+import type { Sql } from 'postgres'
 import { db } from './db/pg'
 import { isElevatedAssistant } from './users'
 import { statusMeta, type StatusMeta } from './statuses'
@@ -21,6 +22,44 @@ export interface Board {
 
 const RANK: Record<BoardRole, number> = { owner: 3, editor: 2, viewer: 1 }
 
+// ── The two board-visibility SQL fragments ───────────────────────────────────
+//
+// The same shape `statusCategorySql` uses in server/statuses.ts: one shared
+// fragment instead of a hand-written copy per query. These two exist because
+// the copies DID drift — nine user-side joins of which three forgot the
+// `archived_at` filter, and an agent-side twin on the check-invariants census.
+// An archived board is out of service at every door: it had vanished from
+// every list while still reachable through retrieval scopes, the activity
+// feed and upload reach checks.
+//
+// Both reference the board by the alias `b` — the alias every caller already
+// uses — and take the caller's own `sql` tag, because a fragment is inert
+// until embedded in a query and this module owns the semantics, not the
+// connection. EXISTS rather than a JOIN so they drop into any scope that can
+// see `b` (including inside an `exists (…)` of its own) without colliding
+// with the caller's aliases or changing its row count. Queries that need the
+// member's ROLE (`listBoards`) keep their left joins for the role and use
+// these only as the predicate.
+
+/** SQL fragment: the board `b` is one this USER can see — a direct member, or
+ *  a member of the team that owns it — and not archived. `includeArchived`
+ *  drops the archival arm for `listBoards`, the one caller with a deliberate
+ *  view of retired boards (it states its own). */
+export const boardVisibilitySql = (sql: Sql, userId: string, opts: { includeArchived?: boolean } = {}): ReturnType<Sql> =>
+  opts.includeArchived
+    ? sql`(exists (select 1 from board_members bvm where bvm.board_id = b.id and bvm.user_id = ${userId}) or exists (select 1 from team_members tvm where tvm.team_id = b.team_id and tvm.user_id = ${userId}))`
+    : sql`(b.archived_at is null and (exists (select 1 from board_members bvm where bvm.board_id = b.id and bvm.user_id = ${userId}) or exists (select 1 from team_members tvm where tvm.team_id = b.team_id and tvm.user_id = ${userId})))`
+
+/** SQL fragment: the board `b` is one this AGENT may touch under its board
+ *  policy — `allow_all_agents`, or listed on the board — and not archived.
+ *  This is `boardAllowsAgent`'s question, as a fragment, for the set-scoping
+ *  queries that cannot call a per-row JS predicate without an N+1. The
+ *  elevated-assistant bypass stays OUT of it: that exemption is policy, and
+ *  the SQL sites it would widen are reach checks an assistant must not pass
+ *  on a board it was never added to. */
+export const agentBoardPolicySql = (sql: Sql, agentModel: string): ReturnType<Sql> =>
+  sql`(b.archived_at is null and (b.allow_all_agents or exists (select 1 from board_agents abm where abm.board_id = b.id and abm.agent_model = ${agentModel})))`
+
 export interface BoardMember {
   userId: string
   email: string | null
@@ -41,7 +80,7 @@ export async function listBoards(userId: string, archived = false): Promise<Boar
     left join board_members m on m.board_id = b.id and m.user_id = ${userId}
     left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
     left join teams t on t.id = b.team_id
-    where (m.user_id is not null or tm.user_id is not null)
+    where ${boardVisibilitySql(sql, userId, { includeArchived: true })}
       and b.archived_at is ${archived ? sql`not null` : sql`null`}
     order by b.updated_at desc
   `
@@ -356,9 +395,8 @@ export async function listBoardsForAgent(model: string): Promise<Array<Omit<Boar
     select distinct b.id, b.name, b.owner_id as "ownerId", b.team_id as "teamId", t.name as "teamName",
            b.created_at as "createdAt", b.updated_at as "updatedAt", b.archived_at as "archivedAt"
     from boards b
-    left join board_agents a on a.board_id = b.id and a.agent_model = ${model}
     left join teams t on t.id = b.team_id
-    where (b.allow_all_agents or a.agent_model is not null) and b.archived_at is null
+    where ${agentBoardPolicySql(sql, model)}
     order by b.updated_at desc
   `
   return rows as unknown as Array<Omit<Board, 'role'>>

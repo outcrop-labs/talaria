@@ -7,6 +7,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { db } from './db/pg'
+import { agentBoardPolicySql, boardVisibilitySql } from './boards'
 import { getSetting, setSetting } from './audit'
 import { activeTarget, getStorageConfig, internalTarget, replicaTarget, s3Get, s3Put, targetReady, type BucketTarget } from './storage'
 
@@ -310,7 +311,7 @@ export async function canAccessUpload(
     const [task] = (await sql`
       select 1 as ok from tasks t join boards b on b.id = t.board_id
       where t.attachments @> ${ref}::jsonb
-        and (b.allow_all_agents or exists(select 1 from board_agents ba where ba.board_id = b.id and ba.agent_model = ${viewer.agent}))
+        and ${agentBoardPolicySql(sql, viewer.agent)}
       limit 1
     `) as unknown as Array<{ ok: number }>
     if (task) return true
@@ -368,9 +369,7 @@ export async function canAccessUpload(
       )
       or exists(
         select 1 from tasks t join boards b on b.id = t.board_id
-        left join board_members m2 on m2.board_id = b.id and m2.user_id = ${viewer.userId}
-        left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${viewer.userId}
-        where t.attachments @> ${ref}::jsonb and (m2.user_id is not null or tm.user_id is not null)
+        where t.attachments @> ${ref}::jsonb and ${boardVisibilitySql(sql, viewer.userId)}
       )
     limit 1
   `) as unknown as Array<{ ok: number }>

@@ -13,10 +13,9 @@
 // a paragraph.
 import { describe, expect, it, vi } from 'vitest'
 import type { DecisionAnswer, RunRow, StepResult } from '@/server/runs/define'
+import { SourceRegistry, type ResearchSource } from '@/server/source-registry'
 import {
   makeResearchRun,
-  SourceRegistry,
-  type RegistrySource,
   type ResearchCheckpoint,
   type ResearchInput,
   type ResearchRunDeps,
@@ -47,7 +46,7 @@ interface World {
   notified: number
   finished: Array<{ artifactId: string; stats: Record<string, number> }>
   failed: string[]
-  sourcesSaved: RegistrySource[][]
+  sourcesSaved: ResearchSource[][]
   /** The artifact_links row, which is what makes a created artifact findable by
    *  the next entry. */
   link: string | null
@@ -527,12 +526,28 @@ describe('the citation registry', () => {
   })
 
   it('rebuilds in idx order however the checkpoint stored it', () => {
-    const scrambled: RegistrySource[] = [
+    const scrambled: ResearchSource[] = [
       { idx: 2, url: 'https://b', title: 'B', snippet: null },
       { idx: 1, url: 'https://a', title: 'A', snippet: null },
     ]
     const reg = SourceRegistry.from(scrambled)
     expect(reg.add({ url: 'https://a', title: null, snippet: null })).toBe(1)
     expect(reg.add({ url: 'https://b', title: null, snippet: null })).toBe(2)
+  })
+
+  it('continues above the highest when the parent seeded a gap, not at size + 1', () => {
+    // THE DIVERGENCE THIS CONSOLIDATION CLOSED. The registry this file used to
+    // carry allocated `size + 1` and defended it with "the map is the whole
+    // registry" — true only while nothing upstream ever wrote a gap. A parent
+    // whose source list lost [2] (size 2, highest [3]) handed [3] to the
+    // follow-up's first NEW source, re-aiming every citation the parent's
+    // already-published prose makes to [3].
+    const parent: ResearchSource[] = [
+      { idx: 1, url: 'https://a', title: 'A', snippet: null },
+      { idx: 3, url: 'https://c', title: 'C', snippet: null },
+    ]
+    const reg = SourceRegistry.from(parent)
+    expect(reg.add({ url: 'https://d', title: 'D', snippet: null })).toBe(4)
+    expect(reg.list().map((s) => s.idx).sort((a, b) => a - b)).toEqual([1, 3, 4])
   })
 })

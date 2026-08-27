@@ -3,6 +3,7 @@
 // surfaces exactly those queues (scoped to boards the user can see) plus unread
 // mentions. One round-trip, cheap aggregates.
 import { db } from './db/pg'
+import { boardVisibilitySql } from './boards'
 import { activityFeed, type ActivityEvent } from './activity-feed'
 import { computeAlerts } from './alerts'
 import { orgProfile } from './org'
@@ -71,10 +72,8 @@ export async function homeQueues(userId: string): Promise<HomeQueues> {
            end as "queue"
     from tasks t
     join boards b on b.id = t.board_id
-    left join board_members m on m.board_id = b.id and m.user_id = ${userId}
-    left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
-    where (m.user_id is not null or tm.user_id is not null)
-      and b.archived_at is null and t.archived_at is null
+    where ${boardVisibilitySql(sql, userId)}
+      and t.archived_at is null
       and (
         t.status = 'blocked'
         or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review')
@@ -106,9 +105,7 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
   const [{ boards }] = (await sql`
     select count(distinct b.id)::int as boards
     from boards b
-    left join board_members m on m.board_id = b.id and m.user_id = ${userId}
-    left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
-    where (m.user_id is not null or tm.user_id is not null) and b.archived_at is null
+    where ${boardVisibilitySql(sql, userId)}
   `) as unknown as [{ boards: number }]
 
   // The org half of the glance: name, an activity pulse everyone sees, and

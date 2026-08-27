@@ -1,4 +1,5 @@
 import { db } from './db/pg'
+import { boardVisibilitySql } from './boards'
 import { listPending } from './google/pending-actions'
 import { statusCategorySql } from './statuses'
 import type { SessionUser } from './api-guard'
@@ -32,10 +33,8 @@ export async function taskItems(userId: string, sourceId?: string): Promise<RawF
            ) as "isTriage"
     from tasks t
     join boards b on b.id = t.board_id
-    left join board_members m on m.board_id = b.id and m.user_id = ${userId}
-    left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
-    where (m.user_id is not null or tm.user_id is not null)
-      and b.archived_at is null and t.archived_at is null
+    where ${boardVisibilitySql(sql, userId)}
+      and t.archived_at is null
       and (${sourceId ?? null}::text is null or t.id::text = ${sourceId ?? null})
       and (
         t.status in ('failed', 'blocked')
@@ -285,9 +284,7 @@ async function accessibleNotificationHrefs(userId: string, hrefs: readonly strin
     boardIds.length
       ? (sql`
           select distinct b.id::text as id from boards b
-          left join board_members m on m.board_id = b.id and m.user_id = ${userId}
-          left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
-          where b.id = any(${boardIds}::uuid[]) and b.archived_at is null and (m.user_id is not null or tm.user_id is not null)
+          where b.id = any(${boardIds}::uuid[]) and ${boardVisibilitySql(sql, userId)}
         ` as unknown as Promise<Array<{ id: string }>>)
       : Promise.resolve([] as Array<{ id: string }>),
     channelIds.length

@@ -12,6 +12,7 @@
 // week. Every one of those has a live number somewhere in the process — the
 // work is bringing it to a person, not computing it.
 import { db } from './db/pg'
+import { boardVisibilitySql } from './boards'
 import { listAgents } from './gateway'
 import { containerStatus } from './fleet-docker'
 import { costOverview } from './usage'
@@ -80,10 +81,8 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
              extract(day from now() - t.updated_at)::int as days
       from tasks t
       join boards b on b.id = t.board_id
-      left join board_members m on m.board_id = b.id and m.user_id = ${userId}
-      left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
-      where (m.user_id is not null or tm.user_id is not null)
-        and b.archived_at is null and t.archived_at is null
+      where ${boardVisibilitySql(sql, userId)}
+        and t.archived_at is null
         and (t.status = 'failed' or (t.status = 'blocked' and t.updated_at < now() - interval '7 days'))
       order by t.updated_at asc limit 20
     ` as unknown as Promise<Array<{ id: string; title: string; status: string; board_id: string; board: string; days: number }>>,

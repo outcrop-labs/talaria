@@ -24,6 +24,7 @@ import { assistantOwnerFor } from './users'
 import { subjectModel, type AgentSubject } from './agent-auth'
 import { hasOauthTokens, oauthTokenFor } from './mcp-oauth'
 import { safeFetch } from './safe-fetch'
+import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
 
 export interface McpServer {
   id: string
@@ -344,7 +345,7 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
     jsonrpc: '2.0',
     id: 1,
     method: 'initialize',
-    params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
+    params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
   })
   if (init.status >= 400) throw new Error(`MCP server "${serverName}" answered ${init.status}`)
   const res = await call({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } }, init.session)
@@ -412,7 +413,7 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
-      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
+      params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
     })
     if (init.status >= 400) return { error: `upstream ${init.status}` }
     const list = await call({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, init.session)

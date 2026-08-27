@@ -25,7 +25,9 @@ vi.mock('@/server/db/pg', () => ({
     const text = strings.join(' ').replace(/\s+/g, ' ').trim()
     if (text.includes('from notifications')) return Promise.resolve(net.notifications)
     if (text.includes('from boards b')) {
-      const wanted = values[values.length - 1] as string[]
+      // The shared `boardVisibilitySql` fragment embeds the user id AFTER the
+      // id array, so the array is no longer the last parameter — find it.
+      const wanted = values.find((v): v is string[] => Array.isArray(v))!
       return Promise.resolve(wanted.filter((id) => net.boards.has(id)).map((id) => ({ id })))
     }
     if (text.includes('from channels c')) {

@@ -21,6 +21,7 @@
 // a stale ACL behind.
 import { createHash, randomUUID } from 'node:crypto'
 import { db } from '../db/pg'
+import { agentBoardPolicySql, boardVisibilitySql } from '../boards'
 import { embed, embedOne } from './embed'
 import { upsertPoints, deletePoints, search as qdrantSearch, hybridQuery, type QdrantPoint } from './qdrant'
 import { collectionsForPrincipal, getCollection, type RagCollection } from './collections'
@@ -177,9 +178,7 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
     const chans = (await sql`select channel_id as id from channel_members where user_id = ${principal.userId}`) as unknown as Array<{ id: string }>
     const boards = (await sql`
       select b.id from boards b
-      left join board_members m on m.board_id = b.id and m.user_id = ${principal.userId}
-      left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${principal.userId}
-      where m.user_id is not null or tm.user_id is not null
+      where ${boardVisibilitySql(sql, principal.userId)}
     `) as unknown as Array<{ id: string }>
     return {
       should: [
@@ -208,8 +207,7 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
     // also fine, but boards are the primary agent scope) + org-wide content.
     const boards = (await sql`
       select b.id from boards b
-      where b.allow_all_agents
-         or exists (select 1 from board_agents ba where ba.board_id = b.id and ba.agent_model = ${principal.agentModel})
+      where ${agentBoardPolicySql(sql, principal.agentModel)}
     `) as unknown as Array<{ id: string }>
     return {
       should: [

@@ -23,6 +23,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { db } from './db/pg'
 import { seal, open } from './secretbox'
 import { safeFetch } from './safe-fetch'
+import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
 
 export interface OauthConfig {
   resource: string
@@ -113,7 +114,7 @@ export async function discoverOauth(serverUrl: string): Promise<OauthConfig | nu
         jsonrpc: '2.0',
         id: 1,
         method: 'initialize',
-        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
+        params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
       }),
       timeoutMs: 10_000,
     })

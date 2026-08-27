@@ -12,6 +12,8 @@
 // need to reach an internal MCP server put the host or CIDR in
 // TALARIA_FETCH_ALLOW_HOSTS and enter the real URL.
 import { safeFetch, BlockedUrlError } from './safe-fetch'
+import { parseMcpResponse } from './mcp-registry'
+import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
 
 export type McpProbeState = 'ok' | 'auth' | 'unreachable' | 'error'
 
@@ -27,7 +29,7 @@ const INITIALIZE = {
   id: 1,
   method: 'initialize',
   params: {
-    protocolVersion: '2025-06-18',
+    protocolVersion: MCP_PROTOCOL_VERSION,
     capabilities: {},
     clientInfo: { name: 'talaria-probe', version: '0.1.0' },
   },
@@ -56,19 +58,16 @@ export async function probeMcp(url: string, headers: Record<string, string> = {}
   }
   if (!res.ok) return { state: 'error', detail: `server answered ${res.status}` }
 
-  // Body may be JSON or an SSE frame ("data: {}"). Pull the first JSON object.
-  const text = await res.text()
-  const jsonStart = text.indexOf('{')
-  if (jsonStart === -1) return { state: 'ok', detail: 'reachable' }
-  try {
-    const j = JSON.parse(text.slice(jsonStart, text.lastIndexOf('}') + 1)) as {
-      result?: { serverInfo?: { name?: string } }
-      error?: { message?: string }
-    }
-    if (j.error) return { state: 'error', detail: j.error.message ?? 'server returned an error' }
-    const name = j.result?.serverInfo?.name
-    return { state: 'ok', detail: name ? `connected to ${name}` : 'connected' }
-  } catch {
-    return { state: 'ok', detail: 'reachable' }
-  }
+  // Body may be JSON or an SSE frame ("data: {}"). `parseMcpResponse` is the
+  // one reader for both — the brace-scan it replaced sliced first-`{` to
+  // last-`}`, so a body carrying more than one data frame (or any `}` after
+  // the final token) failed to parse and read as merely "reachable".
+  const j = parseMcpResponse(await res.text()) as {
+    result?: { serverInfo?: { name?: string } }
+    error?: { message?: string }
+  } | null
+  if (j?.error) return { state: 'error', detail: j.error.message ?? 'server returned an error' }
+  if (!j) return { state: 'ok', detail: 'reachable' }
+  const name = j.result?.serverInfo?.name
+  return { state: 'ok', detail: name ? `connected to ${name}` : 'connected' }
 }
