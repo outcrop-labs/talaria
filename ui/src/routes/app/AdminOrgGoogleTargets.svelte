@@ -3,6 +3,8 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
 
   // Where the org account's agents build: a Shared Drive so files are team-owned,
   // a specific calendar, and an optional send-as alias for outgoing mail.
@@ -16,15 +18,14 @@
   const dirty = $derived(drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? ''))
 
   const save = async () => {
-    const r = await fetch('/api/integrations/google/org', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ driveFolderId: drive, calendarId: cal, sendAs }),
-    })
-    if (r.ok) {
-      await qc.invalidateQueries({ queryKey: ['org-google'] })
-      savedFlash.flash()
+    try {
+      await putJson<{ ok: true }>('/api/integrations/google/org', { driveFolderId: drive, calendarId: cal, sendAs })
+    } catch (e) {
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
     }
+    await qc.invalidateQueries({ queryKey: ['org-google'] })
+    savedFlash.flash()
   }
 </script>
 

@@ -13,6 +13,8 @@
   import { useAgents } from '@/lib/agents'
   import { useTeams } from '@/lib/teams'
   import { createBoard, setBoardAgents, shareBoard } from '@/lib/boards.svelte'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
 
   type Invite = { email: string; role: 'editor' | 'viewer' }
 
@@ -61,10 +63,14 @@
     try {
       const { board } = await createBoard(n, teamId || null)
       await setBoardAgents(board.id, allowAll, allowAll ? [] : agents)
+      // An invite failing (bad address, already a member) must not abort the
+      // board that just got created — swallow per-invite, deliberately.
       for (const inv of invites) await shareBoard(board.id, inv.email, inv.role).catch(() => {})
       await qc.invalidateQueries({ queryKey: ['boards'] })
       close()
       void navigate('/boards/:boardId', { params: { boardId: board.id } })
+    } catch (e) {
+      pushToast({ title: 'Could not create the board', body: errorMessage(e), tone: 'danger' })
     } finally {
       busy = false
     }

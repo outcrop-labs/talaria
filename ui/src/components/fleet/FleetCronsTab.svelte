@@ -7,7 +7,8 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { listStagger, slide } from '@/lib/motion'
   import { type CronJob } from './agent-crons'
   import CronForm from './CronForm.svelte'
@@ -49,21 +50,21 @@
     busy = true
     summary = null
     try {
-      const r = await fetch('/api/fleet/crons', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...input, agentIds: [...chosen] }),
+      const j = await postJson<{ results?: Array<{ ok: boolean; error?: string }> }>('/api/fleet/crons', {
+        ...input,
+        agentIds: [...chosen],
       })
-      const j = (await r.json().catch(() => null)) as { results?: Array<{ ok: boolean; error?: string }>; error?: string } | null
-      if (!j?.results) {
-        summary = j?.error ?? 'could not create jobs'
+      if (!j.results) {
+        summary = 'could not create jobs'
         return false
       }
       const failed = j.results.filter((x) => !x.ok)
       summary = failed.length === 0 ? `Created on ${j.results.length} agents (staggered).` : `Created on ${j.results.length - failed.length}, failed on ${failed.length}: ${failed[0]?.error ?? ''}`
       await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
       return failed.length === 0
+    } catch (e) {
+      summary = errorMessage(e)
+      return false
     } finally {
       busy = false
     }
@@ -71,26 +72,27 @@
 
   const act = async (agentId: string, jobId: string, action: 'pause' | 'resume' | 'run' | 'remove') => {
     if (action === 'remove' && !(await confirm({ title: 'Delete scheduled job', message: 'Delete this scheduled job?', confirmLabel: 'Delete', danger: true }))) return
-    if (action === 'remove') await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, { method: 'DELETE', credentials: 'same-origin' })
-    else
-      await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action }),
-      })
+    try {
+      if (action === 'remove') await delJson(`/api/fleet/agents/${agentId}/crons/${jobId}`)
+      else await postJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, { action })
+    } catch (e) {
+      // Row actions are fire-and-forget here (CronRow doesn't render an error
+      // slot in the fleet tab) — a toast is where a failed one gets said.
+      pushToast({ title: `${action.charAt(0).toUpperCase()}${action.slice(1)} failed`, body: errorMessage(e), tone: 'danger' })
+    }
     await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
   }
 
   const edit = async (agentId: string, jobId: string, patch: { name: string; schedule: string; prompt: string }): Promise<boolean> => {
-    const r = await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
-    })
+    let saved = true
+    try {
+      await putJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, patch)
+    } catch (e) {
+      saved = false
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+    }
     await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
-    return r.ok
+    return saved
   }
 
   const withJobs = $derived(agents.flatMap((a) => a.jobs.map((j) => ({ agent: a, job: j }))))

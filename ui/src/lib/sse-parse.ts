@@ -40,18 +40,18 @@ function parseToolProgress(payload: string): Extract<ChatEvent, { type: 'tool' }
   }
 }
 
-/** Parse a raw agent SSE body into typed chat events. */
-export async function* parseAgentStream(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatEvent> {
+/** Split a raw SSE body into frames (`event:` name + joined `data:` payload).
+ *
+ *  THE READER DISCIPLINE LIVES HERE, ONCE. Every exit path — normal end,
+ *  `break` in the caller's for-await, a throw from the caller's loop body, an
+ *  aborted fetch — must cancel AND release the reader. Without this a consumer
+ *  that stops early (chat-view breaks on `queued`) leaves the lock held and
+ *  the HTTP connection open forever: one leaked socket per early exit, and the
+ *  browser's per-host cap eventually stalls every other request on the page. */
+export async function* sseFrames(body: ReadableStream<Uint8Array>): AsyncGenerator<{ event: string; data: string }> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-
-  // Every exit path — normal end, `break` in the caller's for-await, a throw
-  // from the caller's loop body, an aborted fetch — must release the reader.
-  // Without this a consumer that stops early (chat-view breaks on `queued`)
-  // leaves the lock held and the HTTP connection open forever: one leaked
-  // socket per early exit, and the browser's per-host cap eventually stalls
-  // every other request on the page.
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -70,36 +70,7 @@ export async function* parseAgentStream(body: ReadableStream<Uint8Array>): Async
           if (t.startsWith('event:')) eventName = t.slice(6).trim()
           else if (t.startsWith('data:')) dataLines.push(t.slice(5).trim())
         }
-
-        for (const data of dataLines) {
-          if (!data || data === '[DONE]') continue
-          if (eventName === 'hermes.tool.progress' || eventName === 'claude.tool.progress') {
-            const tool = parseToolProgress(data)
-            if (tool) yield tool
-            continue
-          }
-          try {
-            const json = JSON.parse(data) as {
-              choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
-              usage?: { prompt_tokens?: number; completion_tokens?: number }
-            }
-            const d = json.choices?.[0]?.delta
-            if (d?.content) yield { type: 'content', text: d.content }
-            else if (d?.reasoning || d?.reasoning_content) {
-              yield { type: 'reasoning', text: d.reasoning || d.reasoning_content || '' }
-            }
-            // Final chunk carries usage when stream_options.include_usage is honoured.
-            if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
-              yield {
-                type: 'usage',
-                promptTokens: json.usage.prompt_tokens ?? 0,
-                completionTokens: json.usage.completion_tokens ?? 0,
-              }
-            }
-          } catch {
-            /* keep-alive / partial frame */
-          }
-        }
+        yield { event: eventName, data: dataLines.join('\n') }
       }
     }
   } finally {
@@ -111,6 +82,39 @@ export async function* parseAgentStream(body: ReadableStream<Uint8Array>): Async
     // read the body again, which matters when a caller retries against a
     // response it still holds.
     reader.releaseLock()
+  }
+}
+
+/** Parse a raw agent SSE body into typed chat events. */
+export async function* parseAgentStream(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatEvent> {
+  for await (const { event: eventName, data } of sseFrames(body)) {
+    if (!data || data === '[DONE]') continue
+    if (eventName === 'hermes.tool.progress' || eventName === 'claude.tool.progress') {
+      const tool = parseToolProgress(data)
+      if (tool) yield tool
+      continue
+    }
+    try {
+      const json = JSON.parse(data) as {
+        choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
+        usage?: { prompt_tokens?: number; completion_tokens?: number }
+      }
+      const d = json.choices?.[0]?.delta
+      if (d?.content) yield { type: 'content', text: d.content }
+      else if (d?.reasoning || d?.reasoning_content) {
+        yield { type: 'reasoning', text: d.reasoning || d.reasoning_content || '' }
+      }
+      // Final chunk carries usage when stream_options.include_usage is honoured.
+      if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
+        yield {
+          type: 'usage',
+          promptTokens: json.usage.prompt_tokens ?? 0,
+          completionTokens: json.usage.completion_tokens ?? 0,
+        }
+      }
+    } catch {
+      /* keep-alive / partial frame */
+    }
   }
 }
 

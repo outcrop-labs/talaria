@@ -1,6 +1,6 @@
 // Client for the signed-in user's personal assistant (/api/me/assistant).
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, patchJson, postJson } from '@/lib/fetch-json'
 
 export interface AssistantTier {
   name: string
@@ -38,14 +38,15 @@ export interface AssistantResult {
   error?: string
 }
 
+// Both writers resolve an AssistantResult — the wizard and the section read
+// `r.error` rather than catching, so the door's rejection is folded back into
+// that envelope.
 export async function createAssistant(input: { name?: string; handle?: string; personality?: string }): Promise<AssistantResult> {
-  const r = await fetch('/api/me/assistant', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-  }).catch(() => null)
-  return ((await r?.json().catch(() => null)) as AssistantResult | null) ?? { error: 'could not create your assistant' }
+  try {
+    return await postJson<AssistantResult>('/api/me/assistant', input)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 export async function updateAssistant(patch: {
@@ -55,13 +56,11 @@ export async function updateAssistant(patch: {
   /** A tier name from `tiers` — becomes the default model. */
   model?: string
 }): Promise<AssistantResult> {
-  const r = await fetch('/api/me/assistant', {
-    method: 'PATCH',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-  }).catch(() => null)
-  return ((await r?.json().catch(() => null)) as AssistantResult | null) ?? { error: 'could not update your assistant' }
+  try {
+    return await patchJson<AssistantResult>('/api/me/assistant', patch)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 /** Suggest a handle from a display name: "Maxie!" → "maxie". */

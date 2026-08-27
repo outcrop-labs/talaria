@@ -56,9 +56,12 @@
   })
 
   const open = async (rev: Rev) => {
-    const r = await fetch(`/api/history?kind=${kind}&id=${id}&rev=${rev.id}`)
-    if (!r.ok) return
-    const { content } = (await r.json()) as { content: string }
+    let content: string
+    try {
+      ;({ content } = await getJson<{ content: string }>(`/api/history?kind=${kind}&id=${id}&rev=${rev.id}`))
+    } catch {
+      return // a revision that won't open just doesn't — the list stands
+    }
     preview = { rev, content }
   }
 </script>

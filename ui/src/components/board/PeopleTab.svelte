@@ -7,6 +7,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { shareBoard, unshareBoard, useBoardMembers, type Board } from '@/lib/boards.svelte'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { listStagger } from '@/lib/motion'
 
   // The People tab of BoardSettingsModal.svelte.
@@ -25,10 +27,12 @@
 
   const invite = async (email: string) => {
     err = null
-    const res = await shareBoard(board.id, email, role)
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
-    if (!res.ok || !data.ok) {
-      err = data.error ?? 'Could not share'
+    // shareBoard used to hand back a raw Response for this parse — now the
+    // door rejects with the server's sentence and this is just the catch.
+    try {
+      await shareBoard(board.id, email, role)
+    } catch (e) {
+      err = errorMessage(e)
       return
     }
     void refresh()
@@ -73,7 +77,15 @@
         </span>
         <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
         {#if m.role !== 'owner'}
-          <Button variant="ghost" size="xs" class="hover:text-danger" onclick={() => void unshareBoard(board.id, m.userId).then(refresh)}>
+          <Button
+            variant="ghost"
+            size="xs"
+            class="hover:text-danger"
+            onclick={() =>
+              void unshareBoard(board.id, m.userId)
+                .then(refresh)
+                .catch((e) => pushToast({ title: 'Could not remove member', body: errorMessage(e), tone: 'danger' }))}
+          >
             Remove
           </Button>
         {/if}

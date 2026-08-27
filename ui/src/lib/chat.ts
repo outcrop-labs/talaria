@@ -1,3 +1,4 @@
+import { postJson, postStream } from '@/lib/fetch-json'
 import { parseAgentStream } from '@/lib/sse-parse'
 export type { ChatEvent, ToolCall } from '@/lib/sse-parse'
 
@@ -16,18 +17,11 @@ export async function* streamChat(
   onMeta?: (m: ChatMeta) => void,
   signal?: AbortSignal,
 ) {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify(params),
-    signal,
-  })
-  // A JSON reply is either an error or "queued" (a reply was already
-  // streaming server-side; the message joined history for the next turn).
+  const res = await postStream('/api/chat', params, { signal })
+  // A JSON reply is "queued" (a reply was already streaming server-side; the
+  // message joined history for the next turn) — errors already threw in the door.
   if (res.headers.get('content-type')?.includes('application/json')) {
-    const j = (await res.json().catch(() => ({}))) as { queued?: boolean; conversationId?: string; error?: string }
-    if (!res.ok || j.error) throw new Error(j.error ?? `chat failed: ${res.status}`)
+    const j = (await res.json().catch(() => ({}))) as { queued?: boolean; conversationId?: string }
     if (j.queued && j.conversationId) {
       onMeta?.({ conversationId: j.conversationId, messageId: '' })
       yield { type: 'queued' } as const
@@ -35,7 +29,6 @@ export async function* streamChat(
     }
     throw new Error('unexpected chat response')
   }
-  if (!res.ok || !res.body) throw new Error(`chat failed: ${res.status}`)
 
   const conversationId = res.headers.get('X-Conversation-Id')
   const messageId = res.headers.get('X-Message-Id')
@@ -57,14 +50,7 @@ export async function queueChatMessage(params: {
   refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
   kind?: 'chat' | 'plan' | 'research'
 }): Promise<void> {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ ...params, queue: true }),
-  })
-  if (!res.ok) {
-    const j = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(j.error ?? `send failed (${res.status})`)
-  }
+  // The route answers 202 `{ queued: true, conversationId }` — parsed only to
+  // prove it arrived; the caller has nothing to read from it.
+  await postJson<{ queued: true; conversationId: string }>('/api/chat', { ...params, queue: true })
 }

@@ -22,6 +22,8 @@
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { createArtifact, createFolder, saveArtifact, updateFolder, uploadFile, useArtifacts, useFolders, type ArtifactKind } from '@/lib/artifacts'
@@ -291,13 +293,24 @@
     Promise.all([qc.invalidateQueries({ queryKey: ['artifacts'] }), qc.invalidateQueries({ queryKey: ['artifact-folders'] })])
 
   const create = async (kind: ArtifactKind) => {
-    const { artifact } = await createArtifact({ kind, title: 'Untitled' })
-    if (artifact && folderId) await saveArtifact(artifact.id, { folderId })
+    let artifact
+    try {
+      artifact = await createArtifact({ kind, title: 'Untitled' })
+      if (folderId) await saveArtifact(artifact.id, { folderId })
+    } catch (e) {
+      pushToast({ title: 'Could not create', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await refresh()
-    if (artifact) setActiveId(artifact.id)
+    setActiveId(artifact.id)
   }
   const newFolder = async () => {
-    await createFolder('New folder', folderId)
+    try {
+      await createFolder('New folder', folderId)
+    } catch (e) {
+      pushToast({ title: 'Could not create the folder', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await refresh()
   }
 
@@ -308,8 +321,7 @@
     const target = intoFolderId ?? folderId
     for (const file of files) {
       try {
-        const { artifact } = await createArtifact({ kind: 'file', title: file.name })
-        if (!artifact) continue
+        const artifact = await createArtifact({ kind: 'file', title: file.name })
         const up = await uploadFile(file)
         await saveArtifact(artifact.id, { storageRef: up.id, contentType: up.mime, folderId: target })
       } catch {
@@ -320,8 +332,12 @@
   }
 
   const move = async (drag: NonNullable<Drag>, target: string | null) => {
-    for (const id of drag.artifacts) await saveArtifact(id, { folderId: target })
-    for (const id of drag.folders) await updateFolder(id, { parentId: target })
+    try {
+      for (const id of drag.artifacts) await saveArtifact(id, { folderId: target })
+      for (const id of drag.folders) await updateFolder(id, { parentId: target })
+    } catch (e) {
+      pushToast({ title: 'Move failed', body: errorMessage(e), tone: 'danger' })
+    }
     await refresh()
   }
 
@@ -528,8 +544,13 @@
       publicSlug={shareTarget.publicSlug}
       canManage={shareTarget.canManage}
       onSave={async (patch) => {
-        if (shareTarget.kind === 'artifacts') await saveArtifact(shareTarget.id, patch)
-        else await updateFolder(shareTarget.id, patch)
+        try {
+          if (shareTarget.kind === 'artifacts') await saveArtifact(shareTarget.id, patch)
+          else await updateFolder(shareTarget.id, patch)
+        } catch (e) {
+          pushToast({ title: 'Could not save sharing', body: errorMessage(e), tone: 'danger' })
+          return
+        }
         await refresh()
       }}
     />

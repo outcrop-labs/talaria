@@ -18,6 +18,7 @@
   // tab, and retyping is a better outcome than leaving it there.
   import { KeyRound } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { popPanel, tileBase } from '@/components/chat/chat-chrome'
   import { pop, POPOVER } from '@/lib/motion'
@@ -59,7 +60,7 @@
     if (!label.trim() || !value) return
     busy = true
     error = null
-    const body = JSON.stringify({
+    const body = {
       agentModel,
       label: label.trim(),
       value,
@@ -67,24 +68,20 @@
       // ways — one agent, one use, one hour — and this is the fourth: the only
       // one that survives the agent being talked into spending it elsewhere.
       ...(host.trim() ? { allowedHosts: [host.trim().toLowerCase()] } : {}),
-    })
+    }
     // Cleared before the await resolves rather than after: nothing below reads
     // it again, and the shorter it is bound to a live component the better.
     value = ''
-    const r = await fetch('/api/secrets/relay', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body,
-    }).catch(() => null)
-    busy = false
-    const j = (await r?.json().catch(() => ({}))) as { handle?: string; error?: string }
-    if (!r?.ok || !j.handle) {
-      error = j.error ?? 'could not hand that over; try again'
-      return
+    try {
+      const j = await postJson<{ handle?: string }>('/api/secrets/relay', body)
+      if (!j.handle) throw new Error('could not hand that over; try again')
+      onMinted(j.handle)
+      close()
+    } catch (e) {
+      error = errorMessage(e)
+    } finally {
+      busy = false
     }
-    onMinted(j.handle)
-    close()
   }
 </script>
 

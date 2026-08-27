@@ -8,9 +8,10 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { fade, slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
 
   interface ApiKey {
     id: string
@@ -39,24 +40,25 @@
 
   const mint = async () => {
     err = null
-    const r = await fetch('/api/keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: name.trim() || 'default' }),
-    }).catch(() => null)
-    const j = (await r?.json().catch(() => null)) as { secret?: string; error?: string } | null
-    if (!r?.ok || !j?.secret) {
-      err = j?.error ?? 'Could not create the key. Try again.'
-      return
+    try {
+      const j = await postJson<{ key: ApiKey; secret: string }>('/api/keys', { name: name.trim() || 'default' })
+      minted = j.secret
+      name = ''
+      await qc.invalidateQueries({ queryKey: ['api-keys'] })
+    } catch (e) {
+      err = errorMessage(e)
     }
-    minted = j.secret
-    name = ''
-    await qc.invalidateQueries({ queryKey: ['api-keys'] })
   }
 
   const revoke = async (id: string) => {
     if (!(await confirm({ title: 'Revoke key', message: 'Revoke this key? Anything using it stops working immediately.', confirmLabel: 'Revoke', danger: true }))) return
-    await fetch(`/api/keys/${id}`, { method: 'DELETE' })
+    try {
+      await delJson(`/api/keys/${id}`)
+    } catch (e) {
+      // Row button; the err line belongs to the mint form below.
+      pushToast({ title: 'Revoke failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['api-keys'] })
   }
 </script>

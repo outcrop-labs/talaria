@@ -21,9 +21,11 @@
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage } from '@/lib/fetch-json'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
+  import { pushToast } from '@/lib/toast.svelte'
   import { deleteDoc, saveDoc, useBacklinks, useDoc, type KbDocMeta } from '@/lib/kb'
   import KbArtifactAttachments from './KbArtifactAttachments.svelte'
   import KbCommentsPanel from './KbCommentsPanel.svelte'
@@ -169,7 +171,16 @@
   })
 
   const save = async (patch: Parameters<typeof saveDoc>[1]) => {
-    await saveDoc(docId, patch)
+    try {
+      await saveDoc(docId, patch)
+    } catch (e) {
+      // saveDoc used to resolve the `{ error }` body as the saved doc, so a
+      // refused save ("only the owner can change sharing") cleared `dirty`
+      // and read as done. It rejects now — say so, and keep the doc marked
+      // unsaved so onblur retries instead of silently dropping the edits.
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
     await qc.invalidateQueries({ queryKey: ['kb-docs', doc?.spaceId] })
     dirty = false
@@ -368,7 +379,12 @@
             danger: true,
             onClick: async () => {
               if (!(await confirm({ title: 'Delete document', message: `Delete "${doc.title}"?`, confirmLabel: 'Delete', danger: true }))) return
-              await deleteDoc(docId)
+              try {
+                await deleteDoc(docId)
+              } catch (e) {
+                pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+                return
+              }
               await qc.invalidateQueries({ queryKey: ['kb-docs', doc.spaceId] })
               onDeleted()
             },

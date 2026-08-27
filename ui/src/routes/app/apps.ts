@@ -1,5 +1,5 @@
 // Shared types + API calls for the Apps page (Apps.svelte + its tabs).
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
 
 export interface InstalledApp {
   slug: string
@@ -39,11 +39,11 @@ export const fetchAdminApps = (withCatalog: boolean): Promise<AdminApps> =>
 
 export const post = async (body: Record<string, unknown>): Promise<{ error?: string; slug?: string; pendingBuild?: boolean }> => {
   // POST installs (the action); PUT writes config (enable/disable, catalog).
-  const r = await fetch('/api/admin/apps', {
-    method: 'installUrl' in body ? 'POST' : 'PUT',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  return r.json()
+  // Both tabs render `error` in-band, so failures resolve rather than reject.
+  const send = 'installUrl' in body ? postJson : putJson
+  try {
+    return await send<{ error?: string; slug?: string; pendingBuild?: boolean }>('/api/admin/apps', body)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }

@@ -1,5 +1,5 @@
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson, getJsonOr404, getList, HttpError } from '@/lib/fetch-json'
+import { delJson, getJson, getJsonOr404, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
 import type { Effort, Priority, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -45,18 +45,11 @@ export interface BoardMember {
   role: BoardRole
 }
 
-// Resolve a mutation response. It used to reject with `new Error('403')`, so
-// every mutation built on it showed a bare status number where the server had
-// sent a sentence ("You don't have permission to edit this board"). readJson
-// carries that sentence through, and `HttpError.status` still has the code.
-const j = async (r: Response) => {
-  const data = await r.json().catch(() => null)
-  if (!r.ok) throw new HttpError(r.status, (data as { error?: string } | null)?.error ?? `request failed (${r.status})`)
-  if (data === null) throw new HttpError(r.status, 'The server sent a reply this app could not read.')
-  return data
-}
-const post = (url: string, body: unknown) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) })
+// Mutations live in fetch-json now. The local `j`/`post` pair below was that
+// door re-implemented (it even documents the same evolution: it used to reject
+// with `new Error('403')` until it learned to carry the server's sentence) —
+// and it had drifted: `post` on its own resolves a failed Response as success,
+// which `shareBoard` shipped to callers.
 
 export function useBoards() {
   return createQuery(() => ({
@@ -112,12 +105,7 @@ export function useBoardAgents(boardId: MaybeGetter<string | null>) {
 }
 
 export const setBoardAgents = (boardId: string, allowAll: boolean, models: string[]) =>
-  fetch(`/api/boards/${boardId}/agents`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ allowAll, models }),
-  }).then(j)
+  putJson<{ ok: true }>(`/api/boards/${boardId}/agents`, { allowAll, models })
 
 export interface BoardViewConfig {
   view?: 'board' | 'list' | 'gantt'
@@ -163,21 +151,11 @@ export function useBoardLabels(boardId: MaybeGetter<string | null>) {
   })
 }
 export const createBoardLabel = (boardId: string, name: string, color?: LabelColor) =>
-  post(`/api/boards/${boardId}/labels`, { name, color }).then(j)
+  postJson<{ label: BoardLabel }>(`/api/boards/${boardId}/labels`, { name, color })
 export const updateBoardLabel = (boardId: string, labelId: string, patch: { name?: string; color?: LabelColor }) =>
-  fetch(`/api/boards/${boardId}/labels`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ labelId, ...patch }),
-  }).then(j)
+  putJson<{ label: BoardLabel }>(`/api/boards/${boardId}/labels`, { labelId, ...patch })
 export const deleteBoardLabel = (boardId: string, labelId: string) =>
-  fetch(`/api/boards/${boardId}/labels`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ labelId }),
-  }).then(j)
+  delJson<{ ok: true }>(`/api/boards/${boardId}/labels`, { labelId })
 
 /** Saved views: named filter/layout presets shared with the board. */
 export function useBoardViews(boardId: MaybeGetter<string | null>) {
@@ -191,21 +169,11 @@ export function useBoardViews(boardId: MaybeGetter<string | null>) {
   })
 }
 export const createBoardView = (boardId: string, name: string, config: BoardViewConfig) =>
-  post(`/api/boards/${boardId}/views`, { name, config }).then(j)
+  postJson<{ view: BoardView }>(`/api/boards/${boardId}/views`, { name, config })
 export const updateBoardView = (boardId: string, viewId: string, patch: { name?: string; config?: BoardViewConfig }) =>
-  fetch(`/api/boards/${boardId}/views`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ viewId, ...patch }),
-  }).then(j)
+  putJson<{ view: BoardView }>(`/api/boards/${boardId}/views`, { viewId, ...patch })
 export const deleteBoardView = (boardId: string, viewId: string) =>
-  fetch(`/api/boards/${boardId}/views`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ viewId }),
-  }).then(j)
+  delJson<{ ok: true }>(`/api/boards/${boardId}/views`, { viewId })
 
 export function useBoardMembers(boardId: MaybeGetter<string | null>) {
   return createQuery(() => {
@@ -274,7 +242,7 @@ export function useTask(taskId: MaybeGetter<string | null>) {
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
-export const createBoard = (name: string, teamId?: string | null) => post('/api/boards', { name, teamId }).then(j)
+export const createBoard = (name: string, teamId?: string | null) => postJson<{ board: Board }>('/api/boards', { name, teamId })
 /** Move a board between teams (null → personal). Owner only.
  *
  *  Resolves to `{ error }` rather than throwing, because the caller is a drag
@@ -282,15 +250,12 @@ export const createBoard = (name: string, teamId?: string | null) => post('/api/
  *  entirely — a 403 resolved to `{}`, the rail said nothing, and the board
  *  quietly snapped back to its old team on the next refetch. */
 export const moveBoardToTeam = async (boardId: string, teamId: string | null): Promise<{ error?: string }> => {
-  const r = await fetch(`/api/boards/${boardId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ teamId }),
-  })
-  const body = (await r.json().catch(() => null)) as { error?: string } | null
-  if (!r.ok) return { error: body?.error ?? `The server refused the move (${r.status}).` }
-  return body ?? {}
+  try {
+    await patchJson(`/api/boards/${boardId}`, { teamId })
+    return {}
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : `The server refused the move.` }
+  }
 }
 export const createTask = (
   boardId: string,
@@ -307,32 +272,20 @@ export const createTask = (
     parentId?: string | null
     tags?: string[]
   },
-) => post(`/api/boards/${boardId}/tasks`, input).then(j)
+) => postJson<{ task: Task }>(`/api/boards/${boardId}/tasks`, input)
 
-export const addComment = (taskId: string, content: string) => post(`/api/tasks/${taskId}/comments`, { content }).then(j)
-export const deleteTask = (taskId: string) =>
-  fetch(`/api/tasks/${taskId}`, { method: 'DELETE', credentials: 'same-origin' })
+export const addComment = (taskId: string, content: string) => postJson<{ comment: TaskComment }>(`/api/tasks/${taskId}/comments`, { content })
+export const deleteTask = (taskId: string) => delJson<{ ok: true }>(`/api/tasks/${taskId}`)
 
-export const watchTask = (taskId: string, watcher: string) => post(`/api/tasks/${taskId}/watchers`, { watcher })
-export const unwatchTask = (taskId: string, watcher: string) =>
-  fetch(`/api/tasks/${taskId}/watchers`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ watcher }),
-  })
+export const watchTask = (taskId: string, watcher: string) => postJson<{ ok: true }>(`/api/tasks/${taskId}/watchers`, { watcher })
+export const unwatchTask = (taskId: string, watcher: string) => delJson<{ ok: true }>(`/api/tasks/${taskId}/watchers`, { watcher })
 export const reviewTask = (taskId: string, status: 'approved' | 'rejected', notes?: string) =>
-  post(`/api/tasks/${taskId}/review`, { status, notes }).then(j)
+  postJson<{ ok: true }>(`/api/tasks/${taskId}/review`, { status, notes })
 
 export const addDependency = (taskId: string, dependsOnId: string) =>
-  post(`/api/tasks/${taskId}/dependencies`, { dependsOnId })
+  postJson<{ ok: true }>(`/api/tasks/${taskId}/dependencies`, { dependsOnId })
 export const removeDependency = (taskId: string, dependsOnId: string) =>
-  fetch(`/api/tasks/${taskId}/dependencies`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ dependsOnId }),
-  })
+  delJson<{ ok: true }>(`/api/tasks/${taskId}/dependencies`, { dependsOnId })
 
 export const updateTask = (
   taskId: string,
@@ -357,44 +310,16 @@ export const updateTask = (
     attachmentIds?: string[]
     refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
   },
-) =>
-  fetch(`/api/tasks/${taskId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify(patch),
-  }).then(j)
+) => putJson<{ task: Task }>(`/api/tasks/${taskId}`, patch)
 
-export const renameBoard = (boardId: string, name: string) =>
-  fetch(`/api/boards/${boardId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ name }),
-  })
+export const renameBoard = (boardId: string, name: string) => patchJson<{ board: Board }>(`/api/boards/${boardId}`, { name })
 export const setBoardJudgeMode = (boardId: string, judgeMode: 'inherit' | 'off' | 'advisory' | 'enforcing') =>
-  fetch(`/api/boards/${boardId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ judgeMode }),
-  })
+  patchJson<{ board: Board }>(`/api/boards/${boardId}`, { judgeMode })
 export const archiveBoard = (boardId: string, archived: boolean) =>
-  fetch(`/api/boards/${boardId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ archived }),
-  })
-export const deleteBoard = (boardId: string) =>
-  fetch(`/api/boards/${boardId}`, { method: 'DELETE', credentials: 'same-origin' })
+  patchJson<{ board: Board }>(`/api/boards/${boardId}`, { archived })
+export const deleteBoard = (boardId: string) => delJson<{ ok: true }>(`/api/boards/${boardId}`)
 export const archiveTask = (taskId: string, archived: boolean) => updateTask(taskId, { archived })
 export const shareBoard = (boardId: string, email: string, role: 'editor' | 'viewer') =>
-  post(`/api/boards/${boardId}/members`, { email, role })
+  postJson<{ ok: true }>(`/api/boards/${boardId}/members`, { email, role })
 export const unshareBoard = (boardId: string, userId: string) =>
-  fetch(`/api/boards/${boardId}/members`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ userId }),
-  })
+  delJson<{ ok: true }>(`/api/boards/${boardId}/members`, { userId })

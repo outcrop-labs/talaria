@@ -8,7 +8,7 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import McpInstallDialog from './McpInstallDialog.svelte'
   import McpServerMark from './McpServerMark.svelte'
@@ -43,11 +43,8 @@
   const register = async (l: LibraryServerRow, opts: { headers?: Record<string, string>; authMode?: 'org' | 'per-user' }) => {
     busyAdd = l.registryName
     error = null
-    const r = await fetch('/api/mcp/servers', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const { server } = await postJson<{ server: { id: string; oauthMeta: { dcr: boolean; clientSet: boolean } | null } }>('/api/mcp/servers', {
         name: slugify(l.title),
         label: l.title,
         url: l.url,
@@ -55,20 +52,19 @@
         headers: opts.headers,
         authMode: opts.authMode,
         requiredHeaders: l.requiredHeaders,
-      }),
-    })
-    busyAdd = null
-    if (!r.ok) {
-      error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed'
+      })
+      const needsSetup = !!server.oauthMeta && !server.oauthMeta.dcr && !server.oauthMeta.clientSet
+      added = new Map(added).set(l.registryName, needsSetup ? 'setup' : 'ok')
+      installing = null
+      await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
+      void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
+      return true
+    } catch (e) {
+      error = errorMessage(e)
       return false
+    } finally {
+      busyAdd = null
     }
-    const { server } = (await r.json()) as { server: { id: string; oauthMeta: { dcr: boolean; clientSet: boolean } | null } }
-    const needsSetup = !!server.oauthMeta && !server.oauthMeta.dcr && !server.oauthMeta.clientSet
-    added = new Map(added).set(l.registryName, needsSetup ? 'setup' : 'ok')
-    installing = null
-    await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
-    void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
-    return true
   }
 
   // Servers declaring credentials get the install dialog; the rest one-click.

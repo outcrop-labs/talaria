@@ -21,7 +21,9 @@
   import PlanModal from '@/components/chat/PlanModal.svelte'
   import { hydratePlanDraft } from '@/components/chat/plan-drafts.svelte'
   import { useAgents } from '@/lib/agents'
+  import { errorMessage, getJson, patchJson, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { useConversations } from '@/lib/conversations.svelte'
@@ -228,8 +230,7 @@
   // ChannelView makes on open), then refresh the badges. Best-effort.
   const markRead = async (id: string) => {
     try {
-      const r = await fetch(`/api/channels/${id}/messages`, { credentials: 'same-origin' })
-      const { messages = [] } = ((await r.json()) ?? {}) as { messages?: { seq: number }[] }
+      const { messages = [] } = await getJson<{ messages?: { seq: number }[] }>(`/api/channels/${id}/messages`)
       const latest = messages[messages.length - 1]?.seq ?? 0
       if (!latest) return
       await markChannelRead(id, latest)
@@ -272,13 +273,15 @@
     )
       return
     concluding = true
-    const r = await fetch(`/api/channels/${selected.id}/conclude`, { method: 'POST', credentials: 'same-origin' }).finally(
-      () => (concluding = false),
-    )
-    const j = (await r.json().catch(() => ({}))) as { summary?: string; error?: string }
-    if (!r.ok) return void alert({ title: 'Could not conclude', message: j.error ?? `failed (${r.status})` })
-    await refresh()
-    void alert({ title: `${selected.name} concluded`, message: j.summary ?? 'Summarized and archived.' })
+    try {
+      const j = await postJson<{ summary?: string }>(`/api/channels/${selected.id}/conclude`)
+      await refresh()
+      void alert({ title: `${selected.name} concluded`, message: j.summary ?? 'Summarized and archived.' })
+    } catch (e) {
+      void alert({ title: 'Could not conclude', message: errorMessage(e) })
+    } finally {
+      concluding = false
+    }
   }
 
   const peerLabel = (c: Channel) => c.peer?.name ?? c.peer?.email ?? 'teammate'
@@ -476,12 +479,11 @@
                         onSelect: () => {
                           void prompt({ title: 'Rename thread', defaultValue: c.title ?? '', placeholder: 'Thread name', confirmLabel: 'Rename' }).then(async (name) => {
                             if (!name?.trim()) return
-                            await fetch(`/api/conversations/${c.id}`, {
-                              method: 'PATCH',
-                              credentials: 'same-origin',
-                              headers: { 'content-type': 'application/json' },
-                              body: JSON.stringify({ title: name.trim() }),
-                            })
+                            try {
+                              await patchJson(`/api/conversations/${c.id}`, { title: name.trim() })
+                            } catch (e) {
+                              pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+                            }
                             void qc.invalidateQueries({ queryKey: ['conversations'] })
                           })
                         },

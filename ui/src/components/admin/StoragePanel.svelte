@@ -8,6 +8,7 @@
   import Select from '@/components/ui/Select.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { fade, slide } from '@/lib/motion'
   import TargetFields from './TargetFields.svelte'
   import { fmtBytes, useStorageAdmin, type StorageAdmin } from './storage'
@@ -40,25 +41,18 @@
     busy = true
     note = null
     try {
-      const r = await fetch('/api/admin/storage', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          ...form,
-          secretAccessKey: secret || undefined,
-          replica: { ...form.replica, secretAccessKey: replicaSecret || undefined },
-        }),
+      const j = await putJson<{ config: StorageAdmin['config'] }>('/api/admin/storage', {
+        ...form,
+        secretAccessKey: secret || undefined,
+        replica: { ...form.replica, secretAccessKey: replicaSecret || undefined },
       })
-      const j = (await r.json()) as { config?: StorageAdmin['config']; error?: string }
-      if (!r.ok || !j.config) {
-        note = { ok: false, text: j.error ?? 'save failed' }
-        return
-      }
       form = j.config
       secret = ''
       replicaSecret = ''
       note = { ok: true, text: 'saved' }
       await qc.invalidateQueries({ queryKey: ['storage-admin'] })
+    } catch (e) {
+      note = { ok: false, text: errorMessage(e) }
     } finally {
       busy = false
     }
@@ -68,14 +62,22 @@
     busy = true
     if (action === 'test' || action === 'test-replica') note = null
     try {
-      const r = await fetch('/api/admin/storage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) })
-      const j = (await r.json()) as { ok?: boolean; detail?: string; error?: string }
-      if (action === 'test' || action === 'test-replica') note = { ok: !!j.ok, text: j.detail ?? j.error ?? '' }
-      else if (j.error) note = { ok: false, text: j.error }
-      await qc.invalidateQueries({ queryKey: ['storage-admin'] })
+      if (action === 'test' || action === 'test-replica') {
+        // The verdict rides a 200 body ({ ok, detail }); a server-side failure
+        // is a 4xx the door rejects into the catch below.
+        const j = await postJson<{ ok: boolean; detail: string }>('/api/admin/storage', { action })
+        note = { ok: j.ok, text: j.detail }
+      } else {
+        await postJson('/api/admin/storage', { action })
+      }
+    } catch (e) {
+      note = { ok: false, text: errorMessage(e) }
     } finally {
       busy = false
     }
+    // Refetch either way: a failed migrate/sync may still have moved blobs,
+    // and the status strip should say so.
+    await qc.invalidateQueries({ queryKey: ['storage-admin'] })
   }
 
   const migrate = async () => {

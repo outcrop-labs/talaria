@@ -8,7 +8,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { submitOnEnter } from '@/components/ui/control'
-  import { getList } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { listStagger, slide } from '@/lib/motion'
@@ -52,12 +53,10 @@
   let granting = $state(false)
   const setGrant = async (name: string, on: boolean) => {
     granting = true
-    await fetch('/api/admin/workspace-secrets', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: on ? 'grant' : 'revoke', name, agentModel }),
-    }).catch(() => null)
+    // Swallowed on purpose: these rows and the Combobox have no error slot,
+    // and the invalidates below re-read both lists — a failed grant lands as
+    // "still not granted", which is the truth.
+    await postJson('/api/admin/workspace-secrets', { action: on ? 'grant' : 'revoke', name, agentModel }).catch(() => {})
     granting = false
     await qc.invalidateQueries({ queryKey: ['agent-held-handles', agentModel] })
     await qc.invalidateQueries({ queryKey: ['workspace-secrets'] })
@@ -82,20 +81,12 @@
     busy = true
     err = null
     try {
-      const r = await fetch(`/api/fleet/agents/${agentId}/secrets`, {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, value }),
-      })
-      const j = (await r.json().catch(() => ({}))) as { error?: string }
-      if (!r.ok || j.error) {
-        err = j.error ?? 'could not save'
-        return
-      }
+      await putJson(`/api/fleet/agents/${agentId}/secrets`, { name, value })
       name = ''
       value = ''
       await qc.invalidateQueries({ queryKey: key() })
+    } catch (e) {
+      err = errorMessage(e)
     } finally {
       busy = false
     }
@@ -103,7 +94,12 @@
 
   const remove = async (n: string) => {
     if (!(await confirm({ title: 'Remove secret', message: `Remove ${n}? The agent loses it on its next start.`, confirmLabel: 'Remove', danger: true }))) return
-    await fetch(`/api/fleet/agents/${agentId}/secrets?name=${encodeURIComponent(n)}`, { method: 'DELETE', credentials: 'same-origin' })
+    try {
+      await delJson(`/api/fleet/agents/${agentId}/secrets?name=${encodeURIComponent(n)}`)
+    } catch (e) {
+      // Fire-and-forget from a row button; the err line belongs to the form.
+      pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' })
+    }
     await qc.invalidateQueries({ queryKey: key() })
   }
 </script>

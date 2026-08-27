@@ -4,7 +4,7 @@
   import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
 
@@ -44,8 +44,11 @@
     )
       return
     error = null
-    const r = await fetch('/api/integrations/google', { method: 'DELETE', credentials: 'same-origin' })
-    if (!r.ok) error = 'could not disconnect; try again'
+    try {
+      await delJson('/api/integrations/google')
+    } catch (e) {
+      error = errorMessage(e)
+    }
     await qc.invalidateQueries({ queryKey: ['integration-google'] })
   }
 </script>

@@ -1,7 +1,7 @@
 // Task workflow client: match rules → instructions/toolkits that ride with
 // dispatched agent work. Managed on /workflows.
 import { createQuery } from '@tanstack/svelte-query'
-import { getList } from '@/lib/fetch-json'
+import { delJson, getList, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -51,39 +51,28 @@ export function useWorkflows() {
   }))
 }
 
-const send = (url: string, method: string, body?: unknown) =>
-  fetch(url, {
-    method,
-    credentials: 'same-origin',
-    ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
-  }).then(async (r) => {
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
-    if (!r.ok) throw new Error(j.error ?? `request failed (${r.status})`)
-    return j
-  })
-
 export const createWorkflow = (h: { name: string; description?: string }) =>
-  send('/api/workflows', 'POST', h) as Promise<{ workflow: TaskWorkflow }>
+  postJson<{ workflow: TaskWorkflow }>('/api/workflows', h)
 
 export const updateWorkflow = (
   id: string,
   patch: Partial<Pick<TaskWorkflow, 'name' | 'description' | 'enabled' | 'match' | 'skills' | 'toolkits'>>,
-) => send(`/api/workflows/${id}`, 'PUT', patch)
+) => putJson<{ ok: true }>(`/api/workflows/${id}`, patch)
 
-export const deleteWorkflow = (id: string) => send(`/api/workflows/${id}`, 'DELETE')
+export const deleteWorkflow = (id: string) => delJson<{ ok: true }>(`/api/workflows/${id}`)
 
 // ── Skill structural ops (Studio row controls) ──────────────────────────────
 
 export const renameSkill = (owner: string, name: string, toName: string) =>
-  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'rename', toName })
+  postJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { op: 'rename', toName })
 
 export const copySkillTo = (owner: string, name: string, toOwner: string) =>
-  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'copy', toOwner })
+  postJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { op: 'copy', toOwner })
 
 export const moveSkillTo = (owner: string, name: string, toOwner: string) =>
-  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'move', toOwner })
+  postJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { op: 'move', toOwner })
 
-export const deleteSkillReq = (owner: string, name: string) => send(`/api/skills/${owner}/${name}`, 'DELETE')
+export const deleteSkillReq = (owner: string, name: string) => delJson<{ ok: true }>(`/api/skills/${owner}/${name}`)
 
 // ── Capability gaps (the Studio's Suggested queue) ──────────────────────────
 
@@ -112,4 +101,4 @@ export function useGaps(status: MaybeGetter<string> = 'open') {
 }
 
 export const setGapStatus = (id: string, status: CapabilityGap['status']) =>
-  send(`/api/gaps/${id}`, 'PUT', { status })
+  putJson<{ ok: true }>(`/api/gaps/${id}`, { status })

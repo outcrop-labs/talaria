@@ -1,6 +1,6 @@
 // Models tab client: provider presets + endpoint CRUD.
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson, getList } from '@/lib/fetch-json'
+import { delJsonOr, errorMessage, getJson, getList, postJson, putJsonOr } from '@/lib/fetch-json'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
 
 /** Every common US model provider, preconfigured: base URLs and provider
@@ -194,12 +194,11 @@ export interface EndpointOpResult {
   cascaded?: string[]
 }
 
-const j = async (r: Response): Promise<EndpointOpResult> =>
-  (await r.json().catch(() => ({ error: `request failed (${r.status})` }))) as EndpointOpResult
-
-// fetch() itself rejects on network failure (server restarting, offline) —
-// surface that as a normal error instead of an unhandled rejection.
-const netErr = (): EndpointOpResult => ({ error: 'network error. Is the server up?' })
+// The endpoint modals read in-band errors (`r.error`) and the 409 cascade
+// answer (`{needsForce, affected}`) with no catch anywhere, so every function
+// below RESOLVES an EndpointOpResult: the door's rejections fold into the
+// envelope, and 409 is listed as a status-as-data answer on the PUT/DELETE.
+const opErr = (e: unknown): EndpointOpResult => ({ error: errorMessage(e) })
 
 export const addEndpoint = (e: {
   name: string
@@ -210,14 +209,7 @@ export const addEndpoint = (e: {
   /** Raw provider key — sealed (encrypted) server-side. */
   apiKey?: string | null
 }) =>
-  fetch('/api/fleet/endpoints', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(e),
-  })
-    .then(j)
-    .catch(netErr)
+  postJson<EndpointOpResult>('/api/fleet/endpoints', e).catch(opErr)
 
 export const patchEndpoint = (
   id: string,
@@ -236,16 +228,7 @@ export const patchEndpoint = (
     force?: boolean
   },
 ) =>
-  fetch(`/api/fleet/endpoints/${id}`, {
-    method: 'PUT',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-  })
-    .then(j)
-    .catch(netErr)
+  putJsonOr<EndpointOpResult>(`/api/fleet/endpoints/${id}`, patch, [409]).catch(opErr)
 
 export const removeEndpoint = (id: string, force = false) =>
-  fetch(`/api/fleet/endpoints/${id}${force ? '?force=1' : ''}`, { method: 'DELETE', credentials: 'same-origin' })
-    .then(j)
-    .catch(netErr)
+  delJsonOr<EndpointOpResult>(`/api/fleet/endpoints/${id}${force ? '?force=1' : ''}`, undefined, [409]).catch(opErr)

@@ -8,9 +8,10 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
-  import { getJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
 
   interface GoogleStatus {
     available: boolean
@@ -45,7 +46,14 @@
 
   const disconnect = async () => {
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect Google? Your assistant loses mail, calendar, and Drive access until you reconnect.', confirmLabel: 'Disconnect', danger: true }))) return
-    await fetch('/api/integrations/google', { method: 'DELETE' })
+    try {
+      await delJson<{ ok: true }>('/api/integrations/google')
+    } catch (e) {
+      // Nothing inline to hold it: the status row still claims "connected",
+      // so the toast is what says the disconnect didn't happen.
+      pushToast({ title: 'Disconnect failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['integration-google'] })
   }
 

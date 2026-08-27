@@ -7,7 +7,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { type CronJob } from './agent-crons'
   import CronForm from './CronForm.svelte'
@@ -33,19 +33,12 @@
     busy = true
     err = null
     try {
-      const r = await fetch(`/api/fleet/agents/${agentId}/crons`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
-      })
-      const j = (await r.json().catch(() => ({}))) as { error?: string }
-      if (!r.ok || j.error) {
-        err = j.error ?? 'could not create the job'
-        return false
-      }
+      await postJson(`/api/fleet/agents/${agentId}/crons`, input)
       await refresh()
       return true
+    } catch (e) {
+      err = errorMessage(e)
+      return false
     } finally {
       busy = false
     }
@@ -55,19 +48,12 @@
     busy = true
     err = null
     try {
-      const r = await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(patch),
-      })
-      const j = (await r.json().catch(() => ({}))) as { error?: string }
-      if (!r.ok || j.error) {
-        err = j.error ?? 'could not save the job'
-        return false
-      }
+      await putJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, patch)
       await refresh()
       return true
+    } catch (e) {
+      err = errorMessage(e)
+      return false
     } finally {
       busy = false
     }
@@ -78,17 +64,13 @@
     busy = true
     err = null
     try {
-      const r =
-        action === 'remove'
-          ? await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, { method: 'DELETE', credentials: 'same-origin' })
-          : await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action }),
-            })
-      const j = (await r.json().catch(() => ({}))) as { error?: string }
-      if (!r.ok || j.error) err = j.error ?? `could not ${action}`
+      if (action === 'remove') await delJson(`/api/fleet/agents/${agentId}/crons/${jobId}`)
+      else await postJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, { action })
+      await refresh()
+    } catch (e) {
+      err = errorMessage(e)
+      // The list is re-read on failure too, as it always was — a rejected
+      // action may still have partly applied server-side.
       await refresh()
     } finally {
       busy = false

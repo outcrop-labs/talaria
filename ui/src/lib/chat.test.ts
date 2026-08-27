@@ -45,7 +45,7 @@ describe('streamChat — the queued path', () => {
 
   it('falls back to the status code when the error body has no message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonRes({}, 500)))
-    await expect(collect(streamChat(params))).rejects.toThrow('chat failed: 500')
+    await expect(collect(streamChat(params))).rejects.toThrow('request failed (500)')
   })
 })
 
@@ -80,13 +80,15 @@ describe('streamChat — the streaming path', () => {
 
   it('throws on a non-OK streaming response', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 502, headers: { 'content-type': 'text/plain' } })))
-    await expect(collect(streamChat(params))).rejects.toThrow('chat failed: 502')
+    await expect(collect(streamChat(params))).rejects.toThrow('request failed (502)')
   })
 })
 
 describe('queueChatMessage', () => {
   it('sends queue: true and resolves on success', async () => {
-    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    // The route's real answer: 202 with a JSON body (never a bare 204 — the
+    // door reads every reply, and an unparseable one is an error by contract).
+    const fetchMock = vi.fn(async () => jsonRes({ queued: true, conversationId: 'c1' }, 202))
     vi.stubGlobal('fetch', fetchMock)
     await queueChatMessage({ model: 'm', conversationId: 'c1', content: 'later' })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]

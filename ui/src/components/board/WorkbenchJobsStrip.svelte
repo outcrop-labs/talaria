@@ -2,9 +2,10 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
   import { listStagger, slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
 
   interface WbJob {
     id: string
@@ -39,12 +40,18 @@
   }))
   const jobs = $derived(jobsQuery.data)
   const act = async (jobId: string, action: 'approve' | 'reject' | 'merge_testing') => {
-    await fetch('/api/workbench/jobs', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jobId, action }),
-    })
+    // A click that vanishes here leaves an agent blocked on a person who
+    // believes they approved the plan — the one failure this gate can't keep
+    // quiet about. The strip still refetches either way.
+    try {
+      await putJson('/api/workbench/jobs', { jobId, action })
+    } catch (e) {
+      pushToast({
+        title: action === 'approve' ? 'Could not approve the plan' : action === 'reject' ? 'Could not reject the plan' : 'Could not merge to testing',
+        body: errorMessage(e),
+        tone: 'danger',
+      })
+    }
     await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
   }
   const live = $derived((jobs ?? []).filter((j) => j.status !== 'abandoned'))

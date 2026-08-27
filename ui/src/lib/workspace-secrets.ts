@@ -10,7 +10,7 @@
 // share the word; an operator who conflates them will eventually revoke the
 // wrong one.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 
 export type SecretKind = 'vault' | 'relay'
 
@@ -52,16 +52,14 @@ type Action =
 export function useWorkspaceSecretAction() {
   const qc = useQueryClient()
   return async (body: Action): Promise<{ error?: string }> => {
-    const r = await fetch('/api/admin/workspace-secrets', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
+    // The panel reads an in-band `error` field rather than catching, so a
+    // refusal resolves as the same envelope instead of rejecting.
+    const r = await postJson<{ ok: true }>('/api/admin/workspace-secrets', body).then(
+      () => ({}),
+      (e: unknown): { error: string } => ({ error: errorMessage(e) }),
+    )
     await qc.invalidateQueries({ queryKey: WORKSPACE_SECRETS_KEY })
-    if (!r.ok) return { error: j.error ?? `${body.action} failed (${r.status})` }
-    return {}
+    return r
   }
 }
 

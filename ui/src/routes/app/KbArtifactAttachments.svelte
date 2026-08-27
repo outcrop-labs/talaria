@@ -7,6 +7,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { attachArtifact, detachArtifact, useArtifacts, useTargetArtifacts } from '@/lib/artifacts'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
 
   // Attach any artifact to a KB doc (the "attach an artifact to anything" spec).
   let { docId }: { docId: string } = $props()
@@ -56,7 +58,12 @@
                 size={11}
                 label="Detach"
                 onClick={async () => {
-                  await detachArtifact(a.id, 'kb-doc', docId)
+                  try {
+                    await detachArtifact(a.id, 'kb-doc', docId)
+                  } catch (e) {
+                    pushToast({ title: 'Detach failed', body: errorMessage(e), tone: 'danger' })
+                    return
+                  }
                   await refresh()
                 }}
                 class="p-0 hover:bg-transparent hover:text-danger"
@@ -69,10 +76,14 @@
         {options}
         selected={[]}
         onChange={async (v) => {
-          if (v[0]) {
+          if (!v[0]) return
+          try {
             await attachArtifact(v[0], 'kb-doc', docId)
-            await refresh()
+          } catch (e) {
+            pushToast({ title: 'Attach failed', body: errorMessage(e), tone: 'danger' })
+            return
           }
+          await refresh()
         }}
         placeholder="Attach a file"
         size="sm"

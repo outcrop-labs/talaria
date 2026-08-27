@@ -1,5 +1,6 @@
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson, getList } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
+import { pushToast } from '@/lib/toast.svelte'
 import type { ToolCall } from '@/lib/sse-parse'
 
 export interface Conversation {
@@ -50,8 +51,9 @@ export function usePlanMembers(planId: MaybeGetter<string | null>) {
   $effect(() => {
     const id = resolve(planId)
     if (!id) return
-    const ping = () =>
-      fetch(`/api/plans/${id}/members`, { method: 'PUT', credentials: 'same-origin' }).catch(() => {})
+    // Best-effort presence ping — a dropped one just means a stale dot until
+    // the next tick, so a failure is swallowed rather than surfaced.
+    const ping = () => putJson<{ ok: true }>(`/api/plans/${id}/members`).catch(() => {})
     void ping()
     const t = setInterval(() => {
       void ping()
@@ -71,22 +73,15 @@ export function usePlanMembers(planId: MaybeGetter<string | null>) {
 }
 
 export const sharePlan = async (planId: string, email: string): Promise<void> => {
-  const r = await fetch(`/api/plans/${planId}/members`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email }),
-  })
-  if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'share failed')
+  await postJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { email })
 }
 
 export const unsharePlan = async (planId: string, userId: string): Promise<void> => {
-  await fetch(`/api/plans/${planId}/members`, {
-    method: 'DELETE',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ userId }),
-  })
+  // The call site fires and forgets (`.then(refresh)`, no catch), so a refused
+  // remove is surfaced here rather than left as an unhandled rejection.
+  await delJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { userId }).catch((e: unknown) =>
+    pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
+  )
 }
 
 export function useConversations(kind: MaybeGetter<'chat' | 'plan'> = 'chat') {
@@ -110,7 +105,9 @@ export function useConversations(kind: MaybeGetter<'chat' | 'plan'> = 'chat') {
 export async function loadConversation(
   id: string,
 ): Promise<{ conversation: Conversation; messages: StoredMessage[] } | null> {
-  const r = await fetch(`/api/conversations/${id}`, { credentials: 'same-origin' })
-  if (!r.ok) return null
-  return r.json()
+  // Every failure — status or network — reads as "nothing to show" (see the
+  // comment above for why this must not reject).
+  return getJson<{ conversation: Conversation; messages: StoredMessage[] }>(`/api/conversations/${id}`).catch(
+    () => null,
+  )
 }

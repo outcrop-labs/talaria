@@ -8,7 +8,7 @@
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { getJson, getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { streamMuse, type MuseKind } from '@/lib/muse.svelte'
   import { fly, listStagger, slide, GROW_X } from '@/lib/motion'
@@ -172,9 +172,10 @@
   const fetchRevision = async (id: string): Promise<string | null> => {
     if (!history) return null
     const qs = new URLSearchParams({ ...history, rev: id }).toString()
-    const r = await fetch(`/api/history?${qs}`)
-    if (!r.ok) return null
-    return ((await r.json()) as { content: string }).content
+    // Null = "can't show that revision" — any failure folds into it.
+    return getJson<{ content: string }>(`/api/history?${qs}`)
+      .then((j) => j.content)
+      .catch(() => null)
   }
 
   /** Stage a revision's content in the editor (unsaved). */

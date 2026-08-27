@@ -8,6 +8,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { useAdminSettings } from './admin'
 
   // App-wide settings (grows over time). Audit retention is the first.
@@ -25,11 +27,14 @@
   const dirty = $derived(nameVal !== (data?.org.name ?? '') || aboutVal !== (data?.org.about ?? ''))
 
   const save = async () => {
-    await fetch('/api/admin/settings', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ org: { name: nameVal, about: aboutVal } }),
-    })
+    try {
+      await putJson<{ ok: true }>('/api/admin/settings', { org: { name: nameVal, about: aboutVal } })
+    } catch (e) {
+      // Keep the edited identity in the form — flashing "Saved" over a failed
+      // PUT would pretend the fleet just rolled onto it.
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     name = null
     about = null
     savedFlash.flash()

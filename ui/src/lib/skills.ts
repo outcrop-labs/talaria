@@ -13,7 +13,7 @@
 //
 // Keys and mutations live here now so those cannot disagree again.
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson, getList } from '@/lib/fetch-json'
+import { delJson, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
 
 export interface SkillSummary {
   name: string
@@ -73,26 +73,18 @@ export const canEditSkillsOf = (owners: SkillOwner[], owner: string): boolean =>
   owners.find((o) => o.owner === owner)?.canEdit ?? false
 
 export async function saveSkill(owner: string, name: string, content: string): Promise<void> {
-  await getJson<{ ok: true }>(`/api/skills/${owner}/${name}`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
+  await putJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { content })
 }
 
 export async function deleteSkill(owner: string, name: string): Promise<void> {
-  await getJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { method: 'DELETE' })
+  await delJson<{ ok: true }>(`/api/skills/${owner}/${name}`)
 }
 
 /** Rename the skill's directory without touching content. PUTs write to a
  *  single path, so a record that saves under a new name is two writes: rename
  *  the directory first, then write the content under the new name. */
 export async function renameSkill(owner: string, name: string, toName: string): Promise<void> {
-  await getJson<{ ok: true }>(`/api/skills/${owner}/${name}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ op: 'rename', toName }),
-  })
+  await postJson<{ ok: true }>(`/api/skills/${owner}/${name}`, { op: 'rename', toName })
 }
 
 /** What a brand-new skill starts as.

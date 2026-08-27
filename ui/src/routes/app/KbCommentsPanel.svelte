@@ -6,6 +6,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { cn } from '@/lib/cn'
+  import { delJson, errorMessage, patchJson, postJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { fade, slide, GROW_X, QUICK } from '@/lib/motion'
   import KbCommentBody from './KbCommentBody.svelte'
   import type { KbComment } from './knowledge.svelte'
@@ -50,25 +52,23 @@
 
   const post = async (content: string, parentId: string | null, quote: string | null) => {
     if (!content.trim()) return
-    await fetch(`/api/kb/docs/${docId}/comments`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: content.trim(), parentId, quote }),
-    })
+    await postJson(`/api/kb/docs/${docId}/comments`, { content: content.trim(), parentId, quote })
     await refresh()
   }
   const setResolved = async (id: string, resolved: boolean) => {
-    await fetch(`/api/kb/comments/${id}`, {
-      method: 'PATCH',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ resolved }),
-    })
+    try {
+      await patchJson(`/api/kb/comments/${id}`, { resolved })
+    } catch (e) {
+      pushToast({ title: resolved ? 'Resolve failed' : 'Reopen failed', body: errorMessage(e), tone: 'danger' })
+    }
     await refresh()
   }
   const remove = async (id: string) => {
-    await fetch(`/api/kb/comments/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+    try {
+      await delJson(`/api/kb/comments/${id}`)
+    } catch (e) {
+      pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+    }
     await refresh()
   }
 
@@ -120,10 +120,14 @@
           onkeydown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              void post(replyDraft, root.id, null).then(() => {
-                replyDraft = ''
-                replyTo = null
-              })
+              // On a failed post the draft STAYS — clearing it would throw the
+              // written comment away over a transient error.
+              void post(replyDraft, root.id, null)
+                .then(() => {
+                  replyDraft = ''
+                  replyTo = null
+                })
+                .catch((e) => pushToast({ title: 'Reply failed', body: errorMessage(e), tone: 'danger' }))
             } else if (e.key === 'Escape') {
               replyTo = null
             }
@@ -195,10 +199,13 @@
       onkeydown={(e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault()
-          void post(draft, null, pendingQuote).then(() => {
-            draft = ''
-            onQuoteConsumed()
-          })
+          // Draft stays on failure — same promise shape as the reply above.
+          void post(draft, null, pendingQuote)
+            .then(() => {
+              draft = ''
+              onQuoteConsumed()
+            })
+            .catch((e) => pushToast({ title: 'Comment failed', body: errorMessage(e), tone: 'danger' }))
         }
       }}
       placeholder={pendingQuote ? 'Comment on the selection' : 'Start a thread'}

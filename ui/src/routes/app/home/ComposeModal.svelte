@@ -4,6 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import { errorMessage, postJsonOr } from '@/lib/fetch-json'
 
   let { onClose }: { onClose: () => void } = $props()
 
@@ -18,14 +19,17 @@
     busy = true
     status = null
     try {
-      const r = await fetch('/api/integrations/google/gmail/send', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ to: to.trim(), subject, body }),
-      })
-      const j = (await r.json().catch(() => null)) as { sent?: unknown; message?: string } | null
-      if (r.ok && j?.sent) onClose()
-      else status = j?.message ?? 'Could not send the email.'
+      // 409/502 carry the route's human sentence ("Connect a Google account
+      // first.") for this inline status line; anything else rejects below.
+      const j = await postJsonOr<{ sent?: { id: string; threadId: string }; message?: string }>(
+        '/api/integrations/google/gmail/send',
+        { to: to.trim(), subject, body },
+        [409, 502],
+      )
+      if (j.sent) onClose()
+      else status = j.message ?? 'Could not send the email.'
+    } catch (e) {
+      status = errorMessage(e)
     } finally {
       busy = false
     }

@@ -5,7 +5,8 @@
 // free, shared with the server) and is re-exported here so client call sites
 // keep one import.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, patchJson, putJson } from '@/lib/fetch-json'
+import { pushToast } from '@/lib/toast.svelte'
 import type { DigestPref, NotifyDelivery, NotifyPrefs, NotifySettings, Notification } from './notify-classes'
 
 export * from './notify-classes'
@@ -31,12 +32,13 @@ export function useNotifications() {
 export function useMarkNotificationsRead() {
   const qc = useQueryClient()
   return async (ids?: string[]) => {
-    await fetch('/api/notifications', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(ids ? { ids } : {}),
-    })
+    try {
+      await putJson<{ ok: true }>('/api/notifications', ids ? { ids } : {})
+    } catch (e) {
+      // Both call sites fire this with `void` — without a catch a failed
+      // mark-read is an unhandled rejection, and the badge quietly lies.
+      pushToast({ title: 'Mark as read failed', body: errorMessage(e), tone: 'danger' })
+    }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
   }
 }
@@ -65,22 +67,12 @@ export interface NotifySettingsResult extends NotifySettings {
 export async function saveNotifySettings(
   patch: { prefs?: Partial<NotifyPrefs>; digest?: DigestPref; delivery?: NotifyDelivery },
 ): Promise<NotifySettingsResult | { error: string }> {
-  const r = await fetch('/api/notifications', {
-    method: 'PATCH',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-  }).catch(() => null)
-  const j = (await r?.json().catch(() => null)) as {
-    prefs?: NotifyPrefs
-    digest?: DigestPref
-    delivery?: NotifyDelivery
-    canSetDelivery?: boolean
-    error?: string
-  } | null
-  if (!r?.ok || !j?.prefs || !j.digest || !j.delivery) {
-    return { error: j?.error ?? 'could not save your notification settings' }
+  try {
+    const j = await patchJson<NotifySettingsResult>('/api/notifications', patch)
+    if (!j.prefs || !j.digest || !j.delivery) return { error: 'could not save your notification settings' }
+    return { prefs: j.prefs, digest: j.digest, delivery: j.delivery, canSetDelivery: j.canSetDelivery === true }
+  } catch (e) {
+    return { error: errorMessage(e) }
   }
-  return { prefs: j.prefs, digest: j.digest, delivery: j.delivery, canSetDelivery: j.canSetDelivery === true }
 }
 

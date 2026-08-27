@@ -8,7 +8,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 
   type EncryptionData = {
     keyVersion: number | null
@@ -33,19 +33,15 @@
     busy = true
     msg = null
     try {
-      const r = await fetch('/api/admin/encryption', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(newRoot.trim() ? { newRootSecret: newRoot.trim() } : {}),
-      })
-      const j = await r.json()
-      if (!r.ok) {
-        msg = j.error ?? 'rotation failed'
-        return
-      }
+      const j = await postJson<{ ok: true; version: number; reencrypted: number; rootRewrapped: boolean }>(
+        '/api/admin/encryption',
+        newRoot.trim() ? { newRootSecret: newRoot.trim() } : {},
+      )
       msg = `Re-encrypted ${j.reencrypted} secret${j.reencrypted === 1 ? '' : 's'} · now key v${j.version}`
       newRoot = ''
       await qc.invalidateQueries({ queryKey: ['admin-encryption'] })
+    } catch (e) {
+      msg = errorMessage(e)
     } finally {
       busy = false
     }

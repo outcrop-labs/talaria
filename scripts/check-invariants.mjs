@@ -490,6 +490,42 @@ const CENSUS = [
     },
   },
   {
+    id: 'raw-client-fetch',
+    // The ONE HTTP door for browser code: every request the app makes to its
+    // own API goes through a verb in ui/src/lib/fetch-json.ts. Server files
+    // fetch upstream services all the time (OAuth exchanges, MCP relays,
+    // safeFetch) and the SDK is its own published door — both excluded below.
+    pattern: /\bfetch\s*\(/g,
+    what: 'a hand-rolled client fetch, bypassing the one HTTP door',
+    fix: [
+      'Use a verb from `@/lib/fetch-json`: `getJson` / `getList` / `getJsonOr404` / `getJsonOr` for',
+      'reads, `postJson` / `putJson` / `patchJson` / `delJson` for mutations, `postStream` for SSE',
+      'and other streaming replies, and the `*JsonOr` twins where a specific 4xx body is an ANSWER',
+      'the surface renders (the endpoint cascade 409s, the focus actions, the Google-panel 409/502s).',
+      '',
+      'THIS RULE EXISTS BECAUSE THE STANZAS DRIFTED. The 2026-08 audit counted 134 hand-written',
+      '`fetch(...)` blocks in client code, and they disagreed about the one thing that matters:',
+      'most never read the error body (a failed POST resolved and the UI reported success), a few',
+      'resolved the `{ error }` envelope AS the created record, and two streamed SSE with different',
+      'frame rules than the chat parser. One door, one decision: non-2xx rejects with the server\'s',
+      'own sentence, and every caller catches or deliberately swallows it in writing.',
+      '',
+      'The two counted files below are the doors themselves, at their exact call counts — if the',
+      'door is renamed or emptied, the stale-census half of this check fails instead of the rule',
+      'going quietly inert. A fetch anywhere else in client code is a new stanza. If you believe',
+      'you need one, say so in the PR.',
+    ],
+    exempt: (path) =>
+      path.startsWith('ui/src/server/') ||
+      path.startsWith('ui/src/routes/api/') ||
+      path.endsWith('.test.ts') ||
+      !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
+    sites: {
+      'ui/src/lib/fetch-json.ts': 5, // the door: getJson, getJsonOr404, getJsonOr, sendJson, postStream
+      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
+    },
+  },
+  {
     id: 'admin-list-outside-the-resolver',
     // Both spellings of "fetch every admin": the resolver's own function, and
     // the raw query it wraps. gaps.ts used the second one to fan an agent's

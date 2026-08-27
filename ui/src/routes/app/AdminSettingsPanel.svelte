@@ -7,6 +7,8 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { submitOnEnter } from '@/components/ui/control'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { useAdminSettings } from './admin'
 
   const qc = useQueryClient()
@@ -17,11 +19,13 @@
   const save = async () => {
     const n = Number(value)
     if (!Number.isFinite(n)) return
-    await fetch('/api/admin/settings', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ auditRetentionDays: n }),
-    })
+    try {
+      await putJson<{ ok: true }>('/api/admin/settings', { auditRetentionDays: n })
+    } catch (e) {
+      // Leave the typed value in place so the failed edit is retryable.
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     days = ''
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }

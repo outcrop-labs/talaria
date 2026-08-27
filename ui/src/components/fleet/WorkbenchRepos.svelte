@@ -3,7 +3,8 @@
   import Chip from '@/components/ui/Chip.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { slide } from '@/lib/motion'
   import { p } from '@/router'
 
@@ -22,12 +23,13 @@
   const toggle = async (repo: string, on: boolean) => {
     const granted = query.data?.granted ?? []
     const next = on ? [...granted, repo] : granted.filter((r) => r !== repo)
-    await fetch(`/api/workbench/repos/${agentId}`, {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repos: next }),
-    })
+    try {
+      await putJson(`/api/workbench/repos/${agentId}`, { repos: next })
+    } catch (e) {
+      // Fire-and-forget from a chip: the toast is the only place a failed
+      // grant/revoke can be said, and the refresh below restores the chip.
+      pushToast({ title: on ? 'Grant failed' : 'Revoke failed', body: errorMessage(e), tone: 'danger' })
+    }
     await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
   }
 </script>

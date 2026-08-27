@@ -6,7 +6,7 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, HttpError, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import CapabilityTags from './CapabilityTags.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
@@ -72,25 +72,19 @@
     starting = true
     failure = null
     try {
-      const res = await fetch('/api/admin/model-fitness', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          action: 'start',
-          model,
-          tiers,
-          adversaryModel: wantsAdversarial && adversary ? adversary : null,
-          reprobe,
-          concurrency,
-        }),
+      await postJson('/api/admin/model-fitness', {
+        action: 'start',
+        model,
+        tiers,
+        adversaryModel: wantsAdversarial && adversary ? adversary : null,
+        reprobe,
+        concurrency,
       })
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string }
-        failure = body.error ?? (res.status === 409 ? 'A fitness run is already in flight.' : 'Could not start the run.')
-        return
-      }
       onStarted()
+    } catch (e) {
+      // 409 keeps its own sentence — "already in flight" tells the operator
+      // what to do next; the generic envelope never would.
+      failure = e instanceof HttpError && e.status === 409 ? 'A fitness run is already in flight.' : errorMessage(e)
     } finally {
       starting = false
     }

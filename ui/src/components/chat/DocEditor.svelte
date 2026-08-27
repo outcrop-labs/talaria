@@ -12,6 +12,8 @@
   import PlanDocSkeleton from './PlanDocSkeleton.svelte'
   import { saveArtifact, useArtifact } from '@/lib/artifacts'
   import { cn } from '@/lib/cn'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { p } from '@/router'
 
   let { id, planId, syncSignal = 0 }: { id: string; planId: string; syncSignal?: number } = $props()
@@ -29,7 +31,12 @@
 
   const save = async () => {
     const body = editorRef?.getMarkdown() ?? artifact?.body ?? ''
-    await saveArtifact(id, { body })
+    try {
+      await saveArtifact(id, { body })
+    } catch (e) {
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     void qc.invalidateQueries({ queryKey: ['artifact', id] })
   }
 
@@ -38,13 +45,11 @@
     syncing = true
     syncErr = null
     try {
-      const r = await fetch(`/api/plan/${planId}/doc`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' })
-      const j = (await r.json().catch(() => ({}))) as { error?: string }
-      if (!r.ok) throw new Error(j.error ?? `sync failed (${r.status})`)
+      await postJson(`/api/plan/${planId}/doc`, {})
       await qc.invalidateQueries({ queryKey: ['artifact', id] })
       syncNonce += 1
     } catch (e) {
-      syncErr = (e as Error).message
+      syncErr = errorMessage(e)
     } finally {
       syncing = false
     }

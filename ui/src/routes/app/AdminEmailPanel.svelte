@@ -9,7 +9,7 @@
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
   /** Transactional email: bring your own SMTP (Google Workspace etc.) or
@@ -36,17 +36,15 @@
     busy = true
     error = null
     notice = null
-    // PUT patches the config; POST sends the test email.
-    const r = await fetch('/api/admin/email', {
-      method: typeof body === 'object' && body !== null && 'test' in body ? 'POST' : 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    try {
+      // PUT patches the config; POST sends the test email.
+      const send = typeof body === 'object' && body !== null && 'test' in body ? postJson : putJson
+      await send<{ ok: true }>('/api/admin/email', body)
+      if (okNotice) notice = okNotice
+    } catch (e) {
+      error = errorMessage(e)
+    }
     busy = false
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
-    if (!r.ok || j.error) error = j.error ?? 'failed'
-    else if (okNotice) notice = okNotice
     await qc.invalidateQueries({ queryKey: ['email-config'] })
   }
 </script>

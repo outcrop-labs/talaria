@@ -11,7 +11,7 @@
 // So the cursor advances on an explicit gesture (the "N new" control, or
 // scrolling the timeline to the top), never on load.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 import type { BriefResponse, BriefView } from '@/server/daily-brief-types'
 
 export type { BriefResponse, BriefView }
@@ -98,15 +98,14 @@ export function useBriefActions() {
      *  means the thread moved on and the draft would answer the wrong message.
      *  A person who clicks send has to learn that it did not. */
     async decideReply(draftId: string, decision: 'approve' | 'reject'): Promise<{ ok: true } | { ok: false; error: string }> {
-      const res = await fetch('/api/brief/reply', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ draftId, decision }),
-      })
-      const payload = (await res.json().catch(() => null)) as { error?: string } | null
-      await refresh()
-      return res.ok ? { ok: true } : { ok: false, error: payload?.error ?? `Failed (${res.status})` }
+      try {
+        await postJson('/api/brief/reply', { draftId, decision })
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: errorMessage(e) }
+      } finally {
+        await refresh()
+      }
     },
     /** The owner's own verdict on a line: done, not needed, or put it back.
      *
@@ -114,37 +113,32 @@ export function useBriefActions() {
      *  a strike-through that appears a beat after the spinner stops reads as
      *  the click not having worked. */
     async markItem(sourceKey: string, action: 'check' | 'dismiss' | 'restore'): Promise<boolean> {
-      const res = await fetch('/api/brief/item', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sourceKey, action, tz: browserZone() }),
-      })
+      let ok = true
+      try {
+        await postJson('/api/brief/item', { sourceKey, action, tz: browserZone() })
+      } catch {
+        ok = false
+      }
       await refresh()
-      return res.ok
+      return ok
     },
     /** Hand a conversation to the assistant, or take it back. */
     async setDelegated(channelId: string | null, granted: boolean): Promise<boolean> {
-      const res = await fetch('/api/brief/delegate', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ channelId, granted }),
-      })
+      let ok = true
+      try {
+        await postJson('/api/brief/delegate', { channelId, granted })
+      } catch {
+        ok = false
+      }
       await refresh()
-      return res.ok
+      return ok
     },
     invalidate: (): void => void qc.invalidateQueries({ queryKey: BRIEF_KEY }),
     /** Advance the read cursor. Fire-and-forget: the flag it clears is a
      *  nicety, and a failed POST must not interrupt someone reading. */
     markRead: (brief: BriefView): void => {
       if (brief.lastSeq <= brief.readSeq) return
-      void fetch('/api/brief/read', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ briefId: brief.id, seq: brief.lastSeq }),
-      })
+      void postJson('/api/brief/read', { briefId: brief.id, seq: brief.lastSeq })
         .then(() => qc.invalidateQueries({ queryKey: BRIEF_KEY }))
         .catch(() => {})
     },

@@ -12,6 +12,8 @@
   import { cn } from '@/lib/cn'
   import { fade, listStagger } from '@/lib/motion'
   import { deleteArtifact, deleteFolder, updateFolder, type Artifact } from '@/lib/artifacts'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import ArtifactsRow from './ArtifactsRow.svelte'
   import ArtifactsTile from './ArtifactsTile.svelte'
   import { DRAG_MIME, type Drag, type Row, type SortDir, type SortKey } from './artifacts'
@@ -128,10 +130,20 @@
   const removeRow = async (r: Row) => {
     if (r.type === 'folder') {
       if (!(await confirm({ title: 'Delete folder', message: `Delete "${r.name}"? Everything inside moves up a level.`, confirmLabel: 'Delete', danger: true }))) return
-      await deleteFolder(r.id)
+      try {
+        await deleteFolder(r.id)
+      } catch (e) {
+        pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+      }
     } else {
       if (!(await confirm({ title: 'Delete file', message: `Delete "${r.name}"?`, confirmLabel: 'Delete', danger: true }))) return
-      await deleteArtifact(r.id)
+      try {
+        await deleteArtifact(r.id)
+      } catch (e) {
+        pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+        await onRefresh()
+        return
+      }
       onDeleted(r.id)
     }
     await onRefresh()
@@ -142,12 +154,17 @@
     if (!n) return
     const label = n === 1 ? `"${selectedRows[0]!.name}"` : `${n} items`
     if (!(await confirm({ title: 'Delete', message: `Delete ${label}? Folders keep their contents, moved up a level.`, confirmLabel: 'Delete', danger: true }))) return
-    for (const r of selectedRows) {
-      if (r.type === 'folder') await deleteFolder(r.id)
-      else {
-        await deleteArtifact(r.id)
-        onDeleted(r.id)
+    try {
+      for (const r of selectedRows) {
+        if (r.type === 'folder') await deleteFolder(r.id)
+        else {
+          await deleteArtifact(r.id)
+          onDeleted(r.id)
+        }
       }
+    } catch (e) {
+      // Stops at the first refusal — earlier deletes stands, later ones don't.
+      pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
     }
     clear()
     await onRefresh()
@@ -156,7 +173,12 @@
   const rename = async (r: Row) => {
     const name = await prompt({ title: 'Rename folder', defaultValue: r.name, confirmLabel: 'Rename' })
     if (!name?.trim() || name === r.name) return
-    await updateFolder(r.id, { name: name.trim() })
+    try {
+      await updateFolder(r.id, { name: name.trim() })
+    } catch (e) {
+      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await onRefresh()
   }
 

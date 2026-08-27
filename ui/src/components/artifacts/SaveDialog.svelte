@@ -7,6 +7,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { useFolders } from '@/lib/artifacts'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { p } from '@/router'
 
   let { src, onClose }: { src: string; onClose: () => void } = $props()
@@ -28,17 +29,15 @@
     busy = true
     error = null
     try {
-      const r = await fetch(`/api/agent-media/${encodeURIComponent(model)}/save`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path, title: title.trim() || undefined, folderId: folderId || null }),
+      const j = await postJson<{ artifact?: { id: string } }>(`/api/agent-media/${encodeURIComponent(model)}/save`, {
+        path,
+        title: title.trim() || undefined,
+        folderId: folderId || null,
       })
-      const j = (await r.json().catch(() => ({}))) as { artifact?: { id: string }; error?: string }
-      if (!r.ok || !j.artifact) throw new Error(j.error ?? `save failed (${r.status})`)
+      if (!j.artifact) throw new Error('save failed')
       savedId = j.artifact.id
     } catch (e) {
-      error = (e as Error).message
+      error = errorMessage(e)
     } finally {
       busy = false
     }

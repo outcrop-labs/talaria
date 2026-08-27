@@ -2,7 +2,8 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import CategoryDetail from '@/components/models/CategoryDetail.svelte'
   import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
 
@@ -123,12 +124,15 @@
   // The refetch is what surfaces the unfit warning for a pick just made —
   // nothing blocks or reverts; the admin is told and the choice stands.
   const save = async (slot: Slot, patch: { model?: string | null; effort?: string | null }) => {
-    await fetch(slot.kind === 'role' ? '/api/admin/model-roles' : '/api/admin/platform-agents', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(slot.kind === 'role' ? { role: slot.row.role, ...patch } : { id: slot.row.id, ...patch }),
-    })
+    try {
+      await putJson<{ ok: true }>(
+        slot.kind === 'role' ? '/api/admin/model-roles' : '/api/admin/platform-agents',
+        slot.kind === 'role' ? { role: slot.row.role, ...patch } : { id: slot.row.id, ...patch },
+      )
+    } catch (e) {
+      pushToast({ title: 'Could not save that slot', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['model-roles'] })
     await qc.invalidateQueries({ queryKey: ['platform-agents'] })
   }

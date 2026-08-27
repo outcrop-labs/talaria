@@ -1,6 +1,6 @@
 // Shared types + helpers for the MCP page (Mcp.svelte + its cards/modals).
 import { createQuery } from '@tanstack/svelte-query'
-import { getList } from '@/lib/fetch-json'
+import { errorMessage, getList, putJson } from '@/lib/fetch-json'
 export { isInternalServer } from '@/lib/mcp-servers'
 
 export interface McpServerRow {
@@ -39,14 +39,12 @@ export function useMcpServers() {
 }
 
 export async function patchServer(id: string, body: unknown): Promise<string | null> {
-  const r = await fetch(`/api/mcp/servers/${id}`, {
-    method: 'PUT',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }).error ?? `failed (${r.status})`
-  return null
+  try {
+    await putJson<{ ok: true }>(`/api/mcp/servers/${id}`, body)
+    return null
+  } catch (e) {
+    return errorMessage(e)
+  }
 }
 
 // Scope dropdown sentinels: explicit states, not empty-placeholder magic.

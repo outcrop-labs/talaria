@@ -1,6 +1,7 @@
 <script lang="ts">
   import { BookOpen, Gem } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { getJson } from '@/lib/fetch-json'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import PopSearch from '@/components/chat/PopSearch.svelte'
   import { popRow } from '@/components/chat/chat-chrome'
@@ -27,8 +28,7 @@
           const hits = query.trim() ? await searchKb(query) : []
           if (!cancelled) results = hits.slice(0, 8).map((h) => ({ id: h.id, title: h.title || 'Untitled' }))
         } else {
-          const r = await fetch('/api/artifacts', { credentials: 'same-origin' })
-          const all = ((await r.json()) as { artifacts?: Array<{ id: string; title: string }> }).artifacts ?? []
+          const all = (await getJson<{ artifacts?: Array<{ id: string; title: string }> }>('/api/artifacts')).artifacts ?? []
           const needle = query.trim().toLowerCase()
           if (!cancelled) {
             results = all

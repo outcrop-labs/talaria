@@ -10,6 +10,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
+  import { delJson, errorMessage } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import McpAccessModal from './McpAccessModal.svelte'
@@ -69,7 +70,12 @@
             confirmLabel: 'Remove',
           }).then(async (ok) => {
             if (!ok) return
-            await fetch(`/api/mcp/servers/${s.id}`, { method: 'DELETE', credentials: 'same-origin' })
+            try {
+              await delJson<{ ok: true }>(`/api/mcp/servers/${s.id}`)
+            } catch (e) {
+              error = errorMessage(e)
+              return
+            }
             await refresh()
           })
         },

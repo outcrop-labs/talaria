@@ -10,7 +10,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
   interface OrgDomainRow {
@@ -40,14 +40,10 @@
   const add = async () => {
     if (!draft.trim()) return
     error = null
-    const r = await fetch('/api/admin/domains', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ domain: draft.trim() }),
-    })
-    if (!r.ok) {
-      error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed'
+    try {
+      await postJson<{ ok: true }>('/api/admin/domains', { domain: draft.trim() })
+    } catch (e) {
+      error = errorMessage(e)
       return
     }
     draft = ''
@@ -56,15 +52,23 @@
   const verify = async (id: string) => {
     verifying = id
     error = null
-    const r = await fetch('/api/admin/domains', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ verifyId: id }),
-    })
-    const j = (await r.json().catch(() => ({}))) as { verified?: boolean; error?: string }
+    try {
+      const j = await postJson<{ verified: boolean; error?: string }>('/api/admin/domains', { verifyId: id })
+      // An unverified answer is a 200: the DNS record just isn't there yet.
+      if (!j.verified) error = j.error ?? 'verification failed'
+    } catch (e) {
+      error = errorMessage(e)
+    }
     verifying = null
-    if (!j.verified) error = j.error ?? 'verification failed'
+    await refresh()
+  }
+  const remove = async (d: OrgDomainRow) => {
+    if (!(await confirm({ title: 'Remove domain', message: `Remove ${d.domain}? New self-joins stop; existing members keep their accounts.`, confirmLabel: 'Remove' }))) return
+    try {
+      await delJson<{ ok: true }>('/api/admin/domains', { id: d.id })
+    } catch (e) {
+      error = errorMessage(e)
+    }
     await refresh()
   }
 </script>
@@ -119,16 +123,7 @@
             <button
               type="button"
               title="Remove: self-joins from this domain stop immediately"
-              onclick={async () => {
-                if (!(await confirm({ title: 'Remove domain', message: `Remove ${d.domain}? New self-joins stop; existing members keep their accounts.`, confirmLabel: 'Remove' }))) return
-                await fetch('/api/admin/domains', {
-                  method: 'DELETE',
-                  credentials: 'same-origin',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ id: d.id }),
-                })
-                await refresh()
-              }}
+              onclick={() => void remove(d)}
               class="text-muted transition-colors hover:text-danger"
             >
               <Trash2 size={13} />
