@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
   import { ChevronLeft } from '@lucide/svelte'
   import Modal from '@/components/ui/Modal.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import CloseButton from '@/components/ui/CloseButton.svelte'
   import InternalEditor from '@/components/editor/InternalEditor.svelte'
   import type { MuseKind } from '@/lib/muse.svelte'
@@ -65,14 +66,9 @@
       class="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]"
     >
       <div class="flex shrink-0 items-center gap-2 border-b border-line px-6 py-3.5">
-        <button
-          type="button"
-          onclick={onClose}
-          title="Back"
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-        >
+        <IconButton size="sm" title="Back" onclick={onClose}>
           <ChevronLeft size={16} />
-        </button>
+        </IconButton>
         <div class="text-sm font-semibold text-fg">{title}</div>
         <CloseButton onClick={onClose} class="ml-auto" />
       </div>

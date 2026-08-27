@@ -50,7 +50,7 @@
   import Hint from './comms/Hint.svelte'
   import RailFailure from './comms/RailFailure.svelte'
   import HeaderPicker from './comms/HeaderPicker.svelte'
-  import IconAction from './comms/IconAction.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import AgentDmPane from './comms/AgentDmPane.svelte'
 
   // Comms — every conversation in one place, Slack-shaped but agent-native:
@@ -586,19 +586,19 @@
             />
           {/if}
           {#if (detail?.agents.length ?? 0) > 0}
-            <IconAction title="Draft tickets from this conversation" onClick={() => (planOpen = true)}>
+            <IconButton size="sm" title="Draft tickets from this conversation" onclick={() => (planOpen = true)}>
               <ClipboardList size={16} />
-            </IconAction>
+            </IconButton>
           {/if}
           {#if selected.kind === 'group'}
-            <IconAction title="Conclude: summarize what was decided, then archive" onClick={() => void conclude()}>
+            <IconButton size="sm" title="Conclude: summarize what was decided, then archive" onclick={() => void conclude()}>
               <CheckCheck size={16} />
-            </IconAction>
+            </IconButton>
           {/if}
           {#if selected.kind !== 'dm'}
-            <IconAction title="Settings: people, agents, rename" onClick={() => (settingsOpen = true)}>
+            <IconButton size="sm" title="Settings: people, agents, rename" onclick={() => (settingsOpen = true)}>
               <Settings size={16} />
-            </IconAction>
+            </IconButton>
           {/if}
         </header>
         <div class="relative min-h-0 flex-1">

@@ -4,6 +4,7 @@
   // active filter ("Status · 2"). Values are ORed within a facet, ANDed across
   // facets; everything lives in the URL (the route owns encoding).
   import { CalendarDays, Flag, Tag, UserRound, X } from '@lucide/svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { ContextMenuEntry, MenuIcon } from '@/components/ui/context-menu.svelte'
   import { userAssignee } from '@/lib/assignees'
   import type { BoardLabel, BoardMember } from '@/lib/boards.svelte'
@@ -115,7 +116,7 @@
 
 <div class="flex flex-wrap items-center gap-1">
   <FacetPill label="Status" count={value.statuses.length} items={statusItems}>
-    {#snippet icon()}<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>{/snippet}
+    {#snippet icon()}<StatusDot status="accent" />{/snippet}
   </FacetPill>
   <FacetPill label="Assignee" count={value.assignees.length} items={assigneeItems}>
     {#snippet icon()}<UserRound size={12} />{/snippet}

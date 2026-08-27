@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -79,14 +80,7 @@
       <Combobox {options} selected={agents} onChange={(next) => (agents = next)} multiple placeholder="Select agents" />
     {/if}
     <div class="mt-4 flex items-center justify-between gap-2">
-      <label class="flex cursor-pointer items-center gap-2 font-sans text-sm text-fg">
-        <input
-          type="checkbox"
-          bind:checked={allowAll}
-          class="accent-[color:var(--theme-accent)]"
-        />
-        Allow all agents
-      </label>
+      <Checkbox checked={allowAll} onChange={(checked) => (allowAll = checked)} label="Allow all agents" class="gap-2 font-sans text-sm text-fg" />
       <div class="flex items-center gap-2">
         {#if saved}<span class="font-mono text-[10px] uppercase tracking-[0.05em] text-success">Saved</span>{/if}
         <Button size="sm" onclick={() => void save()} disabled={busy}>

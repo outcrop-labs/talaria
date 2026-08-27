@@ -1,6 +1,7 @@
 <script lang="ts">
   import { MessageSquare, GitBranch } from '@lucide/svelte'
   import CopyLinkButton from '@/components/ui/CopyLinkButton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import AssigneesPill from './AssigneesPill.svelte'
   import DuePill from './DuePill.svelte'
   import EstimatePill from './EstimatePill.svelte'
@@ -79,7 +80,7 @@
       <span class="absolute inset-y-0 left-0 w-1" style:background={LABEL_CSS[task.color]}></span>
     {/if}
     <div class="flex items-start gap-2.5">
-      <span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full" style:background={PRIORITY_COLOR[task.priority]}></span>
+      <StatusDot color={PRIORITY_COLOR[task.priority]} class="mt-2" />
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5">
           {#if task.ticketRef}

@@ -125,12 +125,7 @@
       <div class="space-y-1 rounded-lg border border-line p-2">
         {#each models as m (m.id)}
           <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors dither-fill">
-            <input
-              type="checkbox"
-              checked={selection.includes(m.id)}
-              onchange={() => toggle(m.id)}
-              class="mt-1 shrink-0 accent-accent"
-            />
+            <Checkbox bare checked={selection.includes(m.id)} onChange={() => toggle(m.id)} class="mt-1 shrink-0" />
             <span class="min-w-0">
               <span class="block truncate font-sans text-sm text-fg">{m.label ?? m.id}</span>
               <span class="block truncate font-sans text-xs text-muted">{m.blurb || m.id}</span>

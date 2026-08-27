@@ -3,6 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
@@ -81,7 +82,7 @@
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
           Gmail · Calendar · Drive
-          {#if data.connected}<span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>{/if}
+          {#if data.connected}<StatusDot status="ok" />{/if}
         </div>
         <div class="truncate font-mono text-[11px] text-muted">
           {data.connected ? `Connected as ${data.email ?? 'your account'}` : 'Not connected'}

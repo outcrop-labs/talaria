@@ -1,6 +1,7 @@
 <script lang="ts">
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import FieldPill from '@/components/ui/FieldPill.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { statusColorOf, statusLabelOf } from '@/lib/statuses'
   import { STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
@@ -20,7 +21,7 @@
 
 {#if !ctx.canEdit}
   <span class={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
-    <span class="h-1.5 w-1.5 rounded-full" style:background={dot}></span>
+    <StatusDot color={dot} />
     {label}
   </span>
 {:else}

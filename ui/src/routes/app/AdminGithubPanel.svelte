@@ -7,6 +7,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
@@ -115,7 +116,7 @@
       <!-- Status -->
       {#if status?.configured}
         <div class="flex items-center gap-2 text-sm">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
+          <StatusDot status="ok" />
           <span class="text-fg">Connected{status.account ? ` as ${status.account}` : ''}</span>
           <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">via {status.mode === 'app' ? 'GitHub App' : 'access token'}</span>
           <Button variant="ghost" size="xs" class="ml-auto hover:text-danger" onclick={() => void disconnect()}>
@@ -124,7 +125,7 @@
         </div>
       {:else}
         <div class="flex items-center gap-2 text-sm">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></span>
+          <StatusDot status="idle" />
           <span class="text-muted">Not connected. Pick a method and follow the setup guide.</span>
         </div>
       {/if}

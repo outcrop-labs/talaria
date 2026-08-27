@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatCard from '@/components/ui/StatCard.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { formatTokens } from '@/lib/cost.svelte'
   import { fade, listStagger } from '@/lib/motion'
   import { useSession } from '@/lib/session'
@@ -71,10 +72,7 @@
       {#each backends as b (b.id)}
         <Panel>
           <div class="mb-4 flex items-center gap-3">
-            <span
-              class="h-[7px] w-[7px] shrink-0 rounded-full"
-              style:background={b.health.ok ? 'var(--theme-success)' : 'var(--theme-danger)'}
-            ></span>
+            <StatusDot status={b.health.ok ? 'ok' : 'danger'} class="h-[7px] w-[7px]" />
             <span class="font-sans text-sm font-semibold text-fg">{b.name}</span>
             <span class="min-w-0 truncate font-mono text-[11px] text-muted">{b.baseUrl}</span>
             <span class={`ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] ${b.health.ok ? 'text-muted' : 'text-danger'}`}>

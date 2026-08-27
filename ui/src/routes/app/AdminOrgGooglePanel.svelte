@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
@@ -122,7 +123,7 @@
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
           Shared Drive &amp; Docs
-          {#if data?.connected}<span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>{/if}
+          {#if data?.connected}<StatusDot status="ok" />{/if}
         </div>
         <div class="truncate font-mono text-[11px] text-muted">
           {data?.connected ? `Connected${data.email ? ` as ${data.email}` : ''}` : 'Not connected'}
@@ -148,10 +149,7 @@
         {#if apiResults}
           {#each apiResults as a (a.service)}
             <div class="flex items-center gap-2 text-xs">
-              <span
-                aria-hidden="true"
-                class={cn('h-1.5 w-1.5 shrink-0 rounded-full', a.state === 'ok' ? 'bg-success' : 'bg-danger')}
-              ></span>
+              <StatusDot status={a.state === 'ok' ? 'ok' : 'danger'} />
               {#if a.state === 'disabled'}
                 <!-- The one state an admin can fix from the linked console page. -->
                 <a href={a.consoleUrl} target="_blank" rel="noreferrer" class="text-accent hover:underline">{a.name}</a>

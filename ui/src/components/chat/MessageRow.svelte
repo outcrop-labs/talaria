@@ -1,7 +1,8 @@
 <script lang="ts">
   import { MessageSquareText, Pencil, SmilePlus, Trash2 } from '@lucide/svelte'
   import MessageAvatar from './MessageAvatar.svelte'
-  import HoverAction from './HoverAction.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
+  import Popover from '@/components/ui/Popover.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import ChatWaiting from './ChatWaiting.svelte'
@@ -37,25 +38,6 @@
   let picking = $state(false)
   let editing = $state(false)
   let draft = $state('')
-  let toolbarRef = $state<HTMLDivElement | null>(null)
-
-  // The palette must never trap you: outside click, Esc, or simply moving
-  // off the message all dismiss it.
-  $effect(() => {
-    if (!picking) return
-    const onDoc = (e: MouseEvent) => {
-      if (!toolbarRef?.contains(e.target as Node)) picking = false
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') picking = false
-    }
-    document.addEventListener('mousedown', onDoc)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDoc)
-      document.removeEventListener('keydown', onKey)
-    }
-  })
 
   const react = (emoji: string) => {
     picking = false
@@ -76,7 +58,6 @@
   out:fade={QUICK}
   class="group relative flex gap-2.5"
   oncontextmenu={onContextMenu}
-  onmouseleave={() => (picking = false)}
 >
   <MessageAvatar {name} class="mt-0.5" />
   <div class="min-w-0 flex-1">
@@ -172,61 +153,73 @@
       context menu behind a confirm. -->
   {#if !live && !editing}
     <div
-      bind:this={toolbarRef}
       class={cn(
         'absolute -top-2 right-0 items-center gap-0.5 rounded-md border border-line bg-raised p-0.5 shadow-[var(--theme-shadow-1)]',
         picking ? 'flex' : 'hidden group-hover:flex',
       )}
     >
-      {#if picking}
-        {#each REACTION_SET as e (e)}
-          <button
-            type="button"
-            onclick={() => react(e)}
-            class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors dither-fill"
-          >
-            {e}
-          </button>
-        {/each}
-      {:else}
-        <HoverAction title="Add reaction" onClick={() => (picking = true)}>
-          <SmilePlus size={14} />
-        </HoverAction>
-        {#if !inThread && !m.threadRootId}
-          <HoverAction title="Reply in thread" onClick={() => onOpenThread?.()}>
-            <MessageSquareText size={14} />
-          </HoverAction>
-        {/if}
-        {#if own}
-          <HoverAction
-            title="Edit message"
-            onClick={() => {
-              draft = m.content
-              editing = true
-            }}
-          >
-            <Pencil size={14} />
-          </HoverAction>
-        {/if}
-        {#if own || ctx.isChannelOwner}
-          <HoverAction
-            title="Delete message"
-            danger
-            onClick={() => {
-              void confirm({
-                title: 'Delete message',
-                message: m.thread?.count
-                  ? `Delete this message and its ${m.thread.count} thread ${m.thread.count === 1 ? 'reply' : 'replies'}?`
-                  : 'Delete this message?',
-                confirmLabel: 'Delete',
-              }).then((ok) => {
-                if (ok) void deleteChannelMessage(ctx.channelId, m.id)
-              })
-            }}
-          >
-            <Trash2 size={14} />
-          </HoverAction>
-        {/if}
+      <!-- Reaction palette: the §7 popover shell owns dismissal (outside
+          click, Esc, scroll) — `bind:open` keeps the toolbar pinned while it
+          is up. -->
+      <Popover bind:open={picking} up>
+        {#snippet trigger()}
+          <IconButton title="Add reaction" size="sm">
+            <SmilePlus size={14} />
+          </IconButton>
+        {/snippet}
+        {#snippet content(close)}
+          <div class="flex items-center gap-0.5">
+            {#each REACTION_SET as e (e)}
+              <button
+                type="button"
+                onclick={() => {
+                  close()
+                  react(e)
+                }}
+                class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors dither-fill"
+              >
+                {e}
+              </button>
+            {/each}
+          </div>
+        {/snippet}
+      </Popover>
+      {#if !inThread && !m.threadRootId}
+        <IconButton title="Reply in thread" size="sm" onclick={() => onOpenThread?.()}>
+          <MessageSquareText size={14} />
+        </IconButton>
+      {/if}
+      {#if own}
+        <IconButton
+          title="Edit message"
+          size="sm"
+          onclick={() => {
+            draft = m.content
+            editing = true
+          }}
+        >
+          <Pencil size={14} />
+        </IconButton>
+      {/if}
+      {#if own || ctx.isChannelOwner}
+        <IconButton
+          title="Delete message"
+          size="sm"
+          danger
+          onclick={() => {
+            void confirm({
+              title: 'Delete message',
+              message: m.thread?.count
+                ? `Delete this message and its ${m.thread.count} thread ${m.thread.count === 1 ? 'reply' : 'replies'}?`
+                : 'Delete this message?',
+              confirmLabel: 'Delete',
+            }).then((ok) => {
+              if (ok) void deleteChannelMessage(ctx.channelId, m.id)
+            })
+          }}
+        >
+          <Trash2 size={14} />
+        </IconButton>
       {/if}
     </div>
   {/if}

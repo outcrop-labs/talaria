@@ -1,14 +1,14 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { portal } from '@/lib/portal'
+  import Popover from '@/components/ui/Popover.svelte'
   import MeterBars from '@/components/chat/MeterBars.svelte'
-  import { chipPrimary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
-  import { pop, POPOVER } from '@/lib/motion'
+  import { chipPrimary, popHeader, popRow, popRowSelected } from '@/components/chat/chat-chrome'
 
   // The composer's effort chip (Mercury spec §7): the agent-chip anatomy —
   // strong border, mono label, 3×12 meter marking where the pick sits on the
   // model's effort ladder — opening the §7 popover (panel bg, mono section
-  // header, hover fill, dashed-gold selected row, a bar meter on every row).
+  // header, hover fill, dashed-gold selected row, a bar meter on every row);
+  // the shell (ui/Popover) owns the portal/outside-click/Esc mechanics.
   // Rendered by the chat surfaces ONLY with a non-empty `efforts` list, which
   // the server derives from the model's own catalog metadata: a model that
   // publishes no levels gets no chip and its requests carry no effort.
@@ -30,30 +30,6 @@
   } = $props()
 
   let open = $state(false)
-  let pos = $state<{ left: number; bottom: number } | null>(null)
-  let btnRef = $state<HTMLButtonElement | null>(null)
-  let panelRef = $state<HTMLDivElement | null>(null)
-
-  $effect(() => {
-    if (!open) return
-    const place = () => {
-      const r = btnRef?.getBoundingClientRect()
-      if (r) pos = { left: r.left, bottom: window.innerHeight - r.top + 6 }
-    }
-    place()
-    const onDoc = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!btnRef?.contains(t) && !panelRef?.contains(t)) open = false
-    }
-    window.addEventListener('resize', place)
-    window.addEventListener('scroll', place, true)
-    document.addEventListener('mousedown', onDoc)
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-      document.removeEventListener('mousedown', onDoc)
-    }
-  })
 
   // Where the pick sits on the ladder: nothing lit at the model's default,
   // otherwise every bar up to and including the picked level — the same
@@ -62,34 +38,27 @@
   const label = $derived(value || 'auto')
 </script>
 
-<button
-  bind:this={btnRef}
-  type="button"
-  onclick={() => (open = !open)}
-  disabled={disabled}
-  class={cn(chipPrimary, 'shrink-0')}
-  title="Reasoning effort for this reply"
-  aria-haspopup="listbox"
-  aria-expanded={open}
->
-  <span class="max-w-24 truncate">{label}</span>
-  <MeterBars total={efforts.length} {lit} />
-</button>
-{#if open && pos}
-  <div
-    use:portal
-    bind:this={panelRef}
-    in:pop={POPOVER}
-    class={cn(popPanel, 'fixed z-[60] min-w-48 overflow-hidden')}
-    style:left="{pos.left}px"
-    style:bottom="{pos.bottom}px"
-  >
+<Popover bind:open follow up offset={6} class="min-w-48 overflow-hidden">
+  {#snippet trigger()}
+    <button
+      type="button"
+      disabled={disabled}
+      class={cn(chipPrimary, 'shrink-0')}
+      title="Reasoning effort for this reply"
+      aria-haspopup="listbox"
+      aria-expanded={open}
+    >
+      <span class="max-w-24 truncate">{label}</span>
+      <MeterBars total={efforts.length} {lit} />
+    </button>
+  {/snippet}
+  {#snippet content(close)}
     <div class={popHeader}>Reasoning effort</div>
     <button
       type="button"
       onclick={() => {
         onChange('')
-        open = false
+        close()
       }}
       class={cn(popRow, value === '' ? popRowSelected : 'text-muted')}
     >
@@ -101,7 +70,7 @@
         type="button"
         onclick={() => {
           onChange(level)
-          open = false
+          close()
         }}
         class={cn(popRow, level === value ? popRowSelected : 'text-muted')}
       >
@@ -109,5 +78,5 @@
         <MeterBars total={efforts.length} lit={i + 1} class="shrink-0" />
       </button>
     {/each}
-  </div>
-{/if}
+  {/snippet}
+</Popover>

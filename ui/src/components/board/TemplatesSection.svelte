@@ -1,6 +1,8 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { p } from '@/router'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import Radio from '@/components/ui/Radio.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import type { Board } from '@/lib/boards.svelte'
@@ -68,24 +70,16 @@
     <div class="space-y-1 rounded-lg border border-line p-2" use:listStagger>
       {#each ticketTemplates as t (t.id)}
         <div class="flex items-center gap-2 font-sans text-sm">
-          <input
-            type="checkbox"
-            checked={bound.has(t.id)}
-            onchange={() => toggle(t.id)}
-            class="shrink-0 accent-[var(--theme-accent)]"
-          />
+          <Checkbox bare title={t.name} checked={bound.has(t.id)} onChange={() => toggle(t.id)} class="shrink-0" />
           <span class="min-w-0 flex-1 truncate text-fg">{t.name}</span>
           {#if bound.has(t.id)}
-            <label class="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
-              <input
-                type="radio"
-                name={`default-template-${board.id}`}
-                checked={defaultId === t.id}
-                onchange={() => void save([...bound], t.id)}
-                class="accent-[var(--theme-accent)]"
-              />
-              default
-            </label>
+            <Radio
+              name={`default-template-${board.id}`}
+              checked={defaultId === t.id}
+              onChange={() => void save([...bound], t.id)}
+              label="default"
+              class="shrink-0 gap-1 font-mono text-[10px] uppercase tracking-[0.05em]"
+            />
           {/if}
         </div>
       {/each}

@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { GripVertical, Trash2 } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import type { ContextMenuItem } from '@/components/ui/context-menu.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -210,19 +211,14 @@
             <option value="review">review</option>
             <option value="done">done</option>
           </Select>
-          <label
+          <Checkbox
             title="Agents may pick up work in this column (assignment here = approval to start)"
-            class="flex shrink-0 cursor-pointer items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted"
-          >
-            <input
-              type="checkbox"
-              checked={st.agentStart}
-              disabled={!canEdit}
-              onchange={(e) => run(() => updateBoardStatus(board.id, st.key, { agentStart: e.currentTarget.checked }))}
-              class="accent-[var(--theme-accent)]"
-            />
-            agent start
-          </label>
+            checked={st.agentStart}
+            disabled={!canEdit}
+            onChange={(checked) => run(() => updateBoardStatus(board.id, st.key, { agentStart: checked }))}
+            label="agent start"
+            class="shrink-0 gap-1 font-mono text-[10px] uppercase tracking-[0.05em]"
+          />
           {#if canEdit}
             <DropdownMenu align="right" items={deleteItems(st)}>
               {#snippet trigger()}

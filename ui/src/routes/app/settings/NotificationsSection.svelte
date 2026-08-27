@@ -6,6 +6,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import BrowserNotifications from './BrowserNotifications.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { cn } from '@/lib/cn'
@@ -164,10 +165,7 @@
         <div class="flex items-start gap-4">
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                class={cn('h-1.5 w-1.5 shrink-0 rounded-full', emailOn ? 'bg-success' : 'bg-warning')}
-              ></span>
+              <StatusDot status={emailOn ? 'ok' : 'warn'} />
               <span class="text-sm font-medium text-fg">
                 {emailOn ? 'Email delivery is on for this instance' : 'Email delivery is off for this instance'}
               </span>

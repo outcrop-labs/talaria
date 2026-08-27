@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
   import type { HTMLButtonAttributes } from 'svelte/elements'
   import { ChevronDown } from '@lucide/svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
 
@@ -65,7 +66,7 @@
   )}
   {...rest}
 >
-  {#if dot}<span class="h-2 w-2 shrink-0 rounded-full" style:background={dot}></span>{/if}
+  {#if dot}<StatusDot color={dot} class="h-2 w-2" />{/if}
   {#if icon}<span class="grid w-3.5 shrink-0 place-items-center">{@render icon()}</span>{/if}
   <span class="min-w-0 truncate">{@render children()}</span>
   <ChevronDown

@@ -5,6 +5,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { fade, fly, listStagger, PANEL, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
@@ -140,7 +141,7 @@
               )}
             >
               <div class="flex items-baseline gap-2">
-                {#if !n.readAt}<span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>{/if}
+                {#if !n.readAt}<StatusDot status="accent" />{/if}
                 <span class={cn('min-w-0 flex-1 truncate font-sans text-sm', n.readAt ? 'text-muted' : 'font-medium text-fg')}>
                   {n.title}
                 </span>

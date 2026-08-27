@@ -2,7 +2,7 @@
   import { SquarePen } from '@lucide/svelte'
   import ChatView from '@/components/chat/ChatView.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
-  import IconAction from './IconAction.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
 
   // One agent's DM pane. Threads are selected in the sidebar (nested under the
   // agent); a fresh thread is the default — bounded context per topic.
@@ -31,9 +31,9 @@
       <span class="text-sm font-semibold text-fg">◍ {agent.label}</span>
       {#if conversationId === null}<span class="text-xs text-muted">new thread; history stays out of context</span>{/if}
       <span class="ml-auto"></span>
-      <IconAction title="New thread: fresh context" onClick={onNewThread}>
+      <IconButton size="sm" title="New thread: fresh context" onclick={onNewThread}>
         <SquarePen size={16} />
-      </IconAction>
+      </IconButton>
     </header>
     <!-- Chat is the surface where a missing provider is most confusing — the
          thread opens, the composer works, and nothing comes back. -->

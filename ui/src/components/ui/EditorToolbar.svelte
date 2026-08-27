@@ -26,6 +26,7 @@
   import Modal from './Modal.svelte'
   import Input from './Input.svelte'
   import Button from './Button.svelte'
+  import IconButton from './IconButton.svelte'
   import DocLinkPopover from './DocLinkPopover.svelte'
   import type { DocSearchFn } from './rich-editor'
 
@@ -107,19 +108,18 @@
 
 {#snippet btn(icon: IconType, title: string, active: boolean, action: () => void)}
   {@const Icon = icon}
-  <button
-    type="button"
+  <!-- Active keeps its accent glyph (the editor's "this format is on" ink),
+       not the primitive's default active text color. -->
+  <IconButton
+    size="sm"
     {title}
+    {active}
+    class={active ? 'text-accent' : ''}
     onmousedown={(e) => e.preventDefault()}
     onclick={action}
-    class={cn(
-      'grid h-7 w-7 place-items-center rounded-md transition-colors',
-      active ? 'bg-raised text-accent' : 'text-muted dither-fill hover:text-fg',
-      focusGold,
-    )}
   >
     <Icon size={16} strokeWidth={2} />
-  </button>
+  </IconButton>
 {/snippet}
 
 <!-- Compact labeled buttons for the table segment — text beats cryptic icons

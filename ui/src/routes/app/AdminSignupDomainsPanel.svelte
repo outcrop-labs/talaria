@@ -6,6 +6,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -105,12 +106,12 @@
             <span class="font-mono text-[13px] text-fg">{d.domain}</span>
             {#if d.verified}
               <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
-                <span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
+                <StatusDot status="ok" />
                 verified · self-joins open
               </span>
             {:else}
               <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
-                <span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"></span>
+                <StatusDot status="warn" />
                 awaiting DNS proof
               </span>
             {/if}

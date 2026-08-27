@@ -2,6 +2,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -104,10 +105,7 @@
        everyone). Custom collections are bound + curated here. -->
   {#if !col.auto}
     <div class="mt-2.5 space-y-2">
-      <label class="flex items-center gap-1.5 text-xs text-muted">
-        <input type="checkbox" checked={bindingsAll} onchange={(e) => applyBindings({ all: e.currentTarget.checked })} class="accent-accent" />
-        Everyone
-      </label>
+      <Checkbox checked={bindingsAll} onChange={(checked) => applyBindings({ all: checked })} label="Everyone" />
       {#if !bindingsAll && pickersPending}
         <div class="flex flex-col gap-2 sm:flex-row">
           {#each [0, 1, 2] as i (i)}

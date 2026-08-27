@@ -13,5 +13,10 @@ export interface BaseProps {
   label?: string | Snippet
   disabled?: boolean
   title?: string
+  /** Checkbox only: render the bare input, no label element. For cells and
+   *  rows where the surrounding markup is already the label (a table row, a
+   *  clickable card) and nesting a <label> would either double-handle clicks
+   *  or wrap interactive elements. `title` (or aria-label) carries the name. */
+  bare?: boolean
   class?: string
 }

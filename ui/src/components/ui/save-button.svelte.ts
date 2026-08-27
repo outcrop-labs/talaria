@@ -1,6 +1,7 @@
-// The one "Save → Saved ✓" pattern. useSavedFlash gives the timed flag;
-// SaveButton.svelte bundles it with the standard button + confirmation copy so
-// settings panels stop re-rolling setTimeout state machines.
+// The one "Save → Saved ✓" pattern: useSavedFlash gives the timed flag so
+// settings panels stop re-rolling setTimeout state machines. (It once had a
+// SaveButton wrapper; every real site wanted its own button, so the hook is
+// the whole primitive.)
 import { onDestroy } from 'svelte'
 
 /** Call during component init. Read `saved` off the returned object (don't

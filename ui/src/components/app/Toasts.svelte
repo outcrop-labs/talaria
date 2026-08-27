@@ -1,6 +1,7 @@
 <script lang="ts">
   import CloseButton from '@/components/ui/CloseButton.svelte'
-  import { cn } from '@/lib/cn'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
+  import type { DotStatus } from '@/components/ui/chip'
   import { fade, fly, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
   import { dismissToast, toastList, type ToastItem } from '@/lib/toast.svelte'
@@ -10,10 +11,10 @@
   // the modal layer so no ancestor stacking context can clip it.
   const items = $derived(toastList())
 
-  const toneDot: Record<ToastItem['tone'], string> = {
-    info: 'bg-accent',
-    success: 'bg-success',
-    danger: 'bg-danger',
+  const toneStatus: Record<ToastItem['tone'], DotStatus> = {
+    info: 'accent',
+    success: 'ok',
+    danger: 'danger',
   }
 
   const open = (t: ToastItem) => {
@@ -41,7 +42,7 @@
            there". The close affordance sits OUTSIDE that target so ending a
            toast never navigates. -->
       <button type="button" onclick={() => open(t)} class="flex w-full items-start gap-2.5 text-left">
-        <span class={cn('mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full', toneDot[t.tone])}></span>
+        <StatusDot status={toneStatus[t.tone]} class="mt-[7px]" />
         <span class="min-w-0">
           <span class="block font-sans text-sm font-medium leading-5 text-fg">{t.title}</span>
           {#if t.body}<span class="mt-0.5 block truncate font-sans text-xs text-muted">{t.body}</span>{/if}

@@ -1,8 +1,10 @@
 <script lang="ts">
   import { Pause, Pencil, Play, Trash2, Zap } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
@@ -49,7 +51,7 @@
      container (Materialize-friendly geometry). -->
 <div class="px-3.5 py-3">
   <div class="flex items-center gap-2.5">
-    <span class="h-[7px] w-[7px] shrink-0 rounded-full" style:background={jobDot(job)} title={paused ? 'paused' : job.state}></span>
+    <StatusDot color={jobDot(job)} title={paused ? 'paused' : job.state} class="h-[7px] w-[7px]" />
     <button type="button" onclick={() => (expanded = !expanded)} class="min-w-0 flex-1 text-left">
       <span class="font-sans text-sm font-medium text-fg">{job.name}</span>
       {#if agentLabel}<span class="ml-2 text-xs text-muted">{agentLabel}</span>{/if}
@@ -63,39 +65,19 @@
     {#if onAction}
       <span class={cn('flex shrink-0 items-center', busy && 'pointer-events-none opacity-40')}>
         {#if onEdit}
-          <button
-            type="button"
-            title="Edit"
-            onclick={startEdit}
-            class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-          >
+          <IconButton size="sm" title="Edit" onclick={startEdit}>
             <Pencil size={13} />
-          </button>
+          </IconButton>
         {/if}
-        <button
-          type="button"
-          title="Run on the next tick (≤60s)"
-          onclick={() => onAction('run')}
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-        >
+        <IconButton size="sm" title="Run on the next tick (≤60s)" onclick={() => onAction('run')}>
           <Zap size={14} />
-        </button>
-        <button
-          type="button"
-          title={paused ? 'Resume' : 'Pause'}
-          onclick={() => onAction(paused ? 'resume' : 'pause')}
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-        >
+        </IconButton>
+        <IconButton size="sm" title={paused ? 'Resume' : 'Pause'} onclick={() => onAction(paused ? 'resume' : 'pause')}>
           {#if paused}<Play size={14} fill="currentColor" />{:else}<Pause size={14} fill="currentColor" />{/if}
-        </button>
-        <button
-          type="button"
-          title="Delete"
-          onclick={() => onAction('remove')}
-          class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-danger"
-        >
+        </IconButton>
+        <IconButton size="sm" title="Delete" danger onclick={() => onAction('remove')}>
           <Trash2 size={14} />
-        </button>
+        </IconButton>
       </span>
     {/if}
   </div>

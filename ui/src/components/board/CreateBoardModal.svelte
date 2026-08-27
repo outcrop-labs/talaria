@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate } from '@/router'
   import Modal from '@/components/ui/Modal.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -119,10 +120,7 @@
 
     <div>
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agents</div>
-      <label class="mb-2 flex cursor-pointer items-center gap-2 font-sans text-sm text-fg">
-        <input type="checkbox" bind:checked={allowAll} class="accent-[color:var(--theme-accent)]" />
-        Allow all agents
-      </label>
+      <Checkbox checked={allowAll} onChange={(checked) => (allowAll = checked)} label="Allow all agents" class="mb-2 gap-2 font-sans text-sm text-fg" />
       {#if !allowAll}
         {#if fleetLoading}
           <Skeleton class="h-11 w-full" />

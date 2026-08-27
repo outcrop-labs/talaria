@@ -2,6 +2,7 @@
   // One proposal, room to breathe: title + meta on top, full-width description,
   // and a "blocked by" row referencing sibling proposals (created as real
   // ticket dependencies).
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Select from '@/components/ui/Select.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
@@ -31,11 +32,12 @@
 
 <div class={`rounded-lg border border-line bg-panel p-4 ${p.include ? '' : 'opacity-50'}`}>
   <div class="flex items-center gap-2">
-    <input
-      type="checkbox"
+    <Checkbox
+      bare
+      title="Include this proposal"
       checked={p.include}
-      onchange={(e) => onPatch({ include: e.currentTarget.checked })}
-      class="shrink-0 accent-[var(--theme-accent)]"
+      onChange={(checked) => onPatch({ include: checked })}
+      class="shrink-0"
     />
     <span class="w-7 shrink-0 text-right text-xs text-muted">#{index + 1}</span>
     <Input size="sm" value={p.title} oninput={(e) => onPatch({ title: e.currentTarget.value })} class="flex-1" />

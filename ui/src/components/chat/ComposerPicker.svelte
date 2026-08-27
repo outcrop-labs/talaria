@@ -7,13 +7,13 @@
   // Mercury (spec §7): a secondary 36px mono chip (hairline border, muted →
   // readout on hover) over the §7 popover pattern — search row with ⌘K hint,
   // panel bg, mono section header, right-aligned mono meta, hover fill,
-  // dashed-gold selected row.
+  // dashed-gold selected row. The shell (ui/Popover) owns the
+  // portal/outside-click/Esc mechanics and follows the chip on scroll.
   import type { LucideIcon as IconType } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
-  import { portal } from '@/lib/portal'
+  import Popover from '@/components/ui/Popover.svelte'
   import PopSearch from '@/components/chat/PopSearch.svelte'
-  import { chipSecondary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
+  import { chipSecondary, popHeader, popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import type { ComposerOption } from './composer-picker'
 
   let {
@@ -42,33 +42,10 @@
 
   let open = $state(false)
   let q = $state('')
-  let pos = $state<{ left: number; top?: number; bottom?: number } | null>(null)
-  let btnRef = $state<HTMLButtonElement | null>(null)
-  let panelRef = $state<HTMLDivElement | null>(null)
 
+  // Fresh search on every open.
   $effect(() => {
-    if (!open) return
-    const place = () => {
-      const r = btnRef?.getBoundingClientRect()
-      if (!r) return
-      pos =
-        placement === 'top'
-          ? { left: r.left, bottom: window.innerHeight - r.top + 6 }
-          : { left: r.left, top: r.bottom + 6 }
-    }
-    place()
-    const onDoc = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!btnRef?.contains(t) && !panelRef?.contains(t)) open = false
-    }
-    window.addEventListener('resize', place)
-    window.addEventListener('scroll', place, true)
-    document.addEventListener('mousedown', onDoc)
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-      document.removeEventListener('mousedown', onDoc)
-    }
+    if (open) q = ''
   })
 
   const current = $derived(options.find((o) => o.value === value))
@@ -78,30 +55,14 @@
   )
 </script>
 
-<button
-  bind:this={btnRef}
-  type="button"
-  onclick={() => {
-    q = ''
-    open = !open
-  }}
-  class={cn(chipSecondary, className)}
-  {title}
->
-  <Icon size={12} />
-  <span class="max-w-28 truncate">{current?.label ?? value}</span>
-</button>
-{#if open && pos}
-  <div
-    use:portal
-    bind:this={panelRef}
-    in:pop={POPOVER}
-    out:fade={QUICK}
-    class={cn(popPanel, 'fixed z-[60] min-w-56 overflow-hidden')}
-    style:left="{pos.left}px"
-    style:top={pos.top !== undefined ? `${pos.top}px` : undefined}
-    style:bottom={pos.bottom !== undefined ? `${pos.bottom}px` : undefined}
-  >
+<Popover bind:open follow up={placement === 'top'} offset={6} class="min-w-56 overflow-hidden">
+  {#snippet trigger()}
+    <button type="button" class={cn(chipSecondary, className)} {title}>
+      <Icon size={12} />
+      <span class="max-w-28 truncate">{current?.label ?? value}</span>
+    </button>
+  {/snippet}
+  {#snippet content(close)}
     <PopSearch value={q} onChange={(v) => (q = v)} placeholder={`Search ${menuLabel.toLowerCase()}`} />
     <div class={popHeader}>{menuLabel}</div>
     {#each visible as o (o.value)}
@@ -109,7 +70,7 @@
         type="button"
         onclick={() => {
           onChange(o.value)
-          open = false
+          close()
         }}
         class={cn(popRow, o.value === value ? popRowSelected : 'text-muted')}
       >
@@ -124,5 +85,5 @@
     {#if visible.length === 0}
       <div class="px-2 py-1.5 font-sans text-[13px] text-muted">No matches</div>
     {/if}
-  </div>
-{/if}
+  {/snippet}
+</Popover>

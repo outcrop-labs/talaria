@@ -8,6 +8,7 @@
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import AssistantWizard from './AssistantWizard.svelte'
   import AssistantPanels from './AssistantPanels.svelte'
   import AssistantGoogleCard from './AssistantGoogleCard.svelte'
@@ -151,7 +152,7 @@
         <!-- Identity meta speaks mono (spec §2 metadata voice); 6px status dot
              green=online, hairline-toned=off (spec §8 status dots). -->
         <div class="flex items-center gap-1.5 font-mono text-[11px] text-muted">
-          <span class={cn('h-1.5 w-1.5 rounded-full', assistant.running ? 'bg-success' : 'bg-line')}></span>
+          <StatusDot status={assistant.running ? 'ok' : 'idle'} />
           @{assistant.slug} · {assistant.running ? 'online' : 'offline'}
           {#if assistant.currentModel}<span class="truncate"> · {assistant.currentModel}</span>{/if}
         </div>

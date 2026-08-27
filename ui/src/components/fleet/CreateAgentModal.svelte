@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Sparkles } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Generating from '@/components/ui/Generating.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -308,10 +309,7 @@
         />
       {/if}
 
-      <label class="flex cursor-pointer items-center gap-2 text-sm text-fg">
-        <input type="checkbox" bind:checked={start} class="accent-accent" />
-        Start the container now
-      </label>
+      <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
       {#if busy}
         <Generating
           site="fleet/agent-hire"

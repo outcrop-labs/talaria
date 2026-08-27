@@ -10,6 +10,8 @@
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import { updateTask, type Board } from '@/lib/boards.svelte'
   import { LABEL_CSS, isOverdueTask } from './field-pills'
   import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
@@ -247,12 +249,12 @@
       <!-- ── Header: months + day grid + zoom ── -->
       <div class="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur">
         <div style="width: {labelW}px" class="flex shrink-0 items-center gap-0.5 border-r border-line-subtle px-2">
-          <button onclick={() => zoom(-1)} title="Zoom out" class="grid h-5 w-5 place-items-center rounded text-muted transition-colors dither-fill hover:text-fg">
+          <IconButton size="sm" class="h-5 w-5 rounded" title="Zoom out" onclick={() => zoom(-1)}>
             <Minus size={12} />
-          </button>
-          <button onclick={() => zoom(1)} title="Zoom in" class="grid h-5 w-5 place-items-center rounded text-muted transition-colors dither-fill hover:text-fg">
+          </IconButton>
+          <IconButton size="sm" class="h-5 w-5 rounded" title="Zoom in" onclick={() => zoom(1)}>
             <Plus size={12} />
-          </button>
+          </IconButton>
           <span class="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Zoom</span>
         </div>
         <div class="relative">
@@ -394,7 +396,7 @@
             onclick={() => onOpen(t.id)}
             class={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors dither-fill', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')}
           >
-            <span class="h-1.5 w-1.5 shrink-0 rounded-full" style:background={t.color ? LABEL_CSS[t.color] : statusColorOf(t.status, boardStatuses)}></span>
+            <StatusDot color={t.color ? LABEL_CSS[t.color] : statusColorOf(t.status, boardStatuses)} />
             {#if t.ticketRef}
               <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{t.ticketRef}</span>
             {/if}

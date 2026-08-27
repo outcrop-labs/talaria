@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ticketMenuEntries } from '@/components/board/ticket-menu'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import KanbanAddCard from './KanbanAddCard.svelte'
@@ -172,7 +173,7 @@
           )}
         >
           <div class="flex items-center gap-2 px-3 py-2">
-            <span class="h-1.5 w-1.5 rounded-full" style:background={col.color}></span>
+            <StatusDot color={col.color} />
             <span class="font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-ink-dim">{col.label}</span>
             <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{colTasks.length}</span>
             {#if colHours > 0}

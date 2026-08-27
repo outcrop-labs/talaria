@@ -67,7 +67,6 @@
   let dirty = $state(false)
   let showHistory = $state(false)
   let showToc = $state(false)
-  let emojiOpen = $state(false)
   let fullscreen = $state(false)
   let shareOpen = $state(false)
   let seed = $state(0) // bump to remount the editor (e.g. after restore)
@@ -236,28 +235,25 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
-      <div class="relative shrink-0">
-        <button
-          type="button"
-          onclick={() => (emojiOpen = !emojiOpen)}
-          class="rounded-md px-1 text-xl leading-none transition-colors dither-fill"
-          title="Set icon"
+      <div class="shrink-0">
+        <EmojiPicker
+          onPick={(e) => {
+            void save({ icon: e })
+          }}
+          onClear={() => {
+            void save({ icon: null })
+          }}
         >
-          {doc.icon ?? '📄'}
-        </button>
-        {#if emojiOpen}
-          <EmojiPicker
-            onPick={(e) => {
-              void save({ icon: e })
-              emojiOpen = false
-            }}
-            onClear={() => {
-              void save({ icon: null })
-              emojiOpen = false
-            }}
-            onClose={() => (emojiOpen = false)}
-          />
-        {/if}
+          {#snippet trigger()}
+            <button
+              type="button"
+              class="rounded-md px-1 text-xl leading-none transition-colors dither-fill"
+              title="Set icon"
+            >
+              {doc.icon ?? '📄'}
+            </button>
+          {/snippet}
+        </EmojiPicker>
       </div>
       {#if mode === 'edit'}
         <Input

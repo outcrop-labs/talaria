@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import { Maximize2, ChevronLeft } from '@lucide/svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
@@ -84,14 +85,15 @@
     <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</div>
     <div class="ml-auto flex items-center gap-1">
       {@render modeToggle()}
-      <button
-        onclick={() => (reading = true)}
+      <IconButton
+        size="sm"
+        class="h-6 w-6 rounded"
         title="Expand"
         aria-label="Expand description"
-        class="grid h-6 w-6 place-items-center rounded text-muted transition-colors dither-fill hover:text-fg"
+        onclick={() => (reading = true)}
       >
         <Maximize2 size={13} />
-      </button>
+      </IconButton>
     </div>
   </div>
 

@@ -7,6 +7,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
@@ -64,12 +65,12 @@
       <span class="font-mono text-[13px] text-fg">{data.domain}</span>
       {#if data.verified}
         <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
-          <span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-success"></span>
+          <StatusDot status="ok" />
           verified · routes to this instance
         </span>
       {:else}
         <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
-          <span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"></span>
+          <StatusDot status="warn" />
           unverified
         </span>
       {/if}

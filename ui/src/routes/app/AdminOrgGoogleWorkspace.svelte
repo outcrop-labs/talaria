@@ -2,6 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 
@@ -82,7 +83,7 @@
 
     <!-- Org calendar -->
     <div class="flex items-center gap-2 text-xs">
-      <span aria-hidden="true" class={cn('h-1.5 w-1.5 shrink-0 rounded-full', data.calendarId ? 'bg-success' : 'bg-line')}></span>
+      <StatusDot status={data.calendarId ? 'ok' : 'idle'} />
       <span class="text-fg">Org calendar</span>
       {#if data.calendarId}
         <a
@@ -110,7 +111,7 @@
 
     <!-- Shared Drive -->
     <div class="flex items-center gap-2 text-xs">
-      <span aria-hidden="true" class={cn('h-1.5 w-1.5 shrink-0 rounded-full', data.sharedDriveId ? 'bg-success' : 'bg-line')}></span>
+      <StatusDot status={data.sharedDriveId ? 'ok' : 'idle'} />
       <span class="text-fg">Shared Drive</span>
       {#if data.sharedDriveId}
         <a

@@ -44,12 +44,12 @@ See [UI-CONVENTIONS.md](./UI-CONVENTIONS.md) for when to use what.
 
 | Group | Exports |
 |---|---|
-| Actions | `Button` (+`buttonClasses`; variants `primary`, `outline`, `ghost`, `danger`, `danger-outline`, `accent-soft`, `link`), `IconButton`, `CloseButton`, `SaveButton`/`useSavedFlash`, `CopyButton`/`CopyLinkButton`, `DangerLink` |
-| Inputs | `Input`, `Textarea`, `Select`, `Combobox` (+`ComboOption`), `Checkbox`, `Radio`, `Toggle`, `InlineCreate`, `submitOnEnter`, `inlineEditKeys` |
+| Actions | `Button` (+`buttonClasses`; variants `primary`, `outline`, `ghost`, `danger`, `danger-outline`, `accent-soft`, `link`), `IconButton` (sizes incl. the bordered `tile`), `CloseButton`, `useSavedFlash`, `CopyButton`/`CopyLinkButton`, `DangerLink` |
+| Inputs | `Input`, `Textarea`, `Select`, `Combobox` (+`ComboOption`), `Checkbox` (+`bare` cell form), `Radio`, `Toggle`, `InlineCreate`, `submitOnEnter`, `inlineEditKeys` |
 | Structure | `Panel` (+`as=`), `SectionHeader`, `ViewHeader`, `Tabs` (+`TabItem`), `Segmented` (+`SegmentedOption`), `Modal`, `Disclosure`, `StatCard`, `Steps` |
-| Display | `Chip` (tones, filter pills via `onSelect`/`selected`, removable tokens via `onRemove`), `StatusDot`, `EmptyState` (`variant`: `full`/`compact`/`inline`), `Avatar`, `Kbd`/`KeyHint`, `InfoTip`, `CodeBlock`, `Markdown`, `RichEditor` (+`RichEditorHandle`) |
+| Display | `Chip` (tones, filter pills via `onSelect`/`selected`, removable tokens via `onRemove`), `StatusDot` (+`color` prop for data-driven hues), `EmptyState` (`variant`: `full`/`compact`/`inline`), `Avatar`, `Kbd`/`KeyHint` (unused inside the host — kept as documented surface for apps), `InfoTip`, `CodeBlock`, `Markdown`, `RichEditor` (+`RichEditorHandle`) |
 | Feedback | `Skeleton`/`SkeletonRows`/`SkeletonCard`, `Generating`/`GeneratingDots`/`GeneratingOverlay`, `confirm`/`alert`/`prompt` |
-| Menus | `useContextMenu` (right-click), `DropdownMenu` (anchored), `ContextMenuItem`/`ContextMenuEntry` types |
+| Menus | `useContextMenu` (right-click), `DropdownMenu` (anchored, item grammar), `Popover` (anchored, any content — outside-click/Esc/scroll handled), `ContextMenuItem`/`ContextMenuEntry` types |
 | Motion | `fade`, `fly`, `scale`, `slide`, `flip` + the presets `QUICK`, `POP`, `PANEL`, `LIST` |
 | Utilities | `cn`, `controlSizes`/`ControlSize`, prop types (`ButtonProps`, `InputProps`, `TextareaProps`, `SelectProps`, `PanelProps`, `ChipProps`, `ChipTone`, `DotStatus`) |
 

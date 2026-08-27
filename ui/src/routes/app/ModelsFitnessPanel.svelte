@@ -20,6 +20,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { TabItem } from '@/components/ui/tabs'
   import { cn } from '@/lib/cn'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
@@ -271,8 +272,8 @@
                one people actually come here for. It is still one click away,
                just not an accidental one. -->
           {#if Object.keys(data.index).length > 0}
-            <button
-              type="button"
+            <IconButton
+              size="sm"
               title="More"
               aria-label="More actions"
               onclick={(e) =>
@@ -283,10 +284,9 @@
                     onSelect: () => void clearResults(null),
                   },
                 ])}
-              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
             >
               <MoreHorizontal size={14} aria-hidden="true" />
-            </button>
+            </IconButton>
           {/if}
           <Button
             size="sm"
