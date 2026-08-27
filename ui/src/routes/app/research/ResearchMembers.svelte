@@ -5,6 +5,8 @@
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
   import { fade } from '@/lib/motion'
+  import { delJson, errorMessage, postJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useResearchMembers } from '@/lib/research'
 
@@ -28,12 +30,11 @@
   const isOwner = $derived(!!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId)
   const refresh = () => qc.invalidateQueries({ queryKey: ['research-members', runId] })
   const remove = (userId: string) =>
-    fetch(`/api/research/${runId}/members`, {
-      method: 'DELETE',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ userId }),
-    }).then(refresh)
+    delJson(`/api/research/${runId}/members`, { userId })
+      // Fire-and-forget from a hover chip in the run header — a toast is the
+      // only surface this row has for a failed leave/remove.
+      .catch((e) => pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }))
+      .then(refresh)
 </script>
 
 <!-- Org-wide runs (no owner) have nothing to share. -->
@@ -69,18 +70,11 @@
             onPick={(u) => {
               adding = false
               if (!u.email) return
-              void fetch(`/api/research/${runId}/members`, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ email: u.email }),
-              }).then(async (r) => {
-                if (!r.ok) {
-                  const e = ((await r.json().catch(() => ({}))) as { error?: string }).error
-                  void alert({ title: 'Could not share', message: e ?? 'Something went wrong. Try again.' })
-                }
-                refresh()
-              })
+              void postJson(`/api/research/${runId}/members`, { email: u.email })
+                .catch((e) => {
+                  void alert({ title: 'Could not share', message: errorMessage(e) })
+                })
+                .then(refresh)
             }}
           />
         </div>

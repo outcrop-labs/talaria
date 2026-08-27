@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeTool, parseAgentStream, type ChatEvent, type ToolCall } from '@/lib/sse-parse'
+import { mergeTool, parseAgentStream, sseFrames, type ChatEvent, type ToolCall } from '@/lib/sse-parse'
 
 // A ReadableStream we can interrogate afterwards: `cancelled` tells us the
 // underlying source was torn down, and `stream.locked` tells us the reader was
@@ -172,12 +172,15 @@ describe('parseAgentStream — malformed and noise input', () => {
     ])
   })
 
-  it('handles a frame whose data spans multiple data: lines as separate payloads', async () => {
-    const body = `data: ${JSON.stringify({ choices: [{ delta: { content: 'one' } }] })}\ndata: ${JSON.stringify({ choices: [{ delta: { content: 'two' } }] })}\n\n`
-    expect(await drain([body])).toEqual([
-      { type: 'content', text: 'one' },
-      { type: 'content', text: 'two' },
-    ])
+  it('joins a frame whose data spans multiple data: lines into ONE payload — the EventSource rule', async () => {
+    // sseFrames unified the two consumers on the spec behavior: the lines of a
+    // frame concatenate with \n. The split below lands between JSON tokens,
+    // where that \n is legal whitespace — so the joined frame PARSES, while
+    // under the old per-line reading each half was invalid JSON and dropped.
+    // (Splitting mid-string, e.g. inside "content", stays unparseable — a
+    // literal newline in a JSON string is invalid, join or no join.)
+    const body = 'data: {"choices":[\ndata: {"delta":{"content":"hello"}}]}\n\n'
+    expect(await drain([body])).toEqual([{ type: 'content', text: 'hello' }])
   })
 
   it('yields nothing for an empty stream', async () => {
@@ -240,6 +243,33 @@ describe('parseAgentStream — reader cleanup (the try/finally)', () => {
         for await (const _ev of parseAgentStream(stream)) break
       })(),
     ).resolves.toBeUndefined()
+    expect(stream.locked).toBe(false)
+  })
+})
+
+describe('sseFrames — the shared frame reader', () => {
+  it('yields event names and joined data payloads, in order', async () => {
+    const out: Array<{ event: string; data: string }> = []
+    for await (const f of sseFrames(makeStream(['event: one\ndata: a\n\n', 'data: b\n\nevent: two\ndata: c\n\n']).stream)) out.push(f)
+    expect(out).toEqual([
+      { event: 'one', data: 'a' },
+      { event: '', data: 'b' },
+      { event: 'two', data: 'c' },
+    ])
+  })
+
+  it('joins multi-line data with \\n and drops [DONE]/empty only at the consumer', async () => {
+    const out: string[] = []
+    for await (const f of sseFrames(makeStream(['data: first\ndata: second\n\n', 'data: [DONE]\n\n', 'data:\n\n']).stream)) out.push(f.data)
+    // The reader frames; payload semantics (skip [DONE], skip empties) belong
+    // to each consumer — that is why it yields them untouched.
+    expect(out).toEqual(['first\nsecond', '[DONE]', ''])
+  })
+
+  it('releases the reader on an early consumer exit — the discipline every stream inherits', async () => {
+    const { stream, state } = makeStream(['data: a\n\n', 'data: b\n\n'])
+    for await (const _f of sseFrames(stream)) break
+    expect(state.cancelled).toBe(true)
     expect(stream.locked).toBe(false)
   })
 })

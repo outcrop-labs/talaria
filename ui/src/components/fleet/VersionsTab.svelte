@@ -9,10 +9,11 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
-  import { getList } from '@/lib/fetch-json'
+  import { errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
   import InternalEditorModal from './InternalEditorModal.svelte'
 
   interface Version {
@@ -37,9 +38,11 @@
     if (!(await confirm({ title: 'Revert version', message: `Revert ${def.displayName} to v${v}? This publishes it as a new version.`, confirmLabel: 'Revert' }))) return
     busy = v
     try {
-      await fetch(`/api/fleet/defs/${def.id}/versions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revertTo: v }) })
+      await postJson<{ ok: true; version: number; created: boolean }>(`/api/fleet/defs/${def.id}/versions`, { revertTo: v })
       await qc.invalidateQueries({ queryKey: ['agent-versions', def.id] })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+    } catch (e) {
+      pushToast({ title: 'Revert failed', body: errorMessage(e), tone: 'danger' })
     } finally {
       busy = null
     }

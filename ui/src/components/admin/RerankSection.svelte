@@ -6,7 +6,9 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
+  import { errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
   import type { RagAdmin } from './retrieval'
 
   // ── Reranker provider (the precision stage after vector recall) ─────────────
@@ -22,21 +24,21 @@
   // Autosave: provider / url / model apply on change. Only the API key (a
   // secret being committed) keeps an explicit save affordance.
   const apply = async (patch: Record<string, unknown>) => {
-    await fetch('/api/admin/rag', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reranker: patch }),
-    })
+    try {
+      await putJson('/api/admin/rag', { reranker: patch })
+    } catch (e) {
+      pushToast({ title: 'Apply failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
   }
   const loadModels = async () => {
     // The candidate key goes in the body — never a query string (logs).
-    const r = await fetch('/api/admin/rag', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ models: cfg.provider, ...(key ? { key } : {}) }),
-    })
-    if (r.ok) models = ((await r.json()) as { models: string[] }).models
+    try {
+      models = (await postJson<{ models: string[] }>('/api/admin/rag', { models: cfg.provider, ...(key ? { key } : {}) })).models
+    } catch (e) {
+      pushToast({ title: 'Load models failed', body: errorMessage(e), tone: 'danger' })
+    }
   }
   const saveKey = async () => {
     savingKey = true

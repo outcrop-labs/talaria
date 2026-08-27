@@ -10,7 +10,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { GOOGLE_API_LIBRARY as GOOGLE_APIS } from '@/lib/google-apis'
 
@@ -57,25 +57,20 @@
     busy = true
     error = null
     notice = null
-    const r = await fetch('/api/admin/google-client', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
+    try {
       // Omit the secret field entirely when untouched — the server keeps the
       // stored one, so rotating the id or domain never requires re-entering it.
-      body: JSON.stringify({
+      await putJson<{ ok: true }>('/api/admin/google-client', {
         clientId: clientId.trim(),
         ...(secret.trim() ? { clientSecret: secret.trim() } : {}),
         hd: hd.trim() || null,
-      }),
-    })
-    busy = false
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
-    if (!r.ok || j.error) error = j.error ?? 'failed'
-    else {
+      })
       notice = 'Client saved. Connect the org account below.'
       secret = ''
+    } catch (e) {
+      error = errorMessage(e)
     }
+    busy = false
     await qc.invalidateQueries({ queryKey: ['google-client'] })
     // The org panel's "available" flag and every Google surface follow the
     // client — refresh them together.
@@ -87,13 +82,14 @@
     busy = true
     error = null
     notice = null
-    const r = await fetch('/api/admin/google-client', { method: 'DELETE', credentials: 'same-origin' })
-    busy = false
-    if (!r.ok) error = 'could not remove'
-    else {
+    try {
+      await delJson<{ ok: true }>('/api/admin/google-client')
       seeded = false
       notice = 'Client removed.'
+    } catch (e) {
+      error = errorMessage(e)
     }
+    busy = false
     await qc.invalidateQueries({ queryKey: ['google-client'] })
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }

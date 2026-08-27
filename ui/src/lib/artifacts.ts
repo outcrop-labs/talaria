@@ -1,5 +1,5 @@
 import { createQuery } from '@tanstack/svelte-query'
-import { getJsonOr404, getList } from '@/lib/fetch-json'
+import { delJson, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -67,12 +67,12 @@ export const useArtifact = (id: MaybeGetter<string | null>) =>
   })
 
 export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =>
-  fetch('/api/artifacts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) }).then((r) => r.json())
+  postJson<{ artifact: Artifact }>('/api/artifacts', input).then((r) => r.artifact)
 
 export const saveArtifact = (
   id: string,
   patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'folderId' | 'visibility' | 'editPolicy' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] },
-) => fetch(`/api/artifacts/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+) => putJson<{ artifact: Artifact }>(`/api/artifacts/${id}`, patch).then((r) => r.artifact)
 
 // ── Folders ──────────────────────────────────────────────────────────────────
 export const useFolders = () =>
@@ -82,26 +82,24 @@ export const useFolders = () =>
   }))
 
 export const createFolder = (name: string, parentId?: string | null) =>
-  fetch('/api/artifact-folders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, parentId }) }).then((r) => r.json())
+  postJson<{ folder: ArtifactFolder }>('/api/artifact-folders', { name, parentId }).then((r) => r.folder)
 
 export const updateFolder = (
   id: string,
   patch: Partial<Pick<ArtifactFolder, 'name' | 'icon' | 'parentId' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
-) =>
-  fetch(`/api/artifact-folders/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+) => putJson<{ folder: ArtifactFolder }>(`/api/artifact-folders/${id}`, patch).then((r) => r.folder)
 
-export const deleteFolder = (id: string) => fetch(`/api/artifact-folders/${id}`, { method: 'DELETE' })
+export const deleteFolder = (id: string) => delJson<{ ok: true }>(`/api/artifact-folders/${id}`)
 
-/** Upload a file (reuses the shared uploads store) → returns its id + metadata. */
+/** Upload a file (reuses the shared uploads store) → returns its id + metadata.
+ *  Rejects with the server's sentence on failure, like every other mutation. */
 export const uploadFile = async (file: File): Promise<{ id: string; filename: string; mime: string; size: number }> => {
   const form = new FormData()
   form.append('file', file)
-  const r = await fetch('/api/uploads', { method: 'POST', body: form })
-  if (!r.ok) throw new Error('upload failed')
-  return r.json()
+  return postJson<{ id: string; filename: string; mime: string; size: number }>('/api/uploads', form)
 }
 
-export const deleteArtifact = (id: string) => fetch(`/api/artifacts/${id}`, { method: 'DELETE' })
+export const deleteArtifact = (id: string) => delJson<{ ok: true }>(`/api/artifacts/${id}`)
 
 // ── Attachments ──────────────────────────────────────────────────────────────
 export const useTargetArtifacts = (targetType: string, targetId: MaybeGetter<string | null>) =>
@@ -116,7 +114,7 @@ export const useTargetArtifacts = (targetType: string, targetId: MaybeGetter<str
   })
 
 export const attachArtifact = (id: string, targetType: string, targetId: string) =>
-  fetch(`/api/artifacts/${id}/links`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetType, targetId }) })
+  postJson<{ ok: true }>(`/api/artifacts/${id}/links`, { targetType, targetId })
 
 export const detachArtifact = (id: string, targetType: string, targetId: string) =>
-  fetch(`/api/artifacts/${id}/links`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetType, targetId }) })
+  delJson<{ ok: true }>(`/api/artifacts/${id}/links`, { targetType, targetId })

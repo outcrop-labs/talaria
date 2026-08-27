@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 
   // The provisioned workspace: the org calendar + Shared Drive everyone at the
   // domain can reach, and the address each org agent sends mail from. One GET
@@ -30,14 +30,16 @@
 
   const run = async (what: 'calendar' | 'drive') => {
     working = what
-    const r = await fetch('/api/integrations/google/org/provision', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ [what]: true }),
-    })
+    let j: { calendar?: Outcome; drive?: Outcome }
+    try {
+      j = await postJson<{ calendar?: Outcome; drive?: Outcome }>('/api/integrations/google/org/provision', { [what]: true })
+    } catch (e) {
+      // Per-item failures ride in a 200 body; a throw means the call itself
+      // failed — show it as that item's outcome.
+      const failed: Outcome = { ok: false, error: '', message: errorMessage(e) }
+      j = what === 'calendar' ? { calendar: failed } : { drive: failed }
+    }
     working = null
-    const j = (await r.json().catch(() => ({}))) as { calendar?: Outcome; drive?: Outcome }
     results = { ...results, ...j }
     // Targets changed on success — the panel's connection/targets views follow.
     if (j[what]?.ok) await qc.invalidateQueries({ queryKey: ['org-google'] })

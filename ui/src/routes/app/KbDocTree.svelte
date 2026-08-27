@@ -1,7 +1,9 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import { Bot, Plus } from '@lucide/svelte'
+  import { errorMessage } from '@/lib/fetch-json'
   import { moveDoc, type KbDocMeta } from '@/lib/kb'
+  import { pushToast } from '@/lib/toast.svelte'
   import KbDocRow from './KbDocRow.svelte'
 
   type DropPos = 'before' | 'after' | 'inside'
@@ -53,7 +55,9 @@
     sibs.splice(at, 0, docs.find((d) => d.id === dragId)!)
     sibs.forEach((d, i) => {
       if (d.id === dragId) onMove(dragId, parent, i)
-      else if (d.sort !== i) void moveDoc(d.id, parent, i)
+      // Sibling resort is fire-and-forget; a refusal (it rejects now, it used
+      // to swallow) has to at least be said out loud.
+      else if (d.sort !== i) void moveDoc(d.id, parent, i).catch((e) => pushToast({ title: 'Reordering failed', body: errorMessage(e), tone: 'danger' }))
     })
   }
 

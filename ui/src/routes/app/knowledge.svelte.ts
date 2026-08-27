@@ -2,7 +2,7 @@
 // Runes module: useDocLive carries a $effect heartbeat.
 import { createQuery } from '@tanstack/svelte-query'
 import { cn } from '@/lib/cn'
-import { getJson, getList } from '@/lib/fetch-json'
+import { getJson, getList, putJson } from '@/lib/fetch-json'
 import { useSession } from '@/lib/session'
 import { searchKb } from '@/lib/kb'
 import type { DocSearchFn } from '@/components/ui/rich-editor'
@@ -20,12 +20,9 @@ export function useDocLive(docId: string, mode: () => 'read' | 'edit') {
   $effect(() => {
     const beat = mode() === 'edit' ? 'edit' : 'view'
     const ping = () =>
-      fetch(`/api/kb/docs/${docId}/live`, {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: beat }),
-      }).catch(() => {})
+      // Best-effort presence beat: a dropped ping just means the avatar lingers
+      // one beat longer — nothing here is worth surfacing.
+      putJson<{ ok: true }>(`/api/kb/docs/${docId}/live`, { mode: beat }).catch(() => {})
     void ping()
     const t = setInterval(() => void ping(), 25_000)
     return () => clearInterval(t)

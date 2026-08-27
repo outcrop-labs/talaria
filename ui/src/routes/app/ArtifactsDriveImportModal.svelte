@@ -6,6 +6,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { errorMessage, getJsonOr, postJsonOr } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
 
   interface DriveEntry {
@@ -29,26 +30,27 @@
 
   const load = async (query: string) => {
     status = 'loading'
-    const r = await fetch(`/api/integrations/google/drive/files?q=${encodeURIComponent(query)}`).catch(() => null)
-    if (!r) {
+    try {
+      // 409 is this route's ANSWER ("connect Google" / "reconnect Google") and
+      // the modal has a real screen for both bodies; every other failure lands
+      // in the catch as the generic error screen.
+      const j = await getJsonOr<{ files: DriveEntry[] } | { error: string }>(
+        `/api/integrations/google/drive/files?q=${encodeURIComponent(query)}`,
+        [409],
+      )
+      if ('files' in j) {
+        files = j.files
+        status = 'ready'
+      } else if (j.error === 'not_connected') {
+        status = 'not_connected'
+      } else if (j.error === 'reconnect_needed') {
+        status = 'reconnect'
+      } else {
+        status = 'error'
+      }
+    } catch {
       status = 'error'
-      return
     }
-    if (r.ok) {
-      files = ((await r.json()) as { files: DriveEntry[] }).files
-      status = 'ready'
-      return
-    }
-    const j = (await r.json().catch(() => null)) as { error?: string } | null
-    if (j?.error === 'not_connected') {
-      status = 'not_connected'
-      return
-    }
-    if (j?.error === 'reconnect_needed') {
-      status = 'reconnect'
-      return
-    }
-    status = 'error'
   }
   // Debounced search.
   $effect(() => {
@@ -60,14 +62,17 @@
   const doImport = async (fileId: string) => {
     importing = fileId
     try {
-      const r = await fetch('/api/integrations/google/drive/import', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId }),
-      })
-      const j = (await r.json().catch(() => null)) as { artifact?: { id: string }; message?: string } | null
-      if (r.ok && j?.artifact?.id) onImported(j.artifact.id)
-      else await alert({ title: 'Import failed', message: j?.message ?? 'Import failed.' })
+      // 409/413/502 carry a human `message` ("over the 25 MB limit", "connect
+      // Google first") for the alert; anything else rejects to the catch.
+      const j = await postJsonOr<{ artifact?: { id: string }; message?: string }>(
+        '/api/integrations/google/drive/import',
+        { fileId },
+        [409, 413, 502],
+      )
+      if (j.artifact?.id) onImported(j.artifact.id)
+      else await alert({ title: 'Import failed', message: j.message ?? 'Import failed.' })
+    } catch (e) {
+      await alert({ title: 'Import failed', message: errorMessage(e) })
     } finally {
       importing = null
     }

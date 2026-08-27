@@ -8,6 +8,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { listStagger } from '@/lib/motion'
+  import { errorMessage } from '@/lib/fetch-json'
   import { addTeamMember, removeTeamMember, useTeamMembers, type TeamRole } from '@/lib/teams'
 
   // Members panel of TeamsModal.svelte (module-private there in React; its own
@@ -27,10 +28,10 @@
 
   const add = async (email: string) => {
     err = null
-    const res = await addTeamMember(teamId, email, role)
-    const data = (await res.json().catch(() => ({}))) as { error?: string }
-    if (!res.ok || data.error) {
-      err = data.error ?? 'Could not add'
+    try {
+      await addTeamMember(teamId, email, role)
+    } catch (e) {
+      err = errorMessage(e)
       return
     }
     void refresh()

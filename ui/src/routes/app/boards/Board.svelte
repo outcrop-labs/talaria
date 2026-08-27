@@ -39,6 +39,8 @@
     deleteBoardView,
     type BoardViewConfig,
   } from '@/lib/boards.svelte'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
@@ -239,25 +241,29 @@
   const invalidateViews = () => qc.invalidateQueries({ queryKey: ['board-views', boardId] })
   const applyView = (sv: { id: string; config: BoardViewConfig }) =>
     void navigate('/boards/:boardId', { params: { boardId }, search: { ...sv.config, v: sv.id } as Record<string, string> })
+  // Saved-view mutations reject through the fetch-json door now; each menu
+  // action is void-fired, so this is where the sentence lands.
+  const viewFailure = (what: string) => (e: unknown) => pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
   const saveCurrentAsView = async () => {
     const name = await prompt({ title: 'Save view', message: 'Name this view (current layout, grouping, and filters are captured).', confirmLabel: 'Save' })
     if (!name?.trim()) return
-    const r = (await createBoardView(boardId, name.trim(), currentConfig())) as { view?: { id: string } }
+    const r = await createBoardView(boardId, name.trim(), currentConfig()).catch(viewFailure('Saving the view'))
+    if (!r) return
     await invalidateViews()
-    if (r.view?.id) setSearch({ v: r.view.id })
+    if (r.view.id) setSearch({ v: r.view.id })
   }
   const viewTabContextMenu = (e: MouseEvent, sv: { id: string; name: string; config: BoardViewConfig }) =>
     menu.openMenu(e, [
       {
         label: 'Update to current filters',
-        onSelect: () => void updateBoardView(boardId, sv.id, { config: currentConfig() }).then(invalidateViews),
+        onSelect: () => void updateBoardView(boardId, sv.id, { config: currentConfig() }).then(invalidateViews).catch(viewFailure('Saving the view')),
       },
       {
         label: 'Rename',
         onSelect: () =>
           void (async () => {
             const name = await prompt({ title: 'Rename view', message: sv.name, confirmLabel: 'Rename' })
-            if (name?.trim()) await updateBoardView(boardId, sv.id, { name: name.trim() }).then(invalidateViews)
+            if (name?.trim()) await updateBoardView(boardId, sv.id, { name: name.trim() }).then(invalidateViews).catch(viewFailure('Renaming the view'))
           })(),
       },
       'sep',
@@ -267,7 +273,7 @@
         onSelect: () =>
           void (async () => {
             if (!(await confirm({ title: `Delete view "${sv.name}"?`, message: 'The filters it saved are lost; tickets are untouched.', danger: true }))) return
-            await deleteBoardView(boardId, sv.id)
+            await deleteBoardView(boardId, sv.id).catch(viewFailure('Deleting the view'))
             await invalidateViews()
             if (search.v === sv.id) setSearch({ v: undefined })
           })(),
@@ -369,7 +375,7 @@
 
 {#snippet groupByIcon()}<Layers size={12} />{/snippet}
 
-<!-- One continuous skeleton across the serial fetch (boards → tasks): the board
+<!-- One continuous skeleton across the serial load (boards → tasks): the board
      must not paint with empty columns while its tasks are still in flight.
      `!showArchived` keeps the gate to the cold-load path — flipping the archived
      toggle refetches under the toolbar, not under a full-page skeleton.

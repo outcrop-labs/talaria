@@ -8,8 +8,9 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
-  import { getJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
+  import { pushToast } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
 
@@ -41,7 +42,12 @@
 
   const disconnect = async () => {
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
-    await fetch('/api/integrations/google/org', { method: 'DELETE' })
+    try {
+      await delJson<{ ok: true }>('/api/integrations/google/org')
+    } catch (e) {
+      pushToast({ title: 'Disconnect failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }
 
@@ -55,11 +61,17 @@
   const probeApis = async () => {
     probing = true
     probeError = null
-    const r = await fetch('/api/integrations/google/org/health')
-    probing = false
-    const j = (await r.json().catch(() => ({}))) as { results?: GoogleApiHealth[]; error?: string; message?: string }
-    if (!r.ok || !j.results) probeError = j.message ?? 'The probe failed. Try again.'
-    else apiResults = j.results
+    try {
+      // 409/502 carry an answer in the body ("not connected", "Google hiccup")
+      // rather than a results list — render it, don't treat it as failure.
+      const j = await getJsonOr<{ results?: GoogleApiHealth[]; message?: string }>('/api/integrations/google/org/health', [409, 502])
+      if (!j.results) probeError = j.message ?? 'The probe failed. Try again.'
+      else apiResults = j.results
+    } catch (e) {
+      probeError = errorMessage(e)
+    } finally {
+      probing = false
+    }
   }
 
   const msg: Record<string, string> = {

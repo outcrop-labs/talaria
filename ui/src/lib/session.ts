@@ -2,7 +2,8 @@
 // Like the query hooks everywhere in lib/, these call createQuery and so must
 // run during component init (same rule React hooks had).
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
+import { pushToast } from '@/lib/toast.svelte'
 import type { ProviderMeta } from '@/server/auth/config'
 
 export interface SessionUser {
@@ -89,7 +90,12 @@ export function useProviders() {
 export function useLogout() {
   const qc = useQueryClient()
   return async () => {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+    // The nav button fires and forgets this, so a refused sign-out surfaces
+    // here rather than as an unhandled rejection — and the session is
+    // re-checked either way, because the person is still signed in.
+    await postJson<{ ok: true }>('/api/auth/logout').catch((e: unknown) =>
+      pushToast({ title: 'Sign out failed', body: errorMessage(e), tone: 'danger' }),
+    )
     await qc.invalidateQueries({ queryKey: ['session'] })
   }
 }

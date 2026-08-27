@@ -10,6 +10,7 @@
 // PlanModal and the header button read one vocabulary; the server's run
 // states fold into it here.
 import type { Proposal } from './plan-modal'
+import { delJson, getJson, HttpError, patchJson, postJson } from '@/lib/fetch-json'
 
 export interface PlanDraftJob {
   status: 'drafting' | 'ready' | 'failed'
@@ -104,18 +105,17 @@ const refresh = async (planId: string) => {
   const url = urls.get(planId)
   if (!url) return
   try {
-    const r = await fetch(url)
-    if (!r.ok) return
-    const j = (await r.json()) as { draft: ServerDraft | null }
+    const j = await getJson<{ draft: ServerDraft | null }>(url)
     const current = jobs[planId]
     // The stale guard: a reply for another draft row (this client dropped the
     // old one and started fresh) is not news.
     if (j.draft && (!current || current.id === j.draft.id)) apply(planId, toEntry(j.draft))
     else if (!j.draft && current && current.status === 'drafting') apply(planId, null)
-  } catch {
-    // A dropped poll is a late poll: if the draft is still drafting, the next
-    // tick is already scheduled.
-    if (jobs[planId]?.status === 'drafting') schedulePoll(planId)
+  } catch (e) {
+    // HttpError is the old `!r.ok` return: the plan (or its draft row) is
+    // gone, and polling stops. Anything else is a dropped poll — a late poll;
+    // if the draft is still drafting, the next tick is already scheduled.
+    if (!(e instanceof HttpError) && jobs[planId]?.status === 'drafting') schedulePoll(planId)
   }
 }
 
@@ -132,24 +132,22 @@ export function startPlanDraft(
   urls.set(planId, req.draftUrl)
   void (async () => {
     try {
-      const r = await fetch(req.draftUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          agentModel: req.agentModel,
-          tier: req.tier,
-          boardId: req.boardId,
-          templateId: req.templateId,
-        }),
+      const j = await postJson<{ draft?: ServerDraft }>(req.draftUrl, {
+        agentModel: req.agentModel,
+        tier: req.tier,
+        boardId: req.boardId,
+        templateId: req.templateId,
       })
-      const j = (await r.json()) as { draft?: ServerDraft; error?: string }
-      if (!r.ok || !j.draft) {
-        jobs[planId] = { id: '', status: 'failed', proposals: [], note: j.error ?? 'planning failed', boardId: req.boardId ?? '' }
+      if (!j.draft) {
+        jobs[planId] = { id: '', status: 'failed', proposals: [], note: 'planning failed', boardId: req.boardId ?? '' }
         return
       }
       apply(planId, toEntry(j.draft))
-    } catch {
-      jobs[planId] = { id: '', status: 'failed', proposals: [], note: 'planning failed. Is the gateway up?', boardId: req.boardId ?? '' }
+    } catch (e) {
+      // The server's failure sentence (a 500 {error} body) arrives as the
+      // rejection's message; only a network failure gets the reach sentence.
+      const note = e instanceof HttpError ? e.message : 'planning failed. Is the gateway up?'
+      jobs[planId] = { id: '', status: 'failed', proposals: [], note, boardId: req.boardId ?? '' }
     }
   })()
 }
@@ -182,11 +180,9 @@ export function patchPlanDraft(planId: string, i: number, p: Partial<Proposal>):
       const url = urls.get(planId)
       const now = jobs[planId]
       if (!url || now?.status !== 'ready') return
-      void fetch(url, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ proposals: now.proposals }),
-      }).catch(() => {})
+      // Swallowed on purpose: the walk edits in bursts and the row is the
+      // source of truth — a lost write resurfaces on the next reload.
+      void patchJson(url, { proposals: now.proposals }).catch(() => {})
     }, 600),
   )
 }
@@ -200,5 +196,6 @@ export function discardPlanDraft(planId: string): void {
   saves.delete(planId)
   delete jobs[planId]
   const url = urls.get(planId)
-  if (url) void fetch(url, { method: 'DELETE' }).catch(() => {})
+  // Best-effort cancel: the local job is gone either way.
+  if (url) void delJson(url).catch(() => {})
 }

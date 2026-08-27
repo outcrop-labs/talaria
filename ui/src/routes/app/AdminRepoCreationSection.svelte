@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
   /** Agent repo creation: which orgs allow it, and the pending request queue
@@ -41,13 +41,11 @@
   let decideError = $state<string | null>(null)
   const decide = async (id: string, action: 'approve' | 'reject') => {
     decideError = null
-    const r = await fetch('/api/workbench/repo-requests', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, action }),
-    })
-    if (!r.ok) decideError = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed'
+    try {
+      await putJson<{ ok: true }>('/api/workbench/repo-requests', { id, action })
+    } catch (e) {
+      decideError = errorMessage(e)
+    }
     await qc.invalidateQueries({ queryKey: ['repo-requests'] })
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }

@@ -8,7 +8,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { cn } from '@/lib/cn'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
 
   interface GuardData {
     config: { mode: string; checks: Record<string, boolean>; minConfidence: number; policedHosts: string[]; coach: boolean }
@@ -30,7 +31,12 @@
   const save = async (patch: Partial<GuardData['config']>) => {
     if (!cfg) return
     const body = { ...cfg, ...patch }
-    await fetch('/api/admin/guardrails', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    try {
+      await putJson<{ config: GuardData['config'] }>('/api/admin/guardrails', body)
+    } catch (e) {
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['guardrails'] })
   }
   const rules = $derived(data?.rules ?? [])

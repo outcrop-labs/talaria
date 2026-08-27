@@ -1,6 +1,6 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson, getList } from '@/lib/fetch-json'
+import { errorMessage, getJson, getList, patchJson, postJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -119,10 +119,15 @@ export interface ReconcileResult {
   error?: string
 }
 
-/** Render configs + start every enabled managed agent that isn't running. */
+/** Render configs + start every enabled managed agent that isn't running.
+ *  Callers render the answer in-band (`r.error ?? 'Started …'`), so failures
+ *  resolve as `{ error }` with the server's sentence rather than rejecting. */
 export async function reconcileFleet(): Promise<ReconcileResult> {
-  const r = await fetch('/api/fleet/reconcile', { method: 'POST', credentials: 'same-origin' })
-  return (await r.json().catch(() => ({ error: `reconcile failed (${r.status})` }))) as ReconcileResult
+  try {
+    return await postJson<ReconcileResult>('/api/fleet/reconcile')
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 export interface ContainerState {
@@ -162,13 +167,11 @@ export async function saveAgentEdit(
   id: string,
   edit: AgentEdit,
 ): Promise<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; error?: string }> {
-  const r = await fetch(`/api/fleet/defs/${id}/edit`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(edit),
-  })
-  return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
+  try {
+    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean }>(`/api/fleet/defs/${id}/edit`, edit)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'
@@ -184,13 +187,11 @@ export async function createFleetAgent(input: {
   skills?: Array<{ name: string; content: string }>
   start?: boolean
 }): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
-  const r = await fetch('/api/fleet/create', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-  })
-  return (await r.json().catch(() => ({ error: `create failed (${r.status})` }))) as { error?: string }
+  try {
+    return await postJson<{ ok?: boolean; healthy?: boolean }>('/api/fleet/create', input)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 /** Update an agent's editable identity (role, display name, template bindings). */
@@ -198,25 +199,17 @@ export async function patchAgentMeta(
   id: string,
   patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null; workbenchHarness?: string | null; workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string | null>> },
 ): Promise<{ ok?: boolean; error?: string }> {
-  const r = await fetch(`/api/fleet/defs/${id}`, {
-    method: 'PATCH',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-  }).catch(() => null)
-  return (await r?.json().catch(() => ({ error: 'network error' }))) ?? { error: 'network error' }
+  try {
+    return await patchJson<{ ok: boolean }>(`/api/fleet/defs/${id}`, patch)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
-  const r = await fetch(`/api/fleet/agents/${id}/control`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action }),
-  })
-  return (await r.json().catch(() => ({ error: `control failed (${r.status})` }))) as {
-    ok?: boolean
-    healthy?: boolean
-    error?: string
+  try {
+    return await postJson<{ ok?: boolean; healthy?: boolean; warming?: boolean }>(`/api/fleet/agents/${id}/control`, { action })
+  } catch (e) {
+    return { error: errorMessage(e) }
   }
 }

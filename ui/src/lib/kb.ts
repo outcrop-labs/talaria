@@ -1,5 +1,5 @@
 import { createQuery } from '@tanstack/svelte-query'
-import { getJsonOr404, getList } from '@/lib/fetch-json'
+import { delJson, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -100,13 +100,18 @@ export const useDoc = (id: MaybeGetter<string | null>) =>
     }
   })
 
-export const createSpace = (name: string) =>
-  fetch('/api/kb/spaces', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) }).then((r) => r.json())
+// Mutations go through the fetch-json door: a non-2xx REJECTS with the
+// server's sentence. These used to `.then((r) => r.json())`, which resolved
+// the `{ error }` body as if it were the created record — a 403 "only the
+// owner can change sharing" read to the caller as a successful save.
+
+export const createSpace = (name: string): Promise<KbSpace> =>
+  postJson<{ space: KbSpace }>('/api/kb/spaces', { name }).then((r) => r.space)
 
 export const updateSpace = (
   id: string,
   patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
-) => fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+): Promise<KbSpace> => putJson<{ space: KbSpace }>(`/api/kb/spaces/${id}`, patch).then((r) => r.space)
 
 /** The editor grants on a doc / folder / artifact, read from its GET route.
  *
@@ -140,15 +145,15 @@ export const useEditors = (kind: PermKind, id: MaybeGetter<string>, enabled: May
     }
   })
 
-export const deleteSpace = (id: string) => fetch(`/api/kb/spaces/${id}`, { method: 'DELETE' })
+export const deleteSpace = (id: string) => delJson<{ ok: true }>(`/api/kb/spaces/${id}`)
 
-export const createDoc = (spaceId: string, input: { title?: string; kind?: 'human' | 'agent'; parentId?: string | null }) =>
-  fetch(`/api/kb/spaces/${spaceId}/docs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) }).then((r) => r.json())
+export const createDoc = (spaceId: string, input: { title?: string; kind?: 'human' | 'agent'; parentId?: string | null }): Promise<KbDoc> =>
+  postJson<{ doc: KbDoc }>(`/api/kb/spaces/${spaceId}/docs`, input).then((r) => r.doc)
 
 export const saveDoc = (
   id: string,
   patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'permsInherited' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] },
-) => fetch(`/api/kb/docs/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+): Promise<KbDoc> => putJson<{ doc: KbDoc }>(`/api/kb/docs/${id}`, patch).then((r) => r.doc)
 
 /** Custom brains (names only for members) — the doc "Brain" routing picker. */
 export const useBrains = () =>
@@ -160,10 +165,10 @@ export const useBrains = () =>
     },
   }))
 
-export const deleteDoc = (id: string) => fetch(`/api/kb/docs/${id}`, { method: 'DELETE' })
+export const deleteDoc = (id: string) => delJson<{ ok: true }>(`/api/kb/docs/${id}`)
 
-export const moveDoc = (id: string, parentId: string | null, sort: number) =>
-  fetch(`/api/kb/docs/${id}/move`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ parentId, sort }) }).then((r) => r.json())
+export const moveDoc = (id: string, parentId: string | null, sort: number): Promise<KbDoc> =>
+  postJson<{ doc: KbDoc }>(`/api/kb/docs/${id}/move`, { parentId, sort }).then((r) => r.doc)
 
 export interface KbSearchHit {
   id: string

@@ -3,7 +3,7 @@
 // board never customized). Helpers keep label/color lookups safe for custom
 // keys and legacy constants alike.
 import { createQuery } from '@tanstack/svelte-query'
-import { getList } from '@/lib/fetch-json'
+import { delJson, getList, postJson, putJson } from '@/lib/fetch-json'
 import { STATUS_LABEL } from './task-const'
 import { LABEL_CSS } from '@/components/board/field-pills'
 
@@ -57,22 +57,15 @@ export const statusColorOf = (key: string, statuses: BoardStatus[]): string => {
   return FALLBACK[key] ?? 'var(--theme-muted)'
 }
 
-const statusMutate = (boardId: string, method: string, body: unknown) =>
-  fetch(`/api/boards/${boardId}/statuses`, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify(body),
-  }).then(async (r) => (r.ok ? r.json() : Promise.reject(new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? String(r.status)))))
-
 export const createBoardStatus = (boardId: string, input: { label: string; color?: string; category?: string; agentStart?: boolean }) =>
-  statusMutate(boardId, 'POST', input)
+  postJson<{ status: BoardStatus }>(`/api/boards/${boardId}/statuses`, input)
 export const updateBoardStatus = (
   boardId: string,
   statusKey: string,
   patch: { label?: string; color?: string; category?: string; agentStart?: boolean },
-) => statusMutate(boardId, 'PUT', { statusKey, ...patch })
+) => putJson<{ ok: true }>(`/api/boards/${boardId}/statuses`, { statusKey, ...patch })
 /** Order = status KEYS (stable across virtual defaults + materialized rows). */
-export const reorderBoardStatuses = (boardId: string, order: string[]) => statusMutate(boardId, 'PUT', { order })
+export const reorderBoardStatuses = (boardId: string, order: string[]) =>
+  putJson<{ ok: true }>(`/api/boards/${boardId}/statuses`, { order })
 export const deleteBoardStatus = (boardId: string, statusKey: string, reassignTo: string) =>
-  statusMutate(boardId, 'DELETE', { statusKey, reassignTo })
+  delJson<{ ok: true }>(`/api/boards/${boardId}/statuses`, { statusKey, reassignTo })

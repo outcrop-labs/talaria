@@ -1,6 +1,6 @@
 // Group-chat client: queries + mutations + live SSE refresh.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { readJson as j } from '@/lib/fetch-json'
+import { delJson, getJson, patchJson, postJson, putJson } from '@/lib/fetch-json'
 
 export type ChannelRole = 'owner' | 'member'
 
@@ -51,9 +51,6 @@ export interface ChannelMessage {
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
 }
 
-// The throw-on-non-2xx helper this module has always had now lives in
-// lib/fetch-json.ts, shared by every query module.
-
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
 type MaybeGetter<T> = T | (() => T)
@@ -62,8 +59,7 @@ const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as (
 export function useChannels() {
   return createQuery(() => ({
     queryKey: ['channels'],
-    queryFn: async (): Promise<Channel[]> =>
-      (await j<{ channels: Channel[] }>(await fetch('/api/channels', { credentials: 'same-origin' }))).channels,
+    queryFn: async (): Promise<Channel[]> => (await getJson<{ channels: Channel[] }>('/api/channels')).channels,
   }))
 }
 
@@ -73,8 +69,7 @@ export function useChannelDetail(id: MaybeGetter<string | null>) {
     return {
       queryKey: ['channel', cid],
       enabled: !!cid,
-      queryFn: async (): Promise<ChannelDetail> =>
-        j<ChannelDetail>(await fetch(`/api/channels/${cid}`, { credentials: 'same-origin' })),
+      queryFn: async (): Promise<ChannelDetail> => getJson<ChannelDetail>(`/api/channels/${cid}`),
     }
   })
 }
@@ -86,8 +81,7 @@ export function useChannelMessages(id: MaybeGetter<string | null>) {
       queryKey: ['channel-messages', cid],
       enabled: !!cid,
       queryFn: async (): Promise<ChannelMessage[]> =>
-        (await j<{ messages: ChannelMessage[] }>(await fetch(`/api/channels/${cid}/messages`, { credentials: 'same-origin' })))
-          .messages,
+        (await getJson<{ messages: ChannelMessage[] }>(`/api/channels/${cid}/messages`)).messages,
     }
   })
 }
@@ -102,11 +96,7 @@ export function useThreadMessages(channelId: MaybeGetter<string | null>, rootId:
       queryKey: ['channel-messages', cid, 'thread', rid],
       enabled: !!cid && !!rid,
       queryFn: async (): Promise<ChannelMessage[]> =>
-        (
-          await j<{ messages: ChannelMessage[] }>(
-            await fetch(`/api/channels/${cid}/messages?thread=${rid}`, { credentials: 'same-origin' }),
-          )
-        ).messages,
+        (await getJson<{ messages: ChannelMessage[] }>(`/api/channels/${cid}/messages?thread=${rid}`)).messages,
     }
   })
 }
@@ -127,23 +117,15 @@ export function useChannelEvents(id: MaybeGetter<string | null>) {
   })
 }
 
-const post = (url: string, body: unknown, method = 'POST') =>
-  fetch(url, {
-    method,
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-
 export const createChannel = async (name: string, kind: 'channel' | 'group' = 'channel', topic?: string | null): Promise<Channel> =>
-  (await j<{ channel: Channel }>(await post('/api/channels', { name, kind, topic: topic ?? null }))).channel
+  (await postJson<{ channel: Channel }>('/api/channels', { name, kind, topic: topic ?? null })).channel
 
 /** Find-or-create the DM with a teammate. */
 export const openDm = async (userId: string): Promise<Channel> =>
-  (await j<{ channel: Channel }>(await post('/api/dms', { userId }))).channel
+  (await postJson<{ channel: Channel }>('/api/dms', { userId })).channel
 
 export const markChannelRead = async (id: string, seq: number): Promise<void> => {
-  await post(`/api/channels/${id}/read`, { seq })
+  await postJson<{ ok: true }>(`/api/channels/${id}/read`, { seq })
 }
 
 export const sendChannelMessage = async (
@@ -153,38 +135,38 @@ export const sendChannelMessage = async (
   refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }> = [],
   threadRootId: string | null = null,
 ): Promise<void> => {
-  await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds, refs, threadRootId }))
+  await postJson<{ message: ChannelMessage }>(`/api/channels/${id}/messages`, { content, attachmentIds, refs, threadRootId })
 }
 
 export const toggleMessageReaction = async (channelId: string, messageId: string, emoji: string): Promise<void> => {
-  await j(await post(`/api/channels/${channelId}/messages/${messageId}/reactions`, { emoji }))
+  await postJson<{ ok: true }>(`/api/channels/${channelId}/messages/${messageId}/reactions`, { emoji })
 }
 
 export const editChannelMessage = async (channelId: string, messageId: string, content: string): Promise<void> => {
-  await j(await post(`/api/channels/${channelId}/messages/${messageId}`, { content }, 'PATCH'))
+  await patchJson<{ ok: true }>(`/api/channels/${channelId}/messages/${messageId}`, { content })
 }
 
 export const deleteChannelMessage = async (channelId: string, messageId: string): Promise<void> => {
-  await j(await fetch(`/api/channels/${channelId}/messages/${messageId}`, { method: 'DELETE', credentials: 'same-origin' }))
+  await delJson<{ ok: true }>(`/api/channels/${channelId}/messages/${messageId}`)
 }
 
 export const updateChannel = async (id: string, patch: { name?: string; topic?: string | null }): Promise<void> => {
-  await j(await post(`/api/channels/${id}`, patch, 'PUT'))
+  await putJson<{ ok: true }>(`/api/channels/${id}`, patch)
 }
 
 export const deleteChannel = async (id: string): Promise<void> => {
-  await j(await fetch(`/api/channels/${id}?hard=1`, { method: 'DELETE', credentials: 'same-origin' }))
+  await delJson<{ ok: true }>(`/api/channels/${id}?hard=1`)
 }
 
 export const addChannelMember = async (id: string, email: string): Promise<void> => {
-  await j(await post(`/api/channels/${id}/members`, { email }))
+  await postJson<{ ok: true }>(`/api/channels/${id}/members`, { email })
 }
 export const removeChannelMember = async (id: string, userId: string): Promise<void> => {
-  await j(await post(`/api/channels/${id}/members`, { userId }, 'DELETE'))
+  await delJson<{ ok: true }>(`/api/channels/${id}/members`, { userId })
 }
 export const addChannelAgent = async (id: string, model: string): Promise<void> => {
-  await j(await post(`/api/channels/${id}/agents`, { model }))
+  await postJson<{ ok: true }>(`/api/channels/${id}/agents`, { model })
 }
 export const removeChannelAgent = async (id: string, model: string): Promise<void> => {
-  await j(await post(`/api/channels/${id}/agents`, { model }, 'DELETE'))
+  await delJson<{ ok: true }>(`/api/channels/${id}/agents`, { model })
 }

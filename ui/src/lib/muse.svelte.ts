@@ -16,7 +16,7 @@
 //   ticket field allowlist and the form-record schemas all live in
 //   `server/harness/defs/muse.ts` now. What is left here is a fetch.
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson, postStream, putJson } from '@/lib/fetch-json'
 
 export type MuseKind =
   | 'soul'
@@ -45,28 +45,26 @@ export interface MuseRequest {
  *  PROSE KINDS ONLY. The five structured kinds answer with JSON and would
  *  arrive here as one lump; use the `draft*` helpers below. */
 export async function streamMuse(input: MuseRequest, onChunk: (piece: string) => void, signal?: AbortSignal): Promise<string> {
-  const r = await fetch('/api/muse', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-    signal,
-  })
-  if (!r.ok || !r.body) {
-    const j = (await r.json().catch(() => null)) as { error?: string } | null
-    throw new Error(j?.error ?? `muse failed (${r.status})`)
-  }
+  const r = await postStream('/api/muse', input, { signal })
   const reader = r.body.getReader()
   const decoder = new TextDecoder()
   let full = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    const piece = decoder.decode(value, { stream: true })
-    full += piece
-    onChunk(piece)
+  // Raw chunks, not SSE frames — so this loop is its own reader, but the
+  // discipline is the same one `sseFrames` enforces: every exit path cancels
+  // and releases, or an early return leaks the socket (see sse-parse.ts).
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const piece = decoder.decode(value, { stream: true })
+      full += piece
+      onChunk(piece)
+    }
+    return full
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
-  return full
 }
 
 /** One structured draft, already validated against its schema on the server.
@@ -77,16 +75,11 @@ export async function streamMuse(input: MuseRequest, onChunk: (piece: string) =>
  *  produced nothing usable" and "the gateway has no model" is a real difference,
  *  and both of them are things to say out loud rather than states to swallow. */
 async function draft<T>(input: MuseRequest, signal?: AbortSignal): Promise<T> {
-  const r = await fetch('/api/muse', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-    ...(signal ? { signal } : {}),
-  })
-  const j = (await r.json().catch(() => null)) as { value?: T; error?: string } | null
-  if (!r.ok || !j || j.value === undefined) throw new Error(j?.error ?? `muse failed (${r.status})`)
-  return j.value
+  // postJson throws the server's sentence on every non-2xx; the guard below is
+  // the one failure it cannot see — a 200 whose body never carried a `value`.
+  const { value } = await postJson<{ value?: T }>('/api/muse', input, { signal })
+  if (value === undefined) throw new Error('The server sent a reply this app could not read.')
+  return value
 }
 
 export interface GatewayModel {
@@ -131,44 +124,25 @@ export function useProfilePrefs() {
   }))
 }
 
-export async function savePreferredModel(model: string | null): Promise<{ error?: string }> {
-  const r = await fetch('/api/profile', {
-    method: 'PUT',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ preferredModel: model }),
-  })
-  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
-  return {}
-}
+// All three profile writes answer `{ ok: true }` and every caller reads an
+// in-band `.error` field instead of catching, so they resolve-only through the
+// door: rejections fold into the same `{ error }` shape.
+const savePref = (body: Record<string, unknown>): Promise<{ error?: string }> =>
+  putJson<{ ok: true }>('/api/profile', body)
+    .then(() => ({}))
+    .catch((e: unknown) => ({ error: errorMessage(e) }))
+
+export const savePreferredModel = (model: string | null): Promise<{ error?: string }> => savePref({ preferredModel: model })
 
 /** Save the platform-default reasoning effort. `null` clears it — every model
  *  runs at its own default again. The preference is a bare level string; each
  *  surface applies it only where the model's metadata publishes the level. */
-export async function savePreferredEffort(effort: string | null): Promise<{ error?: string }> {
-  const r = await fetch('/api/profile', {
-    method: 'PUT',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ preferredEffort: effort }),
-  })
-  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
-  return {}
-}
+export const savePreferredEffort = (effort: string | null): Promise<{ error?: string }> => savePref({ preferredEffort: effort })
 
 /** Save the person's IANA zone — the zone their brief opens in and their
  *  digest arrives in. `null` clears it back to "follow the workspace zone".
  *  Used by the Settings picker and by TimezoneAdopt's silent first adoption. */
-export async function saveTimezone(timezone: string | null): Promise<{ error?: string }> {
-  const r = await fetch('/api/profile', {
-    method: 'PUT',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ timezone }),
-  })
-  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
-  return {}
-}
+export const saveTimezone = (timezone: string | null): Promise<{ error?: string }> => savePref({ timezone })
 
 // ── The five structured drafts ───────────────────────────────────────────────
 //

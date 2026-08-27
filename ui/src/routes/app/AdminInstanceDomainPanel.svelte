@@ -7,7 +7,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
   /** The HOSTING domain — where this deployment lives. Verified by a self-
@@ -33,16 +33,14 @@
   const post = async (body: Record<string, unknown>) => {
     busy = true
     error = null
-    // PUT writes the domain config; POST runs the verify action.
-    const r = await fetch('/api/admin/instance', {
-      method: 'verify' in body ? 'POST' : 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const j = (await r.json().catch(() => ({}))) as { error?: string; verified?: boolean }
+    try {
+      // PUT writes the domain config; POST runs the verify action.
+      const send = 'verify' in body ? postJson : putJson
+      await send<{ ok: true }>('/api/admin/instance', body)
+    } catch (e) {
+      error = errorMessage(e)
+    }
     busy = false
-    if (!r.ok || j.error) error = j.error ?? 'failed'
     await refresh()
   }
 </script>

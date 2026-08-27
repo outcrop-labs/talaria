@@ -6,6 +6,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { slide } from '@/lib/motion'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { patchServer, slugify } from './mcp'
 
   let { onClose }: { onClose: () => void } = $props()
@@ -32,11 +33,8 @@
     if (!valid || busy) return
     busy = true
     error = null
-    const r = await fetch('/api/mcp/servers', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const { server } = await postJson<{ server: { id: string } }>('/api/mcp/servers', {
         name: name.trim(),
         label: label.trim() || undefined,
         url: url.trim(),
@@ -44,18 +42,16 @@
         headers: headerKey.trim() && headerVal.trim() ? { [headerKey.trim()]: headerVal } : undefined,
         timeoutSecs: timeoutSecs.trim() ? Number(timeoutSecs) : undefined,
         authMode,
-      }),
-    })
-    busy = false
-    if (!r.ok) {
-      error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed'
-      return
+      })
+      busy = false
+      await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
+      // Kick discovery right away — a server with no tool catalog is half-registered.
+      void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
+      onClose()
+    } catch (e) {
+      busy = false
+      error = errorMessage(e)
     }
-    const { server } = (await r.json()) as { server: { id: string } }
-    await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
-    // Kick discovery right away — a server with no tool catalog is half-registered.
-    void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
-    onClose()
   }
   const onEnter = (e: KeyboardEvent) => {
     if (e.key === 'Enter') {

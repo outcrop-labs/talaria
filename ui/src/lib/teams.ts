@@ -1,5 +1,6 @@
 import { createQuery } from '@tanstack/svelte-query'
-import { getList } from '@/lib/fetch-json'
+import { delJson, errorMessage, getList, postJson } from '@/lib/fetch-json'
+import { pushToast } from '@/lib/toast.svelte'
 
 export type TeamRole = 'owner' | 'member'
 export interface Team {
@@ -21,9 +22,6 @@ export interface TeamMember {
 type MaybeGetter<T> = T | (() => T)
 const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
-const post = (url: string, body: unknown) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) })
-
 export function useTeams() {
   return createQuery(() => ({
     queryKey: ['teams'],
@@ -42,13 +40,12 @@ export function useTeamMembers(teamId: MaybeGetter<string | null>) {
   })
 }
 
-export const createTeam = (name: string) => post('/api/teams', { name }).then((r) => r.json())
+export const createTeam = (name: string) => postJson<{ team: Team }>('/api/teams', { name })
 export const addTeamMember = (teamId: string, email: string, role: TeamRole) =>
-  post(`/api/teams/${teamId}/members`, { email, role })
+  postJson<{ ok: true }>(`/api/teams/${teamId}/members`, { email, role })
 export const removeTeamMember = (teamId: string, userId: string) =>
-  fetch(`/api/teams/${teamId}/members`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ userId }),
-  })
+  // The call site fires and forgets (`.then(refresh)`, no catch), so a refused
+  // remove is surfaced here rather than left as an unhandled rejection.
+  delJson<{ ok: true }>(`/api/teams/${teamId}/members`, { userId }).catch((e: unknown) =>
+    pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
+  )

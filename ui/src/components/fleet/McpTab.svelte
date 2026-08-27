@@ -11,9 +11,10 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { submitOnEnter } from '@/components/ui/control'
-  import { getList } from '@/lib/fetch-json'
+  import { errorMessage, getList, postJson } from '@/lib/fetch-json'
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
   import { p } from '@/router'
 
   type ProbeState = 'ok' | 'auth' | 'unreachable' | 'error'
@@ -50,17 +51,23 @@
 
   const test = async (s: McpServer) => {
     probes = { ...probes, [s.name]: 'testing' }
-    const r = await fetch('/api/mcp/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.url, agentSlug: def.slug }) }).catch(() => null)
-    const result: Probe = r?.ok ? ((await r.json()) as Probe) : { state: 'error', detail: 'test failed' }
+    // The probe chip IS this row's error surface: a failed test renders as the
+    // red "Error" state with the reason, same as an unreachable server.
+    const result: Probe = await postJson<Probe>('/api/mcp/test', { url: s.url, agentSlug: def.slug }).catch((e): Probe => ({
+      state: 'error',
+      detail: errorMessage(e),
+    }))
     probes = { ...probes, [s.name]: result }
   }
   const edit = async (body: { add?: Array<{ name: string; url: string }>; remove?: string[] }) => {
     busy = true
     try {
-      await fetch(`/api/fleet/defs/${def.id}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ add: [], remove: [], apply: true, ...body }) })
+      await postJson(`/api/fleet/defs/${def.id}/mcp`, { add: [], remove: [], apply: true, ...body })
       name = ''
       url = ''
       await qc.invalidateQueries({ queryKey: ['mcp-agents'] })
+    } catch (e) {
+      pushToast({ title: 'MCP change failed', body: errorMessage(e), tone: 'danger' })
     } finally {
       busy = false
     }

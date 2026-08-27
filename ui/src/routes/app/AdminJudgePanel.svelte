@@ -8,7 +8,8 @@
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
 
   // The automated QA judge — an advisory reliability gate. When a ticket hits
   // quality_review, a judge model reviews the agent's work and posts a verdict.
@@ -27,11 +28,14 @@
 
   const save = async (patch: { enabled?: boolean; model?: string | null; mode?: 'advisory' | 'enforcing' }) => {
     const body = { enabled: patch.enabled ?? enabled, model: patch.model !== undefined ? patch.model : model, mode: patch.mode ?? mode }
-    const r = await fetch('/api/admin/judge', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    if (r.ok) {
-      await qc.invalidateQueries({ queryKey: ['judge-config'] })
-      savedFlash.flash()
+    try {
+      await putJson<{ config: JudgeData['config'] }>('/api/admin/judge', body)
+    } catch (e) {
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
     }
+    await qc.invalidateQueries({ queryKey: ['judge-config'] })
+    savedFlash.flash()
   }
 </script>
 

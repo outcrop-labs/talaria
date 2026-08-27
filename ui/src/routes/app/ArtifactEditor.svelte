@@ -19,6 +19,8 @@
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage, postJsonOr } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
@@ -69,6 +71,10 @@
       await qc.invalidateQueries({ queryKey: ['artifact', id] })
       await qc.invalidateQueries({ queryKey: ['artifacts'] })
       dirty = false
+    } catch (e) {
+      // dirty stays true: the editor's content is not saved, and must not
+      // read as saved.
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
     } finally {
       saving = false
     }
@@ -98,18 +104,26 @@
   const exportToGoogle = async () => {
     exporting = true
     try {
-      const r = await fetch(`/api/artifacts/${id}/export/google`, { method: 'POST' })
-      const j = (await r.json().catch(() => null)) as { file?: { url: string }; error?: string; message?: string } | null
-      if (r.ok && j?.file?.url) {
+      // 409/422/502 bodies are answers this flow already branches on — the
+      // not_connected confirm hand-off, and the human `message` for the alert.
+      // Anything else (403, 404, network) rejects into the catch.
+      const j = await postJsonOr<{ file?: { url: string }; error?: string; message?: string }>(
+        `/api/artifacts/${id}/export/google`,
+        undefined,
+        [409, 422, 502],
+      )
+      if (j.file?.url) {
         await qc.invalidateQueries({ queryKey: ['artifact', id] })
         window.open(j.file.url, '_blank', 'noopener')
-      } else if (j?.error === 'not_connected') {
+      } else if (j.error === 'not_connected') {
         if (await confirm({ title: 'Connect Google', message: 'Connect a Google account to export to Drive. Go to Settings now?', confirmLabel: 'Go to Settings' })) {
           window.location.href = '/settings'
         }
       } else {
-        await alert({ title: 'Export failed', message: j?.message ?? 'Export to Google Drive failed.' })
+        await alert({ title: 'Export failed', message: j.message ?? 'Export to Google Drive failed.' })
       }
+    } catch (e) {
+      await alert({ title: 'Export failed', message: errorMessage(e) })
     } finally {
       exporting = false
     }
@@ -130,7 +144,12 @@
       danger: true,
       onSelect: async () => {
         if (!(await confirm({ title: 'Delete file', message: `Delete "${artifact.title}"?`, confirmLabel: 'Delete', danger: true }))) return
-        await deleteArtifact(id)
+        try {
+          await deleteArtifact(id)
+        } catch (e) {
+          pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+          return
+        }
         await qc.invalidateQueries({ queryKey: ['artifacts'] })
         onDeleted()
       },

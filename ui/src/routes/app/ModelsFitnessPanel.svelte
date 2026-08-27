@@ -20,8 +20,10 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { TabItem } from '@/components/ui/tabs'
   import { cn } from '@/lib/cn'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
   import FitnessDetail from '@/components/models/FitnessDetail.svelte'
   import FitnessMatrix from '@/components/models/FitnessMatrix.svelte'
   import FitnessRunModal from '@/components/models/FitnessRunModal.svelte'
@@ -137,12 +139,12 @@
     await qc.invalidateQueries({ queryKey: ['model-fitness-value'] })
   }
   const post = async (body: unknown) => {
-    await fetch('/api/admin/model-fitness', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    try {
+      await postJson<{ ok: true }>('/api/admin/model-fitness', body)
+    } catch (e) {
+      pushToast({ title: 'Fitness action failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await refresh()
   }
   /** CLEAR IS NOT FORGET, and the two dialogs say so. Clear drops what a RUN

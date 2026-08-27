@@ -13,6 +13,7 @@
   import AssistantGoogleCard from './AssistantGoogleCard.svelte'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { HANDLE_RE, updateAssistant, useAssistant } from '@/lib/assistant'
   import { slide } from '@/lib/motion'
@@ -80,17 +81,14 @@
 
   const togglePower = async (a: { id: string; running: boolean }) => {
     power = true
+    error = null
     try {
-      await fetch(`/api/fleet/agents/${a.id}/control`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: a.running ? 'stop' : 'up' }),
-      })
-      await qc.invalidateQueries({ queryKey: ['my-assistant'] })
-    } finally {
-      power = false
+      await postJson(`/api/fleet/agents/${a.id}/control`, { action: a.running ? 'stop' : 'up' })
+    } catch (e) {
+      error = errorMessage(e)
     }
+    await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+    power = false
   }
 </script>
 

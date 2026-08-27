@@ -10,7 +10,9 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { listStagger, slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
   import CollectionRow from './CollectionRow.svelte'
   import HealthDot from './HealthDot.svelte'
   import RerankSection from './RerankSection.svelte'
@@ -32,15 +34,22 @@
     if (!name.trim()) return
     busy = true
     try {
-      await fetch('/api/rag/collections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) })
+      await postJson('/api/rag/collections', { name: name.trim() })
       name = ''
       await qc.invalidateQueries({ queryKey: ['rag-collections'] })
+    } catch (e) {
+      pushToast({ title: 'Create failed', body: errorMessage(e), tone: 'danger' })
     } finally {
       busy = false
     }
   }
   const backfill = async (action: 'backfill' | 'reindex' = 'backfill') => {
-    await fetch('/api/admin/rag', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) })
+    try {
+      await postJson('/api/admin/rag', { action })
+    } catch (e) {
+      pushToast({ title: action === 'reindex' ? 'Rebuild failed' : 'Backfill failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
   }
   const rebuilding = $derived(rag?.reindex.state === 'running')

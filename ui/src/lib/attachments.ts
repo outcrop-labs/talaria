@@ -1,3 +1,5 @@
+import { errorMessage, postJson } from '@/lib/fetch-json'
+
 export interface Attachment {
   id: string
   filename: string
@@ -19,9 +21,10 @@ export const attachmentUrl = (id: string) => `/api/uploads/${id}`
 export async function uploadFile(file: File): Promise<Attachment | { error: string }> {
   const form = new FormData()
   form.append('file', file)
-  const r = await fetch('/api/uploads', { method: 'POST', body: form }).catch(() => null)
-  if (!r?.ok) return { error: (await r?.json?.().catch(() => null))?.error ?? 'upload failed' }
-  return r.json()
+  // Resolve-only envelope on purpose: all three callers (RichEditor,
+  // AttachButton, InboxChatPanel) read `.error` off the result instead of
+  // catching. The door's rejection is folded into that shape.
+  return postJson<Attachment>('/api/uploads', form).catch((e: unknown) => ({ error: errorMessage(e) }))
 }
 
 export const humanSize = (bytes: number) =>

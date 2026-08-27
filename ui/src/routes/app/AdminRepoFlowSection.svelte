@@ -3,7 +3,8 @@
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
 
   /** Per-repo git flow — every reachable repo is a row; blank fields mean the
    *  defaults, so there is no separate "add" ceremony to learn. */
@@ -22,16 +23,16 @@
 
   const save = async (repo: string, patch: { baseBranch?: string | null; testingBranch?: string | null }) => {
     const cur = data?.flows.find((f) => f.repo === repo)
-    await fetch('/api/workbench/flow', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      await putJson<{ ok: true }>('/api/workbench/flow', {
         repo,
         baseBranch: patch.baseBranch !== undefined ? patch.baseBranch : (cur?.baseBranch ?? null),
         testingBranch: patch.testingBranch !== undefined ? patch.testingBranch : (cur?.testingBranch ?? null),
-      }),
-    })
+      })
+    } catch (e) {
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     savedFlash.flash()
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }

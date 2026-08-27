@@ -11,6 +11,8 @@
     setBoardJudgeMode,
     type Board,
   } from '@/lib/boards.svelte'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import TemplatesSection from './TemplatesSection.svelte'
 
   // The General tab of BoardSettingsModal.svelte (module-private there in
@@ -41,7 +43,14 @@
       name = board.name
       return
     }
-    await renameBoard(board.id, n)
+    try {
+      await renameBoard(board.id, n)
+    } catch (e) {
+      // Rename rejects now; the field would otherwise snap back on refetch
+      // with no sentence, which is the silent failure this sweep removes.
+      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     void refreshBoards()
   }
 </script>
@@ -64,7 +73,12 @@
     <Select
       value={board.judgeMode ?? 'inherit'}
       onchange={async (e) => {
-        await setBoardJudgeMode(board.id, e.currentTarget.value as 'inherit' | 'off' | 'advisory' | 'enforcing')
+        try {
+          await setBoardJudgeMode(board.id, e.currentTarget.value as 'inherit' | 'off' | 'advisory' | 'enforcing')
+        } catch (err) {
+          pushToast({ title: 'Could not change judge mode', body: errorMessage(err), tone: 'danger' })
+          return
+        }
         void refreshBoards()
       }}
       class="w-full"
@@ -99,7 +113,12 @@
         variant="outline"
         size="sm"
         onclick={async () => {
-          await archiveBoard(board.id, !archived)
+          try {
+            await archiveBoard(board.id, !archived)
+          } catch (e) {
+            pushToast({ title: archived ? 'Could not restore board' : 'Could not archive board', body: errorMessage(e), tone: 'danger' })
+            return
+          }
           void refreshBoards()
           void qc.invalidateQueries({ queryKey: ['boards', 'archived'] })
           onClose()
@@ -125,7 +144,12 @@
               variant="danger"
               size="sm"
               onclick={async () => {
-                await deleteBoard(board.id)
+                try {
+                  await deleteBoard(board.id)
+                } catch (e) {
+                  pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+                  return
+                }
                 void refreshBoards()
                 onClose()
                 onDeleted()

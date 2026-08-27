@@ -8,6 +8,7 @@
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
+  import { delJson, errorMessage } from '@/lib/fetch-json'
   import { fetchAdminApps, post, type InstalledApp } from './apps'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
@@ -43,14 +44,9 @@
     if (!ok) return
     busy = a.slug
     try {
-      const r = await fetch('/api/admin/apps', {
-        method: 'DELETE',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ app: a.slug, wipeData: true }),
+      await delJson<{ ok: true }>('/api/admin/apps', { app: a.slug, wipeData: true }).catch((e) => {
+        void alert({ title: 'Could not uninstall', message: errorMessage(e) })
       })
-      const j = (await r.json()) as { error?: string }
-      if (j.error) void alert({ title: 'Could not uninstall', message: j.error })
       await refresh()
     } finally {
       busy = null

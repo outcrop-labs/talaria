@@ -33,6 +33,7 @@
   import Markdown from '@/components/ui/Markdown.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { cn } from '@/lib/cn'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
   import { slide, staggerIn } from '@/lib/motion'
   import { useBoards } from '@/lib/boards.svelte'
   import { streamMuse } from '@/lib/muse.svelte'
@@ -132,13 +133,8 @@
       const taken = new Set(owners.find((o) => o.owner === owner)?.skills.map((s) => s.name) ?? [])
       let skillName = slugify(name)
       for (let i = 2; taken.has(skillName); i++) skillName = `${slugify(name)}-${i}`
-      const put = await fetch(`/api/skills/${owner}/${skillName}`, {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: skillMd }),
-      })
-      if (!put.ok) throw new Error('could not save the skill')
+      // A failed save throws the server's own sentence; the catch below shows it.
+      await putJson(`/api/skills/${owner}/${skillName}`, { content: skillMd })
       let workflowId: string | null = null
       if (hasRules) {
         const { workflow } = await createWorkflow({ name: name.trim() })
@@ -159,7 +155,7 @@
       done = `${owner}/${skillName}`
       onCreated(workflowId, `${owner}/${skillName}`)
     } catch (e) {
-      error = (e as Error).message
+      error = errorMessage(e)
     } finally {
       creating = false
     }

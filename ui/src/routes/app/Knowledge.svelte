@@ -14,8 +14,10 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { navigate } from '@/router'
+  import { errorMessage } from '@/lib/fetch-json'
   import { fade, slide } from '@/lib/motion'
   import { isUnder } from '@/lib/route-tabs'
+  import { pushToast } from '@/lib/toast.svelte'
   import {
     readKnowledgeSelection,
     restorableKnowledgeSelection,
@@ -138,30 +140,39 @@
     else void navigate('/knowledge/:space', { params: { space: home }, replace: true })
   })
 
-  const newSpace = async (name: string) => {
-    const { space } = await createSpace(name)
+  // Every wrapper is SELF-CATCHING: the callers fire them with `void` from
+  // menus and blur handlers, so a rejected kb mutation (they reject now —
+  // they used to resolve the `{ error }` body as the record) would surface
+  // as an unhandled rejection instead of a sentence. The toast is the honest
+  // minimum; the tree/list behind it stays as it was.
+  const kbFailure = (what: string) => (e: unknown) => pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
+  const guarded = <A extends unknown[]>(what: string, fn: (...args: A) => Promise<unknown>) =>
+    (...args: A) => fn(...args).catch(kbFailure(what))
+
+  const newSpace = guarded('Creating the folder', async (name: string) => {
+    const space = await createSpace(name)
     await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
-    if (space) setSpaceId(space.id)
-  }
-  const newDoc = async (kind: 'human' | 'agent', parentId: string | null = null) => {
+    setSpaceId(space.id)
+  })
+  const newDoc = guarded('Creating the doc', async (kind: 'human' | 'agent', parentId: string | null = null) => {
     if (!activeSpace) return
-    const { doc } = await createDoc(activeSpace.id, { kind, title: 'Untitled', parentId })
+    const doc = await createDoc(activeSpace.id, { kind, title: 'Untitled', parentId })
     await qc.invalidateQueries({ queryKey: ['kb-docs', activeSpace.id] })
-    if (doc) setDocId(doc.id)
-  }
-  const move = async (id: string, parentId: string | null, sort: number) => {
+    setDocId(doc.id)
+  })
+  const move = guarded('Moving the doc', async (id: string, parentId: string | null, sort: number) => {
     await moveDoc(id, parentId, sort)
     await qc.invalidateQueries({ queryKey: ['kb-docs', activeSpace?.id] })
-  }
-  const renameSpace = async (id: string, name: string) => {
+  })
+  const renameSpace = guarded('Renaming the folder', async (id: string, name: string) => {
     await updateSpace(id, { name })
     await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
-  }
-  const removeSpace = async (id: string) => {
+  })
+  const removeSpace = guarded('Deleting the folder', async (id: string) => {
     await deleteSpace(id)
     await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
     if (spaceId === id) setLoc(null, null)
-  }
+  })
 
   // Jump to a doc from search — switch to its space if needed.
   // Jump to a doc from search — one navigation carries space + doc together.
@@ -172,11 +183,11 @@
   // Right-click menus — shortcuts to actions the sidebar/editors already offer.
   const menu = useContextMenu()
   // Same createDoc flow as newDoc, but scoped to any space (not just the active one).
-  const newDocIn = async (sid: string) => {
-    const { doc } = await createDoc(sid, { kind: 'human', title: 'Untitled' })
+  const newDocIn = guarded('Creating the doc', async (sid: string) => {
+    const doc = await createDoc(sid, { kind: 'human', title: 'Untitled' })
     await qc.invalidateQueries({ queryKey: ['kb-docs', sid] })
-    setLoc(sid, doc ? doc.id : null)
-  }
+    setLoc(sid, doc.id)
+  })
   const spaceMenu = (s: KbSpace): ContextMenuEntry[] => [
     { label: 'Open', onSelect: () => setLoc(s.id, null) },
     { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${s.id}`) },
@@ -201,7 +212,12 @@
       onSelect: async () => {
         // Same confirm + deleteDoc flow as the doc editor's kebab menu.
         if (!(await confirm({ title: 'Delete document', message: `Delete "${d.title}"?`, confirmLabel: 'Delete', danger: true }))) return
-        await deleteDoc(d.id)
+        try {
+          await deleteDoc(d.id)
+        } catch (e) {
+          kbFailure('Deleting the document')(e)
+          return
+        }
         await qc.invalidateQueries({ queryKey: ['kb-docs', d.spaceId] })
         if (docId === d.id) setDocId(null)
       },

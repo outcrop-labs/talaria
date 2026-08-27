@@ -2,7 +2,7 @@
 // exactly — including the absence of any field that could hold a plaintext
 // secret, which is the point: there is nowhere for one to arrive.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -87,15 +87,14 @@ export const STATE_COPY: Record<SecretState, { label: string; hint: string }> = 
 export function useClearSecret() {
   const qc = useQueryClient()
   return async (body: { id: string } | { unreadable: true }): Promise<{ error?: string; cleared?: string[]; failed?: string[]; changed?: boolean }> => {
-    const r = await fetch('/api/admin/secrets', {
-      method: 'DELETE',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const j = (await r.json().catch(() => ({}))) as { error?: string; cleared?: string[]; failed?: string[]; changed?: boolean }
+    // The surface reads an in-band `error` field rather than catching, so a
+    // refusal (and a network failure, which used to reject outright) resolves
+    // as the same envelope.
+    const r = await delJson<{ cleared?: string[]; failed?: string[]; changed?: boolean }>('/api/admin/secrets', body).then(
+      (out) => out,
+      (e: unknown): { error: string } => ({ error: errorMessage(e) }),
+    )
     await qc.invalidateQueries({ queryKey: SECRETS_KEY })
-    if (!r.ok) return { error: j.error ?? `clear failed (${r.status})` }
-    return j
+    return r
   }
 }

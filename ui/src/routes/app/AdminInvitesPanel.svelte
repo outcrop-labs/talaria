@@ -10,7 +10,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import NoEmailBump from '@/components/setup/NoEmailBump.svelte'
   import { cn } from '@/lib/cn'
-  import { getList } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
 
@@ -45,19 +45,21 @@
     busy = true
     error = null
     notice = null
-    const r = await fetch('/api/admin/invites', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: draft.trim() }),
-    })
-    busy = false
-    const j = (await r.json().catch(() => ({}))) as { error?: string; emailSent?: boolean; emailError?: string }
-    if (!r.ok || j.error) {
-      error = j.error ?? 'failed'
-    } else {
+    try {
+      const j = await postJson<{ emailSent?: boolean; emailError?: string }>('/api/admin/invites', { email: draft.trim() })
       draft = ''
       notice = j.emailSent ? 'invite sent' : `invite created, but the email failed: ${j.emailError ?? 'no email provider configured'}`
+    } catch (e) {
+      error = errorMessage(e)
+    }
+    busy = false
+    await refresh()
+  }
+  const revoke = async (id: string) => {
+    try {
+      await delJson<{ ok: true }>('/api/admin/invites', { id })
+    } catch (e) {
+      error = errorMessage(e)
     }
     await refresh()
   }
@@ -116,15 +118,7 @@
             <button
               type="button"
               title="Revoke (the link stops working immediately)"
-              onclick={async () => {
-                await fetch('/api/admin/invites', {
-                  method: 'DELETE',
-                  credentials: 'same-origin',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ id: i.id }),
-                })
-                await refresh()
-              }}
+              onclick={() => void revoke(i.id)}
               class="shrink-0 text-muted transition-colors hover:text-danger"
             >
               <Trash2 size={13} />

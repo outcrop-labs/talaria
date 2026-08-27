@@ -7,7 +7,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
 
   // In-app updates. Manual by default: an admin presses the button, Talaria
@@ -56,15 +56,12 @@
   const check = async () => {
     busy = 'check'
     error = null
-    const r = await fetch('/api/admin/update', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'check' }),
-    })
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
+    try {
+      await postJson<{ ok: true }>('/api/admin/update', { action: 'check' })
+    } catch (e) {
+      error = errorMessage(e)
+    }
     busy = null
-    if (!r.ok || j.error) error = j.error ?? 'the check failed'
     await qc.invalidateQueries({ queryKey: ['admin-update'] })
   }
 
@@ -78,30 +75,23 @@
     busy = 'apply'
     error = null
     kicked = true
-    const r = await fetch('/api/admin/update', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'apply' }),
-    })
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
-    busy = null
-    if (!r.ok || j.error) {
+    try {
+      await postJson<{ ok: true }>('/api/admin/update', { action: 'apply' })
+    } catch (e) {
       kicked = false
-      error = j.error ?? 'the update did not start'
+      error = errorMessage(e)
     }
+    busy = null
     await qc.invalidateQueries({ queryKey: ['admin-update'] })
   }
 
   const setAuto = async (on: boolean) => {
     error = null
-    const r = await fetch('/api/admin/update', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ autoUpdate: on }),
-    })
-    if (!r.ok) error = 'could not save that; try again'
+    try {
+      await putJson<{ ok: true }>('/api/admin/update', { autoUpdate: on })
+    } catch (e) {
+      error = errorMessage(e)
+    }
     await qc.invalidateQueries({ queryKey: ['admin-update'] })
   }
 

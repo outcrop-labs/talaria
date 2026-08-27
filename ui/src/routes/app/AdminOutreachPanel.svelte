@@ -7,8 +7,9 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { getJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { pushToast } from '@/lib/toast.svelte'
 
   interface OutreachData {
     config: { enabled: boolean; intervalMinutes: number; dailyDmCap: number }
@@ -34,7 +35,13 @@
       ...patch,
       proactiveAgents: proactiveAgents ?? agents.filter((a) => a.proactive).map((a) => a.model),
     }
-    await fetch('/api/admin/outreach', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    try {
+      await putJson<{ ok: true }>('/api/admin/outreach', body)
+    } catch (e) {
+      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+    }
+    // Refetch even on failure: the route saves config and per-agent flags in
+    // two steps, so a rejected PUT may still have changed half of it.
     await qc.invalidateQueries({ queryKey: ['admin-outreach'] })
   }
 </script>

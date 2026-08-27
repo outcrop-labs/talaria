@@ -8,6 +8,7 @@
   import Steps from '@/components/ui/Steps.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { reconcileFleet } from '@/lib/fleet-defs'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { listStagger, slide, staggerIn } from '@/lib/motion'
   import { cn } from '@/lib/cn'
 
@@ -36,20 +37,16 @@
     busy = true
     err = null
     try {
-      const r = await fetch('/api/fleet/federate', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ dir: dir.trim() }),
-      })
-      const j = (await r.json().catch(() => null)) as { result?: FederateResult; error?: string } | null
-      if (!j?.result) {
-        err = j?.error ?? 'federation failed'
+      const j = await postJson<{ result?: FederateResult }>('/api/fleet/federate', { dir: dir.trim() })
+      if (!j.result) {
+        err = 'federation failed'
         return
       }
       result = j.result
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
       step = 1
+    } catch (e) {
+      err = errorMessage(e)
     } finally {
       busy = false
     }

@@ -19,6 +19,7 @@
   import SecretsPanel from '@/components/admin/SecretsPanel.svelte'
   import WorkspaceSecretsPanel from '@/components/admin/WorkspaceSecretsPanel.svelte'
   import { useAgents } from '@/lib/agents'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
   import { useSession } from '@/lib/session'
   import { relativeTime } from '@/lib/fleet'
   import { fly, slide, staggerIn } from '@/lib/motion'
@@ -76,13 +77,11 @@
 
   const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; allowedManageViews?: string[]; assistantElevated?: boolean }) => {
     error = null
-    const r = await fetch('/api/admin/users', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ userId, ...patch }),
-    })
-    if (!r.ok) error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'update failed'
+    try {
+      await putJson<{ ok: true }>('/api/admin/users', { userId, ...patch })
+    } catch (e) {
+      error = errorMessage(e)
+    }
     await qc.invalidateQueries({ queryKey: ['admin-users'] })
   }
 

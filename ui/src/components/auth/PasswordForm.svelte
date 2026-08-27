@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import { errorMessage, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
   const qc = useQueryClient()
@@ -15,20 +16,13 @@
     busy = true
     err = null
     try {
-      const res = await fetch('/api/auth/password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ username, password }),
-      })
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
-      if (!res.ok || !data.ok) {
-        err = data.error ?? 'Sign-in failed'
-        return
-      }
+      // The route's every failure (401 bad credentials, 400 disabled, 429
+      // rate-limited) carries its sentence in the error envelope — the door
+      // throws it, and errorMessage reads it back out.
+      await postJson('/api/auth/password', { username, password })
       await qc.invalidateQueries({ queryKey: ['session'] })
-    } catch {
-      err = 'Network error'
+    } catch (e) {
+      err = errorMessage(e)
     } finally {
       busy = false
     }

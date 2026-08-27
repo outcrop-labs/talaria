@@ -6,8 +6,9 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import { getList } from '@/lib/fetch-json'
+  import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import { pushToast } from '@/lib/toast.svelte'
 
   /** Per-user MCP connected accounts: servers the org registered in per-user
    *  auth mode. Connect yours (a token header, sealed at rest) and your
@@ -47,12 +48,13 @@
   })
 
   const put = async (serverId: string, headers: Record<string, string> | null) => {
-    await fetch('/api/me/mcp', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ serverId, headers }),
-    })
+    try {
+      await putJson<{ ok: true }>('/api/me/mcp', { serverId, headers })
+    } catch (e) {
+      // Leave the form open with what was typed — a failed connect is retryable.
+      pushToast({ title: 'Could not save that connection', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     connecting = null
     values = {}
     await qc.invalidateQueries({ queryKey: ['me-mcp'] })

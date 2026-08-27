@@ -10,6 +10,8 @@
   import { useAgents } from '@/lib/agents'
   import { useUsers } from '@/lib/users'
   import { useTeams } from '@/lib/teams'
+  import { delJson, errorMessage, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import type { Binding, RagCollection } from './retrieval'
 
   let {
@@ -38,23 +40,38 @@
   const feedingSpaces = $derived(spaces.filter((s) => s.collectionId === col.id).map((s) => s.id))
 
   const setBindings = async (bindings: Binding[]) => {
-    await fetch(`/api/rag/collections/${col.id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ bindings }) })
+    try {
+      await putJson(`/api/rag/collections/${col.id}`, { bindings })
+    } catch (e) {
+      pushToast({ title: 'Save bindings failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
   }
   const del = async () => {
     if (!(await confirm({ title: 'Delete collection', message: `Delete the "${col.name}" collection and its index?`, confirmLabel: 'Delete', danger: true }))) return
-    await fetch(`/api/rag/collections/${col.id}`, { method: 'DELETE' })
+    try {
+      await delJson(`/api/rag/collections/${col.id}`)
+    } catch (e) {
+      pushToast({ title: 'Delete collection failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
   }
   const setSpaces = async (ids: string[]) => {
     // Diff: newly picked spaces bind to this brain; removed ones unbind.
     const added = ids.filter((id) => !feedingSpaces.includes(id))
     const removed = feedingSpaces.filter((id) => !ids.includes(id))
-    for (const spaceId of added) {
-      await fetch('/api/admin/rag', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ spaceBrain: { spaceId, collectionId: col.id } }) })
-    }
-    for (const spaceId of removed) {
-      await fetch('/api/admin/rag', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ spaceBrain: { spaceId, collectionId: null } }) })
+    try {
+      for (const spaceId of added) {
+        await putJson('/api/admin/rag', { spaceBrain: { spaceId, collectionId: col.id } })
+      }
+      for (const spaceId of removed) {
+        await putJson('/api/admin/rag', { spaceBrain: { spaceId, collectionId: null } })
+      }
+    } catch (e) {
+      pushToast({ title: 'Save spaces failed', body: errorMessage(e), tone: 'danger' })
+      return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
   }

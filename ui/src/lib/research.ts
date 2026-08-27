@@ -1,6 +1,7 @@
 // Research client: runs list + detail, mode catalog, start/delete.
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson, getList } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, getList, postJson, postJsonOr } from '@/lib/fetch-json'
+import { pushToast } from '@/lib/toast.svelte'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -69,20 +70,26 @@ export function useResearchRun(id: MaybeGetter<string | null>) {
 }
 
 export async function startResearch(question: string, mode: ResearchMode, agentModel: string): Promise<ResearchRun> {
-  const r = await fetch('/api/research', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ question, mode, agentModel }),
-  })
-  const j = (await r.json().catch(() => ({}))) as { run?: ResearchRun; error?: string; duplicateOf?: string }
-  if (r.status === 409 && j.duplicateOf) throw new Error('that question is already being researched')
-  if (!r.ok || !j.run) throw new Error(j.error ?? `failed (${r.status})`)
+  // 409 is an answer, not a failure: its body names the run already asking
+  // this question. Every other non-2xx throws with the server's sentence.
+  const j = await postJsonOr<{ run?: ResearchRun | null; duplicateOf?: string; error?: string }>(
+    '/api/research',
+    { question, mode, agentModel },
+    [409],
+  )
+  if (j.duplicateOf) throw new Error('that question is already being researched')
+  if (!j.run) throw new Error(j.error ?? 'could not start the run')
   return j.run
 }
 
 export async function deleteResearch(id: string): Promise<void> {
-  await fetch(`/api/research/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+  try {
+    await delJson<{ ok: true }>(`/api/research/${id}`)
+  } catch (e) {
+    // The rail's remove flow has no error state of its own, and its caller
+    // does not catch — the toast is the only place a refused delete gets said.
+    pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+  }
 }
 
 /** OPEN THE THREAD FOR A RUN, creating it on the first call.
@@ -91,10 +98,11 @@ export async function deleteResearch(id: string): Promise<void> {
  *  not a failure: a run an AGENT started for the org has no human owner and so
  *  has no conversation to own. The report is still readable. */
 export async function openResearchConversation(runId: string): Promise<{ conversationId?: string; error?: string }> {
-  const r = await fetch(`/api/research/${runId}/conversation`, { method: 'POST', credentials: 'same-origin' }).catch(() => null)
-  const j = (await r?.json().catch(() => ({}))) as { conversationId?: string; error?: string }
-  if (!r?.ok) return { error: j.error ?? 'could not open the discussion' }
-  return { conversationId: j.conversationId }
+  try {
+    return await postJson<{ conversationId?: string }>(`/api/research/${runId}/conversation`)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
 }
 
 /** A person on a run: the owner, or somebody it was shared with. */

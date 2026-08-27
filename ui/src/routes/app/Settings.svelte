@@ -11,6 +11,8 @@
   import { listQuery } from '@/components/ui/query-state'
   import Panel from '@/components/ui/Panel.svelte'
   import { useDeniedViews, useSession } from '@/lib/session'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import AssistantSection from '@/components/assistant/AssistantSection.svelte'
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
@@ -86,17 +88,12 @@
     if (!n || n === user?.name) return
     busy = true
     try {
-      const r = await fetch('/api/profile', {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: n }),
-      })
-      if (r.ok) {
-        await qc.invalidateQueries({ queryKey: ['session'] })
-        await qc.invalidateQueries({ queryKey: ['users'] })
-        savedFlash.flash()
-      }
+      await putJson<{ ok: true }>('/api/profile', { name: n })
+      await qc.invalidateQueries({ queryKey: ['session'] })
+      await qc.invalidateQueries({ queryKey: ['users'] })
+      savedFlash.flash()
+    } catch (e) {
+      pushToast({ title: 'Could not save your profile', body: errorMessage(e), tone: 'danger' })
     } finally {
       busy = false
     }

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { errorMessage, putJson } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import AdminPermChip from './AdminPermChip.svelte'
   import type { PermCatalogEntry, PermsData } from './admin'
 
@@ -11,12 +13,12 @@
   const overrides = $derived(perms.overrides[userId] ?? {})
   const orgDefault = (p: PermCatalogEntry) => perms.orgDefaults[p.id] ?? p.memberDefault
   const set = async (perm: string, allowed: boolean | null) => {
-    await fetch('/api/admin/permissions', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ userId, perm, allowed }),
-    })
+    try {
+      await putJson<{ ok: true }>('/api/admin/permissions', { userId, perm, allowed })
+    } catch (e) {
+      pushToast({ title: 'Could not save that permission', body: errorMessage(e), tone: 'danger' })
+      return
+    }
     await qc.invalidateQueries({ queryKey: ['admin-permissions'] })
   }
 </script>

@@ -13,7 +13,7 @@
 // and survive every re-render until the tab closed. Here it exists as a local in
 // whoever asked, for as long as they hold it.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { getJson } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, patchJson, postJson } from '@/lib/fetch-json'
 
 export interface WorkingSecret {
   id: string
@@ -71,16 +71,12 @@ export interface NewSecret {
   allowedHosts?: string[]
 }
 
-const post = async (url: string, body: unknown, method = 'POST'): Promise<{ error?: string; value?: string }> => {
-  const r = await fetch(url, {
-    method,
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  }).catch(() => null)
-  const j = (await r?.json().catch(() => ({}))) as { error?: string; value?: string }
-  if (!r?.ok) return { error: j.error ?? `request failed (${r?.status ?? 'offline'})` }
-  return j
+// The vault surfaces failures as an in-band `error` field (the panels read it
+// rather than catching), so this wrapper resolves every failure into that
+// envelope instead of letting the door's rejection escape.
+const post = async (url: string, body: unknown, method: 'POST' | 'PATCH' | 'DELETE' = 'POST'): Promise<{ error?: string; value?: string }> => {
+  const verb = method === 'PATCH' ? patchJson : method === 'DELETE' ? delJson : postJson
+  return verb<{ error?: string; value?: string }>(url, body).catch((e: unknown) => ({ error: errorMessage(e) }))
 }
 
 export function useSecretsVault() {

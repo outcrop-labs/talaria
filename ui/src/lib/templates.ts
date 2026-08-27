@@ -1,6 +1,7 @@
 // Template library client: org-wide ticket/plan formats + board bindings.
 import { createQuery } from '@tanstack/svelte-query'
-import { getList } from '@/lib/fetch-json'
+import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+import { pushToast } from '@/lib/toast.svelte'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -43,26 +44,18 @@ export function useBoardTemplates(boardId: MaybeGetter<string | null>) {
   })
 }
 
-const post = (url: string, method: string, body: unknown) =>
-  fetch(url, {
-    method,
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(async (r) => {
-    const j = (await r.json().catch(() => ({}))) as { error?: string }
-    if (!r.ok) throw new Error(j.error ?? `request failed (${r.status})`)
-    return j
-  })
-
 export const createTemplate = (t: { name: string; kind: TemplateKind; body?: string; guidance?: string }) =>
-  post('/api/templates', 'POST', t) as Promise<{ template: Template }>
+  postJson<{ template: Template }>('/api/templates', t)
 
 export const updateTemplate = (id: string, patch: { name?: string; body?: string; guidance?: string }) =>
-  post(`/api/templates/${id}`, 'PUT', patch) as Promise<{ template: Template }>
+  putJson<{ template: Template }>(`/api/templates/${id}`, patch)
 
 export const deleteTemplate = (id: string) =>
-  fetch(`/api/templates/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+  // The call site fires and forgets (`void remove(t)`, no catch), so a refused
+  // delete is surfaced here rather than left as an unhandled rejection.
+  delJson<{ ok: true }>(`/api/templates/${id}`).catch((e: unknown) =>
+    pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' }),
+  )
 
 export const setBoardTemplates = (boardId: string, templateIds: string[], defaultId: string | null) =>
-  post(`/api/boards/${boardId}/templates`, 'PUT', { templateIds, defaultId })
+  putJson<{ bindings: BoardTemplateBinding[] }>(`/api/boards/${boardId}/templates`, { templateIds, defaultId })

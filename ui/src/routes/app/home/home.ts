@@ -2,7 +2,7 @@
 // the home/ tab components). Like the query hooks in lib/, the use* functions
 // call createQuery and so must run during component init.
 import { createQuery } from '@tanstack/svelte-query'
-import { getJson, readJson } from '@/lib/fetch-json'
+import { getJson, getJsonOr } from '@/lib/fetch-json'
 import type { DotStatus } from '@/components/ui/chip'
 
 export const HOME_TABS = ['inbox', 'boards', 'comms', 'plans', 'research', 'docs'] as const
@@ -119,11 +119,8 @@ export { groupAgendaByDay, formatAgendaTime } from '@/lib/agenda'
 export const useGoogleStatus = () =>
   createQuery(() => ({
     queryKey: ['integration-google'],
-    queryFn: async (): Promise<{ available: boolean; connected: boolean }> => {
-      const r = await fetch('/api/integrations/google', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<{ available: boolean; connected: boolean }> =>
+      getJson<{ available: boolean; connected: boolean }>('/api/integrations/google'),
     retry: false,
   }))
 
@@ -134,15 +131,11 @@ export const useAgenda = (enabled: () => boolean) =>
   createQuery(() => ({
     queryKey: ['agenda'],
     enabled: enabled(),
-    queryFn: async (): Promise<{ events?: AgendaEvent[]; error?: string }> => {
-      const r = await fetch('/api/integrations/google/calendar/events')
+    queryFn: (): Promise<{ events?: AgendaEvent[]; error?: string }> =>
       // 409 (not connected) and 502 (Google hiccup) are ANSWERS this panel
-      // knows how to render — it hides. Every other non-2xx is a failure, and
-      // readJson turns it into an HttpError carrying the server's message
-      // instead of a bare "failed".
-      if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
-      return readJson<{ events?: AgendaEvent[] }>(r)
-    },
+      // knows how to render — their bodies carry the sentence and it hides.
+      // Every other non-2xx rejects as an HttpError with the server's message.
+      getJsonOr<{ events?: AgendaEvent[]; error?: string }>('/api/integrations/google/calendar/events', [409, 502]),
     retry: false,
     refetchInterval: 5 * 60_000,
   }))
@@ -163,12 +156,9 @@ export const useGmail = (enabled: () => boolean) =>
   createQuery(() => ({
     queryKey: ['gmail'],
     enabled: enabled(),
-    queryFn: async (): Promise<{ messages?: Mail[]; error?: string }> => {
-      const r = await fetch('/api/integrations/google/gmail/messages')
-      // Same contract as Agenda: 409 / 502 mean "nothing to show here".
-      if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
-      return readJson<{ messages?: Mail[] }>(r)
-    },
+    queryFn: (): Promise<{ messages?: Mail[]; error?: string }> =>
+      // Same contract as Agenda: 409 / 502 bodies mean "nothing to show here".
+      getJsonOr<{ messages?: Mail[]; error?: string }>('/api/integrations/google/gmail/messages', [409, 502]),
     retry: false,
     refetchInterval: 5 * 60_000,
   }))

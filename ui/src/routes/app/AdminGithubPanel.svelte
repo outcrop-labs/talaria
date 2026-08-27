@@ -12,7 +12,7 @@
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
-  import { getJson, getList } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, getList, putJson } from '@/lib/fetch-json'
   import { fly, slide } from '@/lib/motion'
   import AdminGithubGuideModal from './AdminGithubGuideModal.svelte'
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
@@ -49,20 +49,22 @@
   const save = async (body: unknown) => {
     busy = true
     error = null
-    const r = await fetch('/api/workbench/github', {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    try {
+      await putJson<{ ok: true }>('/api/workbench/github', body)
+    } catch (e) {
+      error = errorMessage(e)
+    }
     busy = false
-    if (!r.ok) error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed'
     await qc.invalidateQueries({ queryKey: ['github-status'] })
     await qc.invalidateQueries({ queryKey: ['github-installations'] })
   }
   const disconnect = async () => {
     if (!(await confirm({ title: 'Disconnect GitHub', message: 'Agents lose workbench repo access until reconnected.', confirmLabel: 'Disconnect', danger: true }))) return
-    await fetch('/api/workbench/github', { method: 'DELETE', credentials: 'same-origin' })
+    try {
+      await delJson<{ ok: true }>('/api/workbench/github')
+    } catch (e) {
+      error = errorMessage(e)
+    }
     await qc.invalidateQueries({ queryKey: ['github-status'] })
   }
 

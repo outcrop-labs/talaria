@@ -8,7 +8,7 @@
   import { buttonClasses } from '@/components/ui/button'
   import Panel from '@/components/ui/Panel.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { errorMessage, readJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, HttpError } from '@/lib/fetch-json'
   import { useSession } from '@/lib/session'
 
   interface Invite {
@@ -31,15 +31,18 @@
     queryKey: ['join', token],
     enabled: !!token,
     queryFn: async (): Promise<Invite | null> => {
-      const r = await fetch(`/api/join?token=${encodeURIComponent(token!)}`, { credentials: 'same-origin' })
       // 404/410 are the invite's OWN answer — no such token, or it's spent —
       // and only those two earn the "no longer valid" sentence below. Every
       // other non-2xx is the box failing, and `if (!r.ok) return null` used to
       // fold all three together: a 500 during a deploy told a brand-new hire
       // their invite was dead, and sent them to an admin for a replacement
       // token that was never needed. Different failures, different sentences.
-      if (r.status === 404 || r.status === 410) return null
-      return (await readJson<{ invite: Invite }>(r)).invite
+      try {
+        return (await getJson<{ invite: Invite }>(`/api/join?token=${encodeURIComponent(token!)}`)).invite
+      } catch (e) {
+        if (e instanceof HttpError && (e.status === 404 || e.status === 410)) return null
+        throw e
+      }
     },
   }))
 </script>
