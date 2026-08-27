@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
 import { sendMessage } from '@/server/google/gmail'
 import { googleFail } from '@/server/google/errors'
 
@@ -16,12 +16,12 @@ const Body = z.object({
 // POST /api/integrations/google/gmail/send → send a plain-text email as the user.
 export const Route = defineApi('/api/integrations/google/gmail/send', {
   POST: async ({ request }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
     try {
-      return json({ sent: await sendMessage(user.id, Date.now(), parsed.data) })
+      return json({ sent: await sendMessage(user.id, Date.now(), parsed) })
     } catch (err) {
       return googleFail(err as Error, 'Gmail')
     }

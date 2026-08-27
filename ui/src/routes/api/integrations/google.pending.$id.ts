@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
 import { decideAction } from '@/server/google/pending-actions'
 
 const Body = z.object({ decision: z.enum(['approve', 'reject']) })
@@ -10,12 +10,12 @@ const Body = z.object({ decision: z.enum(['approve', 'reject']) })
 // the owner) or reject an agent-drafted action.
 export const Route = defineApi('/api/integrations/google/pending/$id', {
   POST: async ({ request, params }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
 
-    const outcome = await decideAction(params.id, { id: user.id, isAdmin: user.role === 'admin' }, parsed.data.decision, Date.now())
+    const outcome = await decideAction(params.id, { id: user.id, isAdmin: user.role === 'admin' }, parsed.decision, Date.now())
     if (!outcome) return json({ error: 'not found' }, { status: 404 })
     if (outcome.status === 'forbidden') return json({ error: 'forbidden' }, { status: 403 })
     if (outcome.status === 'not_connected') return json({ error: 'not_connected', message: outcome.message }, { status: 409 })

@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
 import { createBoard, listAllBoards, listBoards, listBoardsForAgent } from '@/server/boards'
@@ -32,25 +32,26 @@ export const Route = defineApi('/api/boards', {
         : policyBoards
       return json({ boards: [...ownerBoards, ...rest.filter((b) => !seen.has(b.id))] })
     }
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
     const archived = new URL(request.url).searchParams.get('archived') === '1'
     return json({ boards: await listBoards(user.id, archived) })
   },
   POST: async ({ request }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
     // Authorization BEFORE body parsing — never do work for a caller who
     // can't take the action.
     if (!(await hasPerm(user, 'boards.create'))) return json({ error: 'no permission to create boards' }, { status: 403 })
-    const parsed = z
-      .object({ name: z.string().min(1).max(120), teamId: z.string().uuid().nullish() })
-      .safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const body = await parseBody(
+      request,
+      z.object({ name: z.string().min(1).max(120), teamId: z.string().uuid().nullish() }),
+    )
+    if (body instanceof Response) return body
     // Team boards require membership in that team.
-    if (parsed.data.teamId && !(await teamRole(user.id, parsed.data.teamId))) {
+    if (body.teamId && !(await teamRole(user.id, body.teamId))) {
       return json({ error: 'not a member of that team' }, { status: 403 })
     }
-    return json({ board: await createBoard(user.id, parsed.data.name, parsed.data.teamId ?? null) })
+    return json({ board: await createBoard(user.id, body.name, body.teamId ?? null) })
   },
 })

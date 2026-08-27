@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, getChannelMessage, insertChannelMessage, listChannelMessages, listThreadMessages } from '@/server/channels'
 import { notifyDmMessage, notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
@@ -38,21 +38,24 @@ export const Route = defineApi('/api/channels/$id/messages', {
       // is where this is closed for good. Humans still get the caveat.
       return json({ messages: (await page()).map(({ guard: _guard, ...m }) => m) })
     }
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
     if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
     return json({ messages: await page() })
   },
   POST: async ({ request, params }) => {
-    const parsed = z
-      .object({
+    const body = await parseBody(
+      request,
+      z.object({
         content: z.string().max(20_000).default(''),
         attachmentIds: z.array(z.string().uuid()).max(10).optional(),
         refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
         threadRootId: z.string().uuid().nullish(),
-      })
-      .safeParse(await request.json().catch(() => null))
-    if (!parsed.success || (!parsed.data.content && !parsed.data.attachmentIds?.length && !parsed.data.refs?.length)) {
+      }),
+    )
+    if (body instanceof Response) return body
+    // A post needs something in it: text, an attachment, or a ref chip.
+    if (!body.content && !body.attachmentIds?.length && !body.refs?.length) {
       return json({ error: 'bad request' }, { status: 400 })
     }
 
@@ -64,11 +67,11 @@ export const Route = defineApi('/api/channels/$id/messages', {
       const name = caller.model
       // The CALLER, not `name`: elevation buys org-wide posting rights.
       if (!(await agentMayAccessChannel(params.id, caller))) return json({ error: 'forbidden' }, { status: 403 })
-      if (!parsed.data.content.trim()) return json({ error: 'bad request' }, { status: 400 })
-      const msg = await insertChannelMessage(params.id, 'agent', name, parsed.data.content, 'complete')
+      if (!body.content.trim()) return json({ error: 'bad request' }, { status: 400 })
+      const msg = await insertChannelMessage(params.id, 'agent', name, body.content, 'complete')
       const sql0 = await db()
       const nm = ((await sql0`select name from channels where id = ${params.id}`)[0] as { name: string } | undefined)?.name ?? 'channel'
-      // `msg.content`, NOT `parsed.data.content`. `insertChannelMessage` sends an
+      // `msg.content`, NOT `body.content`. `insertChannelMessage` sends an
       // agent's post through the agent-writes door, which in strict mode returns
       // the REDACTED body — so the row in `channel_messages` is clean and these
       // two copies of the same text were the raw one.
@@ -86,21 +89,21 @@ export const Route = defineApi('/api/channels/$id/messages', {
       return json({ message: msg })
     }
 
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
     if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
     // A thread reply hangs off a ROOT in this channel; replying to a reply
     // re-roots onto its thread (Slack semantics — threads never nest).
     let threadRootId: string | null = null
-    if (parsed.data.threadRootId) {
-      const root = await getChannelMessage(params.id, parsed.data.threadRootId)
+    if (body.threadRootId) {
+      const root = await getChannelMessage(params.id, body.threadRootId)
       if (!root) return json({ error: 'no such thread' }, { status: 400 })
       threadRootId = root.threadRootId ?? root.id
     }
     const author = user.email ?? user.name ?? 'user'
-    const uploads = await resolveAttachments(parsed.data.attachmentIds ?? [])
-    const refChips = await resolveRefs(user, parsed.data.refs ?? [])
-    const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', [...uploads, ...refChips], threadRootId)
+    const uploads = await resolveAttachments(body.attachmentIds ?? [])
+    const refChips = await resolveRefs(user, body.refs ?? [])
+    const message = await insertChannelMessage(params.id, 'user', author, body.content, 'complete', [...uploads, ...refChips], threadRootId)
 
     // Agent replies + mention notifications run detached; the POST returns at once.
     const sql = await db()
@@ -108,24 +111,24 @@ export const Route = defineApi('/api/channels/$id/messages', {
     const channelName = (rows[0] as { name: string } | undefined)?.name ?? 'channel'
 
     // Index into the ambient activity brain (retrieval on demand later).
-    if (parsed.data.content.trim()) {
+    if (body.content.trim()) {
       void indexActivity({
         sourceType: 'channel',
         sourceId: message.id,
         title: `#${channelName} · ${author}`,
-        text: parsed.data.content,
+        text: body.content,
         payload: { channelId: params.id },
         href: '/channels',
       }).catch(() => {})
     }
-    void triggerAgentReplies(params.id, channelName, parsed.data.content, threadRootId).catch(() => {})
+    void triggerAgentReplies(params.id, channelName, body.content, threadRootId).catch(() => {})
     // A DM message notifies the peer outright (deduped while unread);
     // channel/relay messages notify only on @mention.
     const kind = ((await sql`select kind from channels where id = ${params.id}`)[0] as { kind?: string } | undefined)?.kind
     if (kind === 'dm') {
-      void notifyDmMessage(params.id, user.id, user.name ?? author, parsed.data.content).catch(() => {})
+      void notifyDmMessage(params.id, user.id, user.name ?? author, body.content).catch(() => {})
     } else {
-      void notifyUserMentions(params.id, channelName, user.id, user.name ?? author, parsed.data.content).catch(() => {})
+      void notifyUserMentions(params.id, channelName, user.id, user.name ?? author, body.content).catch(() => {})
     }
     return json({ message })
   },

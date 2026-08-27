@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
+import { parseBody, requireAdmin } from '@/server/api-guard'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
 import { agentFromAddress } from '@/server/google/aliasing'
 import { listAgentDefs } from '@/server/agent-defs'
 import { getOrgConnectionStatus, getOrgEmail } from '@/server/google/org-connection'
@@ -14,9 +14,8 @@ const Body = z.object({ calendar: z.boolean().optional(), drive: z.boolean().opt
 // send address. POST → run the requested provisions, per-item outcomes back.
 export const Route = defineApi('/api/integrations/google/org/provision', {
   GET: async ({ request }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-    if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+    const gate = await requireAdmin(request)
+    if (gate instanceof Response) return gate
     const [readiness, status, orgEmail, defs] = await Promise.all([
       provisioningReadiness(),
       getOrgConnectionStatus(),
@@ -40,12 +39,11 @@ export const Route = defineApi('/api/integrations/google/org/provision', {
     })
   },
   POST: async ({ request }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-    if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    if (!parsed.data.calendar && !parsed.data.drive) return json({ error: 'bad request' }, { status: 400 })
-    return json(await provisionWorkspace(parsed.data))
+    const gate = await requireAdmin(request)
+    if (gate instanceof Response) return gate
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
+    if (!parsed.calendar && !parsed.drive) return json({ error: 'bad request' }, { status: 400 })
+    return json(await provisionWorkspace(parsed))
   },
 })

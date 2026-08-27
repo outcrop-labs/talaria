@@ -11,6 +11,8 @@ const PutBody = z.object({
   value: z.string().min(1).max(8192),
 })
 
+const DeleteBody = z.object({ name: z.string().min(1).max(64) })
+
 // Per-agent secrets, write-only. GET → names + timestamps (never values).
 // PUT { name, value } → set/replace. DELETE { name } → remove. Admin, or the
 // owner of a personal assistant. Takes effect on the next start from Talaria.
@@ -49,11 +51,10 @@ export const Route = defineApi('/api/fleet/agents/$id/secrets', {
     if (user instanceof Response) return user
     if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
       return json({ error: 'forbidden' }, { status: 403 })
-    // Body { name } — matches PUT's transport (was ?name=).
-    const parsed = z
-      .object({ name: z.string().min(1).max(64) })
-      .safeParse(await request.json().catch(() => null))
-    const name = parsed.success ? parsed.data.name : new URL(request.url).searchParams.get('name')
+    // Body { name } — matches PUT's transport. When the body doesn't parse,
+    // the old ?name= query spelling still works.
+    const body = await parseBody(request, DeleteBody)
+    const name = body instanceof Response ? new URL(request.url).searchParams.get('name') : body.name
     if (!name) return json({ error: 'missing name' }, { status: 400 })
     await deleteAgentSecret(params.id, name)
     void logAudit({

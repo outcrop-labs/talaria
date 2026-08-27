@@ -1,6 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
+import { parseBody } from '@/server/api-guard'
 import { requireAgent } from '@/server/agent-auth'
 import { agentMessageUser } from '@/server/outreach'
 
@@ -19,10 +20,10 @@ export const Route = defineApi('/api/agent/message-user', {
     const caller = await requireAgent(request)
     if (caller instanceof Response) return caller
     const agent = caller.model
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-    const result = await agentMessageUser(agent, parsed.data.to, parsed.data.message)
-    if (!result.ok) return json({ error: result.error }, { status: 422 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const result = await agentMessageUser(agent, body.to, body.message)
+    if (!result.ok) return json({ error: result.error }, { status: 400 })
     return json({ ok: true, conversationId: result.conversationId })
   },
 })

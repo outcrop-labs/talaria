@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { deleteResearchRun, getResearchRun, researchRole } from '@/server/research'
 import { assistantOwnerFor } from '@/server/users'
@@ -17,9 +17,9 @@ export const Route = defineApi('/api/research/$id', {
       // CALLER so an asserted identity sees org runs only.
       viewer = await assistantOwnerFor(agent)
     } else {
-      const user = await getSessionUser(request)
-      if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-      viewer = user.id
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      viewer = gate.id
     }
     if (!(await researchRole(viewer, params.id))) return json({ error: 'not found' }, { status: 404 })
     const result = await getResearchRun(params.id)
@@ -27,8 +27,9 @@ export const Route = defineApi('/api/research/$id', {
     return json(result)
   },
   DELETE: async ({ request, params }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     const result = await getResearchRun(params.id)
     if (!result) return json({ error: 'not found' }, { status: 404 })
     if (result.run.ownerUserId !== user.id && user.role !== 'admin') {

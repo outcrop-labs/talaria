@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
 import { createArtifact, recordGoogleExport, saveArtifact } from '@/server/artifacts'
 import { importDriveFile } from '@/server/google/drive'
 
@@ -11,14 +11,14 @@ const Body = z.object({ fileId: z.string().min(1) })
 // as a new artifact owned by the caller (Doc→doc, Sheet→sheet, else→file).
 export const Route = defineApi('/api/integrations/google/drive/import', {
   POST: async ({ request }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-    const parsed = Body.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const parsed = await parseBody(request, Body)
+    if (parsed instanceof Response) return parsed
 
     const actor = user.email ?? user.name ?? 'user'
     try {
-      const content = await importDriveFile(user.id, parsed.data.fileId, Date.now())
+      const content = await importDriveFile(user.id, parsed.fileId, Date.now())
       const artifact = await createArtifact({ kind: content.kind, title: content.title, createdBy: actor, ownerUserId: user.id })
       await saveArtifact(
         artifact.id,
@@ -26,7 +26,7 @@ export const Route = defineApi('/api/integrations/google/drive/import', {
         actor,
       )
       // Remember where it came from so "Open in Google Drive" links back.
-      if (content.sourceUrl) await recordGoogleExport(artifact.id, parsed.data.fileId, content.sourceUrl)
+      if (content.sourceUrl) await recordGoogleExport(artifact.id, parsed.fileId, content.sourceUrl)
       return json({ artifact: { ...artifact, kind: content.kind, title: content.title } })
     } catch (err) {
       const e = err as Error

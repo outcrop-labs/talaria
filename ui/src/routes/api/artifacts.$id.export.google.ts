@@ -72,7 +72,10 @@ export const Route = defineApi('/api/artifacts/$id/export/google', {
         return json({ error: 'not_connected', message: 'Connect a Google account first.' }, { status: 409 })
       }
       if (e.name === 'NotExportable') {
-        return json({ error: 'not_exportable', message: 'This artifact can’t be exported to Google Drive.' }, { status: 422 })
+        // 400, not 422: the artifact's kind is the client's own choice, so an
+        // unexportable one is a malformed request for THIS endpoint — the
+        // repo's contract is 400 for shape problems and 422 never appears.
+        return json({ error: 'not_exportable', message: 'This artifact can’t be exported to Google Drive.' }, { status: 400 })
       }
       if (import.meta.env.DEV) console.error('[artifacts/export/google] failed:', e)
       return json({ error: 'export_failed', message: 'Google Drive rejected the export.' }, { status: 502 })

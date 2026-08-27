@@ -1,6 +1,6 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { canAccessUpload, getUpload, serveUpload } from '@/server/uploads'
 
@@ -19,8 +19,9 @@ export const Route = defineApi('/api/uploads/$id', {
       const name = caller.model
       allowed = await canAccessUpload(params.id, { agent: name })
     } else {
-      const user = await getSessionUser(request)
-      if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      const user = gate
       allowed = await canAccessUpload(params.id, { userId: user.id, who: user.email ?? user.name, isAdmin: user.role === 'admin' })
     }
     if (!allowed) return json({ error: 'not found' }, { status: 404 })

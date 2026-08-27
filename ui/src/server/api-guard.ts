@@ -32,9 +32,11 @@ export async function requireAdmin(request: Request): Promise<SessionUser | Resp
   return user
 }
 
-/** Admin, or a member GRANTED the given view (deniedViews-based — the same
- *  resolution the nav and route gates use). For APIs that power a gateable
- *  view: /observability, /models, /agents, /apps, /x/<slug>… */
+/** Signed-in user whose view is NOT DENIED. Denial-based, so a member sees a
+ *  view by default and only a deniedViews entry (or a prefix of one — 'x'
+ *  denies 'x/anything') takes it away; admins are exempt. The same resolution
+ *  the nav and route gates use. For APIs that power a gateable view:
+ *  /observability, /models, /agents, /apps, /x/<slug>… */
 export async function requireView(request: Request, view: string): Promise<SessionUser | Response> {
   const user = await getSessionUser(request)
   if (!user) return json({ error: 'unauthorized' }, { status: 401 })

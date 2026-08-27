@@ -72,7 +72,11 @@ export const Route = defineApi('/api/plan/$id/draft', {
       })
       return json({ draft })
     } catch (e) {
-      return json({ error: (e as Error).message }, { status: 500 })
+      // The row-creation failure is never a sentence worth showing (docker
+      // text, pg internals); the run's OWN failures reach the client as the
+      // draft row's `error` field, not through this 500.
+      console.error('[plan/$id/draft] start failed', { conversationId: params.id, agentModel }, e)
+      return json({ error: 'could not start the plan draft — see server logs' }, { status: 500 })
     }
   },
   PATCH: async ({ request, params }) => {

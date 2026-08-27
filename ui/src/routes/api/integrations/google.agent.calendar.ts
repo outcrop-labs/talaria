@@ -1,4 +1,5 @@
 import { defineApi } from '@/server/api-route'
+import { parseBody } from '@/server/api-guard'
 import { json } from '@/server/http'
 import { z } from 'zod'
 import { refuseLegacy, requireAgent } from '@/server/agent-auth'
@@ -50,13 +51,13 @@ export const Route = defineApi('/api/integrations/google/agent/calendar', {
     const denied = refuseLegacy(caller, 'Calendar access')
     if (denied) return denied
     const name = caller.model
-    const parsed = Draft.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const parsed = await parseBody(request, Draft)
+    if (parsed instanceof Response) return parsed
     const principal = await resolveAgentPrincipal(name)
     const action = await queueAction({
       kind: 'calendar_create',
-      summary: `Event: ${parsed.data.summary} (${parsed.data.start})`,
-      payload: parsed.data,
+      summary: `Event: ${parsed.summary} (${parsed.start})`,
+      payload: parsed,
       agentModel: name,
       ownerUserId: principal.ownerUserId,
       isOrg: principal.isOrg,

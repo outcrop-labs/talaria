@@ -3,7 +3,7 @@ import { json } from '@/server/http'
 import { z } from 'zod'
 import { TICKET_COLORS } from '@/lib/task-const'
 import { statusMeta } from '@/server/statuses'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser, type SessionUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { notifyMentions } from '@/server/mentions'
@@ -59,8 +59,9 @@ export const Route = defineApi('/api/tasks/$id', {
       const { workflowsForTask } = await import('@/server/workflows')
       return json({ ...full, workflows: await workflowsForTask(full.task) })
     }
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     if (!(await boardRole(user.id, full.task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
     return json(full)
   },
@@ -71,7 +72,7 @@ export const Route = defineApi('/api/tasks/$id', {
     const agent = await agentCaller(request)
     if (agent instanceof Response) return agent
     let actor: TaskActor
-    let sessionUser: Awaited<ReturnType<typeof getSessionUser>> = null
+    let sessionUser: SessionUser | null = null
     if (agent) {
       // Identity comes from the credential, so board policy is
       // unconditional — there is no longer an unnamed caller to wave
@@ -82,23 +83,25 @@ export const Route = defineApi('/api/tasks/$id', {
       }
       actor = { kind: 'agent', id: agent.model }
     } else {
-      const user = await getSessionUser(request)
-      if (!user || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+      const gate = await requireUser(request)
+      if (gate instanceof Response) return gate
+      const user = gate
+      if (!canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
       actor = { kind: 'human', id: user.email ?? user.name ?? 'user' }
       sessionUser = user
     }
 
-    const parsed = Patch.safeParse(await request.json().catch(() => null))
-    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const parsed = await parseBody(request, Patch)
+    if (parsed instanceof Response) return parsed
     // Human-in-the-loop guardrails (assignment, sign-off, archival) belong
     // to the ACTOR, not this route: updateTask enforces them for every
     // caller, so nothing agent-specific happens here.
     //
     // Mixed assignees: humans as `user:<uuid>` (board members), agents by
     // model id (board agent policy).
-    const bad = await invalidAssignee(task.boardId, parsed.data.assignees ?? [])
+    const bad = await invalidAssignee(task.boardId, parsed.assignees ?? [])
     if (bad) return json({ error: bad }, { status: 400 })
-    const { attachmentIds, refs, ...patch } = parsed.data
+    const { attachmentIds, refs, ...patch } = parsed
     if (attachmentIds !== undefined || refs !== undefined) {
       // Resolve to canonical chips server-side (never trust client metadata).
       // Refs are ACL-checked against the attacher, so agent callers (no
@@ -115,19 +118,19 @@ export const Route = defineApi('/api/tasks/$id', {
       return json({ error: (e as Error).message }, { status: 400 })
     }
     // Keep the activity brain fresh when the ticket's text changed.
-    if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
+    if (updated && (parsed.title !== undefined || parsed.description !== undefined)) {
       void indexTicket(updated).catch(() => {})
     }
     // A description that gains an @mention notifies board members — same
     // contract as comments. Only on actual change, never on other patches.
-    if (updated && parsed.data.description !== undefined && parsed.data.description !== task.description) {
+    if (updated && parsed.description !== undefined && parsed.description !== task.description) {
       void (async () => {
         const members = await listMembers(task.boardId)
         await notifyMentions(
           members,
           sessionUser?.id ?? '',
           sessionUser ? (sessionUser.name ?? actor.id) : describeAgent(actor.id).label,
-          parsed.data.description ?? '',
+          parsed.description ?? '',
           updated.ticketRef ?? 'a ticket',
           `/boards/${task.boardId}/${task.id}`,
         )
@@ -145,8 +148,9 @@ export const Route = defineApi('/api/tasks/$id', {
     return json({ task: updated })
   },
   DELETE: async ({ request, params }) => {
-    const user = await getSessionUser(request)
-    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
     const task = await getTask(params.id)
     if (!task) return json({ error: 'not found' }, { status: 404 })
     if (!canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })

@@ -97,7 +97,9 @@ export const Route = defineApi('/api/fleet/agents/$id/control', {
         }
       }
     } catch (e) {
-      return json({ error: (e as Error).message }, { status: 500 })
+      // Docker and pg failure text is operator context, not a user sentence.
+      console.error('[fleet/agents/$id/control] failed', { agent: def.id, action: body.action }, e)
+      return json({ error: `could not ${body.action} the agent — see server logs` }, { status: 500 })
     }
   },
 })

@@ -104,13 +104,14 @@
   const exportToGoogle = async () => {
     exporting = true
     try {
-      // 409/422/502 bodies are answers this flow already branches on — the
-      // not_connected confirm hand-off, and the human `message` for the alert.
-      // Anything else (403, 404, network) rejects into the catch.
+      // 409/400/502 bodies are answers this flow already branches on — the
+      // not_connected confirm hand-off, and the human `message` for the alert
+      // (400 = not_exportable, the artifact-kind refusal). Anything else
+      // (403, 404, network) rejects into the catch.
       const j = await postJsonOr<{ file?: { url: string }; error?: string; message?: string }>(
         `/api/artifacts/${id}/export/google`,
         undefined,
-        [409, 422, 502],
+        [409, 400, 502],
       )
       if (j.file?.url) {
         await qc.invalidateQueries({ queryKey: ['artifact', id] })
