@@ -294,6 +294,56 @@ const RULES = [
       'were about.',
     ],
   },
+  {
+    id: 'hand-rolled-popover-engine',
+    // Scanned structurally — see scanPopoverEngines(). The match is a
+    // CONJUNCTION of two signals, not a filename heuristic and not either
+    // signal alone: a portal/fixed-position panel that carries its own
+    // document-level outside listener. Either half by itself is legal all over
+    // the tree — InfoTip portals a panel with no listener (hover opens it),
+    // router.ts listens at the document with no panel — so matching one signal
+    // would fire on neighbours, and matching a name would fire on nothing.
+    scan: scanPopoverEngines,
+    // The COMPLETE list of files allowed to hold both halves:
+    allow: [
+      // The three sanctioned shells — this rule's subject, not its exceptions.
+      // They are the one owner of the four decisions every engine before them
+      // made differently: outside click, Escape, what a scroll does, and how
+      // the panel escapes a stacking context.
+      'ui/src/components/ui/Popover.svelte',
+      'ui/src/components/ui/DropdownMenu.svelte',
+      'ui/src/components/ui/ContextMenu.svelte',
+      // The ONE documented exception, kept hand-rolled on purpose (PR 7): an
+      // EXTERNAL anchor (the editor's selection) with a measured flip, which
+      // the primitive's trigger-anchored contract cannot express. If a second
+      // file believes it needs this, the answer is a slot on Popover, not a
+      // sixth entry here.
+      'ui/src/components/ui/DocLinkPopover.svelte',
+      // Not a popover at all — an INPUT primitive that trips the scan because
+      // its suggestion list is a portaled panel with an outside listener. The
+      // panel must keep keyboard focus in the search field, and its Escape
+      // stops at the dropdown so it does not close the Modal hosting it; a
+      // trigger/content split cannot express an input whose trigger IS the
+      // panel's filter.
+      'ui/src/components/ui/Combobox.svelte',
+    ],
+    what: 'a hand-rolled popover engine — a portal/fixed panel with its own document-level outside listener',
+    fix: [
+      'Use a shell: `<Popover>` for content panels, `<DropdownMenu>` for item lists,',
+      '`<ContextMenu>` (via `useContextMenu()`) at the cursor. All three already answer the four',
+      'questions a hand-rolled engine answers wrong: what an outside click closes, what Escape',
+      'does, what a scroll does (close — the anchor moved, and guessing where to is worse; or',
+      'follow, when the trigger is docked to fixed chrome), and how the panel stacks (fixed +',
+      'portaled to <body> — cards carry backdrop-filter, and no z-index saves an absolutely',
+      'positioned sibling).',
+      '',
+      'WHY THIS RULE: PR 7 deleted fourteen hand-rolled engines that disagreed on exactly those',
+      'four questions — three different close behaviors among them, including a verbatim',
+      'ContextMenu clone in InboxChatPanel. A new match here is engine fifteen. The allowlist',
+      'above is complete (three shells, one documented exception, one input primitive); believing',
+      'you need a sixth entry is a conversation for the PR, not a line in this file.',
+    ],
+  },
 ]
 
 /** Legal in named files, in a known quantity, and forbidden everywhere else.
@@ -603,6 +653,41 @@ const CENSUS = [
       'ui/src/server/tasks.ts': 1, // completedAt: a done-CATEGORY question, not a terminal one
     },
   },
+  {
+    id: 'same-origin-fetch-outside-the-door',
+    // The credential stanza. `credentials: 'same-origin'` is what makes a fetch
+    // a request AS THE SIGNED-IN USER — the difference between an anonymous
+    // probe and a mutation on the viewer's session — so a second stanza is a
+    // second door, and doors drift.
+    pattern: /\bcredentials\s*:\s*['"]same-origin['"]/g,
+    exempt: (path) =>
+      !path.startsWith('ui/src/') || // server files fetch upstream; mcp/ and cli/ are not the browser app
+      path.endsWith('.test.ts'), // a test may drive the door by hand; it is not a second one
+    what: "`credentials: 'same-origin'` outside the one HTTP door",
+    fix: [
+      'Use a verb from `@/lib/fetch-json`: `getJson` / `getList` / `getJsonOr404` / `getJsonOr` for',
+      'reads, `postJson` / `putJson` / `patchJson` / `delJson` (and the `*Or` twins) for mutations.',
+      'Every one of them spreads the SAME_ORIGIN RequestInit defined once in that file — the',
+      'stanza, the error-body contract and the JSON encoding are decided there, once, and a',
+      'hand-rolled stanza inherits none of them when they change.',
+      '',
+      'THE DRIFT THIS CLOSES (audit 2026-08-26, P2): before the mutation door, 134 hand-rolled',
+      "`credentials: 'same-origin'` stanzas across 67 files — and the stanza was the only part",
+      'they AGREED on. The bodies around them did not: most never read the error body (a failed',
+      'POST resolved and the UI reported success), and eight private helpers carried eight',
+      'divergent error contracts. PR 2 collapsed all of it into fetch-json; the audit line was',
+      '"Invariant rule: the stanza lives only in fetch-json.ts", and this census is that line,',
+      'executable.',
+      '',
+      'The SDK entry below is not a second door in the app: it is the same exception',
+      '`raw-client-fetch` above already carries — the published SDK cannot import the app\'s',
+      'door, so it is its own, and its count is exact.',
+    ],
+    sites: {
+      'ui/src/lib/fetch-json.ts': 1, // the door: the one SAME_ORIGIN RequestInit every verb spreads
+      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
+    },
+  },
 ]
 
 /** The off-board list is currently written twice. Until `server/statuses.ts`
@@ -802,6 +887,37 @@ function scanDroppedNotices(src) {
   return hits
 }
 
+/** The two halves of a hand-rolled popover engine, as a conjunction:
+ *
+ *    PANEL    a portaled or fixed-position panel — `use:portal`, an import of
+ *             the portal action, or `position: fixed` in a style string
+ *    OUTSIDE  the file's own document-level pointer listener, in either
+ *             spelling: `document.addEventListener('mousedown', …)` or
+ *             `<svelte:document onmousedown={…}>` — window/body too, and
+ *             pointerdown/click as well as mousedown, because the event is
+ *             not the point; owning the outside-close IS.
+ *
+ *  Either half alone is common and legal — a hover tooltip portals a panel
+ *  with no listener, router.ts listens at the document with no panel — so an
+ *  engine is a file that holds BOTH, and one hit is reported per file.
+ *
+ *  NOT matched, knowingly: a panel made `fixed` only by a Tailwind class, or
+ *  portaled by a raw appendChild, in a file with no `position: fixed` string,
+ *  no `use:portal` and no portal import. No such engine exists in the tree and
+ *  all five sanctioned files use the shared action; matching every mention of
+ *  `fixed` would fire on half the CSS in the app. Same trade as the dynamic-
+ *  import spellings above: catch what people actually write, and let the
+ *  allowlist be the argument about the rest. */
+function scanPopoverEngines(src) {
+  const PANEL = /\buse:portal\b|position:\s*fixed|from\s+['"]@\/lib\/portal['"]/
+  const OUTSIDE =
+    /(?:document|window)\s*\.\s*addEventListener\s*\(\s*['"](?:mousedown|pointerdown|click)['"]|<svelte:(?:document|window|body)\b[^>]*\bon:?(?:mousedown|pointerdown|click)=/
+  if (!PANEL.test(src)) return []
+  const hits = matches(src, OUTSIDE)
+  if (!hits.length) return []
+  return [{ line: hits[0].line, text: `panel + own document-level listener (${hits[0].text})` }]
+}
+
 /** Read the array literal assigned to OFF_BOARD_STATUSES, or null if the file
  *  no longer declares one (i.e. it imports it — the goal state). */
 function offBoardListIn(src) {
@@ -873,6 +989,43 @@ for (const [ruleId, name] of [
       ],
       found: [],
     })
+  }
+}
+
+// The popover rule's `allow` list carries the same rot risk every `allow` does,
+// so it gets the same companion: each of its five files must still EXIST and
+// still hold both halves of an engine. When `closedToAgents` was renamed, its
+// duplicate rule kept passing on a tree that no longer contained it; a renamed
+// shell would leave an entry that exempts nothing while reading as a sanctioned
+// engine — which is how an allowlist becomes a standing amnesty.
+{
+  const popoverRule = RULES.find((r) => r.id === 'hand-rolled-popover-engine')
+  for (const path of popoverRule.allow) {
+    const src = sources.get(path)
+    if (src === undefined) {
+      failures.push({
+        id: 'popover-allowlist-entry-gone',
+        what: `${path} is on the popover rule's allowlist but no longer exists`,
+        fix: [
+          "If the shell moved or was renamed, update `allow` on 'hand-rolled-popover-engine' in",
+          'scripts/check-invariants.mjs. The allowlist names real files, and an entry that points',
+          'at nothing exempts nothing while still reading as a sanctioned engine.',
+        ],
+        found: [],
+      })
+    } else if (!scanPopoverEngines(src).length) {
+      failures.push({
+        id: 'popover-allowlist-entry-is-not-an-engine',
+        what: `${path} is on the popover rule's allowlist but no longer carries an engine`,
+        fix: [
+          'It holds neither a portal/fixed panel nor a document-level outside listener any more —',
+          'most likely it was rebuilt on one of the shells. Delete its entry from `allow`; an',
+          'exemption held open for a file that no longer needs it is held open for the next',
+          'hand-rolled engine to walk through.',
+        ],
+        found: [],
+      })
+    }
   }
 }
 
@@ -1317,6 +1470,116 @@ for (const rule of CENSUS) {
       ],
       found,
     })
+  }
+}
+
+// UPLOAD BYTES HAVE ONE SERVING PATH, AND THE INLINE DECISION IS NOT A ROUTE'S.
+//
+// THE RULE. No route under ui/src/routes/api/ may (a) set a Content-Disposition
+// that says `inline`, or (b) set a Content-Type taken from a stored `.mime` /
+// `.type` field. Upload bytes go through `serveUpload()` in server/uploads.ts —
+// the single inline/download decision, built on the INLINE_MIME set (raster
+// images and PDF inline; EVERYTHING else `attachment` + `nosniff` + a sandbox
+// CSP). A route that re-makes that decision is the P0 again.
+//
+// THE FINDING THIS KEEPS FROM RETURNING (audit 2026-08-26, P0): both bytes
+// routes served the uploader-declared MIME with `inline` disposition for any
+// `image/*` and `text/*`. An upload's MIME is whatever the uploader's client
+// SAID it was — the upload route stores `file.type` verbatim — so `text/html`
+// and `image/svg+xml` rode the allowlist, and an inline response is
+// SAME-ORIGIN: script in the "image" ran with the viewer's session. The public
+// artifact route served it unauthenticated. The fix was one function and two
+// one-line route changes; the bug was two routes each re-making a security
+// decision that had already been made correctly in one place. A copy of that
+// decision in a third file is what this block fails on.
+//
+// THE BOUNDARY, because one route legitimately sets a mime-typed content-type:
+// agent-media.$model.ts writes `'content-type': media.mime` — and its mime is
+// NOT uploader input. `readAgentImage` derives it from a fixed extension map
+// (png/jpg/gif/webp — nothing a browser executes), path-guards the read to the
+// agent's own volume, and the response carries nosniff. A server-decided type
+// on guarded bytes is the shape serveUpload itself has; it is excepted below BY
+// NAME, so anything else matching the pattern still fails.
+{
+  const BYTES_ROUTES = [
+    'ui/src/routes/api/uploads.$id.ts',
+    'ui/src/routes/api/artifacts.public.$slug.download.ts',
+  ]
+  const AGENT_MEDIA = 'ui/src/routes/api/agent-media.$model.ts'
+
+  // (a) The disposition, any spelling that names the header and says inline —
+  // including a ternary `` `${x ? 'inline' : 'attachment'}` ``: the DECISION is
+  // the bug, whether the inline arm is a constant or a branch. `attachment`
+  // alone does not match; that is the safe direction to miss in.
+  const INLINE_DISPOSITION = /['"]content-disposition['"]\s*[:,=][^;\n]{0,120}\binline\b/i
+  // (b) A content-type taken from a stored mime/type field: `up.mime`, `r.mime`,
+  // `file.type`. A literal (`'application/json'`) does not match; an echoed
+  // request/upstream header (`request.headers.get('content-type')`) does not —
+  // parens are not part of an identifier chain, and a proxied type is not a
+  // stored one.
+  const STORED_MIME_TYPE = /['"]content-type['"]\s*[:,]\s*[A-Za-z_$][\w$.]*\b(?:mime|type)\b/i
+
+  const found = []
+  for (const [path, src] of sources) {
+    if (!path.startsWith('ui/src/routes/api/') || path.endsWith('.test.ts') || path === AGENT_MEDIA) continue
+    for (const re of [INLINE_DISPOSITION, STORED_MIME_TYPE]) {
+      for (const hit of matches(src, re)) found.push({ path, ...hit })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'upload-bytes-served-outside-serveupload',
+      what: 'an inline or content-type decision on upload bytes, made inside a route',
+      fix: [
+        "Serve through the helper: `import { serveUpload } from '@/server/uploads'` and",
+        '`return serveUpload(up, { cache: … })`. It is the one inline/download decision — the',
+        'INLINE_MIME allowlist (raster + PDF), the filename-header scrub, `nosniff`, and the',
+        'sandbox CSP on everything downloaded. No route can widen it, which is the point: the two',
+        'routes this rule was written after each shipped script-in-"image" running with the',
+        "viewer's session, and the public one served it to the open internet.",
+        '',
+        'If the bytes are NOT an upload (generated on the server, read out of an agent volume),',
+        'do what agent-media does: derive the type from a fixed map of safe extensions, refuse',
+        'everything else, carry nosniff — and say so in the PR, because the exception has to be',
+        'written into this block by name, not slipped past it.',
+      ],
+      found,
+    })
+  }
+
+  // THE COMPANION — the closedToAgents lesson, applied to a helper. The scan
+  // above watches every route file for a NEW hand-made decision; this watches
+  // the two routes that actually carry bytes for the helper itself. If either
+  // stops calling serveUpload, the bytes came back inside the route, and the
+  // scan above is the only thing left between the response headers and the
+  // uploader's declared MIME.
+  for (const path of BYTES_ROUTES) {
+    const src = sources.get(path)
+    if (src === undefined) {
+      failures.push({
+        id: 'bytes-route-missing',
+        what: `${path} is one of the two upload-bytes routes and was not found`,
+        fix: [
+          'If it moved or was renamed, update BYTES_ROUTES in scripts/check-invariants.mjs — a',
+          'list that points at nothing exempts nothing while reading as coverage. If it was',
+          'deleted, the upload-bytes path changed shape and the scan above needs to meet',
+          'whatever replaced it.',
+        ],
+        found: [],
+      })
+    } else if (!/\bserveUpload\s*\(/.test(src)) {
+      failures.push({
+        id: 'bytes-route-bypasses-serveupload',
+        what: `${path} serves upload bytes without going through serveUpload()`,
+        fix: [
+          'Put the decision back in the one place it lives: `serveUpload(up, { cache: … })` from',
+          'server/uploads.ts. A route that builds its own Response re-opens the P0 — the',
+          'uploader-declared MIME served inline, same-origin, and on the public route without',
+          'even a session to blame.',
+        ],
+        found: [],
+      })
+    }
   }
 }
 
