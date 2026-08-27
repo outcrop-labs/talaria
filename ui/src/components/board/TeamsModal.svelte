@@ -1,10 +1,15 @@
 <script lang="ts">
+  import { Pencil, Trash2 } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import Modal from '@/components/ui/Modal.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { confirmDelete, prompt } from '@/components/ui/confirm.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import { createTeam, useTeams, type Team } from '@/lib/teams'
+  import { createTeam, deleteTeam, renameTeam, useTeams, type Team } from '@/lib/teams'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { pushToast } from '@/lib/toast.svelte'
   import TeamMembers from './TeamMembers.svelte'
 
   // Create teams and manage their members. Team members can access all of a team's
@@ -26,6 +31,37 @@
     const { team: t } = await createTeam(name)
     await qc.invalidateQueries({ queryKey: ['teams'] })
     selected = t.id
+  }
+
+  const rename = async (t: Team) => {
+    const name = await prompt({ title: 'Rename team', defaultValue: t.name, confirmLabel: 'Rename' })
+    if (!name?.trim() || name === t.name) return
+    try {
+      await renameTeam(t.id, name.trim())
+    } catch (e) {
+      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    await qc.invalidateQueries({ queryKey: ['teams'] })
+  }
+
+  const remove = async (t: Team) => {
+    if (
+      !(await confirmDelete({
+        what: 'team',
+        name: t.name,
+        detail: `Deleting “${t.name}” removes its member list. Its boards stay and become personal boards.`,
+      }))
+    )
+      return
+    try {
+      await deleteTeam(t.id)
+    } catch (e) {
+      pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    if (selected === t.id) selected = null
+    await qc.invalidateQueries({ queryKey: ['teams'] })
   }
 </script>
 
@@ -53,6 +89,21 @@
         <span class="min-w-0 flex-1 truncate">{t.name}</span>
         <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{t.memberCount}</span>
       </span>
+    {/snippet}
+
+    {#snippet rowAction(t: Team)}
+      <!-- Owner-only, like the server's gate: a member's row carries no verb
+           the API would refuse. -->
+      {#if t.role === 'owner'}
+        <span class="flex gap-0.5">
+          <IconButton size="sm" title="Rename {t.name}" onclick={() => void rename(t)}>
+            <Pencil size={14} />
+          </IconButton>
+          <IconButton size="sm" danger title="Delete {t.name}" onclick={() => void remove(t)}>
+            <Trash2 size={14} />
+          </IconButton>
+        </span>
+      {/if}
     {/snippet}
 
     {#snippet empty()}

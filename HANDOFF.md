@@ -1,15 +1,16 @@
 # Talaria - handoff for the next agent
 
-_Pointers updated 2026-07-31; the phase log below is current to 2026-07-09. Scope: Talaria as the
+_Pointers updated 2026-08-26; the phase log below is current to 2026-07-09. Scope: Talaria as the
 fleet's harness + product UI. This file is a fast on-ramp, not the source of truth: [`README.md`](./README.md)
 is canonical for what the product is and what's shipped, [`ROADMAP.md`](./ROADMAP.md) for status
 detail, [`docs/TODO.md`](./docs/TODO.md) for the living backlog, and
 [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) +
 [`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) for how code here is written. Before changing
-anything, read the current work order: [`docs/AUDIT-2026-07-30.md`](./docs/AUDIT-2026-07-30.md)
-(engineering quality, P0s first), [`docs/PRODUCT-GAPS-2026-07-31.md`](./docs/PRODUCT-GAPS-2026-07-31.md)
-(what the product is missing), and [`docs/PRODUCT-PLAN-2026-07-31.md`](./docs/PRODUCT-PLAN-2026-07-31.md)
-(the sequence for closing it)._
+anything, read the current work order: [`docs/AUDIT-2026-08-26.md`](./docs/AUDIT-2026-08-26.md)
+(quality & consistency, with the PR-series remediation plan). The July rounds it builds on —
+[`AUDIT-2026-07-30.md`](./docs/AUDIT-2026-07-30.md),
+[`PRODUCT-GAPS-2026-07-31.md`](./docs/PRODUCT-GAPS-2026-07-31.md), and
+[`PRODUCT-PLAN-2026-07-31.md`](./docs/PRODUCT-PLAN-2026-07-31.md) — are historical now._
 
 > ⚠️ **The phase-by-phase sections below are a historical record, not current status.** They explain how
 > each subsystem came to be; plenty has shipped since (the Plan view is multiplayer now, and Knowledge,

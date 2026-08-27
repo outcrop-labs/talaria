@@ -11,7 +11,7 @@ import { open, seal } from './secretbox'
 import { FLEET_DIR } from './fleet-render'
 
 /** Container-env name: UPPER_SNAKE, must not collide with the stamped vars. */
-export const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/
+const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/
 const RESERVED = new Set(['API_SERVER_KEY', 'API_SERVER_MODEL_NAME'])
 
 export interface AgentSecretMeta {

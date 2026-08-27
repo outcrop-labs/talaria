@@ -23,7 +23,7 @@ export function permissionState(): PermissionState {
 /** The person's own off switch. Revoking browser permission means digging
  *  through browser site settings; a pref makes "stop showing these" one
  *  click while the grant stands. Default on: the grant IS the opt-in. */
-export function browserNotifyPrefOn(): boolean {
+function browserNotifyPrefOn(): boolean {
   try {
     return localStorage.getItem(PREF_KEY) !== 'off'
   } catch {

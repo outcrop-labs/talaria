@@ -2,14 +2,7 @@
 // Manage → MCP exactly like any server: assign agents, narrow tool subsets,
 // gate people. Calls dispatch in-process with this app's store.
 import { defineAppMcp } from '@talaria/sdk/server'
-
-interface Contact {
-  name: string
-  company?: string
-  email?: string
-  stage?: string
-  notes?: string
-}
+import { contactMatches, type Contact } from './search'
 
 export default defineAppMcp({
   tools: [
@@ -23,9 +16,7 @@ export default defineAppMcp({
       async handler(args, ctx) {
         const q = String(args.query ?? '').toLowerCase()
         const all = await ctx.store.list<Contact>('contacts', { limit: 500 })
-        const hits = all.filter(
-          (c) => !q || [c.data.name, c.data.company, c.data.email, c.data.notes].some((v) => v?.toLowerCase().includes(q)),
-        )
+        const hits = all.filter((c) => contactMatches(c.data, q))
         return hits.map((c) => ({ id: c.id, ...c.data, updatedAt: c.updatedAt }))
       },
     },

@@ -355,7 +355,7 @@ async function ghJson<T>(path: string, token: string, init: RequestInit = {}): P
   return (await res.json()) as T
 }
 
-export async function defaultBranch(repo: string): Promise<string> {
+async function defaultBranch(repo: string): Promise<string> {
   const token = await githubToken(repo)
   if (!token) throw new Error('GitHub is not connected')
   return (await ghJson<{ default_branch: string }>(`/repos/${repo}`, token)).default_branch

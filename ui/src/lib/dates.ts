@@ -20,13 +20,13 @@
 // it out of reach of a node-environment test.
 
 /** Hour-of-day (local) each schedule date is anchored at. */
-export const DUE_HOUR = 17
-export const START_HOUR = 9
+const DUE_HOUR = 17
+const START_HOUR = 9
 
 /** `YYYY-MM-DD` (from an <input type="date">) -> ISO instant at `hour` LOCAL.
  *  Returns null for an unparseable value so callers never persist garbage —
  *  `new Date('nonsense').toISOString()` throws RangeError inside onChange. */
-export const localDateAtHour = (ymd: string, hour: number): string | null => {
+const localDateAtHour = (ymd: string, hour: number): string | null => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd)
   if (!m) return null
   const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])]

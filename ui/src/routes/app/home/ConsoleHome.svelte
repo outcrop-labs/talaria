@@ -28,10 +28,10 @@
   <div use:staggerIn class="space-y-6">
     <HomeTabs value={tab} />
 
-    <!-- The inbox tab is the focus queue now (Home.svelte renders
-         <FocusInbox> before this console ever mounts), which is why the
-         old inbox stack — briefing, notifications, approvals — is gone
-         from here. `home` goes into BoardsTab whole, not pre-unwrapped:
+    <!-- The inbox tab is the daily brief now (Home.svelte renders
+         `DailyBrief` for it; this console never mounts for that tab), which
+         is why the old inbox stack — briefing, notifications, approvals — is
+         gone from here. `home` goes into BoardsTab whole, not pre-unwrapped:
          the tab needs `isError`/`refetch` to tell an empty queue from a
          queue it could not read. -->
     <!-- Tab-pane grammar: rise in on switch, no exit. These are dense work

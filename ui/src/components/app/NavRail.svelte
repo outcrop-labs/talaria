@@ -63,8 +63,7 @@
   // and must not render as one. The rail is where a person checks whether
   // anything is waiting without opening anything; a silent 0 over a failed
   // read is this app's oldest bug shape, on the one surface that gates every
-  // human decision. `!` with a title is the honest badge — see the Inbox
-  // surface itself (components/inbox/FocusInbox.svelte) for the same rule.
+  // human decision. `!` with a title is the honest badge.
   const inboxRead = $derived(isInbox ? inboxQueue : inboxSummary)
   const unread: number | null = $derived(
     inboxRead.isError && inboxRead.data === undefined
