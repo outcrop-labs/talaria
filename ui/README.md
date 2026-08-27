@@ -22,14 +22,18 @@ contract), and Talaria owns the whole surface and its own state.
 
 ## Run it
 
+From the **repo root** — the CLI owns the whole local stack (secrets, `ui/.env`,
+the dev containers):
+
 ```bash
-cp .env.example .env      # set AUTH_SECRET + enable a provider (Google first)
-bun install
-bun run dev               # http://localhost:5273
+bun talaria setup   # generates ui/.env + admin credentials, brings up postgres + redis
+talaria dev         # the app → http://localhost:5273
 ```
 
-For Google: create OAuth credentials, set the authorized redirect URI to
-`<origin>/api/auth/google/callback`, and put the client id/secret in `.env`.
+Full detail and the dev loop: [`../DEVELOPERS.md`](../DEVELOPERS.md). For Google:
+create OAuth credentials, set the authorized redirect URI to
+`<origin>/api/auth/google/callback`, and the client id/secret land in `ui/.env` via
+Admin → Organization once the instance is up.
 
 ## Auth surface
 
@@ -45,32 +49,31 @@ For Google: create OAuth credentials, set the authorized redirect URI to
 Sessions are **Redis-backed** (`src/server/auth/session.ts`): the cookie carries
 only an opaque session id, and the user record lives in Redis under `sess:<sid>`
 with a TTL. Logout deletes the key. Admins are designated by `AUTH_ADMIN_EMAILS`
-(comma-separated); everyone else who signs in is a member. The default self-host
-admin is the `AUTH_USERS` entry whose email is also in `AUTH_ADMIN_EMAILS`.
+(comma-separated); everyone else who signs in is a member.
 
 ## Data + infra
 
 Durable state is **Postgres** (`DATABASE_URL`); sessions and realtime pub/sub are
-**Redis** (`REDIS_URL`). Migrations are idempotent and run on boot. For local dev
-they run as containers (`talaria-postgres-dev` on `:5544`, `talaria-redis-dev` on
-`:6399`, both `--restart unless-stopped`). If the app can't reach either at boot it
-caches a failed migration and every request 500s until restarted, so bring the
-containers up first (`docker start talaria-postgres-dev talaria-redis-dev`).
+**Redis** (`REDIS_URL`). Migrations are idempotent and run on boot. Local dev runs
+them as containers (`talaria-postgres-dev` on `:5544`, `talaria-redis-dev` on
+`:6399`) that `bun talaria setup` creates. If the app can't reach either at boot it
+caches a failed migration and every request 500s until restarted — if you bring the
+stack up by hand, start the containers first.
 
 ## Boards & tickets (project-management suite)
 
-Talaria owns a Plane/Linear-style PM suite (ripped from mission-control into our
-own Postgres, not proxied). Highlights:
+Talaria owns a full PM suite (ripped from mission-control into our own Postgres,
+not proxied). Highlights:
 
 - **Boards**: shareable kanban boards, personal or team-owned. Restrictive agent
   policy by default (allow-all is an explicit opt-in). Rename / archive / delete
   live in a consolidated **Board settings** modal (General / People / Agents).
-- **Tickets**: rich detail modal with a WYSIWYG (TipTap) description that stores
+- **Tickets**: rich detail overlay with a WYSIWYG (TipTap) description that stores
   markdown under the hood, read/edit toggle + slide-in full-screen editor,
   comments (Ctrl+Enter to send), an activity tab, watchers, and a quality-review
   approval gate. Each ticket is a **directly-linkable route**
   (`/boards/:boardId/:taskId`) with copy-link affordances on cards, list rows, and
-  the modal.
+  the overlay.
 - **Fields**: priority, agent-appropriate **effort** (XS to XL, not hour estimates),
   **multiple assignees** (board-scoped agents only), labels, due date, **ticket
   dependencies** (blocked-by / blocks), and **auto-accumulated time spent** (agents
@@ -78,57 +81,22 @@ own Postgres, not proxied). Highlights:
 - **Statuses**: Inbox, Assigned, In progress, **Blocked**, Quality review,
   Done (+ Failed / Cancelled). Drag-and-drop across columns; a `blocked` column
   parks stalled/needs-input work.
-- **Views**: kanban board + a **list view with configurable, drag-reorderable,
-  click-to-sort columns** (persisted per board in `localStorage`).
+- **Views**: kanban board, list view, and Gantt; saved views and filters persist
+  per board.
 - **Multiplayer**: boards are live via Redis pub/sub to SSE (`/api/boards/:id/events`).
 - **Teams**: create teams and manage members; team boards are visible to all members.
 
-### Agent guardrails (human-in-the-loop)
+### Agent guardrails (human sign-off)
 
-Agents authenticate with `TALARIA_AGENT_KEY` (x-api-key / Bearer). On `PUT
+Agents authenticate with their own per-agent credentials (`tak_` keys; the legacy
+org-wide `TALARIA_AGENT_KEY` is a migration window — see
+[`AGENT-KEY-MIGRATION.md`](../docs/AGENT-KEY-MIGRATION.md)). On `PUT
 /api/tasks/:id` they may triage (priority, effort, labels, description, status →
 `in_progress`/`blocked`/`quality_review`) but **cannot** move a ticket to
 `assigned` (403) or `done` (coerced to `quality_review`), and **cannot** change
 assignees. Assignment and sign-off stay human. (The dedicated agent MCP that
 exposes only these safe operations is shipped — see [`../mcp/README.md`](../mcp/README.md).)
 
-## Where this is headed
-
-Shipped: the PM suite, the agent MCP (`talaria-mcp`), the unified **Comms**
-surface (channels · relays · teammate DMs · agent DMs with tier mentions,
-unread badges, DM notifications, and distill-then-archive decay), the
-**multiplayer Plan view** (shared plan conversations + living plan document,
-presence, templated dependency-aware ticket drafting), the **Research view**
-(Recon/Brief/Expedition cited research with **Model Roles** on `/models`),
-ticket/plan **templates**, **org identity**,
-the full agent harness
-(design agents from a description with Muse, federate outside agents in,
-render/orchestrate from one Talaria-owned chassis with **zero-downtime rolling
-replacement**, per-agent encrypted secrets,
-native Hermes crons; souls, models, tiers, and MCP servers as immutable
-revertible versions; skills + memory in versioned diff-and-restore workspaces),
-personal assistants, the knowledge base, artifacts (incl. Google Drive export),
-per-person timezones (each brief opens and each digest arrives on that person's
-clock; autodetected at first sign-in, overridable in Settings),
-the QA judge + gateway confab guard, the priced token ledger (auto-fetched
-rates, local/cloud split, per-agent and per-ticket spend), and the ops surfaces
-(`/activity`, `/alerts`, `/inference`). Members see the Work surfaces +
-Settings; the Manage plane is admin-only.
-
-Still growing toward the full multiplayer workspace from the
-[top-level README](../README.md):
-
-- **Design/creative + finance surfaces** 🔭 and in-app agentic coding.
-- **Analytics + ROI** 🚧: board-level cost rollups and trends on top of the
-  per-ticket spend that ships today.
-
-## TODO / backlog
-
-- **More auth providers:** GitHub, Microsoft/Entra, generic OIDC. Each drops into
-  the provider registry.
-- **Hash password credentials** (bcrypt/argon2) instead of plaintext `AUTH_USERS`.
-- **Deeper local-inference monitoring:** `/inference` ships health, latency,
-  served models, and throughput today; add GPU/VRAM and tokens/sec so Talaria
-  becomes an all-in-one self-hosted Hermes super-dashboard.
-- **Multitenancy:** run several businesses from one Talaria and swap between them in
-  a click.
+For what's shipped and what's next, see the top-level [`README.md`](../README.md)
+and [`ROADMAP.md`](../ROADMAP.md) — they are the only status lists; this file
+stays out of that business.

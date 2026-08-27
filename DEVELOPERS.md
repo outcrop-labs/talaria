@@ -166,7 +166,7 @@ Full detail in [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) and
 | Doc | What it covers |
 |---|---|
 | [`docs/PRODUCT.md`](./docs/PRODUCT.md) | The product definition: problem, answer, surfaces, defensible differences |
-| [`docs/TODO.md`](./docs/TODO.md) | The living backlog |
+| [`docs/TODO.md`](./docs/history/TODO-2026-07-09.md) | The living backlog |
 | [`docs/APPS.md`](./docs/APPS.md) | Building apps: anatomy, lifecycle, marketplace, publishing |
 | [`docs/SDK.md`](./docs/SDK.md) | The complete `@talaria/sdk` reference |
 | [`docs/WORKBENCH.md`](./docs/WORKBENCH.md) | The Workbench: execution in role-scoped sandboxes |
@@ -184,8 +184,8 @@ Full detail in [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) and
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
 | [`docs/AGENT-NETWORKING.md`](./docs/AGENT-NETWORKING.md) | How agents reach Talaria — and why that needed a firewall rule |
 | [`docs/AGENT-KEY-MIGRATION.md`](./docs/AGENT-KEY-MIGRATION.md) | Per-agent credentials and their one-way migration |
-| [`docs/SECRETS-PLAN.md`](./docs/SECRETS-PLAN.md) | Secrets: inventory, health, and recovery |
-| [`docs/PRICING.md`](./docs/PRICING.md) | Cloud pricing direction (internal draft) |
+| [`docs/SECRETS-PLAN.md`](./docs/history/SECRETS-PLAN.md) | Secrets: inventory, health, and recovery |
+| [`docs/PRICING.md`](./docs/history/PRICING.md) | Cloud pricing direction (internal draft) |
 | [`docs/design/mercury-spec.md`](./docs/design/mercury-spec.md) | The Mercury design system spec |
 | [`ui/README.md`](./ui/README.md) | The app: stack, auth surface, data + infra |
 | [`apps/README.md`](./apps/README.md) | The quick in-repo apps guide |

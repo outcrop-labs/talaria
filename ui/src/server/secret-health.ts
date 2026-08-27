@@ -88,7 +88,7 @@ export interface SecretHealth {
 }
 
 // ── Per-user rows: what an admin sees ────────────────────────────────────────
-// DECISION (the open question in docs/SECRETS-PLAN.md): an admin sees that a
+// DECISION (the open question in docs/history/SECRETS-PLAN.md): an admin sees that a
 // user's connection exists, whose it is, when it was set, and whether it still
 // decrypts — enough to recover the instance. They do NOT see the granted
 // scopes, the account it points at, or when it was last used. Those describe
