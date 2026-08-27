@@ -44,6 +44,7 @@ Source: [`ui/src/routes/api/brief.delegate.ts`](../../ui/src/routes/api/brief.de
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `channelId` | `Uuid.nullable()` |  |
 | `granted` | `z.boolean()` |  |
 
 ## `/api/brief/item`
@@ -63,6 +64,7 @@ Source: [`ui/src/routes/api/brief.item.ts`](../../ui/src/routes/api/brief.item.t
 | :--- | :--- | :--- |
 | `sourceKey` | `z.string().min(1).max(200)` |  |
 | `action` | `z.enum(['check', 'dismiss', 'restore'])` |  |
+| `tz` | `z.string().max(64).nullable().optional()` |  |
 
 ## `/api/brief/read`
 

@@ -25,6 +25,8 @@
 | [`/api/skills`](#apiskills) | GET | `session` |
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | GET | `session` |
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | PUT | `session` |
+| [`/api/skills/{owner}/{name}`](#apiskillsownername) | POST | `session` |
+| [`/api/skills/{owner}/{name}`](#apiskillsownername) | DELETE | `session` |
 | [`/api/vision/describe`](#apivisiondescribe) | POST | `dual` |
 
 ## `/api/agent-role-templates`
@@ -91,6 +93,8 @@ Source: [`ui/src/routes/api/agent.message-user.ts`](../../ui/src/routes/api/agen
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `to` | `z.string().min(1).max(200)` |  |
+| `message` | `z.string().min(1).max(4000)` |  |
 
 ## `/api/agent/problem`
 
@@ -252,12 +256,37 @@ Source: [`ui/src/routes/api/skills.$owner.$name.ts`](../../ui/src/routes/api/ski
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 404 | — |
 | PUT | `session` | [body](#put-apiskillsownername-body) | `{ok}` | 200, 400, 403 | — |
+| POST | `session` | [body](#post-apiskillsownername-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | — | `{ok}` | 200, 400, 403 | — |
 
 ### PUT `/api/skills/{owner}/{name}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `content` | `z.string().max(500_000)` |  |
+
+### POST `/api/skills/{owner}/{name}` body — variant 1
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `op` | `z.literal('rename')` |  |
+| `toName` | `NAME` |  |
+
+### POST `/api/skills/{owner}/{name}` body — variant 2
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `op` | `z.literal('copy')` |  |
+| `toOwner` | `z.string().min(1).max(80)` |  |
+| `toName` | `NAME.optional()` |  |
+
+### POST `/api/skills/{owner}/{name}` body — variant 3
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `op` | `z.literal('move')` |  |
+| `toOwner` | `z.string().min(1).max(80)` |  |
+| `toName` | `NAME.optional()` |  |
 
 ## `/api/vision/describe`
 

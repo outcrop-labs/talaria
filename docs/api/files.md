@@ -17,8 +17,10 @@
 | [`/api/artifact-folders/{id}`](#apiartifact-foldersid) | PUT | `session` + `perm:artifacts.create` `perm:artifacts.publish` |
 | [`/api/artifact-folders/{id}`](#apiartifact-foldersid) | DELETE | `session` + `perm:artifacts.create` |
 | [`/api/artifacts`](#apiartifacts) | GET | `dual` |
+| [`/api/artifacts`](#apiartifacts) | POST | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | GET | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | PUT | `dual` |
+| [`/api/artifacts/{id}`](#apiartifactsid) | DELETE | `session` |
 | [`/api/artifacts/{id}/export/google`](#apiartifactsidexportgoogle) | POST | `dual` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | POST | `session` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | DELETE | `session` |
@@ -61,6 +63,7 @@ Source: [`ui/src/routes/api/agent-media.$model.save.ts`](../../ui/src/routes/api
 | `path` | `z.string().min(1).max(1000)` |  |
 | `title` | `z.string().trim().max(200).optional()` |  |
 | `folderId` | `Uuid.nullish()` |  |
+| `folder` | `z.string().trim().max(120).optional()` |  |
 
 ## `/api/artifact-folders`
 
@@ -79,6 +82,7 @@ Source: [`ui/src/routes/api/artifact-folders.ts`](../../ui/src/routes/api/artifa
 | :--- | :--- | :--- |
 | `name` | `z.string().min(1).max(80)` |  |
 | `parentId` | `Uuid.nullish()` |  |
+| `visibility` | `z.enum(['private', 'org', 'public']).optional()` |  |
 
 ## `/api/artifact-folders/{id}`
 
@@ -114,15 +118,18 @@ Source: [`ui/src/routes/api/artifacts.ts`](../../ui/src/routes/api/artifacts.ts)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | [body](#get-apiartifacts-body) | `{artifact}` | 200 | audit |
+| GET | `dual` | — | `…` | 200 | — |
+| POST | `dual` | [body](#post-apiartifacts-body) | `{artifact}` | 200 | audit |
 
-### GET `/api/artifacts` body
+### POST `/api/artifacts` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `kind` | `z.enum(['doc', 'sheet', 'microsite', 'file']).optional()` |  |
 | `title` | `z.string().max(200).optional()` |  |
 | `body` | `z.string().max(2_000_000).optional()` |  |
+| `folder` | `z.string().trim().max(120).optional()` |  |
+| `visibility` | `z.enum(['private', 'org', 'public']).optional()` |  |
 
 ## `/api/artifacts/{id}`
 
@@ -135,6 +142,7 @@ Source: [`ui/src/routes/api/artifacts.$id.ts`](../../ui/src/routes/api/artifacts
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `…` | 200, 403, 404 | — |
 | PUT | `dual` | [body](#put-apiartifactsid-body) | `{artifact, editors}` | 200, 400, 403, 404 | audit |
+| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 
 ### PUT `/api/artifacts/{id}` body
 
@@ -150,6 +158,7 @@ Source: [`ui/src/routes/api/artifacts.$id.ts`](../../ui/src/routes/api/artifacts
 | `editPolicy` | `z.enum(['owner', 'org', 'restricted']).optional()` |  |
 | `editors` | `z.array(Editor).max(200).optional()` |  |
 | `official` | `z.boolean().optional()` |  |
+| `ragRouting` | `z.string().max(60).optional()` |  |
 
 ## `/api/artifacts/{id}/export/google`
 

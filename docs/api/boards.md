@@ -77,6 +77,8 @@ Source: [`ui/src/routes/api/boards.$id.ts`](../../ui/src/routes/api/boards.$id.t
 | `name` | `z.string().min(1).max(120).optional()` |  |
 | `archived` | `z.boolean().optional()` |  |
 | `judgeMode` | `z.enum(['inherit', 'off', 'advisory', 'enforcing']).optional()` |  |
+| `teamId` | `Uuid.nullable().optional()` |  |
+| `teamName` | `z.string().max(120).nullish()` |  |
 
 ## `/api/boards/{id}/agents`
 

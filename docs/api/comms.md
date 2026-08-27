@@ -15,11 +15,13 @@
 | [`/api/channels/{id}`](#apichannelsid) | PUT | `session` |
 | [`/api/channels/{id}`](#apichannelsid) | DELETE | `session` |
 | [`/api/channels/{id}/agents`](#apichannelsidagents) | POST | `session` |
+| [`/api/channels/{id}/agents`](#apichannelsidagents) | DELETE | `session` |
 | [`/api/channels/{id}/conclude`](#apichannelsidconclude) | POST | `session` |
 | [`/api/channels/{id}/events`](#apichannelsidevents) | GET | `session` |
 | [`/api/channels/{id}/members`](#apichannelsidmembers) | POST | `session` |
 | [`/api/channels/{id}/members`](#apichannelsidmembers) | DELETE | `session` |
 | [`/api/channels/{id}/messages`](#apichannelsidmessages) | GET | `dual` |
+| [`/api/channels/{id}/messages`](#apichannelsidmessages) | POST | `dual` |
 | [`/api/channels/{id}/messages/{msgId}`](#apichannelsidmessagesmsgid) | PATCH | `session` |
 | [`/api/channels/{id}/messages/{msgId}`](#apichannelsidmessagesmsgid) | DELETE | `session` |
 | [`/api/channels/{id}/messages/{msgId}/reactions`](#apichannelsidmessagesmsgidreactions) | POST | `dual` |
@@ -84,8 +86,15 @@ Source: [`ui/src/routes/api/channels.$id.agents.ts`](../../ui/src/routes/api/cha
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `session` | [body](#post-apichannelsidagents-body) | `{ok}` | 200, 403 | — |
+| DELETE | `session` | [body](#delete-apichannelsidagents-body) | `{ok}` | 200, 403 | — |
 
 ### POST `/api/channels/{id}/agents` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `model` | `z.string().min(1).max(200)` |  |
+
+### DELETE `/api/channels/{id}/agents` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -146,9 +155,10 @@ Source: [`ui/src/routes/api/channels.$id.messages.ts`](../../ui/src/routes/api/c
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | [body](#get-apichannelsidmessages-body) | `{messages}` | 200, 400, 403 | — |
+| GET | `dual` | — | `{messages}` | 200, 403 | — |
+| POST | `dual` | [body](#post-apichannelsidmessages-body) | `{message}` | 200, 400, 403 | — |
 
-### GET `/api/channels/{id}/messages` body
+### POST `/api/channels/{id}/messages` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -216,6 +226,8 @@ Source: [`ui/src/routes/api/channels.$id.plan.ts`](../../ui/src/routes/api/chann
 | :--- | :--- | :--- |
 | `agentModel` | `z.string().min(1).max(200)` |  |
 | `tier` | `z.string().max(60).nullish()` |  |
+| `boardId` | `Uuid.nullish()` |  |
+| `templateId` | `Uuid.nullish()` |  |
 
 ### PATCH `/api/channels/{id}/plan` body
 
@@ -258,6 +270,14 @@ Source: [`ui/src/routes/api/chat.ts`](../../ui/src/routes/api/chat.ts)
 | :--- | :--- | :--- |
 | `model` | `z.string().min(1)` |  |
 | `conversationId` | `Uuid.optional()` |  |
+| `content` | `z.string().max(100_000).default('')` |  |
+| `tier` | `z.string().max(60).optional()` |  |
+| `effort` | `z.string().max(24).optional()` |  |
+| `attachmentIds` | `z.array(Uuid).max(10).optional()` |  |
+| `refs` | `z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional()` |  |
+| `kind` | `z.enum(['chat', 'plan', 'research']).optional()` |  |
+| `templateId` | `Uuid.nullish()` |  |
+| `queue` | `z.boolean().optional()` |  |
 
 ## `/api/conversations`
 

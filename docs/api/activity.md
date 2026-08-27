@@ -79,7 +79,7 @@ Source: [`ui/src/routes/api/notifications.ts`](../../ui/src/routes/api/notificat
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{notifications, unread, delivery}` | 200 | — |
+| GET | `session` | — | `{notifications, unread, delivery, canSetDelivery}` | 200 | — |
 | PUT | `session` | [body](#put-apinotifications-body) | `{ok}` | 200 | — |
 | PATCH | `session` | [body](#patch-apinotifications-body) | `{delivery, canSetDelivery}` | 200, 403 | audit |
 

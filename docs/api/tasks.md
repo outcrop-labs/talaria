@@ -10,9 +10,12 @@
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/tasks/{id}`](#apitasksid) | GET | `dual` |
+| [`/api/tasks/{id}`](#apitasksid) | PUT | `dual` |
+| [`/api/tasks/{id}`](#apitasksid) | DELETE | `session` |
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | GET | `dual` |
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | POST | `dual` |
+| [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | GET | `dual` |
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | POST | `agent` |
@@ -33,14 +36,33 @@ Source: [`ui/src/routes/api/tasks.$id.ts`](../../ui/src/routes/api/tasks.$id.ts)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | [body](#get-apitasksid-body) | `{workflows}` | 200, 400, 403, 404 | — |
+| GET | `dual` | — | `{workflows}` | 200, 403, 404 | — |
+| PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 
-### GET `/api/tasks/{id}` body
+### PUT `/api/tasks/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `title` | `z.string().min(1).max(300).optional()` |  |
 | `description` | `z.string().max(20_000).nullish()` |  |
+| `status` | `z.string().min(1).max(40).optional()` |  |
+| `priority` | `z.enum(PRIORITIES).optional()` |  |
+| `effort` | `z.enum(EFFORTS).nullish()` |  |
+| `assignees` | `z.array(z.string().max(200)).max(20).optional()` |  |
+| `dueDate` | `z.string().datetime().nullish()` |  |
+| `startDate` | `z.string().datetime().nullish()` |  |
+| `color` | `z.enum(TICKET_COLORS).nullish()` |  |
+| `tags` | `z.array(z.string().min(1).max(40)).max(20).optional()` |  |
+| `outcome` | `z.string().max(50_000).nullish()` |  |
+| `resolution` | `z.string().max(50_000).nullish()` |  |
+| `errorMessage` | `z.string().max(50_000).nullish()` |  |
+| `archived` | `z.boolean().optional()` |  |
+| `estimatedHours` | `z.number().min(0).max(999).nullish()` |  |
+| `parentId` | `Uuid.nullish()` |  |
+| `addTimeSpentSeconds` | `z.number().min(0).max(86_400 * 30).optional()` |  |
+| `attachmentIds` | `z.array(Uuid).max(20).optional()` |  |
+| `refs` | `z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional()` |  |
 
 ## `/api/tasks/{id}/comments`
 
@@ -72,8 +94,15 @@ Source: [`ui/src/routes/api/tasks.$id.dependencies.ts`](../../ui/src/routes/api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `dual` | [body](#post-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404 | — |
+| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 403 | — |
 
 ### POST `/api/tasks/{id}/dependencies` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `dependsOnId` | `Uuid` |  |
+
+### DELETE `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -117,6 +146,8 @@ Source: [`ui/src/routes/api/tasks.$id.usage.ts`](../../ui/src/routes/api/tasks.$
 | :--- | :--- | :--- |
 | `promptTokens` | `z.number().int().min(0).max(100_000_000)` |  |
 | `completionTokens` | `z.number().int().min(0).max(100_000_000)` |  |
+| `tier` | `z.string().max(60).nullish()` |  |
+| `estimated` | `z.boolean().optional()` |  |
 
 ## `/api/tasks/{id}/watchers`
 

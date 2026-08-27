@@ -63,6 +63,8 @@ Source: [`ui/src/routes/api/plans.$id.draft.ts`](../../ui/src/routes/api/plans.$
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `tier` | `z.string().max(60).nullish()` |  |
+| `boardId` | `Uuid.nullish()` |  |
+| `templateId` | `Uuid.nullish()` |  |
 
 ### PATCH `/api/plans/{id}/draft` body
 

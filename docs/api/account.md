@@ -87,7 +87,7 @@ Source: [`ui/src/routes/api/auth/providers.ts`](../../ui/src/routes/api/auth/pro
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `…` | 200 | — |
+| GET | `public` | — | `{configured}` | 200 | — |
 
 ## `/api/auth/session`
 
@@ -157,7 +157,7 @@ Source: [`ui/src/routes/api/me.assistant.ts`](../../ui/src/routes/api/me.assista
 
 ### PATCH `/api/me/assistant` body
 
-Body schema `z.object({ name: Name.optional(), handle: Handle.optional(), personality: z.string().max(4000).optional(), /** A tier name from the assista…` is not an object literal in the route file — see the route source.
+Body schema `z.object({ name: Name.optional(), handle: Handle.optional(), personality: z.string().max(4000).optional(), model: z.string().trim().min(1).…` is not an object literal in the route file — see the route source.
 
 ## `/api/me/events`
 

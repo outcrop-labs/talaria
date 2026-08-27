@@ -10,7 +10,9 @@
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/research`](#apiresearch) | GET | `dual` |
+| [`/api/research`](#apiresearch) | POST | `dual` |
 | [`/api/research/{id}`](#apiresearchid) | GET | `dual` |
+| [`/api/research/{id}`](#apiresearchid) | DELETE | `session` |
 | [`/api/research/{id}/conversation`](#apiresearchidconversation) | POST | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | GET | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | POST | `session` |
@@ -28,6 +30,15 @@ Source: [`ui/src/routes/api/research.ts`](../../ui/src/routes/api/research.ts)
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{runs, modes}` | 200 | — |
+| POST | `dual` | [body](#post-apiresearch-body) | `{run, duplicateOf}` | 200, 400, 403, 409 | — |
+
+### POST `/api/research` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `question` | `z.string().min(8).max(4000)` |  |
+| `mode` | `z.enum(['recon', 'brief', 'expedition']).default('brief')` |  |
+| `agentModel` | `z.string().min(1).max(200).optional()` |  |
 
 ## `/api/research/{id}`
 
@@ -38,7 +49,8 @@ Source: [`ui/src/routes/api/research.$id.ts`](../../ui/src/routes/api/research.$
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{ok}` | 200, 403, 404 | — |
+| GET | `dual` | — | `…` | 200, 404 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 
 ## `/api/research/{id}/conversation`
 
