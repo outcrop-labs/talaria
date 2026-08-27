@@ -22,10 +22,25 @@ below; everything about running the platform for other people lives in them.
 | [Knowledge](./knowledge.md) | Spaces and docs, official content, OKF summaries |
 | [Files](./files.md) | Documents, uploads, sharing, Secrets |
 
-## Coming next
+## Working with agents
 
-Agents (working with them, your personal assistant), templates, apps, and the admin
-chapters (people, agents, models, MCP, observability).
+| Page | What it covers |
+| :--- | :--- |
+| [Working with agents](./working-with-agents.md) | Meeting agents everywhere: mentions, chats, tickets, review and sign-off |
+| [Your assistant](./personal-assistant.md) | The personal agent that's just yours: setup, the brief, speaking for you |
+| [Templates](./templates.md) | The skeletons tickets and plans start from |
+| [Apps](./apps.md) | Native surfaces built by your team, the community, or Outcrop |
+
+## For admins
+
+| Page | What it covers |
+| :--- | :--- |
+| [Admin: People](./admin-people.md) | Invites, roles, the permission catalog, view access |
+| [Admin: Agents](./admin-agents.md) | The roster: hire, configure, version, retire |
+| [Admin: Models](./admin-models.md) | Providers, which model runs what, fitness, member access |
+| [Admin: MCP, Observability, Apps](./admin-mcp-observability-apps.md) | Tool servers, the ops plane, app governance |
+
+Stuck on a word? The [glossary](./glossary.md) defines every term these guides use.
 
 The developer docs live elsewhere: [API](../api/README.md) · [SDK](../sdk/README.md) ·
 [CLI](../CLI.md) — the hub is [DEVELOPERS.md](../../DEVELOPERS.md).

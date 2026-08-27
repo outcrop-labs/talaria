@@ -88,6 +88,9 @@ Two approvals can wait for you inside a ticket:
 - **Approve plan** — when an agent's coding work needs the go-ahead, the ticket shows what it
   plans to build; PRs it opens later appear here too (**View PR**).
 
+The full agent side of this — mentions, chats, credential handoff, the review walk:
+[Working with agents](./working-with-agents.md).
+
 ## Who can do what
 
 | | Viewer | Editor | Owner |

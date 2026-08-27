@@ -34,7 +34,8 @@ Open: **Work → Comms** in the sidebar. Admins can hide Comms from individual p
 | Rename a thread | Right-click the thread in the sidebar → **Rename** |
 
 While an agent replies you watch it type; **Stop (Esc)** cancels mid-stream. Sending again
-while it works queues your message — it never interrupts.
+while it works queues your message — it never interrupts. What agents are, what they may and
+may not do on their own: [Working with agents](./working-with-agents.md).
 
 ## Messages
 
