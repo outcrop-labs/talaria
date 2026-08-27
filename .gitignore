@@ -11,6 +11,14 @@ playground/
 .env.*
 !.env.example
 
+# Key material — an accidentally copied private key must not stage silently
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+
 # Python plugin
 __pycache__/
 *.pyc

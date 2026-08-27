@@ -2,7 +2,7 @@
 // manifest Talaria renders (fleet/fleet.json: { model, url, key } per agent and
 // per model tier). No separate bridge/multiplexer — these helpers run
 // server-side, so the URLs/keys stay off the client and every call is route-gated.
-import { newVault, sealText } from './secret-vault'
+import { newVault, sealContent } from './secret-vault'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { FLEET_DIR } from './fleet-render'
@@ -96,9 +96,12 @@ export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number; s
   if (Array.isArray((payload as { messages?: unknown }).messages)) {
     payload = {
       ...payload,
-      messages: ((payload as unknown as { messages: Array<Record<string, unknown>> }).messages ?? []).map((m) =>
-        typeof m.content === 'string' ? { ...m, content: sealText(m.content, vault) } : m,
-      ),
+      // sealContent, not a string-only map: an image turn's content is an array
+      // of parts, and its text part is as credential-prone as any prose turn.
+      messages: ((payload as unknown as { messages: Array<Record<string, unknown>> }).messages ?? []).map((m) => ({
+        ...m,
+        content: sealContent(m.content, vault),
+      })),
     } as ChatPayload
     for (const s of vault.sealed) console.warn(`[secrets] sealed ${s.label} out of a turn to ${payload.model}`)
   }

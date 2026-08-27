@@ -8,7 +8,7 @@
 // allowlist), streams the reply through, and meters every call into the
 // ledger with the calling key's identity. This is the litellm replacement,
 // engineered into Talaria itself.
-import { newVault, sealText, type SecretVault } from './secret-vault'
+import { newVault, sealContent, type SecretVault } from './secret-vault'
 import { db } from './db/pg'
 import { getSetting, setSetting } from './audit'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
@@ -277,9 +277,9 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
   // why the vault is per-request and stored nowhere.
   const vault = newVault()
   if (Array.isArray(body.messages)) {
-    body.messages = (body.messages as Array<Record<string, unknown>>).map((m) =>
-      typeof m.content === 'string' ? { ...m, content: sealText(m.content, vault) } : m,
-    )
+    // sealContent, not a string-only map: an image turn's content is an array
+    // of parts, and its text part is as credential-prone as any prose turn.
+    body.messages = (body.messages as Array<Record<string, unknown>>).map((m) => ({ ...m, content: sealContent(m.content, vault) }))
   }
 
   // Pre-strip parameters this endpoint+model has already rejected (learned live

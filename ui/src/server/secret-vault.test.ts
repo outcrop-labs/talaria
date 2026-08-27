@@ -6,7 +6,7 @@
 // each, after grounding. This layer is what makes that number not matter for
 // credentials WE put in front of them.
 import { describe, expect, it, vi } from 'vitest'
-import { inventedHandles, newVault, sealMessages, sealText, unsealText } from './secret-vault'
+import { inventedHandles, newVault, sealContent, sealMessages, sealText, unsealText } from './secret-vault'
 
 // The chokepoint test below drives the REAL `buildUpstream`, which reads the
 // endpoint key and the learned-parameter store. Both are edges; the subject is
@@ -102,11 +102,56 @@ describe('unsealing', () => {
     expect(unsealText('«secret:1»', b)).toBe(PAT)
     expect(unsealText('«secret:1»', a)).toBe(KEY)
   })
+
+  it('seals the text inside ARRAY content and leaves the other parts alone', () => {
+    // sealContent is what both chokepoints map messages through — prose turns
+    // AND image turns have to leave the process sealed.
+    const v = newVault()
+    const parts = [
+      { type: 'text', text: `deploy with ${PAT}` },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } },
+      { type: 'text', text: 'no secrets here' },
+    ]
+    const out = sealContent(parts, v) as Array<{ type: string; text?: string }>
+    expect(out[0]?.text).not.toContain(PAT)
+    expect(unsealText(out[0]!.text!, v)).toBe(`deploy with ${PAT}`)
+    expect(out[2]?.text).toBe('no secrets here')
+    // Non-text parts pass through by reference — nothing to seal, nothing to copy.
+    expect(out[1]).toBe(parts[1])
+    // And a plain string still seals, same as before the array case existed.
+    expect(sealContent(`key: ${KEY}`, v)).not.toContain(KEY)
+  })
 })
 
 // ── The chokepoint, end to end ───────────────────────────────────────────────
 
 describe('buildUpstream seals before the request leaves the process', () => {
+  it('seals the TEXT PART of an image-carrying turn, not just prose turns', async () => {
+    // An image turn's content is an array of OpenAI parts. The string-only
+    // sealing this file used to prove left exactly those turns traveling
+    // whole (audit 2026-08-26, P0-2) — and channel replies build this shape
+    // whenever attachments ride along.
+    const { buildUpstream, sealedSecretsOf } = await import('./llm-gateway')
+    const route = { endpoint: { name: 'e', provider: 'openai', baseUrl: 'https://api.test' }, upstreamModel: 'm' }
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSU'
+    const call = await buildUpstream(route as never, {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: `screenshot of the deploy — the token in it is ${PAT}` },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    })
+
+    const wire = JSON.stringify(call.body)
+    expect(wire).not.toContain(PAT)
+    expect(wire).toContain(dataUrl) // the image part passes through unmangled
+    expect(sealedSecretsOf(call).map((s) => s.label)).toEqual(['GitHub fine-grained token'])
+  })
+
   it('replaces a credential in the outbound body, and keeps the vault on the call', async () => {
     // THE CLAIM THIS FILE EXISTS TO MAKE, asserted against the function every
     // gateway call in the tree actually goes through — the blocking transport,

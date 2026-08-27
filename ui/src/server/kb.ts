@@ -7,6 +7,7 @@ import { db } from './db/pg'
 import { snapshot } from './internal-history'
 import { EFFECTIVE_DOC_SELECT, resyncSpaceDocs, syncKbDoc, unindexKbDoc, type KbDocSync } from './retrieval/sources'
 import { canRead, listEditors, type EditorGrant, type Guarded } from './kb-perms'
+import { escapeHtml } from './html'
 
 /** Resolve a doc's effective audience: when it inherits, visibility / edit
  *  policy / grants come from its folder, but ownership always stays with the
@@ -340,9 +341,6 @@ export interface KbSearchHit {
 const HL_START = '\u0002hl\u0002'
 const HL_STOP = '\u0002/hl\u0002'
 const HEADLINE_OPTS = `MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1, StartSel="${HL_START}", StopSel="${HL_STOP}"`
-
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
 /** Exported for tests: this is the whole XSS boundary for KB search. */
 export const safeSnippet = (raw: string | null) =>

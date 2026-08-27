@@ -22,10 +22,38 @@ export interface Attachment {
 }
 
 const MAX_BYTES = 25 * 1024 * 1024 // 25 MB
-// Store-and-serve is safe for any type, but we only ever RENDER images inline;
-// everything else is a download. No executable-content rendering.
 const isImage = (mime: string) => /^image\//.test(mime)
 export { isImage }
+
+// ── Serving bytes back ──────────────────────────────────────────────────────
+
+/** The ONLY types the app will ever render INLINE. `image/svg+xml` and every
+ *  `text/*` are deliberately absent: both execute as HTML in a browser, an
+ *  upload's MIME is whatever the uploader's client declared (the upload route
+ *  stores `file.type` verbatim), and an inline response is SAME-ORIGIN — script
+ *  in it runs with the viewer's session. Raster images are inert data; PDF
+ *  renders inside the browser's own viewer sandbox. */
+const INLINE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'application/pdf'])
+
+/** One Response serving an upload's bytes — the single place the inline/download
+ *  decision is made, so no route can widen it on its own. Downloads additionally
+ *  carry a sandbox CSP: even a type mislisted above stays inert when navigated
+ *  to directly, on top of the attachment disposition. */
+export function serveUpload(up: { bytes: Buffer; mime: string; filename: string }, opts: { cache: string }): Response {
+  const inline = INLINE_MIME.has(up.mime)
+  // CR/LF would smuggle extra header lines; a quote would break out of the
+  // quoted-string. The filename is display metadata, never a path.
+  const name = up.filename.replace(/[\r\n"\\]/g, '')
+  return new Response(up.bytes as unknown as BodyInit, {
+    headers: {
+      'content-type': up.mime,
+      'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${name}"`,
+      'cache-control': opts.cache,
+      'x-content-type-options': 'nosniff',
+      ...(inline ? {} : { 'content-security-policy': "default-src 'none'; sandbox" }),
+    },
+  })
+}
 
 export async function saveUpload(input: {
   filename: string

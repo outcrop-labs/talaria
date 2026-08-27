@@ -5,6 +5,14 @@
 import { db } from './db/pg'
 import { seal } from './secretbox'
 
+/** Agent slug / department alphabets. `createAgent` has always enforced these;
+ *  they live HERE now because every path that accepts an agent identity needs
+ *  the same bar — the federation importer included, since its imported strings
+ *  reach an .env line (`HERMES_KEY_<SLUG>` — a `\n` injects a line), path
+ *  joins (a `../` traverses), and a RegExp interpolation. */
+export const SLUG_RE = /^[a-z][a-z0-9]{1,30}$/
+export const DEPT_RE = /^[a-z][a-z0-9-]{1,40}$/
+
 export interface LlmEndpoint {
   id: string
   name: string
