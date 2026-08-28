@@ -24,7 +24,11 @@ export async function runStart(ctx: Ctx, name: string): Promise<number> {
       ctx.log.warn(`${svc} didn't start — box runs degraded without it`)
     }
   }
-  return compose(ctx, boxComposeSpec(ctx, name), ['start'])
+  // `up -d`, NOT `start`: `start` merely re-launches the existing containers —
+  // an edited compose.override.yml (the documented channel for auth/env
+  // changes: stop, edit, start) would never apply. `up -d` converges: it
+  // recreates containers whose config changed and starts the stopped rest.
+  return compose(ctx, boxComposeSpec(ctx, name), ['up', '-d', '--quiet-pull'])
 }
 
 export async function runRm(ctx: Ctx, name: string, force: boolean): Promise<number> {

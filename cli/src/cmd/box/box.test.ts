@@ -8,10 +8,10 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { boxUiEnv, overrideYaml } from './new'
+import { boxUiEnv, overrideYaml, parseEnvFlags } from './new'
 import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
-import { runRm } from './lifecycle'
+import { runRm, runStart } from './lifecycle'
 import { boxComposeSpec } from './shared'
 import { fakeCtx, type FakeCtx } from '../../testing'
 import { CliError } from '../../ui'
@@ -88,6 +88,42 @@ TALARIA_AGENT_KEY=also-kept
     expect(overrideYaml({ token: 'tok' })).not.toContain('volumes:')
     expect(overrideYaml({ sshSock: '/s' })).not.toContain("CLAUDE_CODE_OAUTH_TOKEN: '")
     expect(overrideYaml({})).toBeNull()
+  })
+
+  test('overrideYaml: inherited Anthropic-compatible endpoint joins the same environment block', () => {
+    const y = overrideYaml({
+      sshSock: '/s',
+      anthropic: { baseUrl: 'https://api.z.ai/api/anthropic', authToken: 'tok' },
+    })!
+    expect(y.split('\n').filter((l) => l.trim() === 'environment:')).toHaveLength(1)
+    expect(y).toContain("ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic'")
+    expect(y).toContain("ANTHROPIC_AUTH_TOKEN: 'tok'")
+    expect(y).not.toContain('ANTHROPIC_MODEL') // unset model must be TRULY ABSENT
+    expect(y).toContain('SSH_AUTH_SOCK: /ssh-agent')
+  })
+
+  test('overrideYaml: endpoint alone writes the file; model rides when set', () => {
+    const y = overrideYaml({ anthropic: { baseUrl: 'https://p', authToken: 't', model: 'glm-4.7' } })!
+    expect(y).toContain("ANTHROPIC_MODEL: 'glm-4.7'")
+    expect(y).not.toContain('volumes:')
+  })
+
+  test('overrideYaml: an --env key wins over the inherited trio — no key emitted twice', () => {
+    const y = overrideYaml({
+      anthropic: { baseUrl: 'https://p', authToken: 'inherited', model: 'm' },
+      extra: { ANTHROPIC_AUTH_TOKEN: 'explicit', OTHER_TOOL_TOKEN: "va'lue" },
+    })!
+    expect(y.match(/^ {6}ANTHROPIC_AUTH_TOKEN:/gm)).toHaveLength(1) // env entries, not the header's rule
+    expect(y).toContain("ANTHROPIC_AUTH_TOKEN: 'explicit'")
+    expect(y).toContain("OTHER_TOOL_TOKEN: 'va''lue'") // '' is the YAML single-quote escape
+  })
+
+  test('parseEnvFlags: KEY=VALUE list → ordered map; malformed dies loudly', () => {
+    expect(parseEnvFlags(['A=1', 'B=2'])).toEqual({ A: '1', B: '2' })
+    expect(parseEnvFlags(['EMPTY='])).toEqual({ EMPTY: '' })
+    expect(() => parseEnvFlags(['nope'])).toThrow('--env wants KEY=VALUE')
+    expect(() => parseEnvFlags(['1BAD=x'])).toThrow('--env wants KEY=VALUE')
+    expect(() => parseEnvFlags(['A B=x'])).toThrow('--env wants KEY=VALUE')
   })
 })
 
@@ -173,6 +209,22 @@ describe('box seed — run', () => {
     const msg = await attempt(() => runSeed(ctx, 'demo'))
     expect(msg).toContain("primary postgres (talaria-postgres-dev) isn't running")
     expect(ctx.calls.some((c) => c.args.includes('pg_dump'))).toBe(false)
+  })
+})
+
+describe('box start — converge, not just start', () => {
+  test('the box project comes up via `up -d`, so an edited override applies', async () => {
+    const { root } = makeBox('demo')
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runStart(ctx, 'demo')
+    const boxUps = ctx.calls.filter(
+      (c) => c.cmd === 'docker' && c.args.includes('compose') && c.args.includes('devbox-demo') && c.args.includes('up') && c.args.includes('-d'),
+    )
+    expect(boxUps.length).toBeGreaterThan(0)
+    // `start` would merely re-launch the existing containers — an edited
+    // compose.override.yml (the documented stop-edit-start channel) never applies
+    expect(ctx.calls.some((c) => c.args.includes('start'))).toBe(false)
   })
 })
 

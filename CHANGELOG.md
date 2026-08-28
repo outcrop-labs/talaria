@@ -38,6 +38,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Changed
 
+- **Devboxes spawn configured for the creating shell**: `box new` inherits
+  `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (and `_MODEL` when set) into the box's
+  `compose.override.yml` — a shell whose own Claude runs on GLM gets boxes that do too, no
+  per-box login. `--env KEY=VALUE` (repeatable) carries any other container env (explicit keys
+  beat the inherited trio), and `--setup <cmd>` (repeatable) runs arbitrary provisioning inside
+  the fresh box — the any-coding-harness channel: `--setup 'npm i -g @openai/codex'`. An explicit
+  `--claude-token` disables the inheritance; the two auth vars never ride together.
 - **One owner per duplicated helper** (the audit's recurring failure mode): Google OAuth built once
   (`server/google/oauth.ts`), JSON-RPC envelope once (`mcp-jsonrpc.ts`), `errText`/`errLine`,
   `tz.ts`, `docker-exec.ts`, `asIso`, shared zod schemas (`lib/api-schema.ts`); `localMoment`,
@@ -59,6 +66,12 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   doors (env.ts promised this guard; it didn't exist until now).
 - check-invariants grew three tripwires: inline-serving only via `serveUpload`, same-origin-fetch
   census at zero, popover census.
+
+### Fixed
+
+- **`box start` now converges with `up -d`** (was `compose start`, which merely re-launches the
+  existing containers): the documented stop → edit `compose.override.yml` → start flow for
+  auth/env changes silently never applied. Regression-tested against the verb.
 
 ### Documentation
 

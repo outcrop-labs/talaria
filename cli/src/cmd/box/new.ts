@@ -53,25 +53,57 @@ PORT=5273
 `
 }
 
+/** A YAML single-quoted scalar — all this file's values are plain strings, and
+ *  `''` is YAML's escape for a quote inside single quotes. */
+const yq = (v: string): string => `'${v.replaceAll("'", "''")}'`
+
+/** `--env KEY=VALUE` args → an ordered env map. Throws on malformed input —
+ *  runNew turns that into a die. Pure so the validation is testable. */
+export function parseEnvFlags(list: string[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const item of list) {
+    const eq = item.indexOf('=')
+    const key = eq === -1 ? '' : item.slice(0, eq)
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`--env wants KEY=VALUE, got: ${item}`)
+    out[key] = item.slice(eq + 1)
+  }
+  return out
+}
+
 /** compose.override.yml — extra env/volumes for the box, merged into its
  *  compose whenever the file exists. Written only when there is something to
  *  put in it: an unset var must be TRULY ABSENT, not present-and-empty (an
  *  empty CLAUDE_CODE_OAUTH_TOKEN would shadow real auth). One environment
- *  block for both sources — the bash version appended a second `environment:`
+ *  block for all sources — the bash version appended a second `environment:`
  *  key under SSH forwarding and docker's duplicate-key merge drops the token.
+ *  `anthropic` is the creating shell's inherited endpoint (GLM et al.); an
+ *  `extra` key with the same name wins, so no key is ever emitted twice.
  *  Pure so that shape is testable. */
-export function overrideYaml(o: { token?: string; sshSock?: string }): string | null {
-  if (!o.token && !o.sshSock) return null
+export function overrideYaml(o: {
+  token?: string
+  sshSock?: string
+  anthropic?: { baseUrl: string; authToken: string; model?: string }
+  extra?: Record<string, string>
+}): string | null {
+  const extra = o.extra ?? {}
+  if (!o.token && !o.sshSock && !o.anthropic && Object.keys(extra).length === 0) return null
   const lines = [
-    '# Written by `talaria box new` (--claude-token and/or SSH agent forwarding).',
-    '# Manual edits welcome — this file merges into the box compose whenever it',
-    "# exists. NEVER set CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_AUTH_TOKEN together.",
+    '# Written by `talaria box new` (--claude-token, --env, SSH agent forwarding,',
+    "# and/or the creating shell's Anthropic-compatible endpoint). Manual edits",
+    '# welcome — this file merges into the box compose whenever it exists.',
+    '# NEVER set CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_AUTH_TOKEN together.',
     'services:',
     '  devbox:',
   ]
   if (o.sshSock) lines.push('    volumes:', `      - ${o.sshSock}:/ssh-agent`)
   lines.push('    environment:')
-  if (o.token) lines.push(`      CLAUDE_CODE_OAUTH_TOKEN: '${o.token}'`)
+  if (o.token) lines.push(`      CLAUDE_CODE_OAUTH_TOKEN: ${yq(o.token)}`)
+  if (o.anthropic) {
+    if (!('ANTHROPIC_BASE_URL' in extra)) lines.push(`      ANTHROPIC_BASE_URL: ${yq(o.anthropic.baseUrl)}`)
+    if (!('ANTHROPIC_AUTH_TOKEN' in extra)) lines.push(`      ANTHROPIC_AUTH_TOKEN: ${yq(o.anthropic.authToken)}`)
+    if (o.anthropic.model && !('ANTHROPIC_MODEL' in extra)) lines.push(`      ANTHROPIC_MODEL: ${yq(o.anthropic.model)}`)
+  }
+  for (const [k, v] of Object.entries(extra)) lines.push(`      ${k}: ${yq(v)}`)
   if (o.sshSock) lines.push('      SSH_AUTH_SOCK: /ssh-agent')
   return `${lines.join('\n')}\n`
 }
@@ -90,7 +122,7 @@ export async function runBuild(ctx: Ctx, noCache = false): Promise<number> {
   return 0
 }
 
-export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?: string; noInstall?: boolean; token?: string; qdrant?: boolean } = {}): Promise<number> {
+export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?: string; noInstall?: boolean; token?: string; qdrant?: boolean; env?: string[]; setup?: string[] } = {}): Promise<number> {
   const root = ctx.root
   checkName(ctx, name)
   try {
@@ -218,11 +250,27 @@ BOX_S3_SECRET_KEY=${s3.secret}
   // Auth/provider env rides the override file (see overrideYaml for why it is
   // a file at all). SSH agent forwarding, when the invoker has one: lets
   // `git push` out of the box without copying keys (the key itself never
-  // enters the box).
-  const override = overrideYaml({ token: o.token, sshSock: ctx.env.SSH_AUTH_SOCK })
+  // enters the box). The invoker's Anthropic-compatible endpoint (GLM et al.)
+  // inherits the same way — a shell that runs Claude against one spawns boxes
+  // that do too, no per-box login — unless an explicit --claude-token wins
+  // (headless OAuth; the two auth vars must never ride together) or a --env
+  // key overrides part of the trio.
+  let extra: Record<string, string> = {}
+  try {
+    extra = parseEnvFlags(o.env ?? [])
+  } catch (e) {
+    ctx.log.die(e instanceof Error ? e.message : String(e))
+  }
+  const anthropic =
+    o.token === undefined && ctx.env.ANTHROPIC_BASE_URL && ctx.env.ANTHROPIC_AUTH_TOKEN
+      ? { baseUrl: ctx.env.ANTHROPIC_BASE_URL, authToken: ctx.env.ANTHROPIC_AUTH_TOKEN, model: ctx.env.ANTHROPIC_MODEL }
+      : undefined
+  const override = overrideYaml({ token: o.token, sshSock: ctx.env.SSH_AUTH_SOCK, anthropic, extra })
   if (override) {
     writeSecret(join(box, 'compose.override.yml'), override)
     if (ctx.env.SSH_AUTH_SOCK) ctx.log.ok('SSH agent forwarded')
+    if (anthropic) ctx.log.ok(`Claude → ${anthropic.baseUrl} (inherited from this shell)`)
+    if (Object.keys(extra).length > 0) ctx.log.ok(`extra env: ${Object.keys(extra).join(', ')}`)
   }
   ctx.log.ok(`compose.env written (app → 127.0.0.1:${appPort})`)
 
@@ -265,6 +313,21 @@ BOX_S3_SECRET_KEY=${s3.secret}
 
   ctx.log.say('Seeding starter data from the primary dev environment')
   await runSeed(ctx, name, { qdrant: o.qdrant })
+
+  // `--setup` hooks: arbitrary provisioning inside the fresh box — the
+  // any-coding-harness channel (`--setup 'npm i -g @openai/codex'`), dotfiles,
+  // extra tooling. They run BEFORE the deps step so failures abort early, and
+  // land in the home volume, so they survive stop/start (not `rm` — a box is
+  // disposable by design; pass the same --setup again).
+  for (const cmd of o.setup ?? []) {
+    ctx.log.say(`Setup hook → ${cmd}`)
+    try {
+      await ctx.exec('docker', ['exec', `devbox-${name}`, 'sh', '-lc', cmd], { timeoutMs: 600_000 })
+    } catch (e) {
+      ctx.log.die(`setup hook failed: ${cmd} (${e instanceof Error ? e.message : String(e)})`)
+    }
+    ctx.log.ok('setup hook done')
+  }
 
   if (!o.noInstall) {
     ctx.log.say('Dependencies + toolkit build (snapshot copies reconciled against the lockfile)')
@@ -322,6 +385,8 @@ export async function newGuarded(ctx: Ctx, args: { positionals: string[]; flags:
       noInstall: args.flags['no-install'] === true,
       token: args.flags['claude-token'] as string | undefined,
       qdrant: args.flags.qdrant === true,
+      env: args.flags.env as string[] | undefined,
+      setup: args.flags.setup as string[] | undefined,
     })
   } catch (e) {
     if (!preexisting && existsSync(box) && !existsSync(join(box, 'box.env'))) {
@@ -336,13 +401,15 @@ export const newCommand: Leaf = {
   kind: 'leaf',
   name: 'new',
   summary: 'create a devbox: clone + own sidecars, seeded from the primary stack',
-  usage: 'talaria box new <name> [--branch <b>] [--from <ref>] [--no-install] [--claude-token <tok>] [--qdrant]',
+  usage: 'talaria box new <name> [--branch <b>] [--from <ref>] [--no-install] [--claude-token <tok>] [--env <k=v>]… [--setup <cmd>]… [--qdrant]',
   positionals: { name: 'name', required: true },
   flags: [
     { name: 'branch', kind: 'value', desc: 'branch for the clone (default: agent/<name>)' },
     { name: 'from', kind: 'value', desc: 'ref to branch from (default: HEAD — committed refs only)' },
     { name: 'no-install', kind: 'bool', desc: 'skip the in-box bun install + mcp build' },
     { name: 'claude-token', kind: 'value', desc: 'CLAUDE_CODE_OAUTH_TOKEN for Claude Code inside the box' },
+    { name: 'env', kind: 'value', list: true, desc: 'extra env for the box container, KEY=VALUE (repeatable)' },
+    { name: 'setup', kind: 'value', list: true, desc: 'shell command run inside the new box (repeatable) — e.g. install another coding harness' },
     { name: 'qdrant', kind: 'bool', desc: 'also round-trip the Qdrant index (derived; default off)' },
   ],
   run: (ctx, args) => newGuarded(ctx, args),

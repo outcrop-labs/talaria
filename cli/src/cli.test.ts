@@ -56,6 +56,13 @@ describe('parseArgs', () => {
     const a = parseArgs(['--', '--not-a-flag', 'x'], flags, 't')
     expect(a.positionals).toEqual(['--not-a-flag', 'x'])
   })
+
+  test('list flags accumulate across repeats, both forms, in argv order', () => {
+    const lflags = [...flags, { name: 'env', kind: 'value' as const, list: true as const, desc: 'e' }]
+    const a = parseArgs(['--env', 'A=1', '--env=B=2', '--env', 'C=3'], lflags, 't')
+    expect(a.flags.env).toEqual(['A=1', 'B=2', 'C=3'])
+    expect(a.flags.branch).toBeUndefined() // untouched flags stay absent
+  })
 })
 
 describe('dispatch', () => {
