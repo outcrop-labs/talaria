@@ -6,6 +6,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
+- **Compose's env channels are git-ignored**: `compose.env`, `compose.override.yml` (now the
+  devbox carrier for provider tokens and `--env` secrets) and `docker-compose.override.yml`, as
+  bare patterns so a devbox tree relocated into a checkout (`TALARIA_DEVBOX_HOME`) is covered
+  too. A regression test pins the canonical secret-carrying paths to `git check-ignore`.
 - **2026-08-26 audit remediation** (full work order: `docs/history/AUDIT-2026-08-26.md`, PR series
   #257–#265). The one real vulnerability: both bytes routes served uploader-declared MIME inline —
   `text/html`/`image/svg+xml` executed same-origin with the viewer's session. `serveUpload()` is
@@ -43,8 +47,15 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   `compose.override.yml` — a shell whose own Claude runs on GLM gets boxes that do too, no
   per-box login. `--env KEY=VALUE` (repeatable) carries any other container env (explicit keys
   beat the inherited trio), and `--setup <cmd>` (repeatable) runs arbitrary provisioning inside
-  the fresh box — the any-coding-harness channel: `--setup 'npm i -g @openai/codex'`. An explicit
-  `--claude-token` disables the inheritance; the two auth vars never ride together.
+  the fresh box. An explicit `--claude-token` disables the inheritance; the two auth vars never
+  ride together.
+- **A harness of choice installs once, not per box**: every box mounts the shared tools layer
+  (`../devboxes/shared/tools` → `/work/tools`, its `bin` first on PATH). `talaria box install
+  <name> '<cmd>'` installs into it from any box — flock-held, `NPM_CONFIG_PREFIX` pointed at the
+  layer (the image's own global prefix is root-owned; plain `npm i -g` in a box was always an
+  EACCES) — and the result is usable from every box, survives `box rm`, and rides into boxes
+  created later. `--setup` hooks get the same tools env, so recreate-with-same-`--setup` is a
+  no-op, not a re-download.
 - **One owner per duplicated helper** (the audit's recurring failure mode): Google OAuth built once
   (`server/google/oauth.ts`), JSON-RPC envelope once (`mcp-jsonrpc.ts`), `errText`/`errLine`,
   `tz.ts`, `docker-exec.ts`, `asIso`, shared zod schemas (`lib/api-schema.ts`); `localMoment`,

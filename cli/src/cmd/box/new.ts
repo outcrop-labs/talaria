@@ -12,7 +12,31 @@ import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
 import { renderSearxng } from '../../searxng'
 import { runSeed } from './seed'
-import { boxDir, boxState, checkName, COMPOSE_FILE, IMAGE } from './shared'
+import { boxDir, boxState, checkName, COMPOSE_FILE, IMAGE, sharedTools, toolsExec } from './shared'
+
+/** The per-box compose interpolation env (written 0600). Pure so the mount
+ *  surface — BOX_TOOLS_DIR especially — is testable. */
+export function composeEnvTpl(o: {
+  name: string
+  appPort: number
+  hostRepo: string
+  state: string
+  home: string
+  dockerGid: number
+  s3: { bucket: string; key: string; secret: string }
+  tools: string
+}): string {
+  return `BOX_NAME=${o.name}
+BOX_APP_PORT=${o.appPort}
+BOX_HOST_REPO=${o.hostRepo}
+BOX_HOST_STATE=${o.state}
+BOX_HOME=${o.home}
+BOX_TOOLS_DIR=${o.tools}
+DOCKER_GID=${o.dockerGid}
+BOX_S3_ACCESS_KEY=${o.s3.key}
+BOX_S3_SECRET_KEY=${o.s3.secret}
+`
+}
 
 /** The primary's ui/.env lines a box must NOT inherit — everything that names
  *  a primary-side service gets re-pointed at the box's own below. Everything
@@ -232,20 +256,25 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   } catch {
     ctx.log.die('no docker socket at /var/run/docker.sock — Docker must be running')
   }
+  // The shared tools layer: created here, mounted by every box at /work/tools.
+  // First `new` makes it; later boxes join it with whatever's installed.
+  const tools = sharedTools(ctx)
+  mkdirSync(tools, { recursive: true })
   // Paths here are canonical by construction (root and devboxHome both
   // realpath'd) — they land verbatim in compose.env and must exist identically
   // INSIDE the box, where the host's symlink spellings do not.
   writeSecret(
     join(box, 'compose.env'),
-    `BOX_NAME=${name}
-BOX_APP_PORT=${appPort}
-BOX_HOST_REPO=${hostRepo}
-BOX_HOST_STATE=${state}
-BOX_HOME=${ctx.env.HOME ?? ''}
-DOCKER_GID=${dockerGid}
-BOX_S3_ACCESS_KEY=${s3.key}
-BOX_S3_SECRET_KEY=${s3.secret}
-`,
+    composeEnvTpl({
+      name,
+      appPort,
+      hostRepo,
+      state,
+      home: ctx.env.HOME ?? '',
+      dockerGid,
+      s3,
+      tools,
+    }),
   )
   // Auth/provider env rides the override file (see overrideYaml for why it is
   // a file at all). SSH agent forwarding, when the invoker has one: lets
@@ -314,15 +343,15 @@ BOX_S3_SECRET_KEY=${s3.secret}
   ctx.log.say('Seeding starter data from the primary dev environment')
   await runSeed(ctx, name, { qdrant: o.qdrant })
 
-  // `--setup` hooks: arbitrary provisioning inside the fresh box — the
-  // any-coding-harness channel (`--setup 'npm i -g @openai/codex'`), dotfiles,
-  // extra tooling. They run BEFORE the deps step so failures abort early, and
-  // land in the home volume, so they survive stop/start (not `rm` — a box is
-  // disposable by design; pass the same --setup again).
+  // `--setup` hooks: arbitrary provisioning inside the fresh box — dotfiles,
+  // extra tooling, harness installs. They run BEFORE the deps step so
+  // failures abort early, and run against the shared tools layer
+  // (toolsExec): an `npm i -g` hook lands in /work/tools, so recreating a
+  // box re-runs it as a no-op, not a re-download.
   for (const cmd of o.setup ?? []) {
     ctx.log.say(`Setup hook → ${cmd}`)
     try {
-      await ctx.exec('docker', ['exec', `devbox-${name}`, 'sh', '-lc', cmd], { timeoutMs: 600_000 })
+      await ctx.exec('docker', toolsExec(name, cmd), { timeoutMs: 600_000 })
     } catch (e) {
       ctx.log.die(`setup hook failed: ${cmd} (${e instanceof Error ? e.message : String(e)})`)
     }

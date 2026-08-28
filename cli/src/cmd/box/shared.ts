@@ -9,6 +9,8 @@
 //   compose.override.yml  optional: extra env for the box (auth tokens, GLM
 //                  provider vars); merged when present
 //   box.env        the registry `ls` reads
+// Sibling: ../devboxes/shared/tools/ — the tools layer EVERY box mounts at
+// /work/tools (harness of choice installed once, used from all of them).
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -24,6 +26,28 @@ export const devboxes = (ctx: Ctx): string => devboxHome(ctx.root, ctx.env)
 export const boxDir = (ctx: Ctx, name: string): string => join(devboxes(ctx), name)
 
 export const boxState = (ctx: Ctx, name: string): string => join(boxDir(ctx, name), 'state')
+
+/** The shared tools layer's host dir (mounted at /work/tools in every box —
+ *  docker/devbox.compose.yml). The alternative, plain `npm i -g` inside a
+ *  box, fails twice: the image's global prefix is root-owned (EACCES as
+ *  dev), and anything in the container's writable layer dies with it. */
+export const sharedTools = (ctx: Ctx): string => join(devboxes(ctx), 'shared', 'tools')
+
+/** The docker argv that runs a command inside a box AGAINST the shared tools
+ *  layer: npm's global prefix pointed at it, TOOLS_* for any other installer,
+ *  flock-held so two boxes can't interleave installs into the same dir. The
+ *  user command rides as `$0` — passed as argv, never re-quoted. Pure. */
+export function toolsExec(name: string, cmd: string): string[] {
+  return [
+    'exec',
+    '-e', 'NPM_CONFIG_PREFIX=/work/tools',
+    '-e', 'TOOLS_DIR=/work/tools',
+    '-e', 'TOOLS_BIN=/work/tools/bin',
+    `devbox-${name}`,
+    'sh', '-lc', 'exec flock /work/tools/.lock -c "$0"',
+    cmd,
+  ]
+}
 
 /** The repeated tuple: this template + this box's interpolation + its
  *  project. compose.override.yml (auth/provider env) merges in when the box

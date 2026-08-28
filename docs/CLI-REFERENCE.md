@@ -13,6 +13,7 @@
 | [`talaria box new`](#talaria-box-new) | create a devbox: clone + own sidecars, seeded from the primary stack |
 | [`talaria box ls`](#talaria-box-ls) | list devboxes (branch, port, container status) |
 | [`talaria box enter`](#talaria-box-enter) | run a shell (or command) inside a devbox |
+| [`talaria box install`](#talaria-box-install) | install a tool/harness into the layer every devbox shares |
 | [`talaria box seed`](#talaria-box-seed) | seed a box with starter data from the primary dev environment |
 | [`talaria box stop`](#talaria-box-stop) | stop a devbox's containers (state kept) |
 | [`talaria box start`](#talaria-box-start) | restart a stopped devbox (and the shared TEI/SearXNG) |
@@ -71,6 +72,16 @@ talaria box enter <name> [cmd…]
 ```
 
 Positional `<name>` (required) (takes the rest of the arguments) — then any args pass to the command (default: bash)
+
+### `talaria box install`
+
+install a tool/harness into the layer every devbox shares
+
+```
+talaria box install <name> <cmd…>
+```
+
+Positional `<name>` (required) (takes the rest of the arguments) — box to run the install in, then the command (quote it as one arg)
 
 ### `talaria box seed`
 
