@@ -171,11 +171,12 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
     ctx.log.die('the primary checkout has no `origin` remote — pushes out of the box need one')
   }
   await ctx.exec('git', ['-C', hostRepo, 'remote', 'set-url', 'origin', origin])
-  // apps/leadworks is a gitignored subrepo that's part of local builds — copy
-  // it or the box's builds silently differ from the primary's. Same for the
-  // installed node_modules (snapshot; bun install below reconciles lockfile
-  // drift). btrfs reflinks make these near-free — hence cp, not fs.cp.
-  for (const p of ['apps/leadworks', 'ui/node_modules', 'mcp/node_modules']) {
+  // apps/leadworks and apps/waypoint are gitignored subrepos that are part of
+  // local builds — copy them or the box's builds silently differ from the
+  // primary's. Same for the installed node_modules (snapshot; bun install
+  // below reconciles lockfile drift). btrfs reflinks make these near-free —
+  // hence cp, not fs.cp.
+  for (const p of ['apps/leadworks', 'apps/waypoint', 'ui/node_modules', 'mcp/node_modules']) {
     if (existsSync(join(root, p))) {
       await ctx.exec('cp', ['-a', '--reflink=auto', join(root, p), join(hostRepo, p)], { timeoutMs: 600_000 })
     }

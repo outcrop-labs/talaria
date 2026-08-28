@@ -57,10 +57,11 @@ ui/.omc/
 # generated SEARXNG_SECRET).
 docker/searxng/settings.local.yml
 
-# Client POC app — true subrepo with its own history (see apps/leadworks/README.md).
-# Gitignore does not affect the build-time apps glob; the app compiles and runs
+# Client POC apps — true subrepos with their own history (see apps/leadworks/README.md).
+# Gitignore does not affect the build-time apps glob; the apps compile and run
 # in dev while staying out of this repo's history.
 apps/leadworks/
+apps/waypoint/
 
 # The in-app updater: the restart helper lives and logs here.
 logs/
