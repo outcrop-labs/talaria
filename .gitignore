@@ -10,6 +10,14 @@ playground/
 .env
 .env.*
 !.env.example
+# Compose's auth/env channels: devbox overrides carry provider tokens
+# (ANTHROPIC_AUTH_TOKEN, --env values), the --env-file interpolations carry
+# S3/DB creds — and TALARIA_DEVBOX_HOME can relocate the devbox tree into a
+# checkout, so the bare patterns (any depth) are the guard. Docker's
+# conventional override names ride along.
+compose.env
+compose.override.yml
+docker-compose.override.yml
 
 # Key material — an accidentally copied private key must not stage silently
 *.pem
