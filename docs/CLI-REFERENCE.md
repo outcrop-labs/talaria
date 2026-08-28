@@ -39,7 +39,7 @@ devboxes — a containerized dev environment per task (docs/DEVBOX.md)
 create a devbox: clone + own sidecars, seeded from the primary stack
 
 ```
-talaria box new <name> [--branch <b>] [--from <ref>] [--no-install] [--claude-token <tok>] [--qdrant]
+talaria box new <name> [--branch <b>] [--from <ref>] [--no-install] [--claude-token <tok>] [--env <k=v>]… [--setup <cmd>]… [--qdrant]
 ```
 
 Positional `<name>` (required)
@@ -50,6 +50,8 @@ Positional `<name>` (required)
 | `--from` | value | — | ref to branch from (default: HEAD — committed refs only) |
 | `--no-install` | bool | — | skip the in-box bun install + mcp build |
 | `--claude-token` | value | — | CLAUDE_CODE_OAUTH_TOKEN for Claude Code inside the box |
+| `--env` | value | — | extra env for the box container, KEY=VALUE (repeatable) |
+| `--setup` | value | — | shell command run inside the new box (repeatable) — e.g. install another coding harness |
 | `--qdrant` | bool | — | also round-trip the Qdrant index (derived; default off) |
 
 ### `talaria box ls`

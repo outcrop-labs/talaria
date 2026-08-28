@@ -37,15 +37,19 @@ branch on the host.
 4. Snapshots `apps/leadworks` (the gitignored client subrepo) and both
    `node_modules` trees in with reflinks, so a box's builds match the
    primary's and the first `bun install` is a no-op reconciliation.
-5. Writes the per-box compose env (0600) and brings up the box project:
-   `devbox-<name>` plus sidecars, nothing published except
+5. Writes the per-box compose env (0600) — plus `compose.override.yml` when
+   there is auth/env to carry: the creating shell's Anthropic-compatible
+   endpoint, `--env` extras, forwarded SSH agent — and brings up the box
+   project: `devbox-<name>` plus sidecars, nothing published except
    `127.0.0.1:53xx:5273` for your browser.
 6. Writes the box's `ui/.env`: its own service-DNS URLs, its own state dirs,
    `TALARIA_AGENT_DIAL=container`, `TALARIA_FLEET_PROJECT=devbox-<name>-fleet`
    — and the primary's `TALARIA_SECRET_KEY`/`AUTH_*` verbatim, so sealed
    secrets decrypt and your primary login works unchanged.
 7. Seeds starter data from the primary (below).
-8. Installs deps and builds the toolkit MCP (`--no-install` to skip).
+8. Runs any `--setup` hooks inside the fresh box (the any-harness channel,
+   below), then installs deps and builds the toolkit MCP (`--no-install`
+   skips only the latter).
 9. Prints how to get in, and how to tear it down.
 
 ## Layout
@@ -112,12 +116,29 @@ survive stop/start and are never shared with the host or other boxes.
 (Sharing a host `~/.claude` read-write across concurrent CLIs corrupts
 `.claude.json` — last writer wins — and bleeds sessions across boxes.)
 
+Any other coding harness rides the same rails — `enter` runs any command,
+and `--setup` (repeatable) installs at creation time:
+
+```bash
+bun talaria box new demo --setup 'npm i -g @openai/codex'
+bun talaria box enter demo codex
+```
+
+Installs land in the home volume, so they survive stop/start. A `rm`'d box is
+gone by design — pass the same `--setup` when you recreate it.
+
 Auth options:
 
 - **Interactive login** — `bun talaria box enter demo claude` and follow the
   device flow; `enter demo opencode` has its own login. Per-box, isolated.
-- **GLM (or any Anthropic-compatible provider) via env** — no OAuth at all.
-  Edit `<box>/compose.override.yml`:
+- **GLM (or any Anthropic-compatible provider) via env** — no OAuth at all,
+  and inherited by default: a shell with `ANTHROPIC_BASE_URL` +
+  `ANTHROPIC_AUTH_TOKEN` (plus `ANTHROPIC_MODEL` when set) exported — i.e. a
+  shell whose own Claude runs on the provider — gets a box whose
+  `compose.override.yml` carries them, so Claude inside works on first
+  launch. `--claude-token` disables the inheritance, and an
+  `--env ANTHROPIC_*=…` key overrides any part of the trio. After creation,
+  the override file is also the manual channel:
 
   ```yaml
   services:
@@ -134,6 +155,9 @@ Auth options:
   **Never set `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` together.**
 - **Headless Claude token** — `bun talaria box new demo --claude-token <tok>`
   writes the override for you (same file, same rule).
+- **Any other env** — `--env KEY=VALUE`, repeatable, at `new` time: provider
+  keys for other tools, feature flags, anything the box container should see.
+  Same file, same truly-absent rule; explicit keys beat the inherited trio.
 
 ## Seeding
 
@@ -192,7 +216,8 @@ box that can't be recreated.
   load-bearing on such hosts (see [`CONTAINER.md`](./CONTAINER.md),
   Troubleshooting). Running boxes pin their own resolvers and are unaffected.
 - **First `claude` in a box** — expect the login flow; credentials live in
-  that box's home volume only.
+  that box's home volume only. (Unless the creating shell's Anthropic-compatible
+  endpoint was inherited — then Claude works immediately, no login.)
 - **Stale `apps/leadworks` / deps** — snapshots from creation time; re-copy
   from the primary or `bun install` to reconcile the lockfile.
 - **A box's app won't start** — `docker logs devbox-<name>`, then

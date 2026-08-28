@@ -18,6 +18,9 @@ export type FlagSpec = {
   desc: string
   /** Default for value flags; absent bools are simply not set. */
   default?: string
+  /** A value flag that may REPEAT (`--env K=V --env K2=V2`); the parsed
+   *  value is a string[] in argv order. No default applies. */
+  list?: true
 }
 
 export type PositionalSpec = {
@@ -30,7 +33,7 @@ export type PositionalSpec = {
 
 export type ParsedArgs = {
   positionals: string[]
-  flags: Record<string, string | boolean>
+  flags: Record<string, string | boolean | string[]>
 }
 
 export type Leaf = {
@@ -81,11 +84,14 @@ export function parseArgs(argv: string[], flags: FlagSpec[], cmdPath: string): P
       if (spec.kind === 'bool') {
         if (eq !== -1) throw new CliError(`${cmdPath}: ${token} takes no value`)
         out.flags[spec.name] = true
-      } else if (eq !== -1) {
-        out.flags[spec.name] = a.slice(eq + 1)
       } else {
-        if (i + 1 >= argv.length) throw new CliError(`${cmdPath}: ${token} needs a value`)
-        out.flags[spec.name] = argv[++i]!
+        const value = eq !== -1 ? a.slice(eq + 1) : i + 1 < argv.length ? argv[++i]! : (() => { throw new CliError(`${cmdPath}: ${token} needs a value`) })()
+        if (spec.list) {
+          const prior = out.flags[spec.name]
+          out.flags[spec.name] = [...(Array.isArray(prior) ? prior : []), value]
+        } else {
+          out.flags[spec.name] = value
+        }
       }
     } else {
       out.positionals.push(a)
@@ -123,7 +129,7 @@ export function renderHelp(path: string[], node: Node): string {
       lines.push('Flags:')
       for (const f of node.flags) {
         const tok = f.short ? `-${f.short}, --${f.name}` : `--${f.name}`
-        const takes = f.kind === 'value' ? ' <value>' : ''
+        const takes = f.kind === 'value' ? (f.list ? ' <value>…' : ' <value>') : ''
         lines.push(`  ${`${tok}${takes}`.padEnd(28)} ${f.desc}`)
       }
     }
