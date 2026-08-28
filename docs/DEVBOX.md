@@ -47,9 +47,9 @@ branch on the host.
    — and the primary's `TALARIA_SECRET_KEY`/`AUTH_*` verbatim, so sealed
    secrets decrypt and your primary login works unchanged.
 7. Seeds starter data from the primary (below).
-8. Runs any `--setup` hooks inside the fresh box (the any-harness channel,
-   below), then installs deps and builds the toolkit MCP (`--no-install`
-   skips only the latter).
+8. Runs any `--setup` hooks inside the fresh box (provisioning; `npm i -g`
+   hooks land in the shared tools layer, below), then installs deps and
+   builds the toolkit MCP (`--no-install` skips only the latter).
 9. Prints how to get in, and how to tear it down.
 
 ## Layout
@@ -61,6 +61,10 @@ branch on the host.
 ├── compose.env         per-box interpolation (ports, paths, creds) — 0600
 ├── compose.override.yml  optional: auth/provider env, SSH agent forwarding
 └── box.env             the registry `ls` reads
+
+../devboxes/shared/tools/   the layer EVERY box mounts at /work/tools —
+                            harness of choice installed once (`box install`),
+                            usable from all boxes (`ls` ignores it)
 ```
 
 `TALARIA_DEVBOX_HOME` relocates the whole tree.
@@ -116,16 +120,24 @@ survive stop/start and are never shared with the host or other boxes.
 (Sharing a host `~/.claude` read-write across concurrent CLIs corrupts
 `.claude.json` — last writer wins — and bleeds sessions across boxes.)
 
-Any other coding harness rides the same rails — `enter` runs any command,
-and `--setup` (repeatable) installs at creation time:
+Any other coding harness installs ONCE into the **shared tools layer** —
+every box mounts the same `/work/tools` with its `bin` first on PATH, so a
+harness installed from any box is available in all of them, including boxes
+that don't exist yet, and survives any box's `rm`:
 
 ```bash
-bun talaria box new demo --setup 'npm i -g @openai/codex'
-bun talaria box enter demo codex
+bun talaria box install demo 'npm i -g @openai/codex'   # once, from any box
+bun talaria box enter demo codex                         # every box, forever
 ```
 
-Installs land in the home volume, so they survive stop/start. A `rm`'d box is
-gone by design — pass the same `--setup` when you recreate it.
+`box install` runs the command inside a box with `NPM_CONFIG_PREFIX` (and
+`TOOLS_DIR`/`TOOLS_BIN`) pointed at the layer, `flock`-held so concurrent
+installs can't interleave. Plain `npm i -g` inside a box is the wrong tool
+twice over: the image's global prefix is root-owned (EACCES as `dev`), and
+anything in the container's writable layer dies with it. `--setup` hooks at
+`new` time run with the same tools env, so a `--setup 'npm i -g …'` lands in
+the shared layer too — recreating a box re-runs it as a no-op, not a
+re-download.
 
 Auth options:
 

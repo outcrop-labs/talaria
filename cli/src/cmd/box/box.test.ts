@@ -8,11 +8,12 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { boxUiEnv, overrideYaml, parseEnvFlags } from './new'
+import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl } from './new'
 import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
+import { runInstall } from './install'
 import { runRm, runStart } from './lifecycle'
-import { boxComposeSpec } from './shared'
+import { boxComposeSpec, toolsExec } from './shared'
 import { fakeCtx, type FakeCtx } from '../../testing'
 import { CliError } from '../../ui'
 
@@ -124,6 +125,46 @@ TALARIA_AGENT_KEY=also-kept
     expect(() => parseEnvFlags(['nope'])).toThrow('--env wants KEY=VALUE')
     expect(() => parseEnvFlags(['1BAD=x'])).toThrow('--env wants KEY=VALUE')
     expect(() => parseEnvFlags(['A B=x'])).toThrow('--env wants KEY=VALUE')
+  })
+})
+
+describe('box — shared tools layer', () => {
+  test('compose.env carries BOX_TOOLS_DIR (the every-box mount)', () => {
+    const env = composeEnvTpl({
+      name: 'demo', appPort: 5301, hostRepo: '/x/talaria', state: '/x/state',
+      home: '/home/jon', dockerGid: 998, s3: { bucket: 'b', key: 'k', secret: 's' }, tools: '/x/devboxes/shared/tools',
+    })
+    expect(env).toContain('BOX_TOOLS_DIR=/x/devboxes/shared/tools\n')
+    expect(env).toContain('BOX_NAME=demo\n')
+    expect(env).toContain('DOCKER_GID=998\n')
+  })
+
+  test('toolsExec: prefix env + flock, command rides as argv ($0), never re-quoted', () => {
+    const a = toolsExec('demo', "npm i -g @openai/codex 'weird --flag=va'lue'")
+    expect(a).toContain('-e')
+    expect(a).toContain('NPM_CONFIG_PREFIX=/work/tools')
+    expect(a).toContain('TOOLS_BIN=/work/tools/bin')
+    // the command is the LAST argv element, exactly as given
+    expect(a.at(-1)).toBe("npm i -g @openai/codex 'weird --flag=va'lue'")
+    // flock serializes installs into the shared dir
+    expect(a.join(' ')).toContain('flock /work/tools/.lock -c "$0"')
+  })
+
+  test('runInstall execs via toolsExec; unknown box and empty cmd die', async () => {
+    const { root } = makeBox('demo')
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runInstall(ctx, 'demo', 'npm i -g x')
+    const call = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('exec flock /work/tools/.lock -c "$0"'))
+    expect(call).toBeDefined()
+    expect(call!.args.at(-1)).toBe('npm i -g x')
+
+    const noBox = fakeCtx()
+    noBox.root = root
+    const msg = await attempt(() => runInstall(noBox, 'nope', 'x'))
+    expect(msg).toContain("no devbox named 'nope'")
+    const msg2 = await attempt(() => runInstall(ctx, 'demo', '   '))
+    expect(msg2).toContain('quoted as one arg')
   })
 })
 
