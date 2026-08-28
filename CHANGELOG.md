@@ -26,6 +26,16 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   ~90 routes (was a mix of 400/422/custom); 401/403 split fixed on four task endpoints; 500s no
   longer echo `e.message`.
 
+### Added
+
+- `talaria service` — `install` starts the production stack (the `deploy up` build, in your
+  terminal) and installs a systemd unit that starts it at boot, health-gates that start on the
+  compose healthchecks (`up -d --wait`, dropped automatically on compose builds that hang on it),
+  and stops it cleanly (`compose down`) before docker.service; `uninstall` removes both, keeping
+  volumes and state; `status` shows the unit state and the compose view. `install` also pins
+  `DOCKER_GID` into `docker/.env` — the boot unit has no shell to resolve it from
+  (docs/CONTAINER.md → "Keep it running across reboots").
+
 ### Changed
 
 - **One owner per duplicated helper** (the audit's recurring failure mode): Google OAuth built once

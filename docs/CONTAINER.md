@@ -44,6 +44,7 @@ bun talaria deploy down     # stop (--volumes also deletes the data — careful)
 bun talaria deploy logs     # follow every service's logs
 bun talaria deploy creds    # the 'Sign in' block from the logs
 bun talaria deploy status   # effective port/state/fleet + compose ps
+bun talaria service install # start the stack + keep it running across reboots
 ```
 
 Three things the wrappers add beyond typing the compose command yourself:
@@ -69,6 +70,82 @@ bun build --compile cli/bin/talaria.ts --outfile talaria
 
 Plain compose remains the canonical path; the CLI is a convenience that
 always shows its work.
+
+## Keep it running across reboots
+
+Every service in the compose file carries `restart: unless-stopped`, so once
+the *docker daemon* is back, the containers come back on their own. What that
+doesn't give you is boot ordering, a health-gated start, a clean shutdown
+before the daemon stops, and one place to ask "is my instance up". On a
+Linux host, one command adds all of it:
+
+```bash
+bun talaria service install
+```
+
+It refuses to hide anything: it prints every command it runs, and the three
+privileged steps it needs sudo for (`install` the unit into
+`/etc/systemd/system`, `systemctl daemon-reload`, `systemctl enable --now`)
+run one at a time with the password prompt on your terminal. What it does,
+in order:
+
+1. Guards: Linux, systemd actually running, docker and the compose plugin,
+   a checkout with `docker/compose.yml`.
+2. Pins `DOCKER_GID` into `docker/.env` — the boot unit has no shell to
+   resolve it from, and compose interpolates from that file on every `up`.
+   A value already in the file (or exported) wins; nothing is overwritten.
+3. Starts the stack if it isn't already running — the same `up -d --build`
+   as `deploy up`, so a first boot's build failures land in your terminal,
+   not in journald.
+4. Writes and enables the unit below. On re-install it overwrites in place.
+
+```ini
+# /etc/systemd/system/talaria.service — installed by `talaria service install`.
+[Unit]
+Description=Talaria (docker compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=<your checkout>
+ExecStart=/usr/bin/docker compose -f docker/compose.yml up -d --wait
+ExecStop=/usr/bin/docker compose -f docker/compose.yml down
+TimeoutStartSec=20min
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The unit is only the boot/stop handle — `ExecStart` has no `--build` on
+purpose (boot starts what exists; `talaria deploy update` rebuilds), and
+`--wait` is dropped automatically on compose builds too old to gate on a
+one-shot service. `systemctl status talaria` and `journalctl -u talaria`
+are the supervision view; `talaria service status` shows both that and the
+compose view.
+
+- **Updates** stay checkout-driven: `talaria deploy update` (pull +
+  rebuild + recreate). The unit starts whatever exists; no restart needed.
+- **`talaria service uninstall`** stops the stack (its ExecStop is
+  `compose down`) and removes the unit — named volumes and the state dir
+  are kept, the same blast radius as `deploy down`. Bring it back with
+  `deploy up`.
+- **Two instances on one host** need separate compose projects (see
+  [Networking](#networking)) and, by hand, a renamed unit — the CLI
+  installs exactly `talaria.service`.
+- **Orchestrator-driven hosts don't need it.** When Dokploy (or any other
+  orchestrator) runs the stack, it owns the lifecycle — reboots are
+  already covered by the daemon starting at boot and the orchestrator
+  bringing the stack back (swarm reconciliation, restart policies).
+  `service install` is for the checkout-driven host the command at the
+  top of this page describes.
+- **Hosts without systemd** (macOS, Windows, containers-as-hosts) keep the
+  plain path: enable docker at boot and the restart policies carry the
+  stack.
 
 ## The pieces
 
@@ -198,7 +275,10 @@ The compose file is Dokploy-shaped on purpose (it's also just a compose file
 
 `DOCKER_GID` still applies: `docker compose exec talaria docker ps` inside the
 resource's terminal should list host containers. Multi-instance hosts see the
-note above about per-instance networks.
+note above about per-instance networks. Reboots are covered on this path —
+the daemon enabled at boot plus the stack's restart policies bring everything
+back; the [systemd unit](#keep-it-running-across-reboots) is for
+checkout-driven hosts.
 
 ## Security posture
 

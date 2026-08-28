@@ -143,7 +143,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 
 | Doc | What it covers |
 |---|---|
-| [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, Dokploy |
+| [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, systemd boot, Dokploy |
 | [`RELEASING.md`](./RELEASING.md) | Release channels: nightly/RC/stable on GHCR, the branch model |
 | [`RELEASES/pre-alpha.md`](./RELEASES/pre-alpha.md) | The pre-alpha release notes |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |

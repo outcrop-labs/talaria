@@ -9,6 +9,7 @@ import { deployCommand } from './deploy'
 import { devCommand } from './dev'
 import { resetCommand } from './reset'
 import { restoreCommand } from './restore'
+import { serviceCommand } from './service'
 import { setupCommand } from './setup'
 import { worktreeCommand } from './worktree'
 
@@ -16,5 +17,5 @@ export const tree: Group = {
   kind: 'group',
   name: 'talaria',
   summary: 'Talaria — every way to drive the repo, from one place',
-  children: [setupCommand, devCommand, worktreeCommand, resetCommand, boxCommand, deployCommand, backupCommand, restoreCommand],
+  children: [setupCommand, devCommand, worktreeCommand, resetCommand, boxCommand, deployCommand, serviceCommand, backupCommand, restoreCommand],
 }

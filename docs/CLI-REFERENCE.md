@@ -24,6 +24,9 @@
 | [`talaria deploy logs`](#talaria-deploy-logs) | follow the stack's logs (Ctrl-C to detach) |
 | [`talaria deploy creds`](#talaria-deploy-creds) | print the first-boot admin Sign-in block from the logs |
 | [`talaria deploy status`](#talaria-deploy-status) | effective port/state/fleet + compose ps |
+| [`talaria service install`](#talaria-service-install) | start the stack + install the systemd unit that keeps it running across reboots |
+| [`talaria service uninstall`](#talaria-service-uninstall) | stop the stack and remove the unit (volumes and state dir are kept) |
+| [`talaria service status`](#talaria-service-status) | the unit state (enabled/active), then the compose view |
 | [`talaria backup`](#talaria-backup) | snapshot the database + upload blobs (Postgres dump + blobs, staged atomically) |
 | [`talaria restore`](#talaria-restore) | restore a snapshot (destructive: drops and recreates the target) |
 
@@ -182,6 +185,34 @@ effective port/state/fleet + compose ps
 
 ```
 talaria deploy status
+```
+
+## `talaria service`
+
+keep the compose stack running across reboots — a systemd unit (docs/CONTAINER.md)
+
+### `talaria service install`
+
+start the stack + install the systemd unit that keeps it running across reboots
+
+```
+talaria service install
+```
+
+### `talaria service uninstall`
+
+stop the stack and remove the unit (volumes and state dir are kept)
+
+```
+talaria service uninstall
+```
+
+### `talaria service status`
+
+the unit state (enabled/active), then the compose view
+
+```
+talaria service status
 ```
 
 ### `talaria setup`
