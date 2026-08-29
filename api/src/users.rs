@@ -90,6 +90,28 @@ pub async fn join_org_wide_boards(pg: &PgPool, user_id: &str) -> Result<u64, sql
     .map(|r| r.rows_affected())
 }
 
+/// users.ts getUserRole: an unknown row is a member, never an error.
+pub async fn get_user_role(pg: &PgPool, user_id: &str) -> Result<String, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as("select role from users where id = $1::uuid")
+        .bind(user_id)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(|(role,)| role).unwrap_or_else(|| "member".into()))
+}
+
+/// Preferred gateway model for AI drafting (muse); None = server default.
+pub async fn get_preferred_model(
+    pg: &PgPool,
+    user_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select preferred_model as m from users where id = $1::uuid")
+            .bind(user_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(m,)| m))
+}
+
 /// Everyone who has signed in, for people pickers — users.ts's listUsers.
 /// Fields in select order; the order-by is the TS query's own lower(coalesce).
 pub async fn list_users(

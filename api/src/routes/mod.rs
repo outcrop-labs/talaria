@@ -4,6 +4,7 @@
 pub mod activity;
 pub mod admin_google_client;
 pub mod admin_instance;
+pub mod admin_model_roles;
 pub mod admin_password_accounts;
 pub mod admin_permissions;
 pub mod agent_role_templates;
@@ -23,6 +24,8 @@ pub mod keys_id;
 pub mod llm_chat;
 pub mod llm_models;
 pub mod me;
+pub mod models;
+pub mod models_efforts;
 pub mod notifications;
 pub mod teams;
 pub mod teams_id;
@@ -123,6 +126,14 @@ pub fn router(state: AppState) -> Router {
             get(activity::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/models",
+            get(models::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/models/efforts",
+            get(models_efforts::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/cost",
             get(cost::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -219,6 +230,12 @@ pub fn router(state: AppState) -> Router {
             "/api/admin/permissions",
             get(admin_permissions::get)
                 .put(admin_permissions::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/model-roles",
+            get(admin_model_roles::get)
+                .put(admin_model_roles::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .fallback(api_not_found)

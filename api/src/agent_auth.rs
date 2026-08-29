@@ -452,6 +452,77 @@ pub fn epoch_ms_to_iso(ms: i64) -> String {
     format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
 }
 
+/// Days-from-civil (Hinnant) — the inverse of the era arithmetic above.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400); // [0, 399]
+    let mp = (m + 9) % 12; // Mar=0
+    let doy = (153 * mp + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The inverse of `epoch_ms_to_iso`: `Date.parse` for the ONE shape this
+/// system stores — `toISOString()` output, `YYYY-MM-DDTHH:MM:SS(.sss)?Z`.
+/// Anything else is None, and every caller wants exactly that: a stored `at`
+/// that no longer parses is expired, not eternal.
+pub fn iso_to_epoch_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let mut v: i64 = 0;
+        for &c in b.get(range)? {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            v = v * 10 + (c - b'0') as i64;
+        }
+        Some(v)
+    };
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || (b[10] != b'T' && b[10] != b't')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, m, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if h > 23 || m > 59 || sec > 59 {
+        return None;
+    }
+    let mut i = 19;
+    let mut millis: i64 = 0;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        let mut scale = 100;
+        while i < b.len() && i - start < 3 && b[i].is_ascii_digit() {
+            millis += (b[i] - b'0') as i64 * scale;
+            scale /= 10;
+            i += 1;
+        }
+        if i == start {
+            return None; // '.' with no digits
+        }
+    }
+    // The writers always spell UTC; a bare local-time string is not one of ours.
+    match b.get(i) {
+        Some(&b'Z') | Some(&b'z') => i += 1,
+        _ => return None,
+    }
+    if i != b.len() {
+        return None; // trailing garbage
+    }
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + h * 3600 + m * 60 + sec) * 1000 + millis)
+}
+
 /// Wire shape (camelCase — the admin instance route serves these verbatim).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -540,6 +611,48 @@ mod tests {
         );
         // Pre-epoch: 1969-12-31T23:59:59.500Z.
         assert_eq!(epoch_ms_to_iso(-500), "1969-12-31T23:59:59.500Z");
+    }
+
+    #[test]
+    fn iso_parser_is_the_inverse_of_the_formatter() {
+        for ms in [
+            0i64,
+            -500,
+            1_796_970_954_478,
+            1_709_208_000_000,
+            1_767_225_599_999,
+        ] {
+            assert_eq!(iso_to_epoch_ms(&epoch_ms_to_iso(ms)), Some(ms), "{ms}");
+        }
+        // The other spellings Date.parse tolerates that our writers never emit.
+        assert_eq!(
+            iso_to_epoch_ms("2026-08-29T07:00:00Z"),
+            Some(1_787_986_800_000)
+        );
+        // 1-2 digit fractions parse (truncated to millis).
+        assert_eq!(
+            iso_to_epoch_ms("2026-08-29T07:00:00.5Z"),
+            Some(1_787_986_800_500)
+        );
+        assert_eq!(
+            iso_to_epoch_ms("2026-08-29T07:00:00.42Z"),
+            Some(1_787_986_800_420)
+        );
+        // Not our shape: expired, never eternal.
+        for bad in [
+            "",
+            "nonsense",
+            "2026-08-29",
+            "2026-08-29T07:00:00",          // no Z
+            "2026-08-29T07:00:00+02:00",    // offset form
+            "2026-13-01T00:00:00.000Z",     // month
+            "2026-08-32T00:00:00.000Z",     // day
+            "2026-08-29T24:00:00.000Z",     // hour
+            "2026-08-29T07:00:00.000Zjunk", // trailing
+            "2026/08/29T07:00:00.000Z",     // separators
+        ] {
+            assert!(iso_to_epoch_ms(bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

@@ -348,6 +348,22 @@ pub fn present_nullable_string_member(
     }
 }
 
+/// A no-min present-nullable string (`z.string().max(n).nullable().optional()`)
+/// — the empty string is a legal VALUE here, distinct from absent and from
+/// present-null. admin.model-roles' `model` uses this shape: zod accepts `""`
+/// and the HANDLER's truthiness decides it means "clear the assignment".
+pub fn present_nullable_max_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<Option<String>>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(_) => string_member(obj, key, 0, max).map(|s| Some(Some(s))),
+    }
+}
+
 /// zod's uuid check (`z.string().uuid()` → "Invalid UUID"): the canonical
 /// 8-4-4-4-12 hex layout, either case. Not WHICH version — v4 and the
 /// name-derived v8s both pass here.

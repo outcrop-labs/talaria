@@ -20,6 +20,14 @@ pub struct LlmEndpoint {
     pub api_key_env: Option<String>,
     pub models: Vec<String>,
     pub request_defaults: serde_json::Value,
+    /// `llm_endpoints.model_efforts` — an admin's declared effort ladder per
+    /// upstream model id (`{"deepseek-v4": ["low","high"]}`), the second voice
+    /// that can vouch where a provider's catalog is silent. Raw jsonb kept
+    /// unparsed: the column is admin-typed and outlives the build that wrote
+    /// it, and validation happens per-model at use (model_efforts.rs), where a
+    /// malformed entry degrades to the catalog's answer. Null when the column
+    /// is null or predates the feature.
+    pub model_efforts: serde_json::Value,
 }
 
 pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error> {
@@ -36,9 +44,10 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
             Option<String>,
             sqlx::types::Json<Vec<String>>,
             Option<serde_json::Value>,
+            Option<serde_json::Value>,
         ),
     >(
-        "select id::text, name, provider, base_url, class, api_key_env, models, request_defaults \
+        "select id::text, name, provider, base_url, class, api_key_env, models, request_defaults, model_efforts \
          from llm_endpoints order by (class = 'local') desc, name asc",
     )
     .fetch_all(pg)
@@ -46,7 +55,17 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
     Ok(rows
         .into_iter()
         .map(
-            |(id, name, provider, base_url, class, api_key_env, models, request_defaults)| {
+            |(
+                id,
+                name,
+                provider,
+                base_url,
+                class,
+                api_key_env,
+                models,
+                request_defaults,
+                model_efforts,
+            )| {
                 LlmEndpoint {
                     id,
                     name,
@@ -57,6 +76,7 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                     models: models.0,
                     // TS reads `ep.requestDefaults ?? {}` at use — same here.
                     request_defaults: request_defaults.unwrap_or(serde_json::Value::Null),
+                    model_efforts: model_efforts.unwrap_or(serde_json::Value::Null),
                 }
             },
         )

@@ -59,10 +59,20 @@ describe('maybeProxy', () => {
     expect(await maybeProxy(req('/api/boards'), '/api/boards')).toBeNull()
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
     // Admin groups still on TS — invites sends email from its handler,
-    // model-roles reads the effort-prefs plane; neither has crossed yet.
+    // model-fitness is the probe suite's own plane.
     expect(await maybeProxy(req('/api/admin/invites'), '/api/admin/invites')).toBeNull()
-    expect(await maybeProxy(req('/api/admin/model-roles'), '/api/admin/model-roles')).toBeNull()
+    expect(await maybeProxy(req('/api/admin/model-fitness'), '/api/admin/model-fitness')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of ['/api/models', '/api/models/efforts']) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('forwards the admin wave-1 groups, /login riding under its parent', async () => {
@@ -144,12 +154,13 @@ describe('maybeProxy', () => {
     // The route IS the group…
     expect(await maybeProxy(req('/api/agents'), '/api/agents')).not.toBeNull()
     expect(await maybeProxy(req('/api/apps'), '/api/apps')).not.toBeNull()
+    expect(await maybeProxy(req('/api/admin/model-roles'), '/api/admin/model-roles')).not.toBeNull()
     // …but its sub-paths still belong to TS: register/heartbeat (the fleet
     // plane) and the app-server gateway would land on a Rust 404.
     expect(await maybeProxy(req('/api/agents/register'), '/api/agents/register')).toBeNull()
     expect(await maybeProxy(req('/api/agents/x/heartbeat'), '/api/agents/x/heartbeat')).toBeNull()
     expect(await maybeProxy(req('/api/apps/contacts/x'), '/api/apps/contacts/x')).toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledTimes(3)
   })
 
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {

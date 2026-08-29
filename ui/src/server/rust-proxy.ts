@@ -39,10 +39,16 @@ const PREFIXES = [
   '/api/teams',
   '/api/workflows',
   '/api/notifications',
+  // The model-identity plane: the picker catalog (models.ts) and the effort
+  // ladder (models.efforts.ts) are the only routes under /api/models, and
+  // they crossed together — the picker's rows and the composer's effort feed
+  // read the same persona/catalog state.
+  '/api/models',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite
-  // sends email), admin/model-roles, and the rest of admin/*.
+  // sends email), admin/model-fitness (the probe suite's plane), and the
+  // rest of admin/*.
   '/api/agent-role-templates',
   '/api/admin/password-accounts',
   '/api/admin/google-client',
@@ -58,7 +64,7 @@ const PREFIXES = [
 // me.mcp, me.assistant, and me.events are their own planes (fleet, agents,
 // SSE) that migrate whole with those batches. A startsWith entry here would
 // strand those on a Rust 404.
-const EXACT = new Set(['/api/agents', '/api/apps', '/api/me'])
+const EXACT = new Set(['/api/agents', '/api/apps', '/api/me', '/api/admin/model-roles'])
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
 // must not depend on which module graph got the frozen copy.
