@@ -6,6 +6,15 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
+- Upstream error text is sanitized at the trust boundary (#268): the two
+  proxy wires — `/api/llm/v1/chat/completions` (external key holders) and the
+  MCP gateway (agent containers) — no longer forward an upstream's error body
+  verbatim. Failed hops answer with the status (ours to share) and a fixed
+  sentence; the only upstream-written text that survives is the structured
+  `error.type`/`error.code` tokens OpenAI-style clients switch on for retries,
+  length-capped. The verbatim body goes to the server log, inside the
+  boundary. JSON-RPC errors on the MCP wire ride 200s and pass untouched —
+  tool results, including tool failures, are the protocol the agent speaks.
 - Oversized uploads are refused before they are buffered (#266): the upload
   route reads its multipart body through a capped stream — a declared
   content-length over the cap is answered 413 from the header alone, and a
