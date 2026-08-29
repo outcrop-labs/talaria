@@ -197,6 +197,7 @@ pub struct TokenPair {
 /// One turn, as the runner hands it to a transport. Every field is spent by
 /// the mapping below or by the transports — see the module header for the
 /// three shims that dropped fields because there was nowhere to put them.
+#[derive(Clone)]
 pub struct TransportRequest {
     /// The id actually called — a tier id when a tier was routed.
     pub model: String,

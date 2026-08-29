@@ -44,14 +44,14 @@ pub struct ModelSpec<'a> {
     pub user_id: Option<&'a str>,
 }
 
-pub struct ResolvedHarnessModel<'a> {
+pub struct ResolvedHarnessModel {
     pub model: String,
     /// The winning STEP is part of the answer, not a detail: the runner
     /// records it on the harness_runs row, and the model-fitness UI reads
     /// those rows to show an operator which fallback actually carried a
     /// harness in production. A subsystem limping along on 'first-routable'
     /// for a month is a real finding.
-    pub step: &'a str,
+    pub step: ModelChainStep,
 }
 
 const DEFAULT_CHAIN: [ModelChainStep; 5] = ["pin", "role", "utility", "env", "first-routable"];
@@ -246,8 +246,8 @@ impl<'a> Chain<'a> {
 /// propagates (TS throws to the same 500).
 pub async fn resolve_harness_model<'a>(
     pg: &'a PgPool,
-    spec: &ModelSpec<'a>,
-) -> Result<Option<ResolvedHarnessModel<'a>>, sqlx::Error> {
+    spec: &'a ModelSpec<'a>,
+) -> Result<Option<ResolvedHarnessModel>, sqlx::Error> {
     let chain = Chain {
         pg,
         spec,

@@ -1141,7 +1141,17 @@ pub async fn guard_text(pg: &PgPool, text: &str, input: Option<&str>) -> Vec<Fin
         return Vec::new();
     }
     let config = guard_config(pg).await;
-    if config.mode == GuardMode::Off {
+    gate_safe(&config, text, input)
+}
+
+/// The settings-free half of `guard_text`: the gate-safe rules over plain text,
+/// against optional grounding material. Split out because the harness runner's
+/// REPAIR GATE is this exact pass behind an injected edge, and its tests need
+/// the real rule registry without a database — a fake gate would turn every
+/// "does the runner refuse to repair a flagged reply" assertion into a
+/// restatement of the fake.
+pub fn gate_safe(config: &GuardConfig, text: &str, input: Option<&str>) -> Vec<Finding> {
+    if text.trim().is_empty() || config.mode == GuardMode::Off {
         return Vec::new();
     }
     let empty = ToolRecord::default();
@@ -1157,8 +1167,8 @@ pub async fn guard_text(pg: &PgPool, text: &str, input: Option<&str>) -> Vec<Fin
     RULES
         .iter()
         .filter(|r| r.gate_safe)
-        .filter(|r| rule_enabled(&config, r))
-        .filter_map(|r| evaluate(r, &ctx, &config))
+        .filter(|r| rule_enabled(config, r))
+        .filter_map(|r| evaluate(r, &ctx, config))
         .collect()
 }
 

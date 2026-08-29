@@ -44,6 +44,7 @@ use super::schema::Schema;
 use serde_json::{Map, Value};
 
 /// A schema ready for `response_format.json_schema`.
+#[derive(Clone)]
 pub struct WireSchema {
     /// Required by the wire format. Derived from the harness id, which is
     /// stable and unique, with the characters providers reject removed.

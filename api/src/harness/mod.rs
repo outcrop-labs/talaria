@@ -17,23 +17,28 @@
 // probes of zod 4.3.6 itself), `prompt_rules` (the trust-boundary clause
 // more than one harness states), `json_schema` (the schema put ON the
 // wire: a probed reproduction of zod's `toJSONSchema` renderer, the
-// provider-safe keyword subset, and the strict-eligibility walk) — plus the
+// provider-safe keyword subset, and the strict-eligibility walk) — the
 // two halves of the contract layer: `define` (the harness declaration,
 // type-erased onto `Value` the way the runs engine erases a run's typed
 // input, with the derived json floor and the fixture-floor helpers) and
 // `transport`'s CONTRACT half (the request/reply types, the one persona
 // payload mapping, the response_format derivation, the tool-channel wire
-// renderer, and the refusal sentences). The gateway's parameter learner
-// crossed earlier with the chat relay as `gateway/params.rs`. Still TS:
-// the transports themselves (`run.ts` names them: the gateway turn, the
-// streamed pair, the fleet turn, the picker), `run`, `registry`,
-// `recorded`, and every def under harness/defs/ — plus the eval-case/
-// dry-run plane, which crosses with the fitness suite.
+// renderer, and the refusal sentences) — the gateway transports
+// (`gateway_transport`/`gateway_stream`, crossed with the chat relay's
+// parameter learner in `gateway/params.rs`) — and `run` itself: the
+// runner, its thirteen injected edges (`real_deps` for production, a
+// recorded world for tests), and the nine steps, with the gateway turn as
+// its real transport edge. Still TS: the fleet turn and the picker
+// (`pickTransport`; they cross with the fleet/streaming planes in batch 5,
+// as does `RunContext.signal`), `registry`, `recorded`, and every def
+// under harness/defs/ — plus the eval-case/dry-run plane, which crosses
+// with the fitness suite.
 
 pub mod define;
 pub mod json;
 pub mod json_schema;
 pub mod prompt_rules;
+pub mod run;
 pub mod schema;
 pub mod text;
 pub mod transport;
