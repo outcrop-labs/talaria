@@ -1,10 +1,12 @@
-// Token-ledger client. Dollar cost lands once per-LLM pricing attribution exists.
+// Token-ledger client.
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
 export interface CostTotals {
   prompt: number
   completion: number
+  /** Cache writes + reads — billed at their own multipliers, not 1x. */
+  cache?: number
   generations: number
   /** Dollars (local = $0; unpriced cloud excluded — see unpricedCloudTokens). */
   cost?: number

@@ -23,7 +23,9 @@
   const perDay = $derived(data?.perDay ?? [])
   // "~" when the window is dominated by estimates rather than reported usage.
   const approx = $derived((t?.estimatedShare ?? 0) > 0.5 ? '~' : '')
-  const total = (x?: CostTotals) => (x ? x.prompt + x.completion : 0)
+  // Every KIND of token — cache included, or the headline would quietly
+  // understate exactly the spend cache multipliers change most.
+  const total = (x?: CostTotals) => (x ? x.prompt + x.completion + (x.cache ?? 0) : 0)
 
   // `data` is undefined on rejection, and the old guard read
   // `!data || total(t?.month) === 0` — so a 500 on /api/cost rendered
@@ -192,6 +194,10 @@
           gateway didn't report token usage for them.
         </p>
       {/if}
+      <p class="text-xs text-muted">
+        Dollar figures are rate-card estimates — your configured prices, else fetched public rates — not provider
+        invoices. Cache tokens are priced at their own rates (writes 1.25x input, reads 0.1x).
+      </p>
     {/if}
     </Materialize>
     {/if}

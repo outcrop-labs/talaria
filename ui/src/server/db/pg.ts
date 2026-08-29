@@ -2224,6 +2224,17 @@ const MIGRATIONS: string[] = [
      updated_at timestamptz not null default now(),
      last_used_at timestamptz
    )`,
+  // ── Full token accounting (usage.ts) ──────────────────────────────────────
+  // prompt/completion were never the whole bill. Anthropic prices cache WRITES
+  // at 1.25x input and cache READS at 0.1x input, both SEPARATE from
+  // input_tokens (so the ledger understated); OpenAI-compatible providers fold
+  // cached input into prompt_tokens at the full rate (so it overstated).
+  // Reasoning tokens ride inside completion_tokens at the output rate —
+  // recorded for visibility, never re-priced. Splitting them out is what makes
+  // the ledger match the invoice.
+  `alter table usage_events add column if not exists cache_write_tokens integer not null default 0`,
+  `alter table usage_events add column if not exists cache_read_tokens integer not null default 0`,
+  `alter table usage_events add column if not exists reasoning_tokens integer not null default 0`,
 
 ]
 

@@ -593,12 +593,9 @@ Source: [`ui/src/routes/api/admin.secrets.ts`](../../ui/src/routes/api/admin.sec
 
 Source: [`ui/src/routes/api/admin.settings.ts`](../../ui/src/routes/api/admin.settings.ts)
 
-> App settings (admin). GET → current values. PUT → update. Grows as more
-> app-wide settings land; audit retention is the first.
-
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{auditRetentionDays, org, memberModels}` | 200 | — |
+| GET | `admin` | — | `{auditRetentionDays, org, memberModels, llmBudgets, cronMinIntervalMinutes}` | 200 | — |
 | PUT | `admin` | [body](#put-apiadminsettings-body) | `{ok}` | 200 | audit |
 
 ### PUT `/api/admin/settings` body
@@ -608,6 +605,8 @@ Source: [`ui/src/routes/api/admin.settings.ts`](../../ui/src/routes/api/admin.se
 | `auditRetentionDays` | `z.number().int().min(0).max(3650).optional()` |  |
 | `org` | `z.object({ name: z.string().max(120).optional(), about: z.string().max(2000).optional() }).optional()` |  |
 | `memberModels` | `z.array(z.string().min(1).max(200)).max(200).optional()` |  |
+| `llmBudgets` | `z.object({ windowHours: z.number().int().min(1).max(8760), org: budgetLimits.optional().default(null), perAgent: budgetLimits.optional().de…` |  |
+| `cronMinIntervalMinutes` | `z.number().int().min(0).max(1440).optional()` |  |
 
 ## `/api/admin/storage`
 

@@ -25,7 +25,7 @@ Source: [`ui/src/routes/api/llm.v1.chat.completions.ts`](../../ui/src/routes/api
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `bearer-key` | — | `…` | 200, 400, 401, 404, 502 + varies | SSE |
+| POST | `bearer-key` | — | `…` | 200, 400, 401, 404, 429, 502 + varies | SSE |
 
 ## `/api/llm/v1/models`
 

@@ -11,6 +11,7 @@
 import { newVault, sealContent, type SecretVault } from './secret-vault'
 import { db } from './db/pg'
 import { getSetting, setSetting } from './audit'
+import { normalizeUsage, spendSince, type RawUsage, type TokenCounts } from './usage'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
 import { NATIVE_BASE, openrouterUsPool, resolveEndpointKey } from './provider-catalog'
 import { guardCompletion } from './guardrails'
@@ -562,6 +563,10 @@ export async function completeViaGateway(
 ): Promise<{ text: string; contractDrops: ContractDrop[] }> {
   const route = await resolveRoute(model)
   if (!route) throw new Error(`model "${model}" is not on the gateway`)
+  // Internal callers spend real money too — the ceiling is the gateway's, not
+  // the HTTP route's, so it holds for the judge/titler/research path as well.
+  const denial = await checkBudget(opts.caller)
+  if (denial) throw new Error(budgetMessage(denial))
   const clientBody: Record<string, unknown> = { model, messages, stream: false }
   if (opts.temperature !== undefined) clientBody.temperature = opts.temperature
   if (opts.responseFormat) clientBody.response_format = opts.responseFormat
@@ -577,15 +582,15 @@ export async function completeViaGateway(
   if (!res.ok) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 400)}`)
   const j = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>
-    usage?: { prompt_tokens?: number; completion_tokens?: number }
+    usage?: RawUsage | null
   }
-  if (j.usage) {
+  const counts = normalizeUsage(j.usage)
+  if (counts) {
     await recordGatewayUsage({
       caller: opts.caller,
       endpoint: route.endpoint,
       upstreamModel: route.upstreamModel,
-      promptTokens: j.usage.prompt_tokens ?? 0,
-      completionTokens: j.usage.completion_tokens ?? 0,
+      ...counts,
       estimated: false,
     }).catch(() => {})
   }
@@ -600,19 +605,154 @@ export async function completeViaGateway(
 
 /** Ledger row for a gateway call — attribution is direct (we KNOW the
  *  endpoint), no agent-def classification involved. */
-export async function recordGatewayUsage(u: {
-  caller: string // "api:<key name>" or "user:<email>"
-  endpoint: LlmEndpoint
-  upstreamModel: string
-  promptTokens: number
-  completionTokens: number
-  estimated: boolean
-}): Promise<void> {
+export async function recordGatewayUsage(
+  u: {
+    caller: string // "api:<key name>" or "user:<email>"
+    endpoint: LlmEndpoint
+    upstreamModel: string
+    estimated: boolean
+  } & Partial<TokenCounts>,
+): Promise<void> {
   const sql = await db()
+  const k = (v: number | undefined | null) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0)
   await sql`
-    insert into usage_events (agent_model, source, prompt_tokens, completion_tokens, estimated, endpoint_class, llm_model, endpoint)
+    insert into usage_events (agent_model, source, prompt_tokens, completion_tokens,
+                              cache_write_tokens, cache_read_tokens, reasoning_tokens,
+                              estimated, endpoint_class, llm_model, endpoint)
     values (${u.caller}, 'gateway',
-            ${Math.max(0, Math.round(u.promptTokens))}, ${Math.max(0, Math.round(u.completionTokens))},
+            ${k(u.promptTokens)}, ${k(u.completionTokens)},
+            ${k(u.cacheWriteTokens)}, ${k(u.cacheReadTokens)}, ${k(u.reasoningTokens)},
             ${u.estimated}, ${u.endpoint.class}, ${u.upstreamModel}, ${u.endpoint.name})
   `
+}
+
+// ── Spend ceiling ───────────────────────────────────────────────────────────
+// Before this there was NO bound on LLM spend anywhere: MAX_SESSION_TURNS is a
+// per-session turn cap held in an in-process Set (a restart re-enters), and the
+// titler budget covers one small feature. A stuck loop, a runaway cron or a
+// leaked key could spend without limit and nothing would refuse it.
+//
+// The ceiling is a rolling-window budget checked BEFORE the upstream call, at
+// two scopes: the whole org, and the individual caller (agent or API key). It
+// defaults to OFF — null limits everywhere — so upgrading an existing
+// deployment changes nothing until an admin sets a number.
+
+export interface BudgetLimits {
+  /** Tokens allowed in the window. Null/absent/zero = unlimited. */
+  tokens?: number | null
+  /** Priced USD allowed in the window. Null/absent/zero = unlimited. */
+  usd?: number | null
+}
+
+export interface BudgetPolicy {
+  /** Rolling window the limits apply over. */
+  windowHours: number
+  /** Ceiling across every caller combined. */
+  org: BudgetLimits | null
+  /** Default ceiling applied to each caller individually. */
+  perAgent: BudgetLimits | null
+  /** Per-caller overrides, keyed by agent model id or API key name. */
+  agents: Record<string, BudgetLimits>
+}
+
+/** Off by default — an existing deployment must never start getting 429s. */
+export const DEFAULT_BUDGETS: BudgetPolicy = { windowHours: 24, org: null, perAgent: null, agents: {} }
+
+export const getBudgets = (): Promise<BudgetPolicy> => getSetting<BudgetPolicy>('llm_budgets', DEFAULT_BUDGETS)
+
+export async function setBudgets(policy: BudgetPolicy): Promise<void> {
+  await setSetting('llm_budgets', policy)
+  spendCache.clear()
+}
+
+export interface BudgetDenial {
+  scope: 'org' | 'caller'
+  /** The caller that hit its own ceiling; null for the org-wide one. */
+  subject: string | null
+  unit: 'tokens' | 'usd'
+  limit: number
+  used: number
+  windowHours: number
+  retryAfterSeconds: number
+}
+
+const limitOf = (l: BudgetLimits | null | undefined, unit: 'tokens' | 'usd'): number | null => {
+  const v = unit === 'tokens' ? l?.tokens : l?.usd
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+}
+
+const hasAnyLimit = (p: BudgetPolicy): boolean =>
+  !!(limitOf(p.org, 'tokens') || limitOf(p.org, 'usd') || limitOf(p.perAgent, 'tokens') || limitOf(p.perAgent, 'usd')) ||
+  Object.values(p.agents ?? {}).some((l) => limitOf(l, 'tokens') || limitOf(l, 'usd'))
+
+/** A rolling window ages out continuously, so "try again shortly" is honest —
+ *  but never advise a wait longer than the window itself. */
+const retryAfter = (windowHours: number) => Math.max(30, Math.min(Math.round(windowHours * 3600), 300))
+
+export function budgetMessage(d: BudgetDenial): string {
+  const used = d.unit === 'usd' ? `$${d.used.toFixed(2)}` : `${d.used.toLocaleString()} tokens`
+  const cap = d.unit === 'usd' ? `$${d.limit.toFixed(2)}` : `${d.limit.toLocaleString()} tokens`
+  const who = d.scope === 'org' ? 'This organization' : `"${d.subject}"`
+  return (
+    `${who} has reached its LLM budget: ${used} of ${cap} in the last ${d.windowHours}h. ` +
+    `Requests resume as spend ages out of the window, or an admin can raise the limit ` +
+    `(Admin → Settings → LLM budgets).`
+  )
+}
+
+// Spend is read per request, so it is cached briefly. The TTL collapses as the
+// caller approaches its ceiling: cheap while there's headroom, exact at the
+// edge, so the overshoot a cache could hide stays bounded.
+const spendCache = new Map<string, { at: number; ttl: number; value: Awaited<ReturnType<typeof spendSince>> }>()
+
+async function cachedSpend(
+  windowHours: number,
+  subject: string | null,
+  fractionUsed: (v: Awaited<ReturnType<typeof spendSince>>) => number,
+): Promise<Awaited<ReturnType<typeof spendSince>>> {
+  const key = `${windowHours}:${subject ?? '*'}`
+  const hit = spendCache.get(key)
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.value
+  const value = await spendSince(windowHours, subject)
+  // >80% spent: no caching at all. Otherwise 15s, which bounds how much a burst
+  // can slip past the check to roughly 15s of traffic.
+  const ttl = fractionUsed(value) > 0.8 ? 0 : 15_000
+  spendCache.set(key, { at: Date.now(), ttl, value })
+  return value
+}
+
+/**
+ * The circuit breaker. Returns a denial when `caller` (or the org) is over
+ * budget, else null. Called BEFORE the upstream request — a refusal must cost
+ * nothing.
+ *
+ * Cheap by construction: with no limits configured (the default) it returns on
+ * a settings read and never touches usage_events.
+ */
+export async function checkBudget(caller: string): Promise<BudgetDenial | null> {
+  const policy = await getBudgets().catch(() => DEFAULT_BUDGETS)
+  if (!policy || !hasAnyLimit(policy)) return null
+  const windowHours = Math.max(1, Math.min(24 * 365, Math.round(policy.windowHours || 24)))
+
+  const scopes: Array<{ scope: BudgetDenial['scope']; subject: string | null; limits: BudgetLimits | null }> = [
+    { scope: 'caller', subject: caller, limits: policy.agents?.[caller] ?? policy.perAgent },
+    { scope: 'org', subject: null, limits: policy.org },
+  ]
+
+  for (const s of scopes) {
+    const tokenCap = limitOf(s.limits, 'tokens')
+    const usdCap = limitOf(s.limits, 'usd')
+    if (!tokenCap && !usdCap) continue
+    const spend = await cachedSpend(windowHours, s.subject, (v) =>
+      Math.max(tokenCap ? v.tokens / tokenCap : 0, usdCap ? v.cost / usdCap : 0),
+    ).catch(() => null)
+    if (!spend) continue // a failed read must not become an outage
+    if (tokenCap && spend.tokens >= tokenCap) {
+      return { scope: s.scope, subject: s.subject, unit: 'tokens', limit: tokenCap, used: spend.tokens, windowHours, retryAfterSeconds: retryAfter(windowHours) }
+    }
+    if (usdCap && spend.cost >= usdCap) {
+      return { scope: s.scope, subject: s.subject, unit: 'usd', limit: usdCap, used: spend.cost, windowHours, retryAfterSeconds: retryAfter(windowHours) }
+    }
+  }
+  return null
 }
