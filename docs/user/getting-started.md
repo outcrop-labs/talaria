@@ -1,7 +1,8 @@
 # Getting started
 
 Talaria signs you in with Google — there are no passwords to make and no profile to fill
-in. Your admin invites you by email; the first thing you land on is your **Inbox**, where
+in (your admin can also issue email + password accounts, but Google is the usual door).
+Your admin invites you by email; the first thing you land on is your **Inbox**, where
 your own assistant writes you a daily brief. This page takes you from the invite to knowing
 where everything lives.
 
@@ -15,6 +16,10 @@ where everything lives.
 Trouble: "This invite is no longer valid" means it expired or was revoked — your admin can
 re-issue. If Google isn't offered, your workspace may not have it enabled yet; ask your
 admin.
+
+If you're the one who just deployed this instance, there is no admin yet: the first visit
+offers to **claim** it — the account you create there (email + password, or the first Google
+sign-in when Google is enabled) becomes the admin's.
 
 ## Set up your assistant (do this first)
 

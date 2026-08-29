@@ -1,23 +1,24 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { enabledProviders, getAuthConfig } from '@/server/auth/config'
+import { instanceClaimable } from '@/server/auth/claim'
+import { hasPasswordAccounts } from '@/server/auth/password-accounts'
 import { googleLoginEnabled } from '@/server/google/client-config'
 import type { ProviderMeta } from '@/server/auth/config'
 
-// GET /api/auth/providers → the providers the login screen should render.
-// Reflects exactly which providers are enabled AND fully configured right now.
-// Google login follows the Admin UI toggle (AUTH_GOOGLE_ENABLED in env pins it
-// on) and accepts credentials from the Admin UI record or the env —
-// `enabledProviders` answers the env-only view, so the Google entry is
-// recomputed against the merged client + login switch here.
+// GET /api/auth/providers → the providers the login screen should render, and
+// whether the instance is still UNCLAIMED. Everything is computed live:
+//   • google — the Admin UI login toggle (or the AUTH_GOOGLE_ENABLED pin) AND
+//     a resolvable client (Admin UI record or env);
+//   • password — at least one DB-backed account exists (Admin → People);
+//   • claimable — zero admins: the login screen offers /claim instead.
 export const Route = defineApi('/api/auth/providers', {
   GET: async () => {
-    const cfg = getAuthConfig()
     const providers: ProviderMeta[] = []
     if (await googleLoginEnabled()) providers.push({ id: 'google', label: 'Continue with Google', kind: 'oauth' })
-    providers.push(...enabledProviders(cfg).filter((p) => p.id !== 'google'))
+    if (await hasPasswordAccounts()) providers.push({ id: 'password', label: 'Username & password', kind: 'password' })
     return json({
       providers,
+      claimable: await instanceClaimable(),
       // Surfaced so the login screen can warn instead of silently failing.
       configured: Boolean(process.env.DATABASE_URL && process.env.REDIS_URL),
     })

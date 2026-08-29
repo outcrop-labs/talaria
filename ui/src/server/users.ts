@@ -1,7 +1,8 @@
 // Users, roles, and per-agent access (durable in Postgres).
 //
-// Roles: 'admin' | 'member'. Admins are designated by AUTH_ADMIN_EMAILS; anyone
-// else who signs in (already gated by AUTH_ALLOWED_*) becomes a member.
+// Roles: 'admin' | 'member'. The FIRST admin is minted by the first-run claim
+// (auth/claim.ts); after that, roles are granted in Admin → People. A sign-in
+// never changes anyone's role.
 //
 // Per-agent access policy: admins → all agents. A member with NO access rows →
 // all agents (open by default); with rows → restricted to exactly those. Admins
@@ -29,21 +30,14 @@ export interface Identity {
   picture: string | null
 }
 
-function adminEmails(): string[] {
-  return (process.env.AUTH_ADMIN_EMAILS ?? '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-}
-
-/** Upsert the identity into `users`, assigning/keeping its role. */
+/** Upsert the identity into `users`. A sign-in assigns 'member' to a
+ *  brand-new sub and never touches an existing role — the first admin comes
+ *  from the claim (auth/claim.ts), every later one from Admin → People. */
 export async function upsertUser(identity: Identity): Promise<User> {
   const sql = await db()
-  const isAdmin = !!identity.email && adminEmails().includes(identity.email.toLowerCase())
-  const role: Role = isAdmin ? 'admin' : 'member'
   const rows = await sql`
     insert into users (sub, email, name, picture, role, last_seen_at)
-    values (${identity.sub}, ${identity.email}, ${identity.name}, ${identity.picture}, ${role}, now())
+    values (${identity.sub}, ${identity.email}, ${identity.name}, ${identity.picture}, 'member', now())
     on conflict (sub) do update set
       email = excluded.email,
       -- a display name the user set (≠ email) survives logins; the provider
@@ -53,9 +47,7 @@ export async function upsertUser(identity: Identity): Promise<User> {
         else users.name
       end,
       picture = excluded.picture,
-      last_seen_at = now(),
-      -- promote admin-listed users; otherwise keep whatever role they have.
-      role = case when ${role} = 'admin' then 'admin' else users.role end
+      last_seen_at = now()
     returning id, sub, email, name, picture, role
   `
   const user = rows[0] as User
@@ -247,8 +239,9 @@ export interface AdminUser {
   deniedViews: string[]
   /** Manage-section views this member HAS been granted (default: none). */
   allowedManageViews: string[]
-  /** Email is in AUTH_ADMIN_EMAILS — role is pinned to admin at every login. */
-  pinnedAdmin: boolean
+  /** Has a password account (a user_password_credentials row) — the People
+   *  list badges these; removing one ends that person's password sign-in. */
+  hasPasswordAccount: boolean
   /** The user's personal assistant model, if they have one. */
   assistantModel: string | null
   /** Assistant promoted to org-wide view/edit (only effective while admin). */
@@ -262,6 +255,7 @@ export async function listUsersAdmin(): Promise<AdminUser[]> {
     select u.id, u.email, u.name, u.role, u.can_mint_keys as "canMintKeys", u.denied_views as "deniedViews",
            coalesce(u.allowed_manage_views, '{}') as "allowedManageViews",
            u.last_seen_at as "lastSeenAt", u.created_at as "createdAt",
+           exists(select 1 from user_password_credentials c where c.user_id = u.id) as "hasPasswordAccount",
            coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels",
            min(d.model) as "assistantModel", coalesce(bool_or(d.elevated), false) as "assistantElevated"
     from users u
@@ -270,16 +264,19 @@ export async function listUsersAdmin(): Promise<AdminUser[]> {
     group by u.id
     order by lower(coalesce(u.email, u.name, '')) asc
   `
-  const admins = adminEmails()
-  return (rows as unknown as AdminUser[]).map((u) => ({
-    ...u,
-    pinnedAdmin: !!u.email && admins.includes(u.email.toLowerCase()),
-  }))
+  return rows as unknown as AdminUser[]
 }
 
 export async function setUserRole(userId: string, role: Role): Promise<void> {
   const sql = await db()
   await sql`update users set role = ${role} where id = ${userId}`
+}
+
+/** Admins currently holding the role — the last-admin guard's input. */
+export async function adminCount(): Promise<number> {
+  const sql = await db()
+  const rows = await sql`select count(*)::int as n from users where role = 'admin'`
+  return (rows[0] as { n: number } | undefined)?.n ?? 0
 }
 
 /** Grant/revoke the ability to mint LLM-gateway API keys (admins always may). */

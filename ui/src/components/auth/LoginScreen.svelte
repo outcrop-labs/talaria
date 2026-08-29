@@ -31,6 +31,10 @@
 
   const hasGoogle = $derived(providers.some((p) => p.id === 'google'))
   const hasPassword = $derived(providers.some((p) => p.id === 'password'))
+  // Zero admins: the instance is still claimable. A brand-new install has no
+  // providers either — the claim IS the way in. A degenerate one (members,
+  // zero admins) keeps its member sign-ins and gets the claim as a notice.
+  const claimable = $derived(providersQuery.data?.claimable === true)
 
   // When Google is connected it IS the sign-in: one button, nothing else on
   // the card. The password route stays reachable for the default org admin —
@@ -119,8 +123,33 @@
           title="Could not load sign-in options"
           onRetry={() => void providersQuery.refetch()}
         />
+      {:else if claimable && providers.length === 0}
+        <!-- A fresh install: nobody owns it yet. The claim is the only way
+             forward, so it takes the card. -->
+        <div class="flex flex-col gap-3">
+          <div class="text-center text-sm text-muted">
+            This instance has no admin yet — the first person to claim it owns it.
+          </div>
+          <a
+            href="/claim"
+            class="inline-flex h-11 w-full items-center justify-center rounded-md bg-accent px-4 font-sans text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
+          >Claim this instance</a>
+        </div>
       {:else if providers.length === 0}
         <div class="py-4 text-center text-sm text-muted">No sign-in providers are enabled.</div>
+      {:else if claimable}
+        <!-- Members exist but no admin does: sign-ins stay, and the claim
+             rides above them as a notice. -->
+        <a
+          href="/claim"
+          class="mb-3 block rounded-md border border-line px-3 py-2 text-center font-sans text-xs text-muted transition-colors hover:border-line-strong hover:text-fg"
+        >
+          No admin on this instance yet — the first to <span class="underline underline-offset-2">claim it</span> becomes the admin.
+        </a>
+        <div class="flex flex-col gap-3">
+          {#if hasGoogle}<GoogleButton />{/if}
+          {#if !hasGoogle && hasPassword}<PasswordForm />{/if}
+        </div>
       {:else}
         <div class="flex flex-col gap-3">
           {#if hasGoogle}<GoogleButton />{/if}

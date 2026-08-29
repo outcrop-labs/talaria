@@ -10,6 +10,7 @@ import {
   setGoogleClientConfig,
 } from '@/server/google/client-config'
 import { resolveOrigin } from '@/server/auth/google'
+import { getConnectionStatus } from '@/server/google/connections'
 import { logAudit } from '@/server/audit'
 
 const Body = z.object({
@@ -32,10 +33,14 @@ export const Route = defineApi('/api/admin/google-client', {
     const user = await requireAdmin(request)
     if (user instanceof Response) return user
     const origin = resolveOrigin(request)
+    // The admin's OWN account connection — drives the "connect your account"
+    // affordance in the panel (offered only once a client resolves).
+    const conn = await getConnectionStatus(user.id)
     return json({
       status: await googleClientStatus(),
       loginEnabled: await googleLoginEnabled(),
       loginPinnedByEnv: googleLoginPinnedByEnv(),
+      personalConnected: conn.connected,
       redirectUris: [
         { uri: `${origin}/api/integrations/google/callback`, what: 'your account connect (Settings)' },
         { uri: `${origin}/api/integrations/google/org/callback`, what: 'org connect (Admin)' },

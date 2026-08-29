@@ -79,13 +79,16 @@ detached branch persisted server-side, so a reply survives a reload mid-stream (
 | Caller | Credential | Resolution |
 | :--- | :--- | :--- |
 | Browser | opaque `sid` cookie → Redis `sess:<sid>` | sessions patchable in place; a role change lands without re-login |
-| Google OAuth | redirect `…/api/auth/google/callback` | tokens hand-rolled (no SDK); hosted-domain and Workspace gates |
-| Password (MVP) | `AUTH_USERS` env | env-gated, plaintext, dev-grade |
+| Google OAuth | redirect `…/api/auth/google/callback` | tokens hand-rolled (no SDK); hosted-domain and Workspace gates; the first identity through a claimable instance claims it |
+| Password | email + scrypt hash in `user_password_credentials` | accounts created/removed by admins (Admin → People); timing-equalized misses |
 | Agent | `tak_…` per-agent key (`x-api-key`) | `agent-auth.ts` `resolve()` — the key *proves* identity; `x-agent-name` can narrow, never grant. `agentCaller` (requires the name), `fleetCaller` (URL-subject plane), `requireAgent` |
 | Legacy shared key | org-wide `TALARIA_AGENT_KEY` | resolves `legacy: true` — identified but untrusted; anything granting privilege refuses it. Close with `TALARIA_AGENT_KEY_LEGACY=off` |
 | LLM gateway | `tlk_…` per-user bearer key | sha256-stored, mint gated by the `models.mint-keys` permission |
 
-Admin designation is `AUTH_ADMIN_EMAILS` — pinned at every login. Fine-grained permissions
+There are no users in a fresh install: the first visit offers `/claim`, and the identity
+created there (password or Google) becomes the admin — the race is serialized on an advisory
+lock, first claim wins. Roles are granted and revoked in Admin → People; a sign-in never
+changes a role, and the last admin cannot be demoted. Fine-grained permissions
 are a 13-entry catalog resolved user-override → org default → shipped default
 (`permissions.ts`, `docs/PERMISSIONS.md`); admins hold everything unconditionally.
 

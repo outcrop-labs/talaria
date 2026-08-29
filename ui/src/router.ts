@@ -49,6 +49,7 @@ if (typeof document !== 'undefined') {
 //   routes/_app/boards/*        → '/boards', '/boards/:boardId(/:taskId)'
 export const { p, navigate, isActive, preload, route } = createRouter({
   '/login': () => import('./routes/Login.svelte'),
+  '/claim': () => import('./routes/Claim.svelte'),
   '/join': () => import('./routes/Join.svelte'),
   '/a': {
     '/:slug': () => import('./routes/ArtifactPublic.svelte'),

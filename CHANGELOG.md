@@ -6,9 +6,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
-- Password credentials hash as scrypt (#244): `AUTH_USERS` accepts `scrypt$N$r$p$salt$hash`
-  entries (node:crypto, params in-band), `talaria setup` writes the hash instead of the
-  plaintext, and a boot warning names any plaintext entry still sitting in the env.
+- Password credentials live in Postgres as scrypt hashes (#244): `user_password_credentials`
+  stores `scrypt$N$r$p$salt$hash` (node:crypto, params in-band) — never plaintext, never env.
+  A login miss on the email burns a dummy verify, so response timing can't reveal which
+  addresses have accounts.
 - Google sign-in refuses unverified email addresses (#269): an identity whose email claim
   Google has not verified — including an absent claim — is rejected at code exchange, so an
   unverified address can no longer mint an account.
@@ -28,9 +29,17 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   as issues: llm.v1 per-key spend caps, stream-based upload size rejection, compose first-boot
   secret generation, upstream-error-text sanitizer pass, Google `email_verified` enforcement.
 
-### Breaking (external SDK consumers only)
+### Breaking
 
-- API renames: `/api/plan/:id/doc|draft` → `/api/plans/…`; singular
+- **Self-hosters — env auth is removed entirely.** `AUTH_USERS`, `AUTH_PASSWORD_ENABLED` and
+  `AUTH_ADMIN_EMAILS` are ignored after this upgrade (no import path). A fresh instance has
+  zero users: the first visit offers `/claim`, and the account created there (email + password,
+  or the first Google sign-in when Google login is enabled) becomes the admin — first claim
+  wins, so reach the claim screen before exposing a fresh instance publicly. Existing users
+  keep their stored roles; re-create password sign-in via Admin → People (or Google).
+  `AUTH_ALLOWED_*` gates Google sign-ins only now — password accounts are admitted by the
+  admin who creates them.
+- External SDK consumers only: API renames — `/api/plan/:id/doc|draft` → `/api/plans/…`; singular
   `/api/inbox/focus/conversation` folded into `/api/inbox/focus/conversations/$id` (with `current`
   sentinel); `/api/profile` → `/api/me`. Validation-failure bodies are now zod-issue 400s across
   ~90 routes (was a mix of 400/422/custom); 401/403 split fixed on four task endpoints; 500s no
@@ -38,6 +47,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **First-run claim + admin-managed auth.** A fresh instance offers `/claim` (email + password,
+  plus "Claim with Google" when Google login is on); the first identity through becomes the
+  admin, advisory-lock serialized so a race can't mint two. From then on auth is managed in the
+  app: Admin → People gains **password accounts** (create, reset, remove — including your own),
+  roles live only in the database (a sign-in never changes one; the last admin can't be demoted),
+  and once a Google client is configured, Admin → Google client links the admin's own Google
+  account.
 - Google login can be enabled from the Admin UI (Admin → Google client): the toggle writes the
   `google_login_enabled` setting (`PUT /api/admin/google-client/login`), so login no longer needs
   `AUTH_GOOGLE_ENABLED=1` in the env. The env var still pins login ON (undeactivatable from the

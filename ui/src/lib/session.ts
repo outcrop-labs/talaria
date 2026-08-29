@@ -81,8 +81,8 @@ export function useProviders() {
     // `configured: false` is a real server answer ("no provider is set up"),
     // not a stand-in for a failed request — telling someone their auth is
     // unconfigured when the box is merely down sends them to the wrong fix.
-    queryFn: (): Promise<{ providers: ProviderMeta[]; configured: boolean }> =>
-      getJson<{ providers: ProviderMeta[]; configured: boolean }>('/api/auth/providers'),
+    queryFn: (): Promise<{ providers: ProviderMeta[]; claimable: boolean; configured: boolean }> =>
+      getJson<{ providers: ProviderMeta[]; claimable: boolean; configured: boolean }>('/api/auth/providers'),
     staleTime: 60_000,
   }))
 }

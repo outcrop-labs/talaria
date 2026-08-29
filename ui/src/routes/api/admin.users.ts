@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { Uuid } from '@/lib/api-schema'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { updateSessionsForUser } from '@/server/auth/session'
-import { listUsersAdmin, setAssistantElevated, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole, setAllowedManageViews } from '@/server/users'
+import { adminCount, listUsersAdmin, setAssistantElevated, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole, setAllowedManageViews } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
 // Admin console API. GET → all users with roles + agent allow-lists.
@@ -32,9 +32,14 @@ export const Route = defineApi('/api/admin/users', {
       }),
     )
     if (body instanceof Response) return body
-    // No self-demotion — you'd lock yourself out of this page.
-    if (body.role === 'member' && body.userId === user.id) {
-      return json({ error: 'you cannot demote yourself' }, { status: 400 })
+    // The last admin is undemotable — that includes self-demotion, which is
+    // FINE once another admin remains. Roles come from the claim and this
+    // page; nothing re-grants admin after the last one is gone.
+    if (body.role === 'member' && (await adminCount()) <= 1) {
+      const target = (await listUsersAdmin()).find((u) => u.id === body.userId)
+      if (target?.role === 'admin') {
+        return json({ error: 'cannot demote the last admin' }, { status: 400 })
+      }
     }
     const actor = actorOf(user)
     if (body.role) {

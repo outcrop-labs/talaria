@@ -96,34 +96,16 @@ export function runLogs(ctx: Ctx): Promise<number> {
   return deployCompose(ctx, op)
 }
 
-/** The first-boot admin credentials, the documented way: the `Sign in`
- *  block prints once in the talaria service's logs. When retained logs no
- *  longer have it (rotation, log limits, a redeploy), fall back to the
- *  source the block was printed FROM — generated.env inside the container,
- *  which knows its own TALARIA_STATE_DIR — and show only the credential
- *  lines, never the secrets filed next to them. */
+/** First-run access, the documented way: there are no generated credentials
+ *  anymore — a fresh instance is CLAIMED. Point the operator at the claim
+ *  screen (same port resolution as runStatus, so the URL is the one compose
+ *  actually listens on). */
 export async function runCreds(ctx: Ctx): Promise<number> {
-  ctx.log.say(`${plain([], ['logs', 'talaria'])} | grep -A2 'Sign in'`)
-  try {
-    await ctx.pipe(['docker', ['compose', '-f', FILE, 'logs', 'talaria']], ['grep', ['-A2', 'Sign in']], { cwd: ctx.root })
-    return 0
-  } catch {
-    ctx.log.warn("no 'Sign in' block in retained logs — reading the generated credentials instead")
-    let generated = ''
-    try {
-      generated = (
-        await ctx.exec('docker', ['compose', '-f', FILE, 'exec', '-T', 'talaria', 'sh', '-c', 'cat "$TALARIA_STATE_DIR/env/generated.env"'], { cwd: ctx.root })
-      ).stdout
-    } catch {
-      ctx.log.die("couldn't read generated.env either — is the instance up? (docs/CONTAINER.md → The env-var contract)")
-    }
-    const creds = generated.split('\n').filter((l) => /^(AUTH_USERS|AUTH_ADMIN_EMAILS)=/.test(l))
-    if (creds.length === 0) {
-      ctx.log.die('generated.env carries no AUTH_USERS — the credentials came from the environment; whoever set it knows them')
-    }
-    ctx.log.raw(`${creds.join('\n')}\n`)
-    return 0
-  }
+  const effective = envWins(dockerEnvFile(ctx), ctx.env)
+  const port = effective.TALARIA_HTTP_PORT ?? '5273'
+  ctx.log.say(`first-run access: open http://localhost:${port} and claim the admin account`)
+  ctx.log.say('the account you create there is the admin — there are no default credentials')
+  return 0
 }
 
 /** The effective instance identity — env + docker/.env merged the way
@@ -182,7 +164,7 @@ export const logsCommand: Leaf = {
 export const credsCommand: Leaf = {
   kind: 'leaf',
   name: 'creds',
-  summary: "print the first-boot admin Sign-in block from the logs",
+  summary: 'where first-run access lives: the claim screen, not a generated password',
   usage: 'talaria deploy creds',
   run: (ctx) => runCreds(ctx),
 }

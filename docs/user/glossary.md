@@ -18,6 +18,7 @@ bold throughout the guides resolve here.
 | **Brain routing** | Which knowledge brain retrieves a piece of content | [Knowledge](./knowledge.md) |
 | **Brief (daily)** | The assistant-written morning document — appended to, never rewritten | [Your day](./your-day.md) |
 | **Chassis** | The starter bundle a new agent carries over: model tiers, tools, plugins | [Admin: Agents](./admin-agents.md) |
+| **Claim** | First visit to a fresh instance: the account created there becomes the admin's | [Getting started](./getting-started.md) |
 | **Conclude** | Summarize a relay, post and index the summary, archive it | [Comms](./comms.md) |
 | **Confab guard** | The flag on a reply produced without something to ground it | [Comms](./comms.md) |
 | **Delegation** | Letting your assistant answer one conversation for you — in its own name | [Your assistant](./personal-assistant.md) |
@@ -44,7 +45,6 @@ bold throughout the guides resolve here.
 | **Muse** | Talaria's designer agent — drafts agents, skills, and edits from a description | [Knowledge](./knowledge.md) |
 | **OKF** | The agent-facing summary maintained on official knowledge docs | [Knowledge](./knowledge.md) |
 | **Official** | Promoted into the org brain; grounds every agent's answers | [Knowledge](./knowledge.md) |
-| **Pinned admin** | An admin fixed by the `AUTH_ADMIN_EMAILS` environment setting | [Admin: People](./admin-people.md) |
 | **Permission** | What a person may *do* on a surface they can reach | [Admin: People](./admin-people.md) |
 | **Per-user auth** | An MCP server mode where each person connects their own account | [Admin: MCP](./admin-mcp-observability-apps.md) |
 | **Promote** | Mark a knowledge doc official — indexed into the org brain | [Knowledge](./knowledge.md) |

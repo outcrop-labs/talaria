@@ -39,17 +39,20 @@ Admin → Organization once the instance is up.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/auth/providers` | GET | Which providers are enabled (drives the login screen) |
+| `/api/auth/providers` | GET | Which providers are enabled + whether the instance is claimable |
 | `/api/auth/session` | GET | The current user (or `null`) |
 | `/api/auth/google` | GET | Start Google OAuth (302 → consent) |
 | `/api/auth/google/callback` | GET | OAuth callback → session cookie → `/` |
 | `/api/auth/password` | POST | Username/password login |
+| `/api/auth/claim` | POST | First-run claim: the account created becomes the admin |
 | `/api/auth/logout` | POST | Clear the session |
 
 Sessions are **Redis-backed** (`src/server/auth/session.ts`): the cookie carries
 only an opaque session id, and the user record lives in Redis under `sess:<sid>`
-with a TTL. Logout deletes the key. Admins are designated by `AUTH_ADMIN_EMAILS`
-(comma-separated); everyone else who signs in is a member.
+with a TTL. Logout deletes the key. There are no users in a fresh install — the
+first person to claim the instance becomes its admin, and everything after that
+is managed in the app: password accounts (Admin → People) and the Google login
+switch (Admin → Google client).
 
 ## Data + infra
 

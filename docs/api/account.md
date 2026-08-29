@@ -5,10 +5,11 @@
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-12 routes.
+13 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
+| [`/api/auth/claim`](#apiauthclaim) | POST | `public` |
 | [`/api/auth/google`](#apiauthgoogle) | GET | `public` |
 | [`/api/auth/google/callback`](#apiauthgooglecallback) | GET | `public` |
 | [`/api/auth/logout`](#apiauthlogout) | POST | `session` |
@@ -25,6 +26,28 @@
 | [`/api/me/mcp`](#apimemcp) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | PUT | `session` |
 | [`/api/users`](#apiusers) | GET | `dual` |
+
+## `/api/auth/claim`
+
+Source: [`ui/src/routes/api/auth/claim.ts`](../../ui/src/routes/api/auth/claim.ts)
+
+> POST /api/auth/claim { email, password, name? } → the FIRST admin.
+>
+> Offered only while the instance has zero admins (GET /api/auth/providers →
+> claimable); claimAdmin's advisory lock closes the race, so a lost race is a
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `public` | [body](#post-apiauthclaim-body) | `{ok, user}` | 200, 409, 429 | audit |
+
+### POST `/api/auth/claim` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `email` | `z.preprocess((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v), z.string().email().max(200),)` |  |
+| `password` | `z.string().min(8).max(1000)` |  |
+| `name` | `z.string().max(200).optional()` |  |
 
 ## `/api/auth/google`
 
@@ -46,7 +69,7 @@ Source: [`ui/src/routes/api/auth/google.callback.ts`](../../ui/src/routes/api/au
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `…` | 200, 302 | — |
+| GET | `public` | — | `…` | 200, 302 | audit |
 
 ## `/api/auth/logout`
 
@@ -63,6 +86,9 @@ Source: [`ui/src/routes/api/auth/logout.ts`](../../ui/src/routes/api/auth/logout
 Source: [`ui/src/routes/api/auth/password.ts`](../../ui/src/routes/api/auth/password.ts)
 
 > POST /api/auth/password { username, password } → sets the session cookie.
+> Credentials live in user_password_credentials (Admin → People); the provider
+> exists while any account does. No allow-list applies here — an account was
+> admitted by an admin when it was created; login checks the stored hash only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -79,15 +105,15 @@ Source: [`ui/src/routes/api/auth/password.ts`](../../ui/src/routes/api/auth/pass
 
 Source: [`ui/src/routes/api/auth/providers.ts`](../../ui/src/routes/api/auth/providers.ts)
 
-> GET /api/auth/providers → the providers the login screen should render.
-> Reflects exactly which providers are enabled AND fully configured right now.
-> Google login follows the Admin UI toggle (AUTH_GOOGLE_ENABLED in env pins it
-> on) and accepts credentials from the Admin UI record or the env —
+> GET /api/auth/providers → the providers the login screen should render, and
+> whether the instance is still UNCLAIMED. Everything is computed live:
+>   • google — the Admin UI login toggle (or the AUTH_GOOGLE_ENABLED pin) AND
+>     a resolvable client (Admin UI record or env);
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `{configured}` | 200 | — |
+| GET | `public` | — | `{claimable, configured}` | 200 | — |
 
 ## `/api/auth/session`
 

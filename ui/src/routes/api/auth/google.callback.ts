@@ -1,5 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
+import { claimAdmin, instanceClaimable } from '@/server/auth/claim'
+import { logAudit } from '@/server/audit'
 import { googleLoginEnabled } from '@/server/google/client-config'
 import { exchangeGoogleCode, googleRedirectUri, orgGoogleLoginAllowed } from '@/server/auth/google'
 import {
@@ -49,6 +51,30 @@ export const Route = defineApi('/api/auth/google/callback', {
     } catch (err) {
       if (import.meta.env.DEV) console.error('[auth/google] callback failed:', err)
       return loginError('exchange_failed')
+    }
+
+    // An unclaimed instance (zero admins) hands the FIRST Google identity the
+    // keys — no doors apply, by design: nobody exists yet to have invited them.
+    // A lost race (someone claimed between the check and the lock) falls
+    // through to the normal doors for this sign-in. The org-domain gate below
+    // cannot bite here in practice — org connect is admin-only, so an
+    // unclaimed instance has no connection — but the claim precedes it anyway.
+    if (await instanceClaimable()) {
+      const claimed = await claimAdmin(identity)
+      if (claimed) {
+        void logAudit({
+          actor: identity.email ?? claimed.id,
+          action: 'auth.claim',
+          targetType: 'user',
+          targetId: claimed.id,
+          after: { email: identity.email, role: claimed.role, provider: 'google' },
+        })
+        const sid = await createSession({ ...claimed, provider: identity.provider })
+        const headers = new Headers({ Location: '/' })
+        headers.append('Set-Cookie', sessionCookie(sid))
+        headers.append('Set-Cookie', clearStateCookie())
+        return new Response(null, { status: 302, headers })
+      }
     }
 
     // The org account's domain is the outer gate. Once a Talaria is wired to

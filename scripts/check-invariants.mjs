@@ -624,7 +624,10 @@ const CENSUS = [
     ],
     sites: {
       'ui/src/server/approvals.ts': 3, // adminUserIds() itself (call + query) and the resolver's use
-      'ui/src/server/users.ts': 1, // `and u.role = 'admin'` — a delegation question, not an audience
+      'ui/src/server/users.ts': 2, // `and u.role = 'admin'` (delegation) + adminCount() — the
+      //   last-admin guard. Both are role-governance questions, not audiences.
+      'ui/src/server/auth/claim.ts': 2, // NOT an audience: "does an admin exist" — claim
+      //   eligibility, checked outside the tx and re-checked inside it. No rows are fetched.
       // ── Known debt, owned by a later round ──────────────────────────────────
       // EMPTY, and both departures are the same fix rather than two:
       //   agent.problem.ts    takes an authorised `taskId`, asks `agentTextAuthority` for the
