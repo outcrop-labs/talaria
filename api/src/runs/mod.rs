@@ -7,6 +7,7 @@
 
 pub mod decide;
 pub mod define;
+pub mod defs;
 pub mod lease;
 pub mod reclaim;
 pub mod run;

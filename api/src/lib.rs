@@ -57,4 +57,5 @@ pub mod tasks;
 pub mod teams;
 pub mod templates;
 pub mod users;
+pub mod work_dispatch;
 pub mod workflows;
