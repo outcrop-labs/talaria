@@ -28,7 +28,11 @@ redis = { version = "1", default-features = false, features = ["tokio-comp", "co
 # the prod runtime image is bare alpine and must stay that way.
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: Value::Object keeps INSERTION order, like a JS object. The
+# guard's annotate path does JSON.parse → mutate → stringify on an upstream
+# body and must not alphabetize it (TS preserves the upstream's key order);
+# merged upstream bodies likewise keep client-first order like TS's spread.
+serde_json = { version = "1", features = ["preserve_order"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"

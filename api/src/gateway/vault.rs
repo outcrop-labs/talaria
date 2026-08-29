@@ -112,13 +112,13 @@ const PATTERNS: &[Pattern] = &[
     },
 ];
 
-struct Compiled {
-    label: &'static str,
-    re: Regex,
-    redact: Option<Regex>,
+pub struct Compiled {
+    pub label: &'static str,
+    pub re: Regex,
+    pub redact: Option<Regex>,
 }
 
-fn compiled() -> &'static Vec<Compiled> {
+pub fn compiled() -> &'static Vec<Compiled> {
     static C: OnceLock<Vec<Compiled>> = OnceLock::new();
     C.get_or_init(|| {
         PATTERNS

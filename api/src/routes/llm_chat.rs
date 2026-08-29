@@ -1,23 +1,27 @@
 // POST /api/llm/v1/chat/completions — port of
 // ui/src/routes/api/llm.v1.chat.completions.ts. OpenAI-compatible chat over
 // the org's model stack: streaming and non-streaming both relay, every call
-// metered into the ledger under the calling key's identity.
+// metered into the ledger under the calling key's identity, every completion
+// through the confab guard (gateway/guard.rs).
 //
 // The pipeline: bearer → authenticateKey → the key's own rpm brake → body
 // validation → resolveRoute → checkBudget (org + caller, key caps min-merged
 // under the admin's ceiling) → buildUpstream (defaults UNDER the client body,
 // secret-vault seal, learned-param pre-strip) → fetchUpstream (400
 // strip-and-retry ≤4, dev hostname fallback) → relay. Non-streaming reads,
-// meters, relays; streaming passes bytes through a metering Stream that scans
-// SSE lines and settles the ledger exactly once from wherever the stream
-// ends — clean flush, client hangup (Drop), or upstream error.
+// meters, relays — annotate/strict rewriting the body before it goes out;
+// streaming passes bytes through a metering Stream that scans SSE lines and
+// settles the ledger exactly once from wherever the stream ends — clean
+// flush, client hangup (Drop), or upstream error.
 //
-// RECORDED DIVERGENCE (this commit): the confab guard (guardCompletion /
-// redactSecrets / the annotate meter) is not ported yet — it lands in its own
-// commit within batch 1. Nothing is live, so annotate mode simply does not
-// fire on the Rust side until then; observe-posture guard calls were
-// fire-and-forget and change no response bytes. The annotate/observe wiring
-// points are marked GUARD: below.
+// THE GUARD'S TWO POSTURES. Observe (or an agent-loop key): the guard runs
+// detached after the bytes are gone — findings record, response untouched.
+// Annotate/strict on a human's key: non-streaming awaits the guard and
+// rewrites the body (strict redacts, both append the caveat); streaming
+// relays line-wise with [DONE] withheld, then injects the caveat as one
+// final delta chunk. AN AGENT'S OWN TOOL LOOP IS NEVER ANNOTATED — a caveat
+// mid-loop would contaminate the agent's context; the chat/channel layer
+// annotates the human-facing copy instead.
 
 use crate::auth::{authenticate_key, bearer_secret};
 use crate::error::{
@@ -25,6 +29,10 @@ use crate::error::{
     openai_error_null_param, sanitized_upstream_body,
 };
 use crate::gateway::budget::{BudgetLimits, budget_message, check_budget};
+use crate::gateway::guard::{
+    Finding, Grounding, GuardMode, grounding_text_of, guard_completion, guard_config,
+    needs_redaction, redact_secrets,
+};
 use crate::gateway::registry::resolve_route;
 use crate::gateway::settings::get_setting;
 use crate::gateway::upstream::{Reply, build_upstream, fetch_upstream, js_truthy};
@@ -37,6 +45,8 @@ use axum::http::{Request, StatusCode, header};
 use axum::response::Response;
 use futures_util::Stream;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -44,6 +54,12 @@ use std::task::{Context, Poll};
 /// sanity ceiling for a chat body, and a body past it lands in the same 400
 /// as unparseable JSON (what a genuinely unreadable body produces there).
 const BODY_LIMIT: usize = 25 * 1024 * 1024;
+
+// The two Talaria-minted gateway credentials (fleet-brain owns both). Named
+// here only as the DEFAULTS for the settings below; operators can extend the
+// lists, and any other key — an operator's own — is metered and annotated.
+const PERSONA_KEY: &str = "fleet-gateway";
+const WORKBENCH_KEY: &str = "workbench-gateway";
 
 pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response {
     let auth_header = req
@@ -206,6 +222,34 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
         .unwrap_or(false);
 
+    // ANNOTATION — is the caller an agent's own tool loop? Guard caveats are
+    // for humans reading a reply; injecting one into an agent's loop would
+    // contaminate its context, so annotate/strict never rewrite these keys'
+    // responses (findings still record, and the chat/channel layer annotates
+    // the human-facing copy). Both the personas' key and the workbench's are
+    // loops.
+    let agent_loop_keys = get_setting(
+        &state.pg,
+        "gateway_agent_loop_keys",
+        json!([PERSONA_KEY, WORKBENCH_KEY]),
+    )
+    .await;
+    let is_agent_loop = agent_loop_keys
+        .as_array()
+        .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
+        .unwrap_or(false);
+    let guard_cfg = guard_config(&state.pg).await;
+    let may_annotate = !is_agent_loop && guard_cfg.mode.discloses();
+
+    // Everything a guard call needs, held once for both relay paths.
+    let guard_spec = GuardSpec {
+        pg: state.pg.clone(),
+        caller: caller.clone(),
+        model: model.clone(),
+        endpoint: route.endpoint.name.clone(),
+        messages: client_body["messages"].clone(),
+    };
+
     let prompt_chars = prompt_chars_of(&client_body["messages"]);
 
     let reply = match fetch_upstream(&state.pg, &mut call, Some(&route)).await {
@@ -232,7 +276,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     if !js_truthy(&call.body["stream"]) {
         let status = reply.status();
         let content_type = reply.content_type();
-        let text = reply.text().await;
+        let mut text = reply.text().await;
         if !(200..300).contains(&status) {
             // The upstream's own error body never crosses to the key holder;
             // verbatim goes to the log. Metering is not gated on ok: a
@@ -247,14 +291,54 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
             }
             return fixed_json(status, &sanitized_upstream_body(status, &text));
         }
-        if let Ok(j) = serde_json::from_str::<Value>(&text) {
+        if let Ok(mut j) = serde_json::from_str::<Value>(&text) {
             let content = j["choices"][0]["message"]["content"]
                 .as_str()
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_string();
             let counts = normalize_usage(j.get("usage"));
-            // GUARD (deferred): annotate/strict acts on `content` here before
-            // anything is relayed; observe-posture fires detached.
             ledger.maybe_spawn(counts, content.encode_utf16().count());
+            if may_annotate && !content.is_empty() {
+                // Nothing has been relayed yet, so annotate/strict can act on
+                // the body itself: strict redacts leaked secrets, and any
+                // findings append the human-facing caveat.
+                let (findings, caveat, mode) = guard_completion(
+                    &state.pg,
+                    &content,
+                    &client_body["messages"],
+                    &caller,
+                    &model,
+                    Some(&route.endpoint.name),
+                )
+                .await;
+                if !findings.is_empty() && j["choices"][0]["message"].is_object() {
+                    // GROUNDED, like the findings above: redaction gets the
+                    // same grounding material the findings got, or the two
+                    // halves of one rule disagree about the same span.
+                    let safe = if mode == GuardMode::Strict && needs_redaction(&findings) {
+                        redact_secrets(
+                            &content,
+                            Some(&Grounding::new(&grounding_text_of(
+                                client_body["messages"]
+                                    .as_array()
+                                    .map(Vec::as_slice)
+                                    .unwrap_or_default(),
+                            ))),
+                        )
+                        .0
+                    } else {
+                        content.clone()
+                    };
+                    j["choices"][0]["message"]["content"] = json!(format!("{safe}{caveat}"));
+                    if let Ok(rewritten) = serde_json::to_string(&j) {
+                        text = rewritten;
+                    }
+                }
+            } else {
+                // Observe posture (or no content): findings record, response
+                // bytes are already relay-ready and stay untouched.
+                guard_spec.observe(&content);
+            }
         }
         return fixed_json_with_type(status, &text, &content_type);
     }
@@ -279,7 +363,12 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         .and_then(|v| v.to_str().ok())
         .unwrap_or("text/event-stream")
         .to_string();
-    let stream = MeteredStream::new(res.bytes_stream(), ledger);
+    let mode = if may_annotate {
+        MeterMode::Annotate
+    } else {
+        MeterMode::Passthrough
+    };
+    let stream = MeteredStream::new(res.bytes_stream(), ledger, mode, guard_spec);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
@@ -383,11 +472,65 @@ impl Ledger {
     }
 }
 
-/// The passthrough meter: bytes relay untouched while SSE `data:` lines are
-/// scanned for usage/content; the ledger settles once, from wherever the
-/// stream ends — a clean flush, a client hangup (this struct's Drop), or an
-/// upstream error frame. The provider bills a hung-up stream exactly the
-/// same, so the ledger books it too — exactly once, whichever fires first.
+/// Everything one guard call needs — held by the meter so the stream's end,
+/// wherever it lands, can run the guard with the same context the handler
+/// would.
+#[derive(Clone)]
+struct GuardSpec {
+    pg: sqlx::PgPool,
+    caller: String,
+    model: String,
+    endpoint: String,
+    messages: Value,
+}
+
+impl GuardSpec {
+    fn call(&self, answer: &str) -> GuardFut {
+        let s = self.clone();
+        let answer = answer.to_string();
+        Box::pin(async move {
+            guard_completion(
+                &s.pg,
+                &answer,
+                &s.messages,
+                &s.caller,
+                &s.model,
+                Some(&s.endpoint),
+            )
+            .await
+        })
+    }
+
+    /// Observe posture: fire-and-forget, findings record, nobody is told.
+    /// `try_current` because Drop can run outside the runtime at shutdown —
+    /// losing the guard there is acceptable, panicking is not.
+    fn observe(&self, answer: &str) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let fut = self.call(answer);
+            handle.spawn(async move {
+                let _ = fut.await;
+            });
+        }
+    }
+}
+
+type GuardFut = Pin<Box<dyn Future<Output = (Vec<Finding>, String, GuardMode)> + Send>>;
+
+/// Which relay the stream is. Passthrough relays bytes untouched (observe
+/// posture or an agent-loop key); annotate relays line-wise with [DONE]
+/// withheld so a caveat can land before it.
+#[derive(PartialEq, Clone, Copy)]
+enum MeterMode {
+    Passthrough,
+    Annotate,
+}
+
+/// The meter: SSE `data:` lines are scanned for usage/content while the bytes
+/// relay, and the ledger settles once, from wherever the stream ends — a
+/// clean flush, a client hangup (this struct's Drop), or an upstream error
+/// frame. The provider bills a hung-up stream exactly the same, so the ledger
+/// books it too — exactly once, whichever fires first. Only the CLEAN end
+/// scans the pending tail (TS's flush); settle books, it does not scan.
 struct MeteredStream {
     inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
     /// Partial line BYTES across chunk boundaries — buffering bytes (not
@@ -398,12 +541,45 @@ struct MeteredStream {
     usage: Option<Value>,
     settled: bool,
     ledger: Ledger,
+    mode: MeterMode,
+    /// [DONE] was seen and is being withheld until the guard has spoken.
+    saw_done: bool,
+    /// Re-emitted line bytes (annotate mode) and the caveat/[DONE] tail —
+    /// drained before the upstream is polled again.
+    out: VecDeque<Bytes>,
+    /// The guard future, armed only at a clean annotate-mode end with content.
+    guard: Option<GuardFut>,
+    /// Upstream returned None — the flush path has run.
+    ended: bool,
+    /// Upstream errored mid-stream — neither flush nor cancel runs a guard.
+    errored: bool,
+    guard_spec: GuardSpec,
+}
+
+/// TS's isDone: a data: line whose payload is exactly [DONE].
+fn line_is_done(line: &[u8]) -> bool {
+    line.strip_prefix(b"data:")
+        .is_some_and(|rest| String::from_utf8_lossy(rest).trim() == "[DONE]")
+}
+
+/// The caveat as one final delta chunk — byte-shaped like the TS literal
+/// (preserve_order keeps the key order `JSON.stringify` would emit).
+fn guard_caveat_chunk(caveat: &str, model: &str) -> Bytes {
+    let chunk = json!({
+        "id": "talaria-guard",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{ "index": 0, "delta": { "content": caveat }, "finish_reason": null }],
+    });
+    Bytes::from(format!("data: {chunk}\n\n"))
 }
 
 impl MeteredStream {
     fn new(
         inner: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
         ledger: Ledger,
+        mode: MeterMode,
+        guard_spec: GuardSpec,
     ) -> Self {
         MeteredStream {
             inner: Box::pin(inner),
@@ -412,6 +588,13 @@ impl MeteredStream {
             usage: None,
             settled: false,
             ledger,
+            mode,
+            saw_done: false,
+            out: VecDeque::new(),
+            guard: None,
+            ended: false,
+            errored: false,
+            guard_spec,
         }
     }
 
@@ -437,24 +620,47 @@ impl MeteredStream {
     fn on_chunk(&mut self, chunk: &Bytes) {
         self.buf.extend_from_slice(chunk);
         while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
+            // The drained line carries its own \n (and any \r before it);
+            // passthrough ignores it, annotate re-emits exactly those bytes —
+            // TS's `${line}\n` is the same bytes back.
             let line: Vec<u8> = self.buf.drain(..=i).collect();
-            let line = String::from_utf8_lossy(&line[..line.len() - 1]);
-            self.scan_line(&line);
+            let body = &line[..line.len() - 1];
+            self.scan_line(&String::from_utf8_lossy(body));
+            if self.mode == MeterMode::Annotate {
+                if line_is_done(body) {
+                    self.saw_done = true;
+                } else {
+                    self.out.push_back(Bytes::from(line));
+                }
+            }
         }
     }
 
+    /// The clean-end tail: scanned, and in annotate mode re-emitted verbatim
+    /// (no newline added — TS enqueues `lineBuf` as-is).
+    fn flush_tail(&mut self) {
+        if self.buf.is_empty() {
+            return;
+        }
+        let tail = std::mem::take(&mut self.buf);
+        self.scan_line(&String::from_utf8_lossy(&tail));
+        if self.mode == MeterMode::Annotate {
+            if line_is_done(&tail) {
+                self.saw_done = true;
+            } else {
+                self.out.push_back(Bytes::from(tail));
+            }
+        }
+    }
+
+    /// Book the ledger — once, from whichever end the stream comes to. The
+    /// pending line is NOT scanned here: TS's settle() books only, and a
+    /// cancelled or errored stream's partial tail was never a complete frame.
     fn settle(&mut self) {
         if self.settled {
             return;
         }
         self.settled = true;
-        if !self.buf.is_empty() {
-            let tail = String::from_utf8_lossy(&self.buf).into_owned();
-            self.buf.clear();
-            self.scan_line(&tail);
-        }
-        // GUARD (deferred): observe-posture runs here on the assembled
-        // content, fire-and-forget — never delaying the stream.
         self.ledger.maybe_spawn(
             normalize_usage(self.usage.as_ref()),
             self.content.encode_utf16().count(),
@@ -470,20 +676,67 @@ impl Stream for MeteredStream {
         // address-sensitive data lives in `inner`, a Pin<Box> that pins its
         // own pointee, and no other field's address is ever handed out.
         let this = unsafe { self.get_unchecked_mut() };
-        match this.inner.as_mut().poll_next(cx) {
-            Poll::Ready(Some(Ok(chunk))) => {
-                this.on_chunk(&chunk);
-                Poll::Ready(Some(Ok(chunk)))
+        loop {
+            if let Some(chunk) = this.out.pop_front() {
+                return Poll::Ready(Some(Ok(chunk)));
             }
-            Poll::Ready(Some(Err(e))) => {
-                this.settle();
-                Poll::Ready(Some(Err(e)))
+            if this.ended && this.guard.is_none() {
+                return Poll::Ready(None);
             }
-            Poll::Ready(None) => {
-                this.settle();
-                Poll::Ready(None)
+            // Annotate-mode clean end: await the guard, then the caveat (if
+            // any) and the withheld [DONE] go out as the stream's last bytes.
+            if let Some(g) = this.guard.as_mut() {
+                if let Poll::Ready((_, caveat, _)) = g.as_mut().poll(cx) {
+                    this.guard = None;
+                    if !caveat.is_empty() {
+                        this.out
+                            .push_back(guard_caveat_chunk(&caveat, &this.guard_spec.model));
+                    }
+                    if this.saw_done {
+                        this.out.push_back(Bytes::from_static(b"data: [DONE]\n\n"));
+                    }
+                    continue;
+                }
+                return Poll::Pending;
             }
-            Poll::Pending => Poll::Pending,
+            match this.inner.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(chunk))) => {
+                    this.on_chunk(&chunk);
+                    if this.mode == MeterMode::Passthrough {
+                        // Passthrough: the client's bytes, untouched.
+                        return Poll::Ready(Some(Ok(chunk)));
+                    }
+                    // Annotate: re-emitted lines come off the out queue.
+                    continue;
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    // TS's error frame runs neither flush nor cancel — the
+                    // spend settles, the guard does not run.
+                    this.errored = true;
+                    this.settle();
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Poll::Ready(None) => {
+                    // Clean end: scan the tail, settle, run the guard.
+                    this.ended = true;
+                    this.flush_tail();
+                    this.settle();
+                    match this.mode {
+                        MeterMode::Passthrough => {
+                            this.guard_spec.observe(&this.content);
+                        }
+                        MeterMode::Annotate if this.content.is_empty() => {
+                            if this.saw_done {
+                                this.out.push_back(Bytes::from_static(b"data: [DONE]\n\n"));
+                            }
+                        }
+                        MeterMode::Annotate => {
+                            this.guard = Some(this.guard_spec.call(&this.content));
+                        }
+                    }
+                }
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }
@@ -491,6 +744,14 @@ impl Stream for MeteredStream {
 impl Drop for MeteredStream {
     fn drop(&mut self) {
         self.settle();
+        // The cancel path: the client walked away mid-stream. The spend
+        // settles above; in annotate mode the guard still runs observe-posture
+        // on what assembled — the caveat can't reach a stream nobody is
+        // reading, but the findings still record. A clean end already ran the
+        // guard; an upstream error frame runs nothing.
+        if self.mode == MeterMode::Annotate && !self.ended && !self.errored {
+            self.guard_spec.observe(&self.content);
+        }
     }
 }
 
@@ -499,7 +760,7 @@ impl Drop for MeteredStream {
 mod tests {
     use super::*;
 
-    fn scanner() -> MeteredStream {
+    fn scanner_mode(mode: MeterMode) -> MeteredStream {
         // skip:true — settle runs its scan logic, the ledger write doesn't
         // (no DB in unit tests; the write itself is exercised live).
         let ledger = Ledger {
@@ -511,7 +772,18 @@ mod tests {
             prompt_chars: 0,
             skip: true,
         };
-        MeteredStream::new(futures_util::stream::empty(), ledger)
+        let guard_spec = GuardSpec {
+            pg: sqlx::PgPool::connect_lazy("postgres://x").unwrap(),
+            caller: "api:test".into(),
+            model: "test-model".into(),
+            endpoint: "e".into(),
+            messages: json!([]),
+        };
+        MeteredStream::new(futures_util::stream::empty(), ledger, mode, guard_spec)
+    }
+
+    fn scanner() -> MeteredStream {
+        scanner_mode(MeterMode::Passthrough)
     }
 
     // #[tokio::test]: constructing the ledger's lazy PgPool arms sqlx's pool
@@ -531,7 +803,7 @@ mod tests {
             s.usage.as_ref().unwrap()["prompt_tokens"],
             serde_json::json!(10)
         );
-        // settle flushes nothing new and must be idempotent.
+        // settle books only — it must be idempotent and scan nothing new.
         s.settle();
         s.settle();
         assert!(s.settled);
@@ -545,10 +817,61 @@ mod tests {
         ));
         assert_eq!(s.content, "");
         assert!(s.usage.is_none());
-        // The tail is still pending — not scanned until settle.
+        // The tail stays pending — settle books only; the CLEAN end scans it.
         assert!(!s.buf.is_empty());
         s.settle();
+        assert!(!s.buf.is_empty()); // still pending — a cancel would drop it
+        s.flush_tail();
         assert!(s.buf.is_empty()); // flushed (and still ignored — not JSON)
+    }
+
+    #[tokio::test]
+    async fn annotate_relays_lines_with_done_withheld_and_tail_verbatim() {
+        let mut s = scanner_mode(MeterMode::Annotate);
+        s.on_chunk(&Bytes::from_static(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n",
+        ));
+        // The delta line re-emits byte-for-byte; the blank separator line too;
+        // [DONE] is withheld; the blank AFTER [DONE] still goes out (it is a
+        // line like any other — only [DONE] itself is withheld).
+        assert_eq!(
+            s.out.pop_front().unwrap(),
+            Bytes::from_static(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n")
+        );
+        assert_eq!(s.out.pop_front().unwrap(), Bytes::from_static(b"\n"));
+        assert_eq!(s.out.pop_front().unwrap(), Bytes::from_static(b"\n"));
+        assert!(s.out.is_empty());
+        assert!(s.saw_done);
+        assert_eq!(s.content, "hi");
+        // A partial tail at the clean end goes out verbatim, no newline added.
+        s.on_chunk(&Bytes::from_static(b"data: {\"choices\""));
+        s.flush_tail();
+        assert_eq!(
+            s.out.pop_front().unwrap(),
+            Bytes::from_static(b"data: {\"choices\"")
+        );
+        // A [DONE] tail is withheld like a [DONE] line.
+        s.buf = b"data: [DONE]".to_vec();
+        s.flush_tail();
+        assert!(s.out.is_empty());
+        assert!(s.saw_done);
+    }
+
+    #[test]
+    fn done_detection_and_the_caveat_chunk_shape() {
+        assert!(line_is_done(b"data: [DONE]"));
+        assert!(line_is_done(b"data:[DONE]"));
+        assert!(line_is_done(b"data: [DONE]\r")); // \r belongs to the line
+        assert!(!line_is_done(b"data: {\"x\":1}"));
+        assert!(!line_is_done(b": [DONE]"));
+        // The caveat chunk is byte-exact with the TS literal.
+        let chunk = guard_caveat_chunk("\n\n--- caveat", "claude-3");
+        assert_eq!(
+            chunk,
+            Bytes::from_static(
+                b"data: {\"id\":\"talaria-guard\",\"object\":\"chat.completion.chunk\",\"model\":\"claude-3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\\n--- caveat\"},\"finish_reason\":null}]}\n\n"
+            )
+        );
     }
 
     #[test]
