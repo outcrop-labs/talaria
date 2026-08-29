@@ -5,9 +5,7 @@
 // limit across a window boundary, which is the right trade for a brake whose
 // goal is "thousands become dozens", not exact accounting.
 //
-// Unit-tested now; wired into the chat-completions route in phase 2 (the
-// models route is un-metered in TS too). DELETE THIS ALLOW when that lands.
-#![allow(dead_code)]
+// Unit-tested now; wired into the chat-completions route's rpm brake.
 
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
@@ -61,6 +59,8 @@ pub async fn rate_limit(
 }
 
 /// Drop the counter for `key` (a success shouldn't leave the budget spent).
+/// No Rust caller yet — the TS routes that use it are a later batch.
+#[allow(dead_code)]
 pub async fn rate_limit_reset(redis: &mut ConnectionManager, key: &str) {
     let _: Result<i64, _> = redis.del(redis_key(key)).await;
 }

@@ -10,7 +10,8 @@ publish = false
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+# "sync" for the OnceCell-style serialization of capability-store writes.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 tower = "0.5"
 # No `cors` feature on purpose: same-origin throughout (the repo's
 # same-origin-fetch invariant). The browser only ever talks to the TS app; the
@@ -37,4 +38,6 @@ aes-gcm = "0.11"
 base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
 getrandom = "0.3"
+regex = "1"
+url = "2"
 futures-util = "0.3"

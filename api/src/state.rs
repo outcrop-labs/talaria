@@ -21,10 +21,7 @@ pub struct AppState {
     /// getRedis()).
     redis: Arc<OnceCell<ConnectionManager>>,
     /// Lazily-loaded secretbox keys. Nothing in the models slice needs a key;
-    /// the first operation that does pays the load (and sees its diagnosis if
-    /// the root secret is wrong — recorded, never thrown; secretbox.rs).
-    /// DELETE THIS ALLOW with the phase-2 relay, its first caller.
-    #[allow(dead_code)]
+    /// the chat relay unseals endpoint credentials through it.
     sb: Arc<OnceCell<SecretBox>>,
     started: Instant,
 }
@@ -74,8 +71,6 @@ impl AppState {
 
     /// The loaded secretbox, loading `secret_keys` on first use. SecretBox is
     /// Clone (plain key maps) and loaded at most once per process.
-    /// DELETE THIS ALLOW with the phase-2 relay, its first caller.
-    #[allow(dead_code)]
     pub async fn secretbox(&self) -> Result<SecretBox, String> {
         self.sb
             .get_or_try_init(|| async {
