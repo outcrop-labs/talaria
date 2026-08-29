@@ -457,6 +457,21 @@ pub fn optional_enum_member(
     }
 }
 
+/// A NULLISH enum (`z.enum([...]).nullish()`): absent AND null both pass as
+/// None — the create-side conflation, where a null effort and a missing one
+/// land the same. (A PATCH tells them apart; feed this to `nullish_member`
+/// as the inner reader there.)
+pub fn nullish_enum_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    options: &[&str],
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => enum_member(obj, key, options).map(Some),
+    }
+}
+
 /// An optional boolean (`z.boolean().optional()`): absent is None; a present
 /// value — null included — must be a boolean. (The nullable sibling folds
 /// null in; this one is the stricter optional-only shape.)
@@ -485,6 +500,45 @@ pub fn optional_uuid_member(
         None | Some(Value::Null) => Ok(None),
         Some(_) => uuid_member(obj, key).map(Some),
     }
+}
+
+/// zod 4's `z.string().datetime()` under default params, transcribed from
+/// zod/src/v4/core/regexes.ts: a real proleptic date (per-month day bounds
+/// and the leap-year alternatives in the source), then `T`, an `hh:mm` that
+/// may carry seconds and any-length fraction, then a bare `Z` — no offsets,
+/// no local times, unless the schema asked for them and these routes never
+/// do. The failure message is zod 4's `Invalid ISO datetime` (the
+/// invalid_format case through the "datetime" → "ISO datetime" dictionary).
+static ISO_DATETIME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|02-(?:0[1-9]|1\d|2[0-8])))T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?Z$",
+    )
+    .unwrap()
+});
+
+/// A nullish ISO datetime (`z.string().datetime().nullish()`): absent and
+/// null both pass as None; a present value must be a string the datetime
+/// regex admits.
+pub fn nullish_datetime_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let s = v.as_str().ok_or_else(|| {
+        format!(
+            "Invalid input: expected string, received {}",
+            zod_type_name(v)
+        )
+    })?;
+    if !ISO_DATETIME.is_match(s) {
+        return Err("Invalid ISO datetime".into());
+    }
+    Ok(Some(s.to_string()))
 }
 
 /// A uuid whose NULL IS A VALUE (`Uuid.nullable().optional()`): absent is
@@ -632,6 +686,138 @@ pub fn nullable_number_member(
         ));
     }
     Ok(Some(n))
+}
+
+/// An `.optional()`-ONLY number (`z.number().…().optional()`, no
+/// `.nullable()`): absent passes, but a present null is a type error — zod
+/// refuses it, and so does this. The nullish sibling above folds null in;
+/// this one is the stricter shape.
+pub fn optional_number_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    kind: NumKind,
+    min: f64,
+    max: f64,
+) -> Result<Option<f64>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Err("Invalid input: expected number, received null".into()),
+        Some(_) => nullable_number_member(obj, key, kind, min, max),
+    }
+}
+
+/// A REQUIRED number (`z.number().…()` with no optional/nullable): absent is
+/// the undefined type error, zod's order.
+pub fn number_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    kind: NumKind,
+    min: f64,
+    max: f64,
+) -> Result<f64, String> {
+    match obj.get(key) {
+        None => Err("Invalid input: expected number, received undefined".into()),
+        Some(_) => nullable_number_member(obj, key, kind, min, max)
+            .and_then(|v| v.ok_or_else(|| "Invalid input: expected number, received null".into())),
+    }
+}
+
+/// A `.nullish()` PATCH column — the tri-state an update carries: absent is
+/// `None` (leave the column alone), null is `Some(None)` (clear it), and a
+/// present value reads through `read` (an optional-shaped member helper,
+/// called only on the present branch). The conflated helpers above answer
+/// create-side questions where null and absent land the same; a PATCH can
+/// tell them apart, and this is the combinator that does.
+pub fn nullish_member<T>(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    read: impl Fn(&serde_json::Map<String, Value>, &str) -> Result<Option<T>, String>,
+) -> Result<Option<Option<T>>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        // The member is present and non-null, so the optional-shaped reader
+        // can only answer Some(value) or an error — its absent/null arms are
+        // unreachable here.
+        Some(_) => read(obj, key).map(Some),
+    }
+}
+
+#[cfg(test)]
+mod datetime_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn dt(v: Value) -> Result<Option<String>, String> {
+        nullish_datetime_member(v.as_object().unwrap(), "dueDate")
+    }
+
+    #[test]
+    fn nullish_datetime_admits_zod_shapes_and_refuses_the_rest() {
+        // The shapes zod 4's default datetime admits.
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T12:00:00Z" }))
+                .unwrap()
+                .as_deref(),
+            Some("2026-08-29T12:00:00Z")
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T12:00Z" }))
+                .unwrap()
+                .as_deref(),
+            Some("2026-08-29T12:00Z")
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T12:00:00.123456Z" }))
+                .unwrap()
+                .as_deref(),
+            Some("2026-08-29T12:00:00.123456Z")
+        );
+        // Leap day on a leap year.
+        assert!(dt(json!({ "dueDate": "2024-02-29T00:00:00Z" })).is_ok());
+        // nullish.
+        assert_eq!(dt(json!({})).unwrap(), None);
+        assert_eq!(dt(json!({ "dueDate": null })).unwrap(), None);
+        // Offsets and local times are outside default params.
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T12:00:00+02:00" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T12:00:00" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        // Date-only, impossible months/days, impossible times.
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29Z" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-13-01T00:00:00Z" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-04-31T00:00:00Z" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2023-02-29T00:00:00Z" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T24:00:00Z" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        assert_eq!(
+            dt(json!({ "dueDate": "2026-08-29T12:60:00Z" })).unwrap_err(),
+            "Invalid ISO datetime"
+        );
+        // Non-strings are a type error, not a format one.
+        assert_eq!(
+            dt(json!({ "dueDate": 17 })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -979,6 +1165,78 @@ mod tests {
         assert_eq!(
             rpm(json!({ "v": 20_000 })).unwrap_err(),
             "Too big: expected number to be <=10000"
+        );
+    }
+
+    #[test]
+    fn optional_and_required_numbers_tell_null_from_absent() {
+        use super::NumKind;
+        // addTimeSpentSeconds's shape: `.optional()` only — null is a TYPE
+        // error, unlike the nullish sibling above.
+        let opt = |v: Value| {
+            optional_number_member(v.as_object().unwrap(), "v", NumKind::Float, 0.0, 30.0)
+        };
+        assert_eq!(opt(json!({})).unwrap(), None);
+        assert_eq!(opt(json!({ "v": 12.5 })).unwrap(), Some(12.5));
+        assert_eq!(
+            opt(json!({ "v": null })).unwrap_err(),
+            "Invalid input: expected number, received null"
+        );
+        // promptTokens's shape: required, int-bounded.
+        let req = |v: Value| number_member(v.as_object().unwrap(), "v", NumKind::Int, 0.0, 10.0);
+        assert_eq!(req(json!({ "v": 3 })).unwrap(), 3.0);
+        assert_eq!(
+            req(json!({})).unwrap_err(),
+            "Invalid input: expected number, received undefined"
+        );
+        assert_eq!(
+            req(json!({ "v": null })).unwrap_err(),
+            "Invalid input: expected number, received null"
+        );
+        assert_eq!(
+            req(json!({ "v": 11 })).unwrap_err(),
+            "Too big: expected number to be <=10"
+        );
+    }
+
+    #[test]
+    fn nullish_member_carries_the_patch_tri_state() {
+        // The PATCH columns: absent = leave alone, null = clear, value = set.
+        // Inner reader is the max-only string (description's shape).
+        let tri = |v: Value| {
+            nullish_member(v.as_object().unwrap(), "d", |o, k| {
+                optional_max_string_member(o, k, 5)
+            })
+        };
+        assert_eq!(tri(json!({})).unwrap(), None); // untouched
+        assert_eq!(tri(json!({ "d": null })).unwrap(), Some(None)); // cleared
+        assert_eq!(
+            tri(json!({ "d": "abc" })).unwrap(),
+            Some(Some("abc".into()))
+        );
+        assert_eq!(
+            tri(json!({ "d": "toolong" })).unwrap_err(),
+            "Too big: expected string to have <=5 characters"
+        );
+        assert_eq!(
+            tri(json!({ "d": 5 })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        // The nullish enum inner reader (effort's shape) under the combinator.
+        let effort = |v: Value| {
+            nullish_member(v.as_object().unwrap(), "e", |o, k| {
+                nullish_enum_member(o, k, &["xs", "s"])
+            })
+        };
+        assert_eq!(effort(json!({})).unwrap(), None);
+        assert_eq!(effort(json!({ "e": null })).unwrap(), Some(None));
+        assert_eq!(
+            effort(json!({ "e": "xs" })).unwrap(),
+            Some(Some("xs".into()))
+        );
+        assert_eq!(
+            effort(json!({ "e": "xl" })).unwrap_err(),
+            "Invalid option: expected one of \"xs\"|\"s\""
         );
     }
 

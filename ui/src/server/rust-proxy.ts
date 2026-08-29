@@ -44,6 +44,13 @@ const PREFIXES = [
   // they crossed together — the picker's rows and the composer's effort feed
   // read the same persona/catalog state.
   '/api/models',
+  // The boards group, whole: the list/create, the {id} board, and every
+  // sub-route (members, labels, statuses, tasks, agents, templates, views,
+  // events) — plus the tasks group a board hands off to: the ticket, its
+  // comments, dependencies, review gate, usage, and watchers. Statuses and
+  // tasks were the last two files under either path; both are all-Rust now.
+  '/api/boards',
+  '/api/tasks',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite

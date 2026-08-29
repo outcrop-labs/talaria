@@ -135,8 +135,9 @@ fn retry_after(window_hours: i64) -> i64 {
     (window_hours * 3600).clamp(30, 300)
 }
 
-/// en-US grouping for the token figure — node's toLocaleString().
-fn group(n: i64) -> String {
+/// en-US grouping for a token figure — node's toLocaleString(). Shared
+/// with the task-usage route, whose activity line carries the same shape.
+pub fn group(n: i64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {

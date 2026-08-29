@@ -23,6 +23,8 @@ pub mod boards_id_agents;
 pub mod boards_id_events;
 pub mod boards_id_labels;
 pub mod boards_id_members;
+pub mod boards_id_statuses;
+pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
 pub mod cost;
@@ -37,6 +39,12 @@ pub mod models;
 pub mod models_efforts;
 pub mod notifications;
 pub mod runs_events;
+pub mod tasks_id;
+pub mod tasks_id_comments;
+pub mod tasks_id_dependencies;
+pub mod tasks_id_review;
+pub mod tasks_id_usage;
+pub mod tasks_id_watchers;
 pub mod teams;
 pub mod teams_id;
 pub mod teams_id_members;
@@ -182,6 +190,20 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
+            "/api/boards/{id}/statuses",
+            get(boards_id_statuses::get)
+                .post(boards_id_statuses::post)
+                .put(boards_id_statuses::put)
+                .delete(boards_id_statuses::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/tasks",
+            get(boards_id_tasks::get)
+                .post(boards_id_tasks::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/boards/{id}/agents",
             get(boards_id_agents::get)
                 .put(boards_id_agents::put)
@@ -204,6 +226,42 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/boards/{id}/events",
             get(boards_id_events::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/tasks/{id}",
+            get(tasks_id::get)
+                .put(tasks_id::put)
+                .delete(tasks_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/tasks/{id}/comments",
+            get(tasks_id_comments::get)
+                .post(tasks_id_comments::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/tasks/{id}/dependencies",
+            axum::routing::post(tasks_id_dependencies::post)
+                .delete(tasks_id_dependencies::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/tasks/{id}/review",
+            axum::routing::post(tasks_id_review::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/tasks/{id}/usage",
+            get(tasks_id_usage::get)
+                .post(tasks_id_usage::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/tasks/{id}/watchers",
+            axum::routing::post(tasks_id_watchers::post)
+                .delete(tasks_id_watchers::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/keys/{id}",

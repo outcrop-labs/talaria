@@ -58,6 +58,7 @@ pub mod secretbox;
 pub mod session;
 pub mod state;
 pub mod statuses;
+pub mod task_const;
 pub mod tasks;
 pub mod teams;
 pub mod templates;

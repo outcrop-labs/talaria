@@ -56,7 +56,10 @@ describe('maybeProxy', () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
-    expect(await maybeProxy(req('/api/boards'), '/api/boards')).toBeNull()
+    // Channels is a batch-5 group — nothing under /api/channels has crossed,
+    // so the whole path stays TS. (Boards and tasks used to live here; they
+    // crossed whole and moved to the prefix list above.)
+    expect(await maybeProxy(req('/api/channels'), '/api/channels')).toBeNull()
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
     // Admin groups still on TS — invites sends email from its handler,
     // model-fitness is the probe suite's own plane.
