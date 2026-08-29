@@ -1,23 +1,14 @@
 // talaria-api — the Rust successor to the TS fetch handler, taking over route
 // groups one prefix at a time (docs/RUST-MIGRATION.md). Process shell only:
 // config, tracing, pools, router, graceful shutdown. Everything observable
-// lives in the route modules.
+// lives in the library (src/lib.rs) and its route modules.
 
-mod config;
-mod db;
-mod error;
-mod ratelimit;
-mod routes;
-mod secretbox;
-mod state;
-
-use crate::config::Config;
-use crate::state::AppState;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
 use std::sync::Arc;
 use std::time::Duration;
+use talaria_api::{config, config::Config, db, routes, state::AppState};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;

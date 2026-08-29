@@ -40,7 +40,9 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 
 const SALT: &[u8] = b"talaria.secretbox.v1";
-const IV_LEN: usize = 12;
+/// Public because the cross-language fixtures (tests/secretbox.rs) build IVs
+/// from hex literals of exactly this length.
+pub const IV_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const KEK_LEN: usize = 32;
 
