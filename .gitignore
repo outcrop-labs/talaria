@@ -3,6 +3,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Rust build output (api/) — Cargo.lock IS committed, target/ is not
+api/target/
+
 # Playground
 playground/
 

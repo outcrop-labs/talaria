@@ -13,6 +13,9 @@
     "test": "cd ui && bun run test",
     "typecheck": "cd ui && bun run typecheck && cd ../mcp && bun run typecheck",
     "docs:api": "bun scripts/gen-docs.mjs",
+    "api": "cargo run --quiet --manifest-path api/Cargo.toml",
+    "api:check": "cargo fmt --manifest-path api/Cargo.toml --check && cargo clippy --manifest-path api/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path api/Cargo.toml --quiet",
+    "api:vectors": "bun scripts/gen-secretbox-vectors.mjs",
     "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs && bun scripts/gen-docs.mjs --check",
     "verify": "bun run check && bun run typecheck && bun run test"
   }

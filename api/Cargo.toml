@@ -1,0 +1,40 @@
+# talaria-api — the Rust successor to the TS fetch handler (ui/src/server).
+# Strangler-fig migration: this service takes over route groups one prefix at a
+# time; the TS app reverse-proxies migrated prefixes to it. docs/RUST-MIGRATION.md.
+[package]
+name = "talaria-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tower = "0.5"
+# No `cors` feature on purpose: same-origin throughout (the repo's
+# same-origin-fetch invariant). The browser only ever talks to the TS app; the
+# TS→Rust hop is server-side.
+tower-http = { version = "0.7", features = ["trace", "timeout", "catch-panic", "request-id", "propagate-header"] }
+# NO "macros" feature, on purpose: runtime queries only during coexistence.
+# The schema moves with the TS MIGRATIONS array (ui/src/server/db/pg.ts —
+# append-only, sha256 checksums, advisory lock 8_314_207) and every devbox has
+# its own database, so compile-time statement checking would couple this build
+# to one devbox's schema. "derive" is for #[derive(FromRow)] structs only.
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+# rustls (not rustls-tls — renamed in reqwest 0.13) so nothing links OpenSSL;
+# the prod runtime image is bare alpine and must stay that way.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+sha2 = "0.11"
+scrypt = "0.12"
+aes-gcm = "0.11"
+base64 = "0.23"
+uuid = { version = "1", features = ["v4"] }
+getrandom = "0.3"
+futures-util = "0.3"
