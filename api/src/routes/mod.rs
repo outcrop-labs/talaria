@@ -17,6 +17,8 @@ pub mod auth_logout;
 pub mod auth_password;
 pub mod auth_providers;
 pub mod auth_session;
+pub mod boards;
+pub mod boards_id;
 pub mod cost;
 pub mod health;
 pub mod keys;
@@ -145,6 +147,18 @@ pub fn router(state: AppState) -> Router {
             get(keys::get)
                 .post(keys::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/boards",
+            get(boards::get)
+                .post(boards::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/boards/{id}",
+            axum::routing::patch(boards_id::patch)
+                .delete(boards_id::delete)
+                .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
         )
         .route(
             "/api/keys/{id}",

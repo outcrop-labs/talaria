@@ -417,6 +417,65 @@ pub fn enum_member(
     }
 }
 
+/// An OPTIONAL enum (`z.enum([...]).optional()`): absent passes as None, a
+/// present value answers the enum's message whatever its JSON type. The
+/// boards/tasks patch bodies lean on this shape heavily.
+pub fn optional_enum_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    options: &[&str],
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(_) => enum_member(obj, key, options).map(Some),
+    }
+}
+
+/// An optional boolean (`z.boolean().optional()`): absent is None; a present
+/// value — null included — must be a boolean. (The nullable sibling folds
+/// null in; this one is the stricter optional-only shape.)
+pub fn optional_boolean_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<bool>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or_else(|| {
+            format!(
+                "Invalid input: expected boolean, received {}",
+                zod_type_name(v)
+            )
+        }),
+    }
+}
+
+/// A nullish uuid (`Uuid.nullish()`): absent and null both pass as None; a
+/// present value must be a uuid, type message then format, in zod's order.
+pub fn optional_uuid_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => uuid_member(obj, key).map(Some),
+    }
+}
+
+/// A uuid whose NULL IS A VALUE (`Uuid.nullable().optional()`): absent is
+/// None, present-null is Some(None) — "clear it" — and a present string is
+/// Some(id). The three-state shape routes like the boards patch body use to
+/// tell "move to personal" from "don't touch the team".
+pub fn present_nullable_uuid_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<Option<String>>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(_) => uuid_member(obj, key).map(|s| Some(Some(s))),
+    }
+}
+
 /// The lowercase-kebab pattern (`/^[a-z0-9]+(-[a-z0-9]+)*$/`) — the SLUG/DEPT
 /// shape the role-template dialog enforces. Runs AFTER zod's own length
 /// checks, exactly where `.regex()` sits in the chain.
