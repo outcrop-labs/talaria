@@ -224,7 +224,11 @@ describe('talaria service install — orchestration', () => {
     expect(ctx.calls.some((c) => c.cmd === 'sudo' && c.args[1] === 'enable')).toBe(true)
   })
 
-  test('DOCKER_GID precedence: file wins untouched, exported value lands in the file, socket fills the gap', async () => {
+  test('DOCKER_GID precedence: file wins unpinned, exported value lands in the file, socket fills the gap', async () => {
+    // "Untouched" stopped being a file-level invariant when #267 made `up`
+    // append the shared secrets to this same docker/.env — the GID block's
+    // promise is narrower and still holds: a value already there is never
+    // re-pinned, never rewritten.
     const cases: { envFile?: string; env?: Record<string, string>; expectGid?: string; untouched?: boolean }[] = [
       { envFile: 'DOCKER_GID=42\n', expectGid: '42', untouched: true },
       { env: { DOCKER_GID: '7-from-shell' }, expectGid: '7-from-shell' },
@@ -241,7 +245,10 @@ describe('talaria service install — orchestration', () => {
       await runInstall(ctx, { host, euid: 1000, sock })
       const after = readFileSync(join(root, 'docker/.env'), 'utf8')
       expect(after).toContain(`DOCKER_GID=${c.expectGid}`)
-      if (c.untouched) expect(after).toBe(before)
+      if (c.untouched) {
+        expect(after.startsWith(before)).toBe(true)
+        expect(after).not.toContain('pinned by `talaria service install`')
+      }
     }
 
     // neither file nor shell: the socket's gid is pinned
@@ -256,7 +263,7 @@ describe('talaria service install — orchestration', () => {
     expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain(`DOCKER_GID=${statSync(sock).gid}\n`)
   })
 
-  test('no socket anywhere → warn, docker/.env not created', async () => {
+  test('no socket anywhere → warn, nothing pinned', async () => {
     const root = makeRepo()
     const { host } = makeHost()
     const ctx = fakeCtx({ env: { PATH: makeStubs() } })
@@ -264,7 +271,10 @@ describe('talaria service install — orchestration', () => {
     ctx.plant(['systemctl', [...DOCKER_SERVICE_SHOW]], 'LoadState=loaded\nUnitFileState=enabled\n')
     await runInstall(ctx, { host, euid: 1000, sock: '/nonexistent-service-test-sock' })
     expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes("couldn't stat"))).toBe(true)
-    expect(existsSync(join(root, 'docker/.env'))).toBe(false)
+    // docker/.env may exist after this — #267's shared secrets create it at
+    // up-time — but a socket nobody could stat must pin no GID into it.
+    const envFile = join(root, 'docker/.env')
+    if (existsSync(envFile)) expect(readFileSync(envFile, 'utf8')).not.toContain('DOCKER_GID=')
   })
 
   test('guards die before anything privileged runs', async () => {
