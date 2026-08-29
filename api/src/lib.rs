@@ -27,6 +27,7 @@ pub mod google_oauth;
 pub mod harness_model;
 pub mod instance;
 pub mod invites;
+pub mod labels;
 pub mod llm_keys;
 pub mod me;
 pub mod model_access;

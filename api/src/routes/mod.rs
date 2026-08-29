@@ -19,6 +19,11 @@ pub mod auth_providers;
 pub mod auth_session;
 pub mod boards;
 pub mod boards_id;
+pub mod boards_id_agents;
+pub mod boards_id_events;
+pub mod boards_id_labels;
+pub mod boards_id_members;
+pub mod boards_id_views;
 pub mod cost;
 pub mod health;
 pub mod keys;
@@ -159,6 +164,39 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(boards_id::patch)
                 .delete(boards_id::delete)
                 .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/members",
+            get(boards_id_members::get)
+                .post(boards_id_members::post)
+                .delete(boards_id_members::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/labels",
+            get(boards_id_labels::get)
+                .post(boards_id_labels::post)
+                .put(boards_id_labels::put)
+                .delete(boards_id_labels::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/agents",
+            get(boards_id_agents::get)
+                .put(boards_id_agents::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/boards/{id}/views",
+            get(boards_id_views::get)
+                .post(boards_id_views::post)
+                .put(boards_id_views::put)
+                .delete(boards_id_views::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/events",
+            get(boards_id_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/keys/{id}",

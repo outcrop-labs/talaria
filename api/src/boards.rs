@@ -513,7 +513,8 @@ pub async fn join_everyone_to_board(pg: &PgPool, board_id: &str) -> Result<(), s
 /// A board's agent policy (boards.ts BoardAgentConfig): the allow-all flag
 /// plus the explicit allow-list. Not a wire shape — every consumer reads the
 /// two fields.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BoardAgentConfig {
     pub allow_all: bool,
     pub models: Vec<String>,
