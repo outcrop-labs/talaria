@@ -2236,6 +2236,17 @@ const MIGRATIONS: string[] = [
   `alter table usage_events add column if not exists cache_read_tokens integer not null default 0`,
   `alter table usage_events add column if not exists reasoning_tokens integer not null default 0`,
 
+  // ── Per-key gateway policy (#265) ──────────────────────────────────────────
+  // A spend cap and a request-rate ceiling attached to the key itself, set by
+  // the key's owner in Settings → API keys. The cap rides the #243 budget
+  // machinery (see checkBudget in llm-gateway.ts, which min-merges it with any
+  // admin ceiling — a key owner can lower their own limit, never raise past an
+  // admin's) over the org budget window; the rate ceiling is a fixed-window
+  // Redis counter at the llm.v1 route. All three null by default: unlimited.
+  `alter table llm_api_keys add column if not exists spend_cap_tokens bigint`,
+  `alter table llm_api_keys add column if not exists spend_cap_usd numeric`,
+  `alter table llm_api_keys add column if not exists rate_limit_per_minute integer`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

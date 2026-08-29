@@ -5,6 +5,7 @@ import { budgetMessage, buildUpstream, checkBudget, fetchUpstream, recordGateway
 import { estimateTokens, normalizeUsage, type RawUsage, type TokenCounts } from '@/server/usage'
 import { getGuardConfig, groundingTextOf, guardCompletion, needsRedaction, redactSecrets } from '@/server/guardrails'
 import { getSetting } from '@/server/audit'
+import { rateLimit } from '@/server/rate-limit'
 import { logUpstreamError, sanitizedUpstreamBody } from '@/server/upstream-error'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
@@ -27,6 +28,27 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
     const id = await authenticateKey(bearer)
     if (!id) return json({ error: { message: 'invalid API key' } }, { status: 401 })
 
+    // The key's own request-rate ceiling (#265), a Redis fixed-window counter.
+    // Checked first — it's the cheapest refusal and bounds how hard anything
+    // can lean on the budget read below. Unset on the key (the default) skips
+    // it entirely; a limiter outage fails open like every other one.
+    if (id.caps.rpm) {
+      const r = await rateLimit(`gw:key:${id.keyId}`, id.caps.rpm, 60)
+      if (!r.ok) {
+        return json(
+          {
+            error: {
+              message: `rate limit exceeded for this key: ${id.caps.rpm} requests per minute`,
+              type: 'rate_limit_exceeded',
+              code: 'rate_limit_exceeded',
+              param: null,
+            },
+          },
+          { status: 429, headers: { 'retry-after': String(r.retryAfter) } },
+        )
+      }
+    }
+
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null
     if (!body || typeof body.model !== 'string' || !Array.isArray(body.messages)) {
       return json({ error: { message: 'model and messages are required' } }, { status: 400 })
@@ -35,9 +57,11 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
     if (!route) return json({ error: { message: `unknown model "${body.model}" — GET /v1/models` } }, { status: 404 })
 
     // The ceiling, BEFORE anything is spent upstream. Off unless an admin
-    // configured a budget, so the common path is one settings read.
+    // configured a budget or the key set its own cap (#265), so the common
+    // path is one settings read. The key's caps ride in min-merged — an owner
+    // can throttle their own key, never out-spend an admin's ceiling.
     const caller = `api:${id.keyName}`
-    const denial = await checkBudget(caller)
+    const denial = await checkBudget(caller, { tokens: id.caps.tokens, usd: id.caps.usd })
     if (denial) {
       return json(
         {
@@ -53,6 +77,7 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
               limit: denial.limit,
               used: denial.used,
               windowHours: denial.windowHours,
+              via: denial.via,
             },
           },
         },

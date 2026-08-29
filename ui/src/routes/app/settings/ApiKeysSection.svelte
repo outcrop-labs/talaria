@@ -8,7 +8,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { delJson, errorMessage, getJson, postJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { fade, slide } from '@/lib/motion'
   import { pushToast } from '@/lib/toast.svelte'
@@ -20,10 +20,16 @@
     createdAt: string
     lastUsedAt: string | null
     revokedAt: string | null
+    spendCapTokens: number | null
+    spendCapUsd: number | null
+    rateLimitPerMinute: number | null
   }
 
   // Personal keys for the Talaria LLM gateway — one org endpoint over the whole
-  // model stack. The secret shows exactly once at mint time.
+  // model stack. The secret shows exactly once at mint time. Each key carries
+  // its OWN ceilings (#265): a spend cap over the org budget window and a
+  // per-minute request limit — self-imposed, so a leaked or runaway key burns
+  // only what its owner decided it may.
 
   const qc = useQueryClient()
   const query = createQuery(() => ({
@@ -37,6 +43,48 @@
   let err = $state<string | null>(null)
   const keys = $derived((data?.keys ?? []).filter((k) => !k.revokedAt))
   const baseUrl = typeof window !== 'undefined' ? `${window.location.origin}/api/llm/v1` : '/api/llm/v1'
+
+  // One limits editor open at a time; the draft is seeded from the row, blank
+  // meaning unlimited — the same spelling the API uses (null).
+  let limitsFor = $state<string | null>(null)
+  let draft = $state({ tokens: '', usd: '', rpm: '' })
+
+  const limitsSummary = (k: ApiKey) => {
+    const parts: string[] = []
+    if (k.spendCapTokens) parts.push(`${k.spendCapTokens.toLocaleString()} tok`)
+    if (k.spendCapUsd) parts.push(`$${k.spendCapUsd}`)
+    if (k.rateLimitPerMinute) parts.push(`${k.rateLimitPerMinute}/min`)
+    return parts.join(' · ') || 'unlimited'
+  }
+
+  const openLimits = (k: ApiKey) => {
+    limitsFor = limitsFor === k.id ? null : k.id
+    draft = {
+      tokens: k.spendCapTokens ? String(k.spendCapTokens) : '',
+      usd: k.spendCapUsd ? String(k.spendCapUsd) : '',
+      rpm: k.rateLimitPerMinute ? String(k.rateLimitPerMinute) : '',
+    }
+  }
+
+  const saveLimits = async (k: ApiKey) => {
+    // Blank stays null — the wire never has to guess what "no cap" is.
+    const num = (s: string) => {
+      const v = Number(s.trim())
+      return s.trim() !== '' && Number.isFinite(v) && v > 0 ? v : null
+    }
+    try {
+      await putJson(`/api/keys/${k.id}`, {
+        spendCapTokens: num(draft.tokens),
+        spendCapUsd: num(draft.usd),
+        rateLimitPerMinute: num(draft.rpm),
+      })
+    } catch (e) {
+      pushToast({ title: 'Could not save limits', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    limitsFor = null
+    await qc.invalidateQueries({ queryKey: ['api-keys'] })
+  }
 
   const mint = async () => {
     err = null
@@ -89,19 +137,42 @@
     {#if keys.length > 0}
       <div class="mb-4 divide-y divide-line-subtle">
         {#each keys as k (k.id)}
-          <div
-            in:fade={{ duration: 150 }}
-            out:slide={{ duration: 150 }}
-            class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors dither-fill"
-          >
-            <span class="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
-            <code class="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>
-            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
-              {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'}
-            </span>
-            <Button variant="danger-outline" size="sm" class="shrink-0" onclick={() => void revoke(k.id)}>
-              Revoke
-            </Button>
+          <div in:fade={{ duration: 150 }} out:slide={{ duration: 150 }} class="-mx-2 rounded-md px-2 py-3 transition-colors dither-fill">
+            <div class="flex items-center gap-3 text-sm">
+              <span class="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
+              <code class="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>
+              <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
+                {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'} · {limitsSummary(k)}
+              </span>
+              <Button variant="ghost" size="sm" class="shrink-0" onclick={() => openLimits(k)}>
+                Limits…
+              </Button>
+              <Button variant="danger-outline" size="sm" class="shrink-0" onclick={() => void revoke(k.id)}>
+                Revoke
+              </Button>
+            </div>
+            {#if limitsFor === k.id}
+              <div transition:slide={{ duration: 150 }} class="mt-3">
+                <div class="flex max-w-lg flex-wrap items-end gap-2">
+                  <label class="flex-1 min-w-28 text-xs text-muted">
+                    Token cap
+                    <Input size="sm" bind:value={draft.tokens} placeholder="∞" inputmode="numeric" class="mt-1" />
+                  </label>
+                  <label class="flex-1 min-w-24 text-xs text-muted">
+                    $ cap
+                    <Input size="sm" bind:value={draft.usd} placeholder="∞" inputmode="decimal" class="mt-1" />
+                  </label>
+                  <label class="flex-1 min-w-24 text-xs text-muted">
+                    Requests / min
+                    <Input size="sm" bind:value={draft.rpm} placeholder="∞" inputmode="numeric" class="mt-1" />
+                  </label>
+                  <Button size="sm" onclick={() => void saveLimits(k)}>Save</Button>
+                </div>
+                <p class="mt-2 max-w-lg text-[11px] leading-relaxed text-muted">
+                  Caps apply over the org budget window (Admin → Settings) and never raise past an admin's ceiling — they can only tighten it. Blank means unlimited.
+                </p>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>

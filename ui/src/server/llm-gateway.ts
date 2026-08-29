@@ -636,6 +636,10 @@ export async function recordGatewayUsage(
 // two scopes: the whole org, and the individual caller (agent or API key). It
 // defaults to OFF — null limits everywhere — so upgrading an existing
 // deployment changes nothing until an admin sets a number.
+//
+// A caller may also carry its OWN cap — the per-key policy (#265) — which is
+// min-merged with whatever the admin configured for that caller: an owner can
+// throttle their own key, but never spend past an admin's ceiling.
 
 export interface BudgetLimits {
   /** Tokens allowed in the window. Null/absent/zero = unlimited. */
@@ -674,16 +678,14 @@ export interface BudgetDenial {
   used: number
   windowHours: number
   retryAfterSeconds: number
+  /** Which side set the binding number — where the fix lives. */
+  via: 'key' | 'admin'
 }
 
 const limitOf = (l: BudgetLimits | null | undefined, unit: 'tokens' | 'usd'): number | null => {
   const v = unit === 'tokens' ? l?.tokens : l?.usd
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
 }
-
-const hasAnyLimit = (p: BudgetPolicy): boolean =>
-  !!(limitOf(p.org, 'tokens') || limitOf(p.org, 'usd') || limitOf(p.perAgent, 'tokens') || limitOf(p.perAgent, 'usd')) ||
-  Object.values(p.agents ?? {}).some((l) => limitOf(l, 'tokens') || limitOf(l, 'usd'))
 
 /** A rolling window ages out continuously, so "try again shortly" is honest —
  *  but never advise a wait longer than the window itself. */
@@ -693,11 +695,13 @@ export function budgetMessage(d: BudgetDenial): string {
   const used = d.unit === 'usd' ? `$${d.used.toFixed(2)}` : `${d.used.toLocaleString()} tokens`
   const cap = d.unit === 'usd' ? `$${d.limit.toFixed(2)}` : `${d.limit.toLocaleString()} tokens`
   const who = d.scope === 'org' ? 'This organization' : `"${d.subject}"`
-  return (
-    `${who} has reached its LLM budget: ${used} of ${cap} in the last ${d.windowHours}h. ` +
-    `Requests resume as spend ages out of the window, or an admin can raise the limit ` +
-    `(Admin → Settings → LLM budgets).`
-  )
+  // The advice points at the surface whoever-hit-it can actually act on: a
+  // self-imposed key cap is the owner's to raise, an admin's is not.
+  const fix =
+    d.via === 'key'
+      ? `the key's owner can raise or remove the cap (Settings → API keys).`
+      : `an admin can raise the limit (Admin → Settings → LLM budgets).`
+  return `${who} has reached its LLM budget: ${used} of ${cap} in the last ${d.windowHours}h. Requests resume as spend ages out of the window, or ${fix}`
 }
 
 // Spend is read per request, so it is cached briefly. The TTL collapses as the
@@ -721,22 +725,42 @@ async function cachedSpend(
   return value
 }
 
+/** Per unit, the tighter of the key's own cap and the admin's ceiling for that
+ *  caller — remembering which side bound it, so a denial can point its reader
+ *  at the surface that actually holds the number. */
+function mergeCaps(key: BudgetLimits | null | undefined, admin: BudgetLimits | null | undefined) {
+  const pick = (a: number | null, b: number | null) =>
+    a == null ? { v: b, fromKey: false } : b == null ? { v: a, fromKey: true } : { v: Math.min(a, b), fromKey: a <= b }
+  const tokens = pick(limitOf(key, 'tokens'), limitOf(admin, 'tokens'))
+  const usd = pick(limitOf(key, 'usd'), limitOf(admin, 'usd'))
+  return { tokens: tokens.v, usd: usd.v, tokensFromKey: tokens.fromKey, usdFromKey: usd.fromKey }
+}
+
 /**
  * The circuit breaker. Returns a denial when `caller` (or the org) is over
  * budget, else null. Called BEFORE the upstream request — a refusal must cost
  * nothing.
  *
- * Cheap by construction: with no limits configured (the default) it returns on
- * a settings read and never touches usage_events.
+ * `keyCaps` is the caller's OWN policy (#265) — a key's self-imposed cap,
+ * min-merged with the admin's ceiling for that caller. An all-default policy
+ * with no key caps returns on the settings read and never touches usage_events.
  */
-export async function checkBudget(caller: string): Promise<BudgetDenial | null> {
+export async function checkBudget(caller: string, keyCaps?: BudgetLimits | null): Promise<BudgetDenial | null> {
   const policy = await getBudgets().catch(() => DEFAULT_BUDGETS)
-  if (!policy || !hasAnyLimit(policy)) return null
+  const adminCaller = policy.agents?.[caller] ?? policy.perAgent ?? null
+  const caps = mergeCaps(keyCaps ?? null, adminCaller)
+  if (!caps.tokens && !caps.usd && !limitOf(policy.org, 'tokens') && !limitOf(policy.org, 'usd')) return null
   const windowHours = Math.max(1, Math.min(24 * 365, Math.round(policy.windowHours || 24)))
 
-  const scopes: Array<{ scope: BudgetDenial['scope']; subject: string | null; limits: BudgetLimits | null }> = [
-    { scope: 'caller', subject: caller, limits: policy.agents?.[caller] ?? policy.perAgent },
-    { scope: 'org', subject: null, limits: policy.org },
+  const scopes: Array<{
+    scope: BudgetDenial['scope']
+    subject: string | null
+    limits: BudgetLimits | null
+    /** Which side set each binding number (caller scope only). */
+    fromKey: { tokens: boolean; usd: boolean }
+  }> = [
+    { scope: 'caller', subject: caller, limits: { tokens: caps.tokens, usd: caps.usd }, fromKey: { tokens: caps.tokensFromKey, usd: caps.usdFromKey } },
+    { scope: 'org', subject: null, limits: policy.org ?? null, fromKey: { tokens: false, usd: false } },
   ]
 
   for (const s of scopes) {
@@ -748,10 +772,10 @@ export async function checkBudget(caller: string): Promise<BudgetDenial | null> 
     ).catch(() => null)
     if (!spend) continue // a failed read must not become an outage
     if (tokenCap && spend.tokens >= tokenCap) {
-      return { scope: s.scope, subject: s.subject, unit: 'tokens', limit: tokenCap, used: spend.tokens, windowHours, retryAfterSeconds: retryAfter(windowHours) }
+      return { scope: s.scope, subject: s.subject, unit: 'tokens', limit: tokenCap, used: spend.tokens, windowHours, retryAfterSeconds: retryAfter(windowHours), via: s.fromKey.tokens ? 'key' : 'admin' }
     }
     if (usdCap && spend.cost >= usdCap) {
-      return { scope: s.scope, subject: s.subject, unit: 'usd', limit: usdCap, used: spend.cost, windowHours, retryAfterSeconds: retryAfter(windowHours) }
+      return { scope: s.scope, subject: s.subject, unit: 'usd', limit: usdCap, used: spend.cost, windowHours, retryAfterSeconds: retryAfter(windowHours), via: s.fromKey.usd ? 'key' : 'admin' }
     }
   }
   return null

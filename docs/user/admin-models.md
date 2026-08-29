@@ -71,3 +71,9 @@ brains are set per agent and unaffected.
 Members granted **Mint API keys** can mint personal LLM-gateway keys in
 **Settings → API keys** — an OpenAI-compatible base URL and model list drawn from this page —
 for external tools. Keys are scoped to the models allowed here.
+
+Each key carries its own ceilings (**Limits…** on the row): a spend cap in tokens and/or
+dollars over the org budget window, and a requests-per-minute throttle. They are the owner's
+to set — a leaked or runaway key then burns only what its owner decided it may. A personal cap
+can only tighten, never raise past, an admin's ceiling; hitting it answers `429 budget_exceeded`
+(or `rate_limit_exceeded`) with `retry-after`, which standard OpenAI clients honor.

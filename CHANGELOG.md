@@ -28,6 +28,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   no price configured, and spend reads are cached briefly except at the edge (>80% of a cap
   goes exact, bounding what a burst can slip past). Cron schedules get a frequency floor
   (default: nothing faster than every 5 minutes) — a cron is an agent turn is spend.
+- **Per-key caps and throttling** (#265): each LLM-gateway key carries its own ceilings in
+  **Settings → API keys** — a spend cap (tokens/$ over the org budget window) and a
+  requests-per-minute limit. Both self-imposed and unlimited by default; the cap can only
+  tighten an admin's ceiling, never raise past it, and the refusal (`429 budget_exceeded` /
+  `rate_limit_exceeded`, with `retry-after`) names the surface that holds the number.
 
 ### Security
 
