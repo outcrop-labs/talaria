@@ -17,11 +17,15 @@
 // probes of zod 4.3.6 itself), `prompt_rules` (the trust-boundary clause
 // more than one harness states), and `json_schema` (the schema put ON the
 // wire: a probed reproduction of zod's `toJSONSchema` renderer, the
-// provider-safe keyword subset, and the strict-eligibility walk). Still TS:
-// `define`, `transport`, `run`, `registry`, `gateway-params`, `recorded`,
-// `model` (the persona engine's harness-facing half crossed earlier as
-// `harness_model.rs`), and every def under harness/defs/.
+// provider-safe keyword subset, and the strict-eligibility walk), and
+// `gateway_params` (the 400-reading parameter learner: what may be stripped,
+// what must be reported to the caller, what is never touched — pure; the
+// gateway's fetch loop reads it when that loop moves). Still TS: `define`,
+// `transport`, `run`, `registry`, `recorded`, `model` (the persona engine's
+// harness-facing half crossed earlier as `harness_model.rs`), and every def
+// under harness/defs/.
 
+pub mod gateway_params;
 pub mod json;
 pub mod json_schema;
 pub mod prompt_rules;

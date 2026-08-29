@@ -44,5 +44,9 @@ uuid = { version = "1", features = ["v4"] }
 getrandom = "0.3"
 regex = "1"
 url = "2"
+# Insertion-ordered maps for the learned-parameter store (already compiled in
+# via serde_json's preserve_order; declared so the store's type says what it
+# means rather than leaning on serde_json::Map as a Map).
+indexmap = "2"
 futures-util = "0.3"
 chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
