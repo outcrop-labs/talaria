@@ -22,7 +22,7 @@ export interface Attachment {
   refType?: 'kb-doc' | 'artifact'
 }
 
-const MAX_BYTES = 25 * 1024 * 1024 // 25 MB
+export const MAX_BYTES = 25 * 1024 * 1024 // 25 MB
 const isImage = (mime: string) => /^image\//.test(mime)
 export { isImage }
 
@@ -54,6 +54,63 @@ export function serveUpload(up: { bytes: Buffer; mime: string; filename: string 
       ...(inline ? {} : { 'content-security-policy': "default-src 'none'; sandbox" }),
     },
   })
+}
+
+// ── Reading the body without trusting its size (#266) ───────────────────────
+
+/** Multipart envelope beyond the file bytes: boundaries, field names, a
+ *  margin for incidental fields. The stream cap is file + envelope — anything
+ *  bigger is refused before formData() has a reason to finish parsing it. */
+const FORM_ENVELOPE_BYTES = 64 * 1024
+
+export type UploadForm =
+  | { ok: true; form: FormData }
+  | { ok: false; reason: 'too-large' | 'malformed' }
+
+/** Read the upload form without buffering an unbounded body. Content-length is
+ *  checked first — the free win, refusing a sized attack at connect time — but
+ *  a streamed multipart body (what every browser FormData POST is) carries no
+ *  content-length, so the stream itself is capped: the transform errors at the
+ *  cap, formData() rejects mid-stream, and the caller answers 413 having
+ *  buffered `cap` bytes instead of whatever the client felt like sending.
+ *  `cap` is injectable so tests can use a small one; production callers never
+ *  pass it. */
+export async function readUploadForm(request: Request, cap = MAX_BYTES + FORM_ENVELOPE_BYTES): Promise<UploadForm> {
+  const declared = Number(request.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > cap) return { ok: false, reason: 'too-large' }
+  if (!request.body) {
+    try {
+      return { ok: true, form: await request.formData() }
+    } catch {
+      return { ok: false, reason: 'malformed' }
+    }
+  }
+  let total = 0
+  let overran = false
+  const counter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      total += chunk.byteLength
+      if (total > cap) {
+        overran = true
+        controller.error(new Error('upload body exceeds cap'))
+        return
+      }
+      controller.enqueue(chunk)
+    },
+  })
+  // duplex is required for a stream body but absent from the DOM's
+  // RequestInit type; node's runtime (undici) is where this executes.
+  const capped = new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body.pipeThrough(counter),
+    duplex: 'half',
+  } as RequestInit)
+  try {
+    return { ok: true, form: await capped.formData() }
+  } catch {
+    return { ok: false, reason: overran ? 'too-large' : 'malformed' }
+  }
 }
 
 export async function saveUpload(input: {

@@ -240,11 +240,12 @@ Source: [`ui/src/routes/api/uploads.ts`](../../ui/src/routes/api/uploads.ts)
 
 > POST (multipart/form-data, field "file") → store an attachment, return its
 > metadata. Any signed-in user may upload; the file is served back from
-> /api/uploads/:id.
+> /api/uploads/:id. The body is read through readUploadForm — an oversized
+> upload is refused before it is buffered (413), not discovered after.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:files.upload` | — | `…` | 200, 400 | — |
+| POST | `session` + `perm:files.upload` | — | `…` | 200, 400 + varies | — |
 
 ## `/api/uploads/{id}`
 

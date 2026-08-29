@@ -6,6 +6,12 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
+- Oversized uploads are refused before they are buffered (#266): the upload
+  route reads its multipart body through a capped stream — a declared
+  content-length over the cap is answered 413 from the header alone, and a
+  chunked body (what every browser FormData POST is) is aborted mid-read at the
+  cap. Previously the whole body was buffered and only saveUpload's byte count
+  refused — after the memory was already spent.
 - Compose generates its first-boot secrets (#267): `talaria deploy up` writes
   `POSTGRES_PASSWORD` and the minio root pair into `docker/.env` (once, 0600,
   git-ignored) before invoking compose — the two places no container entrypoint
