@@ -1,12 +1,92 @@
 // Token ledger — Talaria-owned usage accounting for every agent generation.
 // Real counts when the gateway's final chunk reports usage; otherwise a
-// chars/4 estimate flagged `estimated`. Dollar cost comes later (needs
-// per-LLM pricing attribution — see ROADMAP).
+// chars/4 estimate flagged `estimated`.
 import { db } from './db/pg'
 import { routingFor } from './llm-gateway'
 import { nudgeAutoPrices } from './price-oracle'
 
-export interface UsageInput {
+// ── What a token costs, by KIND ─────────────────────────────────────────────
+// prompt/completion were never the whole bill:
+//   • cache WRITES cost more than fresh input (Anthropic: 1.25x) — you pay a
+//     premium to put the block in the cache.
+//   • cache READS cost far less (Anthropic: 0.1x) — that is the whole point.
+//   • reasoning tokens are OUTPUT tokens; providers already fold them into
+//     completion_tokens, so they are recorded for visibility and NOT re-priced.
+// Multipliers ride against the endpoint's INPUT rate, which is how every
+// provider publishes them.
+export const CACHE_WRITE_MULTIPLIER = 1.25
+export const CACHE_READ_MULTIPLIER = 0.1
+
+/** Every usage shape we see across providers, before normalisation. */
+export interface RawUsage {
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+  prompt_tokens_details?: { cached_tokens?: number | null; cache_creation_tokens?: number | null } | null
+  completion_tokens_details?: { reasoning_tokens?: number | null } | null
+  // Anthropic's NATIVE shape (some compat layers pass it straight through).
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_creation_input_tokens?: number | null
+  cache_read_input_tokens?: number | null
+}
+
+/** Priced token counts: `promptTokens` is UNCACHED input only, so the four
+ *  fields never overlap and each is billed at its own rate. */
+export interface TokenCounts {
+  promptTokens: number
+  completionTokens: number
+  cacheWriteTokens: number
+  cacheReadTokens: number
+  /** Informational — already inside completionTokens, never re-priced. */
+  reasoningTokens: number
+}
+
+const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0)
+
+/**
+ * Normalise a provider usage object into non-overlapping, separately-priced
+ * counts. The two shapes in the wild disagree about whether cached input is
+ * INSIDE prompt_tokens:
+ *
+ *   Anthropic (native)  input_tokens EXCLUDES cache_creation_input_tokens and
+ *                       cache_read_input_tokens — they are billed on top. Pricing
+ *                       prompt_tokens alone UNDERSTATED the bill.
+ *   OpenAI-compatible   prompt_tokens INCLUDES prompt_tokens_details.cached_tokens
+ *                       (Anthropic's own compat layer does this too). Pricing all
+ *                       of prompt_tokens at the input rate OVERSTATED the bill,
+ *                       because cached reads are a tenth of the price.
+ *
+ * We detect the shape from the payload rather than the provider name, so a
+ * gateway/proxy in the middle can't mislabel it.
+ *
+ * KNOWN GAP: a compat layer that folds cache WRITES into prompt_tokens without
+ * reporting them separately is indistinguishable from plain input, so those
+ * land at 1.0x instead of 1.25x — a bounded understatement on cache writes
+ * only, and it corrects itself the moment the provider reports the field.
+ */
+export function normalizeUsage(u: RawUsage | null | undefined): TokenCounts | null {
+  if (!u || typeof u !== 'object') return null
+  let promptTokens = n(u.prompt_tokens ?? u.input_tokens)
+  const completionTokens = n(u.completion_tokens ?? u.output_tokens)
+  const reasoningTokens = Math.min(n(u.completion_tokens_details?.reasoning_tokens), completionTokens)
+
+  let cacheWriteTokens = n(u.cache_creation_input_tokens ?? u.prompt_tokens_details?.cache_creation_tokens)
+  let cacheReadTokens = n(u.cache_read_input_tokens)
+  if (cacheWriteTokens === 0 && cacheReadTokens === 0) {
+    // OpenAI-compatible: cached input is already counted inside prompt_tokens,
+    // so bill it once — at the cache-read rate, not the input rate.
+    cacheReadTokens = Math.min(n(u.prompt_tokens_details?.cached_tokens), promptTokens)
+    promptTokens -= cacheReadTokens
+  } else if (u.cache_read_input_tokens == null && u.cache_creation_input_tokens == null) {
+    // Detail-object cache writes are folded in (see KNOWN GAP above).
+    cacheWriteTokens = Math.min(cacheWriteTokens, promptTokens)
+    promptTokens -= cacheWriteTokens
+  }
+  if (promptTokens + completionTokens + cacheWriteTokens + cacheReadTokens === 0) return null
+  return { promptTokens, completionTokens, cacheWriteTokens, cacheReadTokens, reasoningTokens }
+}
+
+export interface UsageInput extends Partial<TokenCounts> {
   agentModel: string
   /** 'chat'/'channel' rows are gateway-metered by Talaria; 'ticket' rows are
    *  agent-SELF-REPORTED (MCP log_usage) for work done outside Talaria's
@@ -93,9 +173,12 @@ export async function recordUsage(u: UsageInput): Promise<void> {
   const sql = await db()
   const cls = await classifyAgent(u.agentModel, u.tier ?? null).catch(() => null)
   await sql`
-    insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens, estimated, endpoint_class, llm_model, endpoint)
+    insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens,
+                              cache_write_tokens, cache_read_tokens, reasoning_tokens,
+                              estimated, endpoint_class, llm_model, endpoint)
     values (${u.agentModel}, ${u.source}, ${u.refId ?? null}, ${u.taskId ?? null},
-            ${Math.max(0, Math.round(u.promptTokens))}, ${Math.max(0, Math.round(u.completionTokens))},
+            ${n(u.promptTokens)}, ${n(u.completionTokens)},
+            ${n(u.cacheWriteTokens)}, ${n(u.cacheReadTokens)}, ${n(u.reasoningTokens)},
             ${u.estimated}, ${cls?.endpointClass ?? null}, ${cls?.llmModel ?? null}, ${cls?.endpoint ?? null})
   `
   // A cloud row landing without a price is the oracle's cue to look again —
@@ -115,9 +198,9 @@ export async function recordUsage(u: UsageInput): Promise<void> {
 
 export interface CostOverview {
   totals: {
-    today: { prompt: number; completion: number; generations: number; cost: number }
-    week: { prompt: number; completion: number; generations: number; cost: number }
-    month: { prompt: number; completion: number; generations: number; cost: number }
+    today: { prompt: number; completion: number; cache: number; generations: number; cost: number }
+    week: { prompt: number; completion: number; cache: number; generations: number; cost: number }
+    month: { prompt: number; completion: number; cache: number; generations: number; cost: number }
     estimatedShare: number // 0..1 of the month's generations that are estimates
     /** 30-day local-vs-cloud token split; `other` = unattributed rows, so the
      *  three always sum to the 30-day total. */
@@ -149,13 +232,20 @@ export interface CostOverview {
 // the auto-fetched public rate (price-oracle), else the endpoint default;
 // local rows are $0 (your hardware); cloud rows with no price at all get NULL
 // cost so they can be surfaced as "unpriced".
+//
+// Every INPUT kind is priced off the input rate at its own multiplier: fresh
+// prompt at 1x, cache writes at 1.25x, cache reads at 0.1x. Reasoning tokens
+// are already inside completion_tokens, so they are never added again.
 const PRICED = `
   select u.*,
     case
       when u.endpoint_class = 'local' then 0
       when u.endpoint_class = 'cloud' then
-        (u.prompt_tokens * coalesce((e.model_prices->u.llm_model->>'in')::numeric,
-                                    (e.auto_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok)
+        ((u.prompt_tokens
+            + u.cache_write_tokens * ${CACHE_WRITE_MULTIPLIER}
+            + u.cache_read_tokens * ${CACHE_READ_MULTIPLIER})
+           * coalesce((e.model_prices->u.llm_model->>'in')::numeric,
+                      (e.auto_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok)
          + u.completion_tokens * coalesce((e.model_prices->u.llm_model->>'out')::numeric,
                                           (e.auto_prices->u.llm_model->>'out')::numeric, e.price_out_per_mtok)) / 1e6
       else null
@@ -164,9 +254,14 @@ const PRICED = `
   left join llm_endpoints e on e.name = u.endpoint
 `
 
+/** Every token on a row, whatever its kind — the denominator for volume views. */
+const ALL_TOKENS = 'prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens'
+
 export interface TaskUsage {
   promptTokens: number
   completionTokens: number
+  cacheWriteTokens: number
+  cacheReadTokens: number
   cost: number
   /** Tokens with no $ figure: unpriced cloud AND unattributed rows (agent name
    *  didn't resolve to a def). Cost is understated when > 0. */
@@ -181,24 +276,35 @@ export async function taskUsage(taskId: string): Promise<TaskUsage> {
     `with priced as (${PRICED})
      select coalesce(sum(prompt_tokens),0)::int as prompt,
             coalesce(sum(completion_tokens),0)::int as completion,
+            coalesce(sum(cache_write_tokens),0)::int as cache_write,
+            coalesce(sum(cache_read_tokens),0)::int as cache_read,
             coalesce(sum(cost),0)::float as cost,
-            coalesce(sum(prompt_tokens + completion_tokens) filter (where cost is null), 0)::bigint as unpriced
+            coalesce(sum(${ALL_TOKENS}) filter (where cost is null), 0)::bigint as unpriced
      from priced where task_id = $1`,
     [taskId],
   )
   const perModel = await sql.unsafe(
     `with priced as (${PRICED})
      select llm_model as "llmModel",
-            coalesce(sum(prompt_tokens + completion_tokens),0)::bigint as tokens,
+            coalesce(sum(${ALL_TOKENS}),0)::bigint as tokens,
             sum(cost)::float as cost
      from priced where task_id = $1
      group by llm_model order by tokens desc`,
     [taskId],
   )
-  const t = totals as unknown as { prompt: number; completion: number; cost: number; unpriced: string | number }
+  const t = totals as unknown as {
+    prompt: number
+    completion: number
+    cache_write: number
+    cache_read: number
+    cost: number
+    unpriced: string | number
+  }
   return {
     promptTokens: t.prompt,
     completionTokens: t.completion,
+    cacheWriteTokens: t.cache_write,
+    cacheReadTokens: t.cache_read,
     cost: Number(t.cost),
     unpricedTokens: Number(t.unpriced),
     perModel: (perModel as unknown as TaskUsage['perModel']).map((m) => ({
@@ -216,6 +322,7 @@ export async function costOverview(): Promise<CostOverview> {
       `with priced as (${PRICED})
        select coalesce(sum(prompt_tokens),0)::int as prompt,
               coalesce(sum(completion_tokens),0)::int as completion,
+              coalesce(sum(cache_write_tokens + cache_read_tokens),0)::int as cache,
               count(*)::int as generations,
               coalesce(sum(cost), 0)::float as cost
        from priced where created_at > now() - interval '${interval}'`,
@@ -230,23 +337,26 @@ export async function costOverview(): Promise<CostOverview> {
       select count(*) filter (where estimated)::int as est, count(*)::int as all_n
       from usage_events where created_at > now() - interval '30 days'
     `,
+    // NOTE: the token sum is INLINED here — a tagged sql template interpolates
+    // a string as a bind parameter, and sum($1) is sum(unknown) to Postgres.
+    // ALL_TOKENS is only for the sql.unsafe strings.
     sql`
-      select coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local,
-             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud,
-             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is null), 0)::bigint as other
+      select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local,
+             coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud,
+             coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class is null), 0)::bigint as other
       from usage_events where created_at > now() - interval '30 days'
     `,
     // Cloud tokens we can't price (no per-model or endpoint rate) — shown, not $0.
     sql.unsafe(
       `with priced as (${PRICED})
-       select coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens
+       select coalesce(sum(${ALL_TOKENS}), 0)::bigint as tokens
        from priced where created_at > now() - interval '30 days'
          and endpoint_class = 'cloud' and cost is null`,
     ),
     sql.unsafe(
       `with priced as (${PRICED})
        select llm_model as "llmModel", endpoint_class as "endpointClass",
-              coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens,
+              coalesce(sum(${ALL_TOKENS}), 0)::bigint as tokens,
               sum(cost)::float as cost
        from priced where created_at > now() - interval '30 days'
        group by llm_model, endpoint_class
@@ -261,26 +371,26 @@ export async function costOverview(): Promise<CostOverview> {
               max(created_at) as "lastUsed",
               coalesce(sum(cost), 0)::float as cost,
               case when count(*) filter (where endpoint_class is not null) = 0 then null
-                   else sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local')::float
-                        / nullif(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is not null), 0)
+                   else sum(${ALL_TOKENS}) filter (where endpoint_class = 'local')::float
+                        / nullif(sum(${ALL_TOKENS}) filter (where endpoint_class is not null), 0)
               end as "localShare"
        from priced where created_at > now() - interval '30 days'
-       group by agent_model order by sum(prompt_tokens) + sum(completion_tokens) desc`,
+       group by agent_model order by sum(${ALL_TOKENS}) desc`,
     ),
     sql`
       select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day,
              coalesce(sum(prompt_tokens),0)::int as prompt,
              coalesce(sum(completion_tokens),0)::int as completion,
              count(*)::int as generations,
-             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::int as local,
-             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::int as cloud
+             coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local'), 0)::int as local,
+             coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'cloud'), 0)::int as cloud
       from usage_events where created_at > now() - interval '14 days'
       group by 1 order by 1 asc
     `,
   ])
 
   const t = (r: unknown) => {
-    const x = r as { prompt: number; completion: number; generations: number; cost: number | null }
+    const x = r as { prompt: number; completion: number; cache: number; generations: number; cost: number | null }
     return { ...x, cost: Number(x.cost ?? 0) }
   }
   const e = est as { est: number; all_n: number }
@@ -302,4 +412,38 @@ export async function costOverview(): Promise<CostOverview> {
     perAgent: (perAgent as unknown as CostOverview['perAgent']).map((a) => ({ ...a, cost: Number(a.cost ?? 0) })),
     perDay: perDay as unknown as CostOverview['perDay'],
   }
+}
+
+// ── Rolling-window spend (the budget check's read side) ─────────────────────
+
+export interface SpendWindow {
+  tokens: number
+  /** Priced spend in USD. Unpriced cloud rows contribute 0, so a $ ceiling is
+   *  never tripped by a model whose rate isn't configured — `unpricedTokens`
+   *  says how much of the window that covers, and a token ceiling bounds it. */
+  cost: number
+  unpricedTokens: number
+}
+
+/**
+ * Billable spend over a rolling window, optionally for one agent/caller
+ * (`agent_model` — a fleet model id for persona rows, `api:<key>` for gateway
+ * rows). Called before every budgeted gateway call; llm-gateway caches it.
+ */
+export async function spendSince(windowHours: number, agentModel?: string | null): Promise<SpendWindow> {
+  const hours = Math.max(1, Math.min(24 * 365, Math.round(windowHours)))
+  const sql = await db()
+  const rows = await sql.unsafe(
+    `with priced as (${PRICED})
+     select coalesce(sum(${ALL_TOKENS}), 0)::bigint as tokens,
+            coalesce(sum(cost), 0)::float as cost,
+            coalesce(sum(${ALL_TOKENS}) filter (where cost is null), 0)::bigint as unpriced
+     from priced
+     where created_at > now() - interval '${hours} hours'
+       and ($1::text is null or agent_model = $1)`,
+    [agentModel ?? null],
+  )
+  const r = rows[0] as unknown as { tokens: string | number; cost: number; unpriced: string | number } | undefined
+  if (!r) return { tokens: 0, cost: 0, unpricedTokens: 0 }
+  return { tokens: Number(r.tokens), cost: Number(r.cost), unpricedTokens: Number(r.unpriced) }
 }

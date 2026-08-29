@@ -15,6 +15,7 @@
 // through gateway.ts's proxyChat like any other turn, which meters and
 // attributes it for free) instead of by the agent's own ticker.
 import { db } from './db/pg'
+import { getSetting } from './audit'
 import { agentContainer, dockerExec } from './docker-exec'
 
 const JOBS_PATH = '/opt/data/cron/jobs.json'
@@ -85,6 +86,78 @@ function assertSafe(value: string, what: string): void {
   if (/[\n\r]/.test(value)) throw new Error(`${what} cannot contain newlines`)
 }
 
+// ── Frequency floor ─────────────────────────────────────────────────────────
+// A cron job is an agent turn, and an agent turn is LLM spend. `* * * * *`
+// used to be accepted verbatim: 1,440 turns a day, per agent, forever — the
+// cheapest way in the product to run up an unbounded bill, and the schedule a
+// well-meaning "check this often" request lands on. The floor is the coarse
+// guard; the gateway budget is the fine one.
+const DEFAULT_MIN_INTERVAL_MINUTES = 5
+
+export const cronFloorMinutes = (): Promise<number> =>
+  getSetting<number>('cron_min_interval_minutes', DEFAULT_MIN_INTERVAL_MINUTES)
+
+const UNIT_MINUTES: Record<string, number> = { s: 1 / 60, m: 1, h: 60, d: 1440 }
+
+/** Expand one comma-separated cron field into the values it fires on. */
+function cronFieldValues(field: string, max: number): number[] {
+  const out = new Set<number>()
+  for (const part of field.split(',')) {
+    const [spec, stepRaw] = part.split('/')
+    const step = stepRaw ? Number(stepRaw) : 1
+    if (!Number.isFinite(step) || step < 1) return []
+    let lo = 0
+    let hi = max
+    if (spec && spec !== '*') {
+      const [a, b] = spec.split('-')
+      lo = Number(a)
+      hi = b === undefined ? lo : Number(b)
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < 0 || hi > max || lo > hi) return []
+    }
+    for (let v = lo; v <= hi; v += step) out.add(v)
+  }
+  return [...out].sort((x, y) => x - y)
+}
+
+/**
+ * The SHORTEST gap between two firings of a schedule, in minutes — the number
+ * a floor has to be compared against. Null when we can't tell (Hermes stays the
+ * validator for anything exotic; we only refuse what we can prove is too fast).
+ */
+export function minIntervalMinutes(schedule: string): number | null {
+  const s = schedule.trim().toLowerCase()
+
+  // Interval form: "30m", "every 2h", "90s".
+  const iv = /^(?:every\s+)?(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$/.exec(s)
+  if (iv) {
+    const unit = UNIT_MINUTES[iv[2]![0]!]
+    return unit === undefined ? null : Number(iv[1]) * unit
+  }
+
+  // 5-field cron: minute hour dom mon dow.
+  const fields = s.split(/\s+/)
+  if (fields.length !== 5) return null
+  const minutes = cronFieldValues(fields[0]!, 59)
+  if (minutes.length === 0) return null
+  // One minute value an hour → at most hourly, whatever the other fields say.
+  if (minutes.length === 1) return 60
+  let gap = 60 - minutes[minutes.length - 1]! + minutes[0]! // wrap past the hour
+  for (let i = 1; i < minutes.length; i++) gap = Math.min(gap, minutes[i]! - minutes[i - 1]!)
+  return gap
+}
+
+/** Refuse a schedule we can PROVE fires faster than the floor lets it. */
+async function assertScheduleAllowed(schedule: string): Promise<void> {
+  const gap = minIntervalMinutes(schedule)
+  if (gap === null) return
+  const floor = await cronFloorMinutes()
+  if (floor > 0 && gap < floor) {
+    throw new Error(
+      `schedule fires every ${gap < 1 ? `${Math.round(gap * 60)}s` : `${gap}m`}, faster than the ${floor}m minimum an admin set — ask them to lower the floor or pick a slower schedule`,
+    )
+  }
+}
+
 export async function createCronJob(
   defId: string,
   input: { name: string; schedule: string; prompt: string },
@@ -96,6 +169,7 @@ export async function createCronJob(
   if (!name || !schedule || !prompt) throw new Error('name, schedule, and prompt are required')
   assertSafe(name, 'name')
   assertSafe(schedule, 'schedule')
+  await assertScheduleAllowed(schedule)
   if (prompt.startsWith('-')) throw new Error('prompt cannot start with "-"')
   const { stdout } = await dockerExec(await agentContainer(department), [
     'hermes',
@@ -128,6 +202,7 @@ export async function editCronJob(
   }
   if (input.schedule !== undefined) {
     assertSafe(input.schedule, 'schedule')
+    await assertScheduleAllowed(input.schedule)
     args.push('--schedule', input.schedule.trim())
   }
   if (input.prompt !== undefined) {

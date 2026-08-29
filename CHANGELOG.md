@@ -4,6 +4,31 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Changed
+
+- **The token ledger counts what providers actually bill** (#243): cache-write, cache-read
+  and reasoning tokens get their own `usage_events` columns, and `normalizeUsage` detects
+  each provider's shape from the payload — Anthropic native reports cache tokens OUTSIDE
+  `input_tokens` (the flat model understated), OpenAI-compatible folds cached input INTO
+  `prompt_tokens` at full price (it overstated). Cache writes bill at 1.25× input, reads at
+  0.1×; reasoning rides inside output, recorded for visibility. Volume views and the cost
+  cards total every kind now, with a standing "rate-card estimates, not invoices" footnote.
+- Gateway metering no longer escapes on abort: the streaming ledger write settles exactly
+  once from flush, client-cancel, or the request's abort signal — a client that hangs up
+  mid-stream is still billed by the provider, so it is still recorded. Non-streaming metering
+  books usage from failed responses too (a rejection without usage books nothing — a
+  rejection can't invent spend).
+
+### Added
+
+- **LLM spend ceilings** (#243): rolling-window budgets in Admin → Settings — org-wide and
+  per-caller, in tokens and/or priced dollars — checked before every gateway call (the HTTP
+  route answers 429 `budget_exceeded` with `retry-after`; internal callers like the QA judge
+  are held to the same ceiling). Off by default; a $ ceiling is never tripped by tokens with
+  no price configured, and spend reads are cached briefly except at the edge (>80% of a cap
+  goes exact, bounding what a burst can slip past). Cron schedules get a frequency floor
+  (default: nothing faster than every 5 minutes) — a cron is an agent turn is spend.
+
 ### Security
 
 - Upstream error text is sanitized at the trust boundary (#268): the two

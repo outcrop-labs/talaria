@@ -60,8 +60,13 @@ How long the audit keeps its record is **Admin → Security → Settings → Aud
 (days; 0 = keep forever).
 
 Cost comes from the token ledger: every chat turn and channel reply lands in it once agents
-start talking. Models without prices set on the [Models](./admin-models.md) page show as
-unattributed — the "ledger priced" alert is the honesty check.
+start talking. Cache and reasoning tokens are accounted separately (cache writes bill at
+1.25× input, reads at 0.1× — reasoning rides inside output), dollar figures are rate-card
+estimates rather than provider invoices, and models without prices set on the
+[Models](./admin-models.md) page show as unattributed — the "ledger priced" alert is the
+honesty check. **Admin → Settings** also carries rolling-window LLM budgets (org-wide and
+per-caller token/$ ceilings, checked before every gateway call) and a minimum cron interval;
+both are unlimited/unset by default.
 
 ## Apps (admin)
 

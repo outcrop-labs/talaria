@@ -1,8 +1,8 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { authenticateKey } from '@/server/llm-keys'
-import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
-import { estimateTokens } from '@/server/usage'
+import { budgetMessage, buildUpstream, checkBudget, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
+import { estimateTokens, normalizeUsage, type RawUsage, type TokenCounts } from '@/server/usage'
 import { getGuardConfig, groundingTextOf, guardCompletion, needsRedaction, redactSecrets } from '@/server/guardrails'
 import { getSetting } from '@/server/audit'
 import { logUpstreamError, sanitizedUpstreamBody } from '@/server/upstream-error'
@@ -34,6 +34,32 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
     const route = await resolveRoute(body.model)
     if (!route) return json({ error: { message: `unknown model "${body.model}" — GET /v1/models` } }, { status: 404 })
 
+    // The ceiling, BEFORE anything is spent upstream. Off unless an admin
+    // configured a budget, so the common path is one settings read.
+    const caller = `api:${id.keyName}`
+    const denial = await checkBudget(caller)
+    if (denial) {
+      return json(
+        {
+          error: {
+            message: budgetMessage(denial),
+            type: 'budget_exceeded',
+            code: 'budget_exceeded',
+            param: null,
+            budget: {
+              scope: denial.scope,
+              subject: denial.subject,
+              unit: denial.unit,
+              limit: denial.limit,
+              used: denial.used,
+              windowHours: denial.windowHours,
+            },
+          },
+        },
+        { status: 429, headers: { 'retry-after': String(denial.retryAfterSeconds) } },
+      )
+    }
+
     let upstream: { url: string; headers: Record<string, string>; body: Record<string, unknown> }
     try {
       upstream = await buildUpstream(route, body)
@@ -44,7 +70,6 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
       return json({ error: { message: 'upstream request could not be built' } }, { status: 502 })
     }
 
-    const caller = `api:${id.keyName}`
     // Two questions that used to hang off one setting, and conflating them
     // cost the ledger its largest line item. Both are answered by the
     // CALLING KEY, and both lists are maintained by fleet-brain, which
@@ -84,15 +109,17 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
       return json({ error: { message: 'upstream unreachable' } }, { status: 502 })
     }
 
-    const ledger = (usage: { prompt_tokens?: number; completion_tokens?: number } | null, contentChars: number) => {
+    const ledger = (counts: TokenCounts | null, contentChars: number) => {
       if (skipMeter) return
       return recordGatewayUsage({
         caller,
         endpoint: route.endpoint,
         upstreamModel: route.upstreamModel,
-        promptTokens: usage?.prompt_tokens ?? estimateTokens(promptChars),
-        completionTokens: usage?.completion_tokens ?? estimateTokens(contentChars),
-        estimated: !usage,
+        ...(counts ?? {
+          promptTokens: estimateTokens(promptChars),
+          completionTokens: estimateTokens(contentChars),
+        }),
+        estimated: !counts,
       }).catch(() => {})
     }
 
@@ -103,6 +130,24 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
         // The upstream's own error body never crosses to the key holder —
         // fixed sentence + structured type/code only; verbatim goes to the log.
         logUpstreamError('llm-v1', res.status, text)
+        // Metering is not gated on ok: a rejected call still reports (and is
+        // still billed for) its usage. One without usage books NOTHING — the
+        // estimate fallback must not run here, or a rejection would invent
+        // spend (an e2e against a 401 self-hop booked a 1-token estimate).
+        try {
+          const reported = normalizeUsage((JSON.parse(text) as { usage?: RawUsage }).usage)
+          if (reported && !skipMeter) {
+            void recordGatewayUsage({
+              caller,
+              endpoint: route.endpoint,
+              upstreamModel: route.upstreamModel,
+              ...reported,
+              estimated: false,
+            }).catch(() => {})
+          }
+        } catch {
+          /* not JSON — no usage to book */
+        }
         return new Response(sanitizedUpstreamBody(res.status, text), {
           status: res.status,
           headers: { 'content-type': 'application/json' },
@@ -110,11 +155,11 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
       }
       try {
         const j = JSON.parse(text) as {
-          usage?: { prompt_tokens?: number; completion_tokens?: number }
+          usage?: RawUsage | null
           choices?: Array<{ message?: { content?: string } }>
         }
         const content = j.choices?.[0]?.message?.content ?? ''
-        void ledger(j.usage ?? null, content.length)
+        void ledger(normalizeUsage(j.usage), content.length)
         if (mayAnnotate && content) {
           // Nothing has been relayed yet, so annotate/strict can act on
           // the body itself: strict redacts leaked secrets, and any
@@ -162,7 +207,7 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
 
     let lineBuf = ''
     let content = ''
-    let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null
+    let usage: RawUsage | null = null
     const decoder = new TextDecoder()
     const encoder = new TextEncoder()
     const isDone = (line: string) => line.startsWith('data:') && line.slice(5).trim() === '[DONE]'
@@ -171,7 +216,7 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
       if (!data || data === '[DONE]') return
       try {
         const j = JSON.parse(data) as {
-          usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+          usage?: RawUsage | null
           choices?: Array<{ delta?: { content?: string } }>
         }
         if (j.usage) usage = j.usage
@@ -187,9 +232,22 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
       return lines
     }
 
+    // Settle once, from wherever the stream ends: a clean flush, a cancel
+    // (client hung up mid-stream), or the request's abort signal. The provider
+    // bills a hung-up stream exactly the same, so the ledger books it too —
+    // and exactly once, whichever of the three fires first.
+    let settled = false
+    const settle = () => {
+      if (settled) return
+      settled = true
+      void ledger(normalizeUsage(usage), content.length)
+    }
+
     // Passthrough meter: bytes relay untouched; the guard runs on the
     // assembled text after the stream (observe posture, or an agent-loop
     // key that must never see a caveat) — never delays streaming.
+    // (`as` only for the type: this lib's Transformer predates cancel —
+    //  the runtimes Talaria ships on all call it.)
     const meter = new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         controller.enqueue(chunk)
@@ -197,10 +255,13 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
       },
       flush() {
         if (lineBuf) scanLine(lineBuf)
-        void ledger(usage, content.length)
+        settle()
         void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
       },
-    })
+      cancel() {
+        settle()
+      },
+    } as Transformer<Uint8Array, Uint8Array>)
 
     // Annotate meter: relay line-wise but withhold [DONE]; once upstream
     // ends, run the guard and inject any caveat as one final delta chunk
@@ -221,7 +282,7 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
           if (isDone(lineBuf)) sawDone = true
           else controller.enqueue(encoder.encode(lineBuf))
         }
-        void ledger(usage, content.length)
+        settle()
         const g = content
           ? await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => null)
           : null
@@ -231,8 +292,16 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
         }
         if (sawDone) controller.enqueue(encoder.encode('data: [DONE]\n\n'))
       },
-    })
+      // No flush runs on cancel: the caveat can't be injected into a stream the
+      // client walked away from, but the spend still settles, and the guard
+      // runs observe-posture on what was assembled.
+      cancel() {
+        settle()
+        void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
+      },
+    } as Transformer<Uint8Array, Uint8Array>)
 
+    request.signal?.addEventListener('abort', settle, { once: true })
     return new Response(res.body.pipeThrough(mayAnnotate ? annotateMeter : meter), {
       status: 200,
       headers: {

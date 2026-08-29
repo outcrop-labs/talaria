@@ -73,10 +73,19 @@ export function useAdminPermissions() {
  *  TypeScript happily believed three different contracts for the same cached
  *  object, so the day one of them started fetching something else nothing
  *  would have complained. One type, one hook. */
+/** Rolling-window LLM spend ceilings (server: llm-gateway.ts). Null/0 = off. */
+export interface LlmBudgets {
+  windowHours: number
+  org: { tokens?: number | null; usd?: number | null } | null
+  perAgent: { tokens?: number | null; usd?: number | null } | null
+  agents: Record<string, { tokens?: number | null; usd?: number | null }>
+}
 export interface AdminSettings {
   auditRetentionDays: number
   org: { name: string; about: string }
   memberModels: string[]
+  llmBudgets: LlmBudgets
+  cronMinIntervalMinutes: number
 }
 export function useAdminSettings() {
   return createQuery(() => ({
