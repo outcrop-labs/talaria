@@ -80,6 +80,21 @@ pub(crate) fn utf16_len(s: &str) -> usize {
         + s.chars().count()
 }
 
+/// JS `s.slice(0, max)` for a UTF-16 budget: the longest `&str` prefix whose
+/// UTF-16 length stays within `max`. A cut that would split a surrogate pair
+/// yields the prefix one unit short rather than a broken half-pair — the one
+/// documented divergence from the TS, which happily produces lone surrogates.
+pub(crate) fn truncate_utf16(s: &str, max: usize) -> &str {
+    let mut units = 0;
+    for (i, c) in s.char_indices() {
+        units += c.len_utf16();
+        if units > max {
+            return &s[..i];
+        }
+    }
+    s
+}
+
 /// A required string member with min/max checks, in zod's order: type, then
 /// length. `min`/`max` are the inclusive bounds exactly as zod prints them.
 pub fn string_member(

@@ -30,8 +30,9 @@
 // tests), and the nine steps, with the gateway turn as its real transport
 // edge — `recorded` (the recorded-transcript harness, the ONE fake world
 // every def's tests and the coming fitness sweep drive) — and the first defs:
-// `defs/titler`, `defs/summarizer`, `defs/concluder` (the last the port's
-// first widen branch). Still TS: the fleet turn and the picker
+// `defs/titler`, `defs/summarizer`, `defs/concluder` (the port's first widen
+// branch), `defs/blurb_writer` (the only many-keyed one), `defs/librarian`
+// (whose hybrid value is why `CleanFn` yields a `Value`). Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step
 // of a port, and it crosses once every def is here to fill it), and the rest

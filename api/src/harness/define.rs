@@ -285,7 +285,15 @@ pub type RenderFn =
 /// A text harness's narrowing step: receives the raw reply, returns the value,
 /// or `None` to fail the contract (which is exactly what the titler's
 /// quote-and-fence stripping always did by hand).
-pub type CleanFn = Arc<dyn Fn(&str) -> Result<Option<String>, String> + Send + Sync>;
+///
+/// The value is a `Value`, not a string, because a text harness may parse a
+/// HYBRID — the librarian's reply is a markdown body plus a trailing `TAGS:`
+/// line, and its clean consumes the line and returns `{body, tags}`. That is
+/// the TS contract (`clean` returns the typed value; the runner stores it as
+/// the run's value), and it is why redaction re-applies the WHOLE contract to
+/// the scrubbed text: a redacted hybrid is rebuilt by the same parse, not
+/// handed back half-scrubbed.
+pub type CleanFn = Arc<dyn Fn(&str) -> Result<Option<Value>, String> + Send + Sync>;
 
 /// THE RELATION BETWEEN THE INPUT AND THE OUTPUT — the half of a harness
 /// contract a schema is structurally incapable of stating.

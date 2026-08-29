@@ -566,7 +566,7 @@ fn parse_value(def: &HarnessDefinition, raw: &str) -> Applied {
                 };
             };
             match clean(raw) {
-                Ok(Some(v)) => Applied::Ok(Value::String(v)),
+                Ok(Some(v)) => Applied::Ok(v),
                 Ok(None) => Applied::Err("the reply did not survive the harness clean step".into()),
                 Err(e) => Applied::Err(format!("the harness clean step threw on the reply: {e}")),
             }
@@ -1601,7 +1601,7 @@ mod tests {
                     if stripped.is_empty() {
                         Ok(None)
                     } else {
-                        Ok(Some(stripped.to_string()))
+                        Ok(Some(Value::String(stripped.to_string())))
                     }
                 }) as CleanFn),
                 verify: None,
@@ -2555,7 +2555,7 @@ mod tests {
                 if t.is_empty() {
                     Ok(None)
                 } else {
-                    Ok(Some(t.to_string()))
+                    Ok(Some(Value::String(t.to_string())))
                 }
             })),
             verify: Some(Arc::new(|value, input, _ctx| {

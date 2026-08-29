@@ -65,22 +65,9 @@ pub struct SummarizerInput {
     pub md: String,
 }
 
-/// The first `max` UTF-16 units of `s`, never splitting a surrogate pair (see
-/// `truncate_utf16` in the titler for the one-character divergence this buys).
-fn truncate_utf16(s: &str, max: usize) -> &str {
-    let mut units = 0;
-    for (i, c) in s.char_indices() {
-        units += c.len_utf16();
-        if units > max {
-            return &s[..i];
-        }
-    }
-    s
-}
-
 fn clip(s: &str, max: usize) -> &str {
     if utf16_len(s) > max {
-        truncate_utf16(s, max)
+        crate::body::truncate_utf16(s, max)
     } else {
         s
     }
@@ -96,7 +83,7 @@ fn clip(s: &str, max: usize) -> &str {
 /// screen instead of overwriting it with an empty string.
 pub fn first_line(raw: &str) -> Option<String> {
     let line = first_meaningful_line(raw)?;
-    let clipped = truncate_utf16(&line, MAX_SUMMARY);
+    let clipped = crate::body::truncate_utf16(&line, MAX_SUMMARY);
     if clipped.is_empty() {
         None
     } else {
@@ -448,7 +435,7 @@ pub fn summarizer_harness() -> HarnessDefinition {
             ])
         }),
         Output::Text {
-            clean: Some(Arc::new(|raw: &str| Ok(first_line(raw)))),
+            clean: Some(Arc::new(|raw: &str| Ok(first_line(raw).map(Value::String)))),
             verify: None,
         },
         // The caller keeps the summary it had. See the note at the top of this

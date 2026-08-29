@@ -88,28 +88,13 @@ pub fn prompt_for(kind: TitleKind) -> String {
 
 // ── The narrowing ────────────────────────────────────────────────────────────
 
-/// The first `max` UTF-16 units of `s`. JS `slice` can cut a surrogate pair in
-/// half; a Rust string cannot represent the lone half that would leave, so the
-/// cut lands on the boundary before it — one fewer visible character, never a
-/// broken one.
-fn truncate_utf16(s: &str, max: usize) -> &str {
-    let mut units = 0;
-    for (i, c) in s.char_indices() {
-        units += c.len_utf16();
-        if units > max {
-            return &s[..i];
-        }
-    }
-    s
-}
-
 /// Naming is worth one short call and no more. A transcript longer than this
 /// says nothing about its own subject that the first few thousand characters
 /// did not, and paying to send it would make the cheapest harness in the
 /// product the most expensive one on a long chat.
 fn clip(s: &str, max: usize) -> &str {
     if utf16_len(s) > max {
-        truncate_utf16(s, max)
+        crate::body::truncate_utf16(s, max)
     } else {
         s
     }
@@ -145,7 +130,10 @@ pub fn clean_title(raw: &str) -> Option<String> {
         return None;
     }
     if utf16_len(t) > 90 {
-        Some(format!("{}…", truncate_utf16(t, 90).trim_end()))
+        Some(format!(
+            "{}…",
+            crate::body::truncate_utf16(t, 90).trim_end()
+        ))
     } else {
         Some(t.to_string())
     }
@@ -493,7 +481,9 @@ pub fn titler_harness() -> HarnessDefinition {
             ])
         }),
         Output::Text {
-            clean: Some(Arc::new(|raw: &str| Ok(clean_title(raw)))),
+            clean: Some(Arc::new(
+                |raw: &str| Ok(clean_title(raw).map(Value::String)),
+            )),
             verify: None,
         },
         // Fire and forget, and that is a product decision rather than laziness:

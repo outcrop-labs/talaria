@@ -430,7 +430,7 @@ pub fn concluder_harness() -> HarnessDefinition {
                 if t.is_empty() {
                     Ok(None)
                 } else {
-                    Ok(Some(t.to_string()))
+                    Ok(Some(Value::String(t.to_string())))
                 }
             })),
             verify: None,
