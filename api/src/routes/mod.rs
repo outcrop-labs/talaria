@@ -23,6 +23,7 @@ pub mod boards_id_agents;
 pub mod boards_id_events;
 pub mod boards_id_labels;
 pub mod boards_id_members;
+pub mod boards_id_templates;
 pub mod boards_id_views;
 pub mod cost;
 pub mod health;
@@ -184,6 +185,12 @@ pub fn router(state: AppState) -> Router {
             "/api/boards/{id}/agents",
             get(boards_id_agents::get)
                 .put(boards_id_agents::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/boards/{id}/templates",
+            get(boards_id_templates::get)
+                .put(boards_id_templates::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(

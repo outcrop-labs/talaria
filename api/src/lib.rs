@@ -53,5 +53,6 @@ pub mod state;
 pub mod statuses;
 pub mod tasks;
 pub mod teams;
+pub mod templates;
 pub mod users;
 pub mod workflows;

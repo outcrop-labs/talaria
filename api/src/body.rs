@@ -212,6 +212,32 @@ pub fn optional_uuid_array_member(
     Ok(Some(out))
 }
 
+/// A REQUIRED array-of-uuids member (`z.array(Uuid).max(n)`): absent answers
+/// the array type message on undefined — the length bound is a check, not an
+/// option; the member itself is not optional.
+pub fn uuid_array_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max_items: usize,
+) -> Result<Vec<String>, String> {
+    optional_uuid_array_member(obj, key, max_items)?.ok_or_else(|| array_msg("undefined"))
+}
+
+/// A required uuid-or-null member (`Uuid.nullable()`): null is a VALUE
+/// (None — "no default"), absent is zod's undefined message on the string
+/// type. For bodies where clearing the setting and omitting the key are
+/// different requests.
+pub fn nullable_uuid_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None => Err(string_msg("undefined")),
+        Some(Value::Null) => Ok(None),
+        Some(_) => uuid_member(obj, key).map(Some),
+    }
+}
+
 /// A plain `z.string().email()` member (api-schema's Email): no preprocess,
 /// no length bound — the value crosses exactly as sent. (The claim route's
 /// trim-and-lower variant is preprocessed_email_member below.)
@@ -1121,6 +1147,53 @@ mod tests {
         assert_eq!(
             email(json!({ "email": format!("{}@b.co", "a".repeat(196)) })).unwrap_err(),
             "Too big: expected string to have <=200 characters"
+        );
+    }
+
+    #[test]
+    fn required_uuid_array_and_nullable_uuid_match_zod_probes() {
+        // z.array(Uuid).max(50) — the template bindings' templateIds.
+        let arr = |v: Value| uuid_array_member(v.as_object().unwrap(), "templateIds", 50);
+        assert_eq!(
+            arr(json!({})).unwrap_err(),
+            "Invalid input: expected array, received undefined"
+        );
+        assert_eq!(
+            arr(json!({ "templateIds": null })).unwrap_err(),
+            "Invalid input: expected array, received null"
+        );
+        assert_eq!(
+            arr(json!({ "templateIds": [] })).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            arr(json!({ "templateIds": vec!["67b06c14-7c2a-4fe5-91a4-1d0d2b8b2d81"; 51] }))
+                .unwrap_err(),
+            "Too big: expected array to have <=50 items"
+        );
+        assert_eq!(
+            arr(json!({ "templateIds": ["not-a-uuid"] })).unwrap_err(),
+            "Invalid UUID"
+        );
+        // Uuid.nullable() — defaultId. Null is a value; absent is the error;
+        // a present string runs the uuid format check.
+        let def = |v: Value| nullable_uuid_member(v.as_object().unwrap(), "defaultId");
+        assert_eq!(def(json!({ "defaultId": null })).unwrap(), None);
+        assert_eq!(
+            def(json!({ "defaultId": "67b06c14-7c2a-4fe5-91a4-1d0d2b8b2d81" })).unwrap(),
+            Some("67b06c14-7c2a-4fe5-91a4-1d0d2b8b2d81".into())
+        );
+        assert_eq!(
+            def(json!({})).unwrap_err(),
+            "Invalid input: expected string, received undefined"
+        );
+        assert_eq!(
+            def(json!({ "defaultId": 5 })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        assert_eq!(
+            def(json!({ "defaultId": "nope" })).unwrap_err(),
+            "Invalid UUID"
         );
     }
 }
