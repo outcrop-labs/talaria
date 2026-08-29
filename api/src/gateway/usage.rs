@@ -96,12 +96,18 @@ pub struct SpendWindow {
 // The priced view, verbatim from usage.ts: cloud rows get $ from the user's
 // per-model override, else the auto-fetched public rate, else the endpoint
 // default; local rows are $0; cloud rows with no price at all get NULL cost
-// so they can be surfaced as "unpriced". Multipliers per input KIND.
-const PRICED: &str = "select u.*, \
-    case \
-      when u.endpoint_class = 'local' then 0 \
-      when u.endpoint_class = 'cloud' then \
-        ((u.prompt_tokens + u.cache_write_tokens * $2 + u.cache_read_tokens * $3) \
+// so they can be surfaced as "unpriced". Multipliers per input KIND — TS
+// interpolates the constants into its unsafe string, and so does this: they
+// are VALUES in the text, not binds (an earlier draft bound them, which
+// collided with every caller's own $2 and made the statement unpreparable —
+// a failure budget.rs's `.ok()?` swallowed as "no spend data").
+static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "select u.*, \
+        case \
+          when u.endpoint_class = 'local' then 0 \
+          when u.endpoint_class = 'cloud' then \
+            ((u.prompt_tokens + u.cache_write_tokens * {CACHE_WRITE_MULTIPLIER} + u.cache_read_tokens * {CACHE_READ_MULTIPLIER}) \
            * coalesce((e.model_prices->u.llm_model->>'in')::numeric, \
                       (e.auto_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok) \
          + u.completion_tokens * coalesce((e.model_prices->u.llm_model->>'out')::numeric, \
@@ -109,7 +115,14 @@ const PRICED: &str = "select u.*, \
       else null \
     end as cost \
   from usage_events u \
-  left join llm_endpoints e on e.name = u.endpoint";
+  left join llm_endpoints e on e.name = u.endpoint"
+    )
+});
+
+/// The priced view as &str, for format! interpolation.
+fn priced() -> &'static str {
+    &PRICED_STR
+}
 
 /// Billable spend over a rolling window, optionally for one caller
 /// (`agent_model` — a fleet model id for persona rows, `api:<key>` for
@@ -120,12 +133,13 @@ pub async fn spend_since(
     window_hours: i64,
     agent_model: Option<&str>,
 ) -> Result<SpendWindow, sqlx::Error> {
+    let priced = priced();
     let hours = window_hours.clamp(1, 24 * 365);
     // sqlx can't interpolate the interval literal as a bind for `now() - $1`
     // with unit attached — build `make_interval(hours => $1)` instead, which
     // stays a bound parameter the way TS's unsafe string does not.
     let sql = format!(
-        "with priced as ({PRICED}) \
+        "with priced as ({priced}) \
          select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens, \
                 coalesce(sum(cost), 0)::float8 as cost, \
                 coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost is null), 0)::bigint as unpriced \
