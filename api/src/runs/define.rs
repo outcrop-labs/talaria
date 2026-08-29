@@ -211,6 +211,12 @@ pub enum StepResult {
     Retry { after: Duration, reason: String },
 }
 
+/// The Rust spelling of a THROWN STEP: TS's `step` signals failure by throwing
+/// and the driver files the message on an error row; here it returns `Err` and
+/// the driver does the same with the text. A step that merely wants to come
+/// back later returns `Retry`; `Err` is always terminal for this entry.
+pub type StepError = String;
+
 /// The abort signal a step is given. Fired when the run exceeds
 /// `max_step_ms`, when the driver loses its lease, and when the process is
 /// shutting down — a step that ignores it is a step the driver has to abandon
@@ -224,6 +230,13 @@ impl StepSignal {
     pub fn channel() -> (tokio::sync::watch::Sender<bool>, Self) {
         let (tx, rx) = tokio::sync::watch::channel(false);
         (tx, Self { rx })
+    }
+
+    /// A fresh receiver of an EXISTING abort sender — the driver owns one
+    /// sender for the whole drive and subscribes each step to it, so a lease
+    /// lost mid-drive reaches whichever step is in flight.
+    pub(crate) fn from_sender(tx: &tokio::sync::watch::Sender<bool>) -> Self {
+        Self { rx: tx.subscribe() }
     }
 
     pub fn is_aborted(&self) -> bool {
@@ -273,7 +286,11 @@ pub struct RunStepContext {
 }
 
 pub type StepFn = Arc<
-    dyn Fn(RunStepContext) -> futures_util::future::BoxFuture<'static, StepResult> + Send + Sync,
+    dyn Fn(
+            RunStepContext,
+        ) -> futures_util::future::BoxFuture<'static, Result<StepResult, StepError>>
+        + Send
+        + Sync,
 >;
 pub type AudienceFn = Arc<dyn Fn(&RunRow) -> Authority + Send + Sync>;
 
@@ -445,9 +462,9 @@ mod tests {
             label: "first".into(),
             step: Arc::new(|_| {
                 Box::pin(async {
-                    StepResult::Done {
+                    Ok(StepResult::Done {
                         result: Value::Null,
-                    }
+                    })
                 })
             }),
             audience: Arc::new(|_| Authority::Nobody),
@@ -459,9 +476,9 @@ mod tests {
             label: "second".into(),
             step: Arc::new(|_| {
                 Box::pin(async {
-                    StepResult::Done {
+                    Ok(StepResult::Done {
                         result: Value::Null,
-                    }
+                    })
                 })
             }),
             audience: Arc::new(|_| Authority::Nobody),
