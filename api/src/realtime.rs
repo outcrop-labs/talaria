@@ -95,6 +95,26 @@ impl RealtimeDeps {
             subscribe,
         }
     }
+
+    /// The publish half alone — what a notification write needs. The subscribe
+    /// edge is the quiet one: nothing on this plane will ever open a stream.
+    /// `None` is Redis unreachable at construction, and it resolves to the
+    /// same logged silence TS's publishUser try/catch already tolerates per
+    /// call — the row underneath is the record, the fan-out is a delivery.
+    pub fn publish_only(conn: Option<redis::aio::ConnectionManager>) -> Self {
+        Self {
+            publish: match conn {
+                Some(conn) => redis_publish(conn),
+                None => {
+                    tracing::error!(
+                        "{LOG} no Redis connection for a publisher — its events will not fan out"
+                    );
+                    Arc::new(|_, _| {})
+                }
+            },
+            subscribe: quiet_subscribe(),
+        }
+    }
 }
 
 fn redis_publish(conn: redis::aio::ConnectionManager) -> PublishFn {

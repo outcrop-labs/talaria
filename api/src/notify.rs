@@ -1,9 +1,10 @@
 // Notifications — the user's inbox half of ui/src/server/notifications.ts:
 // list, unread count, mark-read, the per-user routing table in
-// users.notify_prefs, and the instance email master switch in app_settings.
-// The mail fan-out (sendGatedMail, the queue, the drain) is scheduler plane —
-// it stays TS until batch 5, which is also why addNotification is not ported:
-// its callers are TS routes.
+// users.notify_prefs, the instance email master switch in app_settings, and
+// the single writer (`add_notification`) every filing of a row goes through.
+// The mail fan-out's DRAIN (sendGatedMail, the queue, the breaker) is
+// scheduler plane — it crosses with the scheduler slice of this batch, and the
+// mail leg of `add_notification` is documented there.
 //
 // The class vocabulary is lib/notify-classes.ts ported whole: classes,
 // fallbacks, the digest's reserved key. resolve/digest DERIVE the effective
@@ -12,6 +13,7 @@
 
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::gateway::settings::{get_setting, set_setting};
+use crate::realtime::{RealtimeDeps, UserEvent, publish_user};
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -162,22 +164,196 @@ pub async fn mark_notifications_read(
     Ok(())
 }
 
-/// The brief-nudge half of markBriefStale: clear today's sweep throttle so
-/// the person's next /api/brief re-sweeps. The realtime publish that follows
-/// it on TS is SSE — batch 5's plane — so it is not written here (rule 5);
-/// the degradation is exactly the one TS tolerates when the nudge's own
-/// `.catch(() => {})` swallows a failure. Fire-and-forget by design there.
-pub async fn nudge_brief(pg: &PgPool, user_id: &str) {
-    if let Err(e) = sqlx::query(
+// ── The write: one notification, filed ───────────────────────────────────────
+
+/// `kind` (what the writer called it) → the class a user has an opinion about
+/// (lib/notify-classes.ts KIND_CLASS). Kinds are free-form strings at ~10 call
+/// sites and predate this table; the map is how they stay free-form without
+/// every new one inventing a setting.
+fn kind_class(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        // Someone pointed at you on purpose.
+        "mention" | "kb-comment" | "task-assigned" | "plan-share" | "research-share" => "mention",
+        // Addressed to you, in a thread of your own.
+        "dm" | "agent-outreach" => "dm",
+        // Blocked on a human.
+        "agent-problem" | "workbench-repo-request" => "agent_blocked",
+        // Outcomes.
+        "research" | "task-status" => "work_complete",
+        // `judge_escalation` and `gap_reported` are NOT here on purpose: their
+        // writers name the CLASS as the kind, which `notify_class_of` accepts
+        // directly. A kind that is already the class it belongs to has nothing
+        // to map.
+        _ => return None,
+    })
+}
+
+/// The class a notification belongs to (notifyClassOf). Every class id is also
+/// accepted as a kind, so a new writer can name the class directly and skip
+/// the table.
+///
+/// An UNRECOGNIZED kind lands in `work_complete` — the quiet bucket — on
+/// purpose: a notification kind added by someone who never opened this file
+/// must not start mailing the whole org because it fell through a default.
+pub fn notify_class_of(kind: &str) -> &'static str {
+    kind_class(kind).unwrap_or_else(|| {
+        // The class table's OWN static id, not the caller's borrow — the ids
+        // are the same bytes, and only one of them can be returned as
+        // &'static.
+        NOTIFY_CLASSES
+            .iter()
+            .find(|(id, _)| *id == kind)
+            .map(|(id, _)| *id)
+            .unwrap_or("work_complete")
+    })
+}
+
+/// What a writer files: the kind routes through the class table; title, body
+/// and href are CONTENT and reach only the person whose row this is.
+pub struct NotificationInput<'a> {
+    pub kind: &'a str,
+    pub title: &'a str,
+    pub body: Option<&'a str>,
+    pub href: Option<&'a str>,
+}
+
+/// The edges a notification write touches beyond its own row: the pool the row
+/// lands in and the realtime fan-out that tells the person's open pages.
+#[derive(Clone)]
+pub struct NotifyDeps {
+    pub pg: PgPool,
+    pub realtime: RealtimeDeps,
+}
+
+impl NotifyDeps {
+    /// The publish half over the shared manager, from the pieces every route
+    /// already holds. Redis unreachable at construction is logged inside
+    /// `publish_only` and publishes nothing — the row is still the record.
+    pub fn publishing(pg: PgPool, conn: Option<redis::aio::ConnectionManager>) -> Self {
+        Self {
+            pg,
+            realtime: RealtimeDeps::publish_only(conn),
+        }
+    }
+}
+
+/// daily-brief-stale.ts markBriefStale, complete now that the realtime plane
+/// has crossed: mark these people's current brief as needing a sweep, AND tell
+/// their open pages it moved.
+///
+/// Bounded to the last 48 hours so a long-lived account does not have every
+/// brief it has ever had rewritten by one DM. Only today's is ever swept, so
+/// older rows are noise either way — the window is about the size of the
+/// UPDATE, not about correctness. What it DOES NOT DO is sweep: a sweep is
+/// four scoped queries and up to one model call; this clears the throttle and
+/// rings the bell, and the next read does the work.
+pub async fn mark_brief_stale(deps: &NotifyDeps, user_ids: &[String]) -> Result<(), sqlx::Error> {
+    // TS: [...new Set(userIds)].filter(Boolean) — deduped, and an empty id is
+    // nobody's brief, not a row to look up.
+    let mut ids: Vec<String> = user_ids.to_vec();
+    ids.sort();
+    ids.dedup();
+    ids.retain(|id| !id.is_empty());
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
         "update daily_briefs set last_swept_at = null \
-         where user_id = $1::uuid and created_at > now() - interval '48 hours'",
+         where user_id = any($1::uuid[]) and created_at > now() - interval '48 hours' \
+         returning id::text, user_id::text, last_seq",
+    )
+    .bind(&ids)
+    .fetch_all(&deps.pg)
+    .await?;
+    // Id-shaped, like every other user event: the payload says a brief moved
+    // and the client re-reads through the ordinary route with the ordinary ACL.
+    for (brief_id, user_id, seq) in rows {
+        publish_user(
+            &deps.realtime,
+            &user_id,
+            &UserEvent::Brief { brief_id, seq },
+        );
+    }
+    Ok(())
+}
+
+/// notifications.ts addNotification — THE single writer. Ten call sites file
+/// rows; this one decides where they go. The caller's contract is fire and
+/// forget: the row is the record, and everything after it is a delivery that
+/// must not cost the request it rode in on.
+///
+/// THE ROW LANDS UNREAD, ALWAYS. `email` files it read afterwards (in the
+/// drain, once a provider has accepted the mail) so a class you read in your
+/// mail does not also nag you with an unread count — but "afterwards" is doing
+/// all the work in that sentence. Everything between the intention to send and
+/// an inbox is allowed to fail, and every one of those failures would leave
+/// the person with no email AND a notification that was born read: not in the
+/// bell count, not in the unread list, findable only by scrolling an inbox
+/// they have no reason to open. A delivery that did not happen must not mark
+/// the record consumed.
+///
+/// THE MAIL LEG WAITS FOR THE DRAIN. The queue and its breaker live in the TS
+/// scheduler's process memory and cross with the scheduler slice of this
+/// batch; until then a Rust-filed notification lands in-app, rings the bell,
+/// and nudges the brief, and its email delivery is deferred — `will_mail` is
+/// still computed, so the moment the drain crosses the leg is already wired
+/// correctly. No live workspace exists in the window, and every caller of this
+/// function today is itself a port waiting on the scheduler.
+pub async fn add_notification(
+    deps: &NotifyDeps,
+    user_id: &str,
+    n: &NotificationInput<'_>,
+) -> Result<(), sqlx::Error> {
+    let class = notify_class_of(n.kind);
+    // Both reads are forgiving (prefs_blob, get_setting's fallback), and both
+    // fall back to the answer that sends LESS mail.
+    let blob = prefs_blob(&deps.pg, user_id).await.unwrap_or(Value::Null);
+    let route = resolve_prefs(&blob)
+        .get(class)
+        .and_then(|v| v.as_str())
+        .unwrap_or("in_app")
+        .to_string();
+    let wants_mail = matches!(route.as_str(), "email" | "both");
+    let will_mail = wants_mail && get_notify_delivery(&deps.pg).await;
+
+    let (notification_id,): (String,) = sqlx::query_as(
+        "insert into notifications (user_id, kind, title, body, href, read_at) \
+         values ($1::uuid, $2, $3, $4, $5, null) returning id::text",
     )
     .bind(user_id)
-    .execute(pg)
-    .await
-    {
-        tracing::error!("[notifications] brief nudge failed: {e}");
+    .bind(n.kind)
+    .bind(n.title)
+    .bind(n.body.unwrap_or(""))
+    .bind(n.href.unwrap_or(""))
+    .fetch_one(&deps.pg)
+    .await?;
+
+    // PUBLISH, NOW THAT THERE IS SOMETHING TO PUBLISH. This is the row's
+    // second job after existing: every surface that shows notifications — the
+    // bell, the brief's 'worth knowing' section — learns the row landed the
+    // moment it does, instead of discovering it on the next poll. Detached
+    // both halves: the row is written, which is the part the caller needed,
+    // and neither fan-out may cost the request it rode in on.
+    publish_user(
+        &deps.realtime,
+        user_id,
+        &UserEvent::Notification {
+            notification_id: notification_id.clone(),
+        },
+    );
+    let nudge = deps.clone();
+    let nudged = user_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = mark_brief_stale(&nudge, &[nudged]).await {
+            tracing::error!("[notifications] brief nudge failed: {e}");
+        }
+    });
+    if will_mail {
+        // `both` deliberately passes null: that route wants the in-app copy to
+        // stay unread whatever the mail does. The enqueue itself is the drain
+        // slice's to write — see the doc above.
     }
+    Ok(())
 }
 
 /// The raw notify_prefs blob, None on any read failure — prefsBlob's

@@ -17,8 +17,9 @@ use crate::body::{
 };
 use crate::error::house_error;
 use crate::notify::{
-    NOTIFY_CLASSES, get_notify_delivery, get_notify_settings, list_notifications,
-    mark_notifications_read, nudge_brief, set_notify_delivery, set_notify_settings, unread_count,
+    NOTIFY_CLASSES, NotifyDeps, get_notify_delivery, get_notify_settings, list_notifications,
+    mark_brief_stale, mark_notifications_read, set_notify_delivery, set_notify_settings,
+    unread_count,
 };
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
@@ -164,9 +165,14 @@ pub async fn put(
         tracing::error!("[notifications] mark-read failed: {e}");
         return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
     }
-    // The brief nudge TS fires detached after the update; awaiting it changes
-    // nothing on the wire and its failures are swallowed inside.
-    nudge_brief(&state.pg, &user.id).await;
+    // The brief nudge TS fires detached after the update — the FULL one now
+    // that the realtime plane has crossed: clear the sweep throttle AND ring
+    // the bell. Awaiting it costs one UPDATE; its failure is logged, never the
+    // caller's, which is TS's `.catch(() => {})`.
+    let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+    if let Err(e) = mark_brief_stale(&notify, std::slice::from_ref(&user.id)).await {
+        tracing::error!("[notifications] brief nudge failed: {e}");
+    }
     Json(json!({ "ok": true })).into_response()
 }
 

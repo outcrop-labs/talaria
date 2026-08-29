@@ -223,7 +223,12 @@ pub struct PgRunStore {
 /// (and so no timestamp crate is needed: the row is published over SSE and
 /// rendered on a device that never talked to Postgres, so it leaves this file
 /// as ISO strings — the note on `RunRow`).
-const COLS: &str = "id::text, kind, \
+///
+/// `pub(crate)` because the approvals census reads the same whole-row shape —
+/// its run rows are handed to the run definition's own `audience`, which is
+/// the row's whole business — and a second column list would be a second
+/// opinion about what a run row is.
+pub(crate) const COLS: &str = "id::text, kind, \
      owner_user_id::text, subject_type, subject_id, state, phase, checkpoint, input, result, \
      error, attempt, lease_owner, \
      (trunc(extract(epoch from lease_expires_at) * 1000))::bigint as lease_expires_ms, \
@@ -264,7 +269,9 @@ fn decode_decision(v: Option<Value>) -> Result<Option<RunDecision>, sqlx::Error>
     .transpose()
 }
 
-fn hydrate(row: &PgRow) -> Result<RunRow, sqlx::Error> {
+/// Row → `RunRow`, shared by every reader that selects `COLS` (the store's own
+/// reads and the approvals census's `awaiting` sweep alike).
+pub(crate) fn hydrate(row: &PgRow) -> Result<RunRow, sqlx::Error> {
     Ok(RunRow {
         id: row.try_get("id")?,
         kind: row.try_get("kind")?,

@@ -23,9 +23,10 @@ use std::sync::{Arc, Mutex};
 use futures_util::{FutureExt, future::BoxFuture};
 use serde_json::{Value, json};
 use talaria_api::agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
+use talaria_api::approvals::{ApprovalKind, Disclosure, run_decision_approval};
 use talaria_api::runs::decide::{
-    AnnounceFn, AudienceForFn, DecideArgs, DecideDeps, DecideRefusal, DecideResult, Disclosure,
-    PauseDeps, PauseResult, run_approval_key, run_decision_approval,
+    AnnounceFn, AudienceForFn, DecideArgs, DecideDeps, DecideRefusal, DecideResult, PauseDeps,
+    PauseResult, run_approval_key,
 };
 use talaria_api::runs::define::{
     Authority, DecisionAnswer, DecisionOption, DecisionRequest, RunDecision, RunDefinition, RunRow,
@@ -1027,7 +1028,7 @@ async fn pauses_into_an_approval_tells_the_audience_its_definition_declared_refu
     // Not the run's owner (u-owner) and not the admins: the definition's
     // authority is the ticket's BOARD, and this is what that resolved to.
     let approval = (w.deps.approval_for)(&parked).expect("the census entry builds");
-    assert_eq!(approval.kind, "run_decision");
+    assert_eq!(approval.kind, ApprovalKind::RunDecision);
     assert_eq!(
         approval.authority,
         Authority::Board {
@@ -1126,7 +1127,7 @@ async fn describes_a_parked_run_as_an_approval_with_the_authority_its_definition
 
     let approval = (w.deps.approval_for)(&w.store.row(&run.id)).expect("translates");
 
-    assert_eq!(approval.kind, "run_decision");
+    assert_eq!(approval.kind, ApprovalKind::RunDecision);
     // The key on the ROW, not a second derivation of it: the announce marks are
     // keyed on this string, and two spellings would announce the same pause
     // twice.

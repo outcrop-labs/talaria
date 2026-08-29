@@ -50,20 +50,23 @@
 //   `store.answer`, and this file is the only caller that gets to reach it with
 //   a person's name attached.
 //
-// THE SEAMS. approvals.ts and daily-brief-stale.ts have not crossed yet — they
-// land later in this batch — so the three approvals shapes this file touches
-// (`Disclosure`, `PendingApproval`, `may_decide`) are declared here and MOVE to
-// the approvals module when it crosses, and `audience_for` / `announce` /
-// `mark_brief_stale` are fields on the deps rather than imports. Their CONTRACTS
-// are the TS ones: `audience_for` resolves an `Authority` to the two halves of a
-// `Disclosure` and resolves "could not say" to NOBODY, never to "everybody";
-// `announce` files the approval with the notify machinery and returns how many
-// people were reached (ZERO IS A REAL ANSWER); `mark_brief_stale` clears the
-// deciders' brief lines.
+// THE SEAMS. The approvals census has crossed (crate `approvals`), so the four
+// shapes this file shares with it — `Disclosure`, `PendingApproval`,
+// `run_decision_approval`, `may_decide_content` — live THERE and are imported
+// here. `audience_for` / `announce` / `mark_brief_stale` remain fields on the
+// deps rather than imports, because the engine's deps are closures over a
+// `dyn RunStore` with no pool in them; the real edges (a `PgPool` and a
+// `ConnectionManager` over `ApprovalDeps`/`NotifyDeps`) are adapted onto these
+// seams by the run-kinds boot slice. Their CONTRACTS are the TS ones:
+// `audience_for` resolves an `Authority` to the two halves of a `Disclosure`
+// and resolves "could not say" to NOBODY, never to "everybody"; `announce`
+// files the approval with the notify machinery and returns how many people were
+// reached (ZERO IS A REAL ANSWER); `mark_brief_stale` clears the deciders'
+// brief lines.
 
 use crate::agent_auth::epoch_ms_to_iso;
+use crate::approvals::{Disclosure, PendingApproval, may_decide_content};
 use futures_util::future::BoxFuture;
-use serde::Serialize;
 use std::sync::Arc;
 
 use super::define::{Authority, DecisionAnswer, DecisionRequest, RunDecision, RunRow, RunState};
@@ -74,50 +77,6 @@ use super::run::{
 use super::store::{AnswerOutcome, RunStore, WriteFailure};
 
 const LOG: &str = "[runs]";
-
-// ── The approvals shapes this file touches (they move when approvals crosses) ─
-
-/// Who may be told WHAT: the content half may be shown the thing itself, the
-/// fact half may only be told that it is stuck. Both halves in one answer
-/// because approvals.ts once returned the content half alone and every consumer
-/// that needed the other went and fetched the admin list by hand — which is how
-/// an approval bounded to a board was announced to NOBODY while the SLA
-/// reported it to admins the census had never heard of.
-#[derive(Debug, Clone, Serialize, Default, PartialEq)]
-pub struct Disclosure {
-    pub content: Vec<String>,
-    pub fact: Vec<String>,
-}
-
-/// The census row for a parked run — the same shape `pendingApprovals` builds,
-/// so the thing this file authorizes against is byte-for-byte the thing the
-/// digest, the announcement and the SLA are looking at.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingApproval {
-    /// Always "run_decision" here; the census's other kinds arrive with the
-    /// approvals port.
-    pub kind: &'static str,
-    /// Stable across runs — the dedupe key the escalation job records against.
-    /// The ROW's key, never a second derivation of it: the announce marks are
-    /// keyed on this string, and two spellings would announce one pause twice.
-    pub key: String,
-    pub id: String,
-    /// One line. Goes in a subject, a list item, or a notification title.
-    /// CONTENT: only the authority below may be shown it.
-    pub title: String,
-    /// What the reader needs to decide it. Also CONTENT.
-    pub detail: String,
-    /// In-app path to the surface that can actually decide it.
-    pub href: String,
-    /// When a human became responsible. This is what ages.
-    pub waiting_since: String,
-    /// The named person(s) already on the hook — always a SUBSET of the
-    /// authority, never a widening of it.
-    pub owner_user_ids: Vec<String>,
-    /// Who may decide it, and so who may be told what it is.
-    pub authority: Authority,
-}
 
 /// The approvals key for a parked run, derived from the run and the question
 /// and nothing else.
@@ -136,109 +95,11 @@ pub fn run_approval_key(kind: &str, run_id: &str, question_key: &str) -> String 
     format!("run:{kind}:{run_id}:{question_key}")
 }
 
-/// The row → approval translation. The DEFAULT for `DecideDeps.approval_for`,
-/// and pure: it reads the row, asks the definition for its authority, and
-/// builds the census entry. FAILS CLOSED — `None` means "this instance cannot
-/// say who may decide this run", never "anybody".
-pub fn run_decision_approval(
-    run: &RunRow,
-    definition_for: &DefinitionForFn,
-) -> Option<PendingApproval> {
-    if run.state != RunState::Awaiting {
-        return None;
-    }
-    let decision = run.decision.as_ref();
-    let key = run.approval_key.as_deref();
-    let (request, key) = match (decision, key) {
-        (Some(d), Some(k)) => (&d.request, k),
-        _ => {
-            tracing::error!(
-                "[approvals] run {} ({}) is awaiting with no {} on the row — nobody can be told \
-                 about it",
-                run.id,
-                run.kind,
-                if decision.is_some() {
-                    "approval key"
-                } else {
-                    "question"
-                }
-            );
-            return None;
-        }
-    };
-    let Some(def) = definition_for(&run.kind) else {
-        tracing::warn!(
-            "[approvals] run {} is awaiting a decision but kind \"{}\" is not registered on this \
-             instance — leaving it for one that has it. It stays unannounced and UNMARKED, so the \
-             next sweep on an instance that imports the definition announces it normally.",
-            run.id,
-            run.kind
-        );
-        return None;
-    };
-    // The definition's own code, running inside the census. In TS a throw here
-    // resolved to nobody hearing anything; the Rust `AudienceFn` type cannot
-    // throw, so "cannot say" is structural rather than caught.
-    let authority = (def.audience)(run);
-
-    let options: Vec<&str> = request
-        .options
-        .iter()
-        .map(|o| o.label.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let detail = match request
-        .detail
-        .as_deref()
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-    {
-        Some(d) => d.to_string(),
-        // The fallback names where the run stopped, because the question alone
-        // does not always say.
-        None => format!(
-            "{} stopped at \"{}\" and cannot go on until somebody chooses.",
-            def.label, run.phase
-        ),
-    };
-    Some(PendingApproval {
-        kind: "run_decision",
-        key: key.to_string(),
-        id: run.id.clone(),
-        title: format!("{} needs a decision: {}", def.label, request.question),
-        detail: if options.is_empty() {
-            detail
-        } else {
-            format!("{detail} Options: {}.", options.join(" · "))
-        },
-        // A run that has nowhere to send a reader is not a bug worth
-        // suppressing the approval over — the notification still says what the
-        // question is.
-        href: request.href.clone().unwrap_or_else(|| "/".into()),
-        // WHEN IT PARKED, and unusually for an approvals row that is exactly
-        // what `updated_at` means here: an `awaiting` run's row is touched by
-        // nothing (every write in the store requires `state = 'running'`, and
-        // the only statement that moves a row out of `awaiting` is the answer
-        // itself), so the timestamp cannot drift the way a ticket's does.
-        waiting_since: run.updated_at.clone(),
-        // The owner is who the run belongs to, NOT proof they may decide it: a
-        // run owned by one person can pause to a board they are not an editor
-        // of. Every stage that uses `owner_user_ids` intersects it with the
-        // resolved audience first.
-        owner_user_ids: run.owner_user_id.clone().into_iter().collect(),
-        authority,
-    })
-}
-
-/// THE predicate, not a re-derivation of it: this person is in the CONTENT half
-/// — never the `fact` half, which is people who may be told something is stuck
-/// and cannot be told what. TS's `mayDecide` takes the whole census and the
-/// approval and looks the audience up by key; at the single-approval call site
-/// here that indirection drops out, and the census-shaped wrapper arrives with
-/// the approvals port.
-pub fn may_decide(who: &Disclosure, user_id: &str) -> bool {
-    who.content.iter().any(|u| u == user_id)
-}
+// `run_decision_approval` — the row → approval translation this file's
+// `DecideDeps.approval_for` is defaulted to, and the predicate
+// `may_decide_content` — now live in the approvals module with the census that
+// builds the same shape for the other four kinds. Imported above; see
+// `crate::approvals` for the fail-closed contract both carry.
 
 // ── Deps ─────────────────────────────────────────────────────────────────────
 
@@ -633,7 +494,7 @@ pub async fn decide(args: DecideArgs, deps: &DecideDeps) -> Result<DecideResult,
         });
     };
     let who = (deps.audience_for)(&approval.authority).await;
-    if !may_decide(&who, &args.by) {
+    if !may_decide_content(&who, &args.by) {
         return Ok(DecideResult::Refused {
             reason: DecideRefusal::Forbidden,
             state: Some(run.state),
@@ -751,7 +612,7 @@ pub struct DecideArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runs::define::{DecisionOption, RunDefinition, StepResult};
+    use crate::runs::define::DecisionOption;
     use serde_json::Value;
 
     fn row(state: RunState, decision: Option<RunDecision>, approval_key: Option<String>) -> RunRow {
@@ -777,33 +638,6 @@ mod tests {
             started_at: None,
             finished_at: None,
         }
-    }
-
-    /// A lookup that knows exactly one kind, so the fail-closed paths have an
-    /// "unregistered kind" to be.
-    fn lookup(kind: &str) -> DefinitionForFn {
-        let kind = kind.to_string();
-        Arc::new(move |k| {
-            if *k != kind {
-                return None;
-            }
-            Some(Arc::new(RunDefinition {
-                kind: kind.clone(),
-                label: "Ticket handover".into(),
-                step: Arc::new(|_| {
-                    Box::pin(async {
-                        Ok(StepResult::Done {
-                            result: Value::Null,
-                        })
-                    })
-                }),
-                audience: Arc::new(|run| Authority::Board {
-                    board_id: run.subject_id.clone().unwrap_or_else(|| "unknown".into()),
-                }),
-                max_step_ms: 30_000,
-                max_attempts: 3,
-            }))
-        })
     }
 
     fn ask() -> DecisionRequest {
@@ -835,79 +669,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn may_decide_is_the_content_half_only() {
-        let d = Disclosure {
-            content: vec!["u-editor".into()],
-            fact: vec!["u-admin".into()],
-        };
-        assert!(may_decide(&d, "u-editor"));
-        assert!(
-            !may_decide(&d, "u-admin"),
-            "the fact half may be told it is stuck, not decide it"
-        );
-        assert!(!may_decide(&d, "u-stranger"));
-    }
-
-    #[test]
-    fn run_decision_approval_fails_closed() {
-        let ask = ask();
-        let parked = || {
-            Some(RunDecision {
-                request: ask.clone(),
-                answer: None,
-            })
-        };
-        let def = lookup("unit-kind");
-        let nobody = lookup("another-kind");
-
-        // Not awaiting, no question, no key, unknown kind: all None, never
-        // "anybody".
-        assert!(run_decision_approval(&row(RunState::Running, parked(), None), &def).is_none());
-        assert!(
-            run_decision_approval(&row(RunState::Awaiting, None, Some("k".into())), &def).is_none()
-        );
-        assert!(run_decision_approval(&row(RunState::Awaiting, parked(), None), &def).is_none());
-        assert!(
-            run_decision_approval(
-                &row(RunState::Awaiting, parked(), Some("k".into())),
-                &nobody
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn run_decision_approval_translates_the_row() {
-        let ask = ask();
-        let row = row(
-            RunState::Awaiting,
-            Some(RunDecision {
-                request: ask,
-                answer: None,
-            }),
-            Some("run:unit-kind:run-1:assignee".into()),
-        );
-        let approval = run_decision_approval(&row, &lookup("unit-kind")).expect("translates");
-
-        assert_eq!(approval.kind, "run_decision");
-        // The key on the ROW, not a second derivation of it.
-        assert_eq!(approval.key, "run:unit-kind:run-1:assignee");
-        assert_eq!(
-            approval.title,
-            "Ticket handover needs a decision: Who should take this ticket?"
-        );
-        assert!(approval.detail.contains("Options: Ana · Ben."));
-        assert_eq!(approval.href, "/boards/board-1/task-1");
-        assert_eq!(
-            approval.authority,
-            Authority::Board {
-                board_id: "board-1".into()
-            }
-        );
-        assert_eq!(approval.owner_user_ids, vec!["u-owner".to_string()]);
-        assert_eq!(approval.waiting_since, "t0");
-    }
+    // `may_decide_content` and `run_decision_approval` are tested where they
+    // now live, in crate::approvals.
 
     #[test]
     fn pending_question_is_none_unless_parked_unanswered() {

@@ -5,6 +5,7 @@
 pub mod activity;
 pub mod agent_auth;
 pub mod agent_role_templates;
+pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod auth_config;
@@ -48,6 +49,7 @@ pub mod runs;
 pub mod secretbox;
 pub mod session;
 pub mod state;
+pub mod statuses;
 pub mod tasks;
 pub mod teams;
 pub mod users;
