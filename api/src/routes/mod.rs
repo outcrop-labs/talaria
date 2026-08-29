@@ -22,6 +22,7 @@ pub mod keys;
 pub mod keys_id;
 pub mod llm_chat;
 pub mod llm_models;
+pub mod me;
 pub mod notifications;
 pub mod teams;
 pub mod teams_id;
@@ -168,6 +169,12 @@ pub fn router(state: AppState) -> Router {
                 .put(notifications::put)
                 .patch(notifications::patch)
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
+        )
+        .route(
+            "/api/me",
+            get(me::get)
+                .put(me::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workflows/{id}",

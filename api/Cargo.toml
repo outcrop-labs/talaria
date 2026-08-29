@@ -45,3 +45,4 @@ getrandom = "0.3"
 regex = "1"
 url = "2"
 futures-util = "0.3"
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }

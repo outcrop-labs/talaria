@@ -54,9 +54,11 @@ const PREFIXES = [
 // besides the route itself still belongs to TS. '/api/agents' has register +
 // heartbeat sub-routes (the fleet plane, a later batch), and '/api/apps' is
 // the app-server gateway (apps.$app.$ dispatches into app server modules —
-// TS until cutover by construction). A startsWith entry here would strand
-// those on a Rust 404.
-const EXACT = new Set(['/api/agents', '/api/apps'])
+// TS until cutover by construction). '/api/me' is exact for the same reason:
+// me.mcp, me.assistant, and me.events are their own planes (fleet, agents,
+// SSE) that migrate whole with those batches. A startsWith entry here would
+// strand those on a Rust 404.
+const EXACT = new Set(['/api/agents', '/api/apps', '/api/me'])
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
 // must not depend on which module graph got the frozen copy.

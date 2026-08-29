@@ -124,6 +124,19 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('forwards /api/me exactly — the profile reads and writes, not the me.* planes under it', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/me'), '/api/me')).not.toBeNull()
+    // The me.* siblings are their own planes — mcp (fleet render), assistant
+    // (agent start), events (SSE) — and stay TS until those batches.
+    expect(await maybeProxy(req('/api/me/mcp'), '/api/me/mcp')).toBeNull()
+    expect(await maybeProxy(req('/api/me/assistant'), '/api/me/assistant')).toBeNull()
+    expect(await maybeProxy(req('/api/me/events'), '/api/me/events')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it('forwards exact-match routes but not the TS sub-routes under them', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

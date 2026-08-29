@@ -331,6 +331,23 @@ pub fn nullable_optional_string_member(
     }
 }
 
+/// A string member whose NULL IS A VALUE (`z.string().min(1).max(n)
+/// .nullable().optional()`): absent is None, present-null is Some(None), a
+/// present string is Some(s) within bounds. For routes where "clear the
+/// setting" and "don't touch it" are different requests (me's preferences) —
+/// the folded helper above cannot tell them apart.
+pub fn present_nullable_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<Option<String>>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(_) => string_member(obj, key, 1, max).map(|s| Some(Some(s))),
+    }
+}
+
 /// zod's uuid check (`z.string().uuid()` → "Invalid UUID"): the canonical
 /// 8-4-4-4-12 hex layout, either case. Not WHICH version — v4 and the
 /// name-derived v8s both pass here.
@@ -671,6 +688,24 @@ mod tests {
         );
         assert_eq!(
             nullable_optional_string_member(h, "hd", 200).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        // The present-vs-absent split: absent is None, null is Some(None),
+        // a value is Some(Some) — the explicit clear stays distinguishable.
+        assert_eq!(
+            present_nullable_string_member(h, "absent", 200).unwrap(),
+            None
+        );
+        assert_eq!(
+            present_nullable_string_member(h, "clear", 200).unwrap(),
+            Some(None)
+        );
+        assert_eq!(
+            present_nullable_string_member(h, "set", 200).unwrap(),
+            Some(Some("x".to_string()))
+        );
+        assert_eq!(
+            present_nullable_string_member(h, "hd", 200).unwrap_err(),
             "Invalid input: expected string, received number"
         );
     }
