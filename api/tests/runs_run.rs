@@ -289,8 +289,10 @@ impl RunStore for FakeStore {
             }
             row.checkpoint = checkpoint;
             row.phase = phase;
-            if clear_decision && let Some(d) = row.decision.as_mut() {
-                d.answer = None; // the answer is consumed, the question stays
+            if clear_decision {
+                // The SQL nulls the whole decision and the key with it.
+                row.decision = None;
+                row.approval_key = None;
             }
             say(
                 &self.tape,
@@ -350,6 +352,8 @@ impl RunStore for FakeStore {
             }
             row.state = RunState::Done;
             row.result = result;
+            row.decision = None;
+            row.approval_key = None;
             row.finished_at = Some("t9".into());
             row.lease_owner = None;
             row.lease_expires_at = None;
@@ -491,7 +495,8 @@ impl RunStore for FakeStore {
             }
             row.decision.as_mut().unwrap().answer = Some(answer);
             row.state = RunState::Queued;
-            row.approval_key = None;
+            // The SQL keeps the approval key: the census re-derives nothing,
+            // and `run_decision_approval` already returns None off the state.
             row.lease_owner = None;
             row.lease_expires_at = None;
             st.exp.remove(id);
@@ -518,9 +523,7 @@ impl RunStore for FakeStore {
                 return Ok(CancelOutcome::Terminal { state: row.state });
             }
             row.state = RunState::Cancelled;
-            if reason.is_some() {
-                row.error = reason;
-            }
+            row.error = reason;
             row.finished_at = Some("t8".into());
             row.lease_owner = None;
             row.lease_expires_at = None;
@@ -1209,7 +1212,12 @@ async fn the_answer_clears_in_the_same_write_as_the_checkpoint() {
         1
     );
     assert!(!tape.iter().any(|l| l == "db:checkpoint"));
-    assert!(fx.store.row(id).decision.unwrap().answer.is_none());
+    // …and the SQL nulls the whole decision with it, not just the answer — a
+    // reclaim cannot hand a step an answer it has already acted on, and there
+    // is no half-cleared question left on the row either.
+    let row = fx.store.row(id);
+    assert!(row.decision.is_none());
+    assert!(row.approval_key.is_none());
 }
 
 #[tokio::test]

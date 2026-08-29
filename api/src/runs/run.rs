@@ -438,7 +438,7 @@ enum StepInterrupt {
 /// TS clamps phase text at 300 UTF-16 units; Rust clamps at 300 BYTES on a
 /// char boundary — the standing surrogate divergence, and no phase line is
 /// near either limit.
-fn clamp_text(s: &str, max: usize) -> String {
+pub(crate) fn clamp_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
