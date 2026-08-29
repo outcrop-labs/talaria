@@ -4,6 +4,7 @@ import { presentedCredential, requireAgent } from '@/server/agent-auth'
 import { effectiveMcpFor, parseMcpResponse } from '@/server/mcp-registry'
 import { rpcError, type Rpc } from '@/server/mcp-jsonrpc'
 import { assertFetchableUrl } from '@/server/safe-fetch'
+import { logUpstreamError, upstreamErrorMessage } from '@/server/upstream-error'
 
 // The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
 // upstream URL or credential: their configs point here, the agent's own
@@ -107,7 +108,22 @@ export const Route = defineApi('/api/mcp/gw/$server', {
       body: bodyText,
       signal: AbortSignal.timeout((eff.server.timeoutSecs ?? 120) * 1000),
     }).catch((e: Error) => e)
-    if (upstream instanceof Error) return json({ error: `upstream unreachable: ${upstream.message}` }, { status: 502 })
+    if (upstream instanceof Error) {
+      // The fetch error can name the upstream host (ECONNREFUSED host:port) —
+      // agent configs are hand-editable; endpoint topology isn't theirs.
+      logUpstreamError(`mcp-gw:${params.server}`, 'unreachable', upstream.message)
+      return json({ error: 'upstream unreachable' }, { status: 502 })
+    }
+    // HTTP-level failures never relay verbatim: their bodies are written by
+    // whatever proxy or server answered, not by the MCP protocol. One check
+    // here covers every relay below (tools/list filter, its fallback, the
+    // final stream). JSON-RPC errors ride 200s and pass untouched — tool
+    // results, including tool FAILURES, are the protocol the agent speaks.
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => '')
+      logUpstreamError(`mcp-gw:${params.server}`, upstream.status, text)
+      return json({ error: upstreamErrorMessage(upstream.status) }, { status: upstream.status })
+    }
 
     const respHeaders: Record<string, string> = {
       'content-type': upstream.headers.get('content-type') ?? 'application/json',
@@ -175,7 +191,17 @@ export const Route = defineApi('/api/mcp/gw/$server', {
         ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': presentedCredential(request) ?? '' } : {}),
       },
     }).catch((e: Error) => e)
-    if (upstream instanceof Error) return json({ error: `upstream unreachable: ${upstream.message}` }, { status: 502 })
+    if (upstream instanceof Error) {
+      logUpstreamError(`mcp-gw-get:${params.server}`, 'unreachable', upstream.message)
+      return json({ error: 'upstream unreachable' }, { status: 502 })
+    }
+    // A failed notification-stream hop relays the same way as POST: fixed
+    // sentence, verbatim to the log. Only a live 200 SSE stream passes.
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => '')
+      logUpstreamError(`mcp-gw-get:${params.server}`, upstream.status, text)
+      return json({ error: upstreamErrorMessage(upstream.status) }, { status: upstream.status })
+    }
     return new Response(upstream.body, {
       status: upstream.status,
       headers: { 'content-type': upstream.headers.get('content-type') ?? 'text/event-stream' },

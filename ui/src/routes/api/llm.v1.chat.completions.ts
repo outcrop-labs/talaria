@@ -5,6 +5,7 @@ import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '
 import { estimateTokens } from '@/server/usage'
 import { getGuardConfig, groundingTextOf, guardCompletion, needsRedaction, redactSecrets } from '@/server/guardrails'
 import { getSetting } from '@/server/audit'
+import { logUpstreamError, sanitizedUpstreamBody } from '@/server/upstream-error'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
 // non-streaming both pass through; every call is metered into the ledger with
@@ -37,7 +38,10 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
     try {
       upstream = await buildUpstream(route, body)
     } catch (e) {
-      return json({ error: { message: (e as Error).message } }, { status: 502 })
+      // The build can fail on endpoint/credential internals — the caller
+      // (an external key holder) gets a fixed sentence, the log gets why.
+      logUpstreamError('build', 'no-route', (e as Error).message)
+      return json({ error: { message: 'upstream request could not be built' } }, { status: 502 })
     }
 
     const caller = `api:${id.keyName}`
@@ -73,7 +77,12 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
     )
 
     const res = await fetchUpstream(upstream, route).catch((e: Error) => e)
-    if (res instanceof Error) return json({ error: { message: `upstream unreachable: ${res.message}` } }, { status: 502 })
+    if (res instanceof Error) {
+      // The fetch error can name the endpoint host (ECONNREFUSED host:port) —
+      // endpoint topology is not a key holder's business. Fixed sentence out.
+      logUpstreamError('fetch', 'unreachable', res.message)
+      return json({ error: { message: 'upstream unreachable' } }, { status: 502 })
+    }
 
     const ledger = (usage: { prompt_tokens?: number; completion_tokens?: number } | null, contentChars: number) => {
       if (skipMeter) return
@@ -90,40 +99,47 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
     // ── Non-streaming: read, meter, relay ─────────────────────────────────
     if (!upstream.body.stream) {
       let text = await res.text()
-      if (res.ok) {
-        try {
-          const j = JSON.parse(text) as {
-            usage?: { prompt_tokens?: number; completion_tokens?: number }
-            choices?: Array<{ message?: { content?: string } }>
-          }
-          const content = j.choices?.[0]?.message?.content ?? ''
-          void ledger(j.usage ?? null, content.length)
-          if (mayAnnotate && content) {
-            // Nothing has been relayed yet, so annotate/strict can act on
-            // the body itself: strict redacts leaked secrets, and any
-            // findings append the human-facing caveat.
-            const g = await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name })
-            if (g.findings.length && j.choices?.[0]?.message) {
-              // GROUNDED, like the findings on the line above. `guardCompletion`
-              // already grounds what it REPORTS against this request's messages;
-              // redacting without the same material was the two halves of one
-              // rule disagreeing about the same span — the caller's own order
-              // number would survive `pii_leak`'s finding and then be rewritten
-              // out of the reply anyway. Both halves get the same input, which
-              // is the rule guardrails.ts's header now states.
-              const safe =
-                g.mode === 'strict' && needsRedaction(g.findings)
-                  ? redactSecrets(content, groundingTextOf(body.messages as Array<{ role?: string; content?: unknown }>)).text
-                  : content
-              j.choices[0].message.content = `${safe}${g.caveat}`
-              text = JSON.stringify(j)
-            }
-          } else {
-            void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
-          }
-        } catch {
-          /* relay verbatim even if unparseable */
+      if (!res.ok) {
+        // The upstream's own error body never crosses to the key holder —
+        // fixed sentence + structured type/code only; verbatim goes to the log.
+        logUpstreamError('llm-v1', res.status, text)
+        return new Response(sanitizedUpstreamBody(res.status, text), {
+          status: res.status,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      try {
+        const j = JSON.parse(text) as {
+          usage?: { prompt_tokens?: number; completion_tokens?: number }
+          choices?: Array<{ message?: { content?: string } }>
         }
+        const content = j.choices?.[0]?.message?.content ?? ''
+        void ledger(j.usage ?? null, content.length)
+        if (mayAnnotate && content) {
+          // Nothing has been relayed yet, so annotate/strict can act on
+          // the body itself: strict redacts leaked secrets, and any
+          // findings append the human-facing caveat.
+          const g = await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name })
+          if (g.findings.length && j.choices?.[0]?.message) {
+            // GROUNDED, like the findings on the line above. `guardCompletion`
+            // already grounds what it REPORTS against this request's messages;
+            // redacting without the same material was the two halves of one
+            // rule disagreeing about the same span — the caller's own order
+            // number would survive `pii_leak`'s finding and then be rewritten
+            // out of the reply anyway. Both halves get the same input, which
+            // is the rule guardrails.ts's header now states.
+            const safe =
+              g.mode === 'strict' && needsRedaction(g.findings)
+                ? redactSecrets(content, groundingTextOf(body.messages as Array<{ role?: string; content?: unknown }>)).text
+                : content
+            j.choices[0].message.content = `${safe}${g.caveat}`
+            text = JSON.stringify(j)
+          }
+        } else {
+          void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
+        }
+      } catch {
+        /* relay verbatim even if unparseable */
       }
       return new Response(text, {
         status: res.status,
@@ -133,10 +149,14 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
 
     // ── Streaming: pass bytes through, scan SSE lines for usage/content ──
     if (!res.ok || !res.body) {
+      // Same boundary as the non-streaming relay above: a failed hop's body is
+      // the upstream's words, not ours to forward. The client asked to stream,
+      // but an error is one small JSON body — that every OpenAI SDK accepts.
       const text = await res.text().catch(() => '')
-      return new Response(text || JSON.stringify({ error: { message: `upstream ${res.status}` } }), {
+      logUpstreamError('llm-v1-stream', res.status, text)
+      return new Response(sanitizedUpstreamBody(res.status, text), {
         status: res.status,
-        headers: { 'content-type': res.headers.get('content-type') ?? 'application/json' },
+        headers: { 'content-type': 'application/json' },
       })
     }
 
