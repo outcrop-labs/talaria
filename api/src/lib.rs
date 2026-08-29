@@ -21,6 +21,7 @@ pub mod google_connections;
 pub mod google_oauth;
 pub mod instance;
 pub mod invites;
+pub mod llm_keys;
 pub mod org_domains;
 pub mod password;
 pub mod password_accounts;

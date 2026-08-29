@@ -2,6 +2,7 @@
 // every provider shape, the chars/4 estimate, the priced rolling-window spend
 // read (budget check's read side), and the gateway's usage_events insert.
 
+use crate::body::js_num;
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -122,17 +123,6 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 /// The priced view as &str, for format! interpolation.
 fn priced() -> &'static str {
     &PRICED_STR
-}
-
-/// A float the way JSON.stringify prints it: an integral value serializes as
-/// an integer ("0", "1"), not Rust's "0.0". Costs and shares ride the wire
-/// through this so a $0 day is byte-identical to TS's.
-fn js_num(v: f64) -> serde_json::Number {
-    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.007_199_254_740_992e15 {
-        serde_json::Number::from(v as i64)
-    } else {
-        serde_json::Number::from_f64(v).expect("finite f64")
-    }
 }
 
 /// Billable spend over a rolling window, optionally for one caller

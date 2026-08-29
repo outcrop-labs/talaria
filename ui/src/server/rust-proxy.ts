@@ -30,6 +30,9 @@ const PREFIXES = [
   '/api/users',
   '/api/activity',
   '/api/cost',
+  // The whole keys group: keys.ts + keys.$id.ts are the only routes under
+  // this path, so the prefix is the group.
+  '/api/keys',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite

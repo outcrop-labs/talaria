@@ -309,6 +309,87 @@ pub fn literal_true_member(obj: &serde_json::Map<String, Value>, key: &str) -> R
     }
 }
 
+/// The `.int()` flavor of z.number(), for members declared with the guard.
+#[derive(Clone, Copy, PartialEq)]
+pub enum NumKind {
+    Int,
+    Float,
+}
+
+/// A float the way JSON.stringify prints it: an integral value serializes as
+/// an integer ("0", "1"), not Rust's "0.0". Any number that rides the wire
+/// — parsed request echoes, DB columns read as f64 — goes through this so a
+/// 1000-token cap is byte-identical to TS's.
+pub fn js_num(v: f64) -> serde_json::Number {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.007_199_254_740_992e15 {
+        serde_json::Number::from(v as i64)
+    } else {
+        serde_json::Number::from_f64(v).expect("finite f64")
+    }
+}
+
+/// A bound as zod prints it — these schemas use whole-number bounds and zod
+/// never shows "1000000000.0".
+fn fmt_bound(b: f64) -> String {
+    if b.fract() == 0.0 && b.abs() < 1e15 {
+        format!("{}", b as i64)
+    } else {
+        format!("{b}")
+    }
+}
+
+/// An optional+nullable z.number() member (`.nullish()`): absent and null both
+/// pass. Numbers run type → int guard → min → max, zod's order. The message
+/// table is zod 4.3.6's, probed — including its odd corners: the int guard
+/// reports the SAFE-INTEGER bounds (±9007199254740991) for anything beyond
+/// them, each side naming its own, and a plain bound breach on an int field
+/// still says "expected number", not "expected int".
+pub fn nullable_number_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    kind: NumKind,
+    min: f64,
+    max: f64,
+) -> Result<Option<f64>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None); // absent — what `.optional()` admits
+    };
+    if v.is_null() {
+        return Ok(None); // null — what `.nullable()` admits
+    }
+    let Some(n) = v.as_f64() else {
+        return Err(format!(
+            "Invalid input: expected number, received {}",
+            zod_type_name(v)
+        ));
+    };
+    if kind == NumKind::Int {
+        if n.fract() != 0.0 {
+            return Err("Invalid input: expected int, received number".into());
+        }
+        // The guard is two-sided and each side names ITS OWN safe bound.
+        if n > 9_007_199_254_740_991.0 {
+            return Err("Too big: expected int to be <=9007199254740991".into());
+        }
+        if n < -9_007_199_254_740_991.0 {
+            return Err("Too small: expected int to be >=-9007199254740991".into());
+        }
+    }
+    if n < min {
+        return Err(format!(
+            "Too small: expected number to be >={}",
+            fmt_bound(min)
+        ));
+    }
+    if n > max {
+        return Err(format!(
+            "Too big: expected number to be <={}",
+            fmt_bound(max)
+        ));
+    }
+    Ok(Some(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +650,73 @@ mod tests {
         assert_eq!(
             nullable_string_member(json!({}).as_object().unwrap(), "domain", 3, 253).unwrap_err(),
             "Invalid input: expected string, received undefined"
+        );
+    }
+
+    #[test]
+    fn nullable_number_members_match_zod_probes() {
+        use super::NumKind;
+        // The key-policy schema (keys.$id): int fields max 1e15/10_000, a
+        // float field max 1e9 — every row probed against zod 4.3.6.
+        let num =
+            |v: Value| nullable_number_member(v.as_object().unwrap(), "v", NumKind::Int, 0.0, 1e15);
+        assert_eq!(num(json!({ "v": 250 })).unwrap(), Some(250.0));
+        assert_eq!(num(json!({ "v": 0 })).unwrap(), Some(0.0));
+        assert_eq!(num(json!({ "v": 1e15 })).unwrap(), Some(1e15));
+        assert!(num(json!({})).unwrap().is_none()); // nullish: absent…
+        assert!(num(json!({ "v": null })).unwrap().is_none()); // …and null
+        assert_eq!(
+            num(json!({ "v": "x" })).unwrap_err(),
+            "Invalid input: expected number, received string"
+        );
+        assert_eq!(
+            num(json!({ "v": true })).unwrap_err(),
+            "Invalid input: expected number, received boolean"
+        );
+        // The int guard runs before the bounds — a negative FRACTION reports
+        // the guard, not the min.
+        assert_eq!(
+            num(json!({ "v": -0.5 })).unwrap_err(),
+            "Invalid input: expected int, received number"
+        );
+        assert_eq!(
+            num(json!({ "v": 2.5 })).unwrap_err(),
+            "Invalid input: expected int, received number"
+        );
+        // Beyond safe-integer, the guard reports THE CEILING — not the max —
+        // and each side names its own bound.
+        assert_eq!(
+            num(json!({ "v": 1e16 })).unwrap_err(),
+            "Too big: expected int to be <=9007199254740991"
+        );
+        assert_eq!(
+            num(json!({ "v": -1e16 })).unwrap_err(),
+            "Too small: expected int to be >=-9007199254740991"
+        );
+        // An integral breach of the field's own max still says "number".
+        assert_eq!(
+            num(json!({ "v": 2e15 })).unwrap_err(),
+            "Too big: expected number to be <=1000000000000000"
+        );
+        // Min first, then max, with zod's bound spellings.
+        assert_eq!(
+            num(json!({ "v": -1 })).unwrap_err(),
+            "Too small: expected number to be >=0"
+        );
+        let float = |v: Value| {
+            nullable_number_member(v.as_object().unwrap(), "v", NumKind::Float, 0.0, 1e9)
+        };
+        assert_eq!(float(json!({ "v": 0.5 })).unwrap(), Some(0.5)); // no int guard
+        assert_eq!(
+            float(json!({ "v": 2e9 })).unwrap_err(),
+            "Too big: expected number to be <=1000000000"
+        );
+        let rpm = |v: Value| {
+            nullable_number_member(v.as_object().unwrap(), "v", NumKind::Int, 0.0, 10_000.0)
+        };
+        assert_eq!(
+            rpm(json!({ "v": 20_000 })).unwrap_err(),
+            "Too big: expected number to be <=10000"
         );
     }
 

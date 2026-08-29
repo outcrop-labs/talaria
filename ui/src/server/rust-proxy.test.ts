@@ -82,6 +82,16 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(6)
   })
 
+  it('forwards the keys group — the list and the id route under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of ['/api/keys', '/api/keys/00000000-0000-4000-8000-000000000000']) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
   it('forwards exact-match routes but not the TS sub-routes under them', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

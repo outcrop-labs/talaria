@@ -18,6 +18,8 @@ pub mod auth_providers;
 pub mod auth_session;
 pub mod cost;
 pub mod health;
+pub mod keys;
+pub mod keys_id;
 pub mod llm_chat;
 pub mod llm_models;
 pub mod users;
@@ -116,6 +118,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/cost",
             get(cost::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/keys",
+            get(keys::get)
+                .post(keys::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/keys/{id}",
+            axum::routing::delete(keys_id::delete)
+                .put(keys_id::put)
+                .fallback(|| async { method_not_allowed("DELETE, PUT") }),
         )
         .route(
             "/api/agent-role-templates",
