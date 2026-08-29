@@ -6,6 +6,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
+- Google sign-in refuses unverified email addresses (#269): an identity whose email claim
+  Google has not verified — including an absent claim — is rejected at code exchange, so an
+  unverified address can no longer mint an account.
 - **Compose's env channels are git-ignored**: `compose.env`, `compose.override.yml` (now the
   devbox carrier for provider tokens and `--env` secrets) and `docker-compose.override.yml`, as
   bare patterns so a devbox tree relocated into a checkout (`TALARIA_DEVBOX_HOME`) is covered
