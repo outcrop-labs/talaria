@@ -58,7 +58,28 @@ describe('maybeProxy', () => {
     vi.stubGlobal('fetch', fetch)
     expect(await maybeProxy(req('/api/boards'), '/api/boards')).toBeNull()
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
+    // Admin groups still on TS — invites sends email from its handler,
+    // model-roles reads the effort-prefs plane; neither has crossed yet.
+    expect(await maybeProxy(req('/api/admin/invites'), '/api/admin/invites')).toBeNull()
+    expect(await maybeProxy(req('/api/admin/model-roles'), '/api/admin/model-roles')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards the admin wave-1 groups, /login riding under its parent', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/agent-role-templates',
+      '/api/admin/password-accounts',
+      '/api/admin/google-client',
+      '/api/admin/google-client/login',
+      '/api/admin/instance',
+      '/api/admin/permissions',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(6)
   })
 
   it('forwards exact-match routes but not the TS sub-routes under them', async () => {

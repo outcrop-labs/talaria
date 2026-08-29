@@ -357,6 +357,15 @@ pub fn unauthorized() -> Response {
     crate::error::house_error(StatusCode::UNAUTHORIZED, "unauthorized")
 }
 
+/// Canonical audit-log actor for a session user (api-guard.ts actorOf):
+/// email, else name, else the id.
+pub fn actor_of(user: &SessionUser) -> String {
+    user.email
+        .clone()
+        .or_else(|| user.name.clone())
+        .unwrap_or_else(|| user.id.clone())
+}
+
 /// Signed-in user or the 401 Response (the api-guard contract: return the
 /// gate when it is a Response).
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {

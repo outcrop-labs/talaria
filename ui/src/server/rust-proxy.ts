@@ -30,6 +30,15 @@ const PREFIXES = [
   '/api/users',
   '/api/activity',
   '/api/cost',
+  // The admin console's wave-1 groups. Each prefix IS the whole group — no
+  // TS sub-routes hide under any of these paths. '/api/admin/google-client'
+  // covers its own /login sibling. Still TS: admin/invites (createInvite
+  // sends email), admin/model-roles, and the rest of admin/*.
+  '/api/agent-role-templates',
+  '/api/admin/password-accounts',
+  '/api/admin/google-client',
+  '/api/admin/instance',
+  '/api/admin/permissions',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it

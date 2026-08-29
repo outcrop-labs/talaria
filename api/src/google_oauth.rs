@@ -292,6 +292,7 @@ mod tests {
             client_id: "cid-1".into(),
             client_secret: "sec".into(),
             hd: None,
+            source: "env",
         };
         assert_eq!(
             google_auth_url(

@@ -335,101 +335,11 @@ pub async fn denied_views(
 }
 
 // ── Permissions (permissions.ts) ─────────────────────────────────────────────
+// The catalog and the resolution chain live in permissions.rs since the admin
+// console routes landed — one source for the admin GET's full entries and the
+// session's resolved ids.
 
-/// The 13-entry catalog in shipped order — (id, memberDefault). This order IS
-/// the wire order of a member's resolved perms array, so it is pinned.
-pub const PERMISSIONS: [(&str, bool); 13] = [
-    ("agents.manage", false),
-    ("research.run", true),
-    ("plans.create", true),
-    ("boards.create", true),
-    ("comms.channels", true),
-    ("comms.relays", true),
-    ("kb.edit", true),
-    ("kb.official", false),
-    ("artifacts.create", true),
-    ("artifacts.publish", false),
-    ("files.upload", true),
-    ("templates.manage", false),
-    ("models.mint-keys", false),
-];
-
-/// The user's effective permission set: per-user override → org default → the
-/// catalog's shipped default. Admins: everything, in catalog order.
-pub async fn user_permissions(
-    pg: &PgPool,
-    user_id: &str,
-    role: &str,
-) -> Result<Vec<&'static str>, sqlx::Error> {
-    if role == "admin" {
-        return Ok(PERMISSIONS.iter().map(|(id, _)| *id).collect());
-    }
-    let org = get_setting(
-        pg,
-        "member_default_permissions",
-        serde_json::Value::Object(serde_json::Map::new()),
-    )
-    .await;
-    let org = org.as_object().cloned().unwrap_or_default();
-    let rows: Vec<(String, bool)> =
-        sqlx::query_as("select perm, allowed from user_permissions where user_id = $1::uuid")
-            .bind(user_id)
-            .fetch_all(pg)
-            .await?;
-    // Object.fromEntries: later duplicate rows win, same as the map insert.
-    let overrides: HashMap<String, bool> = rows.into_iter().collect();
-    Ok(PERMISSIONS
-        .iter()
-        .filter(|(id, default)| {
-            overrides
-                .get(*id)
-                .copied()
-                .or_else(|| org.get(*id).and_then(|v| v.as_bool()))
-                .unwrap_or(*default)
-        })
-        .map(|(id, _)| *id)
-        .collect())
-}
-
-/// One permission, resolved through the same override → org-default →
-/// catalog chain (permissions.ts hasPerm). Admins: everything.
-pub async fn has_perm(
-    pg: &PgPool,
-    user_id: &str,
-    role: &str,
-    perm: &str,
-) -> Result<bool, sqlx::Error> {
-    if role == "admin" {
-        return Ok(true);
-    }
-    let rows: Vec<(String, bool)> =
-        sqlx::query_as("select perm, allowed from user_permissions where user_id = $1::uuid")
-            .bind(user_id)
-            .fetch_all(pg)
-            .await?;
-    let overrides: HashMap<String, bool> = rows.into_iter().collect();
-    let org = get_setting(
-        pg,
-        "member_default_permissions",
-        serde_json::Value::Object(serde_json::Map::new()),
-    )
-    .await;
-    Ok(overrides
-        .get(perm)
-        .copied()
-        .or_else(|| {
-            org.as_object()
-                .and_then(|o| o.get(perm))
-                .and_then(|v| v.as_bool())
-        })
-        .or_else(|| {
-            PERMISSIONS
-                .iter()
-                .find(|(id, _)| *id == perm)
-                .map(|(_, d)| *d)
-        })
-        .unwrap_or(false))
-}
+pub use crate::permissions::{has_perm, user_permissions};
 
 // ── Who a request acts AS (users.ts actingUser and the assistant grants) ─────
 
@@ -597,7 +507,10 @@ mod tests {
 
     #[test]
     fn permission_catalog_is_the_wire_order() {
-        let ids: Vec<&str> = PERMISSIONS.iter().map(|(id, _)| *id).collect();
+        let ids: Vec<&str> = crate::permissions::PERMISSIONS
+            .iter()
+            .map(|p| p.id)
+            .collect();
         assert_eq!(
             ids,
             vec![
@@ -617,10 +530,10 @@ mod tests {
             ]
         );
         // And the member-default map matches permissions.ts exactly.
-        let defaults: Vec<(&str, bool)> = PERMISSIONS
+        let defaults: Vec<(&str, bool)> = crate::permissions::PERMISSIONS
             .iter()
-            .filter(|(_, d)| *d)
-            .map(|(id, _)| (*id, true))
+            .filter(|p| p.member_default)
+            .map(|p| (p.id, true))
             .collect();
         assert_eq!(
             defaults,

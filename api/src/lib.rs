@@ -4,6 +4,7 @@
 
 pub mod activity;
 pub mod agent_auth;
+pub mod agent_role_templates;
 pub mod audit;
 pub mod auth;
 pub mod auth_config;
@@ -16,11 +17,14 @@ pub mod error;
 pub mod fleet;
 pub mod gateway;
 pub mod google_client;
+pub mod google_connections;
 pub mod google_oauth;
+pub mod instance;
 pub mod invites;
 pub mod org_domains;
 pub mod password;
 pub mod password_accounts;
+pub mod permissions;
 pub mod ratelimit;
 pub mod routes;
 pub mod secretbox;

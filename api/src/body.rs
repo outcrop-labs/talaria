@@ -165,6 +165,150 @@ pub fn zod_email_ok(s: &str) -> bool {
     })
 }
 
+/// A required boolean member — zod's type message only (no bounds to check).
+pub fn boolean_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<bool, String> {
+    let v = obj.get(key).ok_or_else(|| boolean_msg("undefined"))?;
+    v.as_bool().ok_or_else(|| boolean_msg(zod_type_name(v)))
+}
+
+fn boolean_msg(received: &str) -> String {
+    format!("Invalid input: expected boolean, received {received}")
+}
+
+/// A boolean-or-null member (`z.boolean().nullable()`): absent, like the
+/// optional string, is the caller's business (`.optional()` wraps it).
+pub fn nullable_boolean_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<bool>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| boolean_msg(zod_type_name(v))),
+    }
+}
+
+/// A string member that may be null or absent (`z.string().max(n)
+/// .nullable().optional()`): absent and null both pass as None; a present
+/// string must fit max. Length runs from 1 — the shape never declares a min
+/// beside a nullable, and '' is a legal "clear" value on every route using it.
+pub fn nullable_optional_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => string_member(obj, key, 1, max).map(Some),
+    }
+}
+
+/// zod's uuid check (`z.string().uuid()` → "Invalid UUID"): the canonical
+/// 8-4-4-4-12 hex layout, either case. Not WHICH version — v4 and the
+/// name-derived v8s both pass here.
+pub fn zod_uuid_ok(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    let dash = |i: usize| bytes[i] == b'-';
+    let hexrun = |range: std::ops::Range<usize>| bytes[range].iter().all(|b| b.is_ascii_hexdigit());
+    dash(8)
+        && dash(13)
+        && dash(18)
+        && dash(23)
+        && hexrun(0..8)
+        && hexrun(9..13)
+        && hexrun(14..18)
+        && hexrun(19..23)
+        && hexrun(24..36)
+}
+
+/// A required uuid member: type, then format, in zod's order.
+pub fn uuid_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| string_msg("undefined"))?;
+    let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?;
+    if !zod_uuid_ok(s) {
+        return Err("Invalid UUID".into());
+    }
+    Ok(s.to_string())
+}
+
+/// zod's enum message — the exact quoted-pipe list, in catalog order:
+///   Invalid option: expected one of "a"|"b"|"c"
+pub fn enum_msg(options: &[&str]) -> String {
+    let quoted: Vec<String> = options.iter().map(|o| format!("\"{o}\"")).collect();
+    format!("Invalid option: expected one of {}", quoted.join("|"))
+}
+
+/// An enum member: present and one of `options`, else zod's enum message.
+pub fn enum_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    options: &[&str],
+) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| enum_msg(options))?;
+    let s = v.as_str().ok_or_else(|| enum_msg(options))?;
+    if options.contains(&s) {
+        Ok(s.to_string())
+    } else {
+        Err(enum_msg(options))
+    }
+}
+
+/// The lowercase-kebab pattern (`/^[a-z0-9]+(-[a-z0-9]+)*$/`) — the SLUG/DEPT
+/// shape the role-template dialog enforces. Runs AFTER zod's own length
+/// checks, exactly where `.regex()` sits in the chain.
+pub fn kebab_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// The role-template SLUG/DEPT member: `z.string().min(2).max(60)
+/// .regex(KEBAB, 'lowercase-kebab')` — the custom message is the literal
+/// string "lowercase-kebab" (zod 4 prints the message verbatim, no received
+/// clause), and it only fires after the length checks pass.
+pub fn kebab_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
+    let s = string_member(obj, key, 2, 60)?;
+    if !kebab_ok(&s) {
+        return Err("lowercase-kebab".into());
+    }
+    Ok(s)
+}
+
+/// A required string-or-null member (`z.string().min(n).max(m).nullable()`):
+/// absent is the type error on undefined (the key is required — only the
+/// VALUE may be null), null is Ok(None), a present string runs the bounds.
+pub fn nullable_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    min: usize,
+    max: usize,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        Some(Value::Null) => Ok(None),
+        Some(_) => string_member(obj, key, min, max).map(Some),
+        None => Err(string_msg("undefined")),
+    }
+}
+
+/// A `z.literal(true)` member — instance verify's "the action, on purpose".
+/// zod 4 prints the same message for every non-true input, received type
+/// included: "Invalid input: expected true".
+pub fn literal_true_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<(), String> {
+    match obj.get(key) {
+        Some(Value::Bool(true)) => Ok(()),
+        _ => Err("Invalid input: expected true".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +428,147 @@ mod tests {
         assert_eq!(
             string_member(over.as_object().unwrap(), "name", 1, 200).unwrap_err(),
             "Too big: expected string to have <=200 characters"
+        );
+    }
+
+    #[test]
+    fn boolean_and_nullable_shapes_match_zod_probes() {
+        let obj = json!({ "on": true, "off": "x", "nul": null, "blank": null });
+        let o = obj.as_object().unwrap();
+        assert!(boolean_member(o, "on").is_ok());
+        assert_eq!(
+            boolean_member(o, "off").unwrap_err(),
+            "Invalid input: expected boolean, received string"
+        );
+        assert_eq!(
+            boolean_member(o, "missing").unwrap_err(),
+            "Invalid input: expected boolean, received undefined"
+        );
+        assert!(nullable_boolean_member(o, "nul").unwrap().is_none());
+        assert!(nullable_boolean_member(o, "missing").unwrap().is_none());
+        assert_eq!(
+            nullable_boolean_member(o, "off").unwrap_err(),
+            "Invalid input: expected boolean, received string"
+        );
+        let hd = json!({ "hd": 5, "clear": null, "set": "x" });
+        let h = hd.as_object().unwrap();
+        assert!(
+            nullable_optional_string_member(h, "absent", 200)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            nullable_optional_string_member(h, "clear", 200)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            nullable_optional_string_member(h, "hd", 200).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+    }
+
+    #[test]
+    fn uuid_and_enum_messages_match_zod_probes() {
+        let obj = json!({ "userId": "xyz", "good": "67b06c14-7c2a-4fe5-91a4-1d0d2b8b2d81" });
+        let o = obj.as_object().unwrap();
+        assert!(uuid_member(o, "good").is_ok());
+        // Uppercase hex passes — zod's uuid is case-insensitive.
+        assert!(
+            uuid_member(
+                json!({ "u": "67B06C14-7C2A-4FE5-91A4-1D0D2B8B2D81" })
+                    .as_object()
+                    .unwrap(),
+                "u"
+            )
+            .is_ok()
+        );
+        assert_eq!(uuid_member(o, "userId").unwrap_err(), "Invalid UUID");
+        assert_eq!(
+            uuid_member(o, "missing").unwrap_err(),
+            "Invalid input: expected string, received undefined"
+        );
+        let catalog = ["agents.manage", "research.run", "plans.create"];
+        let listed = json!({ "perm": "nope", "ok": "research.run" });
+        let l = listed.as_object().unwrap();
+        assert_eq!(
+            enum_member(l, "perm", &catalog).unwrap_err(),
+            "Invalid option: expected one of \"agents.manage\"|\"research.run\"|\"plans.create\""
+        );
+        // Missing and wrong-type both surface the same enum message — zod 4
+        // folds them into the option list.
+        assert_eq!(
+            enum_member(json!({}).as_object().unwrap(), "perm", &catalog).unwrap_err(),
+            "Invalid option: expected one of \"agents.manage\"|\"research.run\"|\"plans.create\""
+        );
+        assert_eq!(
+            enum_member(o, "userId", &catalog).unwrap_err(),
+            "Invalid option: expected one of \"agents.manage\"|\"research.run\"|\"plans.create\""
+        );
+        assert_eq!(enum_member(l, "ok", &catalog).unwrap(), "research.run");
+    }
+
+    #[test]
+    fn kebab_and_literal_true_match_zod_probes() {
+        assert!(kebab_ok("software-engineer"));
+        assert!(kebab_ok("swe2"));
+        assert!(!kebab_ok("BAD"));
+        assert!(!kebab_ok("-lead"));
+        assert!(!kebab_ok("lead-"));
+        assert!(!kebab_ok("a--b"));
+        assert!(!kebab_ok(""));
+        // The route's SLUG/DEPT member: length messages first (min 2, max 60),
+        // then the literal custom message the route passes .regex().
+        let v = json!({ "slug": "software-engineer", "one": "a", "big": "x".repeat(61), "bad": "Bad_Slug" });
+        let o = v.as_object().unwrap();
+        assert_eq!(kebab_member(o, "slug").unwrap(), "software-engineer");
+        assert_eq!(
+            kebab_member(o, "one").unwrap_err(),
+            "Too small: expected string to have >=2 characters"
+        );
+        assert_eq!(
+            kebab_member(o, "big").unwrap_err(),
+            "Too big: expected string to have <=60 characters"
+        );
+        assert_eq!(kebab_member(o, "bad").unwrap_err(), "lowercase-kebab");
+        assert_eq!(
+            kebab_member(o, "missing").unwrap_err(),
+            "Invalid input: expected string, received undefined"
+        );
+        // z.literal(true): one message for every non-true input, type included.
+        let t = json!({ "verify": true, "no": false, "str": "yes", "nul": null });
+        let o = t.as_object().unwrap();
+        assert!(literal_true_member(o, "verify").is_ok());
+        for k in ["no", "str", "nul", "missing"] {
+            assert_eq!(
+                literal_true_member(o, k).unwrap_err(),
+                "Invalid input: expected true",
+                "case {k}"
+            );
+        }
+        // z.string().min(3).max(253).nullable() — the instance domain member.
+        let d = json!({ "clear": null, "set": "a.bb", "short": "ab", "str": 5 });
+        let o = d.as_object().unwrap();
+        assert!(
+            nullable_string_member(o, "clear", 3, 253)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            nullable_string_member(o, "set", 3, 253).unwrap().as_deref(),
+            Some("a.bb")
+        );
+        assert_eq!(
+            nullable_string_member(o, "short", 3, 253).unwrap_err(),
+            "Too small: expected string to have >=3 characters"
+        );
+        assert_eq!(
+            nullable_string_member(o, "str", 3, 253).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        assert_eq!(
+            nullable_string_member(json!({}).as_object().unwrap(), "domain", 3, 253).unwrap_err(),
+            "Invalid input: expected string, received undefined"
         );
     }
 
