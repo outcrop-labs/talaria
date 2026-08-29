@@ -55,6 +55,9 @@ export async function runSetup(ctx: Ctx): Promise<number> {
   } else {
     adminEmail = 'admin@talaria.local'
     adminPass = rand(9)
+    // The env file carries the argon2id HASH, never the password — the
+    // plaintext exists only in the credentials this command prints (#244).
+    const adminHash = await Bun.password.hash(adminPass)
     const date = ctx.now().toISOString().slice(0, 10)
     writeFileSync(
       uiEnvPath,
@@ -83,9 +86,10 @@ AUTH_SECRET=${rand(32)}
 # can decrypt data seeded from this one.
 TALARIA_SECRET_KEY=${rand(32)}
 
-# Password sign-in. Format: email:password[,email:password...]
+# Password sign-in. Format: email:password-or-hash[,email:password-or-hash...]
+# — argon2/bcrypt hashes verify as-is; a boot warning nags while entries are plaintext.
 AUTH_PASSWORD_ENABLED=1
-AUTH_USERS=${adminEmail}:${adminPass}
+AUTH_USERS=${adminEmail}:${adminHash}
 AUTH_ADMIN_EMAILS=${adminEmail}
 
 # Google sign-in (off until you add real credentials)
