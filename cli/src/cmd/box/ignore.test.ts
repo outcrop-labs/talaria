@@ -10,14 +10,17 @@ import { repoRoot } from '../../paths'
 
 describe('secrets stay out of git', () => {
   test('every secret-carrying env path is git-ignored (any depth)', () => {
-    // The canonical carriers: primary env, fleet env, the devbox compose
-    // channels (the override carries provider tokens/--env values, compose.env
-    // carries S3 creds), and the rendered searxng secret.
+    // The canonical carriers: primary env, fleet env, the deploy compose
+    // channel (docker/.env — `deploy up` writes the generated shared secrets
+    // there), the devbox compose channels (the override carries provider
+    // tokens/--env values, compose.env carries S3 creds), and the rendered
+    // searxng secret.
     const paths = [
       'ui/.env',
       'mcp/.env',
       '.env.local',
       'fleet/.env',
+      'docker/.env',
       'compose.env',
       'compose.override.yml',
       'docker-compose.override.yml',

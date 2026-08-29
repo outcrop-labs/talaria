@@ -6,6 +6,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
+- Compose generates its first-boot secrets (#267): `talaria deploy up` writes
+  `POSTGRES_PASSWORD` and the minio root pair into `docker/.env` (once, 0600,
+  git-ignored) before invoking compose — the two places no container entrypoint
+  can reach, because interpolation happens at container-create time. An existing
+  postgres volume keeps the password it was initialized with (a fresh random
+  would lock the app out); the file says how to rotate. Without this, an
+  unconfigured compose instance ran on passwords published in the repo.
 - Password credentials live in Postgres as scrypt hashes (#244): `user_password_credentials`
   stores `scrypt$N$r$p$salt$hash` (node:crypto, params in-band) — never plaintext, never env.
   A login miss on the email burns a dummy verify, so response timing can't reveal which

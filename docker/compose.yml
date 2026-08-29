@@ -6,9 +6,12 @@
 #
 # Zero required env — every ${VAR:-default} below has one, and the app's
 # entrypoint generates the secrets the environment doesn't supply into the
-# persistent state dir. First-boot admin credentials print once in the logs:
-#
-#   docker compose -f docker/compose.yml logs talaria | grep -A2 'Sign in'
+# persistent state dir. The secrets compose itself interpolates (postgres
+# password, minio root pair) it cannot generate — interpolation happens
+# before any entrypoint runs — so `talaria deploy up` generates those into
+# docker/.env on the first boot; a bare `up` with nothing set runs on the
+# dev defaults below. First-boot access is the claim screen: open the app
+# and claim the admin account (there are no generated credentials).
 #
 # Three load-bearing shapes (the WHY is in docs/CONTAINER.md — Networking):
 #   1. State is a HOST BIND mounted at the SAME path on both sides
@@ -118,8 +121,10 @@ services:
       TALARIA_QDRANT_URL: ${TALARIA_QDRANT_URL:-http://qdrant:6333}
       TALARIA_EMBED_URL: ${TALARIA_EMBED_URL:-http://embeddings:80}
       # Built-in object storage: the same interpolated key pair configures the
-      # app AND the minio container below. The default is documented, not
-      # secret — set a real one (openssl rand -hex 24) for anything exposed.
+      # app AND the minio container below. The published default is dev-grade;
+      # `talaria deploy up` generates a random pair into docker/.env on first
+      # boot (compose can't generate it itself — this interpolation is the only
+      # channel that reaches both consumers before their containers exist).
       TALARIA_S3_URL: ${TALARIA_S3_URL:-http://minio:9000}
       TALARIA_S3_BUCKET: ${TALARIA_S3_BUCKET:-talaria}
       TALARIA_S3_ACCESS_KEY: ${TALARIA_S3_ACCESS_KEY:-talaria}
@@ -167,6 +172,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: talaria
+      # Pinned by initdb on first boot — a later value the initialized cluster
+      # has never heard of breaks auth. `talaria deploy up` generates this into
+      # docker/.env BEFORE the first `up`; after that, rotate inside the DB.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-talaria}
       POSTGRES_DB: talaria
     volumes:

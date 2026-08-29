@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import {
   credsCommand,
   downCommand,
+  ensureSharedSecrets,
   logsCommand,
   runCreds,
   runDown,
@@ -252,5 +253,78 @@ describe('talaria deploy — leaves are honest about their usage strings', () =>
     for (const leaf of [upCommand, downCommand, updateCommand, logsCommand, credsCommand, statusCommand]) {
       expect(leaf.usage).toMatch(/^talaria deploy \w+/)
     }
+  })
+})
+
+// #267 — the shared secrets. Compose interpolates POSTGRES_PASSWORD and the
+// minio root pair into containers at CREATE time, before any entrypoint runs,
+// so `deploy up` is the only moment anything can generate them: it writes
+// docker/.env (the one file compose always reads) before invoking compose.
+describe('talaria deploy up — first-boot shared secrets', () => {
+  /** A ctx on a fresh host: the pg volume does not exist. fakeCtx's unplanted
+   *  run() answers 0, so "fresh" must be planted explicitly. */
+  const freshHost = (root: string) => {
+    const ctx = fakeCtx()
+    ctx.root = root
+    ctx.plant(['docker', ['volume', 'inspect', 'talaria_pg-data']], new Error('no such volume'))
+    return ctx
+  }
+
+  test('a fresh host gets random secrets in docker/.env, once, 0600', async () => {
+    const root = makeDeployTree()
+    const ctx = freshHost(root)
+    await runUp(ctx, '/nonexistent-deploy-test-socket')
+    const envPath = join(root, 'docker/.env')
+    const text = readFileSync(envPath, 'utf8')
+    const pw = /POSTGRES_PASSWORD=([0-9a-f]+)/.exec(text)![1]!
+    const ak = /TALARIA_S3_ACCESS_KEY=([0-9a-f]+)/.exec(text)![1]!
+    const sk = /TALARIA_S3_SECRET_KEY=([0-9a-f]+)/.exec(text)![1]!
+    expect(pw).toHaveLength(48) // randomBytes(24).hex — the documented openssl rand -hex 24
+    expect(ak).not.toBe(sk) // independent values, not one blob twice
+    expect((statSync(envPath).mode & 0o777)).toBe(0o600)
+    // the story is names, never values
+    const said = ctx.logLines.filter((l) => l.kind === 'say').map((l) => l.msg).join('\n')
+    expect(said).toContain('POSTGRES_PASSWORD')
+    expect(said).not.toContain(pw)
+    // and the compose argv is still exactly the documented command
+    expect(ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('up'))!.args).toEqual(docUpArgv)
+  })
+
+  test('operator-supplied values win — shell env and existing file lines are never overwritten', async () => {
+    const root = makeDeployTree('POSTGRES_PASSWORD=mine-already\nDOCKER_GID=7\n')
+    const ctx = fakeCtx({ env: { TALARIA_S3_SECRET_KEY: 'from-shell' } })
+    ctx.root = root
+    await ensureSharedSecrets(ctx, 'talaria_pg-data')
+    const text = readFileSync(join(root, 'docker/.env'), 'utf8')
+    expect(text).toContain('POSTGRES_PASSWORD=mine-already')
+    expect(text).toContain('DOCKER_GID=7') // pre-existing lines ride along untouched
+    expect(text).not.toContain('from-shell') // shell values stay in the shell
+    expect(text).toMatch(/^TALARIA_S3_ACCESS_KEY=[0-9a-f]{48}$/m) // only the gap is filled
+    expect(text).not.toMatch(/^TALARIA_S3_SECRET_KEY=/m)
+  })
+
+  test('existing postgres data keeps the password it was born with — a fresh random would lock the app out', async () => {
+    const root = makeDeployTree()
+    const ctx = fakeCtx() // unplanted run() answers 0: the volume exists
+    ctx.root = root
+    await ensureSharedSecrets(ctx)
+    const text = readFileSync(join(root, 'docker/.env'), 'utf8')
+    expect(text).toContain('POSTGRES_PASSWORD=talaria') // the published default, pinned not randomized
+    expect(text).toContain('rotate') // the file says how to leave the default behind
+    const warn = ctx.logLines.find((l) => l.kind === 'warn')!
+    expect(warn.msg).toContain('rotate')
+    // minio's pair is env-driven at every boot — it still rotates freely
+    expect(text).toMatch(/^TALARIA_S3_SECRET_KEY=[0-9a-f]{48}$/m)
+  })
+
+  test('idempotent: the second up changes nothing and says nothing', async () => {
+    const root = makeDeployTree()
+    const first = freshHost(root)
+    await ensureSharedSecrets(first)
+    const after = readFileSync(join(root, 'docker/.env'), 'utf8')
+    const second = freshHost(root)
+    await ensureSharedSecrets(second)
+    expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toBe(after)
+    expect(second.logLines.filter((l) => l.kind === 'say' && l.msg.includes('generated'))).toHaveLength(0)
   })
 })
