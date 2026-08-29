@@ -5,6 +5,7 @@
 pub mod agent_auth;
 pub mod audit;
 pub mod auth;
+pub mod auth_config;
 pub mod body;
 pub mod claim;
 pub mod config;
@@ -12,6 +13,9 @@ pub mod db;
 pub mod error;
 pub mod gateway;
 pub mod google_client;
+pub mod google_oauth;
+pub mod invites;
+pub mod org_domains;
 pub mod password;
 pub mod password_accounts;
 pub mod ratelimit;

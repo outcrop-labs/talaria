@@ -24,6 +24,9 @@ const PREFIXES = [
   '/api/auth/password',
   '/api/auth/providers',
   '/api/auth/claim',
+  // Prefix, not exact: '/api/auth/google' also matches its own /callback —
+  // the only other route under this path (the CONNECT flow lives elsewhere).
+  '/api/auth/google',
   '/api/users',
 ] as const
 
@@ -38,8 +41,9 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 
 // The response allow-list is the inverse posture: nothing the Rust api says
 // about itself (its server header, its date) is ours to re-claim under this
-// origin. These four are the ones callers can act on.
-const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id']
+// origin. These five are the ones callers can act on — `location` because the
+// OAuth routes answer in redirects.
+const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location']
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
@@ -52,6 +56,12 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   request.headers.forEach((value, name) => {
     if (!HOP_BY_HOP.has(name.toLowerCase())) headers.set(name, value)
   })
+  // The Rust api sees the request without this origin, and the OAuth redirect
+  // URIs are derived from it. Forward whatever the caller's own proxy stated,
+  // else synthesize it from the incoming URL — exactly the chain TS's
+  // resolveOrigin prefers, so both runtimes compute the same redirect_uri.
+  if (!headers.has('x-forwarded-proto')) headers.set('x-forwarded-proto', incoming.protocol.replace(':', ''))
+  if (!headers.has('x-forwarded-host')) headers.set('x-forwarded-host', incoming.host)
 
   const res = await fetch(target, {
     method: request.method,

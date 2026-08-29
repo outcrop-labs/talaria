@@ -2,6 +2,8 @@
 // tests drive the exact same stack the process serves.
 
 pub mod auth_claim;
+pub mod auth_google;
+pub mod auth_google_callback;
 pub mod auth_logout;
 pub mod auth_password;
 pub mod auth_providers;
@@ -35,6 +37,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/password", post(auth_password::post))
         .route("/api/auth/providers", get(auth_providers::get))
         .route("/api/auth/claim", post(auth_claim::post))
+        .route("/api/auth/google", get(auth_google::get))
+        .route("/api/auth/google/callback", get(auth_google_callback::get))
         .route("/api/users", get(users::get))
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())
