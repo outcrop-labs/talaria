@@ -7,6 +7,7 @@
 #     cd ui && bun run typecheck                (svelte-check)
 #     cd mcp && typecheck + build
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
+#     cd api && fmt + clippy + cargo test       (the Rust port)
 #   That is the whole thing. It takes a couple of minutes.
 #
 # WHY rc AND testing ARE IN THE PUSH LIST. They are the branches the release
@@ -57,7 +58,9 @@
 #
 # NO ACTIONS/CACHE, on purpose. Bun's cold install from bun.lock is seconds;
 #   a cache step would add config surface to save less time than the tripwire
-#   philosophy is willing to spend.
+#   philosophy is willing to spend. The api job's rust-cache is the one
+#   exception and carries its own note there — the tradeoff is inverted for
+#   cargo (a cold build is minutes, the cache is one line).
 #
 # DELIBERATELY LEFT OUT (do not treat these as oversights)
 #   - THE MODEL FITNESS SUITE (ui/src/server/fitness/*). It costs money and
@@ -101,6 +104,12 @@
 # NOTES FOR WHOEVER TOUCHES THIS NEXT
 #   - The Bun version is pinned HERE and in the root package.json's
 #     `packageManager` field. Move the two together.
+#   - The Rust version is pinned in THREE places that must move together:
+#     api/rust-toolchain.toml (the source of truth — cargo honors it
+#     everywhere), the api job's dtolnay action ref below (installs the
+#     toolchain + components before cargo first runs), and the rustup line
+#     in docker/devbox.Dockerfile. sqlx 0.9's MSRV is the floor; pinning
+#     rather than tracking stable is what keeps devbox/CI/host one toolchain.
 #   - Node 22 is a hard floor, not a preference: vite 7 declares
 #     `^20.19.0 || >=22.12.0`. If you add a .nvmrc at the repo root, switch this
 #     to `node-version-file:` so there is one source of truth.
@@ -288,3 +297,56 @@ jobs:
 
       - name: Test
         run: bun test
+
+  # The Rust port of the API (docs/RUST-MIGRATION.md) — the same tripwire
+  # treatment for api/ that the jobs above give ui/, mcp/ and cli/: the three
+  # gates the port develops under (`bun run api:check` from the root runs the
+  # same list). The unit suite is PURE — no postgres, no redis, no network —
+  # by the same house rule that keeps the ui suite service-free: the #[ignore]d
+  # integration tests that do touch the dev DB run locally (`cargo test --
+  # --ignored`) and never here, so a red build always names a commit's bug.
+  api:
+    name: fmt + clippy + test (api)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # 1.97.1, not stable, for the reason the header's NOTES give: the crate
+      # pins it in rust-toolchain.toml and devboxes install the same one, so
+      # CI must not drift ahead of the environments the port runs in. The
+      # action ref also installs the components; the toolchain pin itself is
+      # honored by rustup from the checked-out rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      # The ONE actions/cache use in this file (see the header's amended "no
+      # cache" note): cargo's cold build of the dependency tree is minutes on
+      # every push, and rust-cache costs one line. It keys on Cargo.lock, so
+      # a dependency change recompiles exactly what changed and nothing else.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+
+      # Same order as api:check: format (instant, and its failures are the
+      # cheapest to read), then clippy as the port's lint gate (-D warnings —
+      # the crate develops clean or not at all), then the tests. No apt step:
+      # aws-lc-sys compiles C and wants a compiler + cmake, both of which
+      # ship on the ubuntu-latest image — if a runner-image change ever
+      # breaks this job at the aws-lc-sys build, that is the line to read.
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --quiet
