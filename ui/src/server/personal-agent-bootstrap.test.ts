@@ -15,12 +15,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 /** Rows the CHASSIS lookup returns (`select id from agent_defs where enabled`). */
 let agentRows: Array<{ id: string }> = []
 
+/** Statements the module issued — read back by the board-seeding assert. */
+const statements: string[] = []
+
 // Query-aware, because two different `agent_defs` reads run here and they must
 // not answer each other: the owner lookup decides whether an assistant already
 // exists (it must not), the enabled lookup supplies the chassis shortcut.
 const sql = Object.assign(
   (strings: TemplateStringsArray) => {
     const text = strings.join(' ').replace(/\s+/g, ' ').toLowerCase()
+    statements.push(text)
     if (text.includes('owner_user_id =')) return Promise.resolve([])
     if (text.includes('select id from agent_defs where enabled')) return Promise.resolve(agentRows)
     return Promise.resolve([])
@@ -48,6 +52,7 @@ const user = { id: 'u1', email: 'jon@example.com', name: 'Jon Iler' }
 beforeEach(() => {
   createAgent.mockClear()
   agentRows = []
+  statements.length = 0
 })
 
 describe('creating a personal assistant on a fresh install', () => {
@@ -79,5 +84,19 @@ describe('when the fleet already has an agent', () => {
     await mod.createPersonalAgent(user).catch(() => {})
     const arg = createAgent.mock.calls[0]![0]
     expect(arg.templateId).toBe('existing-agent')
+  })
+})
+
+describe('board access', () => {
+  it('seeds the owner’s boards — an assistant must be able to work what it is told it owns', async () => {
+    // GET /api/boards owner-proxies the owner's boards to a personal assistant
+    // from the moment it exists; without this seed the assistant would SEE them
+    // and 403 against every board-scoped route (the defect the sweep filed:
+    // boards created before the assistant existed).
+    await mod.createPersonalAgent(user).catch(() => {})
+    const seed = statements.find((s) => s.includes('insert into board_agents'))
+    expect(seed).toBeDefined()
+    expect(seed).toContain('from boards where owner_id =')
+    expect(seed).toContain('on conflict do nothing')
   })
 })
