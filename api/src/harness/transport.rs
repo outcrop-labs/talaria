@@ -1,10 +1,13 @@
 // THE TRANSPORTS, and the request that reaches them — the port of
-// harness/transport.ts. This slice is the CONTRACT LAYER: the request and
-// reply types, the one mapping onto a persona payload, the `response_format`
-// derivation, the tool-channel wire renderer, and the refusal sentences. The
-// async transports (the gateway turn, the streamed pair, the fleet turn and
-// the picker) land with the runner, over the gateway pieces that already
-// crossed (`build_upstream`, `fetch_upstream`, `record_gateway_usage`).
+// harness/transport.ts. The CONTRACT LAYER: the request and reply types, the
+// one mapping onto a persona payload, the `response_format` derivation, the
+// tool-channel wire renderer, and the refusal sentences. Then the GATEWAY
+// half of the async layer — the blocking tool turn, the plain completion,
+// and the streamed pair — over the gateway pieces that crossed with the chat
+// relay (`resolve_route`, `build_upstream`, `fetch_upstream`,
+// `record_gateway_usage`). The FLEET half (the persona turn, the persona
+// stream pump, and the `pickTransport` rule) crosses with the fleet tail in
+// batch 5: `proxyChat` and `listAgents` do not exist on this side yet.
 //
 // WHY THIS FILE EXISTS — ONE MISSING FEATURE THAT WORE FIVE COATS. Five files
 // USED TO hand-write their own persona transport because `runHarness` could
@@ -254,9 +257,15 @@ pub struct TransportRequest {
 
 impl TransportRequest {
     /// Every message's content, concatenated — the character count both
-    /// metering paths estimate the prompt from.
+    /// metering paths estimate the prompt from. UTF-16 units, like JS
+    /// `.length` and like the chat relay's own count: the estimate is
+    /// chars/4, and a caller and a relay that disagreed on the unit would
+    /// disagree on the ledger row for the same turn.
     pub fn prompt_chars(&self) -> usize {
-        self.messages.iter().map(|m| m.content.len()).sum()
+        self.messages
+            .iter()
+            .map(|m| m.content.encode_utf16().count())
+            .sum()
     }
 }
 
@@ -604,6 +613,465 @@ pub fn replays_tools(req: &TransportRequest) -> bool {
     req.messages
         .iter()
         .any(|m| m.role.is_tool() || !m.tool_calls.is_empty())
+}
+
+// ── The gateway transports, async over the pieces that crossed with the relay ─
+//
+// The GATEWAY half of the async layer, on `resolve_route` / `build_upstream` /
+// `fetch_upstream` / `record_gateway_usage`. The FLEET half (the persona turn,
+// `pump_personaStream`, and the `pickTransport` rule that chooses between the
+// sides) crosses with the fleet tail in batch 5 — `proxyChat` and `listAgents`
+// do not exist on this side yet, and the picker that needs both would arrive
+// half-blind.
+
+use crate::gateway::registry::resolve_route;
+use crate::gateway::upstream::{Reply, build_upstream, fetch_upstream};
+use crate::gateway::usage::{TokenCounts, estimate_tokens, record_gateway_usage};
+use crate::state::AppState;
+use futures_util::StreamExt;
+
+/// `gateway completion {status}: {body}` — the failure sentence both blocking
+/// paths throw with, body cut at 300 characters like TS's `.slice(0, 300)`
+/// (on chars, not bytes: a cut mid-codepoint would panic the formatter and
+/// say less).
+fn completion_error(status: u16, body: String) -> String {
+    let head: String = body.chars().take(300).collect();
+    format!("gateway completion {status}: {head}")
+}
+
+/// The ledger row both paths write. Spawned, never awaited on the turn's
+/// path — TS meters with `.catch(() => {})`, so a ledger hiccup never fails a
+/// turn that already succeeded.
+fn meter(
+    state: &AppState,
+    route: &crate::gateway::registry::ResolvedRoute,
+    caller: &str,
+    usage: Option<TokenPair>,
+    prompt_chars: usize,
+    text_chars: usize,
+) {
+    let pg = state.pg.clone();
+    let counts = match usage {
+        Some(u) => TokenCounts {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            ..TokenCounts::default()
+        },
+        None => TokenCounts {
+            prompt_tokens: estimate_tokens(prompt_chars),
+            completion_tokens: estimate_tokens(text_chars),
+            ..TokenCounts::default()
+        },
+    };
+    let estimated = usage.is_none();
+    let caller = caller.to_string();
+    let endpoint_name = route.endpoint.name.clone();
+    let endpoint_class = route.endpoint.class.clone();
+    let upstream_model = route.upstream_model.clone();
+    tokio::spawn(async move {
+        let _ = record_gateway_usage(
+            &pg,
+            &caller,
+            &endpoint_name,
+            &endpoint_class,
+            &upstream_model,
+            &counts,
+            estimated,
+        )
+        .await;
+    });
+}
+
+/// The gateway call that OFFERS TOOLS, and the reason it is not the plain
+/// completion helper: that path's body has no slot for tool definitions and
+/// its return is a string, so it can neither ask the question nor report the
+/// answer. This walks the same route the same way `gateway_stream` does —
+/// `build_upstream` for the provider key and the request_defaults merge,
+/// `fetch_upstream` for the 400-recovery loop and the contract-drop record,
+/// `record_gateway_usage` for the ledger row.
+///
+/// `tool_choice: 'auto'` rather than the policy's `'none'`: `ToolPolicy`
+/// governs the model's OWN tools and this turn is about ours, so suppressing
+/// them here would send four definitions and forbid calling any of them.
+///
+/// ALSO SERVES THE CLOSING TURN OF A TOOL LOOP — `gateway_transport` routes
+/// here whenever the conversation replays a tool round even with no defs
+/// offered, so the one renderer that speaks the tool channel builds the
+/// history (see `gateway_transport` for the Anthropic 400 that flat
+/// `{role, content}` rendering produced).
+pub async fn gateway_tool_turn(
+    state: &AppState,
+    req: &TransportRequest,
+    defs: &[ToolDefinition],
+) -> Result<TransportReply, String> {
+    let route = resolve_route(&state.pg, &req.model)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("model \"{}\" is not on the gateway", req.model))?;
+
+    let mut body = Map::new();
+    body.insert("model".into(), Value::String(req.model.clone()));
+    // `tool_wire_message`, NOT a flatten to `{role, content}`. This is the one
+    // renderer that speaks the tool channel — flattening dropped
+    // `tool_calls`/`tool_call_id` on the floor, leaving a caller no way to
+    // show the model what it had already called except by narrating it into
+    // prose. Models imitate whatever the transcript shows them:
+    // `research-search` narrated `Called web_search({...})` and got that
+    // string back as the model's final answer on a live sweep. See the note
+    // on `Message.tool_calls`.
+    body.insert(
+        "messages".into(),
+        Value::Array(req.messages.iter().map(tool_wire_message).collect()),
+    );
+    body.insert("stream".into(), Value::Bool(false));
+    // NO TOOLS OFFERED IS A REAL CASE HERE, and it is the closing turn of a
+    // search loop: the conversation replays a tool round, but this turn asks
+    // for prose. Sending `tools: []` with `tool_choice: 'auto'` is a request
+    // some providers reject and none of them needs, so the fields are simply
+    // absent.
+    if !defs.is_empty() {
+        body.insert(
+            "tools".into(),
+            Value::Array(defs.iter().map(tool_wire_shape).collect()),
+        );
+        body.insert("tool_choice".into(), Value::String("auto".into()));
+    }
+    if let Some(t) = req.temperature {
+        body.insert(
+            "temperature".into(),
+            serde_json::Number::from_f64(t)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+    }
+    // FUNCTION TOOLS AND A REASONING EFFORT ARE INCOMPATIBLE ON
+    // /v1/chat/completions, and the provider says so in the sentence it
+    // refuses with:
+    //
+    //   Function tools with reasoning_effort are not supported for
+    //   gpt-5.6-terra in /v1/chat/completions. To use function tools, use
+    //   /v1/responses or set reasoning_effort to 'none'.
+    //
+    // WE WERE NOT SENDING IT. The model's OWN default effort is what
+    // conflicts, so there was nothing for the strip-and-retry ratchet to
+    // remove — it bails when the named parameter is not in the body — and a
+    // sweep of that model filed 27 cases across four tool-loop harnesses as
+    // "could not reach this model" on an endpoint that was answering
+    // everything else fine.
+    //
+    // So the tool turn says the one thing that makes tools work. It is sent
+    // to EVERY provider rather than gated on a vendor check, because a table
+    // of which providers accept which parameters is the thing this file
+    // refuses to maintain: an endpoint that does not know the field answers
+    // 400 naming it, it IS in the body, and the existing ratchet strips it
+    // for good on the retry. The quirk costs one 400 once, on providers that
+    // have it, and nothing thereafter.
+    //
+    // A USER-PICKED EFFORT (`req.effort`) IS DELIBERATELY NOT SENT HERE, on
+    // either branch of that rule: with defs offered the explicit 'none' below
+    // is the one value the provider accepts, and without them the turn
+    // replays a tool conversation whose history can trip the same restriction.
+    // The pick is not lost — the closing, tool-free turn of the loop still
+    // carries it — and the alternative is a 400 the ratchet would answer by
+    // stripping effort from every future turn on that model.
+    if !defs.is_empty() {
+        body.insert("reasoning_effort".into(), Value::String("none".into()));
+    }
+    if let Some(f) = response_format_of(req) {
+        body.insert("response_format".into(), f);
+    }
+
+    let mut call = build_upstream(state, &route, &Value::Object(body)).await?;
+    let reply = fetch_upstream(&state.pg, &mut call, Some(&route)).await?;
+    if !reply.is_ok() {
+        return Err(completion_error(reply.status(), reply.text().await));
+    }
+    // BEFORE THE BODY IS READ, because a dropped `tools` parameter makes the
+    // body an answer to a different question. `build_upstream` pre-strips a
+    // remembered rejection and `fetch_upstream` strips a live one, and both
+    // record the drop on the call — so this one check covers the remembered
+    // case and the 400 case.
+    if call.contract_drops.iter().any(|d| d.capability == "tools") {
+        return Err(tool_defs_dropped_refusal(&req.model, &route.endpoint.name));
+    }
+
+    let raw = reply.text().await;
+    let j: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("gateway completion parse: {e}"))?;
+    let message = j
+        .pointer("/choices/0/message")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let text = message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    let wire_calls = message
+        .get("tool_calls")
+        .and_then(|t| t.as_array())
+        .cloned();
+    let tool_calls = read_tool_calls(wire_calls.as_ref());
+    let usage = j.get("usage").filter(|u| !u.is_null()).map(|u| TokenPair {
+        prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+        completion_tokens: u
+            .get("completion_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+    });
+    let text_chars = text.encode_utf16().count();
+    meter(
+        state,
+        &route,
+        &req.caller,
+        usage,
+        req.prompt_chars(),
+        text_chars,
+    );
+    Ok(TransportReply {
+        kind: TransportKind::Gateway,
+        tool_names: tool_names_of(&tool_calls),
+        tool_calls: Some(tool_calls),
+        usage,
+        contract_dropped: call.contract_drops.iter().any(|d| d.capability == "json"),
+        text,
+    })
+}
+
+/// THE BLOCKING GATEWAY TRANSPORT.
+pub async fn gateway_transport(
+    state: &AppState,
+    req: &TransportRequest,
+) -> Result<TransportReply, String> {
+    if tool_policy_of(req) == ToolPolicy::Own {
+        return Err(gateway_tools_refusal(&req.model));
+    }
+    // OFFERING TOOLS IS NOT THE ONLY REASON TO RENDER THEM, and this cost
+    // every research-search fixture on Anthropic.
+    //
+    // `toolSearchTransport` ends with a CLOSING TURN that offers no tools —
+    // the model has searched, now it writes the answer — and that turn
+    // carries the whole tool conversation behind it. With no defs it fell
+    // through to the plain completion helper, which flattens every message
+    // to `{role, content}` and drops `tool_call_id` on the floor. Anthropic
+    // then refused the request it had itself produced two turns earlier:
+    //
+    //   messages.3.tool.tool_call_id: Field required
+    //
+    // Three tool turns came back 200 and the fourth 400'd, which is why this
+    // read as "the model cannot reach the search tool" — the search had
+    // already worked.
+    if !req.tool_defs.is_empty() || replays_tools(req) {
+        return gateway_tool_turn(state, req, &req.tool_defs).await;
+    }
+
+    // The plain single-shot turn: no tool channel anywhere in the history, so
+    // the flat `{role, content}` rendering IS the history. Effort is
+    // forwarded here — the plain turn has no function tools to conflict with
+    // it (see the note in `gateway_tool_turn` for why the tool turn cannot).
+    let route = resolve_route(&state.pg, &req.model)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("model \"{}\" is not on the gateway", req.model))?;
+    let mut body = Map::new();
+    body.insert("model".into(), Value::String(req.model.clone()));
+    body.insert(
+        "messages".into(),
+        Value::Array(
+            req.messages
+                .iter()
+                .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
+                .collect(),
+        ),
+    );
+    body.insert("stream".into(), Value::Bool(false));
+    if let Some(t) = req.temperature {
+        body.insert(
+            "temperature".into(),
+            serde_json::Number::from_f64(t)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+    }
+    if let Some(e) = &req.effort {
+        body.insert("reasoning_effort".into(), Value::String(e.clone()));
+    }
+    if let Some(f) = response_format_of(req) {
+        body.insert("response_format".into(), f);
+    }
+    let mut call = build_upstream(state, &route, &Value::Object(body)).await?;
+    let reply = fetch_upstream(&state.pg, &mut call, Some(&route)).await?;
+    if !reply.is_ok() {
+        return Err(completion_error(reply.status(), reply.text().await));
+    }
+    let raw = reply.text().await;
+    let j: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("gateway completion parse: {e}"))?;
+    let text = j
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    let usage = j.get("usage").filter(|u| !u.is_null()).map(|u| TokenPair {
+        prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+        completion_tokens: u
+            .get("completion_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+    });
+    let text_chars = text.encode_utf16().count();
+    meter(
+        state,
+        &route,
+        &req.caller,
+        usage,
+        req.prompt_chars(),
+        text_chars,
+    );
+    // Faithful to the TS plain path, which meters with the real usage but
+    // surfaces none to the runner (`completeViaGateway` returns a string) —
+    // the runner estimates from chars, exactly as it did before.
+    Ok(TransportReply {
+        kind: TransportKind::Gateway,
+        tool_names: Vec::new(),
+        tool_calls: None,
+        usage: None,
+        contract_dropped: call.contract_drops.iter().any(|d| d.capability == "json"),
+        text,
+    })
+}
+
+/// The gateway transport, STREAMED — the sibling of the fleet stream that
+/// crosses in batch 5, and the piece that makes "a harness may stream" true
+/// of both transports rather than only of personas. The Muse's six prose
+/// kinds draft against an ORG GATEWAY model, so without this they would keep
+/// a hand-written upstream pair however good the streamed runner gets.
+///
+/// The blocking helper cannot serve it: it asks for `stream: false` and hands
+/// back a finished string, which is the one thing a streaming surface must
+/// not wait for. So this walks the same route, asks for `stream: true`, and
+/// emits each delta as it lands — metering exactly as the blocking paths do,
+/// and reporting the same `contract_dropped` signal from the same drops, so a
+/// dropped `response_format` is as visible here as it is there.
+pub async fn gateway_stream(
+    state: &AppState,
+    req: &TransportRequest,
+    mut emit: impl FnMut(&str) + Send,
+) -> Result<TransportReply, String> {
+    if tool_policy_of(req) == ToolPolicy::Own {
+        return Err(gateway_tools_refusal(&req.model));
+    }
+    // A STREAMED TURN OFFERS NO TOOLS. Assembling tool calls out of deltas is
+    // a second, fiddlier parser for a case no surface has: the streaming
+    // harnesses are the Muse's prose kinds and the briefing follow-up, and
+    // the one caller that needs tool definitions (the probe) is blocking by
+    // construction. Better to refuse the field here than to grow a parser
+    // that nothing exercises and that would report a half-assembled call as
+    // a real one.
+    if !req.tool_defs.is_empty() {
+        return Err(stream_tool_defs_refusal(&req.model));
+    }
+    let route = resolve_route(&state.pg, &req.model)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("model \"{}\" is not on the gateway", req.model))?;
+    let mut body = Map::new();
+    body.insert("model".into(), Value::String(req.model.clone()));
+    body.insert(
+        "messages".into(),
+        Value::Array(
+            req.messages
+                .iter()
+                .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
+                .collect(),
+        ),
+    );
+    body.insert("stream".into(), Value::Bool(true));
+    if let Some(t) = req.temperature {
+        body.insert(
+            "temperature".into(),
+            serde_json::Number::from_f64(t)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+    }
+    if let Some(e) = &req.effort {
+        body.insert("reasoning_effort".into(), Value::String(e.clone()));
+    }
+    if let Some(f) = response_format_of(req) {
+        body.insert("response_format".into(), f);
+    }
+    let mut call = build_upstream(state, &route, &Value::Object(body)).await?;
+    let reply = fetch_upstream(&state.pg, &mut call, Some(&route)).await?;
+    if !reply.is_ok() {
+        return Err(completion_error(reply.status(), reply.text().await));
+    }
+    let res = match reply {
+        Reply::Live(r) => r,
+        // A synthesized reply is a relayed 400 — is_ok already said no, so
+        // this arm is the same failure one turn later, kept structural so
+        // the stream below cannot see a body-less reply.
+        Reply::Synthesized { status, text, .. } => return Err(completion_error(status, text)),
+    };
+
+    let mut text = String::new();
+    let mut usage: Option<TokenPair> = None;
+    let mut buffered = String::new();
+    let mut stream = res.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buffered.push_str(&String::from_utf8_lossy(&chunk));
+        let mut lines: Vec<String> = buffered.split('\n').map(str::to_string).collect();
+        // The last element is a partial line: keep it for the next chunk.
+        // Splitting on '\n' and parsing every piece is how a JSON frame gets
+        // torn in half.
+        buffered = lines.pop().unwrap_or_default();
+        for line in &lines {
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if data == "[DONE]" {
+                continue;
+            }
+            let Ok(frame) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            if let Some(u) = frame.get("usage").filter(|u| !u.is_null()) {
+                usage = Some(TokenPair {
+                    prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                    completion_tokens: u
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                });
+            }
+            if let Some(piece) = frame
+                .pointer("/choices/0/delta/content")
+                .and_then(|c| c.as_str())
+            {
+                text.push_str(piece);
+                emit(piece);
+            }
+        }
+    }
+
+    let text_chars = text.encode_utf16().count();
+    meter(
+        state,
+        &route,
+        &req.caller,
+        usage,
+        req.prompt_chars(),
+        text_chars,
+    );
+    Ok(TransportReply {
+        kind: TransportKind::Gateway,
+        tool_names: Vec::new(),
+        tool_calls: None,
+        usage,
+        contract_dropped: call.contract_drops.iter().any(|d| d.capability == "json"),
+        text,
+    })
 }
 
 #[cfg(test)]
