@@ -25,16 +25,20 @@
 // payload mapping, the response_format derivation, the tool-channel wire
 // renderer, and the refusal sentences) — the gateway transports
 // (`gateway_transport`/`gateway_stream`, crossed with the chat relay's
-// parameter learner in `gateway/params.rs`) — and `run` itself: the
-// runner, its thirteen injected edges (`real_deps` for production, a
-// recorded world for tests), and the nine steps, with the gateway turn as
-// its real transport edge. Still TS: the fleet turn and the picker
-// (`pickTransport`; they cross with the fleet/streaming planes in batch 5,
-// as does `RunContext.signal`), `registry`, `recorded`, and every def
-// under harness/defs/ — plus the eval-case/dry-run plane, which crosses
-// with the fitness suite.
+// parameter learner in `gateway/params.rs`) — `run` itself: the runner, its
+// thirteen injected edges (`real_deps` for production, a recorded world for
+// tests), and the nine steps, with the gateway turn as its real transport
+// edge — `recorded` (the recorded-transcript harness, the ONE fake world
+// every def's tests and the coming fitness sweep drive) — and the first def:
+// `defs/titler`. Still TS: the fleet turn and the picker (`pickTransport`;
+// they cross with the fleet/streaming planes in batch 5, as does
+// `RunContext.signal`), `registry` (LAST — registering is the last step of a
+// port, and it crosses once every def is here to fill it), and the rest of
+// harness/defs/ — plus the eval-case/dry-run plane, which crosses with the
+// fitness suite.
 
 pub mod define;
+pub mod defs;
 pub mod json;
 pub mod json_schema;
 pub mod prompt_rules;

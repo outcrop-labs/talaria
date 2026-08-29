@@ -794,7 +794,11 @@ async fn fail(
     Ok(result)
 }
 
-async fn execute(
+/// The deps-injected entry. `run_harness`/`run_harness_streamed` are the
+/// production spellings (they inject `real_deps`); this one exists for the
+/// recorded world — every def's tests, and later the fitness sweep, drive the
+/// SAME runner the product drives rather than a copy of it.
+pub(crate) async fn execute(
     deps: &HarnessDeps,
     def: &HarnessDefinition,
     input: &Value,
