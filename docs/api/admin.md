@@ -5,7 +5,7 @@
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-22 routes.
+23 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -24,6 +24,7 @@
 | [`/api/admin/google-client`](#apiadmingoogle-client) | GET | `admin` |
 | [`/api/admin/google-client`](#apiadmingoogle-client) | PUT | `admin` |
 | [`/api/admin/google-client`](#apiadmingoogle-client) | DELETE | `admin` |
+| [`/api/admin/google-client/login`](#apiadmingoogle-clientlogin) | PUT | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | GET | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | PUT | `admin` |
 | [`/api/admin/instance`](#apiadmininstance) | GET | `admin` |
@@ -194,9 +195,9 @@ Source: [`ui/src/routes/api/admin.google-client.ts`](../../ui/src/routes/api/adm
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{status, loginEnabled, redirectUris}` | 200 + varies | — |
-| PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, loginEnabled}` | 200 + varies | audit |
-| DELETE | `admin` | — | `{status, loginEnabled}` | 200 + varies | audit |
+| GET | `admin` | — | `{status, loginEnabled, loginPinnedByEnv, redirectUris}` | 200 + varies | — |
+| PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, loginEnabled, loginPinnedByEnv}` | 200 + varies | audit |
+| DELETE | `admin` | — | `{status, loginEnabled, loginPinnedByEnv}` | 200 + varies | audit |
 
 ### PUT `/api/admin/google-client` body
 
@@ -205,6 +206,26 @@ Source: [`ui/src/routes/api/admin.google-client.ts`](../../ui/src/routes/api/adm
 | `clientId` | `z.string().min(1).max(200)` |  |
 | `clientSecret` | `z.string().max(400).nullable().optional()` |  |
 | `hd` | `z.string().max(200).nullable().optional()` |  |
+
+## `/api/admin/google-client/login`
+
+Source: [`ui/src/routes/api/admin.google-client.login.ts`](../../ui/src/routes/api/admin.google-client.login.ts)
+
+> The Google LOGIN switch — the policy half of the client credential
+> (PUT /api/admin/google-client stores the credential; this decides whether the
+> login screen offers it). Flipping it is an admin's deliberate, audit-logged
+> act; AUTH_GOOGLE_ENABLED pinned in env still wins towards on. A client must
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `admin` | [body](#put-apiadmingoogle-clientlogin-body) | `{loginEnabled}` | 200 | audit |
+
+### PUT `/api/admin/google-client/login` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `enabled` | `z.boolean()` |  |
 
 ## `/api/admin/guardrails`
 

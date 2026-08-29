@@ -10,6 +10,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
@@ -28,6 +29,8 @@
   interface Payload {
     status: ClientStatus
     loginEnabled: boolean
+    /** Env pinned login on — the toggle can't turn it back off. */
+    loginPinnedByEnv: boolean
     redirectUris: Array<{ uri: string; what: string }>
   }
 
@@ -94,6 +97,23 @@
     await qc.invalidateQueries({ queryKey: ['google-client'] })
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }
+
+  // The login switch saves itself — it is one deliberate flip, not a form
+  // field, and the login screen follows it immediately.
+  const toggleLogin = async (next: boolean) => {
+    busy = true
+    error = null
+    notice = null
+    try {
+      await putJson<{ ok: true }>('/api/admin/google-client/login', { enabled: next })
+      notice = next ? 'Google login enabled — the sign-in button is live on /login.' : 'Google login disabled.'
+    } catch (e) {
+      error = errorMessage(e)
+    }
+    busy = false
+    await qc.invalidateQueries({ queryKey: ['google-client'] })
+    await qc.invalidateQueries({ queryKey: ['auth-providers'] })
+  }
 </script>
 
 {#if query.isPending}
@@ -134,6 +154,29 @@
           No Google client configured. Create one in Google Cloud Console, add the redirect URIs below, and paste the credentials here.
         </div>
       {/if}
+
+      <!-- The login switch — policy, not credential: offering "Continue with
+           Google" on the login screen is a deliberate admin act, so it is a
+           toggle here (saved on flip), never a side effect of saving a client. -->
+      <div class="flex items-center gap-2 border-t border-line pt-3">
+        <Toggle
+          checked={data.loginEnabled}
+          onChange={(next) => void toggleLogin(next)}
+          disabled={busy || !data.status.configured}
+          label="Google login"
+        />
+        <span class="font-sans text-[10px] text-muted">
+          {#if !data.status.configured}
+            configure a client first
+          {:else if data.loginEnabled && data.loginPinnedByEnv}
+            on — pinned by <code>AUTH_GOOGLE_ENABLED</code> in ui/.env
+          {:else if data.loginEnabled}
+            on — the sign-in button is live on /login
+          {:else}
+            off — the login screen stays password-only
+          {/if}
+        </span>
+      </div>
 
       <!-- The redirect URIs — the one thing every Google setup asks for first. -->
       <div>
@@ -210,13 +253,6 @@
             Remove
           </Button>
         {/if}
-        <span class="ml-auto font-sans text-[10px] text-muted">
-          {#if data.status.configured && !data.loginEnabled}
-            Google login stays off until AUTH_GOOGLE_ENABLED=1 is set in ui/.env
-          {:else if data.loginEnabled}
-            Google login is enabled
-          {/if}
-        </span>
       </div>
     </div>
   </Panel>

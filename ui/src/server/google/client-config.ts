@@ -10,13 +10,16 @@
 // when it is complete, so exactly one client is ever active.
 //
 // THE ACTIVE CLIENT SERVES EVERY GOOGLE FLOW — workspace connect (per-user and
-// org), token refresh, and Google LOGIN when AUTH_GOOGLE_ENABLED is also set.
-// One OAuth client in Google Cloud Console, one set of credentials here.
+// org), token refresh, and Google LOGIN when login is switched on (the Admin
+// UI toggle beside this record, or AUTH_GOOGLE_ENABLED in env — see
+// googleLoginEnabled). One OAuth client in Google Cloud Console, one set of
+// credentials here.
 import { getSetting, setSetting } from '../audit'
 import { db } from '../db/pg'
 import { open, seal } from '../secretbox'
 
 const KEY = 'google_oauth_client'
+const LOGIN_KEY = 'google_login_enabled'
 
 interface StoredClient {
   clientId: string
@@ -102,10 +105,24 @@ export async function clearGoogleClientConfig(): Promise<void> {
 }
 
 /** Whether GOOGLE LOGIN is offered. Login is a policy decision, not a
- *  credential decision: an admin registering a workspace client must not
- *  silently open a new way into the instance, so the env flag stays the gate —
- *  but it now works with credentials from either source. */
+ *  credential decision: configuring a client (Admin record or env) must not by
+ *  itself open a new way into the instance. The switch is the Admin UI toggle
+ *  (stored beside the client, flipped by an authenticated admin);
+ *  AUTH_GOOGLE_ENABLED remains the env bootstrap and wins towards ON when set —
+ *  an operator who pinned login on in env keeps it on. Either way a resolvable
+ *  client is still required: a toggle with no credential behind it must never
+ *  render a login button that cannot work. */
 export async function googleLoginEnabled(): Promise<boolean> {
-  const flag = process.env.AUTH_GOOGLE_ENABLED === '1' || process.env.AUTH_GOOGLE_ENABLED === 'true'
-  return flag && !!(await resolveGoogleClient())
+  return (googleLoginPinnedByEnv() || (await getSetting<boolean>(LOGIN_KEY, false)) === true) && !!(await resolveGoogleClient())
+}
+
+/** The env flag's view alone — the Admin panel labels a login env pins on (the
+ *  UI toggle cannot turn a deliberate env policy back off). */
+export function googleLoginPinnedByEnv(): boolean {
+  return process.env.AUTH_GOOGLE_ENABLED === '1' || process.env.AUTH_GOOGLE_ENABLED === 'true'
+}
+
+/** Flip the Admin UI's login switch. */
+export async function setGoogleLoginEnabled(on: boolean): Promise<void> {
+  await setSetting(LOGIN_KEY, on === true)
 }

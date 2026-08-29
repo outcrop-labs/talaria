@@ -6,9 +6,10 @@ import type { ProviderMeta } from '@/server/auth/config'
 
 // GET /api/auth/providers → the providers the login screen should render.
 // Reflects exactly which providers are enabled AND fully configured right now.
-// Google login is env-flag-gated (AUTH_GOOGLE_ENABLED) but accepts credentials
-// from the Admin UI record or the env — `enabledProviders` answers the env-only
-// view, so the Google entry is recomputed against the merged client here.
+// Google login follows the Admin UI toggle (AUTH_GOOGLE_ENABLED in env pins it
+// on) and accepts credentials from the Admin UI record or the env —
+// `enabledProviders` answers the env-only view, so the Google entry is
+// recomputed against the merged client + login switch here.
 export const Route = defineApi('/api/auth/providers', {
   GET: async () => {
     const cfg = getAuthConfig()
