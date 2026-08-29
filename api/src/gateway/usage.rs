@@ -437,6 +437,93 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     })
 }
 
+// ── Ticket usage (usage.ts taskUsage → the tasks family's detail read) ───────
+
+/// One per-model line of a ticket's usage.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskUsagePerModel {
+    pub llm_model: Option<String>,
+    pub tokens: i64,
+    /// Null when every row for the model is unpriced — shown, never silent $0.
+    pub cost: Option<serde_json::Number>,
+}
+
+/// Token spend reported against one ticket (usage.ts TaskUsage). Agents
+/// self-report it via MCP log_usage for work done outside Talaria's request
+/// path — by design it adds to the same totals.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskUsage {
+    pub prompt_tokens: i32,
+    pub completion_tokens: i32,
+    pub cache_write_tokens: i32,
+    pub cache_read_tokens: i32,
+    pub cost: serde_json::Number,
+    /// Tokens with no $ figure: unpriced cloud AND unattributed rows (agent
+    /// name didn't resolve to a def). Cost is understated when > 0.
+    pub unpriced_tokens: i64,
+    pub per_model: Vec<TaskUsagePerModel>,
+}
+
+pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::Error> {
+    let priced = priced();
+    // AssertSqlSafe: the only interpolation is the PRICED const — the task id
+    // stays a bind, exactly as TS's sql.unsafe($1) does.
+    let totals_sql = format!(
+        "with priced as ({priced}) \
+         select coalesce(sum(prompt_tokens),0)::int as prompt, \
+                coalesce(sum(completion_tokens),0)::int as completion, \
+                coalesce(sum(cache_write_tokens),0)::int as cache_write, \
+                coalesce(sum(cache_read_tokens),0)::int as cache_read, \
+                coalesce(sum(cost),0)::float8 as cost, \
+                coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + \
+                             cache_read_tokens) filter (where cost is null), 0)::bigint as unpriced \
+         from priced where task_id = $1::uuid"
+    );
+    let (prompt, completion, cache_write, cache_read, cost, unpriced): (
+        i32,
+        i32,
+        i32,
+        i32,
+        f64,
+        i64,
+    ) = sqlx::query_as(sqlx::AssertSqlSafe(totals_sql.as_str()))
+        .bind(task_id)
+        .fetch_one(pg)
+        .await?;
+    let per_model_sql = format!(
+        "with priced as ({priced}) \
+         select llm_model as \"llmModel\", \
+                coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + \
+                             cache_read_tokens), 0)::bigint as tokens, \
+                sum(cost)::float8 as cost \
+         from priced where task_id = $1::uuid \
+         group by llm_model order by tokens desc"
+    );
+    let rows: Vec<(Option<String>, i64, Option<f64>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(per_model_sql.as_str()))
+            .bind(task_id)
+            .fetch_all(pg)
+            .await?;
+    Ok(TaskUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        cache_write_tokens: cache_write,
+        cache_read_tokens: cache_read,
+        cost: js_num(cost),
+        unpriced_tokens: unpriced,
+        per_model: rows
+            .into_iter()
+            .map(|(llm_model, tokens, cost)| TaskUsagePerModel {
+                llm_model,
+                tokens,
+                cost: cost.map(js_num),
+            })
+            .collect(),
+    })
+}
+
 /// Ledger row for a gateway call — port of recordGatewayUsage. Attribution is
 /// direct (we KNOW the endpoint), no agent-def classification involved.
 /// `k()` semantics from TS: non-finite/negative → 0, rounded.
