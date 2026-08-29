@@ -1,0 +1,372 @@
+// Users, view denials, and fine-grained permissions — port of the parts of
+// ui/src/server/users.ts + permissions.ts + apps.ts (appViewRoutes) that the
+// session/auth plane needs. The rest of users.ts (actingUser, agent
+// allow-lists, the admin console queries) ports with the route groups that
+// use it (batch 3).
+//
+// Two recorded divergences, both order-only and both inherited from the
+// gateway precedent (docs/RUST-MIGRATION.md):
+//   • discoveredApps() sorts names with localeCompare; this is byte order —
+//     agrees on ASCII names, which is every app slug's neighborhood.
+//   • TS discovers apps via build-time import.meta.glob; this reads
+//     apps/<slug>/talaria.json from disk. In dev both see the same directory;
+//     the difference is only visible to a build that compiled an app in and
+//     then had its source tree scrubbed — not a state a deployment can reach.
+
+use crate::gateway::settings::get_setting;
+use sqlx::PgPool;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+/// The sign-in identity a provider hands us — users.ts's Identity.
+#[derive(Debug, Clone)]
+pub struct Identity {
+    pub sub: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub picture: Option<String>,
+}
+
+/// Upsert the identity into `users` (users.ts's upsertUser): a sign-in assigns
+/// 'member' to a brand-new sub and never touches an existing role — the first
+/// admin comes from the claim, every later one from Admin → People. Returns
+/// the row in select order (id, sub, email, name, picture, role) — the
+/// SessionUser constructor's input, exactly TS's `upsertUserRow`.
+pub async fn upsert_user(
+    pg: &PgPool,
+    identity: &Identity,
+) -> Result<
+    (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ),
+    sqlx::Error,
+> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, String)>(
+        "insert into users (sub, email, name, picture, role, last_seen_at) \
+         values ($1, $2, $3, $4, 'member', now()) \
+         on conflict (sub) do update set \
+           email = excluded.email, \
+           name = case \
+             when users.name is null or users.name = '' or users.name = users.email then excluded.name \
+             else users.name \
+           end, \
+           picture = excluded.picture, \
+           last_seen_at = now() \
+         returning id::text, sub, email, name, picture, role",
+    )
+    .bind(&identity.sub)
+    .bind(&identity.email)
+    .bind(&identity.name)
+    .bind(&identity.picture)
+    .fetch_one(pg)
+    .await?;
+    // Org-wide boards (the workspace Helpdesk) are everyone's by definition, so
+    // a sign-in joins this user to any they lack. Never fatal — a user who
+    // could not be joined still signs in; the next login retries.
+    if let Err(e) = join_org_wide_boards(pg, &row.0).await {
+        tracing::error!("[users] could not join {} to org-wide boards: {e}", row.0);
+    }
+    Ok(row)
+}
+
+async fn join_org_wide_boards(pg: &PgPool, user_id: &str) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        "insert into board_members (board_id, user_id, role) \
+         select b.id, $1::uuid, 'editor' from boards b where b.org_wide \
+         on conflict (board_id, user_id) do nothing",
+    )
+    .bind(user_id)
+    .execute(pg)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Everyone who has signed in, for people pickers — users.ts's listUsers.
+/// Fields in select order; the order-by is the TS query's own lower(coalesce).
+pub async fn list_users(
+    pg: &PgPool,
+) -> Result<Vec<(String, Option<String>, Option<String>)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "select id::text, email, name from users order by lower(coalesce(email, name, '')) asc",
+    )
+    .fetch_all(pg)
+    .await
+}
+
+// ── View denials ─────────────────────────────────────────────────────────────
+
+/// Manage-section routes: default DENIED for members, granted explicitly via
+/// allowed_manage_views. Enabled apps extend this set with EVERY app view
+/// (work and manage) — apps are explicit-grant only.
+const MANAGE_VIEW_ROUTES: [&str; 6] = [
+    "/agents",
+    "/models",
+    "/mcp",
+    "/templates",
+    "/observability",
+    "/apps",
+];
+
+/// Apps' slug rule (apps.ts SLUG_RE): lowercase letters, digits, dashes; a
+/// letter-or-digit head; ≤64 chars total.
+fn slug_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() || b.len() > 64 {
+        return false;
+    }
+    let head = b[0].is_ascii_lowercase() || b[0].is_ascii_digit();
+    let rest = b[1..]
+        .iter()
+        .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-');
+    head && rest
+}
+
+/// Where app codebases live (apps.ts appsDir): TALARIA_APPS_DIR, else
+/// <cwd>/../apps — the repo's apps/ dir when the process runs from ui/ (TS)
+/// or api/ (here).
+fn apps_dir() -> PathBuf {
+    match std::env::var("TALARIA_APPS_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => std::env::current_dir()
+            .ok()
+            .and_then(|c| c.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default()
+            .join("apps"),
+    }
+}
+
+struct DiscoveredApp {
+    slug: String,
+    name: String,
+    work: bool,
+    manage: bool,
+}
+
+/// The manifests on disk, sorted by app name — this port's discoveredApps().
+/// Any unreadable/unparseable directory is skipped, like the glob that sees
+/// nothing there.
+fn discovered_apps() -> Vec<DiscoveredApp> {
+    let Ok(entries) = std::fs::read_dir(apps_dir()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let slug = e.file_name().to_string_lossy().into_owned();
+        if !slug_ok(&slug) {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(e.path().join("talaria.json")) else {
+            continue;
+        };
+        let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        // A truthy name is what admits an app at all; surface keys count only
+        // when they hold non-empty strings (JS truthiness in the manifest
+        // spread).
+        let Some(name) = j
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+        let surface = |key: &str| {
+            j.get("surfaces")
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+        };
+        out.push(DiscoveredApp {
+            slug,
+            name: name.to_string(),
+            work: surface("work"),
+            manage: surface("manage"),
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// ALL app view routes of ENABLED apps (apps.ts appViewRoutes): every work
+/// surface, then every manage surface — apps are explicit-grant.
+pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
+    let enabled: HashSet<String> =
+        get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
+            .await
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+    let apps: Vec<_> = discovered_apps()
+        .into_iter()
+        .filter(|a| enabled.contains(&a.slug))
+        .collect();
+    let mut out = Vec::new();
+    for a in apps.iter().filter(|a| a.work) {
+        out.push(format!("/x/{}", a.slug));
+    }
+    for a in apps.iter().filter(|a| a.manage) {
+        out.push(format!("/x/{}/manage", a.slug));
+    }
+    out
+}
+
+/// Views a member may NOT reach (users.ts deniedViews): their explicit
+/// work-view denials (DB order) PLUS every Manage view they haven't been
+/// granted. Admins are never restricted.
+pub async fn denied_views(
+    pg: &PgPool,
+    user_id: &str,
+    role: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    if role == "admin" {
+        return Ok(Vec::new());
+    }
+    let row: Option<(Vec<String>, Option<Vec<String>>)> =
+        sqlx::query_as("select denied_views, allowed_manage_views from users where id = $1::uuid")
+            .bind(user_id)
+            .fetch_optional(pg)
+            .await?;
+    let (denied, allowed) = row.unwrap_or_default();
+    let allowed: HashSet<String> = allowed.unwrap_or_default().into_iter().collect();
+    let mut out = denied;
+    out.extend(
+        MANAGE_VIEW_ROUTES
+            .into_iter()
+            .map(String::from)
+            .chain(app_view_routes(pg).await)
+            .filter(|v| !allowed.contains(v)),
+    );
+    Ok(out)
+}
+
+// ── Permissions (permissions.ts) ─────────────────────────────────────────────
+
+/// The 13-entry catalog in shipped order — (id, memberDefault). This order IS
+/// the wire order of a member's resolved perms array, so it is pinned.
+pub const PERMISSIONS: [(&str, bool); 13] = [
+    ("agents.manage", false),
+    ("research.run", true),
+    ("plans.create", true),
+    ("boards.create", true),
+    ("comms.channels", true),
+    ("comms.relays", true),
+    ("kb.edit", true),
+    ("kb.official", false),
+    ("artifacts.create", true),
+    ("artifacts.publish", false),
+    ("files.upload", true),
+    ("templates.manage", false),
+    ("models.mint-keys", false),
+];
+
+/// The user's effective permission set: per-user override → org default → the
+/// catalog's shipped default. Admins: everything, in catalog order.
+pub async fn user_permissions(
+    pg: &PgPool,
+    user_id: &str,
+    role: &str,
+) -> Result<Vec<&'static str>, sqlx::Error> {
+    if role == "admin" {
+        return Ok(PERMISSIONS.iter().map(|(id, _)| *id).collect());
+    }
+    let org = get_setting(
+        pg,
+        "member_default_permissions",
+        serde_json::Value::Object(serde_json::Map::new()),
+    )
+    .await;
+    let org = org.as_object().cloned().unwrap_or_default();
+    let rows: Vec<(String, bool)> =
+        sqlx::query_as("select perm, allowed from user_permissions where user_id = $1::uuid")
+            .bind(user_id)
+            .fetch_all(pg)
+            .await?;
+    // Object.fromEntries: later duplicate rows win, same as the map insert.
+    let overrides: HashMap<String, bool> = rows.into_iter().collect();
+    Ok(PERMISSIONS
+        .iter()
+        .filter(|(id, default)| {
+            overrides
+                .get(*id)
+                .copied()
+                .or_else(|| org.get(*id).and_then(|v| v.as_bool()))
+                .unwrap_or(*default)
+        })
+        .map(|(id, _)| *id)
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slug_rules_match_the_regex() {
+        assert!(slug_ok("a"));
+        assert!(slug_ok("0-9"));
+        assert!(slug_ok("helpdesk-2"));
+        assert!(slug_ok(&"a".repeat(64)));
+        assert!(!slug_ok(&"a".repeat(65)));
+        assert!(!slug_ok("")); // regex needs a head char
+        assert!(!slug_ok("-x"));
+        assert!(!slug_ok("Upper"));
+        assert!(!slug_ok("under_score"));
+        assert!(!slug_ok("sp ace"));
+    }
+
+    #[test]
+    fn permission_catalog_is_the_wire_order() {
+        let ids: Vec<&str> = PERMISSIONS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "agents.manage",
+                "research.run",
+                "plans.create",
+                "boards.create",
+                "comms.channels",
+                "comms.relays",
+                "kb.edit",
+                "kb.official",
+                "artifacts.create",
+                "artifacts.publish",
+                "files.upload",
+                "templates.manage",
+                "models.mint-keys",
+            ]
+        );
+        // And the member-default map matches permissions.ts exactly.
+        let defaults: Vec<(&str, bool)> = PERMISSIONS
+            .iter()
+            .filter(|(_, d)| *d)
+            .map(|(id, _)| (*id, true))
+            .collect();
+        assert_eq!(
+            defaults,
+            vec![
+                ("research.run", true),
+                ("plans.create", true),
+                ("boards.create", true),
+                ("comms.channels", true),
+                ("comms.relays", true),
+                ("kb.edit", true),
+                ("artifacts.create", true),
+                ("files.upload", true),
+            ]
+        );
+    }
+}

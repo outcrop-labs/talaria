@@ -17,7 +17,7 @@ import { json } from './http'
 
 // The compiled switch list. A prefix joins when its Rust port is verified
 // byte-compatible, and leaves when the TS route files it shadows are deleted.
-const PREFIXES = ['/api/llm/v1/'] as const
+const PREFIXES = ['/api/llm/v1/', '/api/auth/session', '/api/auth/logout', '/api/users'] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
 // must not depend on which module graph got the frozen copy.
@@ -68,6 +68,11 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
     const v = res.headers.get(name)
     if (v !== null) out.set(name, v)
   }
+  // Set-Cookie rides through plural-safe: get() would comma-join multiple
+  // cookies into one corrupt value (Set-Cookie may itself contain commas), and
+  // an auth plane that can't clear its cookie through the boundary is not
+  // ported. The login/OAuth routes land here too, and they set two.
+  for (const c of res.headers.getSetCookie()) out.append('set-cookie', c)
   // The body streams through with backpressure — both callers (vite dev,
   // server-entry.js) pump Response.body; an SSE relay must not buffer.
   return new Response(res.body, { status: res.status, headers: out })

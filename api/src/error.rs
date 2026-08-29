@@ -137,6 +137,18 @@ pub fn house_error(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// The house error with a `message` field beside it — agent-auth's migration
+/// refusals carry the fix as a second field ({error, message}); the pipe is
+/// that exact shape, never a merged sentence.
+pub fn house_error_msg(status: StatusCode, error: &str, message: &str) -> Response {
+    #[derive(serde::Serialize)]
+    struct Body<'a> {
+        error: &'a str,
+        message: &'a str,
+    }
+    (status, Json(Body { error, message })).into_response()
+}
+
 #[derive(serde::Serialize)]
 pub struct OpenAiErrorBody {
     pub message: String,
