@@ -5,10 +5,10 @@
 //
 //   - `model-roles.ts` `resolveRoleModel` validates that an assignment still
 //     ROUTES on the gateway, and nothing else. So an admin can point
-//     `research-recon` at a model with no web search; `research.ts`
-//     `searchModelFor` hands it straight to the search stages, and the run
-//     produces a confident, uncited, hallucinated brief. Nothing errors, and
-//     the auto-chain's careful `sonar*` preference is bypassed entirely.
+//     `research-recon` at a model with no web search; `planSearch` hands it
+//     straight to the search stages, and the run produces a confident, uncited,
+//     hallucinated brief. Nothing errors, and the auto-chain's careful
+//     `sonar*` preference is bypassed entirely.
 //   - `llm-gateway.ts` learns unsupported parameters from upstream 400s and
 //     pre-strips them on every later call. `rejectedParam` matches a bare
 //     lowercase identifier, so `response_format` is strippable: a model that

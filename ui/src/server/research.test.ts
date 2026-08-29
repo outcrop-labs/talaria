@@ -59,13 +59,18 @@ const cancelRun = vi.fn(async () => {
   queries.push({ text: '-- cancelRun', values: [] })
   return { ok: true as const, state: 'cancelled' as const }
 })
-const searchModelFor = vi.fn(async (_mode: string): Promise<string | null> => 'sonar')
+const planSearch = vi.fn(async (_mode: string): Promise<{ model: string; via: 'native' | 'tool'; supplier: { server: string; tool: string } | null } | null> => ({
+  model: 'sonar',
+  via: 'native',
+  supplier: null,
+}))
 
 vi.mock('@/server/db/pg', () => ({ db: async () => sql }))
 vi.mock('@/server/runs/run', () => ({ enqueue, drive, cancelRun }))
 vi.mock('@/server/runs/defs/research', () => ({
   RESEARCH_MODES: [{ mode: 'recon', blurb: 'one fast pass' }],
-  searchModelFor: (mode: string) => searchModelFor(mode),
+  NO_SEARCH_REASON: 'this workspace cannot search yet',
+  planSearch: (mode: string) => planSearch(mode),
   researchRun: { kind: 'research' },
 }))
 vi.mock('@/server/titler', () => ({ generateTitle: async () => null }))
@@ -79,7 +84,7 @@ beforeEach(() => {
   enqueue.mockClear()
   drive.mockClear()
   cancelRun.mockClear()
-  searchModelFor.mockResolvedValue('sonar')
+  planSearch.mockResolvedValue({ model: 'sonar', via: 'native', supplier: null })
 })
 
 describe('starting a run', () => {
@@ -118,11 +123,11 @@ describe('starting a run', () => {
     expect(insert?.text).toContain('on conflict (id) do nothing')
   })
 
-  it('refuses up front when the gateway has no search model, and starts nothing', async () => {
-    searchModelFor.mockResolvedValue(null)
+  it('refuses up front when the workspace cannot search, and starts nothing', async () => {
+    planSearch.mockResolvedValue(null)
     await expect(
       startResearch({ question: RUN.question, mode: 'recon', agentModel: 'nomad', ownerUserId: 'user-1', requestedBy: 'user-1' }),
-    ).rejects.toThrow(/no search-capable model/)
+    ).rejects.toThrow(/this workspace cannot search yet/)
     expect(enqueue).not.toHaveBeenCalled()
     expect(writes()).toEqual([])
   })

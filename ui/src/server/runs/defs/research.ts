@@ -69,13 +69,16 @@
 // THE OTHER SIX HAZARDS, answered:
 //   2 (abandoned but still running)  every step calls `stopIfAbandoned` before
 //     each outward call, and the persona/search stages are handed `ctx.signal`.
-//   3 (notifying from a step)  the run never messages anybody to ask something.
-//     The one question it can raise is a `decide`, and the question IS the
-//     notification.
-//   4 (the re-ask)  the no-sources question's key carries the attempt number,
-//     so a genuinely new ask is a new approval key.
-//   5 (the answer consumed twice)  the branch that reads `ctx.decision`
-//     checkpoints in the same step, or throws terminally.
+//   3 (notifying from a step)  the run never messages anybody to ask
+//     anything. It did once — a no-sources `decide` — and the parked runs
+//     read as working ones for hours (2026-08-28, ticket #5); research now
+//     retries by itself and then fails with a sentence in `error`. A def
+//     that DOES park (work-session, plan-draft) renders its question on the
+//     run's own surface, where it can be answered.
+//   4 (the re-ask)  moot with nobody asked; the retry counter lives in the
+//     checkpoint, so a reclaim mid-retry re-enters the same round.
+//   5 (the answer consumed twice)  moot the same way — there is no answer to
+//     consume; the retry is taken in the same write that records it.
 //   6 (the enqueue)  `startResearch` passes a deterministic `opts.id` — the
 //     research record's own uuid names the run, so one research row can only
 //     ever have one run.
@@ -95,6 +98,7 @@ import {
   researchSearchHarness,
   researchSynthesisHarness,
   searchTransport,
+  toolSearchTransport,
   type ResearchDepth,
   type SearchSource,
 } from '../../harness/defs/research'
@@ -124,8 +128,8 @@ export const RESEARCH_RUN_KIND = 'research'
 // Moved here from server/research.ts rather than imported from it: this module
 // is loaded at boot so the reclaim sweep can drive a research run it finds, and
 // an import back into the domain module would be a cycle. server/research.ts
-// re-exports the two public names (`RESEARCH_MODES`, `searchModelFor`) so no
-// caller moves.
+// re-exports the public names (`RESEARCH_MODES`, `planSearch`, …) so no caller
+// moves.
 
 /** Depth budget + search model preference per mode. Query counts bound each
  *  round; rounds bound the expedition loop. Overridable for tests via env. */
@@ -169,7 +173,18 @@ export interface SearchPlan {
 export const NO_SEARCH_REASON =
   'this workspace cannot search yet. Either connect a search backend (Settings → Search, e.g. a self-hosted SearXNG) so any model can research through it, or register a model with native web search and assign it to the research role'
 
-export async function planSearch(mode: ResearchDepth, deps?: { models?: () => Promise<Array<{ id: string }>> }): Promise<SearchPlan | null> {
+export async function planSearch(
+  mode: ResearchDepth,
+  deps?: {
+    models?: () => Promise<Array<{ id: string }>>
+    /** The role assignment, injectable so the CHOICE RULE can be tested
+     *  without a database. Defaults to `resolveRoleModel`. */
+    roleModel?: (role: string) => Promise<string | null>
+    /** One model's proven path, injectable for the same reason. Defaults to
+     *  the `pathOf` below. */
+    reach?: (model: string) => Promise<SearchPlan | null>
+  },
+): Promise<SearchPlan | null> {
   const pathOf = async (model: string): Promise<SearchPlan | null> => {
     const keys = await capabilityKeysFor(model).catch((): string[] => [])
     const reach = await reachFor(keys, ['search']).catch((): Record<string, Reach> => ({}))
@@ -179,21 +194,42 @@ export async function planSearch(mode: ResearchDepth, deps?: { models?: () => Pr
     if (r.via === 'native') return { model, via: 'native', supplier: null }
     return null
   }
+  const reach = deps?.reach ?? pathOf
 
-  // 1. The admin said which one. Their choice, including the choice to use a
-  //    model that turns out to need the tool path.
+  // 1. The admin said which one. Their choice — including the choice to use a
+  //    model that turns out to need the tool path — but only when the capability
+  //    is PROVEN, never presumed.
   //
-  //    AND UNKNOWN IS NOT MISSING, which is this codebase's cardinal rule about
-  //    capabilities and the reason this step falls through to `native` rather
-  //    than to the next step. A fresh self-host has probed nothing and its
-  //    catalog may say nothing, so `reachFor` answers with silence — and
-  //    treating that silence as "this model cannot search" would refuse the
-  //    admin's own explicit assignment. The runtime defence is one layer down,
-  //    where it belongs: `researchSearchHarness` declares `requires: ['search']`
-  //    with `refuseBelow: true`, so a model POSITIVELY KNOWN not to search fails
-  //    the stage loudly instead of writing a fluent uncited brief.
-  const assigned = await resolveRoleModel(`research-${mode}`)
-  if (assigned) return (await pathOf(assigned)) ?? { model: assigned, via: 'native', supplier: null }
+  //    THE FOUNDER'S RULE, after a run asked `qwen-3.8-27b` — a plain chat model
+  //    on a self-hosted vllm — to search the live web: "we should not be trying
+  //    to call models for search unless they have that capability explicitly and
+  //    it has been proven." This step used to disagree: it fell through to
+  //    `{ via: 'native' }` on SILENCE, on the argument that unknown is not
+  //    missing and the runtime floor would catch a model POSITIVELY KNOWN not
+  //    to search. Both halves were true and the conclusion still failed,
+  //    because the floor obeys the same rule — unknown is not missing — so a
+  //    model nobody has measured sails through it, and the run then asks
+  //    weights with no index behind them for cited findings. What comes back is
+  //    a fluent brief from training data, or, that day, a 502: money spent not
+  //    searching either way.
+  //
+  //    CHOOSING THE MODEL IS WHERE PROOF IS REQUIRED, and it is not the question
+  //    the floor answers. The floor guards a run already in flight against
+  //    deliberate evidence its model cannot do the job; this function decides
+  //    WHICH model the run spends itself on, and for that decision silence is
+  //    not a capability. Proof comes in either of two forms, both checked:
+  //    `reachFor` says `native` only when a probe or catalog MEASURED this model
+  //    browsing, and says `tool` when a search backend is really there on this
+  //    install — which is how an admin's assignment of a blind model is still
+  //    honored, driven through our SearXNG instead of its weights. An
+  //    assignment this step passes over is not a refusal: the steps below look
+  //    for what this install can actually prove, and `NO_SEARCH_REASON` says
+  //    what to connect when nothing can.
+  const assigned = await (deps?.roleModel ?? resolveRoleModel)(`research-${mode}`)
+  if (assigned) {
+    const plan = await reach(assigned)
+    if (plan) return plan
+  }
 
   const models = await (deps?.models ?? gatewayModels)().catch((): Array<{ id: string }> => [])
   if (models.length === 0) return null
@@ -202,19 +238,13 @@ export async function planSearch(mode: ResearchDepth, deps?: { models?: () => Pr
   //    CAPABILITY FACTS, so a new sonar spelling — or any other vendor shipping
   //    native search — is picked up the day it is registered, with nothing here
   //    to edit.
-  const plans = await Promise.all(models.map((m) => pathOf(m.id).catch((): SearchPlan | null => null)))
+  const plans = await Promise.all(models.map((m) => reach(m.id).catch((): SearchPlan | null => null)))
   const native = plans.find((p): p is SearchPlan => p?.via === 'native')
   if (native) return native
 
   // 3. Anything routable, through our own search. The model only has to be able
   //    to call a tool, which is most of them.
   return plans.find((p): p is SearchPlan => p !== null) ?? null
-}
-
-/** BACK-COMPAT for callers that only want the model id. `planSearch` is the one
- *  to reach for — it also says which path the run will take. */
-export async function searchModelFor(mode: ResearchDepth): Promise<string | null> {
-  return (await planSearch(mode))?.model ?? null
 }
 
 /** A deep-research-class search model is an agentic researcher in itself
@@ -290,6 +320,11 @@ export interface ResearchCheckpoint {
    *  admin re-pointing the `research-*` role mid-expedition must not switch
    *  models between one round and the next. */
   searchModel: string
+  /** HOW that model reaches the web, resolved in the same breath: the plan's
+   *  supplier when the model is blind and a tool does the searching, null when
+   *  it searches as part of answering. Optional because checkpoints written
+   *  before the tool path was threaded through are native by construction. */
+  searchSupplier?: { server: string; tool: string } | null
   /** The adapted depth budget, likewise resolved once. */
   rounds: number
   perRound: number
@@ -321,13 +356,17 @@ export interface ResearchCheckpoint {
 // ── Deps ─────────────────────────────────────────────────────────────────────
 
 export interface ResearchRunDeps {
-  searchModelFor: (mode: ResearchDepth) => Promise<string | null>
+  /** The whole plan, not just the model: it says which PATH the run's searches
+   *  take. Null = this install cannot prove search for anything, and the run
+   *  refuses to start rather than pay a blind model to answer from memory. */
+  searchPlanFor: (mode: ResearchDepth) => Promise<SearchPlan | null>
   /** The persona plans a round. Never throws — a failed plan is one lost round,
    *  and an empty list is the persona saying the question is saturated. */
   planQueries: (args: { runId: string; agentModel: string; question: string; findingsSoFar: string[]; max: number; signal: AbortSignal }) => Promise<string[]>
   /** One query against the search model. THROWS on a dead query, which costs
-   *  one angle rather than the run. */
-  search: (args: { runId: string; model: string; query: string; signal: AbortSignal }) => Promise<SearchHit>
+   *  one angle rather than the run. `supplier` is the plan's: set means the
+   *  model is blind and the tool does the searching. */
+  search: (args: { runId: string; model: string; supplier: { server: string; tool: string } | null; query: string; signal: AbortSignal }) => Promise<SearchHit>
   /** The persona writes the document. Throws on an unusable reply. */
   synthesize: (args: {
     runId: string
@@ -382,18 +421,31 @@ export interface ResearchRunDeps {
  *  citable sources — which the pipeline now takes to the OWNER rather than
  *  failing on the spot.
  *
+ *  THE TRANSPORT IS THE PLAN'S, and this is the half of the capability rule the
+ *  run used to break. `planSearch` could say `via: 'tool'` all it liked — the
+ *  plan's model id was the only thing that reached this function, and the stage
+ *  ALWAYS posted the native transport: a bare completion, "you are a research
+ *  search engine", at a model that had just been chosen precisely because it
+ *  CANNOT search. It answered from memory, fluently, and the synthesis stage
+ *  wrote up the uncited brief. So the supplier travels with the call, and a
+ *  supplier set means `toolSearchTransport` — the model drives our checked
+ *  search tool and the sources come off the tool's results — exactly the path
+ *  the fitness suite has been measuring all along while production ran the
+ *  other one.
+ *
  *  The capability floor is the harness's: `requires: ['search']` with
  *  `refuseBelow: true`, so a model an admin assigned to a `research-*` role
  *  that is KNOWN not to search fails loudly here instead of answering fluently
  *  from training data and handing the synthesis stage an uncited brief to write
- *  up (audit 1.6). The sources come off the provider's own
+ *  up (audit 1.6). On the native path the sources come off the provider's own
  *  `search_results`/`citations` fields — see `searchTransport`. */
-async function searchStage(args: { runId: string; model: string; query: string; signal: AbortSignal }): Promise<SearchHit> {
+async function searchStage(args: { runId: string; model: string; supplier: { server: string; tool: string } | null; query: string; signal: AbortSignal }): Promise<SearchHit> {
   const sources: SearchSource[] = []
+  const transport = args.supplier ? toolSearchTransport(args.runId, sources, args.supplier) : searchTransport(args.runId, sources)
   const run = await runHarness(
     researchSearchHarness,
     { query: args.query },
-    { caller: `research:${args.runId}`, model: args.model, signal: args.signal, deps: { transport: searchTransport(args.runId, sources) } },
+    { caller: `research:${args.runId}`, model: args.model, signal: args.signal, deps: { transport } },
   )
   // `researchSearchHarness` declares `onFailure: 'throw'` and `runHarness`
   // honors it on every path that fails to produce a value — the transport and
@@ -467,7 +519,7 @@ async function synthesisStage(args: Parameters<ResearchRunDeps['synthesize']>[0]
 }
 
 export const REAL_RESEARCH_DEPS: ResearchRunDeps = {
-  searchModelFor,
+  searchPlanFor: planSearch,
   planQueries: planStage,
   search: searchStage,
   synthesize: synthesisStage,
@@ -607,16 +659,13 @@ export const REAL_RESEARCH_DEPS: ResearchRunDeps = {
 type Ctx = RunStepContext<ResearchInput, ResearchCheckpoint>
 type Result = StepResult<ResearchCheckpoint>
 
-/** The sentence a run with nothing citable ends on, when the owner says stop or
- *  has already been asked. Unchanged from the version that used to be thrown
- *  the moment the loop ended. */
+/** The sentence a run with nothing citable ends on — the same words the
+ *  pre-parking version threw, so the error a user sees never got softer. */
 const NO_SOURCES = 'no sources found. Search returned nothing citable.'
 
-/** How many times the owner may be asked to search again before the run gives
- *  up on its own. Two asks: the transient outage, and the one after it. */
-const MAX_NO_SOURCE_ASKS = 2
-
-const noSourceKey = (attempt: number) => `no-sources:attempt-${attempt}`
+/** How many times the run re-searches on its own before ending. Two retries:
+ *  the transient outage, and the one after it. */
+const MAX_NO_SOURCE_RETRIES = 2
 
 /** Risk 2, stated as a function. `maxStepMs` and a lost lease abort by
  *  REJECTING a race — nothing stops a promise that ignores its signal — so a
@@ -649,11 +698,13 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
   // ── begin ────────────────────────────────────────────────────────────────
   if (cp === null) {
     await deps.ensureRow(runId, input)
-    const searchModel = await deps.searchModelFor(input.mode)
+    const plan = await deps.searchPlanFor(input.mode)
     // The same refusal `startResearch` makes up front, restated here because a
     // reclaimed run is entered without going through it — and a gateway that
-    // lost its sonar model between the click and the resume is a real state.
-    if (!searchModel) throw new Error('no search-capable model on the gateway. Register a Perplexity sonar model on /models first.')
+    // lost its only proven search path between the click and the resume is a
+    // real state.
+    if (!plan) throw new Error(NO_SEARCH_REASON)
+    const searchModel = plan.model
     const budget = adaptBudget(budgetFor(input.mode), searchModel)
     // A FOLLOW-UP CONTINUES ITS PARENT'S NUMBERING. Seeded here, into the
     // checkpoint, so [1]..[n] keep meaning what the parent's already-written
@@ -666,6 +717,7 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
       checkpoint: {
         ...firstRound(input),
         searchModel,
+        searchSupplier: plan.supplier,
         rounds: budget.rounds,
         perRound: budget.queries,
         round: 1,
@@ -729,7 +781,7 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
       let failed = cp.searchFailed
       try {
         stopIfAbandoned(ctx)
-        const hit = await deps.search({ runId, model: cp.searchModel, query, signal: ctx.signal })
+        const hit = await deps.search({ runId, model: cp.searchModel, supplier: cp.searchSupplier ?? null, query, signal: ctx.signal })
         note = `### Query: ${query}\n${registry.renumber(hit)}`
       } catch (e) {
         // ONE DEAD QUERY COSTS ONE ANGLE, unchanged — except that an abandoned
@@ -761,42 +813,26 @@ async function advance(ctx: Ctx, deps: ResearchRunDeps): Promise<Result> {
     // ── synthesize: ONE persona call ───────────────────────────────────────
     case 'synthesize': {
       if (cp.sources.length === 0) {
-        // NOTHING CITABLE. This used to throw on the spot and end the run with
-        // a sentence nobody could act on. Every one of these is either a
-        // transient search outage or a question nothing on the web answers, and
-        // only the person who asked can tell those apart — so the run PARKS on
-        // it and keeps everything it has. Risk 5: the branch that reads the
-        // answer checkpoints in this same step, or throws terminally.
-        const answer = ctx.decision
-        if (answer && answer.key === noSourceKey(cp.retries)) {
-          if (answer.optionId === 'search-again')
-            return {
-              kind: 'next',
-              // The findings are dropped with the round: with no sources in the
-              // registry every one of them is a failure note or uncited prose,
-              // and carrying them into the retry would put them in the report.
-              checkpoint: { ...cp, ...firstRound(input), round: 1, done: 0, findings: [], searchFailed: false, retries: cp.retries + 1 },
-              phase: 'searching again',
-            }
-          throw new Error(NO_SOURCES)
-        }
-        if (cp.retries >= MAX_NO_SOURCE_ASKS) throw new Error(NO_SOURCES)
+        // NOTHING CITABLE, AND NOBODY IS ASKED. This used to park on a human
+        // decision — "search again?" — on the theory that only the person who
+        // asked can tell a transient search outage from a question the web
+        // cannot answer. Two runs parked on 2026-08-28 and sat for hours
+        // looking exactly like working ones (ticket #5, and the founder's call
+        // that followed): research is an autonomous harness. The transient
+        // case answers ITSELF on the retry below, and the unanswerable case
+        // was never going to be rescued by a human clicking "search again"
+        // either — it ends the run, loudly, with a sentence in `error`.
+        // `?? 0`: a checkpoint written before this field existed must not
+        // compute `undefined + 1` — NaN never reaches the ceiling and a run
+        // would retry for ever.
+        if ((cp.retries ?? 0) >= MAX_NO_SOURCE_RETRIES) throw new Error(NO_SOURCES)
         return {
-          kind: 'decide',
-          question: {
-            // RISK 4: the attempt is IN the key. Re-asking after a reclaim
-            // produces the same key and dedupes; a genuinely new ask after a
-            // retry produces a new one, so the second question is announced
-            // rather than inheriting the first one's mark.
-            key: noSourceKey(cp.retries),
-            question: `No sources came back for "${input.question.slice(0, 120)}". Search again?`,
-            detail: `${cp.queriesRun} search(es) ran and none of them returned anything citable${cp.searchFailed ? ' (at least one failed outright)' : ''}. Nothing is lost either way: the run keeps what it has.`,
-            options: [
-              { id: 'search-again', label: 'Search again', detail: 'Re-plan the angles and run the searches again.' },
-              { id: 'stop', label: 'Stop', detail: 'End the run without a report.' },
-            ],
-            href: `/research?r=${runId}`,
-          },
+          kind: 'next',
+          // The findings are dropped with the round: with no sources in the
+          // registry every one of them is a failure note or uncited prose,
+          // and carrying them into the retry would put them in the report.
+          checkpoint: { ...cp, ...firstRound(input), round: 1, done: 0, findings: [], searchFailed: false, retries: (cp.retries ?? 0) + 1 },
+          phase: 'searching again',
         }
       }
 

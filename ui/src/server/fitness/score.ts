@@ -209,7 +209,7 @@ export interface SlotBinding {
  *  anyone adds a second entry.
  *
  *  `research-search` declares `model: { chain: [] }` on purpose: production
- *  resolves its model through `searchModelFor(mode)` (research.ts), which picks
+ *  resolves its model through `planSearch(mode)` (runs/defs/research.ts), which picks
  *  `research-recon` / `research-brief` / `research-expedition` from the run's
  *  MODE. A `ModelSpec` has one `role` field and the choice is mode-dependent, so
  *  the spec genuinely cannot state it — the harness's own comment says the

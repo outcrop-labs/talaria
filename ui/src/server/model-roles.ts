@@ -10,7 +10,7 @@
 //
 // AUDIT 1.6: routable is not the same as FIT. Routability was the only check
 // here, so an admin could point `research-recon` at a model with no web search,
-// `searchModelFor` would hand it to the search stages, and the run would come
+// `planSearch` would hand it to the search stages, and the run would come
 // back a confident, uncited, hallucinated brief with nothing anywhere reporting
 // a problem. Each role now DECLARES the capabilities its work needs, and
 // `roleAssignmentIssues` reports the assignments a model is known not to be able

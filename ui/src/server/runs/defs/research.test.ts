@@ -35,6 +35,9 @@ interface World {
   /** Every query actually sent to a search model, in order. Its LENGTH is the
    *  bill: one entry is one paid sonar call. */
   searched: string[]
+  /** The supplier each search call was handed — the plan's path, threaded
+   *  through the checkpoint. Null entries are native searches. */
+  suppliers: Array<{ server: string; tool: string } | null>
   planned: number
   synthesized: number
   /** Artifacts created. More than one is the failure this port exists to make
@@ -54,12 +57,16 @@ interface World {
   /** Queries whose search should throw, by query text. */
   deadQueries: Set<string>
   allSearchesDead: boolean
+  /** With allSearchesDead: how many searches stay dead before the outage
+   *  passes. unset = dead for the whole run. */
+  reviveAfter: number | null
 }
 
 function makeWorld(over: Partial<ResearchRunDeps> = {}): World {
   let artifactSeq = 0
   const w: World = {
     searched: [],
+    suppliers: [],
     planned: 0,
     synthesized: 0,
     created: [],
@@ -74,10 +81,11 @@ function makeWorld(over: Partial<ResearchRunDeps> = {}): World {
     rowExists: true,
     deadQueries: new Set(),
     allSearchesDead: false,
+    reviveAfter: null,
     deps: null as unknown as ResearchRunDeps,
   }
   w.deps = {
-    searchModelFor: async () => 'sonar-pro',
+    searchPlanFor: async () => ({ model: 'sonar-pro', via: 'native' as const, supplier: null }),
     // A follow-up's parent sources. Empty unless a test sets `w.parentSources`,
     // which is what the numbering-continues case does.
     sourcesOf: async () => w.parentSources,
@@ -85,9 +93,13 @@ function makeWorld(over: Partial<ResearchRunDeps> = {}): World {
       w.planned++
       return Array.from({ length: max }, (_, i) => `angle ${w.planned}.${i + 1}`)
     },
-    search: async ({ query }) => {
+    search: async ({ query, supplier }) => {
       w.searched.push(query)
-      if (w.allSearchesDead || w.deadQueries.has(query)) throw new Error(`search stage 502 on "${query}"`)
+      w.suppliers.push(supplier)
+      // `reviveAfter`: a transient outage — dead for the first N searches of
+      // the run, healthy from the next one on. What the retry has to survive.
+      const dead = w.allSearchesDead && (w.reviveAfter === null || w.searched.length <= w.reviveAfter)
+      if (dead || w.deadQueries.has(query)) throw new Error(`search stage 502 on "${query}"`)
       return {
         content: `findings for ${query} [1]`,
         sources: [{ url: `https://example.com/${encodeURIComponent(query)}`, title: query, snippet: 's' }],
@@ -266,20 +278,40 @@ describe('the mode budgets', () => {
   })
 
   it('shrinks the loop for a deep-research search model, as adaptBudget always did', async () => {
-    const w = makeWorld({ searchModelFor: async () => 'perplexity/sonar-deep-research' })
+    const w = makeWorld({ searchPlanFor: async () => ({ model: 'perplexity/sonar-deep-research', via: 'native' as const, supplier: null }) })
     await driveRun(w, { ...INPUT, mode: 'expedition' })
     // rounds min(3,2) = 2, one query each.
     expect(w.planned).toBe(2)
     expect(w.searched).toHaveLength(2)
   })
 
+  it("carries the plan's supplier to every search call — a tool plan must not silently run native", async () => {
+    // The regression this pins: `planSearch` could say `via: 'tool'` and the
+    // run used to throw that half away, posting a bare completion at a model
+    // chosen precisely because it CANNOT search. The supplier resolves once at
+    // `begin` and rides the checkpoint, so every query of every round takes the
+    // same path — including the queries a reclaim re-runs.
+    const w = makeWorld({
+      searchPlanFor: async () => ({ model: 'deepseek/deepseek-v4-flash', via: 'tool' as const, supplier: { server: 'talaria', tool: 'web_search' } }),
+    })
+    const out = await driveRun(w, { ...INPUT, mode: 'expedition' })
+    expect(out.stop).toBe('done')
+    expect(w.suppliers).toHaveLength(12)
+    expect(new Set(w.suppliers.map((s) => `${s?.server}.${s?.tool}`))).toEqual(new Set(['talaria.web_search']))
+  })
+
   it('stops early when the persona says the question is saturated', async () => {
     const w = makeWorld({ planQueries: async () => [] })
     const out = await driveRun(w, { ...INPUT, mode: 'expedition' })
-    // No sources, so it parks rather than searching for ever — the point here
-    // is that an empty plan ends the ROUND LOOP instead of spinning it.
-    expect(out.stop).toBe('awaiting')
+    // No sources and nothing more to search — the point here is that an empty
+    // plan ends the ROUND LOOP instead of spinning it. The run then retries
+    // the same empty round its two times (plan → synthesize, three pairs) and
+    // ends on the no-sources sentence: 7 steps, not the 2 a straight error
+    // would take.
+    expect(out.stop).toBe('error')
+    expect(out.error).toBe('no sources found. Search returned nothing citable.')
     expect(w.searched).toHaveLength(0)
+    expect(out.steps).toBe(7)
   })
 })
 
@@ -382,58 +414,37 @@ describe('the report artifact', () => {
   })
 })
 
-// ── Nothing citable: the park that replaces a thrown error ───────────────────
+// ── Nothing citable: the run answers itself ──────────────────────────────────
+// This suite was rewritten when the park was removed (2026-08-28, ticket #5:
+// two runs sat 'awaiting' for hours reading as working ones). The harness
+// retries by itself and then fails; nobody is ever asked.
 
 describe('when nothing citable comes back', () => {
-  it('parks on the owner instead of failing the run', async () => {
+  it('retries by itself — nobody is asked, the run never parks', async () => {
     const w = makeWorld()
     w.allSearchesDead = true
     const out = await driveRun(w, { ...INPUT, mode: 'recon' })
-    expect(out.stop).toBe('awaiting')
-    expect(out.question?.key).toBe('no-sources:attempt-0')
-    expect(out.question?.options.map((o) => o.id)).toEqual(['search-again', 'stop'])
-    expect(w.failed).toEqual([])
-  })
-
-  it('searches again when the owner says so, under a NEW approval key', async () => {
-    const w = makeWorld()
-    w.allSearchesDead = true
-    let asked = 0
-    const keys: string[] = []
-    const out = await driveRun(
-      w,
-      { ...INPUT, mode: 'recon' },
-      {
-        answer: (q) => {
-          keys.push(q.key)
-          asked++
-          // Say "search again" once, then let it park to see the second key.
-          return asked === 1 ? { key: q.key, optionId: 'search-again', answeredBy: 'user-1', answeredAt: 'now' } : null
-        },
-      },
-    )
-    expect(out.stop).toBe('awaiting')
-    // A retried RECON asks the question again — it does not quietly acquire the
-    // planning stage its mode does not have.
-    expect(w.searched).toEqual([INPUT.question, INPUT.question])
-    expect(w.planned).toBe(0)
-    // RISK 4: a genuinely new question must not inherit the first one's
-    // announcement mark, so the key varies with the attempt.
-    expect(keys).toEqual(['no-sources:attempt-0', 'no-sources:attempt-1'])
-  })
-
-  it('ends with the same sentence it always did when the owner says stop', async () => {
-    const w = makeWorld()
-    w.allSearchesDead = true
-    const out = await driveRun(
-      w,
-      { ...INPUT, mode: 'recon' },
-      { answer: (q) => ({ key: q.key, optionId: 'stop', answeredBy: 'user-1', answeredAt: 'now' }) },
-    )
+    // One initial pass plus two retries — MAX_NO_SOURCE_RETRIES, then the end.
     expect(out.stop).toBe('error')
     expect(out.error).toBe('no sources found. Search returned nothing citable.')
-    // And the domain record carries it, so the question can be asked again.
+    // A retried RECON re-searches its one query — it does not quietly acquire
+    // the planning stage its mode does not have.
+    expect(w.searched).toEqual([INPUT.question, INPUT.question, INPUT.question])
+    expect(w.planned).toBe(0)
+    // And the domain record carries the failure, so the question can be
+    // asked again.
     expect(w.failed).toEqual(['no sources found. Search returned nothing citable.'])
+  })
+
+  it('a transient outage answers itself — the retry round completes the run', async () => {
+    const w = makeWorld()
+    w.allSearchesDead = true
+    w.reviveAfter = 1 // dead for the first search only
+    const out = await driveRun(w, { ...INPUT, mode: 'recon' })
+    expect(out.stop).toBe('done')
+    expect(w.searched).toEqual([INPUT.question, INPUT.question])
+    expect(w.finished[0]?.stats.sources).toBe(1)
+    expect(w.written[0]?.body).toContain('A report')
   })
 
   it('one dead query costs one angle, not the run', async () => {
