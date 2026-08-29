@@ -1,9 +1,11 @@
-// Confab guardrail — port of ui/src/server/guardrails.ts, reduced to the one
-// door the gateway route needs: `guard_completion` (config → rules → findings
-// → caveat, recording as it goes), `redact_secrets` for the strict rewrite,
-// and the pieces they lean on. A cheap, model-agnostic STRUCTURAL check on
-// model output: no LLM call, no added model tokens — regex over the answer
-// plus the turn's tool record derived from the request messages.
+// Confab guardrail — port of ui/src/server/guardrails.ts, reduced to the two
+// doors that have crossed: `guard_completion` (the gateway route's config →
+// rules → findings → caveat, recording as it goes) and `guard_text` (the
+// gate-safe rules over plain text, which agent-writes and the judge pre-pass
+// call), plus `redact_secrets` for the strict rewrite and the pieces they
+// lean on. A cheap, model-agnostic STRUCTURAL check on model output: no LLM
+// call, no added model tokens — regex over the answer plus the turn's tool
+// record derived from the request messages.
 //
 // The checks (first three from the Hermes confab-guard plugin):
 //   zero_tool_claim   — claims a completed action, but no external tool ran
@@ -766,6 +768,14 @@ struct RuleDef {
     severity: &'static str,
     default_on: bool,
     groundable: Option<Groundable>,
+    /// Runs over plain text with no tool record (guardrails.ts gateSafe) —
+    /// the rules `guard_text` may use. The tool-record rules (zero_tool_claim,
+    /// ungrounded_ref, fabricated_outage) have nothing to be true AGAINST on
+    /// that path: an MCP comment claiming "I opened the PR" is backed by a
+    /// tool that ran in a different process, so running them would flag
+    /// honest work. Rules that need what we cannot supply are skipped rather
+    /// than guessed.
+    gate_safe: bool,
 }
 
 const RULES: &[RuleDef] = &[
@@ -774,30 +784,35 @@ const RULES: &[RuleDef] = &[
         severity: "high",
         default_on: true,
         groundable: None,
+        gate_safe: false,
     },
     RuleDef {
         id: "ungrounded_ref",
         severity: "medium",
         default_on: true,
         groundable: None,
+        gate_safe: false,
     },
     RuleDef {
         id: "fabricated_outage",
         severity: "high",
         default_on: true,
         groundable: None,
+        gate_safe: false,
     },
     RuleDef {
         id: "secret_leak",
         severity: "high",
         default_on: true,
         groundable: Some(Groundable::Finding),
+        gate_safe: true,
     },
     RuleDef {
         id: "pii_leak",
         severity: "high",
         default_on: true,
         groundable: Some(Groundable::FindingAndRedaction),
+        gate_safe: true,
     },
 ];
 
@@ -1035,6 +1050,50 @@ pub async fn guard_completion(
         String::new()
     };
     (findings, caveat, config.mode)
+}
+
+/// Layered tiering over PLAIN TEXT (guardrails.ts guardText): the gate-safe
+/// rules with an empty tool record — the judge's cheap structural pre-pass and
+/// the agent-writes door both call this. Returns [] when the guard is off.
+///
+/// `input` is the material the text was written FROM, when the caller has it
+/// — the ticket being triaged, the thread being replied to. Both gate-safe
+/// rules are groundable, so supplying it is the difference between flagging a
+/// model for repeating the customer's order number and not; callers with
+/// nothing honest to name pass None and get the old behavior.
+///
+/// Never fails: a guard that errored loudly on a database hiccup would take
+/// down commenting, posting and DMs alongside it.
+pub async fn guard_text(pg: &PgPool, text: &str, input: Option<&str>) -> Vec<Finding> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let config = guard_config(pg).await;
+    if config.mode == GuardMode::Off {
+        return Vec::new();
+    }
+    let empty = ToolRecord::default();
+    let input_text = input.unwrap_or("");
+    let grounding = Grounding::new(input_text);
+    let ctx = GuardContext {
+        answer: text,
+        tool_record: &empty,
+        input_text,
+        policed_hosts: &config.policed_hosts,
+        grounding: &grounding,
+    };
+    RULES
+        .iter()
+        .filter(|r| r.gate_safe)
+        .filter(|r| {
+            config
+                .checks
+                .get(r.id)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(r.default_on)
+        })
+        .filter_map(|r| evaluate(r, &ctx, &config))
+        .collect()
 }
 
 // ── Redaction ────────────────────────────────────────────────────────────────
@@ -1328,6 +1387,15 @@ mod tests {
         assert_eq!(findings[0].check, "secret_leak");
         assert!(findings[0].grounded);
         assert!(needs_redaction(&findings));
+    }
+
+    #[test]
+    fn gate_safe_is_exactly_the_two_leak_rules() {
+        // guard_text's door: the rules that need no tool record. The three
+        // claim rules are pinned OUT of it, or an MCP comment saying "I opened
+        // the PR" would flag honest work.
+        let gate_safe: Vec<&str> = RULES.iter().filter(|r| r.gate_safe).map(|r| r.id).collect();
+        assert_eq!(gate_safe, vec!["secret_leak", "pii_leak"]);
     }
 
     #[test]
