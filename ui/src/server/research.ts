@@ -39,13 +39,13 @@ import { type ResearchDepth } from './harness/defs/research'
 import { generateTitle } from './titler'
 import { createConversation } from './conversations'
 import { randomUUID } from 'node:crypto'
-import { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, researchRun, searchModelFor, type ResearchInput, type SearchPlan } from './runs/defs/research'
+import { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, researchRun, type ResearchInput, type SearchPlan } from './runs/defs/research'
 import { cancelRun, drive, enqueue } from './runs/run'
 import { MARKER_RE, SourceRegistry, type ResearchSource } from './source-registry'
 // RE-EXPORTED, not re-declared. `planSearch` and its two companions moved into
 // the run definition with the pipeline they belong to; every caller — the route,
 // the MCP tool, research-plan.test.ts — keeps the import it already had.
-export { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, searchModelFor, type SearchPlan }
+export { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, type SearchPlan }
 // Likewise the citation registry: it lives in `source-registry.ts`, the one
 // leaf both hosts can share — this module imports the run definition, so the
 // run definition cannot import this one back. Re-exported so every caller and
@@ -426,9 +426,9 @@ export async function getResearchRun(id: string): Promise<{ run: ResearchRun; so
  *  starting a second run doing the same work. The duplicate-QUESTION check that
  *  stops a double click is /api/research's, and it is unchanged.
  *
- *  SIGNATURE UNCHANGED, including the up-front refusal when no sonar model is
- *  registered: that is a 400 the caller shows in the form, and turning it into
- *  a run that fails a second later would be a worse answer to the same
+ *  SIGNATURE UNCHANGED, including the up-front refusal when the workspace
+ *  cannot search: that is a 400 the caller shows in the form, and turning it
+ *  into a run that fails a second later would be a worse answer to the same
  *  question. The run's first step re-checks it, for the resume case. */
 export async function startResearch(input: {
   question: string
@@ -439,9 +439,14 @@ export async function startResearch(input: {
   /** Set when this is a follow-up asked from a report's own conversation. */
   parentRunId?: string | null
 }): Promise<ResearchRun> {
-  const search = await searchModelFor(input.mode)
+  // THE UP-FRONT GATE, and the sentence it throws is the exported one so the
+  // route, the MCP tool and the run's own `begin` step all say the same thing.
+  // It asks the PLAN, not just a model id: a workspace with no proven search
+  // path — no native-searcher registered, no search backend connected — must
+  // refuse here rather than pay a blind model to answer from memory.
+  const search = await planSearch(input.mode)
   if (!search) {
-    throw new Error('no search-capable model on the gateway. Register a Perplexity sonar model on /models first.')
+    throw new Error(NO_SEARCH_REASON)
   }
   const id = randomUUID()
   const runInput: ResearchInput = {

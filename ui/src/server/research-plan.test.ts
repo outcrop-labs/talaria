@@ -59,14 +59,27 @@ describe('1. the admin’s own assignment wins', () => {
     expect(await planSearch('brief')).toEqual({ model: 'llama-70b', via: 'tool', supplier: { server: 'talaria', tool: 'web_search' } })
   })
 
-  it('proceeds on an assignment whose capability is UNKNOWN — unknown is not missing', async () => {
-    // The cardinal rule. A fresh self-host has probed nothing and its catalog
-    // may say nothing, so `reachFor` answers with silence. Reading that silence
-    // as "cannot search" would refuse the admin's own explicit choice. The
-    // runtime defence is the harness floor, one layer down.
+  it('passes over an assignment nothing PROVES — silence is not a search capability', async () => {
+    // THE RULE, REVERSED HERE ON PURPOSE. This test used to pin the opposite:
+    // an assignment with no recorded facts was handed to the stages as
+    // `via: 'native'`, on the argument that unknown is not missing and the
+    // runtime floor would catch a model positively known not to search. Then a
+    // run asked `qwen-3.8-27b` — a plain chat model on a self-hosted vllm — to
+    // search the live web, and the founder's answer was plain: "we should not
+    // be trying to call models for search unless they have that capability
+    // explicitly and it has been proven." Unknown is still not missing for a
+    // run already in flight — the harness floor owns that. CHOOSING the model
+    // is where proof is required, and here the silent assignment is passed
+    // over for what this install can actually prove.
+    resolveRoleModel.mockResolvedValue('mystery-model')
+    reachBy({ 'sonar-pro': NATIVE })
+    expect(await planSearch('brief', { models })).toEqual({ model: 'sonar-pro', via: 'native', supplier: null })
+  })
+
+  it('refuses outright when the assignment is unproven and nothing else is either', async () => {
     resolveRoleModel.mockResolvedValue('mystery-model')
     reachBy({})
-    expect(await planSearch('brief')).toEqual({ model: 'mystery-model', via: 'native', supplier: null })
+    expect(await planSearch('brief', { models })).toBeNull()
   })
 })
 

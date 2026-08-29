@@ -874,7 +874,7 @@ export const researchSearchHarness = defineHarness<SearchQueryInput, string>({
   label: 'Research search',
   job: 'Runs one planned query against a search-capable model and brings back its findings with the sources attached.',
 
-  // THE DECLARATION THIS PORT EXISTS FOR (audit 1.6). `searchModelFor` resolves
+  // THE DECLARATION THIS PORT EXISTS FOR (audit 1.6). `planSearch` resolves
   // an admin's `research-*` role assignment, and `resolveRoleModel` validates
   // exactly one thing about it: that it still ROUTES. So an admin can point
   // Research at any model on the gateway and nothing anywhere notices that it
@@ -909,7 +909,7 @@ export const researchSearchHarness = defineHarness<SearchQueryInput, string>({
     note: 'Research needs live web search. Either assign a model that searches natively (Perplexity’s sonar family), or register a web-search MCP server and assign a model that calls tools well — a tool-driven search returns the same sourced findings. With neither, a model does not fail: it answers from memory, with no sources, in the same confident voice, and the report reads exactly like a researched one.',
   },
 
-  // Production always pins: `searchModelFor(mode)` resolves the per-tier role
+  // Production always pins: `planSearch(mode)` resolves the per-tier role
   // (`research-recon` / `research-brief` / `research-expedition`) and falls back
   // to the mode's own sonar preference list. That policy is MODE-DEPENDENT and
   // therefore cannot live in a single ModelSpec at all — which is exactly what
