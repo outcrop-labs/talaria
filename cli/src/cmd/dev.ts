@@ -3,6 +3,7 @@
 // boot gotcha), then the app dev server on :5273. Port of scripts/dev.sh.
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
@@ -47,6 +48,100 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
   }
 }
 
+/** The Rust api sidecar (docs/RUST-MIGRATION.md) — the port's dev runtime.
+ *  Opt-in with TALARIA_API=on; anything else returns without touching
+ *  anything, exactly the pre-port `talaria dev`.
+ *
+ *  The api binds in-box loopback (127.0.0.1:5274 — no published port, no
+ *  compose change) and reads the same connection facts the app does, lifted
+ *  out of ui/.env with the SHELL always winning — the same override point
+ *  `talaria dev` gives every other lifted var.
+ *
+ *  Non-fatal at every step, on purpose: a box without cargo, or one whose
+ *  api fails to build, is a degraded PORT, not a broken app — the TS server
+ *  still serves every route. The one thing worth saying loudly is the
+ *  sidecar running while nothing proxies to it. */
+export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
+  if (ctx.env.TALARIA_API !== 'on') return
+
+  const port = ctx.env.TALARIA_API_PORT ?? '5274'
+  const url = `http://127.0.0.1:${port}`
+  if (!envValue(uiEnv, 'TALARIA_RUST_API_URL')) {
+    ctx.log.warn(
+      `TALARIA_RUST_API_URL is not set in ui/.env — the app will not proxy to the Rust api on :${port}.`,
+    )
+  }
+
+  if (await probe(url) !== null) {
+    // Already up — a hand-started instance, or a second `talaria dev`. Adopt
+    // it: double-binding would just die loudly at the Rust end.
+    ctx.log.say(`rust api → already listening on :${port}; adopting it`)
+    return
+  }
+  if (!await hasCargo(ctx)) {
+    ctx.log.warn('TALARIA_API=on but no cargo on PATH — skipping the Rust api (the TS server serves everything).')
+    return
+  }
+
+  // The api's config.rs resolves the secret root in this order; lift all
+  // three candidates so ui/.env's arrangement works whichever one it uses.
+  const env: Record<string, string> = {}
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET']) {
+    const val = ctx.env[varName] ?? envValue(uiEnv, varName)
+    if (val) env[varName] = val
+  }
+  const child = spawn('cargo', ['run', '--quiet'], {
+    cwd: join(ctx.root, 'api'),
+    env: { ...process.env, ...env },
+    stdio: 'inherit',
+  })
+  child.on('error', () => ctx.log.warn('rust api failed to start — the TS server still serves everything.'))
+  child.on('close', (code) => { if (code) ctx.log.warn(`rust api exited ${code} — the TS server still serves everything.`) })
+  // Ctrl-C reaches cargo through the tty's process group; the handlers are
+  // the belt-and-braces path, because a LEAKED api holds :5274 and an open
+  // pool against the dev DB until the box dies.
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => child.kill(sig))
+  process.on('exit', () => child.kill('SIGTERM'))
+  ctx.log.say(`rust api → cargo run in api/ (a cold build takes minutes); binding :${port}`)
+  void pollReady(ctx, url)
+}
+
+/** Is something answering HTTP at `url`? The status — whatever it is — or
+ *  null when nothing is listening (the adoption check cares that the port is
+ *  taken, not that the answer is healthy). */
+async function probe(url: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${url}/api/healthz`, { signal: AbortSignal.timeout(1500) })
+    return res.status
+  } catch {
+    return null
+  }
+}
+
+/** Say something exactly once, whenever the api is actually serving: a cold
+ *  cargo build is minutes, so this must never hold up the app — it runs
+ *  alongside vite and speaks when the proxy's target goes live (or 5 minutes
+ *  say it never did — the cargo output above holds the reason). */
+async function pollReady(ctx: Ctx, url: string): Promise<void> {
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 1000))
+    if (await probe(url) === 200) {
+      ctx.log.say(`rust api → ${url} ready`)
+      return
+    }
+  }
+  ctx.log.warn('rust api never became ready — check the cargo output above.')
+}
+
+async function hasCargo(ctx: Ctx): Promise<boolean> {
+  try {
+    await ctx.exec('cargo', ['--version'])
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function runDev(ctx: Ctx): Promise<number> {
   const uiEnvPath = join(ctx.root, 'ui/.env')
   if (!existsSync(uiEnvPath)) ctx.log.die('ui/.env missing — run `bun talaria setup` first')
@@ -76,6 +171,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
       await ctx.run('bun', ['install'], { cwd: join(ctx.root, 'ui') })
     }
     await mcpToolkit(ctx, { quietWhenFresh: true })
+    await rustApi(ctx, uiEnv)
     ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? '5273'} (published to the host by the box compose)`)
     return ctx.run('bun', ['run', 'dev'], { cwd: join(ctx.root, 'ui') })
   }
@@ -185,6 +281,7 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   }
 
   await mcpToolkit(ctx)
+  await rustApi(ctx, uiEnv)
 
   // A worktree's ui/.env carries its own PORT (the allocated slot). vite's
   // dev script hardcodes 5273, and a busy port makes vite silently bind the

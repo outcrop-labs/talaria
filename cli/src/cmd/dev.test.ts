@@ -7,7 +7,9 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runDev } from './dev'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { runDev, rustApi } from './dev'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
@@ -178,5 +180,72 @@ describe('talaria dev — s3 lift', () => {
     plantInfra(ctx)
     await runDev(ctx)
     expect(ctx.env.TALARIA_S3_ACCESS_KEY).toBe('fromenv')
+  })
+})
+
+// The Rust api sidecar, exercised directly (runDev tests above plant execs, but
+// rustApi's probe is a real HTTP fetch and its spawn is a real process — so
+// these cases stick to the three paths that need neither: gate-off, no-cargo,
+// adopt). Real sockets on ephemeral ports: the gate is read from ctx.env, but
+// the PORT default of 5274 could be a live sidecar on a dev machine, so every
+// case pins TALARIA_API_PORT to a port it owns.
+describe('talaria dev — rust api sidecar', () => {
+  /** An ephemeral listener answering 200 on loopback; hands its port to `fn`,
+   *  then closes. */
+  const withListener = async (fn: (port: number) => Promise<void>) => {
+    const srv = createServer((_req, res) => {
+      res.statusCode = 200
+      res.end('ok')
+    })
+    const port = await new Promise<number>((resolve) =>
+      srv.listen(0, '127.0.0.1', () => resolve((srv.address() as AddressInfo).port)),
+    )
+    try {
+      await fn(port)
+    } finally {
+      await new Promise((r) => srv.close(r))
+    }
+  }
+
+  /** A port that was just freed — closed for the probe, with none of the
+   *  flakiness of guessing an unused fixed one. */
+  const closedPort = async (): Promise<number> => {
+    const srv = createServer()
+    const port = await new Promise<number>((resolve) =>
+      srv.listen(0, '127.0.0.1', () => resolve((srv.address() as AddressInfo).port)),
+    )
+    await new Promise((r) => srv.close(r))
+    return port
+  }
+
+  test('off by default — TALARIA_API unset touches nothing', async () => {
+    const ctx = fakeCtx()
+    await rustApi(ctx, 'DATABASE_URL=x\n')
+    expect(ctx.calls).toHaveLength(0)
+    expect(ctx.logLines).toHaveLength(0)
+  })
+
+  test('no cargo on PATH → warn and skip (the TS server serves everything)', async () => {
+    const port = await closedPort()
+    const ctx = fakeCtx({ env: { TALARIA_API: 'on', TALARIA_API_PORT: String(port) } })
+    ctx.plant(['cargo', ['--version']], new Error('not found'))
+    await rustApi(ctx, 'DATABASE_URL=x\n')
+    // the proxy-URL warning fires in every on-path — ui/.env here has none
+    expect(ctx.logLines.filter((l) => l.kind === 'warn').map((l) => l.msg)).toEqual([
+      expect.stringContaining('TALARIA_RUST_API_URL is not set'),
+      'TALARIA_API=on but no cargo on PATH — skipping the Rust api (the TS server serves everything).',
+    ])
+    // looked for cargo, but never tried to run it
+    expect(ctx.calls.map((c) => [c.cmd, ...c.args])).toEqual([['cargo', '--version']])
+  })
+
+  test('something already answering on the port → adopt, never check cargo', async () => {
+    await withListener(async (port) => {
+      const ctx = fakeCtx({ env: { TALARIA_API: 'on', TALARIA_API_PORT: String(port) } })
+      await rustApi(ctx, `TALARIA_RUST_API_URL=http://127.0.0.1:${port}\n`)
+      expect(ctx.logLines).toHaveLength(1)
+      expect(ctx.logLines[0]).toMatchObject({ kind: 'say', msg: `rust api → already listening on :${port}; adopting it` })
+      expect(ctx.calls).toHaveLength(0)
+    })
   })
 })

@@ -23,6 +23,7 @@ FROM docker.io/library/node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client procps less \
+      build-essential cmake pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
 # Docker CLI + compose v2, copied from the upstream CLI image (statically
@@ -61,6 +62,28 @@ RUN usermod -l dev -d /home/dev -m node && groupmod -n dev node \
 
 USER dev
 ENV HOME=/home/dev
+
+# Rust toolchain, pinned to the repo's api/rust-toolchain.toml — the port's
+# dev runtime (docs/RUST-MIGRATION.md). Installed AS dev, after the usermod:
+# ~/.cargo and ~/.rustup then live under HOME, which the box compose mounts as
+# a named volume — so the registry cache and toolchain survive box recreation
+# (and named volumes initialize from image content on first mount, which is
+# how a rebuilt image hands the toolchain to new boxes).
+#
+# build-essential/cmake/pkg-config above are load-bearing, not dev comfort:
+# the api's TLS stack (aws-lc-sys) compiles C, and bookworm-slim ships no
+# compiler — without them every `cargo build` dies at the link step.
+#
+# rustup-init from the distro would also work, but the upstream installer
+# pinned to the same 1.97.1 keeps every environment on one toolchain — the
+# api/rust-toolchain.toml pin is the source of truth this mirrors (sqlx 0.9's
+# MSRV is the floor, not the target). --no-modify-path: PATH is set explicitly
+# below so the box's shell profile stays the source of truth for what's on it.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+ | sh -s -- -y --default-toolchain 1.97.1 --profile minimal --no-modify-path \
+ && /home/dev/.cargo/bin/rustup component add rustfmt clippy
+ENV PATH=/home/dev/.cargo/bin:${PATH}
+
 WORKDIR /work/talaria
 # A shell host, not a process: the compose keeps it alive and everything
 # happens through `bun talaria box enter`.
