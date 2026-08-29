@@ -196,6 +196,17 @@ export async function createPersonalAgent(
   // Mark ownership + grant the user access to their own agent.
   await sql`update agent_defs set owner_user_id = ${user.id} where id = ${def.id}`
   await sql`insert into user_agent_access (user_id, agent_model) values (${user.id}, ${def.model}) on conflict do nothing`
+  // ...and start it ALLOWED on the boards it will be told it owns: GET /api/boards
+  // owner-proxies the owner's boards to a personal assistant from the moment it
+  // exists, and every board-scoped route answers the allowlist — without this,
+  // a fresh assistant sees boards it can only ever 403 against (boards created
+  // before it existed). Boards the owner does NOT own stay the board owner's
+  // call, and a removal via set_board_agents is never re-added.
+  await sql`
+    insert into board_agents (board_id, agent_model)
+    select id, ${def.model} from boards where owner_id = ${user.id}
+    on conflict do nothing
+  `
 
   // Personal RAG: a private collection bound to the user + this agent, seeded
   // with any private docs they already have.

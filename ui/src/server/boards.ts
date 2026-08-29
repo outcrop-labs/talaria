@@ -193,6 +193,18 @@ export async function createBoard(userId: string, name: string, teamId?: string 
     `
     const b = rows[0] as Omit<Board, 'role' | 'teamName'>
     await tx`insert into board_members (board_id, user_id, role) values (${b.id}, ${userId}, 'owner')`
+    // The owner's personal assistant starts ALLOWED — in the same transaction
+    // as the board, so there is no window where `GET /api/boards` lists the
+    // board to that assistant under the owner's role while every board-scoped
+    // route 403s it (the read path owner-proxies on purpose; the allowlist is
+    // what the write path obeys — this insert is where the two meet). An owner
+    // who wants the assistant OFF this board removes it with set_board_agents,
+    // and nothing here ever re-adds it.
+    await tx`
+      insert into board_agents (board_id, agent_model)
+      select ${b.id}, model from agent_defs where owner_user_id = ${userId}
+      on conflict do nothing
+    `
     return b
   })
   return { ...board, teamName: null, role: 'owner', archivedAt: null }
