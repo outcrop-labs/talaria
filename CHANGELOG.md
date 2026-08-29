@@ -43,10 +43,12 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   caches expired. Three cases differ in array order alone — the recorded
   localeCompare divergence, seen for the first time now that an endpoint
   name carries a capital letter (TS collates `Z.ai/glm-5.3` last, byte
-  order puts it first). Two divergences recorded: the org-voice blurb sweep
-  stays on the TS scheduler until the runs plane ports (Rust reads the
-  rows, never writes them), and the blurb clamp cuts at a char boundary
-  where TS's UTF-16 `slice` can split a surrogate pair.
+  order puts it first). Two divergences recorded: the org-voice blurb
+  sweep's only TS trigger was the `/api/models` handler the proxy now
+  shadows, so it is dark in proxied environments until it ports as a real
+  scheduler job (batch 4) — Rust reads the rows, never writes them — and
+  the blurb clamp cuts at a char boundary where TS's UTF-16 `slice` can
+  split a surrogate pair.
 
 - **The profile speaks Rust**: `/api/me` — the three preference reads
   (preferred model, platform-default reasoning effort, IANA zone) and the
