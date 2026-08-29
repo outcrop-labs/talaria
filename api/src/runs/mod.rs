@@ -5,4 +5,5 @@
 // The registered scheduler that drives reclaim and the run kinds land later
 // in the batch; until the handoff slice, nothing here is armed.
 
+pub mod define;
 pub mod lease;
