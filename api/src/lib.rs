@@ -41,6 +41,7 @@ pub mod persona;
 pub mod platform_agents;
 pub mod ratelimit;
 pub mod routes;
+pub mod runs;
 pub mod secretbox;
 pub mod session;
 pub mod state;
