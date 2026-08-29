@@ -86,7 +86,7 @@ against the live dev stack.
 | # | Scope | Exit criteria | Status |
 |---|---|---|---|
 | 1 | **LLM gateway** — `/api/llm/v1/*`: models, chat/completions (streaming + not), `tlk_` key auth with per-key caps and throttling, rate limits, the usage ledger, secretbox unseal, the confab guard (off/observe/annotate/strict, streaming caveat chunk, strict redaction) | byte-diff vs TS on models; live streams through the real provider hop with ledger rows either end of the stream; guard modes verified row-by-row in `guard_findings`; key caps enforced | **served from Rust** |
-| 2 | **Sessions and auth** — Redis `sess:<sid>` sessions, Google OAuth (hand-rolled, no SDK), password credentials, invites, the users routes (oracle shape frozen until this lands) | a browser session held across a runtime hop; OAuth round-trip; the SPA fully usable with the session plane on Rust | in progress — the session store, `/api/auth/session`, `/api/auth/logout`, `/api/users` (oracle) served from Rust, byte-diffed against TS on the same sessions; OAuth/password/claim/providers next |
+| 2 | **Sessions and auth** — Redis `sess:<sid>` sessions, Google OAuth (hand-rolled, no SDK), password credentials, invites, the users routes (oracle shape frozen until this lands) | a browser session held across a runtime hop; OAuth round-trip; the SPA fully usable with the session plane on Rust | in progress — the session store, `/api/auth/session`, `/api/auth/logout`, `/api/users` (oracle), `/api/auth/password`, `/api/auth/providers`, `/api/auth/claim` served from Rust, byte-diffed against TS on the same sessions and the same login counters (a Rust login verifies a node-hashed scrypt entry; either runtime's logout kills the other's session). Google OAuth's two routes next; the admin invites console lands with batch 3's admin surfaces |
 | 3 | **Product reads in bulk** — boards, orgs, settings, agent reads, the read side of every surface the SPA lists | byte-diff per route family; the SPA's boards/orgs/agents surfaces on Rust reads | — |
 | 4 | **Runs engine + scheduler** — durable research/plan runs, per-step leases, the registered jobs; **schema ownership hands to sqlx here** (TS `MIGRATIONS` freezes, future migrations are sqlx's) | a run resumed across a restart; the scheduler armed in Rust with TS disarmed via the lease handoff; a migration issued from Rust applied once under the same advisory-lock discipline | — |
 | 5 | **The tail** — retrieval (Qdrant + TEI + hand-rolled SearXNG client mirroring `search.ts`), SSE fanout (Redis pub/sub, id-shaped payloads), chat/channels, uploads, email, fleet rendering | every remaining `/api/*` prefix served from Rust; `PREFIXES` reduced to `/api/` | — |
@@ -105,6 +105,16 @@ byte-for-byte. This list is the contract: a divergence not here is a bug.
   `apps/<slug>/talaria.json` from disk and sorts bytes (`api/src/users.rs`,
   `appViewRoutes`). Same directory in dev; the difference needs a build that
   compiled an app in and then lost its source tree — not a reachable state.
+- **Corrupt scrypt rows fail closed here, 500 there.** TS parses hash-entry
+  numbers with `Number()` (admitting `"1e4"`, hex) and Node's base64 decoder
+  decodes past junk, so a mangled `scrypt$…` row can reach node:crypto and
+  throw; the Rust parse rejects the same row and the login is a plain 401
+  (`api/src/password.rs`). An entry that malformed was never a credential
+  anyone could present.
+- **`/api/auth/providers` answers `configured: true` unconditionally.** TS
+  computes it from env presence (`DATABASE_URL && REDIS_URL`); the Rust process
+  refuses to boot without both, so the "not configured" warning the flag exists
+  to surface has no state to describe here (`api/src/routes/auth_providers.rs`).
 - Nothing else yet.
 
 ## Layout of the crate

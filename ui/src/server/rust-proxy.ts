@@ -17,7 +17,15 @@ import { json } from './http'
 
 // The compiled switch list. A prefix joins when its Rust port is verified
 // byte-compatible, and leaves when the TS route files it shadows are deleted.
-const PREFIXES = ['/api/llm/v1/', '/api/auth/session', '/api/auth/logout', '/api/users'] as const
+const PREFIXES = [
+  '/api/llm/v1/',
+  '/api/auth/session',
+  '/api/auth/logout',
+  '/api/auth/password',
+  '/api/auth/providers',
+  '/api/auth/claim',
+  '/api/users',
+] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
 // must not depend on which module graph got the frozen copy.

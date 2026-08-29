@@ -74,7 +74,7 @@ pub async fn upsert_user(
     Ok(row)
 }
 
-async fn join_org_wide_boards(pg: &PgPool, user_id: &str) -> Result<u64, sqlx::Error> {
+pub async fn join_org_wide_boards(pg: &PgPool, user_id: &str) -> Result<u64, sqlx::Error> {
     sqlx::query(
         "insert into board_members (board_id, user_id, role) \
          select b.id, $1::uuid, 'editor' from boards b where b.org_wide \

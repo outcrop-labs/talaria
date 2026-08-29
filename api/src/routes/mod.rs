@@ -1,7 +1,10 @@
 // Route handlers, and THE router — built here (not in main.rs) so integration
 // tests drive the exact same stack the process serves.
 
+pub mod auth_claim;
 pub mod auth_logout;
+pub mod auth_password;
+pub mod auth_providers;
 pub mod auth_session;
 pub mod health;
 pub mod llm_chat;
@@ -29,6 +32,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/llm/v1/models", get(llm_models::get))
         .route("/api/auth/session", get(auth_session::get))
         .route("/api/auth/logout", post(auth_logout::post))
+        .route("/api/auth/password", post(auth_password::post))
+        .route("/api/auth/providers", get(auth_providers::get))
+        .route("/api/auth/claim", post(auth_claim::post))
         .route("/api/users", get(users::get))
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())

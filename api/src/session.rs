@@ -33,6 +33,33 @@ pub struct SessionUser {
     pub provider: String,
 }
 
+/// The user object the auth routes put in their JSON bodies
+/// (`{ok: true, user}` on login/claim) — the session user minus `provider`,
+/// in the TS select order. Login spreads `provider` into the SESSION record
+/// only; the response user is the bare row.
+#[derive(Debug, Serialize)]
+pub struct WireUser {
+    pub id: String,
+    pub sub: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub picture: Option<String>,
+    pub role: String,
+}
+
+impl From<&SessionUser> for WireUser {
+    fn from(u: &SessionUser) -> Self {
+        WireUser {
+            id: u.id.clone(),
+            sub: u.sub.clone(),
+            email: u.email.clone(),
+            name: u.name.clone(),
+            picture: u.picture.clone(),
+            role: u.role.clone(),
+        }
+    }
+}
+
 fn key(sid: &str) -> String {
     format!("sess:{sid}")
 }

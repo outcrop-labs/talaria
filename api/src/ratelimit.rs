@@ -59,10 +59,44 @@ pub async fn rate_limit(
 }
 
 /// Drop the counter for `key` (a success shouldn't leave the budget spent).
-/// No Rust caller yet — the TS routes that use it are a later batch.
-#[allow(dead_code)]
 pub async fn rate_limit_reset(redis: &mut ConnectionManager, key: &str) {
     let _: Result<i64, _> = redis.del(redis_key(key)).await;
+}
+
+/// The client's address, for limiting purposes only (rate-limit.ts clientIp).
+///
+/// X-Forwarded-For is caller-supplied and trivially rotated, so trusting it
+/// blindly turns a per-IP limit into no limit at all. It is only honored when
+/// the operator states that a proxy really is in front (TALARIA_TRUST_PROXY),
+/// because only then is the left-most entry something the client can't freely
+/// invent.
+///
+/// With no trusted proxy this returns a constant, and callers lean on the
+/// per-identity limit instead — deliberate: a wrong IP is worse than no IP,
+/// because it silently partitions the counter per attacker-chosen value.
+pub fn client_ip(headers: &axum::http::HeaderMap) -> String {
+    let trust = std::env::var("TALARIA_TRUST_PROXY")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    if trust.is_empty() || trust == "0" || trust == "false" || trust == "no" {
+        return "direct".into();
+    }
+    let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    if let Some(first) = xff
+        .and_then(|x| x.split(',').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return first.to_string();
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("direct")
+        .to_string()
 }
 
 #[cfg(test)]
