@@ -16,21 +16,13 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use uuid::Uuid;
 
 /// TS reaches Postgres with the raw path param and lets the $id::uuid bind
 /// reject garbage; here the parse is just the gate — the original string
 /// flows on to the query and the audit row verbatim, as params.id does.
 /// Some(gate) = the 500 to return.
 fn uuid_or_500(id: &str, action: &str) -> Option<Response> {
-    if Uuid::parse_str(id).is_ok() {
-        return None;
-    }
-    tracing::error!("[keys] non-uuid id on {action}: {id:?}");
-    Some(house_error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "internal error",
-    ))
+    crate::params::uuid_gate("keys", action, id)
 }
 
 pub async fn delete(

@@ -37,6 +37,10 @@ pub fn object_msg(received: &str) -> String {
     format!("Invalid input: expected object, received {received}")
 }
 
+pub fn array_msg(received: &str) -> String {
+    format!("Invalid input: expected array, received {received}")
+}
+
 fn string_msg(received: &str) -> String {
     format!("Invalid input: expected string, received {received}")
 }
@@ -47,6 +51,11 @@ pub fn too_small_msg(min: usize) -> String {
 
 pub fn too_big_msg(max: usize) -> String {
     format!("Too big: expected string to have <={max} characters")
+}
+
+/// zod's array-length message — always "items", never "item(s)".
+pub fn array_too_big_msg(max: usize) -> String {
+    format!("Too big: expected array to have <={max} items")
 }
 
 /// The root z.object check: a non-object body's first issue.
@@ -96,6 +105,105 @@ pub fn optional_string_member(
         None => Ok(None),
         Some(_) => string_member(obj, key, 1, max).map(Some),
     }
+}
+
+/// A max-only optional string (`z.string().max(n).optional()` — no min): the
+/// empty string is a legal value here (workflows' description).
+pub fn optional_max_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<String>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None); // absent — what `.optional()` admits
+    };
+    let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?;
+    if utf16_len(s) > max {
+        return Err(too_big_msg(max));
+    }
+    Ok(Some(s.to_string()))
+}
+
+/// The trimmed string member (`z.string().trim().min(n).max(m)`): the trim
+/// runs BEFORE the length checks, so a 79-char name padded to 81 raw passes
+/// and a spaces-only name is the min failure. The returned value is trimmed.
+pub fn trimmed_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    min: usize,
+    max: usize,
+) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| string_msg("undefined"))?;
+    let s = v
+        .as_str()
+        .ok_or_else(|| string_msg(zod_type_name(v)))?
+        .trim()
+        .to_string();
+    let n = utf16_len(&s);
+    if n < min {
+        return Err(too_small_msg(min));
+    }
+    if n > max {
+        return Err(too_big_msg(max));
+    }
+    Ok(s)
+}
+
+/// An optional array-of-strings member (`z.array(z.string().min(a).max(b))
+/// .max(n).optional()`). Elements validate BEFORE the array-length check —
+/// zod 4's issue order, probed: a bad element outranks an over-long array.
+pub fn optional_string_array_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    elem_min: usize,
+    elem_max: usize,
+    max_items: usize,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None); // absent — what `.optional()` admits
+    };
+    let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for el in arr {
+        let s = el.as_str().ok_or_else(|| string_msg(zod_type_name(el)))?;
+        let n = utf16_len(s);
+        if n < elem_min {
+            return Err(too_small_msg(elem_min));
+        }
+        if n > elem_max {
+            return Err(too_big_msg(elem_max));
+        }
+        out.push(s.to_string());
+    }
+    if arr.len() > max_items {
+        return Err(array_too_big_msg(max_items));
+    }
+    Ok(Some(out))
+}
+
+/// An optional array-of-uuids member (`z.array(Uuid).max(n).optional()`):
+/// element type first (the string message), then the format.
+pub fn optional_uuid_array_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max_items: usize,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None);
+    };
+    let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for el in arr {
+        let s = el.as_str().ok_or_else(|| string_msg(zod_type_name(el)))?;
+        if !zod_uuid_ok(s) {
+            return Err("Invalid UUID".into());
+        }
+        out.push(s.to_string());
+    }
+    if arr.len() > max_items {
+        return Err(array_too_big_msg(max_items));
+    }
+    Ok(Some(out))
 }
 
 /// A plain `z.string().email()` member (api-schema's Email): no preprocess,
@@ -729,6 +837,127 @@ mod tests {
         assert_eq!(
             rpm(json!({ "v": 20_000 })).unwrap_err(),
             "Too big: expected number to be <=10000"
+        );
+    }
+
+    #[test]
+    fn trimmed_max_only_and_array_members_match_zod_probes() {
+        // Every row probed against the workflows schema in the ui's zod
+        // 4.3.6: z.string().trim().min(1).max(80), z.string().max(500)
+        // .optional(), and the arrays behind match/skills/toolkits.
+        let trimmed = |v: Value| trimmed_string_member(v.as_object().unwrap(), "name", 1, 80);
+        assert_eq!(trimmed(json!({ "name": "  x  " })).unwrap(), "x");
+        assert_eq!(
+            trimmed(json!({ "name": "   " })).unwrap_err(),
+            "Too small: expected string to have >=1 characters"
+        );
+        // 81 raw chars, 79 after the trim — the bounds see the trimmed value.
+        assert_eq!(
+            trimmed(json!({ "name": format!("  {}  ", "x".repeat(79)) })).unwrap(),
+            "x".repeat(79)
+        );
+        assert_eq!(
+            trimmed(json!({ "name": "x".repeat(81) })).unwrap_err(),
+            "Too big: expected string to have <=80 characters"
+        );
+        assert_eq!(
+            trimmed(json!({ "name": 5 })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        assert_eq!(
+            trimmed(json!({})).unwrap_err(),
+            "Invalid input: expected string, received undefined"
+        );
+
+        let desc =
+            |v: Value| optional_max_string_member(v.as_object().unwrap(), "description", 500);
+        assert_eq!(
+            desc(json!({ "name": "x", "description": "" })).unwrap(),
+            Some("".into())
+        );
+        assert_eq!(desc(json!({})).unwrap(), None);
+        assert_eq!(
+            desc(json!({ "description": "x".repeat(501) })).unwrap_err(),
+            "Too big: expected string to have <=500 characters"
+        );
+        assert_eq!(
+            desc(json!({ "description": null })).unwrap_err(),
+            "Invalid input: expected string, received null"
+        );
+
+        let arr =
+            |v: Value| optional_string_array_member(v.as_object().unwrap(), "labels", 1, 60, 30);
+        assert_eq!(
+            arr(json!({ "labels": "nope" })).unwrap_err(),
+            "Invalid input: expected array, received string"
+        );
+        assert_eq!(
+            arr(json!({ "labels": null })).unwrap_err(),
+            "Invalid input: expected array, received null"
+        );
+        assert_eq!(
+            arr(json!({ "labels": [5] })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        assert_eq!(
+            arr(json!({ "labels": [""] })).unwrap_err(),
+            "Too small: expected string to have >=1 characters"
+        );
+        assert_eq!(
+            arr(json!({ "labels": ["x".repeat(61)] })).unwrap_err(),
+            "Too big: expected string to have <=60 characters"
+        );
+        // Elements before length: a bad last element outranks the 31st item.
+        let mut long = vec!["a"; 30];
+        long.push("");
+        assert_eq!(
+            arr(json!({ "labels": long })).unwrap_err(),
+            "Too small: expected string to have >=1 characters"
+        );
+        assert_eq!(
+            arr(json!({ "labels": vec!["a"; 31] })).unwrap_err(),
+            "Too big: expected array to have <=30 items"
+        );
+        assert_eq!(
+            arr(json!({ "labels": ["a", "b"] })).unwrap(),
+            Some(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(arr(json!({ "labels": [] })).unwrap(), Some(vec![]));
+        assert_eq!(arr(json!({})).unwrap(), None);
+
+        let uuids = |v: Value| optional_uuid_array_member(v.as_object().unwrap(), "boards", 30);
+        assert_eq!(
+            uuids(json!({ "boards": ["nope"] })).unwrap_err(),
+            "Invalid UUID"
+        );
+        assert_eq!(
+            uuids(json!({ "boards": [5] })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        assert_eq!(
+            uuids(json!({ "boards": vec!["67b06c14-7c2a-4fe5-91a4-1d0d2b8b2d81"; 31] }))
+                .unwrap_err(),
+            "Too big: expected array to have <=30 items"
+        );
+        assert!(
+            uuids(json!({ "boards": ["67b06c14-7c2a-4fe5-91a4-1d0d2b8b2d81"] }))
+                .unwrap()
+                .is_some()
+        );
+
+        // The toolkit element is an object check — object_msg, not the array
+        // spelling: "Invalid input: expected object, received string".
+        assert_eq!(
+            object_msg("string"),
+            "Invalid input: expected object, received string"
+        );
+        assert_eq!(
+            object_msg("number"),
+            "Invalid input: expected object, received number"
+        );
+        assert_eq!(
+            array_too_big_msg(20),
+            "Too big: expected array to have <=20 items"
         );
     }
 

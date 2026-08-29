@@ -26,6 +26,8 @@ pub mod teams;
 pub mod teams_id;
 pub mod teams_id_members;
 pub mod users;
+pub mod workflows;
+pub mod workflows_id;
 
 use crate::state::AppState;
 use axum::Router;
@@ -152,6 +154,18 @@ pub fn router(state: AppState) -> Router {
                 .post(teams_id_members::post)
                 .delete(teams_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/workflows",
+            get(workflows::get)
+                .post(workflows::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/workflows/{id}",
+            put(workflows_id::put)
+                .delete(workflows_id::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
             "/api/agent-role-templates",

@@ -17,19 +17,11 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use uuid::Uuid;
 
 /// The owner gate: Err(gate) is the response to return. Some(gate) shape
 /// (not Result<(), Response>) keeps clippy's large-Err lint quiet.
 fn uuid_gate(id: &str, action: &str) -> Option<Response> {
-    if Uuid::parse_str(id).is_ok() {
-        return None;
-    }
-    tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(house_error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "internal error",
-    ))
+    crate::params::uuid_gate("teams", action, id)
 }
 
 async fn owner_gate(
