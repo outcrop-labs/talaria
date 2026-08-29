@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
-import type { Leaf } from '../../cli'
+import type { Leaf, ParsedArgs } from '../../cli'
 import { compose, waitFor } from '../../compose'
 import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
@@ -403,7 +403,7 @@ Devbox "${name}" ready.
  *  found the directory. Only a directory WE created (it did not exist on
  *  entry) and that never completed (no box.env) is removed — anything else
  *  that happens to sit there is untouchable. */
-export async function newGuarded(ctx: Ctx, args: { positionals: string[]; flags: Record<string, string | boolean> }): Promise<number> {
+export async function newGuarded(ctx: Ctx, args: ParsedArgs): Promise<number> {
   const name = args.positionals[0]!
   const box = boxDir(ctx, name)
   const preexisting = existsSync(box)
