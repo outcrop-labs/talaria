@@ -1,18 +1,11 @@
 // talaria-api — the Rust successor to the TS fetch handler, taking over route
 // groups one prefix at a time (docs/RUST-MIGRATION.md). Process shell only:
 // config, tracing, pools, router, graceful shutdown. Everything observable
-// lives in the library (src/lib.rs) and its route modules.
+// lives in the library (src/lib.rs) — the router itself in routes::router, so
+// integration tests drive the exact stack this serves.
 
-use axum::Router;
-use axum::http::StatusCode;
-use axum::routing::get;
 use std::sync::Arc;
-use std::time::Duration;
 use talaria_api::{config, config::Config, db, routes, state::AppState};
-use tower_http::catch_panic::CatchPanicLayer;
-use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() {
@@ -44,25 +37,7 @@ async fn main() {
 
     let bind = cfg.bind;
     let state = AppState::new(db::pool(&cfg), Arc::new(cfg));
-
-    // NOTE for the streaming phase: the global 30s timeout below bounds THIS
-    // router only. When /api/llm/v1/chat/completions lands it must mount on a
-    // router without a total-request timeout (a long SSE stream is a legitimate
-    // request; the upstream ceiling is its own 10-minute budget, like
-    // UPSTREAM_TIMEOUT_MS in llm-gateway.ts) — don't widen this layer to it.
-    let app = Router::new()
-        .route("/api/healthz", get(routes::health::get))
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(TraceLayer::new_for_http())
-        // 0.7 deprecated the 408-defaulting constructor: name the status we
-        // actually want a timed-out JSON call to return.
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::SERVICE_UNAVAILABLE,
-            Duration::from_secs(30),
-        ))
-        .layer(CatchPanicLayer::new())
-        .with_state(state.clone());
+    let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await

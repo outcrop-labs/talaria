@@ -59,8 +59,9 @@ impl Config {
     }
 
     /// Named `from_parts` (not `from`) so it can never collide with the
-    /// blanket `From` impl at the `Self::…` call site above.
-    fn from_parts(
+    /// blanket `From` impl at the `Self::…` call site above. Public because
+    /// integration tests assemble configs without touching the environment.
+    pub fn from_parts(
         database_url: String,
         redis_url: String,
         secret_key: String,
