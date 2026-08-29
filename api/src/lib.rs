@@ -26,6 +26,7 @@ pub mod gateway;
 pub mod google_client;
 pub mod google_connections;
 pub mod google_oauth;
+pub mod harness;
 pub mod harness_model;
 pub mod instance;
 pub mod invites;
