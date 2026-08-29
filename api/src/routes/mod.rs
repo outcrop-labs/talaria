@@ -24,9 +24,11 @@ pub mod keys_id;
 pub mod llm_chat;
 pub mod llm_models;
 pub mod me;
+pub mod me_events;
 pub mod models;
 pub mod models_efforts;
 pub mod notifications;
+pub mod runs_events;
 pub mod teams;
 pub mod teams_id;
 pub mod teams_id_members;
@@ -67,11 +69,12 @@ async fn api_not_found(uri: Uri) -> Response {
 }
 
 pub fn router(state: AppState) -> Router {
-    // Two stacks, one reason: chat/completions is a STREAMING route whose
-    // legitimate lifetime is bounded by the upstream's own 10-minute budget
-    // (UPSTREAM_TIMEOUT_MS), not by a handler timeout. It must NOT sit under
-    // the 30s TimeoutLayer the request/response routes use — widening that
-    // layer for everyone would be the wrong trade.
+    // Two stacks, one reason: some routes STREAM. chat/completions' legitimate
+    // lifetime is bounded by the upstream's own 10-minute budget
+    // (UPSTREAM_TIMEOUT_MS), and the SSE event streams' by the client's
+    // attention — neither by a handler timeout. They must NOT sit under the
+    // 30s TimeoutLayer the request/response routes use — widening that layer
+    // for everyone would be the wrong trade.
     let timed = Router::new()
         .route(
             "/api/healthz",
@@ -255,6 +258,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/llm/v1/chat/completions",
             post(llm_chat::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The two SSE attach points (realtime.ts's streams). Same stack as
+        // chat: a watch stream's legitimate lifetime is the client's, not a
+        // handler's — the 30s layer would cut every live view off at half a
+        // minute.
+        .route(
+            "/api/runs/{id}/events",
+            get(runs_events::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/me/events",
+            get(me_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())

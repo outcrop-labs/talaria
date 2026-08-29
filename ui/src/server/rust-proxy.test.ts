@@ -134,16 +134,36 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('forwards /api/me exactly — the profile reads and writes, not the me.* planes under it', async () => {
+  it('forwards /api/me exactly — the profile and the firehose, not the other me.* planes', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
     expect(await maybeProxy(req('/api/me'), '/api/me')).not.toBeNull()
-    // The me.* siblings are their own planes — mcp (fleet render), assistant
-    // (agent start), events (SSE) — and stay TS until those batches.
+    // me/events crossed with the realtime slice — the person's own SSE
+    // firehose, served by Rust's dedicated-subscriber streams.
+    expect(await maybeProxy(req('/api/me/events'), '/api/me/events')).not.toBeNull()
+    // The remaining me.* siblings are their own planes — mcp (fleet render)
+    // and assistant (agent start) — and stay TS until those batches.
     expect(await maybeProxy(req('/api/me/mcp'), '/api/me/mcp')).toBeNull()
     expect(await maybeProxy(req('/api/me/assistant'), '/api/me/assistant')).toBeNull()
-    expect(await maybeProxy(req('/api/me/events'), '/api/me/events')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards the run watch stream by path SHAPE — the id is in the path, and the rest of /api/runs is still TS', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(
+      await maybeProxy(req('/api/runs/00000000-0000-4000-8000-000000000000/events'), '/api/runs/00000000-0000-4000-8000-000000000000/events'),
+    ).not.toBeNull()
+    // The shape is anchored: deeper or shallower paths do not match.
+    expect(await maybeProxy(req('/api/runs/x/events/tail'), '/api/runs/x/events/tail')).toBeNull()
+    expect(await maybeProxy(req('/api/runs/events'), '/api/runs/events')).toBeNull()
+    // The rest of the runs surface still belongs to TS — a /api/runs prefix
+    // would strand the list, the detail, cancel, and decide on a Rust 404.
+    expect(await maybeProxy(req('/api/runs'), '/api/runs')).toBeNull()
+    expect(await maybeProxy(req('/api/runs/00000000-0000-4000-8000-000000000000'), '/api/runs/00000000-0000-4000-8000-000000000000')).toBeNull()
+    expect(await maybeProxy(req('/api/runs/00000000-0000-4000-8000-000000000000/cancel'), '/api/runs/00000000-0000-4000-8000-000000000000/cancel')).toBeNull()
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 

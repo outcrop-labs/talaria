@@ -61,10 +61,22 @@ const PREFIXES = [
 // heartbeat sub-routes (the fleet plane, a later batch), and '/api/apps' is
 // the app-server gateway (apps.$app.$ dispatches into app server modules —
 // TS until cutover by construction). '/api/me' is exact for the same reason:
-// me.mcp, me.assistant, and me.events are their own planes (fleet, agents,
-// SSE) that migrate whole with those batches. A startsWith entry here would
-// strand those on a Rust 404.
-const EXACT = new Set(['/api/agents', '/api/apps', '/api/me', '/api/admin/model-roles'])
+// me.mcp and me.assistant are their own planes (fleet, agents) that migrate
+// whole with those batches. '/api/me/events' is whole-path too — this
+// person's own SSE firehose, which crossed with the realtime slice while the
+// rest of me stayed. A startsWith entry here would strand those on a Rust 404.
+const EXACT = new Set(['/api/agents', '/api/apps', '/api/me', '/api/me/events', '/api/admin/model-roles'])
+
+// Parameterized whole-route migrations: the route crossed, but its siblings
+// under the same path have not, so neither EXACT (the id is in the path) nor
+// PREFIXES (it would strand the siblings on a Rust 404) can express it. Each
+// entry is one TS route file's path shape, anchored both ends.
+const SHAPES = [
+  // runs.$id.events.ts — the run's live SSE view, gated by the run's read
+  // ACL. The rest of /api/runs (the list, the detail, cancel, decide) is
+  // still TS until the runs surface crosses as a group.
+  /^\/api\/runs\/[^/]+\/events$/,
+] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
 // must not depend on which module graph got the frozen copy.
@@ -83,7 +95,7 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
-  if (!base || (!EXACT.has(pathname) && !PREFIXES.some((p) => pathname.startsWith(p)))) return null
+  if (!base || (!EXACT.has(pathname) && !PREFIXES.some((p) => pathname.startsWith(p)) && !SHAPES.some((r) => r.test(pathname)))) return null
 
   const incoming = new URL(request.url)
   const target = base + incoming.pathname + incoming.search
