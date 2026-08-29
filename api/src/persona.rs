@@ -295,6 +295,23 @@ pub async fn persona_targets_for(pg: &PgPool, model: &str) -> Vec<ModelTarget> {
     snap.by_id.get(model).cloned().unwrap_or_default()
 }
 
+/// The runner's default `persona_keys` edge: the capability keys a fleet
+/// persona inherits from the model actually serving it — the pool behind the
+/// id (tier target plus the agent's fallbacks), folded to endpoint:upstream
+/// keys and deduped in pool order. Empty for anything that is not a live
+/// persona, which leaves the caller on the unknown path.
+pub async fn persona_capability_keys(pg: &PgPool, model: &str) -> Vec<String> {
+    let snap = index(pg).await;
+    let mut seen: Vec<String> = Vec::new();
+    for t in snap.by_id.get(model).into_iter().flatten() {
+        let key = crate::capability::capability_key(&t.endpoint, &t.model);
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    seen
+}
+
 /// The agent-configured default reasoning effort for a routable persona id
 /// (base or tier), or None. The answer is the CONFIGURED string, unvalidated;
 /// the caller holds it against the model's live published levels, which is

@@ -14,6 +14,7 @@ pub mod auth_config;
 pub mod boards;
 pub mod body;
 pub mod capability;
+pub mod capability_reach;
 pub mod channels;
 pub mod claim;
 pub mod config;

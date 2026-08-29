@@ -18,9 +18,6 @@
 // bounce), but the run-time check is the one correctness depends on —
 // assignments and catalogs move under a stored preference, and the turn must
 // degrade rather than 400.
-//
-// `slot_effort_for_model` (the run-time half) ports with the runs plane;
-// this slice needs the read shape and the admin write.
 
 use crate::gateway::settings::{get_setting, set_setting};
 use sqlx::PgPool;
@@ -76,6 +73,17 @@ pub async fn set_effort_pref(
     }
     let value = serde_json::Value::Object(cur);
     set_setting(pg, KEY, &value).await
+}
+
+/// The stored preference for a slot, held against the model's live published
+/// levels — the run-time half, and the one the runner's precedence rule
+/// depends on. None when there is no preference, or when the preferred level
+/// is not one the model currently publishes: a stale preference is no
+/// preference. Never fails — this exists to improve a turn, not to gate one.
+pub async fn slot_effort_for_model(pg: &PgPool, slot: &str, model: &str) -> Option<String> {
+    let stored = get_effort_prefs(pg).await.get(slot)?.as_str()?.to_string();
+    let levels = crate::model_efforts::efforts_for_model(pg, model).await;
+    levels.contains(&stored).then_some(stored)
 }
 
 #[cfg(test)]
