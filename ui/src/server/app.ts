@@ -13,6 +13,7 @@
 import { readFile } from 'node:fs/promises'
 import { compileRoute, matchRoute, type ApiMethod, type ApiRoute } from './api-route'
 import { json } from './http'
+import { maybeProxy } from './rust-proxy'
 
 const modules = import.meta.glob<{ Route?: ApiRoute }>('../routes/api/**/*.ts', { eager: true })
 
@@ -45,6 +46,11 @@ async function handle(request: Request): Promise<Response> {
   const url = new URL(request.url)
   const pathname = decodeURIComponent(url.pathname)
   const method = request.method.toUpperCase() as ApiMethod
+
+  // Migrated prefixes go to the Rust api before the route table is consulted
+  // — the TS route files still loaded below are the fallback we never take.
+  const proxied = await maybeProxy(request, pathname)
+  if (proxied) return proxied
 
   for (const route of routes) {
     const params = matchRoute(route, pathname)
