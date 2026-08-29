@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ExternalLink, MessageSquare } from '@lucide/svelte'
+  import { ExternalLink, MessageSquare, MessageCircleQuestion } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { p } from '@/router'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -9,7 +10,9 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import ChatView from '@/components/chat/ChatView.svelte'
   import { useArtifact } from '@/lib/artifacts'
-  import { openResearchConversation, useResearchMembers, useResearchRun } from '@/lib/research'
+  import { answerResearch, openResearchConversation, useResearchMembers, useResearchRun } from '@/lib/research'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
   import { useAgents } from '@/lib/agents'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
   import ReportSkeleton from './ReportSkeleton.svelte'
@@ -69,6 +72,41 @@
     opening = false
     if (out.error) openError = out.error
     else opened = out.conversationId ?? null
+  }
+
+  // ── THE QUESTION A PARKED RUN ASKS ─────────────────────────────────────────
+  //
+  // A run that needs a person is an approval, and this page is one of the
+  // places it surfaces: the question renders in place (the projection's
+  // `awaiting` field) with the options the step itself offered, and answering
+  // here resumes the run. It is not a second inbox — the approvals machinery
+  // owns who is told and who may decide; this is the same question, answered
+  // where the run already is.
+  const session = useSession()
+  const me = $derived(session.data)
+  // Mirrors the run's declared audience (runs/defs/research.ts): the owner
+  // decides an owned run, admins decide an org run, members read the question
+  // with the buttons withheld rather than offered-then-refused.
+  const mayDecide = $derived(!!me && (!!run && (me.id === run.ownerUserId || (run.ownerUserId === null && me.role === 'admin'))))
+
+  let answering = $state<string | null>(null)
+  let answerError = $state<string | null>(null)
+  const queryClient = useQueryClient()
+  const answer = async (optionId: string) => {
+    answering = optionId
+    answerError = null
+    try {
+      await answerResearch(runId, optionId)
+      await queryClient.invalidateQueries({ queryKey: ['research-run', runId] })
+      void queryClient.invalidateQueries({ queryKey: ['research-runs'] })
+    } catch (e) {
+      // 409 is the friendly one: somebody answered it already, which is what
+      // the person clicking wanted. Everything else is the server's sentence.
+      answerError = errorMessage(e)
+      void queryClient.invalidateQueries({ queryKey: ['research-run', runId] })
+    } finally {
+      answering = null
+    }
   }
 </script>
 
@@ -147,7 +185,37 @@
           {/if}
         </div>
 
-        {#if run.status === 'queued' || run.status === 'running'}
+        {#if run.awaiting}
+          <!-- The run stopped to ask, and this is the ask — above the status
+               panel because it IS the status, and with the options the step
+               itself offered: the run can only be told something it wrote a
+               branch for. -->
+          <Panel class="space-y-3">
+            <div class="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-ink-dim">
+              <MessageCircleQuestion size={13} aria-hidden="true" />
+              <span>Needs a decision</span>
+            </div>
+            <div class="text-sm text-fg">{run.awaiting.question}</div>
+            {#if run.awaiting.detail}<div class="text-xs text-muted">{run.awaiting.detail}</div>{/if}
+            {#if mayDecide}
+              <div class="flex flex-wrap gap-2">
+                {#each run.awaiting.options as opt (opt.id)}
+                  <Button size="sm" onclick={() => answer(opt.id)} disabled={answering !== null}>
+                    {answering === opt.id ? 'Sending…' : opt.label}
+                  </Button>
+                {/each}
+              </div>
+              {#each run.awaiting.options as opt (opt.id)}
+                {#if opt.detail}<div class="text-xs text-muted">{opt.label} — {opt.detail}</div>{/if}
+              {/each}
+              {#if answerError}<div class="text-xs text-danger">{answerError}</div>{/if}
+            {:else}
+              <div class="text-xs text-muted">
+                Waiting on {run.ownerUserId ? 'the run’s owner' : 'an admin'} to answer.
+              </div>
+            {/if}
+          </Panel>
+        {:else if run.status === 'queued' || run.status === 'running'}
           <Panel class="flex items-center gap-3">
             <WaitingMark site="research/run" size={16} class="text-accent" />
             <div class="min-w-0">

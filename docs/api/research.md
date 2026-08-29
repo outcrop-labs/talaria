@@ -5,7 +5,7 @@
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-4 routes.
+5 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -14,6 +14,7 @@
 | [`/api/research/{id}`](#apiresearchid) | GET | `dual` |
 | [`/api/research/{id}`](#apiresearchid) | DELETE | `session` |
 | [`/api/research/{id}/conversation`](#apiresearchidconversation) | POST | `session` |
+| [`/api/research/{id}/decide`](#apiresearchiddecide) | POST | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | GET | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | POST | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | DELETE | `session` |
@@ -65,6 +66,27 @@ Source: [`ui/src/routes/api/research.$id.conversation.ts`](../../ui/src/routes/a
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `session` | — | `…` | 200, 404, 409 | — |
+
+## `/api/research/{id}/decide`
+
+Source: [`ui/src/routes/api/research.$id.decide.ts`](../../ui/src/routes/api/research.$id.decide.ts)
+
+> THE EXIT FROM 'awaiting', on the run's own surface. A parked run is an
+> approval (runs/decide.ts files it with the approvals machinery), and the
+> research view is where the person it asked is already looking — the question
+> renders in place via the projection's `awaiting` field, and this is the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiresearchiddecide-body) | `{ok, status, phase}` | 200, 400, 403, 404, 409 + varies | — |
+
+### POST `/api/research/{id}/decide` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `optionId` | `z.string().min(1).max(200)` |  |
+| `note` | `z.string().max(2000).optional()` |  |
 
 ## `/api/research/{id}/members`
 
