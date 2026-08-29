@@ -78,14 +78,6 @@ export const envSchema = z
     NODE_ENV: z.preprocess(blankToUndefined, z.enum(['development', 'test', 'production']).optional()),
     PORT: optPort,
 
-    // ── Auth ──────────────────────────────────────────────────────────────────
-    // Optional in the schema, but an empty value yields an instance with zero
-    // admins and no other signal — collectWarnings() shouts about that case.
-    AUTH_ADMIN_EMAILS: opt,
-    // Raw AUTH_USERS pairs — parsed by auth/config.ts; here only so
-    // collectWarnings() can nag about plaintext entries (#244).
-    AUTH_USERS: opt,
-
     // ── Built-in object storage (Admin → Storage, mode 'internal') ────────────
     TALARIA_S3_URL: optUrl,
     TALARIA_S3_BUCKET: opt,
@@ -148,15 +140,6 @@ export const envSchema = z
 
 export type Env = z.infer<typeof envSchema>
 
-/** A `scrypt$…` AUTH_USERS entry (see auth/password.ts's hashPassword — the
- *  format node and bun BOTH verify dependency-free). Lives HERE, not in
- *  auth/password.ts, because this module is the app-import-free leaf the
- *  plain-JS entry resolves — the boot warning and the verify path share one
- *  definition by password.ts importing it from here. */
-export function isHashedCredential(password: string): boolean {
-  return password.startsWith('scrypt$')
-}
-
 // What each key is for, appended to its failure so the message stands alone: an
 // operator reading a crash log does not have .env.example in front of them.
 const HINTS: Record<string, string> = {
@@ -176,17 +159,12 @@ function formatIssue(issue: { path: ReadonlyArray<PropertyKey>; message: string 
   return hint ? `${head}\n      ↳ ${hint}` : head
 }
 
-/** Non-fatal misconfigurations: an instance that boots fine but that nobody can
- *  administer, or whose secrets sit on a footing the operator doesn't know about. */
+/** Non-fatal misconfigurations: an instance that boots fine but whose secrets
+ *  sit on a footing the operator doesn't know about. (A fresh instance with
+ *  zero admins is NOT one — that is the claim state; /claim and the login
+ *  screen surface it, and this module cannot see the database.) */
 function collectWarnings(env: Env): string[] {
   const warnings: string[] = []
-
-  if (!env.AUTH_ADMIN_EMAILS) {
-    warnings.push(
-      'AUTH_ADMIN_EMAILS is unset — this instance has ZERO admins. Everyone who signs in becomes a member, and ' +
-        'nothing in the UI can grant the first admin role. Set it to a comma-separated list of emails and restart.',
-    )
-  }
 
   if (!env.TALARIA_SECRET_KEY && !env.TALARIA_SECRET_KEY_FILE && env.AUTH_SECRET) {
     warnings.push(
@@ -200,24 +178,6 @@ function collectWarnings(env: Env): string[] {
     warnings.push(
       'TALARIA_S3_SECRET_KEY is unset in production — the built-in ("internal") storage mode will refuse to run ' +
         'rather than fall back to the published dev password. Harmless if you use local disk or an external bucket.',
-    )
-  }
-
-  // Plaintext AUTH_USERS entries keep verifying (#244 transition), but anything
-  // that can read this process's env — a crash dump, a dotfile backup, a
-  // docker inspect — sees a working password. talaria setup has written the
-  // scrypt hash since the transition; only hand-rolled or upgraded envs hit this.
-  const plaintext = (env.AUTH_USERS ?? '')
-    .split(',')
-    .map((pair) => pair.trim())
-    .filter(Boolean)
-    .map((pair) => pair.slice(pair.indexOf(':') + 1))
-    .filter((pass) => pass && !isHashedCredential(pass))
-  if (plaintext.length > 0) {
-    warnings.push(
-      `AUTH_USERS carries ${plaintext.length} plaintext password${plaintext.length === 1 ? '' : 's'} — readable by anything that can see this process's env. ` +
-        `Hash them (from the repo root: bun -e "console.log(await (await import('./ui/src/server/auth/password')).hashPassword('the-password'))") ` +
-        `and swap the entries in ui/.env; hashed entries verify unchanged.`,
     )
   }
 

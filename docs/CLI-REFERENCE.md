@@ -23,7 +23,7 @@
 | [`talaria deploy down`](#talaria-deploy-down) | stop the stack (--volumes also deletes its data — destructive) |
 | [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, then the redeploy (up -d --build) |
 | [`talaria deploy logs`](#talaria-deploy-logs) | follow the stack's logs (Ctrl-C to detach) |
-| [`talaria deploy creds`](#talaria-deploy-creds) | print the first-boot admin Sign-in block from the logs |
+| [`talaria deploy creds`](#talaria-deploy-creds) | where first-run access lives: the claim screen, not a generated password |
 | [`talaria deploy status`](#talaria-deploy-status) | effective port/state/fleet + compose ps |
 | [`talaria service install`](#talaria-service-install) | start the stack + install the systemd unit that keeps it running across reboots |
 | [`talaria service uninstall`](#talaria-service-uninstall) | stop the stack and remove the unit (volumes and state dir are kept) |
@@ -186,7 +186,7 @@ talaria deploy logs
 
 ### `talaria deploy creds`
 
-print the first-boot admin Sign-in block from the logs
+where first-run access lives: the claim screen, not a generated password
 
 ```
 talaria deploy creds

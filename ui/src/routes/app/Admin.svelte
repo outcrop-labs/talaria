@@ -38,6 +38,7 @@
   import AdminOrgGooglePanel from './AdminOrgGooglePanel.svelte'
   import AdminOrgPanel from './AdminOrgPanel.svelte'
   import AdminOutreachPanel from './AdminOutreachPanel.svelte'
+  import AdminPasswordAccountsPanel from './AdminPasswordAccountsPanel.svelte'
   import AdminSettingsPanel from './AdminSettingsPanel.svelte'
   import AdminSignupDomainsPanel from './AdminSignupDomainsPanel.svelte'
   import AdminUpdatePanel from './AdminUpdatePanel.svelte'
@@ -73,6 +74,9 @@
   ])
   const workViews = GATEABLE_VIEWS
   const manageViews = $derived([...MANAGE_VIEWS.map((v) => ({ ...v, sub: 'manage' })), ...appViews.map((v) => ({ ...v, sub: 'app' }))])
+  // The last admin cannot be demoted — not even by themselves (the server
+  // enforces it too; this only keeps the control from offering it).
+  const adminsRemaining = $derived((users ?? []).filter((u) => u.role === 'admin').length)
   let error = $state<string | null>(null)
 
   const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; allowedManageViews?: string[]; assistantElevated?: boolean }) => {
@@ -134,6 +138,7 @@
         <AdminUpdatePanel />
       {/if}
       {#if tab === 'people'}<AdminInvitesPanel />{/if}
+      {#if tab === 'people'}<AdminPasswordAccountsPanel />{/if}
       {#if tab === 'people'}
         {#if perms}
           <AdminMemberDefaultsPanel {perms} />
@@ -209,14 +214,20 @@
                     <Select
                       value={u.role}
                       size="sm"
-                      disabled={u.pinnedAdmin || u.id === me?.id}
-                      title={u.pinnedAdmin ? 'Pinned admin via AUTH_ADMIN_EMAILS' : u.id === me?.id ? 'You cannot demote yourself' : undefined}
+                      disabled={u.role === 'admin' && adminsRemaining === 1}
+                      title={u.role === 'admin' && adminsRemaining === 1 ? 'Cannot demote the last admin' : undefined}
                       onchange={(e) => void update(u.id, { role: e.currentTarget.value as 'admin' | 'member' })}
                       class="w-28 shrink-0"
                     >
                       <option value="member">Member</option>
                       <option value="admin">Admin</option>
                     </Select>
+                    {#if u.hasPasswordAccount}
+                      <span
+                        class="shrink-0 rounded-full border border-line-subtle px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted"
+                        title="Signs in with an email + password account (manage below)"
+                      >password</span>
+                    {/if}
                     {#if u.role === 'admin' && u.assistantModel}
                       <Checkbox
                         class="shrink-0"

@@ -2209,6 +2209,22 @@ const MIGRATIONS: string[] = [
    where art.folder_id is null
      and exists (select 1 from daily_briefs b where b.artifact_id = art.id)`,
 
+  // ── DB-BACKED PASSWORD ACCOUNTS ────────────────────────────────────────────
+  // Replaces env AUTH_USERS. One row per account: the scrypt hash produced by
+  // hashPassword() in auth/password.ts (format scrypt$N$r$p$salt$hash, params
+  // in-band), keyed by the unique lowercased email and linked to the users row
+  // it authenticates. user_id is the primary key, so one account per person;
+  // deleting the person deletes the account, removing the account keeps the
+  // person. Precedents: llm_api_keys, agent_keys, mcp_user_credentials.
+  `create table if not exists user_password_credentials (
+     user_id uuid primary key references users(id) on delete cascade,
+     email text not null unique,
+     password_hash text not null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     last_used_at timestamptz
+   )`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

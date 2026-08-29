@@ -7,10 +7,14 @@ one hosting identity, one email pipe. All admin surfaces live in Admin → Org /
 
 A Google sign-in is admitted when ANY of these passes:
 
-1. **Env allow-list** — `AUTH_ADMIN_EMAILS` / allow-list envs (bootstrap and pinned admins).
+1. **Env allow-list** — `AUTH_ALLOWED_EMAILS` / `AUTH_ALLOWED_DOMAINS` (a Google-only gate).
 2. **Verified email sign-up domain** — anyone with an email on a domain your org has proven it
    owns may self-join.
 3. **Invite** — a live invite exists for that exact address.
+
+Password accounts are a fourth door, but not a self-serve one: an admin creates them in
+Admin → People. And before any of this, a fresh instance has one more door — `/claim`,
+where the first person through becomes the admin (see `docs/user/getting-started.md`).
 
 ## Email sign-up domains (Admin → Org)
 

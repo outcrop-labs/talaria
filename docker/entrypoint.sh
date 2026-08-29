@@ -22,10 +22,6 @@
 # needs it — no brace expansion, no [[ ]], no arrays.
 set -eu
 
-# Captured before anything exports generated values: did the REAL environment
-# supply credentials? (If so, never announce generated ones.)
-printenv AUTH_USERS >/dev/null 2>&1 && AUTH_USERS_SUPPLIED=1 || true
-
 APP_DIR=/app
 STATE_DIR="${TALARIA_STATE_DIR:-/var/lib/talaria}"
 GEN_ENV="$STATE_DIR/env/generated.env"
@@ -79,13 +75,8 @@ bootstrap_secrets() {
   ensure_secret SEARXNG_SECRET 32       # rendered into the searxng settings
   ensure_secret TALARIA_AGENT_KEY 32    # app's hop to the toolkit service
 
-  # First-boot admin: same shape `talaria setup` mints (admin@talaria.local + random
-  # password), logged once below. Supplied env (Dokploy panel, orchestration
-  # agent) replaces the whole mechanism.
-  if ! printenv AUTH_USERS >/dev/null 2>&1 && ! grep -q '^AUTH_USERS=' "$GEN_ENV"; then
-    printf 'AUTH_PASSWORD_ENABLED=1\nAUTH_USERS=admin@talaria.local:%s\nAUTH_ADMIN_EMAILS=admin@talaria.local\n' \
-      "$(rand_hex 9)" >> "$GEN_ENV"
-  fi
+  # No admin is generated here: a fresh instance is CLAIMED in the app — the
+  # first visitor creates the admin account. The banner below says so.
 }
 
 ensure_secret() { # <name> <bytes>
@@ -178,21 +169,11 @@ case "${1:-}" in
     export_generated
     seed_fleet
 
-    # First-boot admin banner: once per STATE DIR, not once per generating
-    # process — the init service usually mints the credentials (single
-    # writer), and `logs talaria` is where the docs point, so the app
-    # announces them here and marks them seen. Reappears only on a restored
-    # backup (marker gone, generated.env present), which is when you'd want
-    # the reminder anyway.
-    if [ -z "${AUTH_USERS_SUPPLIED:-}" ] \
-       && grep -q '^AUTH_USERS=' "$GEN_ENV" 2>/dev/null \
-       && [ ! -f "$STATE_DIR/env/.creds-shown" ]; then
-      printf '\033[1;33m════════════════════════════════════════════════════════════════\033[0m\n'
-      printf '  First boot — generated admin credentials (also in %s):\n' "$GEN_ENV"
-      printf '  \033[1m  Sign in:  admin@talaria.local  /  %s\033[0m\n' "$(printenv AUTH_USERS | cut -d: -f2)"
-      printf '\033[1;33m════════════════════════════════════════════════════════════════\033[0m\n'
-      touch "$STATE_DIR/env/.creds-shown" 2>/dev/null || true
-    fi
+    # The claim replaces generated credentials: an operator reading the logs
+    # on a first boot needs the one-line version of "where do I sign in".
+    # Stateless (no marker) on purpose — a restored backup gets the same
+    # pointer, and unlike a password it can never be stale or wrong.
+    say "first boot: claim the admin account at /claim once the app is up"
 
     say "waiting for dependencies (postgres, redis)"
     bun "$APP_DIR/docker/await-deps.mjs"

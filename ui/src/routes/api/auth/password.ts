@@ -2,8 +2,8 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody } from '@/server/api-guard'
-import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
-import { verifyPasswordLogin } from '@/server/auth/password'
+import { verifyPasswordLogin } from '@/server/auth/password-accounts'
+import { hasPasswordAccounts } from '@/server/auth/password-accounts'
 import { createSession, sessionCookie } from '@/server/auth/session'
 import { upsertUser } from '@/server/users'
 import { clientIp, rateLimit, rateLimitReset } from '@/server/rate-limit'
@@ -27,10 +27,12 @@ const IP_LIMIT = 30
 const WINDOW_SECONDS = 15 * 60
 
 // POST /api/auth/password { username, password } → sets the session cookie.
+// Credentials live in user_password_credentials (Admin → People); the provider
+// exists while any account does. No allow-list applies here — an account was
+// admitted by an admin when it was created; login checks the stored hash only.
 export const Route = defineApi('/api/auth/password', {
   POST: async ({ request }) => {
-    const cfg = getAuthConfig()
-    if (!cfg.password.enabled) {
+    if (!(await hasPasswordAccounts())) {
       return json({ error: 'Password login is disabled' }, { status: 400 })
     }
 
@@ -53,7 +55,7 @@ export const Route = defineApi('/api/auth/password', {
     }
 
     const identity = await verifyPasswordLogin(parsed.username, parsed.password)
-    if (!identity || !isEmailAllowed(identity.email, cfg)) {
+    if (!identity) {
       // Slow the failure path a touch to blunt brute force.
       await new Promise((r) => setTimeout(r, 400))
       return json({ error: 'Invalid credentials' }, { status: 401 })

@@ -23,12 +23,30 @@ Organization tab.
 
 ## Set someone's role
 
-The role select on their row: **Member** / **Admin**. Two guards: you cannot demote yourself,
-and an admin pinned via `AUTH_ADMIN_EMAILS` can't be demoted from here at all.
+The role select on their row: **Member** / **Admin**. One guard: the last admin can't be
+demoted — if you're the only one, that select locks; promote someone else first. There is
+no env pin anymore: roles live in the database, and a sign-in never changes one.
 
 To offboard someone, demote to Member, revoke their grants and views on the row, and revoke
 any pending invites. There is no suspend or delete — the audit trail and everything the
 person produced stay.
+
+## Password accounts
+
+Below the invites: the org's email + password sign-ins. Google can be the only door, but
+when someone needs a password instead — a contractor without a Workspace account, a break-glass
+admin login — create it here. Passwords are stored as scrypt hashes; the password itself is
+shown once at creation and never again, so share it over a channel other than the one it
+protects.
+
+- **Add account** — email, initial password, optional name. The email must not already belong
+  to an account.
+- **Set password** — on any row (including your own — the panel's first row offers it when
+  your admin has no password sign-in yet).
+- **Remove** — the person and their role stay; only the password sign-in stops. Removing your
+  own account's password when you have no Google sign-in means no way back in as you.
+
+Every add, set, and remove lands in the audit trail — never the password itself.
 
 ## What each person may do
 

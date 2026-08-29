@@ -5,7 +5,7 @@
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -41,6 +41,10 @@
 | [`/api/admin/model-roles`](#apiadminmodel-roles) | PUT | `admin` |
 | [`/api/admin/outreach`](#apiadminoutreach) | GET | `admin` |
 | [`/api/admin/outreach`](#apiadminoutreach) | PUT | `admin` |
+| [`/api/admin/password-accounts`](#apiadminpassword-accounts) | GET | `admin` |
+| [`/api/admin/password-accounts`](#apiadminpassword-accounts) | POST | `admin` |
+| [`/api/admin/password-accounts`](#apiadminpassword-accounts) | PUT | `admin` |
+| [`/api/admin/password-accounts`](#apiadminpassword-accounts) | DELETE | `admin` |
 | [`/api/admin/permissions`](#apiadminpermissions) | GET | `admin` |
 | [`/api/admin/permissions`](#apiadminpermissions) | PUT | `admin` |
 | [`/api/admin/platform-agents`](#apiadminplatform-agents) | GET | `admin` |
@@ -195,7 +199,7 @@ Source: [`ui/src/routes/api/admin.google-client.ts`](../../ui/src/routes/api/adm
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{status, loginEnabled, loginPinnedByEnv, redirectUris}` | 200 + varies | — |
+| GET | `admin` | — | `{status, loginEnabled, loginPinnedByEnv, personalConnected, redirectUris}` | 200 + varies | — |
 | PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, loginEnabled, loginPinnedByEnv}` | 200 + varies | audit |
 | DELETE | `admin` | — | `{status, loginEnabled, loginPinnedByEnv}` | 200 + varies | audit |
 
@@ -412,6 +416,43 @@ Source: [`ui/src/routes/api/admin.outreach.ts`](../../ui/src/routes/api/admin.ou
 | `intervalMinutes` | `z.number().int().min(15).max(24 * 60)` |  |
 | `dailyDmCap` | `z.number().int().min(1).max(20)` |  |
 | `proactiveAgents` | `z.array(z.string()).max(100)` |  |
+
+## `/api/admin/password-accounts`
+
+Source: [`ui/src/routes/api/admin.password-accounts.ts`](../../ui/src/routes/api/admin.password-accounts.ts)
+
+> Admin console API for DB-backed password accounts (Admin → People).
+> GET → the account list. POST → create an account. PUT → set/reset a
+> password. DELETE → remove the account (the person stays). Admins only.
+> Audit entries carry the email, never the password or its hash.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{accounts}` | 200 | — |
+| POST | `admin` | [body](#post-apiadminpassword-accounts-body) | `{ok, userId}` | 200, 400, 409 | audit |
+| PUT | `admin` | [body](#put-apiadminpassword-accounts-body) | `{ok}` | 200 + varies | audit |
+| DELETE | `admin` | [body](#delete-apiadminpassword-accounts-body) | `{ok}` | 200, 404 | audit |
+
+### POST `/api/admin/password-accounts` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `email` | `z.preprocess((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v), z.string().email().max(200),)` |  |
+| `password` | `z.string().min(8).max(1000)` |  |
+| `name` | `z.string().max(200).optional()` |  |
+
+### PUT `/api/admin/password-accounts` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `userId` | `Uuid` |  |
+| `password` | `z.string().min(8).max(1000)` |  |
+
+### DELETE `/api/admin/password-accounts` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `userId` | `Uuid` |  |
 
 ## `/api/admin/permissions`
 

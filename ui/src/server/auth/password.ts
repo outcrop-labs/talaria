@@ -1,18 +1,12 @@
-// Username / password provider.
-//
-// An AUTH_USERS password may be plaintext (transition — env.ts warns at boot)
-// or `scrypt$…`-hashed via hashPassword(). scrypt rather than bcrypt/argon2:
-// the API server runs under node in dev (vite middleware) and bun in prod, and
-// node:crypto's scrypt is the one password hash both runtimes verify with zero
+// Password hashing — the credential primitives behind DB-backed password
+// accounts (auth/password-accounts.ts) and the first-run claim
+// (auth/claim.ts). scrypt rather than bcrypt/argon2: the API server runs
+// under node in dev (vite middleware) and bun in prod, and node:crypto's
+// scrypt is the one password hash both runtimes verify with zero
 // dependencies. Parameters travel inside the entry, so a future bump keeps
 // verifying old hashes.
 
 import { randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from 'node:crypto'
-import { getAuthConfig } from './config'
-import { isHashedCredential } from '../env'
-import type { Identity } from '../users'
-
-export type LoginResult = Identity & { provider: 'password' }
 
 const scryptAsync = (password: string, salt: Buffer, keylen: number, opts: ScryptOptions): Promise<Buffer> =>
   new Promise((resolve, reject) => scrypt(password, salt, keylen, opts, (err, key) => (err ? reject(err) : resolve(key))))
@@ -49,43 +43,13 @@ export async function verifyPasswordHash(password: string, stored: string): Prom
   return key.length === expected.length && timingSafeEqual(key, expected)
 }
 
-// The hashed-format detector lives in env.ts (the app-import-free leaf) so its
-// boot warning and this verify path can never drift apart.
-export { isHashedCredential }
-
-function constantTimeEquals(a: string, b: string): boolean {
-  const ab = Buffer.from(a)
-  const bb = Buffer.from(b)
-  if (ab.length !== bb.length) return false
-  return timingSafeEqual(ab, bb)
-}
-
-/** Verify credentials against AUTH_USERS (hashed or plaintext entries, mixed
- *  freely). Returns the identity or null. */
-export async function verifyPasswordLogin(username: string, password: string): Promise<LoginResult | null> {
-  const cfg = getAuthConfig()
-  if (!cfg.password.enabled) return null
-
-  // Walk every user so timing doesn't leak which usernames exist — including
-  // a hash verify per hashed row on every attempt, matched row or not. That
-  // keeps the walk flat (N verifies whether the username exists or not);
-  // AUTH_USERS is a short break-glass list, so paying N×scrypt per attempt is
-  // the right trade against a timing oracle.
-  let matched: LoginResult | null = null
-  for (const u of cfg.password.users) {
-    const userOk = constantTimeEquals(u.username.toLowerCase(), username.trim().toLowerCase())
-    const passOk = isHashedCredential(u.password)
-      ? await verifyPasswordHash(password, u.password)
-      : constantTimeEquals(u.password, password)
-    if (userOk && passOk) {
-      matched = {
-        sub: `password:${u.username.toLowerCase()}`,
-        email: u.username.includes('@') ? u.username.toLowerCase() : null,
-        name: u.username,
-        picture: null,
-        provider: 'password' as const,
-      }
-    }
-  }
-  return matched
+// A hash that exists only to be verified and discarded: an unknown email costs
+// the caller a full scrypt verify (see verifyPasswordLogin in
+// password-accounts.ts), so a miss fails exactly as slowly as a wrong password
+// and timing never reveals which emails have accounts. Memoized — the point is
+// to spend the same cost every time, not a fresh one each time.
+let dummy: Promise<string> | null = null
+export function dummyHash(): Promise<string> {
+  dummy ??= hashPassword('talaria-account-probe')
+  return dummy
 }

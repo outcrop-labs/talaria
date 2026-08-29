@@ -31,6 +31,8 @@
     loginEnabled: boolean
     /** Env pinned login on — the toggle can't turn it back off. */
     loginPinnedByEnv: boolean
+    /** The signed-in admin's OWN Google connection (Settings → Connections). */
+    personalConnected: boolean
     redirectUris: Array<{ uri: string; what: string }>
   }
 
@@ -177,6 +179,28 @@
           {/if}
         </span>
       </div>
+
+      <!-- Your own account — offered only once a client exists, because the
+           connect flow cannot even start without one. This is the PERSONAL
+           connection (Drive/Calendar/Mail as you, lands on Settings →
+           Connections); the ORG connection is the panel below and is what
+           gates Google login domains. -->
+      {#if data.status.configured}
+        <div class="flex items-center gap-2 border-t border-line pt-3 text-sm">
+          {#if data.personalConnected}
+            <StatusDot status="ok" />
+            <span class="text-fg">Your Google account is connected</span>
+            <span class="font-sans text-[10px] text-muted">manage it in Settings → Connections</span>
+          {:else}
+            <span class="text-fg">Your Google account</span>
+            <a
+              href="/api/integrations/google/connect"
+              class="text-xs text-accent underline-offset-2 hover:underline"
+            >Connect your account</a>
+            <InfoTip text="Runs the same personal connect as Settings → Connections and lands there when it finishes (it needs the redirect URI listed below). The org connection — the one Google login and the workspace surfaces run on — is separate: Admin → Org → Google Workspace." />
+          {/if}
+        </div>
+      {/if}
 
       <!-- The redirect URIs — the one thing every Google setup asks for first. -->
       <div>

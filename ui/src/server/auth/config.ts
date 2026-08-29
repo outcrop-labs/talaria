@@ -1,14 +1,13 @@
 // Auth configuration — resolved from the environment at request time.
 //
-// Every provider is INDEPENDENTLY enable-able/disable-able. A provider is only
-// "enabled" if its flag is on AND its required secrets are present, so a
-// half-configured provider never shows up in the login screen.
-//
 //   AUTH_SECRET                signing key for session + state cookies (required)
 //   AUTH_PUBLIC_URL            external origin (for OAuth redirect URIs) — optional,
 //                              falls back to the request origin
-//   AUTH_ALLOWED_DOMAINS       comma-separated email domains allowed to sign in
-//   AUTH_ALLOWED_EMAILS        comma-separated exact emails allowed to sign in
+//
+//   AUTH_ALLOWED_DOMAINS       comma-separated email domains allowed GOOGLE sign-in
+//   AUTH_ALLOWED_EMAILS        comma-separated exact emails allowed GOOGLE sign-in
+//                              (password accounts are admitted by an admin at
+//                              creation — these doors do not re-gate them)
 //
 //   Google OAuth — credentials from EITHER the Admin UI record (Admin → Org →
 //   Google Workspace, stored in app_settings; see google/client-config.ts) OR:
@@ -18,11 +17,9 @@
 //                             (see googleLoginEnabled)
 //   AUTH_GOOGLE_HD             optional Google Workspace hosted-domain restriction
 //
-//   Username / password
-//   AUTH_PASSWORD_ENABLED=1
-//   AUTH_USERS                 "user:pass,user2:pass2" — each password may be
-//                              plaintext or a `scrypt$…` hash (see
-//                              auth/password.ts; plaintext warns at boot)
+// Password accounts live in the database (user_password_credentials — Admin →
+// People), not the environment. The first admin is minted by the first-run
+// claim at /claim; see auth/claim.ts.
 
 export type ProviderId = 'google' | 'password'
 
@@ -47,7 +44,6 @@ export interface AuthConfig {
   allowedDomains: string[]
   allowedEmails: string[]
   google: { enabled: boolean; clientId: string; clientSecret: string; hd: string | null }
-  password: { enabled: boolean; users: Array<{ username: string; password: string }> }
 }
 
 export function getAuthConfig(): AuthConfig {
@@ -55,20 +51,6 @@ export function getAuthConfig(): AuthConfig {
 
   const googleEnabled =
     flag(env.AUTH_GOOGLE_ENABLED) && !!env.AUTH_GOOGLE_CLIENT_ID && !!env.AUTH_GOOGLE_CLIENT_SECRET
-
-  const users = (env.AUTH_USERS ?? '')
-    .split(',')
-    .map((pair) => pair.trim())
-    .filter(Boolean)
-    .map((pair) => {
-      const idx = pair.indexOf(':')
-      return idx === -1
-        ? { username: pair, password: '' }
-        : { username: pair.slice(0, idx).trim(), password: pair.slice(idx + 1) }
-    })
-    .filter((u) => u.username && u.password)
-
-  const passwordEnabled = flag(env.AUTH_PASSWORD_ENABLED) && users.length > 0
 
   return {
     secret: env.AUTH_SECRET ?? '',
@@ -81,19 +63,12 @@ export function getAuthConfig(): AuthConfig {
       clientSecret: env.AUTH_GOOGLE_CLIENT_SECRET ?? '',
       hd: env.AUTH_GOOGLE_HD?.trim() || null,
     },
-    password: { enabled: passwordEnabled, users },
   }
 }
 
-/** The providers a user can actually pick right now (login screen renders these). */
-export function enabledProviders(cfg = getAuthConfig()): ProviderMeta[] {
-  const out: ProviderMeta[] = []
-  if (cfg.google.enabled) out.push({ id: 'google', label: 'Continue with Google', kind: 'oauth' })
-  if (cfg.password.enabled) out.push({ id: 'password', label: 'Username & password', kind: 'password' })
-  return out
-}
-
-/** Central allow-list gate — applied to every provider's resolved identity. */
+/** The GOOGLE allow-list gate — applied to Google-resolved identities only.
+ *  A password account was admitted by an admin (or the claim) when it was
+ *  created; its login checks the stored hash and nothing else. */
 export function isEmailAllowed(email: string | null | undefined, cfg = getAuthConfig()): boolean {
   // No allow-list configured ⇒ anyone who authenticates is allowed.
   if (cfg.allowedDomains.length === 0 && cfg.allowedEmails.length === 0) return true

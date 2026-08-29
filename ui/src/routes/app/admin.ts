@@ -27,7 +27,8 @@ export interface AdminUser {
   canMintKeys: boolean
   deniedViews: string[]
   allowedManageViews: string[]
-  pinnedAdmin: boolean
+  /** Has a DB-backed password account — badged in the People list. */
+  hasPasswordAccount: boolean
   assistantModel: string | null
   assistantElevated: boolean
 }

@@ -235,42 +235,15 @@ describe('talaria deploy down / logs / status / update', () => {
 })
 
 describe('talaria deploy creds', () => {
-  test("the documented pipe: logs talaria | grep -A2 'Sign in'", async () => {
+  test('points at the claim screen — there is no generated password to print', async () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     expect(await runCreds(ctx)).toBe(0)
-    const logs = ctx.calls.find((c) => c.args.includes('logs'))!
-    expect(logs.args).toEqual(['compose', '-f', 'docker/compose.yml', 'logs', 'talaria'])
-    const grep = ctx.calls.find((c) => c.cmd === 'grep')!
-    expect(grep.args).toEqual(['-A2', 'Sign in'])
-    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes("grep -A2 'Sign in'"))).toBe(true)
-  })
-
-  test("grep miss → generated.env fallback, credentials only — never the keys filed next to them", async () => {
-    const ctx = fakeCtx()
-    ctx.root = makeDeployTree()
-    ctx.plant(['grep', ['-A2', 'Sign in']], new Error('exited 1'))
-    ctx.plant(
-      ['docker', ['compose', '-f', 'docker/compose.yml', 'exec', '-T', 'talaria', 'sh', '-c', 'cat "$TALARIA_STATE_DIR/env/generated.env"']],
-      'AUTH_USERS=admin@talaria.local:hunter2\nAUTH_SECRET=signing-secret\nTALARIA_SECRET_KEY=encryption-root\n',
-    )
-    expect(await credsCommand.run(ctx, NO_ARGS)).toBe(0)
-    const raw = ctx.logLines.filter((l) => l.kind === 'raw').map((l) => l.msg).join('')
-    expect(raw).toContain('AUTH_USERS=admin@talaria.local:hunter2')
-    expect(raw).not.toContain('encryption-root')
-    expect(raw).not.toContain('signing-secret')
-  })
-
-  test('both paths dead → dies pointing at the env-var contract', async () => {
-    const ctx = fakeCtx()
-    ctx.root = makeDeployTree()
-    ctx.plant(['grep', ['-A2', 'Sign in']], new Error('exited 1'))
-    ctx.plant(
-      ['docker', ['compose', '-f', 'docker/compose.yml', 'exec', '-T', 'talaria', 'sh', '-c', 'cat "$TALARIA_STATE_DIR/env/generated.env"']],
-      new Error('container not running'),
-    )
-    const msg = await attempt(() => runCreds(ctx))
-    expect(msg).toContain('is the instance up?')
+    const says = ctx.logLines.filter((l) => l.kind === 'say').map((l) => l.msg).join('\n')
+    expect(says).toContain('http://localhost:5273')
+    expect(says).toContain('claim')
+    // No docker call, no secret surface — the command only prints a pointer.
+    expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
   })
 })
 

@@ -52,8 +52,6 @@ TALARIA_S3_SECRET_KEY=primarysecret
 TALARIA_S3_URL=http://127.0.0.1:9000
 TALARIA_SECRET_KEY=keep-exactly-this-root
 AUTH_SECRET=keep-this-too
-AUTH_USERS=admin@talaria.local:pass
-AUTH_ADMIN_EMAILS=admin@talaria.local
 TALARIA_AGENT_KEY=also-kept
 `
     const out = boxUiEnv(primary, { name: 'demo', state: '/phys/state', s3: { bucket: 'b', key: 'k', secret: 's' } })
@@ -66,7 +64,6 @@ TALARIA_AGENT_KEY=also-kept
     // sealed-secret compat: the worktree rule
     expect(lines).toContain('TALARIA_SECRET_KEY=keep-exactly-this-root')
     expect(lines).toContain('AUTH_SECRET=keep-this-too')
-    expect(lines).toContain('AUTH_USERS=admin@talaria.local:pass')
     // the marker and the fleet/app dirs
     expect(lines).toContain('TALARIA_DEVBOX=demo')
     expect(lines).toContain('TALARIA_FLEET_PROJECT=devbox-demo-fleet')

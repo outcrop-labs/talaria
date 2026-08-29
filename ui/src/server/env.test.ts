@@ -12,7 +12,6 @@ const base = (over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv 
   DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5544/talaria',
   REDIS_URL: 'redis://127.0.0.1:6399',
   TALARIA_SECRET_KEY: 'a-root-secret',
-  AUTH_ADMIN_EMAILS: 'admin@example.com',
   ...over,
 })
 
@@ -133,11 +132,9 @@ describe('validateEnv — refuses the boot-blocking cases', () => {
 })
 
 describe('validateEnv — warnings describe an instance that still runs', () => {
-  it('warns, without throwing, when the instance has zero admins', () => {
-    const warn = captureWarnings()
-    expect(() => validateEnv(base({ AUTH_ADMIN_EMAILS: undefined }))).not.toThrow()
-    expect(warn.mock.calls.flat().join('\n')).toMatch(/ZERO admins/)
-  })
+  // A fresh instance with zero admins is NOT a warning anymore — that is the
+  // claim state, surfaced by /claim and the login screen, not by the boot
+  // (env.ts cannot see the database).
 
   it('stays quiet when the environment is fully configured', () => {
     const warn = captureWarnings()

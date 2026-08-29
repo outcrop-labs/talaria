@@ -47,17 +47,10 @@ export async function runSetup(ctx: Ctx): Promise<number> {
 
   ctx.log.say('App secrets + config (ui/.env)')
   const uiEnvPath = join(root, 'ui/.env')
-  let adminEmail = '(unchanged — see ui/.env)'
-  let adminPass = '(unchanged)'
   if (existsSync(uiEnvPath)) {
     ctx.log.skip('ui/.env (exists, kept)')
     await pinSecretKey(ctx, uiEnvPath)
   } else {
-    adminEmail = 'admin@talaria.local'
-    adminPass = rand(9)
-    // The env file carries the argon2id HASH, never the password — the
-    // plaintext exists only in the credentials this command prints (#244).
-    const adminHash = await Bun.password.hash(adminPass)
     const date = ctx.now().toISOString().slice(0, 10)
     writeFileSync(
       uiEnvPath,
@@ -86,11 +79,9 @@ AUTH_SECRET=${rand(32)}
 # can decrypt data seeded from this one.
 TALARIA_SECRET_KEY=${rand(32)}
 
-# Password sign-in. Format: email:password-or-hash[,email:password-or-hash...]
-# — argon2/bcrypt hashes verify as-is; a boot warning nags while entries are plaintext.
-AUTH_PASSWORD_ENABLED=1
-AUTH_USERS=${adminEmail}:${adminHash}
-AUTH_ADMIN_EMAILS=${adminEmail}
+# Sign-in: a fresh install has no users. The first visit to the app offers the
+# claim screen — the account you create there becomes the admin, and further
+# accounts are managed in the app (Admin → People).
 
 # Google sign-in (off until you add real credentials)
 AUTH_GOOGLE_ENABLED=0
@@ -280,7 +271,9 @@ LLM_MODEL=
   ctx.log.raw(`
   Start everything:   talaria dev           (or: bun talaria dev)
   App:                http://localhost:5273
-  Sign in:            ${adminEmail}  /  ${adminPass}
+  Claim it:           open the app and claim the instance — the account you
+                      create there is the admin (there are no default
+                      credentials)
 
   First steps in the app: Settings → add an LLM endpoint on /models,
   then design your first agent on /agents (Muse will draft it).
