@@ -49,10 +49,18 @@ export function orgGoogleLoginAllowed(orgEmail: string | null | undefined, login
 
 /** Exchange the auth code and resolve the Google identity. The client comes
  *  from the Admin UI record or the env fallback — login itself stays gated by
- *  AUTH_GOOGLE_ENABLED (see `googleLoginEnabled`). */
+ *  the Admin UI login switch / AUTH_GOOGLE_ENABLED (see `googleLoginEnabled`). */
 export async function exchangeGoogleCode(code: string, redirectUri: string): Promise<LoginResult> {
   const cfg = (await resolveGoogleClient()) as GoogleClient
   const { info } = await exchangeGoogleTokens(code, redirectUri)
+
+  // An email claim is only an identity when Google has verified it. Google's
+  // userinfo always carries the claim alongside the email, so an absent claim
+  // is treated as unverified too — an IdP (or client config) handing back
+  // unverified addresses must not mint accounts on them (#269).
+  if (info.email && info.email_verified !== true) {
+    throw new Error(`google email not verified: ${info.email}`)
+  }
 
   // Enforce the Workspace hosted-domain restriction on the resolved identity too
   // (the `hd` auth param is a hint, not a guarantee).
