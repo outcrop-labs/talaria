@@ -1640,12 +1640,13 @@ pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment
 /// agent's plan comment through here too — and a guard at one caller is a
 /// guard the next caller does not have.
 pub async fn add_comment(
-    pg: &PgPool,
+    deps: &TaskDeps,
     task_id: &str,
     author: &str,
     content: &str,
     parent_id: Option<&str>,
 ) -> Result<TaskComment, sqlx::Error> {
+    let pg = &deps.pg;
     let guarded = guard_agent_write(
         pg,
         "ticket-comment",
@@ -1667,6 +1668,19 @@ pub async fn add_comment(
     .fetch_one(pg)
     .await?;
     log_activity(pg, task_id, author, "comment", "commented").await?;
+    // The comment event carries its own type tag — the board topic tells
+    // readers a conversation moved, not a card.
+    if let Some(board_id) = task_board_id(pg, task_id).await? {
+        publish_board(
+            &deps.realtime,
+            &board_id,
+            &BoardEvent {
+                kind_tag: "comment",
+                task_id: Some(task_id.to_string()),
+                deleted: None,
+            },
+        );
+    }
     Ok(comment_of(row))
 }
 

@@ -562,6 +562,184 @@ pub async fn record_gateway_usage(
     .map(|_| ())
 }
 
+// ── Agent-reported spend (usage.ts recordUsage → tasks.$id.usage POST) ───────
+
+/// Which model serves this generation: the requested TIER's model when a tier
+/// was routed, else the agent's current MAIN model.
+///
+/// The agent's stored `endpoint` is a config-time PREFERENCE, not what ran:
+/// agents call the gateway by model name and `resolve_route` round-robins the
+/// pool serving it, so trusting the config can stamp a cloud turn `local` and
+/// price it at $0. Classify from the gateway's real pool instead and record
+/// only what's certain — one server is exact, a pool that agrees on class is
+/// priced by class, a mixed pool leaves the row unattributed rather than
+/// guessing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentClass {
+    pub endpoint_class: Option<String>,
+    pub llm_model: String,
+    pub endpoint: Option<String>,
+}
+
+type ClassCache = std::collections::HashMap<String, (std::time::Instant, Option<AgentClass>)>;
+
+static CLASS_CACHE: std::sync::LazyLock<std::sync::Mutex<ClassCache>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(ClassCache::new()));
+
+/// classifyAgent — the serving tier-or-main spec for an agent, narrowed to
+/// what the gateway's pool can honestly claim. Cached 60s per
+/// (agentModel, tier): the def and the endpoint pool both move slower than
+/// that, and the hot path should never feel a classification.
+pub async fn classify_agent(
+    pg: &PgPool,
+    agent_model: &str,
+    tier: Option<&str>,
+) -> Result<Option<AgentClass>, sqlx::Error> {
+    let cache_key = format!("{agent_model}:{}", tier.unwrap_or(""));
+    {
+        let cache = CLASS_CACHE.lock().unwrap();
+        if let Some((at, value)) = cache.get(&cache_key)
+            && at.elapsed().as_secs() < 60
+        {
+            return Ok(value.clone());
+        }
+    }
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = match tier {
+        Some(tier) => {
+            sqlx::query_as(
+                "select e.class, (a->>'model') as model, (a->>'endpoint') as endpoint \
+                 from agent_defs d \
+                 join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
+                 cross join lateral jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a \
+                 left join llm_endpoints e on e.name = (a->>'endpoint') \
+                 where d.model = $1 and a->>'name' = $2",
+            )
+            .bind(agent_model)
+            .bind(tier)
+            .fetch_optional(pg)
+            .await?
+        }
+        None => {
+            sqlx::query_as(
+                "select e.class, (v.config->'main'->>'model') as model, (v.config->'main'->>'endpoint') as endpoint \
+                 from agent_defs d \
+                 join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
+                 left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint') \
+                 where d.model = $1",
+            )
+            .bind(agent_model)
+            .fetch_optional(pg)
+            .await?
+        }
+    };
+    let value = match row {
+        // A tier still pointed at a legacy upstream (no model on the alias)
+        // classifies as nothing — an unattributable row, never a guess.
+        Some((class, Some(model), endpoint)) if !model.is_empty() => {
+            classify_model(pg, &model, (class.as_deref(), endpoint.as_deref())).await?
+        }
+        _ => None,
+    };
+    CLASS_CACHE
+        .lock()
+        .unwrap()
+        .insert(cache_key, (std::time::Instant::now(), value.clone()));
+    Ok(value)
+}
+
+/// The serving endpoint as the GATEWAY would pick it, narrowed to what we can
+/// honestly claim. `configured` is the agent's stored spec — the only thing
+/// left to go on for a model the gateway doesn't serve (a tier still pointed
+/// at a legacy upstream).
+async fn classify_model(
+    pg: &PgPool,
+    model: &str,
+    configured: (Option<&str>, Option<&str>),
+) -> Result<Option<AgentClass>, sqlx::Error> {
+    let (class, endpoint) = configured;
+    let routing = crate::gateway::registry::routing_for(pg, model).await?;
+    if routing.endpoints.len() == 1 {
+        let one = &routing.endpoints[0];
+        return Ok(Some(AgentClass {
+            endpoint_class: Some(one.class.clone()),
+            llm_model: routing.upstream_model,
+            endpoint: Some(one.name.clone()),
+        }));
+    }
+    if routing.endpoints.is_empty() {
+        return Ok(class.map(|class| AgentClass {
+            endpoint_class: Some(class.to_string()),
+            llm_model: model.to_string(),
+            endpoint: endpoint.map(str::to_string),
+        }));
+    }
+    // A pool: the class is certain when every member agrees (local stays $0,
+    // cloud stays visible as unpriced), the endpoint never is.
+    let all_agree = routing
+        .endpoints
+        .iter()
+        .map(|e| e.class.as_str())
+        .all(|c| c == routing.endpoints[0].class.as_str());
+    Ok(Some(AgentClass {
+        endpoint_class: all_agree.then(|| routing.endpoints[0].class.clone()),
+        llm_model: routing.upstream_model,
+        endpoint: None,
+    }))
+}
+
+/// One agent-reported spend row (usage.ts UsageInput). 'chat'/'channel' rows
+/// are gateway-metered by Talaria; 'ticket' rows are agent-SELF-REPORTED (MCP
+/// log_usage) for work done outside Talaria's request path — by design they
+/// add to the same totals (that spend is just as real), guarded by the agent
+/// key + board policy rather than metering.
+pub struct UsageInput<'a> {
+    pub agent_model: &'a str,
+    pub source: &'a str,
+    pub ref_id: Option<&'a str>,
+    pub task_id: Option<&'a str>,
+    /// Alias tier the request was routed to (None = the agent's main model).
+    pub tier: Option<&'a str>,
+    pub counts: TokenCounts,
+    pub estimated: bool,
+}
+
+/// recordUsage — insert one usage_events row, attributed by the classify
+/// plane. Classification failure is swallowed to null here (TS:
+/// `.catch(() => null)`): the row still lands, unattributed.
+///
+/// NOT YET CROSSED: TS follows a cloud row without a price with a
+/// `nudgeAutoPrices()` cue (detached, throttled, idempotent) — that oracle
+/// lives on the scheduler plane and crosses with it. Until then the oracle's
+/// look-again trigger is one cue short; rows still price retroactively when
+/// prices land.
+pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::Error> {
+    let cls = classify_agent(pg, u.agent_model, u.tier)
+        .await
+        .unwrap_or(None);
+    sqlx::query(
+        "insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens, \
+                                  cache_write_tokens, cache_read_tokens, reasoning_tokens, \
+                                  estimated, endpoint_class, llm_model, endpoint) \
+         values ($1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+    )
+    .bind(u.agent_model)
+    .bind(u.source)
+    .bind(u.ref_id)
+    .bind(u.task_id)
+    .bind(k(u.counts.prompt_tokens))
+    .bind(k(u.counts.completion_tokens))
+    .bind(k(u.counts.cache_write_tokens))
+    .bind(k(u.counts.cache_read_tokens))
+    .bind(k(u.counts.reasoning_tokens))
+    .bind(u.estimated)
+    .bind(cls.as_ref().and_then(|c| c.endpoint_class.clone()))
+    .bind(cls.as_ref().map(|c| c.llm_model.clone()))
+    .bind(cls.as_ref().and_then(|c| c.endpoint.clone()))
+    .execute(pg)
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -140,6 +140,28 @@ pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx
         .collect())
 }
 
+/// Validate a tier for an agent; returns the routed gateway model id
+/// (fleet-agents.ts routedModelFor). No tier → the agent's main model id as-is;
+/// a tier the agent does not declare → None (the caller rejects the typo
+/// loudly rather than recording an unattributable, unpriceable usage row).
+pub async fn routed_model_for(
+    pg: &PgPool,
+    agent_model: &str,
+    tier: Option<&str>,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(tier) = tier.filter(|t| !t.is_empty()) else {
+        return Ok(Some(agent_model.to_string()));
+    };
+    let agents = list_fleet_agents(pg).await?;
+    let Some(a) = agents.iter().find(|x| x.agent.id == agent_model) else {
+        return Ok(None);
+    };
+    if !a.tiers.iter().any(|t| t == tier) {
+        return Ok(None);
+    }
+    Ok(Some(format!("{agent_model}-{tier}")))
+}
+
 // ── Per-agent access (users.ts allowedAgents / canUseAgent / usableAgentGate) ─
 
 /// A member's agent access: 'all', or an explicit allow-list. No rows at all

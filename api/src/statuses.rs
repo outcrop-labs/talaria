@@ -1,12 +1,10 @@
-// Board statuses — the port of ui/src/server/statuses.ts. The read plane
-// (list/meta/diagnostics), the shared invariants (agentStartConflict, the
-// required-category rules), and the create/reorder writes cross here. The
-// update/delete writes wait for the tasks slice: both MOVE TICKETS through
-// updateTask (recategorising a populated sign-off column drains it; deleting
-// one reassigns), and updateTask is the tasks library's heart — porting them
-// before it exists would mean a second writer of tasks.status, the exact shape
-// those functions exist to avoid. TS reached tasks.ts by dynamic import to
-// dodge the cycle; Rust has no cycle problem, only an ordering one.
+// Board statuses — the port of ui/src/server/statuses.ts, whole: the read
+// plane (list/meta/diagnostics), the shared invariants (agentStartConflict,
+// the required-category rules), and all four writes. The update/delete halves
+// MOVE TICKETS through update_task (recategorising a populated sign-off column
+// drains it; deleting one reassigns) — never a second writer of tasks.status,
+// which is the exact shape those functions exist to avoid. TS reached
+// tasks.ts by dynamic import to dodge the cycle; Rust has no cycle problem.
 
 use crate::boards::get_board_agent_config;
 use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
@@ -754,6 +752,373 @@ pub async fn reorder_statuses(
     tx.commit().await?;
     publish_board(
         realtime,
+        board_id,
+        &BoardEvent {
+            kind_tag: "board",
+            task_id: None,
+            deleted: None,
+        },
+    );
+    Ok(Ok(()))
+}
+
+// ── The update/delete writes ─────────────────────────────────────────────────
+// Both MOVE TICKETS, which is why they waited for the tasks slice: the moves
+// go through `update_task` — never a second writer of tasks.status — and the
+// actor who reshaped the column owns them on every ticket's activity log.
+
+/// updateStatus's patch — every field present-or-absent (no clears).
+pub struct StatusPatch {
+    pub label: Option<String>,
+    pub color: Option<String>,
+    pub category: Option<String>,
+    pub agent_start: Option<bool>,
+    pub position: Option<i32>,
+}
+
+/// statuses.ts updateStatus. Key-addressed: boards that never customized
+/// serve VIRTUAL defaults with no row ids, so the stable handle is the status
+/// KEY — materialize turns the virtual set into rows on first touch, then the
+/// key resolves.
+///
+/// `actor` is required for the same reason delete_status requires one:
+/// recategorising a populated sign-off column MOVES TICKETS, and a ticket move
+/// belongs to the person who caused it. Optional would mean a caller could
+/// forget, and the moves would land on the record unattributed.
+pub async fn update_status(
+    deps: &crate::tasks::TaskDeps,
+    board_id: &str,
+    key: &str,
+    patch: &StatusPatch,
+    actor: &str,
+) -> Result<Result<(), String>, sqlx::Error> {
+    let pg = &deps.pg;
+    if key == "blocked" {
+        return Ok(Err("Blocked is a system status".into()));
+    }
+    materialize(pg, board_id).await?;
+    let cur: Option<(String, String, String, bool)> = sqlx::query_as(
+        "select id::text, label, category, agent_start from board_statuses \
+         where key = $1 and board_id = $2::uuid",
+    )
+    .bind(key)
+    .bind(board_id)
+    .fetch_optional(pg)
+    .await?;
+    // A key that names nothing used to no-op and report success — a silent
+    // failure, and one that hides a typo'd guard rather than surfacing it.
+    let Some((row_id, cur_label, cur_category, cur_agent_start)) = cur else {
+        return Ok(Err(format!("\"{key}\" is not a status on this board")));
+    };
+    // The effective post-patch column, so neither flag can arrive alone and
+    // slip the pair past the check. FIRST, before anything below writes: the
+    // drain moves tickets, and a write that is going to be refused must not
+    // move any. `PUT {review column, category:'done', agentStart:true}` is
+    // exactly that write — legal-looking until the pair is checked, and its
+    // drain would have emptied the column on the way to a 400.
+    let effective_category = patch.category.clone().unwrap_or(cur_category.clone());
+    let effective_agent_start = patch.agent_start.unwrap_or(cur_agent_start);
+    if let Some(conflict) = agent_start_conflict(&effective_category, effective_agent_start) {
+        return Ok(Err(conflict.into()));
+    }
+    // Recategorising is the same loss as deleting: symmetric with
+    // delete_status. …and it is the same ticket move as emptying the column
+    // by hand, so it is made, not refused — through update_task, exactly as
+    // delete_status does.
+    if let Some(new_category) = &patch.category
+        && *new_category != cur_category
+    {
+        if let Err(sentence) =
+            assert_not_last_of_category(pg, board_id, &row_id, &cur_category).await?
+        {
+            return Ok(Err(sentence));
+        }
+        if let Err(sentence) = drain_signoff_column(
+            deps,
+            board_id,
+            key,
+            &cur_label,
+            &row_id,
+            &cur_category,
+            new_category,
+            actor,
+        )
+        .await?
+        {
+            return Ok(Err(sentence));
+        }
+    }
+    // ONE statement, not five. `category` and `agent_start` are read TOGETHER
+    // by agent_start_conflict, so five separate writes meant a failure between
+    // them could leave the pair the checked patch was validated against split
+    // across the column — a review column still flagged agent-start, refused
+    // on every edit but sitting there. Addressed by id: the row was resolved
+    // above.
+    let mut frags: Vec<String> = Vec::new();
+    if patch.label.is_some() {
+        frags.push(format!("label = ${}", frags.len() + 1));
+    }
+    if patch.color.is_some() {
+        frags.push(format!("color = ${}", frags.len() + 1));
+    }
+    if patch.category.is_some() {
+        frags.push(format!("category = ${}", frags.len() + 1));
+    }
+    if patch.agent_start.is_some() {
+        frags.push(format!("agent_start = ${}", frags.len() + 1));
+    }
+    if patch.position.is_some() {
+        frags.push(format!("position = ${}", frags.len() + 1));
+    }
+    if !frags.is_empty() {
+        // AssertSqlSafe: the placeholders are this function's own set list;
+        // every value stays a bind.
+        let sql = format!(
+            "update board_statuses set {} where id = ${}",
+            frags.join(", "),
+            frags.len() + 1
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+        if let Some(l) = &patch.label {
+            q = q.bind(l.trim());
+        }
+        if let Some(c) = &patch.color {
+            q = q.bind(c);
+        }
+        if let Some(c) = &patch.category {
+            q = q.bind(c);
+        }
+        if let Some(a) = patch.agent_start {
+            q = q.bind(a);
+        }
+        if let Some(p) = patch.position {
+            q = q.bind(p);
+        }
+        q.bind(&row_id).execute(pg).await?;
+    }
+    publish_board(
+        &deps.realtime,
+        board_id,
+        &BoardEvent {
+            kind_tag: "board",
+            task_id: None,
+            deleted: None,
+        },
+    );
+    Ok(Ok(()))
+}
+
+/// What a sign-off category HOLDS, for the refusal sentences (statuses.ts
+/// SIGNOFF_CATEGORIES).
+fn signoff_what(category: &str) -> Option<&'static str> {
+    match category {
+        "review" => Some("waiting for sign-off"),
+        "done" => Some("a person signed off on"),
+        _ => None,
+    }
+}
+
+/// statuses.ts drainSignoffColumn — recategorising a populated sign-off
+/// column must not release its tickets. With exactly ONE sibling of the same
+/// kind the move is made for the owner (each ticket through update_task, so
+/// activity/completed_at/watchers/dispatch all happen); with none or several
+/// it is REFUSED and the sentence makes the owner choose, because which
+/// column those tickets belong in is a person's call.
+///
+/// The sibling-count sentences and the stopped-mid-drain sentence are the
+/// product's, verbatim; the stopped one matters most — a drain that failed
+/// halfway says exactly where it stopped and that re-asking carries on.
+#[allow(clippy::too_many_arguments)] // the drain's inputs are the column's — all eight name one
+async fn drain_signoff_column(
+    deps: &crate::tasks::TaskDeps,
+    board_id: &str,
+    key: &str,
+    label: &str,
+    row_id: &str,
+    from: &str,
+    to: &str,
+    actor: &str,
+) -> Result<Result<(), String>, sqlx::Error> {
+    if from == to {
+        return Ok(Ok(()));
+    }
+    let Some(what) = signoff_what(from) else {
+        return Ok(Ok(()));
+    };
+    let pg = &deps.pg;
+    let held: Vec<(String,)> = sqlx::query_as(
+        "select id::text from tasks where board_id = $1::uuid and status = $2 \
+         order by created_at asc",
+    )
+    .bind(board_id)
+    .bind(key)
+    .fetch_all(pg)
+    .await?;
+    let n = held.len();
+    if n == 0 {
+        return Ok(Ok(()));
+    }
+    let one = n == 1;
+    let tickets = format!("{n} ticket{}", if one { "" } else { "s" });
+    let siblings: Vec<(String, String)> = sqlx::query_as(
+        "select key, label from board_statuses \
+         where board_id = $1::uuid and category = $2 and id <> $3::uuid \
+         order by position, created_at",
+    )
+    .bind(board_id)
+    .bind(from)
+    .bind(row_id)
+    .fetch_all(pg)
+    .await?;
+    if siblings.is_empty() {
+        return Ok(Err(format!(
+            "\"{label}\" still holds {tickets} {what}, and it is this board's only {from} column \
+             — there is nowhere of the same kind to move {} to, so changing the category here \
+             would release {} with nothing on the record. Move {} first, then change the \
+             category.",
+            if one { "it" } else { "them" },
+            if one { "it" } else { "them" },
+            if one { "that ticket" } else { "those tickets" },
+        )));
+    }
+    if siblings.len() > 1 {
+        let cols = siblings
+            .iter()
+            .map(|(_, l)| format!("\"{l}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Ok(Err(format!(
+            "\"{label}\" still holds {tickets} {what}, and this board has {} other {from} columns \
+             ({cols}) — which one {} in is your call, not ours. Move {} first, then change the \
+             category.",
+            siblings.len(),
+            if one { "it belongs" } else { "they belong" },
+            if one { "that ticket" } else { "those tickets" },
+        )));
+    }
+    let (dest_key, dest_label) = &siblings[0];
+    // BEFORE the category changes, for the same reason delete_status moves
+    // before it drops the row: update_task reads the board's columns as they
+    // are.
+    let mut moved = 0usize;
+    for (i, (ticket,)) in held.iter().enumerate() {
+        let patch = crate::tasks::TaskPatch {
+            status: Some(dest_key.clone()),
+            status_note: Some(format!(
+                "the \"{label}\" column was recategorised as \"{to}\""
+            )),
+            ..Default::default()
+        };
+        match crate::tasks::update_task(deps, ticket, patch, &crate::tasks::TaskActor::human(actor))
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                let sofar = if moved > 0 {
+                    format!(
+                        "{moved} of {tickets} had already moved to \"{dest_label}\", where {} \
+                         still {what}",
+                        if moved == 1 { "it is" } else { "they are" }
+                    )
+                } else {
+                    "no ticket moved".to_string()
+                };
+                return Ok(Err(format!(
+                    "\"{label}\" was not recategorised: moving its tickets into \"{dest_label}\" \
+                     stopped on one of them — {}. {sofar}, and \"{label}\" still has its {from} \
+                     category, so nothing was released. Make the same change again once that is \
+                     fixed: the tickets already moved are out of this column, so it carries on \
+                     from where it stopped.",
+                    e.message()
+                )));
+            }
+        }
+        moved = i + 1;
+    }
+    Ok(Ok(()))
+}
+
+/// statuses.ts deleteStatus. The last intake and the last terminal column are
+/// protected on every board, and the last review catch on every board that
+/// permits agents — status_meta resolves each of those to a real key for
+/// whoever needs it.
+///
+/// THE REASSIGNMENT IS AN ORDINARY STATUS MOVE, and `actor` is why this takes
+/// one. A bulk `update tasks set status = …` writes no activity row, never
+/// stamps completed_at when the tickets land in a done column, tells no
+/// watcher, and never reaches the push side when they land in a pickup queue
+/// — four things update_task does, that a second writer of tasks.status has
+/// to remember. There is no second writer: each ticket moves through
+/// update_task, as the person who deleted the column, and inherits all four.
+/// N updates instead of one statement is the price, and deleting a populated
+/// column is a rare admin action; being wrong four ways was the alternative.
+pub async fn delete_status(
+    deps: &crate::tasks::TaskDeps,
+    board_id: &str,
+    key: &str,
+    reassign_to: &str,
+    actor: &str,
+) -> Result<Result<(), String>, sqlx::Error> {
+    let pg = &deps.pg;
+    if key == "blocked" {
+        return Ok(Err("Blocked is a system status".into()));
+    }
+    materialize(pg, board_id).await?;
+    let victim: Option<(String, String, String, String)> = sqlx::query_as(
+        "select id::text, key, label, category from board_statuses \
+         where key = $1 and board_id = $2::uuid",
+    )
+    .bind(key)
+    .bind(board_id)
+    .fetch_optional(pg)
+    .await?;
+    // Same as update_status, and it was the asymmetric half: a key that names
+    // nothing used to return 200 {ok:true} here, so DELETE of a typo'd or
+    // already-deleted column reported that a column had been removed and its
+    // tickets reassigned when neither had happened.
+    let Some((victim_id, victim_key, victim_label, victim_category)) = victim else {
+        return Ok(Err(format!("\"{key}\" is not a status on this board")));
+    };
+    if let Err(sentence) =
+        assert_not_last_of_category(pg, board_id, &victim_id, &victim_category).await?
+    {
+        return Ok(Err(sentence));
+    }
+    let meta = status_meta(pg, board_id).await?;
+    if !meta.keys.iter().any(|k| k == reassign_to) || reassign_to == victim_key {
+        return Ok(Err("pick a surviving status for its tickets".into()));
+    }
+    let doomed: Vec<(String,)> = sqlx::query_as(
+        "select id::text from tasks where board_id = $1::uuid and status = $2 \
+         order by created_at asc",
+    )
+    .bind(board_id)
+    .bind(&victim_key)
+    .fetch_all(pg)
+    .await?;
+    // BEFORE the column is dropped: update_task refuses a status the board
+    // does not have, and while this move is legal the one being vacated must
+    // still resolve for the ticket it is reading. A refused move (TS lets the
+    // throw carry out of the loop) names the ticket that could not move.
+    for (ticket,) in &doomed {
+        let patch = crate::tasks::TaskPatch {
+            status: Some(reassign_to.to_string()),
+            status_note: Some(format!("the \"{victim_label}\" column was deleted")),
+            ..Default::default()
+        };
+        match crate::tasks::update_task(deps, ticket, patch, &crate::tasks::TaskActor::human(actor))
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => return Ok(Err(e.message())),
+        }
+    }
+    sqlx::query("delete from board_statuses where id = $1::uuid")
+        .bind(&victim_id)
+        .execute(pg)
+        .await?;
+    publish_board(
+        &deps.realtime,
         board_id,
         &BoardEvent {
             kind_tag: "board",
