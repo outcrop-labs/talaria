@@ -38,6 +38,7 @@ pub mod define;
 pub mod json;
 pub mod json_schema;
 pub mod prompt_rules;
+pub mod recorded;
 pub mod run;
 pub mod schema;
 pub mod text;

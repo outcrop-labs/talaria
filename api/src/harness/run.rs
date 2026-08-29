@@ -1498,7 +1498,7 @@ mod tests {
     use crate::harness::define::{CleanFn, GroundFn, GuardDecl, RoleFloor, Widen, define_harness};
     use crate::harness::schema::{Field, Schema};
     use crate::harness::transport::ToolPolicy;
-    use crate::persona::{PersonaRow, persona_index};
+    use crate::persona::PersonaRow;
     use crate::state::AppState;
     use std::sync::Mutex;
 
@@ -1669,348 +1669,25 @@ mod tests {
         d
     }
 
-    // ── The fake world ───────────────────────────────────────────────────────
+    // ── The recorded world (recorded.rs, the one copy) ─────────────────────
+    //
+    // The scaffolding this corpus was ported against became `recorded.rs` —
+    // the recorded-transcript harness — because 22 def test files were about
+    // to need the same fake world and a second copy of a fake is worse than
+    // a second copy of real code. These aliases keep the corpus's vocabulary;
+    // the thin wrappers below keep its ergonomics.
 
-    /// What the transport hands back, in order. The last one repeats.
-    #[derive(Clone)]
-    enum Reply {
-        Text(String),
-        Full(TransportReply),
-    }
-
-    fn replies(v: &[&str]) -> Vec<Reply> {
-        v.iter().map(|s| Reply::Text((*s).to_string())).collect()
-    }
-
-    /// `world({ model: null })` and "never set" are different worlds — the
-    /// first is an install whose gateway serves nothing this spec can reach.
-    enum ModelAnswer {
-        Default,
-        NoModel,
-        Resolved(String, &'static str),
-    }
-
-    #[derive(Clone, Copy)]
-    struct FactSpec {
-        value: bool,
-        source: &'static str,
-    }
-
-    fn probe(value: bool) -> FactSpec {
-        FactSpec {
-            value,
-            source: "probe",
-        }
-    }
-
-    fn sourced(value: bool, source: &'static str) -> FactSpec {
-        FactSpec { value, source }
-    }
-
-    /// Capability facts keyed by full 'endpoint:model' key or bare endpoint
-    /// name (the shorthand most cases want). Absent = UNKNOWN.
-    fn facts(specs: &[(&str, &str, FactSpec)]) -> HashMap<String, HashMap<String, FactSpec>> {
-        let mut out: HashMap<String, HashMap<String, FactSpec>> = HashMap::new();
-        for (key, cap, spec) in specs {
-            out.entry((*key).to_string())
-                .or_default()
-                .insert((*cap).to_string(), *spec);
-        }
-        out
-    }
-
-    struct World {
-        replies: Vec<Reply>,
-        model: ModelAnswer,
-        endpoints: Option<Vec<String>>,
-        facts: HashMap<String, HashMap<String, FactSpec>>,
-        guard_mode: GuardMode,
-        policed_hosts: Vec<String>,
-        personas: Vec<PersonaRow>,
-        /// The config lookup dies (the database is down mid-run). The Rust
-        /// `persona_keys` edge has no error channel — by design, because the
-        /// REAL edge degrades to no keys rather than failing the run — so the
-        /// throw is simulated as its landing state.
-        personas_throw: bool,
-        transport_error: Option<String>,
-        /// The one caller-side routing override: no endpoints, no upstream.
-        empty_routing: bool,
-        /// Set to record every model id the capability index was asked about.
-        persona_asks: Option<Arc<Mutex<Vec<String>>>>,
-    }
-
-    impl Default for World {
-        fn default() -> Self {
-            World {
-                replies: replies(&["{\"verdict\":\"pass\",\"summary\":\"looks right\"}"]),
-                model: ModelAnswer::Default,
-                endpoints: None,
-                facts: HashMap::new(),
-                guard_mode: GuardMode::Observe,
-                policed_hosts: Vec::new(),
-                personas: Vec::new(),
-                personas_throw: false,
-                transport_error: None,
-                empty_routing: false,
-                persona_asks: None,
-            }
-        }
-    }
-
-    #[derive(Clone)]
-    struct Recorder {
-        world: Arc<World>,
-        requests: Arc<Mutex<Vec<TransportRequest>>>,
-        runs: Arc<Mutex<Vec<HarnessRunRow>>>,
-        recorded: Arc<Mutex<Vec<Finding>>>,
-        clock: Arc<Mutex<i64>>,
-    }
+    use crate::harness::recorded::{
+        RecordedModel as ModelAnswer, RecordedReply as Reply, RecordedRun as Recorder,
+        RecordedWorld as World, facts, probe, recorded_run, replies, sourced,
+    };
 
     fn world(w: World) -> Recorder {
-        Recorder {
-            world: Arc::new(w),
-            requests: Arc::new(Mutex::new(Vec::new())),
-            runs: Arc::new(Mutex::new(Vec::new())),
-            recorded: Arc::new(Mutex::new(Vec::new())),
-            clock: Arc::new(Mutex::new(0)),
-        }
-    }
-
-    /// `personaKeysFrom` — the real resolver over recorded agent-version rows,
-    /// same fold as the `persona_keys` edge's `persona_capability_keys` but
-    /// over rows a test owns.
-    fn persona_keys_from(model: &str, rows: &[PersonaRow]) -> Vec<String> {
-        let mut seen: Vec<String> = Vec::new();
-        for t in persona_index(rows).get(model).into_iter().flatten() {
-            let key = capability_key(&t.endpoint, &t.model);
-            if !seen.contains(&key) {
-                seen.push(key);
-            }
-        }
-        seen
-    }
-
-    /// Keys are 'endpoint:model'. A full key in `facts` wins; otherwise the
-    /// bare endpoint name applies to every model it serves.
-    fn facts_for(world: &World, key: &str) -> HashMap<String, CapabilityFact> {
-        let endpoint = key.split(':').next().unwrap_or(key);
-        let empty = HashMap::new();
-        let known = world
-            .facts
-            .get(key)
-            .or_else(|| world.facts.get(endpoint))
-            .unwrap_or(&empty);
-        known
-            .iter()
-            .map(|(cap, spec)| {
-                (
-                    cap.clone(),
-                    CapabilityFact {
-                        value: spec.value,
-                        source: spec.source.to_string(),
-                        // The stub IS the expiry policy (the real edge owns
-                        // it), so `at` is never consulted here.
-                        at: String::new(),
-                        detail: None,
-                        score: None,
-                    },
-                )
-            })
-            .collect()
-    }
-
-    impl Recorder {
-        fn deps(&self) -> Arc<HarnessDeps> {
-            let world = self.world.clone();
-            let requests = self.requests.clone();
-            let runs = self.runs.clone();
-            let recorded = self.recorded.clone();
-            let clock = self.clock.clone();
-            // A persona is not on the gateway catalog, so `routing` finds no
-            // endpoints for it — which is precisely the condition that used
-            // to leave `keys` empty.
-            let endpoints = world.endpoints.clone().unwrap_or_else(|| {
-                if !world.personas.is_empty() || world.personas_throw {
-                    Vec::new()
-                } else {
-                    vec!["spark".to_string()]
-                }
-            });
-            Arc::new(HarnessDeps {
-                resolve_model: {
-                    let world = world.clone();
-                    Arc::new(move |_spec, _user| {
-                        let world = world.clone();
-                        Box::pin(async move {
-                            match &world.model {
-                                ModelAnswer::Default => Some(("pl-main".to_string(), "pin")),
-                                ModelAnswer::NoModel => None,
-                                ModelAnswer::Resolved(m, s) => Some((m.clone(), *s)),
-                            }
-                        })
-                    })
-                },
-                slot_effort: Arc::new(|_slot, _model| Box::pin(async { None })),
-                routing: {
-                    let endpoints = endpoints.clone();
-                    let empty = world.empty_routing;
-                    Arc::new(move |model| {
-                        let endpoints = endpoints.clone();
-                        Box::pin(async move {
-                            if empty {
-                                (Vec::new(), String::new())
-                            } else {
-                                (endpoints.clone(), model)
-                            }
-                        })
-                    })
-                },
-                persona_keys: {
-                    let world = world.clone();
-                    Arc::new(move |model| {
-                        let world = world.clone();
-                        Box::pin(async move {
-                            if let Some(asks) = &world.persona_asks {
-                                asks.lock().expect("persona asks").push(model.clone());
-                                return Vec::new();
-                            }
-                            if world.personas_throw {
-                                return Vec::new();
-                            }
-                            persona_keys_from(&model, &world.personas)
-                        })
-                    })
-                },
-                // The cardinal rule of capability.ts, reproduced exactly: only
-                // a fact that positively says "no" counts as missing.
-                missing_capabilities: {
-                    let world = world.clone();
-                    Arc::new(move |key, asked| {
-                        let world = world.clone();
-                        Box::pin(async move {
-                            let known = facts_for(&world, &key);
-                            asked
-                                .iter()
-                                .filter(|cap| {
-                                    known.get(cap.as_str()).map(|f| !f.value).unwrap_or(false)
-                                })
-                                .cloned()
-                                .collect()
-                        })
-                    })
-                },
-                capabilities: {
-                    let world = world.clone();
-                    Arc::new(move |key| {
-                        let world = world.clone();
-                        Box::pin(async move { facts_for(&world, &key) })
-                    })
-                },
-                reach: Arc::new(|_keys, _wanted| Box::pin(async { HashMap::new() })),
-                transport: {
-                    let world = world.clone();
-                    Arc::new(move |req| {
-                        let world = world.clone();
-                        let requests = requests.clone();
-                        Box::pin(async move {
-                            if let Some(err) = &world.transport_error {
-                                return Err(err.clone());
-                            }
-                            let n = {
-                                let mut r = requests.lock().expect("requests");
-                                r.push(req);
-                                r.len()
-                            };
-                            let reply = world
-                                .replies
-                                .get(n.saturating_sub(1))
-                                .or_else(|| world.replies.last());
-                            match reply {
-                                Some(Reply::Full(r)) => Ok(r.clone()),
-                                Some(Reply::Text(t)) => Ok(TransportReply {
-                                    kind: TransportKind::Gateway,
-                                    text: t.clone(),
-                                    tool_names: Vec::new(),
-                                    tool_calls: None,
-                                    usage: None,
-                                    contract_dropped: false,
-                                }),
-                                None => Ok(TransportReply {
-                                    kind: TransportKind::Gateway,
-                                    text: String::new(),
-                                    tool_names: Vec::new(),
-                                    tool_calls: None,
-                                    usage: None,
-                                    contract_dropped: false,
-                                }),
-                            }
-                        })
-                    })
-                },
-                guard_config: {
-                    let world = world.clone();
-                    Arc::new(move || {
-                        let world = world.clone();
-                        Box::pin(async move { Some(guard_config_of(&world)) })
-                    })
-                },
-                // The REAL gate-safe rules — `gate_safe` was split out of
-                // `guard_text` for exactly this call.
-                guard_text: {
-                    let world = world.clone();
-                    Arc::new(move |text, input| {
-                        let world = world.clone();
-                        Box::pin(async move {
-                            let config = guard_config_of(&world);
-                            guard::gate_safe(&config, &text, input.as_deref())
-                        })
-                    })
-                },
-                record_findings: {
-                    let recorded = recorded.clone();
-                    Arc::new(move |findings, _meta| {
-                        let recorded = recorded.clone();
-                        Box::pin(async move {
-                            recorded.lock().expect("recorded").extend(findings);
-                        })
-                    })
-                },
-                record_run: {
-                    let runs = runs.clone();
-                    Arc::new(move |row| {
-                        let runs = runs.clone();
-                        Box::pin(async move {
-                            runs.lock().expect("runs").push(row);
-                        })
-                    })
-                },
-                now: {
-                    let clock = clock.clone();
-                    Arc::new(move || {
-                        let mut c = clock.lock().expect("clock");
-                        *c += 7;
-                        *c
-                    })
-                },
-            })
-        }
-    }
-
-    fn guard_config_of(world: &World) -> GuardConfig {
-        GuardConfig {
-            mode: world.guard_mode,
-            checks: serde_json::Map::new(),
-            min_confidence: 0.5,
-            policed_hosts: world.policed_hosts.clone(),
-        }
+        recorded_run(w)
     }
 
     fn ctx(r: &Recorder) -> RunContext {
-        RunContext {
-            caller: "test:harness".into(),
-            deps: Some(r.deps()),
-            ..Default::default()
-        }
+        r.ctx("test:harness")
     }
 
     async fn run(
@@ -2038,7 +1715,7 @@ mod tests {
     }
 
     fn recorded(r: &Recorder) -> Vec<Finding> {
-        r.recorded.lock().expect("recorded").clone()
+        r.findings.lock().expect("findings").clone()
     }
 
     fn checks(res: &HarnessResult) -> Vec<&str> {
