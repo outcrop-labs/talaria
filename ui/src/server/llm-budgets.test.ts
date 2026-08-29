@@ -126,3 +126,34 @@ describe('checkBudget — the circuit breaker', () => {
     expect(await checkBudget('api:anyone')).toBeNull()
   })
 })
+
+describe('checkBudget — per-key caps (#265)', () => {
+  it('a key cap enforces even with org budgets OFF — the default policy alone would never read spend', async () => {
+    await setBudgets({ windowHours: 24, org: null, perAgent: null, agents: {} })
+    spendBySubject.set('api:leaky', window(100, 0))
+    const d = await checkBudget('api:leaky', { tokens: 100, usd: null })
+    expect(d).toMatchObject({ scope: 'caller', subject: 'api:leaky', unit: 'tokens', limit: 100, used: 100, via: 'key' })
+    // The advice points at the surface the owner controls, not the admin's.
+    expect(budgetMessage(d!)).toContain('Settings → API keys')
+  })
+
+  it('a key cap cannot RAISE past an admin per-caller default — the admin number still binds', async () => {
+    await setBudgets({ windowHours: 24, org: null, perAgent: { tokens: 500, usd: null }, agents: {} })
+    spendBySubject.set('api:greedy', window(500, 0))
+    const d = await checkBudget('api:greedy', { tokens: 5000, usd: null })
+    expect(d).toMatchObject({ limit: 500, via: 'admin' })
+  })
+
+  it('a key cap LOWER than the admin default binds, and says so', async () => {
+    await setBudgets({ windowHours: 24, org: null, perAgent: { tokens: 5000, usd: null }, agents: {} })
+    spendBySubject.set('api:frugal', window(500, 0))
+    const d = await checkBudget('api:frugal', { tokens: 500, usd: null })
+    expect(d).toMatchObject({ limit: 500, via: 'key' })
+  })
+
+  it('a $ key cap rides the same merge — unpriced tokens still never trip it', async () => {
+    await setBudgets({ windowHours: 24, org: null, perAgent: null, agents: {} })
+    spendBySubject.set('api:cloud', { tokens: 9_000_000, cost: 0, unpricedTokens: 9_000_000 })
+    expect(await checkBudget('api:cloud', { tokens: null, usd: 10 })).toBeNull()
+  })
+})

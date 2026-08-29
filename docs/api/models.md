@@ -13,6 +13,7 @@
 | [`/api/keys`](#apikeys) | GET | `session` |
 | [`/api/keys`](#apikeys) | POST | `session` |
 | [`/api/keys/{id}`](#apikeysid) | DELETE | `session` |
+| [`/api/keys/{id}`](#apikeysid) | PUT | `session` |
 | [`/api/models`](#apimodels) | GET | `session` |
 | [`/api/models/efforts`](#apimodelsefforts) | GET | `session` |
 
@@ -49,11 +50,18 @@ Source: [`ui/src/routes/api/keys.ts`](../../ui/src/routes/api/keys.ts)
 
 Source: [`ui/src/routes/api/keys.$id.ts`](../../ui/src/routes/api/keys.$id.ts)
 
-> DELETE → revoke one of MY keys (immediate; the hash stays for audit).
-
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | DELETE | `session` | — | `{ok}` | 200 | audit |
+| PUT | `session` | [body](#put-apikeysid-body) | `{ok}` | 200, 404 | audit |
+
+### PUT `/api/keys/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `spendCapTokens` | `z.number().int().min(0).max(1e15).nullish()` |  |
+| `spendCapUsd` | `z.number().min(0).max(1e9).nullish()` |  |
+| `rateLimitPerMinute` | `z.number().int().min(0).max(10_000).nullish()` |  |
 
 ## `/api/models`
 
