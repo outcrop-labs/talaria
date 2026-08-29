@@ -44,14 +44,19 @@ pub fn key_env_allowed(env_var: &str) -> bool {
         .is_match(env_var)
 }
 
-fn fleet_env_path() -> std::path::PathBuf {
-    // FLEET_DIR = TALARIA_FLEET_DIR ?? <cwd>/../fleet (fleet-render.ts:38).
+/// FLEET_DIR (fleet-render.ts:38) — the render output tree whose fleet.json is
+/// the transport table of where each agent's gateway lives.
+pub(crate) fn fleet_dir() -> std::path::PathBuf {
     if let Ok(d) = std::env::var("TALARIA_FLEET_DIR") {
-        return std::path::PathBuf::from(d).join(".env");
+        return std::path::PathBuf::from(d);
     }
     std::env::current_dir()
-        .map(|c| c.join("../fleet/.env"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("../fleet/.env"))
+        .map(|c| c.join("../fleet"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("../fleet"))
+}
+
+fn fleet_env_path() -> std::path::PathBuf {
+    fleet_dir().join(".env")
 }
 
 /// Resolve a key from the server env or the fleet .env — values never leave

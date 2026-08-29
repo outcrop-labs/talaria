@@ -6,6 +6,22 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Changed
 
+- **The first product reads speak Rust**: `/api/agents` (the fleet list with
+  tiers and per-agent access), `/api/apps` (the enabled-app manifest),
+  `/api/activity` (the merged feed with the admins-only audit kind), and
+  `/api/cost` (the full ledger overview — priced windows, per-model,
+  per-agent, per-day) all serve from the Rust api, byte-diffed against TS on
+  the same sessions for admin, member, and anonymous callers. The proxy gains
+  an exact-match list alongside its prefixes: `/api/agents` and `/api/apps`
+  are whole-path migrations because their sub-routes (`register`,
+  `heartbeat`, the app-server gateway) stay TS until their batches.
+- **A Rust-served budgeted call was flying blind**: the priced-view SQL that
+  `spendSince` reads bound its cache multipliers as `$2`/`$3`, colliding with
+  the caller's own second bind — the statement couldn't even prepare
+  (`integer * text`), and the budget check's error-swallowing `.ok()?` turned
+  that into "no spend data" on every Rust-served gateway call with a budget
+  attached. The multipliers are values in the SQL text now, exactly as TS
+  interpolates them; the statement prepares and returns real spend.
 - **Research searches on proven capability, not on hope**: a model is only handed the
   search stage when something proves it can search — a probe or catalog that measured it
   browsing, or a checked search backend (SearXNG) the model can drive through a tool. An

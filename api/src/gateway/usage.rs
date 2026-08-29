@@ -124,6 +124,17 @@ fn priced() -> &'static str {
     &PRICED_STR
 }
 
+/// A float the way JSON.stringify prints it: an integral value serializes as
+/// an integer ("0", "1"), not Rust's "0.0". Costs and shares ride the wire
+/// through this so a $0 day is byte-identical to TS's.
+fn js_num(v: f64) -> serde_json::Number {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.007_199_254_740_992e15 {
+        serde_json::Number::from(v as i64)
+    } else {
+        serde_json::Number::from_f64(v).expect("finite f64")
+    }
+}
+
 /// Billable spend over a rolling window, optionally for one caller
 /// (`agent_model` — a fleet model id for persona rows, `api:<key>` for
 /// gateway rows). Port of spendSince; called before every budgeted call and
@@ -161,6 +172,279 @@ pub async fn spend_since(
             unpriced_tokens: unpriced,
         })
         .unwrap_or_default())
+}
+
+// ── The token ledger overview (usage.ts costOverview → GET /api/cost) ────────
+
+/// One window's aggregate, in wire order (usage.ts's `t()` shape).
+#[derive(Debug, serde::Serialize)]
+pub struct CostWindow {
+    prompt: i32,
+    completion: i32,
+    cache: i32,
+    generations: i32,
+    cost: serde_json::Number,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CostSplit {
+    local: i64,
+    cloud: i64,
+    other: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostTotals {
+    today: CostWindow,
+    week: CostWindow,
+    month: CostWindow,
+    estimated_share: serde_json::Number,
+    split: CostSplit,
+    unpriced_cloud_tokens: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostPerModel {
+    llm_model: Option<String>,
+    endpoint_class: Option<String>,
+    tokens: i64,
+    /// Null when every row for the model is unpriced — shown, never silent $0.
+    cost: Option<serde_json::Number>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostPerAgent {
+    agent_model: Option<String>,
+    prompt: i32,
+    completion: i32,
+    generations: i32,
+    last_used: Option<String>,
+    cost: serde_json::Number,
+    /// 0..1 of this agent's attributed tokens served locally.
+    local_share: Option<serde_json::Number>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CostPerDay {
+    day: String,
+    prompt: i32,
+    completion: i32,
+    generations: i32,
+    local: i32,
+    cloud: i32,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostOverview {
+    pub totals: CostTotals,
+    pub per_model: Vec<CostPerModel>,
+    pub per_agent: Vec<CostPerAgent>,
+    pub per_day: Vec<CostPerDay>,
+}
+
+/// The token ledger overview (usage.ts costOverview): totals, per-model,
+/// per-agent, per-day — the Observability cost page's whole read. The nine
+/// aggregates are independent; TS fans them out concurrently and so does
+/// this (alerts + /cost call it on every load).
+pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
+    let priced = priced();
+    // AssertSqlSafe everywhere below: each string interpolates only the
+    // PRICED const — intervals go in as make_interval binds, never text.
+    let window = |days: i32| {
+        let sql = format!(
+            "with priced as ({priced}) \
+             select coalesce(sum(prompt_tokens),0)::int as prompt, \
+                    coalesce(sum(completion_tokens),0)::int as completion, \
+                    coalesce(sum(cache_write_tokens + cache_read_tokens),0)::int as cache, \
+                    count(*)::int as generations, \
+                    coalesce(sum(cost), 0)::float8 as cost \
+             from priced where created_at > now() - make_interval(days => $1)"
+        );
+        let q = sqlx::query_as::<_, (i32, i32, i32, i32, f64)>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(days);
+        async move { q.fetch_one(pg).await }
+    };
+    let est = async {
+        let row: (i32, i32) = sqlx::query_as(
+            "select count(*) filter (where estimated)::int as est, count(*)::int as all_n \
+             from usage_events where created_at > now() - make_interval(days => $1)",
+        )
+        .bind(30)
+        .fetch_one(pg)
+        .await?;
+        Ok::<_, sqlx::Error>(row)
+    };
+    let split = async {
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local, \
+                   coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud, \
+                   coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class is null), 0)::bigint as other \
+             from usage_events where created_at > now() - make_interval(days => $1)",
+        )
+        .bind(30)
+        .fetch_one(pg)
+        .await
+    };
+    let unpriced = async {
+        let sql = format!(
+            "with priced as ({priced}) \
+             select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens \
+             from priced where created_at > now() - make_interval(days => $1) \
+               and endpoint_class = 'cloud' and cost is null"
+        );
+        let row: (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(30)
+            .fetch_one(pg)
+            .await?;
+        Ok::<_, sqlx::Error>(row)
+    };
+    // (llmModel, endpointClass, tokens, cost)
+    type PerModelRow = (Option<String>, Option<String>, i64, Option<f64>);
+    // (agentModel, prompt, completion, generations, last_ms, cost, localShare)
+    type PerAgentRow = (Option<String>, i32, i32, i32, Option<i64>, f64, Option<f64>);
+
+    let per_model = async {
+        let sql = format!(
+            "with priced as ({priced}) \
+             select llm_model as \"llmModel\", endpoint_class as \"endpointClass\", \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens, \
+                    sum(cost)::float8 as cost \
+             from priced where created_at > now() - make_interval(days => $1) \
+             group by llm_model, endpoint_class \
+             order by (endpoint_class = 'local') desc nulls last, tokens desc"
+        );
+        let rows: Vec<PerModelRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(30)
+            .fetch_all(pg)
+            .await?;
+        Ok::<_, sqlx::Error>(
+            rows.into_iter()
+                .map(|(llm_model, endpoint_class, tokens, cost)| CostPerModel {
+                    llm_model,
+                    endpoint_class,
+                    tokens,
+                    cost: cost.map(js_num),
+                })
+                .collect(),
+        )
+    };
+    let per_agent = async {
+        let sql = format!(
+            "with priced as ({priced}) \
+             select agent_model as \"agentModel\", \
+                    coalesce(sum(prompt_tokens),0)::int as prompt, \
+                    coalesce(sum(completion_tokens),0)::int as completion, \
+                    count(*)::int as generations, \
+                    (trunc(extract(epoch from max(created_at)) * 1000))::bigint as last_ms, \
+                    coalesce(sum(cost), 0)::float8 as cost, \
+                    case when count(*) filter (where endpoint_class is not null) = 0 then null \
+                         else sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local')::float8 \
+                              / nullif(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class is not null), 0) \
+                    end as \"localShare\" \
+             from priced where created_at > now() - make_interval(days => $1) \
+             group by agent_model \
+             order by sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) desc"
+        );
+        let rows: Vec<PerAgentRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(30)
+            .fetch_all(pg)
+            .await?;
+        Ok::<_, sqlx::Error>(
+            rows.into_iter()
+                .map(
+                    |(agent_model, prompt, completion, generations, last_ms, cost, local_share)| {
+                        CostPerAgent {
+                            agent_model,
+                            prompt,
+                            completion,
+                            generations,
+                            last_used: last_ms.map(crate::agent_auth::epoch_ms_to_iso),
+                            cost: js_num(cost),
+                            local_share: local_share.map(js_num),
+                        }
+                    },
+                )
+                .collect(),
+        )
+    };
+    let per_day = async {
+        let rows: Vec<(String, i32, i32, i32, i32, i32)> = sqlx::query_as(
+            "select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day, \
+                    coalesce(sum(prompt_tokens),0)::int as prompt, \
+                    coalesce(sum(completion_tokens),0)::int as completion, \
+                    count(*)::int as generations, \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local'), 0)::int as local, \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'cloud'), 0)::int as cloud \
+             from usage_events where created_at > now() - make_interval(days => $1) \
+             group by 1 order by 1 asc",
+        )
+        .bind(14)
+        .fetch_all(pg)
+        .await?;
+        Ok::<_, sqlx::Error>(
+            rows.into_iter()
+                .map(
+                    |(day, prompt, completion, generations, local, cloud)| CostPerDay {
+                        day,
+                        prompt,
+                        completion,
+                        generations,
+                        local,
+                        cloud,
+                    },
+                )
+                .collect(),
+        )
+    };
+
+    let (today, week, month, est, split, unpriced, per_model, per_agent, per_day) = tokio::join!(
+        window(1),
+        window(7),
+        window(30),
+        est,
+        split,
+        unpriced,
+        per_model,
+        per_agent,
+        per_day
+    );
+    let (today, week, month) = (today?, week?, month?);
+    let (est, split, (unpriced,), per_model, per_agent, per_day) =
+        (est?, split?, unpriced?, per_model?, per_agent?, per_day?);
+    let w =
+        |(prompt, completion, cache, generations, cost): (i32, i32, i32, i32, f64)| CostWindow {
+            prompt,
+            completion,
+            cache,
+            generations,
+            cost: js_num(cost),
+        };
+    Ok(CostOverview {
+        totals: CostTotals {
+            today: w(today),
+            week: w(week),
+            month: w(month),
+            // 0..1 of the month's generations that are estimates.
+            estimated_share: js_num(if est.1 != 0 {
+                f64::from(est.0) / f64::from(est.1)
+            } else {
+                0.0
+            }),
+            split: CostSplit {
+                local: split.0,
+                cloud: split.1,
+                other: split.2,
+            },
+            unpriced_cloud_tokens: unpriced,
+        },
+        per_model,
+        per_agent,
+        per_day,
+    })
 }
 
 /// Ledger row for a gateway call — port of recordGatewayUsage. Attribution is
@@ -205,6 +489,20 @@ pub async fn record_gateway_usage(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn js_numbers_print_like_json_stringify() {
+        // Integral floats lose the ".0" — JSON.stringify(0) is "0".
+        assert_eq!(js_num(0.0).to_string(), "0");
+        assert_eq!(js_num(1.0).to_string(), "1");
+        assert_eq!(js_num(-2.0).to_string(), "-2");
+        // Fractional values keep their shortest round-trip form.
+        assert_eq!(js_num(0.113816095).to_string(), "0.113816095");
+        assert_eq!(
+            js_num(0.00688802543270929).to_string(),
+            "0.00688802543270929"
+        );
+    }
 
     fn norm(v: Value) -> Option<TokenCounts> {
         normalize_usage(Some(&v))

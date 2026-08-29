@@ -2,15 +2,18 @@
 // integration tests (tests/) can drive the router and the secretbox against
 // committed cross-language fixtures without going through a socket.
 
+pub mod activity;
 pub mod agent_auth;
 pub mod audit;
 pub mod auth;
 pub mod auth_config;
+pub mod boards;
 pub mod body;
 pub mod claim;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod fleet;
 pub mod gateway;
 pub mod google_client;
 pub mod google_oauth;

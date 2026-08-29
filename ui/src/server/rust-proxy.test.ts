@@ -56,9 +56,24 @@ describe('maybeProxy', () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
-    expect(await maybeProxy(req('/api/users'), '/api/users')).toBeNull()
+    expect(await maybeProxy(req('/api/boards'), '/api/boards')).toBeNull()
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards exact-match routes but not the TS sub-routes under them', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    // The route IS the group…
+    expect(await maybeProxy(req('/api/agents'), '/api/agents')).not.toBeNull()
+    expect(await maybeProxy(req('/api/apps'), '/api/apps')).not.toBeNull()
+    // …but its sub-paths still belong to TS: register/heartbeat (the fleet
+    // plane) and the app-server gateway would land on a Rust 404.
+    expect(await maybeProxy(req('/api/agents/register'), '/api/agents/register')).toBeNull()
+    expect(await maybeProxy(req('/api/agents/x/heartbeat'), '/api/agents/x/heartbeat')).toBeNull()
+    expect(await maybeProxy(req('/api/apps/contacts/x'), '/api/apps/contacts/x')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {

@@ -147,13 +147,19 @@ fn apps_dir() -> PathBuf {
 struct DiscoveredApp {
     slug: String,
     name: String,
-    work: bool,
-    manage: bool,
+    icon: String,
+    description: String,
+    version: String,
+    work: Option<String>,
+    manage: Option<String>,
+    settings: Option<String>,
+    /// The app publishes MCP tools for agents (apps/<slug>/mcp.ts).
+    mcp: bool,
 }
 
 /// The manifests on disk, sorted by app name — this port's discoveredApps().
 /// Any unreadable/unparseable directory is skipped, like the glob that sees
-/// nothing there.
+/// nothing there. Defaults follow the TS String(x ?? default) coercion.
 fn discovered_apps() -> Vec<DiscoveredApp> {
     let Ok(entries) = std::fs::read_dir(apps_dir()) else {
         return Vec::new();
@@ -183,21 +189,92 @@ fn discovered_apps() -> Vec<DiscoveredApp> {
         else {
             continue;
         };
+        let str_field = |key: &str, default: &str| {
+            j.get(key)
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| default.to_string())
+        };
+        // Surface keys are OMITTED unless they hold a non-empty string —
+        // TS spreads only the truthy ones, so the key is absent, not null.
         let surface = |key: &str| {
             j.get("surfaces")
                 .and_then(|s| s.get(key))
                 .and_then(|v| v.as_str())
-                .is_some_and(|s| !s.is_empty())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
         };
         out.push(DiscoveredApp {
+            mcp: e.path().join("mcp.ts").exists(),
             slug,
             name: name.to_string(),
+            icon: str_field("icon", "⬡"),
+            description: str_field("description", ""),
+            version: str_field("version", "0.0.0"),
             work: surface("work"),
             manage: surface("manage"),
+            settings: surface("settings"),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// One enabled app as /api/apps serves it — AppManifest's wire order, absent
+/// surface keys absent (never null).
+#[derive(serde::Serialize)]
+pub struct WireApp {
+    pub slug: String,
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+    pub version: String,
+    pub surfaces: WireSurfaces,
+    pub mcp: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct WireSurfaces {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<String>,
+}
+
+/// The signed-in view of installed apps (apps.ts enabledApps): ENABLED apps
+/// only, in discovered (name) order — the platform's own menu, not a secret;
+/// per-user view gating happens off deniedViews client-side.
+pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
+    let enabled: HashSet<String> =
+        get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
+            .await
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+    discovered_apps()
+        .into_iter()
+        .filter(|a| enabled.contains(&a.slug))
+        .map(|a| WireApp {
+            slug: a.slug,
+            name: a.name,
+            icon: a.icon,
+            description: a.description,
+            version: a.version,
+            surfaces: WireSurfaces {
+                work: a.work,
+                manage: a.manage,
+                settings: a.settings,
+            },
+            mcp: a.mcp,
+        })
+        .collect()
 }
 
 /// ALL app view routes of ENABLED apps (apps.ts appViewRoutes): every work
@@ -219,10 +296,10 @@ pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
         .filter(|a| enabled.contains(&a.slug))
         .collect();
     let mut out = Vec::new();
-    for a in apps.iter().filter(|a| a.work) {
+    for a in apps.iter().filter(|a| a.work.is_some()) {
         out.push(format!("/x/{}", a.slug));
     }
-    for a in apps.iter().filter(|a| a.manage) {
+    for a in apps.iter().filter(|a| a.manage.is_some()) {
         out.push(format!("/x/{}/manage", a.slug));
     }
     out

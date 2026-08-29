@@ -28,7 +28,17 @@ const PREFIXES = [
   // the only other route under this path (the CONNECT flow lives elsewhere).
   '/api/auth/google',
   '/api/users',
+  '/api/activity',
+  '/api/cost',
 ] as const
+
+// Whole-path migrations: the ROUTE is the group, because everything under it
+// besides the route itself still belongs to TS. '/api/agents' has register +
+// heartbeat sub-routes (the fleet plane, a later batch), and '/api/apps' is
+// the app-server gateway (apps.$app.$ dispatches into app server modules —
+// TS until cutover by construction). A startsWith entry here would strand
+// those on a Rust 404.
+const EXACT = new Set(['/api/agents', '/api/apps'])
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
 // must not depend on which module graph got the frozen copy.
@@ -47,7 +57,7 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
-  if (!base || !PREFIXES.some((p) => pathname.startsWith(p))) return null
+  if (!base || (!EXACT.has(pathname) && !PREFIXES.some((p) => pathname.startsWith(p)))) return null
 
   const incoming = new URL(request.url)
   const target = base + incoming.pathname + incoming.search
