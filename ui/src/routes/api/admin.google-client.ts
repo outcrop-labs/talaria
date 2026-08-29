@@ -6,6 +6,7 @@ import {
   clearGoogleClientConfig,
   googleClientStatus,
   googleLoginEnabled,
+  googleLoginPinnedByEnv,
   setGoogleClientConfig,
 } from '@/server/google/client-config'
 import { resolveOrigin } from '@/server/auth/google'
@@ -34,6 +35,7 @@ export const Route = defineApi('/api/admin/google-client', {
     return json({
       status: await googleClientStatus(),
       loginEnabled: await googleLoginEnabled(),
+      loginPinnedByEnv: googleLoginPinnedByEnv(),
       redirectUris: [
         { uri: `${origin}/api/integrations/google/callback`, what: 'your account connect (Settings)' },
         { uri: `${origin}/api/integrations/google/org/callback`, what: 'org connect (Admin)' },
@@ -54,13 +56,13 @@ export const Route = defineApi('/api/admin/google-client', {
       targetId: 'client',
       after: { clientId: body.clientId, secretRotated: body.clientSecret !== undefined, hd: body.hd ?? undefined },
     })
-    return json({ status: await googleClientStatus(), loginEnabled: await googleLoginEnabled() })
+    return json({ status: await googleClientStatus(), loginEnabled: await googleLoginEnabled(), loginPinnedByEnv: googleLoginPinnedByEnv() })
   },
   DELETE: async ({ request }) => {
     const user = await requireAdmin(request)
     if (user instanceof Response) return user
     await clearGoogleClientConfig()
     void logAudit({ actor: actorOf(user), action: 'google.client_config_clear', targetType: 'google', targetId: 'client' })
-    return json({ status: await googleClientStatus(), loginEnabled: await googleLoginEnabled() })
+    return json({ status: await googleClientStatus(), loginEnabled: await googleLoginEnabled(), loginPinnedByEnv: googleLoginPinnedByEnv() })
   },
 })

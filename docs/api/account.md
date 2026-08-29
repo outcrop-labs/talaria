@@ -81,8 +81,8 @@ Source: [`ui/src/routes/api/auth/providers.ts`](../../ui/src/routes/api/auth/pro
 
 > GET /api/auth/providers → the providers the login screen should render.
 > Reflects exactly which providers are enabled AND fully configured right now.
-> Google login is env-flag-gated (AUTH_GOOGLE_ENABLED) but accepts credentials
-> from the Admin UI record or the env — `enabledProviders` answers the env-only
+> Google login follows the Admin UI toggle (AUTH_GOOGLE_ENABLED in env pins it
+> on) and accepts credentials from the Admin UI record or the env —
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

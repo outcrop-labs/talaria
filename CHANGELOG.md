@@ -35,6 +35,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- Google login can be enabled from the Admin UI (Admin → Google client): the toggle writes the
+  `google_login_enabled` setting (`PUT /api/admin/google-client/login`), so login no longer needs
+  `AUTH_GOOGLE_ENABLED=1` in the env. The env var still pins login ON (undeactivatable from the
+  UI); the toggle stays inert until a client is actually configured.
 - `talaria service` — `install` starts the production stack (the `deploy up` build, in your
   terminal) and installs a systemd unit that starts it at boot, health-gates that start on the
   compose healthchecks (`up -d --wait`, dropped automatically on compose builds that hang on it),
