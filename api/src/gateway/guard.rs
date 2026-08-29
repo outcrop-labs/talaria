@@ -763,6 +763,31 @@ pub struct Finding {
     pub grounded: bool,
 }
 
+/// What a caller can honestly say about the turn's tool results. A path with
+/// the full record has both; the harness guard pass holds a tool NAMES list
+/// and derives its record from it — `results` it can reconstruct, `errorInfo`
+/// (guardrails.ts: "did anything error?") it cannot, because a name is not an
+/// outcome. A rule whose `needs` cannot be supplied is SKIPPED (no false
+/// positive) rather than run on missing data — the same posture as
+/// `gate_safe`, one level up.
+pub struct Available {
+    pub results: bool,
+    pub error_info: bool,
+}
+
+/// The caller that really has the whole record — the gateway completion path.
+pub const FULL: Available = Available {
+    results: true,
+    error_info: true,
+};
+
+/// One unit of `Available` a rule declares it depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    Results,
+    ErrorInfo,
+}
+
 struct RuleDef {
     id: &'static str,
     severity: &'static str,
@@ -776,6 +801,10 @@ struct RuleDef {
     /// honest work. Rules that need what we cannot supply are skipped rather
     /// than guessed.
     gate_safe: bool,
+    /// Which halves of `Available` this rule's truth depends on. Empty for
+    /// every rule but the two tool-record ones; `zero_tool_claim` needs
+    /// neither because an empty record is its answer, not missing data.
+    needs: &'static [Need],
 }
 
 const RULES: &[RuleDef] = &[
@@ -785,6 +814,7 @@ const RULES: &[RuleDef] = &[
         default_on: true,
         groundable: None,
         gate_safe: false,
+        needs: &[],
     },
     RuleDef {
         id: "ungrounded_ref",
@@ -792,6 +822,7 @@ const RULES: &[RuleDef] = &[
         default_on: true,
         groundable: None,
         gate_safe: false,
+        needs: &[Need::Results],
     },
     RuleDef {
         id: "fabricated_outage",
@@ -799,6 +830,7 @@ const RULES: &[RuleDef] = &[
         default_on: true,
         groundable: None,
         gate_safe: false,
+        needs: &[Need::ErrorInfo],
     },
     RuleDef {
         id: "secret_leak",
@@ -806,6 +838,7 @@ const RULES: &[RuleDef] = &[
         default_on: true,
         groundable: Some(Groundable::Finding),
         gate_safe: true,
+        needs: &[],
     },
     RuleDef {
         id: "pii_leak",
@@ -813,6 +846,7 @@ const RULES: &[RuleDef] = &[
         default_on: true,
         groundable: Some(Groundable::FindingAndRedaction),
         gate_safe: true,
+        needs: &[],
     },
 ];
 
@@ -925,23 +959,61 @@ fn evaluate(rule: &RuleDef, ctx: &GuardContext, config: &GuardConfig) -> Option<
     }
 }
 
-/// Run the enabled rules, keep findings at/above the threshold. The gateway
-/// path has the full tool record, so every rule's `needs` is satisfied.
-pub fn run_guardrails(ctx: &GuardContext, config: &GuardConfig) -> Vec<Finding> {
+/// Run the enabled, APPLICABLE rules, keep findings at/above the threshold.
+/// `available` says what the caller can honestly supply about tool results:
+/// a rule whose `needs` it cannot meet is skipped — no false positive from
+/// missing data. The gateway completion path passes `FULL`.
+pub fn run_guardrails(
+    ctx: &GuardContext,
+    config: &GuardConfig,
+    available: &Available,
+) -> Vec<Finding> {
     if ctx.answer.is_empty() {
         return Vec::new();
     }
     RULES
         .iter()
+        .filter(|r| rule_enabled(config, r))
         .filter(|r| {
-            config
-                .checks
-                .get(r.id)
-                .and_then(|v| v.as_bool())
-                .unwrap_or(r.default_on)
+            r.needs.iter().all(|n| match n {
+                Need::Results => available.results,
+                Need::ErrorInfo => available.error_info,
+            })
         })
         .filter_map(|r| evaluate(r, ctx, config))
         .collect()
+}
+
+/// The one spelling of "is this rule on" — `checks[id] ?? default_on`, the
+/// TS `ruleEnabled`. Both `run_guardrails`'s filter and `guard_text`'s read
+/// it so the two loops cannot drift.
+fn rule_enabled(config: &GuardConfig, rule: &RuleDef) -> bool {
+    config
+        .checks
+        .get(rule.id)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(rule.default_on)
+}
+
+/// A def's `guard.rules` narrowed onto the live config (run.ts
+/// narrowGuardConfig): a rule runs only when the def names it AND the admin
+/// left it on. `None` (no guard block) returns the config untouched. Every
+/// RULES id gets an explicit entry so the narrowed config's `checks` is a
+/// total map — absent would fall back to the default, which is not what a
+/// def that omitted a rule means.
+pub fn narrow_guard_config(config: &GuardConfig, rules: Option<&[&str]>) -> GuardConfig {
+    let Some(rules) = rules else {
+        return config.clone();
+    };
+    let mut checks = serde_json::Map::new();
+    for rule in RULES {
+        let on = rules.contains(&rule.id) && rule_enabled(config, rule);
+        checks.insert(rule.id.to_string(), Value::Bool(on));
+    }
+    GuardConfig {
+        checks,
+        ..config.clone()
+    }
 }
 
 /// Which findings warrant content redaction — a GROUNDED finding still counts:
@@ -1042,7 +1114,7 @@ pub async fn guard_completion(
         policed_hosts: &config.policed_hosts,
         grounding: &grounding,
     };
-    let findings = run_guardrails(&ctx, &config);
+    let findings = run_guardrails(&ctx, &config, &FULL);
     record_findings(pg, &findings, caller, model, endpoint, config.mode).await;
     let caveat = if config.mode.discloses() {
         caveat_for(&findings)
@@ -1085,13 +1157,7 @@ pub async fn guard_text(pg: &PgPool, text: &str, input: Option<&str>) -> Vec<Fin
     RULES
         .iter()
         .filter(|r| r.gate_safe)
-        .filter(|r| {
-            config
-                .checks
-                .get(r.id)
-                .and_then(|v| v.as_bool())
-                .unwrap_or(r.default_on)
-        })
+        .filter(|r| rule_enabled(&config, r))
         .filter_map(|r| evaluate(r, &ctx, &config))
         .collect()
 }
@@ -1374,7 +1440,7 @@ mod tests {
         let g = Grounding::new(input);
         // A grounded card is not PII evidence: pii_leak drops it entirely.
         let c = ctx("card 4111-1111-1111-1111", input, &tr, &g);
-        assert!(run_guardrails(&c, &config).is_empty());
+        assert!(run_guardrails(&c, &config, &FULL).is_empty());
         // A grounded secret still returns, marked — needs_redaction says yes.
         let c = ctx(
             "key ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1382,7 +1448,7 @@ mod tests {
             &tr,
             &g,
         );
-        let findings = run_guardrails(&c, &config);
+        let findings = run_guardrails(&c, &config, &FULL);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].check, "secret_leak");
         assert!(findings[0].grounded);
@@ -1409,11 +1475,91 @@ mod tests {
         let tr = ToolRecord::default();
         let g = Grounding::new("");
         let c = ctx("I closed the ticket.", "", &tr, &g);
-        assert!(run_guardrails(&c, &config).is_empty());
+        assert!(run_guardrails(&c, &config, &FULL).is_empty());
         config.min_confidence = 0.5;
         config.checks.insert("zero_tool_claim".into(), json!(false));
-        assert!(run_guardrails(&c, &config).is_empty());
+        assert!(run_guardrails(&c, &config, &FULL).is_empty());
         config.checks.insert("zero_tool_claim".into(), json!(true));
-        assert_eq!(run_guardrails(&c, &config).len(), 1);
+        assert_eq!(run_guardrails(&c, &config, &FULL).len(), 1);
+    }
+
+    #[test]
+    fn unsupplied_needs_skip_the_rule_not_the_run() {
+        // The harness guard pass's honest posture: tool NAMES are results,
+        // a name is not an outcome. fabricated_outage (needs errorInfo) must
+        // stand down rather than flag a reply it cannot check.
+        let config = GuardConfig {
+            mode: GuardMode::Observe,
+            checks: serde_json::Map::new(),
+            min_confidence: 0.5,
+            policed_hosts: vec![],
+        };
+        let tr = ToolRecord {
+            backing_tools: vec!["t".into()],
+            results_text: "r".into(),
+            any_error: false,
+            overflowed: false,
+        };
+        let g = Grounding::new("");
+        // A reply that would trip BOTH tool-record rules: an outage claim with
+        // nothing errored, and an id no result contains (URLs police only on
+        // configured hosts; a UUID is a ref unconditionally). FULL flags both.
+        let c = ctx(
+            "The API is down. Ticket 123e4567-e89b-12d3-a456-426614174000 was filed.",
+            "",
+            &tr,
+            &g,
+        );
+        let ids = |a: &Available| -> Vec<&'static str> {
+            run_guardrails(&c, &config, a)
+                .iter()
+                .map(|f| f.check)
+                .collect()
+        };
+        assert_eq!(ids(&FULL), vec!["ungrounded_ref", "fabricated_outage"]);
+        // The harness guard pass's honest posture: tool NAMES are results, a
+        // name is not an outcome. fabricated_outage stands down; the link
+        // check still runs on the record the names reconstruct.
+        let names_only = Available {
+            results: true,
+            error_info: false,
+        };
+        assert_eq!(ids(&names_only), vec!["ungrounded_ref"]);
+        // Starving results stands down the link check instead — each half
+        // gates only its own rule, never the whole run.
+        let no_results = Available {
+            results: false,
+            error_info: true,
+        };
+        assert_eq!(ids(&no_results), vec!["fabricated_outage"]);
+    }
+
+    #[test]
+    fn narrow_is_def_rules_and_admin_checks() {
+        let mut config = GuardConfig {
+            mode: GuardMode::Observe,
+            checks: serde_json::Map::new(),
+            min_confidence: 0.5,
+            policed_hosts: vec!["example.com".into()],
+        };
+        // No guard block: the config passes through untouched.
+        let passthrough = narrow_guard_config(&config, None);
+        assert_eq!(passthrough.checks, config.checks);
+        // A def asking for secret_leak only: every other rule goes off —
+        // including one the ADMIN left on by default — and the total map
+        // spells the off rules explicitly rather than relying on defaults.
+        config.checks.insert("pii_leak".into(), json!(false)); // admin already off
+        let narrowed = narrow_guard_config(&config, Some(&["secret_leak"]));
+        assert_eq!(narrowed.checks.get("secret_leak"), Some(&json!(true)));
+        assert_eq!(narrowed.checks.get("pii_leak"), Some(&json!(false)));
+        assert_eq!(narrowed.checks.get("ungrounded_ref"), Some(&json!(false)));
+        // The def names it, the admin turned it off: off.
+        config.checks.insert("secret_leak".into(), json!(false));
+        let narrowed = narrow_guard_config(&config, Some(&["secret_leak"]));
+        assert_eq!(narrowed.checks.get("secret_leak"), Some(&json!(false)));
+        // Everything but the checks map rides along.
+        assert_eq!(narrowed.policed_hosts, config.policed_hosts);
+        assert_eq!(narrowed.mode, config.mode);
+        assert_eq!(narrowed.min_confidence, config.min_confidence);
     }
 }
