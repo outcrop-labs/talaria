@@ -52,7 +52,7 @@ export const Route = defineApi('/api/auth/password', {
       )
     }
 
-    const identity = verifyPasswordLogin(parsed.username, parsed.password)
+    const identity = await verifyPasswordLogin(parsed.username, parsed.password)
     if (!identity || !isEmailAllowed(identity.email, cfg)) {
       // Slow the failure path a touch to blunt brute force.
       await new Promise((r) => setTimeout(r, 400))

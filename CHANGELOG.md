@@ -6,6 +6,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Security
 
+- Password credentials hash as scrypt (#244): `AUTH_USERS` accepts `scrypt$N$r$p$salt$hash`
+  entries (node:crypto, params in-band), `talaria setup` writes the hash instead of the
+  plaintext, and a boot warning names any plaintext entry still sitting in the env.
 - Google sign-in refuses unverified email addresses (#269): an identity whose email claim
   Google has not verified — including an absent claim — is rejected at code exchange, so an
   unverified address can no longer mint an account.

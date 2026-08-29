@@ -13,13 +13,16 @@
 //   Google OAuth — credentials from EITHER the Admin UI record (Admin → Org →
 //   Google Workspace, stored in app_settings; see google/client-config.ts) OR:
 //   AUTH_GOOGLE_CLIENT_ID / AUTH_GOOGLE_CLIENT_SECRET
-//   AUTH_GOOGLE_ENABLED=1     login gate (policy — a workspace client alone
-//                             must not open a login path; see googleLoginEnabled)
+//   AUTH_GOOGLE_ENABLED=1     login bootstrap — the Admin UI toggle beside the
+//                             client is the primary switch; env pins login ON
+//                             (see googleLoginEnabled)
 //   AUTH_GOOGLE_HD             optional Google Workspace hosted-domain restriction
 //
 //   Username / password
 //   AUTH_PASSWORD_ENABLED=1
-//   AUTH_USERS                 "user:pass,user2:pass2"  (MVP: plaintext; hash later)
+//   AUTH_USERS                 "user:pass,user2:pass2" — each password may be
+//                              plaintext or a `scrypt$…` hash (see
+//                              auth/password.ts; plaintext warns at boot)
 
 export type ProviderId = 'google' | 'password'
 
