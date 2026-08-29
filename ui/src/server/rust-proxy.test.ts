@@ -116,6 +116,14 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
+  it('forwards the notifications route — the bell and the settings panel under one path', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/notifications'), '/api/notifications')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it('forwards exact-match routes but not the TS sub-routes under them', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

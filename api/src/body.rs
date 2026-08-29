@@ -58,6 +58,12 @@ pub fn array_too_big_msg(max: usize) -> String {
     format!("Too big: expected array to have <={max} items")
 }
 
+/// zod's record type message — "record", not "object", is the received word
+/// (a z.record that isn't given one).
+pub fn record_msg(received: &str) -> String {
+    format!("Invalid input: expected record, received {received}")
+}
+
 /// The root z.object check: a non-object body's first issue.
 pub fn as_object(body: &Value) -> Result<&serde_json::Map<String, Value>, String> {
     body.as_object()
@@ -950,6 +956,24 @@ mod tests {
         assert_eq!(
             object_msg("string"),
             "Invalid input: expected object, received string"
+        );
+        // The prefs record's type message — "record" is the received word a
+        // z.record prints, probed for array/null/string/number alike.
+        assert_eq!(
+            record_msg("array"),
+            "Invalid input: expected record, received array"
+        );
+        assert_eq!(
+            record_msg("null"),
+            "Invalid input: expected record, received null"
+        );
+        assert_eq!(
+            record_msg("string"),
+            "Invalid input: expected record, received string"
+        );
+        assert_eq!(
+            record_msg("number"),
+            "Invalid input: expected record, received number"
         );
         assert_eq!(
             object_msg("number"),

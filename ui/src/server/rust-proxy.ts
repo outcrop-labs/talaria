@@ -33,10 +33,12 @@ const PREFIXES = [
   // The whole keys group: keys.ts + keys.$id.ts are the only routes under
   // this path, so the prefix is the group. Same for teams — the list, the
   // {id} rename/delete, and the members sub-route are one plane. Same for
-  // workflows: the list and the {id} patch/remove are the whole group.
+  // workflows: the list and the {id} patch/remove are the whole group. Same
+  // for notifications — one route file, three methods.
   '/api/keys',
   '/api/teams',
   '/api/workflows',
+  '/api/notifications',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite
