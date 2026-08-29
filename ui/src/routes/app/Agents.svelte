@@ -1,5 +1,6 @@
 <script lang="ts">
   import PageSurface from '@/components/app/PageSurface.svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { Import, LayoutGrid, List, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -12,13 +13,14 @@
   import Tabs from '@/components/ui/Tabs.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import CreateAgentModal from '@/components/fleet/CreateAgentModal.svelte'
+  import HiringStrip from '@/components/fleet/HiringStrip.svelte'
   import RoleTemplatesTab from '@/components/fleet/RoleTemplatesTab.svelte'
   import FederateModal from '@/components/fleet/FederateModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { useFleetContainers, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
+  import { useFleetContainers, useFleetDefs, useFleetHires, type AgentDef } from '@/lib/fleet-defs'
   import { useSession } from '@/lib/session'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
@@ -26,6 +28,7 @@
   import AgentTile from './AgentTile.svelte'
 
   const session = useSession()
+  const queryClient = useQueryClient()
   const isAdmin = $derived(session.data?.role === 'admin')
   // Agents is the home tab; the role library and the fleet's schedules are the
   // other two. Each was a takeover modal behind a toolbar icon — an affordance
@@ -48,6 +51,30 @@
   const fleetQuery = useFleet()
   const defsQuery = useFleetDefs(() => isAdmin)
   const containersQuery = useFleetContainers(() => isAdmin)
+  // Hires in flight, for the strip above the roster. Polls only while
+  // something is actually hiring (the query owns that cadence).
+  const hiresQuery = useFleetHires(() => isAdmin)
+
+  // A hire this surface watched alive reaching a terminal state is the
+  // landing event: the def row (and, after a boot, its container) already
+  // exist server-side — the roster just hasn't heard. One invalidation per
+  // hire, tracked in Sets because the hires window deliberately holds
+  // finished rows for ten minutes. A hire that finished before this mount
+  // fires nothing: the initial defs read already carried its tile.
+  const seenAlive = new Set<string>()
+  const actedOn = new Set<string>()
+  $effect(() => {
+    for (const h of hiresQuery.data?.hires ?? []) {
+      if (h.state === 'queued' || h.state === 'running') {
+        seenAlive.add(h.id)
+        continue
+      }
+      if (actedOn.has(h.id) || !seenAlive.has(h.id)) continue
+      actedOn.add(h.id)
+      void queryClient.invalidateQueries({ queryKey: ['fleet-defs'] })
+      void queryClient.invalidateQueries({ queryKey: ['fleet-containers'] })
+    }
+  })
   const byDept = $derived(new Map((containersQuery.data ?? []).map((c) => [c.department, c])))
   // The roster itself renders through QueryState below (a 500 must never read as
   // "no agents"). This copy is only for the create/duplicate modals' template
@@ -199,6 +226,12 @@
         />
       </div>
     {/if}
+
+    <!-- Hires land here, above the tiles they become: a row per agent being
+         created (the run's own phase sentence), a row per recent failure.
+         Nothing renders once the work is done — the tile materializing over
+         the strip IS the completion event. -->
+    <HiringStrip hires={hiresQuery.data?.hires ?? []} />
 
     <!-- "No agents yet" is a claim about the fleet, and for months a 500 from
          /api/fleet/defs made this surface state it — the owner reading that

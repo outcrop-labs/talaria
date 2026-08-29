@@ -176,7 +176,22 @@ export async function saveAgentEdit(
 
 export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'
 
-export async function createFleetAgent(input: {
+/** What the roster shows while a hire works — the run's own phase sentences
+ *  (`rendering the fleet config`, `starting the container`), never a
+ *  percentage: a boot has no honest number to show. */
+export interface AgentHire {
+  id: string
+  name: string
+  slug: string
+  department: string
+  start: boolean
+  state: 'queued' | 'running' | 'done' | 'error' | 'cancelled'
+  phase: string
+  error: string | null
+  createdAt: string
+}
+
+export async function hireFleetAgent(input: {
   slug: string
   department: string
   displayName: string
@@ -186,12 +201,25 @@ export async function createFleetAgent(input: {
   soul?: string
   skills?: Array<{ name: string; content: string }>
   start?: boolean
-}): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
+}): Promise<{ ok?: boolean; hire?: { id: string; state: string; phase: string }; error?: string }> {
   try {
-    return await postJson<{ ok?: boolean; healthy?: boolean }>('/api/fleet/create', input)
+    return await postJson<{ ok?: boolean; hire?: { id: string; state: string; phase: string } }>('/api/fleet/create', input)
   } catch (e) {
     return { error: errorMessage(e) }
   }
+}
+
+/** Live + recently-landed hires. Polls hard while anything is in flight and
+ *  goes quiet the moment nothing is — the query the roster's hiring rows and
+ *  the "the new agent has landed" invalidation both hang off. */
+export function useFleetHires(enabled: MaybeGetter<boolean>) {
+  return createQuery(() => ({
+    queryKey: ['fleet-hires'],
+    enabled: resolve(enabled),
+    refetchInterval: (query: { state: { data?: { hires: AgentHire[] } } }) =>
+      (query.state.data?.hires ?? []).some((h) => h.state === 'queued' || h.state === 'running') ? 2_500 : false,
+    queryFn: (): Promise<{ hires: AgentHire[] }> => getJson<{ hires: AgentHire[] }>('/api/fleet/hires'),
+  }))
 }
 
 /** Update an agent's editable identity (role, display name, template bindings). */

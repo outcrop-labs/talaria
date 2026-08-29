@@ -5,7 +5,7 @@
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-19 routes.
+20 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -35,6 +35,7 @@
 | [`/api/fleet/endpoints/{id}`](#apifleetendpointsid) | DELETE | `admin` |
 | [`/api/fleet/endpoints/{id}/available`](#apifleetendpointsidavailable) | GET | `admin` |
 | [`/api/fleet/federate`](#apifleetfederate) | POST | `admin` |
+| [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
 
@@ -159,13 +160,15 @@ Source: [`ui/src/routes/api/fleet.containers.ts`](../../ui/src/routes/api/fleet.
 
 Source: [`ui/src/routes/api/fleet.create.ts`](../../ui/src/routes/api/fleet.create.ts)
 
-> POST → create a new agent from a template (an existing agent's definition):
-> fresh gateway key, re-stamped config, soul (scaffold or supplied), optional
-> starter skills, v1. Optionally render + start it immediately. Admin.
+> POST → start HIRING a new agent. The work — create the def, write v1 and
+> any starter skills, render the fleet, boot the container, wait out the
+> healthcheck — is a durable `agent-hire` run, not this request: a boot runs
+> to minutes on a cold pull, and a POST is a promise to stay on the line the
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetcreate-body) | `{ok, warnings}` | 200, 400 | audit |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetcreate-body) | `{ok, hire}` | 200, 409 | — |
 
 ### POST `/api/fleet/create` body
 
@@ -384,6 +387,14 @@ Source: [`ui/src/routes/api/fleet.federate.ts`](../../ui/src/routes/api/fleet.fe
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `dir` | `z.string().trim().min(1).max(500)` |  |
+
+## `/api/fleet/hires`
+
+Source: [`ui/src/routes/api/fleet.hires.ts`](../../ui/src/routes/api/fleet.hires.ts)
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `…` | 200 | — |
 
 ## `/api/fleet/reconcile`
 

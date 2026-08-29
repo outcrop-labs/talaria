@@ -10,8 +10,8 @@
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
-  import { listRoleTemplates, type RoleTemplate } from '@/lib/agent-role-templates'
+  import { hireFleetAgent, type AgentDef } from '@/lib/fleet-defs'
+  import { useRoleTemplates } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide } from '@/lib/motion'
   import { draftAgent, type AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
@@ -25,12 +25,15 @@
   //   • ROLE template — what the agent is FOR. Prefills name, handle, role,
   //     department and a starter soul from a common business role (Talaria
   //     maintains a set; an org adds its own). This is the one that helps on a
-  //     fresh install, where there is no existing agent to copy.
+  //     fresh install, where there is no existing agent to copy. Offered on
+  //     the DESCRIBE step — it is an entry path, a peer of describing.
   //   • CHASSIS template — what it RUNS ON. Clones an existing agent's model
   //     tiers, tools and plugins with the identity re-stamped. Unavailable
   //     until at least one agent exists, which is exactly why it could never
-  //     be the only answer.
-  // Talaria allocates the key, writes v1, renders, starts.
+  //     be the only answer. Stays on the review step.
+  //
+  // Create does not boot anything: it enqueues an agent-hire RUN and closes.
+  // The roster's hiring strip shows the phases from there.
   let {
     open,
     onClose,
@@ -66,17 +69,13 @@
   let soulRev = $state(0)
   let skills = $state<AgentDraft['skills']>([])
   let templateId = $state(preselect ?? templates[0]?.id ?? '') // '' = platform defaults
-  // Role templates: fetched once the dialog is open. Choosing one FILLS the
-  // fields rather than binding to them — every value stays editable, and a
-  // template is a starting point, not a mode you are stuck in.
-  let roleTemplates = $state<RoleTemplate[]>([])
+  // Role templates, as a query (cached across opens, no hand-rolled fetch to
+  // silently fail). Choosing one FILLS the fields rather than binding to them
+  // — every value stays editable, and a template is a starting point, not a
+  // mode you are stuck in.
+  const roleTemplatesQuery = useRoleTemplates()
+  const roleTemplates = $derived(roleTemplatesQuery.data ?? [])
   let roleSlug = $state('')
-  $effect(() => {
-    if (!open) return
-    void listRoleTemplates()
-      .then((t) => (roleTemplates = t))
-      .catch(() => (roleTemplates = []))
-  })
   const applyRole = (slugPicked: string) => {
     roleSlug = slugPicked
     const t = roleTemplates.find((x) => x.slug === slugPicked)
@@ -87,6 +86,7 @@
     role = t.role
     soul = t.soul
     soulRev += 1
+    step = 'review'
   }
   let start = $state(true)
   let busy = $state(false)
@@ -136,11 +136,17 @@
     }
   }
 
+  // Enqueue the hire and close. The boot (render, up, health wait — minutes on
+  // a cold pull) is the run's work, not the modal's: holding the modal open
+  // for it is what made creation feel broken — a stuck spinner, a proxy
+  // timeout, an agent that only existed after a refresh. The roster strip
+  // shows the phases; the only error that belongs HERE is one the open form
+  // can fix (a taken handle).
   const create = async () => {
     err = null
     busy = true
     try {
-      const r = await createFleetAgent({
+      const r = await hireFleetAgent({
         slug,
         department,
         displayName,
@@ -154,10 +160,10 @@
         err = r.error
         return
       }
-      if (start && r.healthy === false) err = 'created, but the container is not healthy yet. Check /agents'
-      await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
-      await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
-      if (!r.error) onClose()
+      await qc.invalidateQueries({ queryKey: ['fleet-hires'] })
+      onClose()
+    } catch (e) {
+      err = (e as Error).message
     } finally {
       busy = false
     }
@@ -189,6 +195,34 @@
         <Generating site="fleet/agent-design" label="Designing the agent: identity, soul, and starter skills" lines={3} />
       {/if}
       {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
+      <!-- The other entry path, a peer of describing: pick a role, the fields
+           fill, the review step opens. Nothing is bound — everything stays
+           editable over there. -->
+      {#if !generating && roleTemplates.length}
+        <div class="flex items-center gap-2.5">
+          <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">or start from a role</span>
+          <Select
+            bind:value={roleSlug}
+            onchange={() => roleSlug && applyRole(roleSlug)}
+            class="min-w-0 flex-1"
+            aria-label="Start from a role template"
+          >
+            <option value="">Pick a role…</option>
+            {#if roleTemplates.some((t) => !t.builtIn)}
+              <optgroup label="Your organization">
+                {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
+                  <option value={t.slug}>{t.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            <optgroup label="Common roles">
+              {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
+                <option value={t.slug}>{t.name}</option>
+              {/each}
+            </optgroup>
+          </Select>
+        </div>
+      {/if}
       <div class="flex items-center gap-3 border-t border-line pt-4">
         <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
           Configure manually →
@@ -208,35 +242,6 @@
   <!-- ── Step 2: review + create ──────────────────────────────────────────── -->
   <Modal {open} {onClose} title="New agent" takeover>
     <div class="space-y-5">
-      <!-- Start from a role. Fills the fields below and leaves every one of
-           them editable — a template is a starting point, not a mode. -->
-      {#if roleTemplates.length}
-        <div>
-          <label for="role-template" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-            Start from a role
-          </label>
-          <Select id="role-template" bind:value={roleSlug} onchange={() => applyRole(roleSlug)} class="w-full">
-            <option value="">Blank; fill it in myself</option>
-            {#if roleTemplates.some((t) => !t.builtIn)}
-              <optgroup label="Your organization">
-                {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
-                  <option value={t.slug}>{t.name}</option>
-                {/each}
-              </optgroup>
-            {/if}
-            <optgroup label="Common roles">
-              {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
-                <option value={t.slug}>{t.name}</option>
-              {/each}
-            </optgroup>
-          </Select>
-          {#if roleSlug}
-            <p class="mt-1.5 font-sans text-xs text-muted">
-              {roleTemplates.find((t) => t.slug === roleSlug)?.description}
-            </p>
-          {/if}
-        </div>
-      {/if}
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
@@ -310,15 +315,6 @@
       {/if}
 
       <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
-      {#if busy}
-        <Generating
-          site="fleet/agent-hire"
-          label={start
-            ? `Hiring ${displayName || slug}: rendering the config, starting the container, waiting for health`
-            : `Creating ${displayName || slug}`}
-          lines={3}
-        />
-      {/if}
       {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
       <div class="flex items-center gap-2 border-t border-line pt-4">
         {#if !preselect}
@@ -331,7 +327,7 @@
           Cancel
         </Button>
         <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName}>
-          {busy ? 'Creating' : 'Create agent'}
+          {busy ? 'Hiring' : 'Create agent'}
         </Button>
       </div>
     </div>
