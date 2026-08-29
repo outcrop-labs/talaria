@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('./db/pg', () => ({ db: async () => Object.assign(() => Promise.resolve([]), { json: (v: unknown) => v, unsafe: () => Promise.resolve([]) }) }))
 vi.mock('./audit', () => ({ getSetting: async (_k: string, fallback: unknown) => fallback, setSetting: async () => {} }))
 
-const { serveUpload } = await import('./uploads')
+const { readUploadForm, serveUpload } = await import('./uploads')
 
 const bytes = Buffer.from('x')
 const serve = (mime: string, filename = 'f.txt') => serveUpload({ bytes, mime, filename }, { cache: 'private' })
@@ -50,5 +50,74 @@ describe('serveUpload — the inline allowlist', () => {
     const value = /filename="(.*)"/.exec(disposition)?.[1] ?? ''
     expect(value).not.toContain('"')
     expect(value).toBe('aX-Evil: 1.txt')
+  })
+})
+
+// readUploadForm is the DoS stop the 2026-08-26 audit asked for (#266): the
+// old route buffered whatever the client sent and only saveUpload's
+// byteLength check refused — after the memory was already spent. Two layers
+// here, because two kinds of attacker exist: one declares a size (refused
+// from the header alone, the body never pulled), one streams chunked with no
+// declaration (the stream itself is capped mid-read). The cap is injected —
+// production's is 25 MB + envelope; tests pass bytes, not megabytes.
+describe('readUploadForm — refusing before buffering', () => {
+  const formRequest = () => {
+    const fd = new FormData()
+    fd.append('file', new File([Buffer.from('tiny')], 'f.txt', { type: 'text/plain' }))
+    return new Request('http://x/api/uploads', { method: 'POST', body: fd })
+  }
+
+  it('reads a small form through untouched', async () => {
+    const read = await readUploadForm(formRequest(), 1024)
+    expect(read.ok).toBe(true)
+    if (read.ok) expect(read.form.get('file')).toBeInstanceOf(File)
+  })
+
+  it('a declared content-length over the cap is refused without waiting on the body', async () => {
+    // The stream NEVER ENDS: if readUploadForm resolved too-large anyway, the
+    // header alone decided it — a body that never finishes cannot have been
+    // buffered. (Undici pulls eagerly at Request construction, so "was never
+    // pulled" is not observable here; "did not wait" is the guarantee.)
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        c.enqueue(Buffer.from('x'))
+      },
+    })
+    const request = new Request('http://x/api/uploads', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=x', 'content-length': '99999999' },
+      body,
+      duplex: 'half',
+    } as RequestInit)
+    expect(await readUploadForm(request, 1024)).toEqual({ ok: false, reason: 'too-large' })
+  })
+
+  it('a chunked stream over the cap is aborted mid-read — not buffered to the end', async () => {
+    const chunk = Buffer.alloc(1024, 1) // one chunk fills the injected cap
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        sent += 1
+        c.enqueue(chunk)
+      },
+    })
+    const request = new Request('http://x/api/uploads', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=x' },
+      body,
+      duplex: 'half',
+    } as RequestInit)
+    const read = await readUploadForm(request, 1024)
+    expect(read).toEqual({ ok: false, reason: 'too-large' })
+    expect(sent).toBeLessThan(8) // the abort stopped the read, the sender was not drained
+  })
+
+  it('garbage that parses as no form at all is malformed, not too-large', async () => {
+    const request = new Request('http://x/api/uploads', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: 'not a form',
+    })
+    expect(await readUploadForm(request, 1024)).toEqual({ ok: false, reason: 'malformed' })
   })
 })
