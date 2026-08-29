@@ -4,7 +4,7 @@
 > group, one row per (path, method). Requests/responses follow the house envelope
 > and conventions: [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-217 routes across 23 groups.
+218 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -25,7 +25,7 @@
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 9 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
 | [`plans`](./plans.md) | Living plans: draft doc, members. | 3 |
-| [`research`](./research.md) | Cited research reports and their conversations. | 4 |
+| [`research`](./research.md) | Cited research reports and their conversations. | 5 |
 | [`secrets`](./secrets.md) | The sealed-secrets vault: folders, shares, reveal, relay. | 6 |
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 8 |

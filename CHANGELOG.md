@@ -38,6 +38,12 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **A run that needs a person asks on its own page**: a parked run's question renders in
+  place on the research surface — with the options the step itself offered — and answering
+  there resumes the run (`POST /api/research/:id/decide`, authority-checked by the run's
+  declared audience; a member reads the question, the owner answers it). Status stays
+  four-value on the wire; the question rides beside it as `awaiting`, null the moment it
+  is answered.
 - **LLM spend ceilings** (#243): rolling-window budgets in Admin → Settings — org-wide and
   per-caller, in tokens and/or priced dollars — checked before every gateway call (the HTTP
   route answers 429 `budget_exceeded` with `retry-after`; internal callers like the QA judge

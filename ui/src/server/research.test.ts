@@ -155,6 +155,17 @@ describe('reading', () => {
     expect(read?.text).toContain("when r.state in ('running', 'awaiting') then 'running'")
   })
 
+  it('carries the question a parked run is waiting on — and only while it is open', async () => {
+    await getResearchRun('the-id')
+    const read = queries.find((q) => q.text.includes('from research_runs'))
+    // The four-value wire keeps a parked run 'running'; `awaiting` is what
+    // makes it LOOK parked on the surface that can answer it. An answered
+    // decision never renders as if it were still open — the answer-null guard
+    // is the SQL spelling of `pendingQuestion`'s rule in runs/decide.ts.
+    expect(read?.text).toContain("case when r.state = 'awaiting' and r.decision->'request' is not null and r.decision->'answer' is null")
+    expect(read?.text).toContain(`then r.decision->'request' else null end as "awaiting"`)
+  })
+
   it('answers "is this question already being researched" from the run', async () => {
     await activeResearchOn(RUN.question)
     const read = queries.find((q) => q.text.includes('left join runs r'))

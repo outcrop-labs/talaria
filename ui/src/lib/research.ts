@@ -21,6 +21,9 @@ export interface ResearchRun {
   title: string | null
   status: ResearchStatus
   phase: string | null
+  /** THE QUESTION A PARKED RUN IS WAITING ON, when it is waiting on one — the
+   *  panel at the top of the run's page. Null the rest of the time. */
+  awaiting: RunQuestion | null
   artifactId: string | null
   /** Null until the first message — the conversation is created on demand. */
   conversationId: string | null
@@ -35,6 +38,17 @@ export interface ResearchSource {
   url: string
   title: string | null
   snippet: string | null
+}
+
+/** WHAT A PARKED RUN ASKS — the step's own question with the options it
+ *  offered. Answers go back by option id; an id the step never declared is
+ *  refused by the server, so the run can only ever be told something it wrote
+ *  a branch for. */
+export interface RunQuestion {
+  key: string
+  question: string
+  detail?: string
+  options: Array<{ id: string; label: string; detail?: string }>
 }
 
 export const MODE_META: Record<ResearchMode, { label: string; tagline: string; eta: string }> = {
@@ -90,6 +104,15 @@ export async function deleteResearch(id: string): Promise<void> {
     // does not catch — the toast is the only place a refused delete gets said.
     pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
   }
+}
+
+/** ANSWER THE QUESTION A RUN IS PARKED ON. The run resumes on the server the
+ *  moment the answer lands — the caller invalidates and the refetch shows it
+ *  moving again. Throws with the server's sentence for the cases that matter
+ *  to a person: 403 you cannot decide this run, 409 somebody already answered
+ *  (or a stale tab), 400 an option the run never offered. */
+export async function answerResearch(runId: string, optionId: string): Promise<void> {
+  await postJson(`/api/research/${runId}/decide`, { optionId })
 }
 
 /** OPEN THE THREAD FOR A RUN, creating it on the first call.

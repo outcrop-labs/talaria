@@ -40,6 +40,7 @@ import { generateTitle } from './titler'
 import { createConversation } from './conversations'
 import { randomUUID } from 'node:crypto'
 import { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, researchRun, type ResearchInput, type SearchPlan } from './runs/defs/research'
+import type { DecisionRequest } from './runs/define'
 import { cancelRun, drive, enqueue } from './runs/run'
 import { MARKER_RE, SourceRegistry, type ResearchSource } from './source-registry'
 // RE-EXPORTED, not re-declared. `planSearch` and its two companions moved into
@@ -68,6 +69,15 @@ export interface ResearchRun {
   title: string | null
   status: ResearchStatus
   phase: string | null
+  /** THE QUESTION A PARKED RUN IS WAITING ON, verbatim off the run's decision
+   *  column. Null unless the run is `awaiting` with no answer yet — a decided
+   *  run never shows its last question as if it were still open, which is the
+   *  rule `pendingQuestion` spells in runs/decide.ts and the projection below
+   *  spells in SQL. `status` still says 'running' (the four-value wire
+   *  constraint); this field is what makes a parked run LOOK parked — and the
+   *  research surface is where it gets answered, so a run never needs a person
+   *  to leave the page they are already on. */
+  awaiting: DecisionRequest | null
   artifactId: string | null
   /** The conversation this run is discussed in. Null until somebody says
    *  something — see `ensureResearchConversation` for why it is on demand. */
@@ -193,9 +203,10 @@ export function stripUnknownMarkers(doc: string, knownIdx: readonly number[]): {
  *
  *  `awaiting` maps to 'running' because `ResearchStatus` has four values, all
  *  of them on the wire and in the client. A parked run is not idle — it is in
- *  somebody's approvals queue with the question on it — and 'running' with the
- *  question in `phase` is the honest four-value spelling of that. A fifth value
- *  is a client change, and it belongs with the runs surface rather than here.
+ *  somebody's approvals queue with the question on it — and 'running' is the
+ *  honest four-value spelling of that. The question itself rides beside status
+ *  as `awaiting` (below), which is what a parked run renders on its own surface
+ *  instead of needing a fifth value on the wire.
  *  `cancelled` maps to 'error' for the same reason, with the cancel's own
  *  reason carried in `error`.
  *
@@ -219,6 +230,8 @@ const ROW = `research_runs.id, research_runs.owner_user_id as "ownerUserId", res
   research_runs.agent_model as "agentModel", research_runs.mode, research_runs.question, research_runs.title,
   ${STATUS} as status,
   case when r.state in ('queued', 'running', 'awaiting') then nullif(r.phase, '') else research_runs.phase end as phase,
+  case when r.state = 'awaiting' and r.decision->'request' is not null and r.decision->'answer' is null
+    then r.decision->'request' else null end as "awaiting",
   research_runs.artifact_id as "artifactId",
   coalesce(research_runs.error, r.error) as error,
   research_runs.stats,
