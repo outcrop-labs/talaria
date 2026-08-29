@@ -373,6 +373,71 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
     }
 }
 
+/// Admin or 401/403 (api-guard.ts requireAdmin).
+pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {
+    let user = require_user(state, headers).await?;
+    if user.role != "admin" {
+        return Err(crate::error::house_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+        ));
+    }
+    Ok(user)
+}
+
+/// Signed-in user whose view is NOT DENIED (api-guard.ts requireView).
+/// Denial-based, so a member sees a view by default and only a deniedViews
+/// entry (or a prefix of one — 'x' denies 'x/anything') takes it away;
+/// admins are exempt. The same resolution the nav and route gates use.
+pub async fn require_view(
+    state: &AppState,
+    headers: &HeaderMap,
+    view: &str,
+) -> Result<SessionUser, Response> {
+    let user = require_user(state, headers).await?;
+    if user.role != "admin" {
+        let denied = crate::users::denied_views(&state.pg, &user.id, &user.role)
+            .await
+            .map_err(|e| {
+                tracing::error!("[session] view-denial read failed: {e}");
+                crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            })?;
+        if denied
+            .iter()
+            .any(|v| v == view || view.starts_with(&format!("{v}/")))
+        {
+            return Err(crate::error::house_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+            ));
+        }
+    }
+    Ok(user)
+}
+
+/// Route gate: session + permission in one call (api-guard.ts requirePerm,
+/// via permissions.ts). Returns the user, or a ready-to-return 401/403.
+pub async fn require_perm(
+    state: &AppState,
+    headers: &HeaderMap,
+    perm: &str,
+) -> Result<SessionUser, Response> {
+    let user = require_user(state, headers).await?;
+    if !crate::users::has_perm(&state.pg, &user.id, &user.role, perm)
+        .await
+        .map_err(|e| {
+            tracing::error!("[session] permission read failed: {e}");
+            crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        })?
+    {
+        return Err(crate::error::house_error(
+            StatusCode::FORBIDDEN,
+            &format!("you don't have permission to do that ({perm})"),
+        ));
+    }
+    Ok(user)
+}
+
 /// Attach a Set-Cookie (or several) to a JSON body — the login/logout shape.
 pub fn json_with_cookies(body: impl IntoResponse, cookies: &[String]) -> Response {
     let mut res = body.into_response();

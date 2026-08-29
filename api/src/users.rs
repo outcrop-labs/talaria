@@ -1,8 +1,8 @@
 // Users, view denials, and fine-grained permissions — port of the parts of
 // ui/src/server/users.ts + permissions.ts + apps.ts (appViewRoutes) that the
-// session/auth plane needs. The rest of users.ts (actingUser, agent
-// allow-lists, the admin console queries) ports with the route groups that
-// use it (batch 3).
+// session/auth plane needs, plus the batch-3 substrate: actingUser, the
+// assistant owner/elevation grants, hasPerm. The admin console queries port
+// with the route groups that use them.
 //
 // Two recorded divergences, both order-only and both inherited from the
 // gateway precedent (docs/RUST-MIGRATION.md):
@@ -13,7 +13,11 @@
 //     the difference is only visible to a build that compiled an app in and
 //     then had its source tree scrubbed — not a state a deployment can reach.
 
+use crate::agent_auth::{AgentSubject, subject_model, subject_proven};
 use crate::gateway::settings::get_setting;
+use crate::state::AppState;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -308,6 +312,192 @@ pub async fn user_permissions(
         })
         .map(|(id, _)| *id)
         .collect())
+}
+
+/// One permission, resolved through the same override → org-default →
+/// catalog chain (permissions.ts hasPerm). Admins: everything.
+pub async fn has_perm(
+    pg: &PgPool,
+    user_id: &str,
+    role: &str,
+    perm: &str,
+) -> Result<bool, sqlx::Error> {
+    if role == "admin" {
+        return Ok(true);
+    }
+    let rows: Vec<(String, bool)> =
+        sqlx::query_as("select perm, allowed from user_permissions where user_id = $1::uuid")
+            .bind(user_id)
+            .fetch_all(pg)
+            .await?;
+    let overrides: HashMap<String, bool> = rows.into_iter().collect();
+    let org = get_setting(
+        pg,
+        "member_default_permissions",
+        serde_json::Value::Object(serde_json::Map::new()),
+    )
+    .await;
+    Ok(overrides
+        .get(perm)
+        .copied()
+        .or_else(|| {
+            org.as_object()
+                .and_then(|o| o.get(perm))
+                .and_then(|v| v.as_bool())
+        })
+        .or_else(|| {
+            PERMISSIONS
+                .iter()
+                .find(|(id, _)| *id == perm)
+                .map(|(_, d)| *d)
+        })
+        .unwrap_or(false))
+}
+
+// ── Who a request acts AS (users.ts actingUser and the assistant grants) ─────
+
+#[derive(Debug, Clone)]
+pub struct ActingUser {
+    pub id: String,
+    pub role: String,
+    /// For attribution: the human, or "<assistant> (for <human>)".
+    pub label: String,
+    pub via_assistant: bool,
+    /// Admin-elevated assistant (org-wide view/edit; owner must be an admin).
+    /// Always false for humans — a human admin's access is unchanged.
+    pub elevated: bool,
+}
+
+/// Who a request acts AS: the signed-in human — or, for a PERSONAL assistant
+/// calling with its own credential, its owner (the identity-proxy model: your
+/// assistant manages your boards for you). General agents resolve to None;
+/// governance actions stay human(-proxied). An agent-credential REJECTION
+/// also resolves to None (TS: `instanceof Response → null`) — the dual-auth
+/// routes that need the refusal itself read `agent_caller` directly.
+pub async fn acting_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<ActingUser>, Response> {
+    match crate::agent_auth::agent_caller(&state.pg, headers).await {
+        Err(_) => return Ok(None),
+        Ok(Some(agent)) => {
+            // Proxying a human — and inheriting their admin role — is the one
+            // thing a self-declared name must never buy. agent-auth already
+            // refuses a legacy caller that CLAIMS a personal-assistant name,
+            // so this is unreachable today and stays as the guarantee for
+            // anything that loosens the door.
+            if agent.legacy {
+                return Ok(None);
+            }
+            // (id, role, email, name, elevated) — the owner row a personal
+            // assistant proxies.
+            type OwnerRow = (String, String, Option<String>, Option<String>, bool);
+            let row: Option<OwnerRow> = sqlx::query_as(
+                "select u.id::text, u.role, u.email, u.name, d.elevated from agent_defs d \
+                 join users u on u.id = d.owner_user_id \
+                 where d.model = $1 and d.owner_user_id is not null",
+            )
+            .bind(&agent.model)
+            .fetch_optional(&state.pg)
+            .await
+            .map_err(|e| internal(&e))?;
+            let Some((id, role, email, name, elevated)) = row else {
+                return Ok(None); // not a personal assistant → no proxied identity
+            };
+            let who = email.or(name).unwrap_or_else(|| id.clone());
+            return Ok(Some(ActingUser {
+                id,
+                role: role.clone(),
+                label: format!("{} (for {who})", agent.model),
+                via_assistant: true,
+                // Elevation only bites while the owner is still an admin —
+                // demote the human and the assistant's reach collapses.
+                elevated: elevated && role == "admin",
+            }));
+        }
+        Ok(None) => {}
+    }
+    let user = match crate::session::get_session_user(state, headers).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            tracing::error!("[users] session read failed: {e}");
+            return Err(internal_msg());
+        }
+    };
+    Ok(Some(ActingUser {
+        label: user
+            .email
+            .clone()
+            .or(user.name.clone())
+            .unwrap_or_else(|| "user".into()),
+        id: user.id,
+        role: user.role,
+        via_assistant: false,
+        elevated: false,
+    }))
+}
+
+/// True only for a personal assistant an admin explicitly promoted AND whose
+/// owner is currently an admin. Gates org-wide agent access. Takes the
+/// SUBJECT, never a bare name: elevation is the largest grant an agent
+/// identity carries, so it is never handed to an identity that was merely
+/// asserted (legacy shared-key caller).
+pub async fn is_elevated_assistant(
+    pg: &PgPool,
+    subject: &AgentSubject,
+) -> Result<bool, sqlx::Error> {
+    if !subject_proven(subject) {
+        return Ok(false);
+    }
+    let row: Option<(i32,)> = sqlx::query_as(
+        "select 1 from agent_defs d join users u on u.id = d.owner_user_id \
+         where d.model = $1 and d.elevated and u.role = 'admin'",
+    )
+    .bind(subject_model(subject))
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// model → owner_user_id for every PERSONAL assistant. Listing helper — for a
+/// per-CALLER decision use `assistant_owner_for`.
+pub async fn personal_assistant_owners(
+    pg: &PgPool,
+) -> Result<HashMap<String, String>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select model, owner_user_id::text from agent_defs where owner_user_id is not null",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The owner a personal assistant acts for, or None. The identity-proxy reach
+/// this answers is the OWNER'S OWN view (their memberships, their DMs), not
+/// org-wide: that larger grant is `elevated` on the agent_defs row and stays
+/// gated by `is_elevated_assistant`. Demands a PROVEN subject — a legacy
+/// caller gets None: identified, but not proven to BE that assistant.
+pub async fn assistant_owner_for(
+    pg: &PgPool,
+    subject: &AgentSubject,
+) -> Result<Option<String>, sqlx::Error> {
+    if !subject_proven(subject) {
+        return Ok(None);
+    }
+    Ok(personal_assistant_owners(pg)
+        .await?
+        .get(subject_model(subject))
+        .cloned())
+}
+
+fn internal(e: &sqlx::Error) -> Response {
+    tracing::error!("[users] database read failed: {e}");
+    internal_msg()
+}
+
+fn internal_msg() -> Response {
+    crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
 #[cfg(test)]
