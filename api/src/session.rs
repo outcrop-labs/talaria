@@ -366,6 +366,86 @@ pub fn actor_of(user: &SessionUser) -> String {
         .unwrap_or_else(|| user.id.clone())
 }
 
+/// Who a request acts AS (users.ts ActingUser): the signed-in human — or, for
+/// a PERSONAL assistant calling with the fleet key, its owner (the
+/// identity-proxy model: your assistant manages your boards for you).
+/// General agents and legacy shared-key callers resolve to None; governance
+/// actions stay human(-proxied). A presented-and-REJECTED agent credential
+/// also resolves to None — TS's `instanceof Response` branch — so those
+/// callers see the plain 401, never agent-auth's refusal sentence.
+pub struct ActingUser {
+    pub id: String,
+    pub role: String,
+    /// For attribution: the human, or "<assistant> (for <human>)".
+    pub label: String,
+    pub via_assistant: bool,
+    /// Admin-elevated assistant (org-wide view/edit). Always false for humans
+    /// — a human admin's access is unchanged by this.
+    pub elevated: bool,
+}
+
+// The personal-assistant's owner row: (id, role, email, name, elevated).
+type OwnerRow = (String, String, Option<String>, Option<String>, bool);
+
+pub async fn acting_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<ActingUser>, Response> {
+    match crate::agent_auth::agent_caller(&state.pg, headers).await {
+        // Rejected credential → None (see above); the fall-through to session
+        // auth is only for requests that presented nothing.
+        Err(_refusal) => Ok(None),
+        Ok(Some(agent)) => {
+            // Proxying a human — and inheriting their admin role — is the one
+            // thing a self-declared name must never buy; legacy never proxies.
+            if agent.legacy {
+                return Ok(None);
+            }
+            let owner: Option<OwnerRow> = sqlx::query_as(
+                "select u.id::text, u.role, u.email, u.name, d.elevated \
+                     from agent_defs d join users u on u.id = d.owner_user_id \
+                     where d.model = $1 and d.owner_user_id is not null",
+            )
+            .bind(&agent.model)
+            .fetch_optional(&state.pg)
+            .await
+            .map_err(|e| {
+                tracing::error!("[session] acting-user lookup failed: {e}");
+                crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            })?;
+            Ok(owner.map(|(id, role, email, name, elevated)| {
+                let for_label = email.clone().or(name).unwrap_or_else(|| id.clone());
+                ActingUser {
+                    id,
+                    // Elevation only bites while the owner is still an admin —
+                    // demote the human and the assistant's reach collapses.
+                    elevated: elevated && role == "admin",
+                    role,
+                    label: format!("{} (for {})", agent.model, for_label),
+                    via_assistant: true,
+                }
+            }))
+        }
+        Ok(None) => match get_session_user(state, headers).await {
+            Ok(Some(user)) => Ok(Some(ActingUser {
+                id: user.id,
+                role: user.role,
+                label: user.email.or(user.name).unwrap_or_else(|| "user".into()),
+                via_assistant: false,
+                elevated: false,
+            })),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                tracing::error!("[session] redis read failed: {e}");
+                Err(crate::error::house_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error",
+                ))
+            }
+        },
+    }
+}
+
 /// Signed-in user or the 401 Response (the api-guard contract: return the
 /// gate when it is a Response).
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {

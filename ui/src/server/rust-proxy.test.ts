@@ -92,6 +92,20 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
+  it('forwards the teams group — list, id, and members under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/teams',
+      '/api/teams/00000000-0000-4000-8000-000000000000',
+      '/api/teams/00000000-0000-4000-8000-000000000000/members',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
   it('forwards exact-match routes but not the TS sub-routes under them', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

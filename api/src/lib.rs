@@ -31,4 +31,5 @@ pub mod routes;
 pub mod secretbox;
 pub mod session;
 pub mod state;
+pub mod teams;
 pub mod users;

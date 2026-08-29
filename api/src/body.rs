@@ -98,6 +98,18 @@ pub fn optional_string_member(
     }
 }
 
+/// A plain `z.string().email()` member (api-schema's Email): no preprocess,
+/// no length bound — the value crosses exactly as sent. (The claim route's
+/// trim-and-lower variant is preprocessed_email_member below.)
+pub fn email_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| string_msg("undefined"))?;
+    let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?;
+    if !zod_email_ok(s) {
+        return Err("Invalid email address".into());
+    }
+    Ok(s.to_string())
+}
+
 /// The claim route's preprocessed email: a STRING is trimmed + lowercased
 /// before any check (the credential's email is its login key, so it is stored
 /// in the form login will look up), then zod's order — email validity, then

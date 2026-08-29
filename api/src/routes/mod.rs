@@ -22,6 +22,9 @@ pub mod keys;
 pub mod keys_id;
 pub mod llm_chat;
 pub mod llm_models;
+pub mod teams;
+pub mod teams_id;
+pub mod teams_id_members;
 pub mod users;
 
 use crate::state::AppState;
@@ -130,6 +133,25 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(keys_id::delete)
                 .put(keys_id::put)
                 .fallback(|| async { method_not_allowed("DELETE, PUT") }),
+        )
+        .route(
+            "/api/teams",
+            get(teams::get)
+                .post(teams::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/teams/{id}",
+            axum::routing::patch(teams_id::patch)
+                .delete(teams_id::delete)
+                .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
+        )
+        .route(
+            "/api/teams/{id}/members",
+            get(teams_id_members::get)
+                .post(teams_id_members::post)
+                .delete(teams_id_members::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
         .route(
             "/api/agent-role-templates",
