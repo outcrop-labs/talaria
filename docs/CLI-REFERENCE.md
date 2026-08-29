@@ -19,7 +19,7 @@
 | [`talaria box start`](#talaria-box-start) | restart a stopped devbox (and the shared TEI/SearXNG) |
 | [`talaria box rm`](#talaria-box-rm) | tear down a devbox — refuses unpushed work unless --force |
 | [`talaria box build`](#talaria-box-build) | rebuild the talaria-devbox:latest toolchain image |
-| [`talaria deploy up`](#talaria-deploy-up) | build + start the stack — CONTAINER.md's one command, DOCKER_GID resolved |
+| [`talaria deploy up`](#talaria-deploy-up) | build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved |
 | [`talaria deploy down`](#talaria-deploy-down) | stop the stack (--volumes also deletes its data — destructive) |
 | [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, then the redeploy (up -d --build) |
 | [`talaria deploy logs`](#talaria-deploy-logs) | follow the stack's logs (Ctrl-C to detach) |
@@ -150,7 +150,7 @@ production compose wrappers — up/down/update/logs/creds/status (docs/CONTAINER
 
 ### `talaria deploy up`
 
-build + start the stack — CONTAINER.md's one command, DOCKER_GID resolved
+build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved
 
 ```
 talaria deploy up
