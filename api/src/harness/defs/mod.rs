@@ -7,4 +7,5 @@
 // suite cannot replay its fixtures; the admin panel cannot show its floor).
 // The registry itself crosses once the defs are here to fill it.
 
+pub mod summarizer;
 pub mod titler;
