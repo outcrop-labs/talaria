@@ -1,9 +1,12 @@
 // Channels — the port of ui/src/server/channels.ts, grown slice by slice.
-// This file starts with the one piece the runs watch gate needs (realtime.rs
-// resolves a run with a `channel` subject through `channelRole`); the CRUD,
-// read-marking, and message planes land with the chat/channels family's own
-// batch.
+// The role read landed with the runs watch gate; `insert_channel_message`
+// lands here because the brief's delegation layer sends replies through it.
+// The CRUD, read-marking, and stream-fill planes land with the chat/channels
+// family's own batch.
 
+use crate::agent_writes::{WriteAuthor, guard_agent_write};
+use crate::notify::{NotifyDeps, briefs_follow_message};
+use crate::realtime::{ChannelEvent, publish_channel};
 use sqlx::PgPool;
 
 /// channels.ts isChannelId: exactly the hyphenated uuid shape, hex in either
@@ -46,6 +49,98 @@ pub async fn channel_role(
     .fetch_optional(pg)
     .await?;
     Ok(row.map(|(role,)| role))
+}
+
+/// What an insert handed back — the two facts every caller needs (the brief's
+/// delegation records the message id on the draft it sent).
+#[derive(Debug, Clone)]
+pub struct InsertedMessage {
+    pub id: String,
+    pub seq: i64,
+}
+
+/// Insert a message, drawing seq from the channel's counter
+/// (channels.ts insertChannelMessage — the shape the brief calls: status
+/// always `complete`, no attachments, no thread root).
+///
+/// THE AGENT-POST GUARD LIVES HERE. `mcp post_to_channel` arrives as a tool
+/// ARGUMENT — model output that never went through a harness — and lands in a
+/// room everybody reads. `guard_agent_write` runs the gate-safe rules over it,
+/// records what they find against the posting agent, and in strict mode stores
+/// the redacted body. It runs on agent posts only: a person's message is not
+/// model output, and guard_findings.model has to keep meaning "this model's
+/// confabulation rate".
+///
+/// Inside the insert rather than at the route, so no caller can express the
+/// ungated post.
+///
+/// Findings are recorded, not PINNED to the row. Agents read channels through
+/// the same API humans do — so pinning a finding here would put its `snippet`
+/// (a verbatim excerpt of the flagged span) on a path back into a model's
+/// context, which is the one thing guardrails forbids outright.
+pub async fn insert_channel_message(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    author_type: &str,
+    author: &str,
+    content: &str,
+) -> Result<InsertedMessage, sqlx::Error> {
+    let body = if author_type == "agent" {
+        guard_agent_write(
+            &deps.pg,
+            "channel-post",
+            WriteAuthor::Agent(author),
+            content,
+            None,
+        )
+        .await
+        .text
+    } else {
+        content.to_string()
+    };
+
+    let mut tx = deps.pg.begin().await?;
+    let seq: i32 = sqlx::query_scalar(
+        "update channels set msg_seq = msg_seq + 1, updated_at = now() where id = $1::uuid returning msg_seq",
+    )
+    .bind(channel_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let row: (String, i32) = sqlx::query_as(
+        "insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments, thread_root_id) \
+         values ($1::uuid, $2, $3, $4, $5, 'complete', '[]'::jsonb, null) \
+         returning id::text, seq",
+    )
+    .bind(channel_id)
+    .bind(seq)
+    .bind(author_type)
+    .bind(author)
+    .bind(&body)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let inserted = InsertedMessage {
+        id: row.0,
+        seq: row.1 as i64,
+    };
+    publish_channel(
+        &deps.realtime,
+        channel_id,
+        &ChannelEvent {
+            kind_tag: "message",
+            message_id: Some(inserted.id.clone()),
+            seq: Some(inserted.seq),
+            deleted: None,
+        },
+    );
+    // THE BRIEF FOLLOWS THE CONVERSATION. A brief line says who is waiting on a
+    // reply, and until this existed it learned that the reply had happened on
+    // the next scheduled sweep — up to five minutes of the document telling you
+    // to answer somebody you had just answered. This clears the sweep throttle
+    // and rings the bell; it does not sweep.
+    briefs_follow_message(deps.clone(), channel_id.to_string());
+    Ok(inserted)
 }
 
 #[cfg(test)]

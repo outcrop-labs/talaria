@@ -1454,6 +1454,54 @@ pub fn register_notification_mail_job(deps: Arc<DrainDeps>) {
     crate::scheduler::register_job(notification_mail_job_spec(deps));
 }
 
+/// The members of a channel — who a message in it might be about
+/// (daily-brief-stale.ts channelMemberIds).
+///
+/// Kept here rather than in channels.rs for the cycle reason the TS file
+/// states: channels' insert needs the brief nudge, and the brief's delegation
+/// layer needs channels' insert. It is one query and it is the only thing this
+/// module needs to know about a channel.
+pub async fn channel_member_ids(
+    pg: &sqlx::PgPool,
+    channel_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("select user_id::text from channel_members where channel_id = $1::uuid")
+            .bind(channel_id)
+            .fetch_all(pg)
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// A message landed in a conversation (daily-brief-stale.ts
+/// briefsFollowMessage). Detached on purpose: the person who sent it is waiting
+/// on the POST that wrote it, and their reply must not block on somebody
+/// else's brief bookkeeping.
+///
+/// WHAT IT DOES NOT DO IS SWEEP. A sweep is four scoped queries and up to one
+/// model call, and posting a message in a busy DM would fire one per message
+/// per participant. This clears the sweep throttle and rings the bell instead:
+/// an open page refetches, the read path sweeps on the way through because the
+/// throttle is now clear, and the person sees the line close. A page nobody is
+/// looking at costs one UPDATE and picks the change up on the next scheduled
+/// pass.
+pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
+    tokio::spawn(async move {
+        match channel_member_ids(&deps.pg, &channel_id).await {
+            Ok(ids) => {
+                if let Err(e) = mark_brief_stale(&deps, &ids).await {
+                    tracing::error!(
+                        "[daily-brief] could not follow a message in {channel_id}: {e}"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("[daily-brief] could not follow a message in {channel_id}: {e}");
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

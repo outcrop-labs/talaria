@@ -156,6 +156,189 @@ pub fn artifact_to_markdown(a: &Artifact) -> String {
     }
 }
 
+// ── The write half the brief's mirror exercises ───────────────────────────────
+//
+// Ported now because the mirror (daily-brief-artifact.ts) is a scheduled job
+// with no route in front of it. The rest of the write plane (icon, storage,
+// visibility + public slug, edit policy, delete) lands with the artifacts
+// routes in batch 5 and extends this file in place.
+
+/// createArtifact — kind/title carry their defaults ('doc', 'Untitled').
+pub async fn create_artifact(
+    pg: &PgPool,
+    kind: Option<&str>,
+    title: Option<&str>,
+    created_by: &str,
+    owner_user_id: Option<&str>,
+    folder_id: Option<&str>,
+) -> Result<Artifact, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's COLS column list.
+    let sql = format!(
+        "insert into artifacts (kind, title, created_by, updated_by, owner_user_id, folder_id) \
+         values ($1, $2, $3::text, $3::text, $4::uuid, $5::uuid) returning {COLS}"
+    );
+    let row: ArtifactRow = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(kind.unwrap_or("doc"))
+        .bind(title.unwrap_or("Untitled"))
+        .bind(created_by)
+        .bind(owner_user_id)
+        .bind(folder_id)
+        .fetch_one(pg)
+        .await?;
+    Ok(Artifact::from(row))
+}
+
+/// createFolder — the shape the agent cabinet path uses: ownerless and
+/// org-visible (the workspace's).
+async fn create_folder(
+    pg: &PgPool,
+    name: &str,
+    parent_id: Option<&str>,
+    created_by: &str,
+) -> Result<String, sqlx::Error> {
+    let id: (String,) = sqlx::query_as(
+        "insert into artifact_folders (name, parent_id, created_by, owner_user_id, visibility) \
+         values ($1, $2::uuid, $3, null, 'org') returning id::text",
+    )
+    .bind(name)
+    .bind(parent_id)
+    .bind(created_by)
+    .fetch_one(pg)
+    .await?;
+    Ok(id.0)
+}
+
+/// Find-or-create a folder by name under a parent (case-insensitive).
+async fn find_or_create_folder(
+    pg: &PgPool,
+    name: &str,
+    parent_id: Option<&str>,
+    created_by: &str,
+) -> Result<String, sqlx::Error> {
+    let existing: Option<(String,)> = sqlx::query_as(
+        "select id::text from artifact_folders \
+         where lower(name) = $1 and parent_id is not distinct from $2::uuid limit 1",
+    )
+    .bind(name.to_lowercase())
+    .bind(parent_id)
+    .fetch_optional(pg)
+    .await?;
+    if let Some((id,)) = existing {
+        return Ok(id);
+    }
+    create_folder(pg, name, parent_id, created_by).await
+}
+
+/// The single root every agent cabinet hangs under. One folder per agent at the
+/// ROOT buried the user's own work under a wall of agent names the moment the
+/// fleet grew; the Files browser now opens on your folders, with the whole
+/// fleet's output one click away.
+pub const AGENTS_ROOT: &str = "Agents";
+
+/// The agent's filing cabinet: "Agents/&lt;Agent label&gt;/&lt;Category&gt;",
+/// created on demand. Auto-created artifacts (plan docs, research reports,
+/// agent documents, media saves, chat summaries, brief mirrors) file here
+/// instead of piling up at the root. Never fails — filing must not be able to
+/// kill the flow that creates the artifact; a None just means "root".
+pub async fn agent_category_folder(
+    pg: &PgPool,
+    agent_label: &str,
+    category: &str,
+    created_by: &str,
+) -> Option<String> {
+    let root = find_or_create_folder(pg, AGENTS_ROOT, None, created_by)
+        .await
+        .ok()?;
+    let top = find_or_create_folder(pg, agent_label, Some(&root), created_by)
+        .await
+        .ok()?;
+    find_or_create_folder(pg, category, Some(&top), created_by)
+        .await
+        .ok()
+}
+
+/// The patch fields saveArtifact's brief-mirror call carries. The double
+/// Option is TS's `!== undefined`: the outer layer says whether the field was
+/// in the patch at all, the inner whether it is null.
+#[derive(Default)]
+pub struct SaveArtifactPatch<'a> {
+    pub title: Option<Option<&'a str>>,
+    pub body: Option<&'a str>,
+    pub folder_id: Option<Option<&'a str>>,
+}
+
+/// saveArtifact, restricted to the patch legs the mirror exercises (see the
+/// write-half note above): folder, title, body, then the re-read, the version
+/// snapshot on a content change, and the official→KB re-mirror.
+///
+/// RECORDED DIVERGENCE (RUST-MIGRATION.md): the TS `remirrorIfOfficial` —
+/// which pushes an official artifact's new body into its KB doc and re-routes
+/// RAG — is a checked, loudly-logged NO-OP here until the retrieval plane
+/// crosses in batch 5. The version snapshot IS ported, so history is whole;
+/// what diverges is the KB/RAG copy of an official artifact edited through the
+/// brief's mirror, which stays stale until that plane exists.
+pub async fn save_artifact(
+    pg: &PgPool,
+    id: &str,
+    patch: SaveArtifactPatch<'_>,
+    actor: &str,
+) -> Result<Option<Artifact>, sqlx::Error> {
+    let Some(_prev) = get_artifact(pg, id).await? else {
+        return Ok(None);
+    };
+    if let Some(folder) = patch.folder_id {
+        sqlx::query(
+            "update artifacts set folder_id = $2::uuid, updated_at = now() where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(folder)
+        .execute(pg)
+        .await?;
+    }
+    if let Some(title) = patch.title {
+        sqlx::query("update artifacts set title = $2, updated_by = $3::text, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(title)
+            .bind(actor)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(body) = patch.body {
+        sqlx::query("update artifacts set body = $2, updated_by = $3::text, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(body)
+            .bind(actor)
+            .execute(pg)
+            .await?;
+    }
+    let next = get_artifact(pg, id).await?;
+    if let Some(a) = &next
+        && (patch.body.is_some() || patch.title.is_some())
+    {
+        // Versions come free: every body change snapshots, so the
+        // artifact's history is a rough record of how the day accumulated.
+        let _ = crate::internal_history::snapshot(
+            pg,
+            "artifact",
+            &a.id,
+            &format!("# {}\n\n{}", a.title, a.body),
+            Some(actor),
+        )
+        .await;
+        // The recorded divergence: TS would push this body into the KB doc
+        // (saveDoc → syncDocEffective → RAG re-route). That plane has not
+        // crossed; the artifact and its KB mirror will diverge until it
+        // does, and this line is how anyone finds out why from the logs.
+        if a.official && a.kb_doc_id.is_some() {
+            tracing::warn!(
+                "[daily-brief] artifact {} is official with a KB doc; the KB re-mirror is not ported yet (batch 5) — the KB copy is now stale",
+                a.id
+            );
+        }
+    }
+    Ok(next)
+}
+
 /// JS `String(c ?? '')` — how a sheet cell stringifies. Numbers and booleans
 /// render as themselves, null as empty, an object as "[object Object]", an
 /// array as its comma-joined elements (Array.prototype.toString joins).
