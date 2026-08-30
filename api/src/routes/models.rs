@@ -23,8 +23,16 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Err(gate) => return gate,
     };
     // New registered models get their org-voice blurb (throttled, detached —
-    // the pass never blocks the request it was kicked from).
-    maybe_rewrite_blurbs(&state);
+    // the pass never blocks the request it was kicked from). The kick is the
+    // sweep's only trigger while TS owns the schedule — the proxy shadows
+    // TS's own kick, so without this one the org-voice sweep is dark in every
+    // proxied install. Once THIS process owns the schedule the blurb-rewrite
+    // job carries the cadence and the kick stands down: the throttle would
+    // serialize the two anyway, but two triggers racing one throttle is two
+    // model calls' worth of contention for one batch of pending ids.
+    if !crate::scheduler::rust_owns_schedule() {
+        maybe_rewrite_blurbs(&state);
+    }
     let catalog = match gateway_models_for(&state.pg, &user.role).await {
         Ok(c) => c,
         Err(e) => {

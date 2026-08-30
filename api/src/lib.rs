@@ -40,6 +40,7 @@ pub mod home;
 pub mod instance;
 pub mod internal_history;
 pub mod invites;
+pub mod jobs;
 pub mod judge;
 pub mod kb;
 pub mod kb_perms;

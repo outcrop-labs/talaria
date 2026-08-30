@@ -38,7 +38,7 @@ pub use crate::runs::defs::research::{
 use crate::runs::defs::research::{ResearchInput, research_run};
 use crate::runs::run::{EnqueueOptions, cancel_run, enqueue};
 use crate::source_registry::{MARKER_RE, ResearchSource};
-use crate::work_dispatch::coexistence_dispatch_deps;
+use crate::work_dispatch::dispatch_deps;
 
 /// What the agent in a research conversation is for: answer from the report,
 /// cite the same [n] markers, and never state as established anything the
@@ -520,7 +520,7 @@ pub async fn delete_research_run(
 ) -> Result<(), sqlx::Error> {
     if let Ok(redis) = state.redis().await {
         let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
-        let deps = coexistence_dispatch_deps(state.pg.clone(), redis, realtime);
+        let deps = dispatch_deps(state.pg.clone(), redis, realtime);
         if let Err(e) = cancel_run(run_id, Some("the research run was deleted".into()), &deps).await
         {
             tracing::error!("[research] could not cancel {run_id} before deleting it: {e}");
@@ -608,10 +608,12 @@ pub async fn get_research_run(
 /// into a run that fails a second later would be a worse answer to the same
 /// question. The run's first step re-checks it, for the resume case.
 ///
-/// COEXISTENCE ORDER (same as plan_drafts): enqueue with `start: false` — the
-/// run row and its publish, no drive. Until the flip arms the Rust driver,
-/// the TS scheduler's sweep is what advances the queued run, and the reclaim
-/// sweep is the guarantee either way.
+/// COEXISTENCE ORDER (same as plan_drafts): while TS owns the schedule,
+/// enqueue with `start: false` — the run row and its publish, no drive; the
+/// TS scheduler's sweep is what advances the queued run, and the reclaim
+/// sweep is the guarantee either way. Once this process owns the schedule
+/// (`TALARIA_SCHEDULER=rust`) the flag drives inline, exactly as TS's own
+/// start route always did.
 pub async fn start_research(
     state: &crate::state::AppState,
     input: ResearchInput,
@@ -635,7 +637,7 @@ pub async fn start_research(
         .await
         .map_err(|_| "the run could not be enqueued: redis is unavailable".to_string())?;
     let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
-    let deps = coexistence_dispatch_deps(state.pg.clone(), redis, realtime);
+    let deps = dispatch_deps(state.pg.clone(), redis, realtime);
     let run_input = serde_json::to_value(&input).expect("ResearchInput is plain data");
     enqueue(
         research_run(),
@@ -646,7 +648,9 @@ pub async fn start_research(
             subject_type: Some("research".into()),
             subject_id: Some(id.clone()),
             phase: Some("queued".into()),
-            start: Some(false),
+            // The coexistence bridge: no drive while TS owns the sweep, inline
+            // drive (TS's own behavior) once this process does.
+            start: Some(crate::scheduler::rust_owns_schedule()),
         },
         &deps,
     )

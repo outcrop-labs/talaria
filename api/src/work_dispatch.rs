@@ -7,14 +7,17 @@
 // task WORKFLOWS ride along; the plugin heartbeat remains the pull-side
 // safety net.
 //
-// THE COEXISTENCE POSTURE: this process enqueues the session and never drives
-// it. The row is written with `start: false` — insert and publish, no
-// detached drive — and the TS sweep, which still owns the scheduler and the
-// real step, picks it up as a queued run with no lease. That is the shared-
-// table shape every crossed plane uses, with one addition the runs table
-// makes possible: the DERIVED id means both runtimes compute the same row id
-// for the same ticket+agent, so a TS dispatch and a Rust dispatch racing one
-// ticket still produce ONE session.
+// THE COEXISTENCE POSTURE, and its flip. While TS owns the scheduler this
+// process enqueues the session and never drives it: the row is written with
+// `start: false` — insert and publish, no detached drive — and the TS sweep,
+// which still owns the real step, picks it up as a queued run with no lease.
+// At the flip (`TALARIA_SCHEDULER=rust`) the posture inverts, in
+// `dispatch_deps` and the `start` flag below together: this process drives
+// what it enqueues, exactly as TS always did. That is the shared-table shape
+// every crossed plane uses, with one addition the runs table makes possible:
+// the DERIVED id means both runtimes compute the same row id for the same
+// ticket+agent, so a TS dispatch and a Rust dispatch racing one ticket still
+// produce ONE session.
 //
 // THE CLAIM, which is what `liveSessions` was:
 //   `session_run_id(task, agent, n)` is a DERIVED uuid, so two dispatchers
@@ -71,18 +74,26 @@ pub struct DispatchTicket {
     pub archived_at: Option<String>,
 }
 
-/// The coexistence dispatch assembly: the real store, the real publish, the
-/// registry lookup — and a lease plus pause that are the DRIVER's edges,
-/// which this process does not hold while TS owns the scheduler. They are
-/// unreachable under `start: false` (enqueue never claims a lease and never
-/// parks); if that analysis is ever wrong the pause says so at full volume
-/// rather than quietly doing the wrong thing. The handoff slice replaces this
-/// assembly with the full real one; nothing else should build on it.
-pub fn coexistence_dispatch_deps(
+/// The dispatch assembly, both postures of the flip in one function so no
+/// caller has to know which world it is in:
+///
+/// · `TALARIA_SCHEDULER=rust` — the FULL real assembly, `real_run_deps`: a
+///   run that parks a question actually parks, because the driver that will
+///   park it is this process.
+/// · anything else (coexistence) — the real store, the real publish, the
+///   registry lookup, and a `pause` that is the DRIVER's edge, which this
+///   process does not hold while TS owns the scheduler. Unreachable under
+///   `start: false` (enqueue never parks); if that analysis is ever wrong
+///   the pause says so at full volume rather than quietly doing the wrong
+///   thing.
+pub fn dispatch_deps(
     pg: PgPool,
     redis: redis::aio::ConnectionManager,
     rt: realtime::RealtimeDeps,
 ) -> RunDeps {
+    if crate::scheduler::rust_owns_schedule() {
+        return crate::runs::real_run_deps(pg, redis, rt);
+    }
     RunDeps {
         store: Arc::new(PgRunStore::new(pg)),
         lease: Arc::new(RedisRunLease::new(redis)),
@@ -172,10 +183,13 @@ pub async fn dispatch_ticket_work(
             subject_id: Some(task.id.clone()),
             phase: Some(format!("queued for {agent_model}")),
             id: Some(id),
-            // THE COEXISTENCE LINE. Row and publish only: no detached drive,
-            // because the driver in this process has no step to run. The TS
-            // sweep finds the row queued with no lease and takes it.
-            start: Some(false),
+            // THE FLIP LINE. While TS owns the schedule: row and publish
+            // only, no detached drive — the TS sweep finds the row queued
+            // with no lease and takes it. When this process owns the
+            // schedule it drives what it enqueues, exactly as TS's dispatch
+            // always did (`start !== false` there); `dispatch_deps` above
+            // supplies the real step either way.
+            start: Some(crate::scheduler::rust_owns_schedule()),
         };
         match enqueue(def, input, opts, deps).await {
             Ok(_) => return,

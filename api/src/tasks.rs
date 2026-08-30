@@ -28,7 +28,7 @@ use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
 use crate::runs::run::RunDeps;
 use crate::statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
-use crate::work_dispatch::{DispatchTicket, coexistence_dispatch_deps, maybe_dispatch_ticket};
+use crate::work_dispatch::{DispatchTicket, dispatch_deps, maybe_dispatch_ticket};
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
@@ -61,8 +61,7 @@ impl TaskDeps {
     pub fn coexistence(pg: PgPool, redis: Option<redis::aio::ConnectionManager>) -> Self {
         let realtime = RealtimeDeps::publish_only(redis.clone());
         let notify = NotifyDeps::publishing(pg.clone(), redis.clone());
-        let dispatch =
-            redis.map(|conn| coexistence_dispatch_deps(pg.clone(), conn, realtime.clone()));
+        let dispatch = redis.map(|conn| dispatch_deps(pg.clone(), conn, realtime.clone()));
         TaskDeps {
             pg,
             realtime,

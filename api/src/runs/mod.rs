@@ -89,12 +89,12 @@ fn real_edges(pg: sqlx::PgPool, rt: RealtimeDeps) -> RealEdges {
 /// stubs out — the REAL pause, wired through decide's `pause_fn` to the
 /// approvals plane's one resolver and one announcer.
 ///
-/// This is the handoff assembly the codebase's comments keep promising: it is
+/// This is the handoff assembly the codebase's comments kept promising: it is
 /// what the Rust scheduler's `run-reclaim` job drives reclaimed runs through,
-/// and what work_dispatch's `coexistence_dispatch_deps` is replaced by when
-/// the flip lands (during coexistence nothing in Rust drives, so the stub's
-/// loud refusal was the honest edge; from the flip on, a driven run that
-/// parks a question must actually park it).
+/// and what work_dispatch's `dispatch_deps` returns once the schedule is this
+/// process's (`TALARIA_SCHEDULER=rust`). During coexistence nothing in Rust
+/// drives, so the stub's loud refusal was the honest edge; from the flip on,
+/// a driven run that parks a question must actually park it.
 ///
 /// Nothing here is reached before the flip: the job that consumes it arms
 /// with `start_scheduler`, and the flip is the only caller of that.

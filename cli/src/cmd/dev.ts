@@ -85,8 +85,11 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
 
   // The api's config.rs resolves the secret root in this order; lift all
   // three candidates so ui/.env's arrangement works whichever one it uses.
+  // TALARIA_SCHEDULER rides along so ui/.env is the ONE place the scheduler
+  // handoff is declared: the Rust api reads it to arm, vite (which loads the
+  // same file) reads it to stand down.
   const env: Record<string, string> = {}
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET']) {
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }

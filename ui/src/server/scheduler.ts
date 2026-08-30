@@ -85,6 +85,13 @@
 //   archiving production chats or sending proactive DMs. Set
 //   TALARIA_SCHEDULER=off to get the same silence in production — the kill
 //   switch to deploy behind if a job ever misbehaves.
+//
+// THE HANDOFF (`TALARIA_SCHEDULER=rust`)
+//   One variable, read by both runtimes: `rust` means the Rust api registers
+//   and arms the job table and this process arms nothing — a handoff declared
+//   in one env file, never a window where both runtimes think a period is
+//   theirs. The 'sched' lease namespace is shared besides, so even a botched
+//   handoff is a contest between holders of the same keys, not a double-fire.
 import { acquireLease, demoteLease, instanceId, keepLeaseAlive, leaseHolder, leaseKey, type LeaseHeartbeat, type LeaseToken } from './runs/lease'
 import { errLine, errText } from './errors'
 
@@ -453,6 +460,10 @@ export function startScheduler(): JobName[] {
 
   if (process.env.TALARIA_SCHEDULER === 'off') {
     console.warn(`${LOG} disabled by TALARIA_SCHEDULER=off — no background jobs will run on this instance`)
+    return []
+  }
+  if (process.env.TALARIA_SCHEDULER === 'rust') {
+    console.warn(`${LOG} TALARIA_SCHEDULER=rust — the schedule is the Rust api's on this deployment; this process arms nothing`)
     return []
   }
   if (started) {

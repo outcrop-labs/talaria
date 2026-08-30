@@ -49,14 +49,16 @@
 //   the only one that produces no error to log.
 //
 // THE ARMING SWITCH
-//   `TALARIA_SCHEDULER=off` is the same kill switch TS has — the one to
-//   deploy behind if a job ever misbehaves. Arming RUST'S scheduler at all
-//   is the batch-4 FLIP (stop-TS → arm-Rust, never both), which lands with
-//   the last job body; until then this module is registered, tested and
-//   quiet, exactly like a TS module whose `registerJob` import has not made
-//   the runtime graph yet. The 'sched' lease namespace is shared with TS, so
-//   when the flip comes it is a handoff between holders of the same periods,
-//   never a window where both runtimes think a period is theirs.
+//   `TALARIA_SCHEDULER` is one variable both runtimes read, with three
+//   postures. Unset (or anything unrecognized) is today's world: TS arms,
+//   Rust arms nothing. `off` is the kill switch on either runtime — the one
+//   to deploy behind if a job ever misbehaves. `rust` is THE FLIP: this
+//   process registers and arms the whole table (jobs::arm, from main) while
+//   TS's startScheduler stands down, so the handoff is one value in one env
+//   file, never a window where both runtimes think a period is theirs. The
+//   'sched' lease namespace is shared besides, so even a botched flip is a
+//   contest between holders of the same keys, not a double-fire: the loser
+//   of a lease attempt skips that interval.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -330,6 +332,21 @@ fn missing_from(registered: &[JobName]) -> Vec<JobName> {
 /// process env under parallel tests.
 fn disabled_by_env(value: Option<&str>) -> bool {
     value == Some("off")
+}
+
+/// THE FLIP as a pure read — `TALARIA_SCHEDULER=rust` means this process owns
+/// the schedule (see the header). Every behavior that changes at the handoff
+/// reads this one predicate, so there is exactly one sentence to get right:
+/// `work_dispatch::dispatch_deps` builds the real driver edges, the three
+/// enqueue sites drive inline again, the models route's blurb kick stands
+/// down for the blurb job, and `main` arms.
+fn schedule_owned_here(value: Option<&str>) -> bool {
+    value == Some("rust")
+}
+
+/// The env-read half of the flip predicate.
+pub fn rust_owns_schedule() -> bool {
+    schedule_owned_here(std::env::var("TALARIA_SCHEDULER").ok().as_deref())
 }
 
 fn job_lease_key(name: JobName) -> String {
@@ -1197,6 +1214,19 @@ mod tests {
         assert!(disabled_by_env(Some("off")));
         assert!(!disabled_by_env(Some("on")));
         assert!(!disabled_by_env(None));
+    }
+
+    #[test]
+    fn the_flip_value_is_rust_and_only_rust() {
+        // Exactly one spelling moves the schedule, and the two other
+        // postures do not: 'off' disables both runtimes, unset leaves it
+        // with TS — so a typo in an env file can never half-flip a
+        // deployment into both-armed or neither-armed.
+        assert!(schedule_owned_here(Some("rust")));
+        assert!(!schedule_owned_here(Some("off")));
+        assert!(!schedule_owned_here(None));
+        assert!(!schedule_owned_here(Some("Rust")));
+        assert!(!schedule_owned_here(Some("on")));
     }
 
     #[test]

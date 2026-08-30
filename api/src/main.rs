@@ -5,7 +5,7 @@
 // integration tests drive the exact stack this serves.
 
 use std::sync::Arc;
-use talaria_api::{config, config::Config, db, routes, state::AppState};
+use talaria_api::{config, config::Config, db, jobs, routes, scheduler, state::AppState};
 
 #[tokio::main]
 async fn main() {
@@ -37,6 +37,17 @@ async fn main() {
 
     let bind = cfg.bind;
     let state = AppState::new(db::pool(&cfg), Arc::new(cfg));
+
+    // THE FLIP. `TALARIA_SCHEDULER=rust` moves the whole job schedule into
+    // this process: TS's startScheduler reads the same value and stands down,
+    // so one env declaration hands the schedule over, never a window where
+    // both runtimes arm. `arm` retries until Postgres and Redis answer — boot
+    // itself stays independent of both, exactly like TS's.
+    if scheduler::rust_owns_schedule() {
+        let st = state.clone();
+        tokio::spawn(async move { jobs::arm(st).await });
+    }
+
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind)
@@ -54,6 +65,13 @@ async fn main() {
             state.pg.close().await;
             std::process::exit(1);
         }
+    }
+    // When the schedule is this process's, draining means its drain too: no
+    // new runs armed, in-flight job work given its grace, then the pool. A
+    // job that ARCHIVES conversations or MESSAGES people must not be killed
+    // half a second from either.
+    if scheduler::rust_owns_schedule() {
+        scheduler::stop_scheduler(30_000).await;
     }
     state.pg.close().await;
 }
