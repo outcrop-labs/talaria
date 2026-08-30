@@ -2244,7 +2244,7 @@ pub async fn log_activity(
 }
 
 /// TS TaskActivity.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskActivity {
     pub id: String,
