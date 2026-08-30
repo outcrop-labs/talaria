@@ -26,14 +26,13 @@
 // back the existing def: the work is done, not failed. `render` and `boot` are
 // idempotent by nature (they rewrite/re-up the same files).
 //
-// THE REAL DEPS ARE THE FLEET WRITE PLANE — createAgent (agent-defs writes +
-// the fleet .env key), writeSkill, renderFleet, fleetUp/waitHealthy — and none
-// of it has crossed yet. So this module registers the kind but nothing arms
-// it, and `jobs.rs`'s `try_arm` does not touch the getter: an
-// armed-in-name-only def would let the flip arm while a hire cannot run, which
-// is the same hole the kind guard exists to plug. The arm call, the getter
-// touch, and `real_agent_hire_deps` land together with the fleet plane, and
-// the flip stops naming agent-hire as missing on that day.
+// THE REAL DEPS ARE THE FLEET WRITE PLANE, and every edge of it has crossed:
+// createAgent (fleet_create::create_or_resume), writeSkill, renderFleet,
+// fleetUp/waitHealthy. `real_agent_hire_deps` wires them below, and
+// `jobs.rs`'s `try_arm` arms the step and touches the getter in the same
+// slice the flip's kind guard stops naming agent-hire as missing — an
+// armed-in-name-only def would let the flip arm while a hire cannot run,
+// which is the same hole the kind guard exists to plug.
 
 use std::sync::{Arc, OnceLock};
 
@@ -306,11 +305,143 @@ pub fn arm_agent_hire_step(deps: AgentHireDeps) {
     let _ = ARMED_DEPS.set(deps);
 }
 
+/// The real deps over the fleet write plane — TS's REAL_AGENT_HIRE_DEPS. Each
+/// closure owns its own clone of the state: registration captures, never
+/// invokes, and a run may drive minutes after the arm.
+pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
+    AgentHireDeps {
+        create: {
+            let pg = state.pg.clone();
+            Arc::new(move |input: AgentHireInput| {
+                let pg = pg.clone();
+                Box::pin(async move {
+                    let created = crate::fleet_create::create_or_resume(
+                        &pg,
+                        &crate::fleet_create::CreateAgentInput {
+                            slug: input.slug,
+                            department: input.department,
+                            display_name: input.display_name,
+                            role: input.role,
+                            template_id: input.template_id,
+                            created_by: input.actor,
+                            soul: input.soul,
+                        },
+                    )
+                    .await?;
+                    Ok(HiredDef {
+                        id: created.def.id,
+                        slug: created.def.slug,
+                        department: created.def.department,
+                        display_name: created.def.display_name,
+                    })
+                })
+            })
+        },
+        write_skills: {
+            let pg = state.pg.clone();
+            Arc::new(move |slug: String, skills: Vec<SkillSeed>, actor: String| {
+                let pg = pg.clone();
+                Box::pin(async move {
+                    // TS writes each skill `.catch(() => {})` — a starter
+                    // skill that fails to land is lost quietly, never a
+                    // failed hire.
+                    for s in skills {
+                        let _ = crate::agent_skills::write_skill(
+                            &pg,
+                            &slug,
+                            &s.name,
+                            &s.content,
+                            Some(&actor),
+                        )
+                        .await;
+                    }
+                })
+            })
+        },
+        audit: {
+            let pg = state.pg.clone();
+            Arc::new(move |def: &HiredDef, actor: &str| {
+                // TS fires and forgets (`void logAudit(...)`; logAudit itself
+                // swallows insert failures). The spawn is that void; the
+                // swallow is log_audit's own.
+                let pg = pg.clone();
+                let (id, label, slug, department, actor) = (
+                    def.id.clone(),
+                    def.display_name.clone(),
+                    def.slug.clone(),
+                    def.department.clone(),
+                    actor.to_string(),
+                );
+                tokio::spawn(async move {
+                    crate::audit::log_audit(
+                        &pg,
+                        crate::audit::AuditEntry {
+                            actor: &actor,
+                            action: "agent.create",
+                            target_type: "agent",
+                            target_id: Some(&id),
+                            target_label: Some(&label),
+                            before: None,
+                            after: Some(serde_json::json!({
+                                "slug": slug,
+                                "department": department,
+                            })),
+                        },
+                    )
+                    .await;
+                });
+            })
+        },
+        render: {
+            let st = state.clone();
+            Arc::new(move || {
+                let st = st.clone();
+                Box::pin(async move {
+                    // The box is read lazily here, not captured at arm time:
+                    // arm already refuses to fire until it loads, and a
+                    // post-arm failure surfaces through the render's own error
+                    // path rather than a poisoned closure.
+                    let sb = st.secretbox().await.unwrap_or_default();
+                    let out = crate::fleet_render::render_fleet(&st.pg, &sb, None).await?;
+                    Ok(RenderOutcome {
+                        warnings: out.warnings,
+                    })
+                })
+            })
+        },
+        up: {
+            let pg = state.pg.clone();
+            Arc::new(move |department: String| {
+                let pg = pg.clone();
+                Box::pin(async move {
+                    // fleetUp answers with the compose service it brought up;
+                    // the run doesn't read it — the promise IS the effect.
+                    crate::fleet_docker::fleet_up(&pg, &department)
+                        .await
+                        .map(|_| ())
+                })
+            })
+        },
+        wait_healthy: {
+            let pg = state.pg.clone();
+            Arc::new(move |department: String| {
+                let pg = pg.clone();
+                Box::pin(async move {
+                    // TS's default window: two minutes, enough for a cold
+                    // pull's healthcheck to settle.
+                    crate::fleet_docker::wait_healthy(&pg, &department, 120_000).await
+                })
+            })
+        },
+    }
+}
+
 /// The registered definition, exactly once per process — TS registers at
-/// module load; the Rust equivalent is the first call. Nothing calls this yet
-/// BY DESIGN (see the module header): `jobs.rs`'s `try_arm` begins touching
-/// it in the same slice that arms the real fleet deps, so the flip's kind
-/// guard keeps naming agent-hire as missing until a hire can actually run.
+/// module load; the Rust equivalent is the first call. The callers are
+/// `jobs.rs`'s `try_arm` (the boot list) and the fleet routes (a process that
+/// lists or enqueues hires can also be the process a reclaim sweep asks to
+/// resume one, and a kind that route never registered would be a run nothing
+/// can drive).
 pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
     static DEF: OnceLock<Arc<RunDefinition>> = OnceLock::new();
     DEF.get_or_init(|| {
@@ -354,9 +485,10 @@ mod tests {
     // NOTE: these tests drive `agent_hire_step` directly and never call
     // `agent_hire_run()` — the getter REGISTERS the kind in the process-wide
     // registry, and jobs.rs's `the_flip_refuses_to_arm_without_the_whole_kind_
-    // table` pins agent-hire as one of the kinds this build cannot define.
-    // Registering it from a test would make that assertion order-dependent.
-    // The day the fleet write plane arms this def, both flip in one slice.
+    // table` touches the getters itself to mirror a real boot. A test here
+    // registering the kind would not break that assertion (the census test is
+    // self-contained), but it would put the registry's state at the mercy of
+    // test scheduling for nothing: the machine under test is right here.
     use super::*;
     use crate::runs::define::{RunState, StepSignal};
     use std::sync::Mutex;

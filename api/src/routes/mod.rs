@@ -29,6 +29,8 @@ pub mod boards_id_templates;
 pub mod boards_id_views;
 pub mod channels_id_plan;
 pub mod cost;
+pub mod fleet_create;
+pub mod fleet_hires;
 pub mod health;
 pub mod keys;
 pub mod keys_id;
@@ -407,6 +409,18 @@ pub fn router(state: AppState) -> Router {
             get(admin_model_roles::get)
                 .put(admin_model_roles::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        // The two fleet routes that own the hire lifecycle (the other 18
+        // fleet.* files — status, stop/start, logs, env — still serve from TS;
+        // they are read-plane surface on machinery this crate exposes, and
+        // each crosses with its caller).
+        .route(
+            "/api/fleet/create",
+            post(fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/hires",
+            get(fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .fallback(api_not_found)
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

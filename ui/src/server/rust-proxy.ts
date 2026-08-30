@@ -77,8 +77,19 @@ const PREFIXES = [
 // me.mcp and me.assistant are their own planes (fleet, agents) that migrate
 // whole with those batches. '/api/me/events' is whole-path too — this
 // person's own SSE firehose, which crossed with the realtime slice while the
-// rest of me stayed. A startsWith entry here would strand those on a Rust 404.
-const EXACT = new Set(['/api/agents', '/api/apps', '/api/me', '/api/me/events', '/api/admin/model-roles'])
+// rest of me stayed. The two fleet routes are exact because the fleet family
+// is 20 TS route files and only the hire's create/list crossed — the other
+// 18 (status, stop/start, logs, env) still serve from TS, and a prefix here
+// would strand every one of them on a Rust 404.
+const EXACT = new Set([
+  '/api/agents',
+  '/api/apps',
+  '/api/me',
+  '/api/me/events',
+  '/api/admin/model-roles',
+  '/api/fleet/create',
+  '/api/fleet/hires',
+])
 
 // Parameterized whole-route migrations: the route crossed, but its siblings
 // under the same path have not, so neither EXACT (the id is in the path) nor

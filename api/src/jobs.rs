@@ -19,8 +19,8 @@
 // one of the ten jobs, and a sweep that cannot define a kind leaves those
 // rows to an instance that can — with TS's sweep disarmed at the flip, that
 // instance does not exist, and the rows sit forever with only a warn line.
-// Missing kinds are named in the error; when agent-hire and the reindex pair
-// cross, the check passes on its own and the flip becomes armable.
+// Missing kinds are named in the error; when the reindex pair crosses, the
+// check passes on its own and the flip becomes armable.
 //
 // update-check is the one deliberate absence from the job table, and it is a
 // HOLD, not an oversight: its apply half pulls, rebuilds ui/dist and restarts
@@ -147,7 +147,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("the secretbox did not load: {e}"))?;
 
-    // The three armed run steps: their deps are the AppState's edges, and an
+    // The four armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
     crate::runs::defs::research::arm_research_step(
@@ -159,11 +159,15 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     crate::runs::defs::work_session::arm_work_session_step(
         crate::runs::defs::work_session::real_work_session_deps(state.clone()),
     );
+    crate::runs::defs::agent_hire::arm_agent_hire_step(
+        crate::runs::defs::agent_hire::real_agent_hire_deps(state.clone()),
+    );
     // runs/boot.ts's import list, this side of the port: touch each getter so
     // its kind registers NOW, then hold the flip to the census's table.
     let _ = crate::runs::defs::research::research_run();
     let _ = crate::runs::defs::plan_draft::plan_draft_run();
     let _ = crate::runs::defs::work_session::work_session_run();
+    let _ = crate::runs::defs::agent_hire::agent_hire_run();
     let missing = missing_run_kinds();
     if !missing.is_empty() {
         return Err(format!(
@@ -248,18 +252,19 @@ mod tests {
 
     #[test]
     fn the_flip_refuses_to_arm_without_the_whole_kind_table() {
-        // Touch the three getters exactly as try_arm does, so the registry
-        // reflects a real boot and not whatever earlier tests loaded.
+        // Touch the getters exactly as try_arm does, so the registry reflects
+        // a real boot and not whatever earlier tests loaded.
         let _ = crate::runs::defs::research::research_run();
         let _ = crate::runs::defs::plan_draft::plan_draft_run();
         let _ = crate::runs::defs::work_session::work_session_run();
+        let _ = crate::runs::defs::agent_hire::agent_hire_run();
         let missing = missing_run_kinds();
         assert_eq!(
             missing,
-            ["agent-hire", "rag-backfill", "rag-reindex"],
-            "the pre-flip boundary: three of six kinds. When agent-hire and the \
-             reindex pair cross, this test flips to asserting the empty list — and \
-             the flip becomes armable"
+            ["rag-backfill", "rag-reindex"],
+            "agent-hire crossed with the fleet write plane. When the retrieval \
+             session's reindex pair crosses, this test flips to asserting the \
+             empty list — and the flip becomes armable"
         );
     }
 
