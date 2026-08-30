@@ -4,6 +4,7 @@
 
 pub mod activity;
 pub mod agent_auth;
+pub mod agent_defs;
 pub mod agent_role_templates;
 pub mod agent_writes;
 pub mod approvals;
@@ -29,6 +30,7 @@ pub mod effort_prefs;
 pub mod email;
 pub mod error;
 pub mod fleet;
+pub mod fleet_create;
 pub mod fleet_docker;
 pub mod fleet_layout;
 pub mod gateway;

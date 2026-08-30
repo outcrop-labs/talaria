@@ -18,6 +18,10 @@ pub struct LlmEndpoint {
     pub base_url: Option<String>,
     pub class: String,
     pub api_key_env: Option<String>,
+    /// `llm_endpoints.context_length` — the default context window an
+    /// endpoint declares; the agent editor's platform-defaults hire carries
+    /// it into the fresh config's main target.
+    pub context_length: Option<i64>,
     pub models: Vec<String>,
     pub request_defaults: serde_json::Value,
     /// `llm_endpoints.model_efforts` — an admin's declared effort ladder per
@@ -42,12 +46,13 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
             Option<String>,
             String,
             Option<String>,
+            Option<i64>,
             sqlx::types::Json<Vec<String>>,
             Option<serde_json::Value>,
             Option<serde_json::Value>,
         ),
     >(
-        "select id::text, name, provider, base_url, class, api_key_env, models, request_defaults, model_efforts \
+        "select id::text, name, provider, base_url, class, api_key_env, context_length, models, request_defaults, model_efforts \
          from llm_endpoints order by (class = 'local') desc, name asc",
     )
     .fetch_all(pg)
@@ -62,6 +67,7 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                 base_url,
                 class,
                 api_key_env,
+                context_length,
                 models,
                 request_defaults,
                 model_efforts,
@@ -73,6 +79,7 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                     base_url,
                     class,
                     api_key_env,
+                    context_length,
                     models: models.0,
                     // TS reads `ep.requestDefaults ?? {}` at use — same here.
                     request_defaults: request_defaults.unwrap_or(serde_json::Value::Null),

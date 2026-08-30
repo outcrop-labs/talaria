@@ -332,6 +332,7 @@ mod tests {
             pricing: None,
         };
         let ep = |name: &str, declared: serde_json::Value| LlmEndpoint {
+            context_length: None,
             id: name.into(),
             name: name.into(),
             provider: "openai".into(),
