@@ -50,12 +50,11 @@
 // driver, the clock — is a field on `ReclaimDeps`, so runs_reclaim.rs drives
 // the whole sweeper with no database, no Redis and no clock.
 //
-// WHAT IS DELIBERATELY NOT HERE YET: the `JobSpec` and its registration. The
-// scheduler crosses in a later slice of this batch, and with it
-// `RECLAIM_JOB_SPEC` (name/everyMs/firstRunDelayMs/maxRunMs, not perInstance)
-// and the REQUIRED_JOBS cross-check. The four numbers below are already the
-// numbers the job will declare; the wiring cannot exist before the scheduler
-// type does.
+// THE REGISTRATION is `reclaim_job_spec`/`register_reclaim_job` at the bottom
+// of this file: the four numbers below in their four slots, not perInstance,
+// armed by the flip's boot path (Rust's deps are runtime values, so the call
+// — not the module load — is what puts the job in the runtime graph). Until
+// the flip arms the scheduler, registering costs nothing and running nothing.
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
@@ -537,6 +536,51 @@ fn state_name(state: RunState) -> &'static str {
     }
 }
 
+// ── The registration ────────────────────────────────────────────────────────
+
+/// The job the scheduler runs, from a built deps bag — the four declared
+/// timings in their four slots, and nothing invented here. Split out from the
+/// registration so a test can read the numbers without a live registry.
+pub fn reclaim_job_spec(deps: Arc<ReclaimDeps>) -> crate::scheduler::JobSpec {
+    crate::scheduler::JobSpec {
+        name: crate::scheduler::JobName::RunReclaim,
+        every_ms: RECLAIM_EVERY_MS,
+        first_run_delay_ms: Some(RECLAIM_FIRST_RUN_DELAY_MS),
+        max_run_ms: Some(RECLAIM_MAX_RUN_MS),
+        // NOT `per_instance`, and the JobSpec doc comment is why: this job's
+        // input is the `runs` TABLE, which every instance can reach, and
+        // `per_instance` is only for a job whose entire input lives inside one
+        // process. So it takes the scheduler's lease, and the fleet does one
+        // sweep per interval instead of one per instance per interval.
+        //
+        // Duplication would in fact be survivable here — every run takes its
+        // own Redis lease, so a second sweeper's hand-overs would come back
+        // `busy` — but "survivable" is not the bar for a job that starts
+        // drives which bill model calls. The trade the lease buys, worth
+        // naming: the instance that wins the tick drives everything it
+        // reclaims, so recovery load lands on one box. Different instances
+        // win different intervals, so it evens out; and if reclaim throughput
+        // ever becomes the bottleneck the answer is a larger RECLAIM_LIMIT,
+        // not N instances scanning the same index.
+        per_instance: false,
+        run: Arc::new(move || {
+            let deps = deps.clone();
+            Box::pin(async move { run_reclaim_job(&deps).await })
+        }),
+    }
+}
+
+/// Declare the sweep to the scheduler. TS registers at module load next to the
+/// work; Rust's deps are runtime values (the pool, the realtime fan-out), so
+/// the registration is a function the flip calls from boot — same rule, same
+/// consequence: the call is what puts the job in the runtime graph, and
+/// 'run-reclaim' is in REQUIRED_JOBS, so an instance that somehow boots
+/// without reaching it prints a MISSING JOBS error instead of running with no
+/// durability at all.
+pub fn register_reclaim_job(deps: Arc<ReclaimDeps>) {
+    crate::scheduler::register_job(reclaim_job_spec(deps));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,5 +646,30 @@ mod tests {
         assert!(line.contains("attempt(s): no message"));
         assert!(line.ends_with('.'));
         assert!(!line.contains("was waiting on it"));
+    }
+
+    /// The four declared timings, provably the four numbers the job runs with
+    /// — the Rust half of runs/boot.test.ts's pin. A spec built with the
+    /// constants in the wrong slot is a job that runs at the wrong rate while
+    /// every comment still says the right thing.
+    #[test]
+    fn the_job_spec_carries_the_declared_timings() {
+        let deps = Arc::new(ReclaimDeps {
+            due: Arc::new(|_| Box::pin(async { Ok(Vec::new()) })),
+            definition_for: Arc::new(|_| None),
+            drive: Arc::new(|_| {
+                Box::pin(async { unreachable!("the spec test never runs the job") })
+            }),
+            now: Arc::new(|| 0),
+        });
+        let spec = reclaim_job_spec(deps);
+        assert_eq!(spec.name.as_str(), "run-reclaim");
+        assert_eq!(spec.every_ms, 30_000);
+        assert_eq!(spec.first_run_delay_ms, Some(20_000));
+        assert_eq!(spec.max_run_ms, Some(60_000));
+        assert!(
+            !spec.per_instance,
+            "the runs table is fleet-shared; it takes the lease"
+        );
     }
 }
