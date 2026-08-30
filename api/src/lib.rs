@@ -6,6 +6,7 @@ pub mod activity;
 pub mod agent_auth;
 pub mod agent_defs;
 pub mod agent_role_templates;
+pub mod agent_skills;
 pub mod agent_writes;
 pub mod approvals;
 pub mod artifacts;
