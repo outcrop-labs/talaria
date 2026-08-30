@@ -12,6 +12,7 @@ pub mod briefer;
 pub mod channel_plan;
 pub mod concluder;
 pub mod distiller;
+pub mod inbox_focus;
 pub mod judge;
 pub mod librarian;
 pub mod outreach;

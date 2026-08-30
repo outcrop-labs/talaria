@@ -694,7 +694,7 @@ pub fn fixtures() -> Vec<ChannelPlanFixture> {
 // ── The def ──────────────────────────────────────────────────────────────────
 
 pub fn channel_plan_harness() -> HarnessDefinition {
-    let mut d = define_harness(HarnessDefinition::new(
+    let mut d = HarnessDefinition::new(
         "channel-plan",
         "Ticket drafter",
         "Turns a channel conversation or a plan document into reviewable ticket proposals.",
@@ -797,7 +797,7 @@ pub fn channel_plan_harness() -> HarnessDefinition {
         // would hand every run the same mutable array; Null says the honest
         // thing and the adapter spells the empty list once.
         OnFailure::Null,
-    ));
+    );
     // A list of objects with an enum, a nullable enum and a nested array of
     // indices under it is `json-strict` territory, not merely `json`. Nothing
     // here refuses on either — see the floor.
@@ -838,7 +838,7 @@ pub fn channel_plan_harness() -> HarnessDefinition {
     // No temperature: the hand-written call sent none, so the persona's own
     // default is what has always answered here. Pinning one now would change
     // every existing install's drafts for no stated reason.
-    d
+    define_harness(d)
 }
 
 #[cfg(test)]
@@ -1156,6 +1156,19 @@ mod tests {
             fixtures.iter().filter(|f| f.band == EvalBand::Hard).count(),
             4
         );
+    }
+
+    #[test]
+    fn the_derived_json_floor_survives_the_runs_anyway_note() {
+        // Registry parity with the TS: `defineHarness` wraps the complete
+        // literal, so the json floor is derived AFTER the author's floor is
+        // set. This def originally wrapped at construction and then assigned
+        // `d.floor`, silently wiping the derivation — a model measured
+        // `json: false` would have been asked anyway. The wrap now happens
+        // last; this is the tripwire.
+        let d = channel_plan_harness();
+        assert!(d.floor.capabilities.contains(&"json"));
+        assert!(d.floor.refuse_below);
     }
 
     // ── The def, driven through the runner against a recorded world ──────────

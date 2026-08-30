@@ -83,7 +83,28 @@
 // than left to whichever fixture remembered; and the only fixed-model
 // family in the product — an EMPTY chain, because `PLATFORM_AGENTS.briefer`
 // is `assignable: false` and the owner's own assistant is the point, so
-// there is no correct second choice to fall back to).
+// there is no correct second choice to fall back to), and `defs/inbox_focus`
+// (the focus queue's three seats — the brief on the card, the command that
+// maps an owner instruction onto ONE allowlisted action, and the detached
+// reply — the def family audit 1.3 was written about, where the same command
+// was strict JSON on the persona path and prompt-and-pray on the gateway
+// path; the port is also where the allowlist became part of the command's
+// CONTRACT: `allowed_focus_action_ids` is one function called from `render`,
+// `verify` and the adapter's gate, so the list the model is shown, the list
+// the answer is graded against and the list execution enforces cannot drift,
+// and an out-of-list proposal now costs a repair turn and a `schema_valid:
+// false` instead of a green run row its caller dropped on the floor; the
+// detached reply is the `tools: Own` seat — the assistant panel answers with
+// its real tools while sign-offs stay on the queue cards — and the def
+// carried the prompt builder and `validate_command_object` across WITH it,
+// because a fixture must replay what production sends, not a copy that can
+// drift; and porting its refusal test is what caught a family-wide port
+// bug: `define_harness` was wrapping at construction and the def's own
+// `d.floor` assignment then WIPED the derived json floor, so blurb_writer,
+// channel_plan and the inbox JSON defs would have asked a model measured
+// `json: false` anyway — the wrap now happens LAST, as the TS's
+// `defineHarness` always did, and each of those defs carries a tripwire
+// test pinning the floor).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step

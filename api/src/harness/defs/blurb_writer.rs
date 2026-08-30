@@ -522,7 +522,7 @@ pub fn fixtures() -> Vec<BlurbFixture> {
 // ── The def ──────────────────────────────────────────────────────────────────
 
 pub fn blurb_writer_harness() -> HarnessDefinition {
-    let mut d = define_harness(HarnessDefinition::new(
+    let mut d = HarnessDefinition::new(
         "blurb-writer",
         "Catalog writer",
         "Keeps the model catalog human: one-line plain-language blurbs for every registered model.",
@@ -618,7 +618,7 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
         // the ids quoted fixes the same replies and is honest about the ones
         // it cannot.
         OnFailure::Null,
-    ));
+    );
     // `json-strict` is what a many-keyed object actually exercises, and saying
     // so is how the fitness matrix learns to distinguish this harness from the
     // titler. Neither is in the floor: the derived json floor applies (a
@@ -645,7 +645,7 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
         redact: true,
     });
     d.temperature = Some(0.4);
-    d
+    define_harness(d)
 }
 
 #[cfg(test)]
@@ -927,6 +927,19 @@ mod tests {
             fixtures.iter().filter(|f| f.band == EvalBand::Hard).count(),
             4
         );
+    }
+
+    #[test]
+    fn the_derived_json_floor_survives_the_runs_anyway_note() {
+        // Registry parity with the TS: `defineHarness` wraps the complete
+        // literal, so the json floor is derived AFTER the author's floor is
+        // set. This def originally wrapped at construction and then assigned
+        // `d.floor`, silently wiping the derivation — a model measured
+        // `json: false` would have been asked anyway. The wrap now happens
+        // last; this is the tripwire.
+        let d = blurb_writer_harness();
+        assert!(d.floor.capabilities.contains(&"json"));
+        assert!(d.floor.refuse_below);
     }
 
     // ── The def, driven through the runner against a recorded world ──────────
