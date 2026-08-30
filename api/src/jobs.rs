@@ -1,5 +1,5 @@
 // The flip assembly — the one place the ported job bodies become a running
-// schedule, and the one place the three armed run steps get their deps.
+// schedule, and the one place the six armed run steps get their deps.
 //
 // Every job module owns its own `register_*_job(deps)`: the deps are runtime
 // values (the pool, the realtime fan-out, the secretbox), so registration
@@ -19,8 +19,9 @@
 // one of the ten jobs, and a sweep that cannot define a kind leaves those
 // rows to an instance that can — with TS's sweep disarmed at the flip, that
 // instance does not exist, and the rows sit forever with only a warn line.
-// Missing kinds are named in the error; when the reindex pair crosses, the
-// check passes on its own and the flip becomes armable.
+// The census's kind table has been whole since the reindex pair crossed, so
+// the check passes and the flip is armable; a kind reappearing in it is a def
+// module that fell out of the boot list below.
 //
 // update-check is the one deliberate absence from the job table, and it is a
 // HOLD, not an oversight: its apply half pulls, rebuilds ui/dist and restarts
@@ -147,7 +148,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("the secretbox did not load: {e}"))?;
 
-    // The four armed run steps: their deps are the AppState's edges, and an
+    // The six armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
     crate::runs::defs::research::arm_research_step(
@@ -162,12 +163,20 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     crate::runs::defs::agent_hire::arm_agent_hire_step(
         crate::runs::defs::agent_hire::real_agent_hire_deps(state.clone()),
     );
+    crate::runs::defs::reindex::arm_backfill_step(crate::runs::defs::reindex::real_backfill_deps(
+        state.clone(),
+    ));
+    crate::runs::defs::reindex::arm_reindex_step(crate::runs::defs::reindex::real_reindex_deps(
+        state.clone(),
+    ));
     // runs/boot.ts's import list, this side of the port: touch each getter so
     // its kind registers NOW, then hold the flip to the census's table.
     let _ = crate::runs::defs::research::research_run();
     let _ = crate::runs::defs::plan_draft::plan_draft_run();
     let _ = crate::runs::defs::work_session::work_session_run();
     let _ = crate::runs::defs::agent_hire::agent_hire_run();
+    let _ = crate::runs::defs::reindex::backfill_run();
+    let _ = crate::runs::defs::reindex::reindex_run();
     let missing = missing_run_kinds();
     if !missing.is_empty() {
         return Err(format!(
@@ -258,13 +267,17 @@ mod tests {
         let _ = crate::runs::defs::plan_draft::plan_draft_run();
         let _ = crate::runs::defs::work_session::work_session_run();
         let _ = crate::runs::defs::agent_hire::agent_hire_run();
+        let _ = crate::runs::defs::reindex::backfill_run();
+        let _ = crate::runs::defs::reindex::reindex_run();
+        // The census's kind table is WHOLE — the flip is armable. An empty
+        // list is the assertion now, not the goal: a kind showing up here
+        // means a def module fell out of try_arm's boot list, and the sweep
+        // would strand that kind's rows the moment the flip fires.
         let missing = missing_run_kinds();
-        assert_eq!(
-            missing,
-            ["rag-backfill", "rag-reindex"],
-            "agent-hire crossed with the fleet write plane. When the retrieval \
-             session's reindex pair crosses, this test flips to asserting the \
-             empty list — and the flip becomes armable"
+        assert!(
+            missing.is_empty(),
+            "the flip's kind table has holes: {missing:?} — every FLIP_RUN_KINDS entry \
+             needs its getter touched in try_arm"
         );
     }
 

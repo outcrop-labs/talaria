@@ -1,13 +1,15 @@
-// The retrieval plane — port of ui/src/server/retrieval/*, whole. Seven TS
-// files cross as seven siblings here, same shape, same boundaries:
+// The retrieval plane — port of ui/src/server/retrieval/*, whole. The TS
+// files cross as siblings here, same shape, same boundaries:
 //
-//   sparse       keyword vectors (FNV-1a hashed terms, saturated tf)
-//   qdrant       the REST client — collections, points, filtered search
-//   embed        the TEI embeddings client, with its sticky-base fallback
-//   collections  the RAG registry — bindings are the outer ACL gate
-//   index        the write core (chunk → embed → upsert) and the search merge
-//   sources      the convenience indexers and the KB doc ↔ RAG routing
-//   rerank       the precision stage — best-effort by contract, never fatal
+//   sparse            keyword vectors (FNV-1a hashed terms, saturated tf)
+//   qdrant            the REST client — collections, points, filtered search
+//   embed             the TEI embeddings client, with its sticky-base fallback
+//   collections       the RAG registry — bindings are the outer ACL gate
+//   index             the write core (chunk → embed → upsert) and the search merge
+//   sources           the convenience indexers and the KB doc ↔ RAG routing
+//   rerank            the precision stage — best-effort by contract, never fatal
+//   artifact_routing  artifact ↔ brain placement (auto / none / explicit)
+//   backfill          the health probes (the repair runs live in runs/defs)
 //
 // WHY A DIRECTORY AND NOT FLAT FILES. The crate's flat modules are single
 // concerns (search.rs, mcp_registry.rs); this is a seven-file family with
@@ -22,6 +24,8 @@
 // state (sticky bases, dimension caches) stays process-global on the real
 // path but is injected per-test so tests can't fight over it.
 
+pub mod artifact_routing;
+pub mod backfill;
 pub mod collections;
 pub mod embed;
 pub mod index;

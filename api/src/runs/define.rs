@@ -243,6 +243,16 @@ impl StepSignal {
         *self.rx.borrow()
     }
 
+    /// A second handle to the same abort channel — for a step that hands the
+    /// signal to a helper (the backfill page checks it before every outward
+    /// call, the way TS threads `signal` into `indexPage`). Cloning the
+    /// receiver, not the shared one: each handle eats its own `changed()` mark.
+    pub fn share(&self) -> StepSignal {
+        StepSignal {
+            rx: self.rx.clone(),
+        }
+    }
+
     /// Resolves when aborted (or immediately if it already was). Takes `&self`
     /// — a step holds `ctx.signal` by reference — so the cloned receiver eats
     /// the `changed()` mark instead of the shared one.

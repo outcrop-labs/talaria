@@ -4,5 +4,6 @@
 
 pub mod agent_hire;
 pub mod plan_draft;
+pub mod reindex;
 pub mod research;
 pub mod work_session;
