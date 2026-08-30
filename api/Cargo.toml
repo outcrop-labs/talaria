@@ -46,3 +46,8 @@ regex = "1"
 url = "2"
 futures-util = "0.3"
 chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+# Transactional mail's SMTP leg (email.ts). Hand-rolling the dialect is one
+# page of RFC 5321, but hand-rolling the MIME is where silent corruption
+# breeds — encoded-word subjects, quoted-printable, multipart/alternative
+# boundaries. tokio1 + rustls keeps the no-OpenSSL invariant (alpine runtime).
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }

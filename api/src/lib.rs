@@ -21,6 +21,7 @@ pub mod config;
 pub mod conversations;
 pub mod db;
 pub mod effort_prefs;
+pub mod email;
 pub mod error;
 pub mod fleet;
 pub mod gateway;
