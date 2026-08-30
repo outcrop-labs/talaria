@@ -3,16 +3,21 @@
 // gateway (`/api/llm/v1`) — so every agent call is guarded (confab checks see
 // the full tool trace), metered in one ledger, and observable in one place.
 //
-// Port of the ROUTING half of ui/src/server/fleet-brain.ts: the model-set
-// question and the config transform. The provisioning half (ensureGatewayBrain
-// — minting the fleet-gateway/workbench-gateway keys into the fleet .env and
-// the two gateway settings) is key-plane work and lands with the env writers.
+// Port of ui/src/server/fleet-brain.ts. Two halves: the ROUTING half (the
+// model-set question and the config transform) and the PROVISIONING half
+// (ensure_gateway_brain — the two gateway keys minted into the Talaria-owned
+// fleet .env, the two key-list settings, and the LLM_* lines the containers
+// interpolate).
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::HashSet;
 
+use crate::auth::sha256_hex;
+use crate::fleet_layout;
 use crate::gateway::registry::list_endpoints;
+use crate::gateway::settings::{get_setting, set_setting};
+use crate::llm_keys::mint_key;
 
 // What a rendered agent config points its model specs at: the gateway, on the
 // PERSONA key — the one the gateway leaves unmetered, because the flow that
@@ -126,6 +131,261 @@ pub fn route_config_through_gateway(
     walk(raw, models, &mut warn)
 }
 
+// ── The provisioning half ────────────────────────────────────────────────────
+
+const GATEWAY_KEY_NAME: &str = "fleet-gateway";
+// The workbench's own gateway credential. Harness runs reach the gateway with
+// this key, never the personas' — metering has to treat the two oppositely
+// (see ensure_gateway_brain), and a key is the only thing the gateway can tell
+// its callers apart by. Env name matches workbench-harnesses' gateway env.
+const WORKBENCH_KEY_NAME: &str = "workbench-gateway";
+const WORKBENCH_KEY_ENV: &str = "LLM_WORKBENCH_API_KEY";
+// Where the fleet reaches Talaria's gateway. In dev the app runs on the host,
+// so agents reach it via the docker host-gateway (`extra_hosts` in the
+// chassis) on :5273. In a containerized stack, set TALARIA_GATEWAY_SELF_URL to
+// the app's service DNS (e.g. http://talaria-ui:3000/api/llm/v1).
+const DEFAULT_SELF_URL: &str = "http://host.docker.internal:5273/api/llm/v1";
+
+fn self_url() -> String {
+    match std::env::var("TALARIA_GATEWAY_SELF_URL") {
+        Ok(v) if !v.is_empty() => v,
+        _ => DEFAULT_SELF_URL.into(),
+    }
+}
+
+/// A gateway URL is one that ends in the gateway path — safe for Talaria to own
+/// and migrate. Any other value means the operator deliberately pointed the
+/// fleet at a raw upstream, so we leave it alone.
+pub(crate) fn is_gateway_url(u: &str) -> bool {
+    regex::Regex::new(r"/api/llm/v1/?$")
+        .expect("gateway url pattern")
+        .is_match(u.trim())
+}
+
+/// Read a KEY=value line from env-file text. The captured value is trimmed,
+/// exactly the TS regex's `m[1].trim()`.
+pub(crate) fn read_env_line(content: &str, key: &str) -> Option<String> {
+    let re = regex::Regex::new(&format!(r"(?m)^{}=(.*)$", regex::escape(key)))
+        .expect("env line pattern");
+    re.captures(content).map(|c| c[1].trim().to_string())
+}
+
+/// Set or replace a KEY=value line; append if absent. The append shape is
+/// TS-exact, including the leading newline when the file is empty.
+pub(crate) fn upsert_env_line(content: &str, key: &str, value: &str) -> String {
+    let re =
+        regex::Regex::new(&format!(r"(?m)^{}=.*$", regex::escape(key))).expect("env line pattern");
+    let line = format!("{key}={value}");
+    if re.is_match(content) {
+        return re.replace(content, line.as_str()).into_owned();
+    }
+    format!("{}\n{line}\n", content.trim_end_matches('\n'))
+}
+
+struct EnsuredKey {
+    secret: String,
+    rotated: bool,
+}
+
+/// Keep the current key if it's a live key of that name; otherwise mint a
+/// fresh one (revoking any stale rows) under an admin owner. Returns the
+/// plaintext secret to write into the fleet .env, or None if there's no user
+/// to own it yet (nothing to own the key — try again next render).
+async fn ensure_gateway_key(
+    pg: &PgPool,
+    name: &str,
+    current_key: Option<&str>,
+) -> Result<Option<EnsuredKey>, String> {
+    if let Some(cur) = current_key.filter(|k| k.starts_with("tlk_")) {
+        let live: Option<(i32,)> = sqlx::query_as(
+            "select 1 from llm_api_keys where name = $1 and revoked_at is null and key_hash = $2",
+        )
+        .bind(name)
+        .bind(sha256_hex(cur))
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| format!("gateway key live-check failed: {e}"))?;
+        if live.is_some() {
+            return Ok(Some(EnsuredKey {
+                secret: cur.to_string(),
+                rotated: false,
+            }));
+        }
+    }
+    let owner: Option<(String,)> = sqlx::query_as(
+        "select id::text from users order by (role = 'admin') desc, created_at asc limit 1",
+    )
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("gateway key owner lookup failed: {e}"))?;
+    let Some((owner_id,)) = owner else {
+        return Ok(None);
+    };
+    sqlx::query(
+        "update llm_api_keys set revoked_at = now() where name = $1 and revoked_at is null",
+    )
+    .bind(name)
+    .execute(pg)
+    .await
+    .map_err(|e| format!("stale gateway key revoke failed: {e}"))?;
+    let (_, secret) = mint_key(pg, &owner_id, name)
+        .await
+        .map_err(|e| format!("gateway key mint failed: {e}"))?;
+    Ok(Some(EnsuredKey {
+        secret,
+        rotated: true,
+    }))
+}
+
+/// First gateway-resolvable model — a sane default LLM_MODEL so
+/// freshly-added endpoints light up the fleet without hand-editing. None if
+/// nothing is configured. (Same local-first pick the routing half's fallback
+/// makes — TS spells the identical body twice.)
+async fn default_gateway_model(pg: &PgPool) -> Option<String> {
+    gateway_model_set(pg).await.fallback
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayBrain {
+    pub url: Option<String>,
+    pub model: Option<String>,
+    pub key_rotated: bool,
+    /// False when the operator pointed the fleet at a non-gateway upstream.
+    pub managed: bool,
+}
+
+/// Provision (or refresh) the fleet's gateway brain in the Talaria-owned .env.
+/// Idempotent; a failure here is the caller's to treat as best-effort — it
+/// never blocks a fleet render (TS's renderFleet wraps the call in try/catch;
+/// the Rust render loop does the same when it lands).
+pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
+    let env_path = fleet_layout::fleet_env();
+    if let Some(parent) = env_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("fleet dir unwritable ({}): {e}", parent.display()))?;
+    }
+    let content = tokio::fs::read_to_string(&env_path)
+        .await
+        .unwrap_or_default();
+
+    // Two settings, two different questions — one list answering both is what
+    // corrupted the ledger, so keep them apart:
+    //
+    //   gateway_unmetered_keys — keys the gateway must NOT write a usage row
+    //     for, because their spend already reaches the ledger from another
+    //     writer. ONLY the personas' key qualifies: a chat/channel/ticket turn
+    //     writes one row from the persona gateway's reported usage for the
+    //     whole turn, so metering the inner-loop calls behind it would count
+    //     every turn twice. `workbench-gateway` is deliberately NOT here —
+    //     nothing else records a harness run, so the gateway is where that
+    //     spend lands.
+    //
+    //   gateway_agent_loop_keys — keys whose replies must never be rewritten
+    //     with a guard caveat, because the caller is an agent's own tool loop
+    //     and a caveat would contaminate its context. BOTH gateway keys
+    //     qualify (findings still record either way).
+    //
+    // A stored setting that isn't a string array is the same failure TS would
+    // throw on — the whole brain step fails and the render carries on without
+    // it, rather than silently overwriting a corrupt value.
+    let unmetered: Vec<String> = serde_json::from_value(
+        get_setting(pg, "gateway_unmetered_keys", json!([GATEWAY_KEY_NAME])).await,
+    )
+    .map_err(|e| format!("gateway_unmetered_keys is unreadable: {e}"))?;
+    if !unmetered.iter().any(|k| k == GATEWAY_KEY_NAME) {
+        let mut next = unmetered;
+        next.push(GATEWAY_KEY_NAME.into());
+        set_setting(pg, "gateway_unmetered_keys", &json!(next))
+            .await
+            .map_err(|e| format!("gateway_unmetered_keys write failed: {e}"))?;
+    }
+    let loop_keys: Vec<String> = serde_json::from_value(
+        get_setting(
+            pg,
+            "gateway_agent_loop_keys",
+            json!([GATEWAY_KEY_NAME, WORKBENCH_KEY_NAME]),
+        )
+        .await,
+    )
+    .map_err(|e| format!("gateway_agent_loop_keys is unreadable: {e}"))?;
+    let missing = [GATEWAY_KEY_NAME, WORKBENCH_KEY_NAME]
+        .into_iter()
+        .filter(|n| !loop_keys.contains(&n.to_string()))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        let mut next = loop_keys;
+        next.extend(missing.iter().map(|n| n.to_string()));
+        set_setting(pg, "gateway_agent_loop_keys", &json!(next))
+            .await
+            .map_err(|e| format!("gateway_agent_loop_keys write failed: {e}"))?;
+    }
+
+    if let Some(cur) = read_env_line(&content, "LLM_BASE_URL").filter(|u| !is_gateway_url(u)) {
+        // Operator override: a raw upstream. Respect it — no gateway brain.
+        return Ok(GatewayBrain {
+            url: Some(cur),
+            model: read_env_line(&content, "LLM_MODEL").filter(|m| !m.is_empty()),
+            key_rotated: false,
+            managed: false,
+        });
+    }
+
+    let url = self_url();
+    let key = ensure_gateway_key(
+        pg,
+        GATEWAY_KEY_NAME,
+        read_env_line(&content, "LLM_API_KEY").as_deref(),
+    )
+    .await?;
+    let wb_key = ensure_gateway_key(
+        pg,
+        WORKBENCH_KEY_NAME,
+        read_env_line(&content, WORKBENCH_KEY_ENV).as_deref(),
+    )
+    .await?;
+
+    let mut next = content.clone();
+    if !next.contains("# talaria-managed (gateway brain)") {
+        next = format!(
+            "{}\n\n# talaria-managed (gateway brain) — the fleet's default LLM is Talaria's org\n\
+             # gateway, so every agent call is guarded, metered, and observable. Configure\n\
+             # the real upstream model in-app on /models; don't hand-edit these lines.\n\
+             # LLM_API_KEY is the personas' loop; LLM_WORKBENCH_API_KEY is the sandbox\n\
+             # harnesses' — separate credentials so the ledger can tell them apart.\n",
+            next.trim_end_matches('\n')
+        );
+    }
+    next = upsert_env_line(&next, "LLM_BASE_URL", &url);
+    if let Some(k) = &key {
+        next = upsert_env_line(&next, "LLM_API_KEY", &k.secret);
+    }
+    if let Some(k) = &wb_key {
+        next = upsert_env_line(&next, WORKBENCH_KEY_ENV, &k.secret);
+    }
+
+    let mut model = read_env_line(&next, "LLM_MODEL").filter(|m| !m.is_empty());
+    if model.is_none()
+        && let Some(m) = default_gateway_model(pg).await
+    {
+        next = upsert_env_line(&next, "LLM_MODEL", &m);
+        model = Some(m);
+    }
+
+    if next != content {
+        tokio::fs::write(&env_path, &next)
+            .await
+            .map_err(|e| format!("fleet .env unwritable ({}): {e}", env_path.display()))?;
+    }
+    Ok(GatewayBrain {
+        url: Some(url),
+        model,
+        key_rotated: key.as_ref().is_some_and(|k| k.rotated)
+            || wb_key.as_ref().is_some_and(|k| k.rotated),
+        managed: true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +486,43 @@ mod tests {
         let raw = json!({"model": "gpt:old", "base_url": "x"});
         let out = route_config_through_gateway(&raw, &models(&[], None), |_| {});
         assert_eq!(out["model"], json!("gpt:old"), "fallback ?? canonical");
+    }
+
+    #[test]
+    fn gateway_urls_are_the_path_with_or_without_the_slash() {
+        assert!(is_gateway_url(
+            "http://host.docker.internal:5273/api/llm/v1"
+        ));
+        assert!(is_gateway_url(
+            "http://host.docker.internal:5273/api/llm/v1/"
+        ));
+        assert!(is_gateway_url("  http://talaria-ui:3000/api/llm/v1 \n"));
+        // A raw upstream the operator chose: not ours to migrate.
+        assert!(!is_gateway_url("https://openrouter.ai/api/v1"));
+        assert!(!is_gateway_url("http://litellm:4000/v1"));
+    }
+
+    #[test]
+    fn env_lines_read_trimmed_and_upsert_in_place() {
+        let f = "A=1\nLLM_BASE_URL = http://x/api/llm/v1  \n# comment\nB=2\n";
+        assert_eq!(
+            read_env_line(f, "LLM_BASE_URL"),
+            None,
+            "the regex is anchored on the bare key — 'LLM_BASE_URL =' (spaced) is not a line it owns"
+        );
+        assert_eq!(read_env_line(f, "A"), Some("1".into()));
+        assert_eq!(read_env_line(f, "B"), Some("2".into()));
+        assert_eq!(read_env_line(f, "C"), None);
+
+        let out = upsert_env_line(f, "A", "9");
+        assert_eq!(
+            out,
+            "A=9\nLLM_BASE_URL = http://x/api/llm/v1  \n# comment\nB=2\n"
+        );
+
+        // Appends after stripping trailing newlines — and an empty file gains a
+        // LEADING newline, the exact TS template shape.
+        assert_eq!(upsert_env_line("", "K", "v"), "\nK=v\n");
+        assert_eq!(upsert_env_line("A=1\n\n\n", "K", "v"), "A=1\nK=v\n");
     }
 }

@@ -102,4 +102,5 @@ pub mod uploads;
 pub mod users;
 pub mod web_search;
 pub mod work_dispatch;
+pub mod workbench_harnesses;
 pub mod workflows;

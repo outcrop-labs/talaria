@@ -86,6 +86,60 @@ pub fn refuse_legacy(caller: &AgentCaller, what: &str) -> Option<Response> {
     ))
 }
 
+// ── Minting ──────────────────────────────────────────────────────────────────
+
+/// Issue a fresh credential for an agent, invalidating any previous one
+/// (agent-auth.ts rotateAgentApiKey). The plaintext is returned here and never
+/// again: the row keeps a sha256 (auth never decrypts) and a sealed copy (a
+/// wiped fleet/.env is recoverable).
+pub async fn rotate_agent_api_key(
+    pg: &PgPool,
+    sb: &crate::secretbox::SecretBox,
+    agent_id: &str,
+) -> Result<String, String> {
+    let mut raw = [0u8; 24];
+    getrandom::fill(&mut raw).map_err(|e| format!("key material unavailable: {e}"))?;
+    let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+    let secret = format!("{KEY_PREFIX}{hex}");
+    let sealed = sb
+        .seal(&secret)
+        .map_err(|e| format!("agent key seal failed: {e}"))?;
+    sqlx::query(
+        "insert into agent_keys (agent_id, key_hash, key_enc) values ($1::uuid, $2, $3) \
+         on conflict (agent_id) do update \
+         set key_hash = excluded.key_hash, key_enc = excluded.key_enc, created_at = now()",
+    )
+    .bind(agent_id)
+    .bind(sha256_hex(&secret))
+    .bind(&sealed)
+    .execute(pg)
+    .await
+    .map_err(|e| format!("agent key write failed: {e}"))?;
+    Ok(secret)
+}
+
+/// The agent's credential, minting one on first use (agent-auth.ts
+/// ensureAgentApiKey). Stable across renders — re-minting on every render
+/// would lock out every running container.
+pub async fn ensure_agent_api_key(
+    pg: &PgPool,
+    sb: &crate::secretbox::SecretBox,
+    agent_id: &str,
+) -> Result<String, String> {
+    let existing: Option<(String,)> =
+        sqlx::query_as("select key_enc from agent_keys where agent_id::text = $1")
+            .bind(agent_id)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| format!("agent key read failed: {e}"))?;
+    match existing {
+        Some((key_enc,)) => sb
+            .open(&key_enc)
+            .map_err(|e| format!("agent key unseal failed: {e}")),
+        None => rotate_agent_api_key(pg, sb, agent_id).await,
+    }
+}
+
 /// The credential as presented: x-api-key first, else a `Bearer ` prefix.
 /// (Case-sensitive single-space `Bearer ` with a trim — exactly
 /// agent-auth.ts's startsWith, NOT the gateway route's case-insensitive
@@ -583,6 +637,31 @@ pub async fn legacy_migration_status(pg: &PgPool) -> Result<LegacyMigrationStatu
     })
 }
 
+/// One operator-readable line, or None when there is nothing to say
+/// (agent-auth.ts legacyMigrationWarning). Rendered into the fleet render's
+/// warnings (where an admin actually looks) and logged. This is the guard for
+/// the migration order — flipping the flag before the fleet is rolled is a
+/// total outage, and nothing else says so.
+pub fn legacy_migration_warning(s: &LegacyMigrationStatus) -> Option<String> {
+    if s.pending.is_empty() {
+        return None;
+    }
+    let who = s.pending.join(", ");
+    if !s.window_open {
+        // The trap sprung: every pending agent is ALREADY failing auth. Say it
+        // instead of leaving a pile of undiagnosable 401s to be read.
+        return Some(format!(
+            "TALARIA_AGENT_KEY_LEGACY=off but {} agent(s) have never authenticated with their own credential — they are locked out right now: {who}. Roll their containers (render → rollRunningAgents), or set the flag back to 'on' until they have.",
+            s.pending.len()
+        ));
+    }
+    Some(format!(
+        "per-agent credential migration: {}/{} done. Still on the org-wide key (or never seen since): {who}. Roll their containers before setting TALARIA_AGENT_KEY_LEGACY=off — flipping it first is a fleet-wide outage.",
+        s.agents.len() - s.pending.len(),
+        s.agents.len()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,6 +732,46 @@ mod tests {
         ] {
             assert!(iso_to_epoch_ms(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn migration_warning_says_who_and_when_to_flip() {
+        let status = |window_open: bool, migrated: usize, pending: &[&str]| {
+            // One row per agent, like the DB query: migrated first, then the
+            // stragglers (the counts in the warning are over BOTH).
+            let mut agents = (0..migrated)
+                .map(|_| LegacyAgentStatus {
+                    model: "moved-on".into(),
+                    key_minted: true,
+                    last_used_at: Some("2026-08-29T07:00:00.000Z".into()),
+                    migrated: true,
+                })
+                .collect::<Vec<_>>();
+            agents.extend(pending.iter().map(|p| LegacyAgentStatus {
+                model: (*p).into(),
+                key_minted: true,
+                last_used_at: None,
+                migrated: false,
+            }));
+            LegacyMigrationStatus {
+                window_open,
+                agents,
+                pending: pending.iter().map(|p| p.to_string()).collect(),
+                legacy_seen: vec![],
+            }
+        };
+        // Nothing pending → nothing to say.
+        assert_eq!(legacy_migration_warning(&status(true, 1, &[])), None);
+        // Window open: the counts and the "flip is an outage" warning.
+        assert_eq!(
+            legacy_migration_warning(&status(true, 2, &["analyst-eng", "scout-research"])),
+            Some("per-agent credential migration: 2/4 done. Still on the org-wide key (or never seen since): analyst-eng, scout-research. Roll their containers before setting TALARIA_AGENT_KEY_LEGACY=off — flipping it first is a fleet-wide outage.".into())
+        );
+        // Window closed with stragglers: the trap has already sprung.
+        assert_eq!(
+            legacy_migration_warning(&status(false, 0, &["analyst-eng"])),
+            Some("TALARIA_AGENT_KEY_LEGACY=off but 1 agent(s) have never authenticated with their own credential — they are locked out right now: analyst-eng. Roll their containers (render → rollRunningAgents), or set the flag back to 'on' until they have.".into())
+        );
     }
 
     #[test]
