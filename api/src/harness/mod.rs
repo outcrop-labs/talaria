@@ -34,7 +34,11 @@
 // branch), `defs/blurb_writer` (the only many-keyed one), `defs/librarian`
 // (whose hybrid value is why `CleanFn` yields a `Value`), and `defs/judge`
 // (the one that refuses below its floor, escalates on an unreadable verdict,
-// and pins nothing — the configured pick arrives as a RunContext override).
+// and pins nothing — the configured pick arrives as a RunContext override),
+// and `defs/plan_doc` (the living plan document, whose output contract is the
+// whole document rather than a patch — which is why it owns the data-loss
+// guard `plan_doc_regression` and answers a bad reply with Null, keeping the
+// document the team already had).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step
