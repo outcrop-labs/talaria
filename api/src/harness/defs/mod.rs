@@ -12,6 +12,7 @@ pub mod channel_plan;
 pub mod concluder;
 pub mod judge;
 pub mod librarian;
+pub mod outreach;
 pub mod plan_doc;
 pub mod summarizer;
 pub mod titler;

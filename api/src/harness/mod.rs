@@ -43,7 +43,13 @@
 // JSON at the protocol level is obliged to answer an array contract with a
 // top-level OBJECT, so the envelope the array arrives wrapped in is unwrapped
 // before the schema sees it — while a bare single ticket, which carries a
-// `title`, is deliberately left for the repair turn).
+// `title`, is deliberately left for the repair turn), and `defs/outreach`
+// (the proactive check-in — the one harness whose turn is a TOOL LOOP,
+// declared as `tools: Own` where it used to be injected as a whole
+// hand-written transport, and whose quiet answer is a fallback rather than a
+// null: a silent model lands on the same NOTHING_TO_SURFACE token the prompt
+// asks for, with `schema_valid` false so the fitness matrix still sees the
+// miss).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step
