@@ -61,8 +61,12 @@ fn col_of(row: &sqlx::postgres::PgRow) -> RagCollection {
     }
 }
 
+// schema_version casts to int8 for the same reason id casts to text: the
+// column is the TS schema's `integer`, and Rust holds the row as i64 (the
+// type the Qdrant-shape functions take). Uncast, sqlx refuses INT4→i64 at
+// row decode — a panic the empty dev table hid until a route listed rows.
 const COL_SELECT: &str = "select id::text, name, kind, qdrant_name, description, auto, \
-                          created_by, created_at::text, schema_version";
+                          created_by, created_at::text, schema_version::int8";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccessBinding {
@@ -276,7 +280,7 @@ pub async fn create_collection(
     let row = sqlx::query(
         "insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, schema_version) \
          values ($1, 'custom', $2, $3, false, $4, $5, 2) \
-         returning id::text, name, kind, qdrant_name, description, auto, created_by, created_at::text, schema_version",
+         returning id::text, name, kind, qdrant_name, description, auto, created_by, created_at::text, schema_version::int8",
     )
     .bind(input.name)
     .bind(&qdrant_name)
@@ -354,7 +358,7 @@ pub async fn ensure_personal_collection(
     let row = sqlx::query(
         "insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, owner_user_id, schema_version) \
          values ($1, 'personal', $2, 'Your private docs, visible only to you and your personal assistant.', false, $3, $4::uuid, $4::uuid, 2) \
-         returning id::text, name, kind, qdrant_name, description, auto, created_by, created_at::text, schema_version",
+         returning id::text, name, kind, qdrant_name, description, auto, created_by, created_at::text, schema_version::int8",
     )
     .bind(opts.name.unwrap_or("My knowledge"))
     .bind(&qdrant_name)

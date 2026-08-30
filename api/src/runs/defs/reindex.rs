@@ -251,8 +251,9 @@ async fn index_page(
             // was down. A handful of rows, so it is one step rather than a
             // paged source.
             let dim = embed_one(ed, "dim probe").await?.len() as i64;
+            // ::int8 — the column is integer, the tuple is i64 (see COL_SELECT).
             let cols = sqlx::query_as::<_, (String, i64)>(
-                "select qdrant_name, schema_version from rag_collections",
+                "select qdrant_name, schema_version::int8 from rag_collections",
             )
             .fetch_all(pg)
             .await

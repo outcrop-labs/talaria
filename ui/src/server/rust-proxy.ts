@@ -57,6 +57,11 @@ const PREFIXES = [
   // below — a prefix alone would 404 nothing, but the shapes keep the two
   // halves of one family in one file, read together.
   '/api/research',
+  // The rag group: the collection registry (list/create, {id} bindings and
+  // delete) and the search the search_knowledge MCP tool rides. The whole
+  // family under this path — the admin console for it lives at
+  // /api/admin/rag, already in EXACT.
+  '/api/rag',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite
@@ -88,9 +93,8 @@ const EXACT = new Set([
   '/api/me/events',
   '/api/admin/model-roles',
   // The retrieval console. EXACT because the /api/admin/rag path names one
-  // route file — the bare /api/rag/* family (collections, search) is a
-  // different path that stays TS, and a PREFIXES entry here would not touch
-  // it anyway, but exactness keeps that boundary stated.
+  // route file; the bare /api/rag/* family (collections, search) is a
+  // different path that crossed later and lives in PREFIXES.
   '/api/admin/rag',
   '/api/fleet/create',
   '/api/fleet/hires',

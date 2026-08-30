@@ -43,6 +43,9 @@ pub mod models;
 pub mod models_efforts;
 pub mod notifications;
 pub mod plans_id_draft;
+pub mod rag_collections;
+pub mod rag_collections_id;
+pub mod rag_search;
 pub mod research;
 pub mod research_id;
 pub mod research_id_conversation;
@@ -412,14 +415,33 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         // The retrieval console — the route that kicks the rag-backfill and
-        // rag-reindex runs and reads their projections. The bare /api/rag/*
-        // routes (collections, search) are a different family, still TS.
+        // rag-reindex runs and reads their projections.
         .route(
             "/api/admin/rag",
             get(admin_rag::get)
                 .put(admin_rag::put)
                 .post(admin_rag::post)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
+        )
+        // The rag family proper: the collection registry (list/create, then
+        // one collection's bindings/delete) and the search the MCP
+        // search_knowledge tool rides. Crossed together — the registry is
+        // what the search resolves principals against.
+        .route(
+            "/api/rag/collections",
+            get(rag_collections::get)
+                .post(rag_collections::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/rag/collections/{id}",
+            axum::routing::delete(rag_collections_id::delete)
+                .put(rag_collections_id::put)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
+        .route(
+            "/api/rag/search",
+            post(rag_search::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The two fleet routes that own the hire lifecycle (the other 18
         // fleet.* files — status, stop/start, logs, env — still serve from TS;
