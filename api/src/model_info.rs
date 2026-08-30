@@ -439,6 +439,60 @@ pub fn maybe_rewrite_blurbs(state: &crate::state::AppState) {
     });
 }
 
+// ── The registered job ───────────────────────────────────────────────────────
+//
+// The scheduler owns the cadence; the module owns the work. The job runs the
+// same pass the kick runs (same batch, same floor), on the kick's own
+// throttle as its interval — the number was always the intended cadence; the
+// kick was just the only trigger that existed. NOT in REQUIRED_JOBS, same as
+// TS's optional jobs: its failure mode is a stale blurb next to a catalog
+// that self-heals on the next pass, not work that silently never happens.
+
+/// The job the scheduler runs. NOT `per_instance`: it writes `model_blurbs`
+/// rows every instance can read, and two instances passing at once would
+/// spend two model calls on one batch of pending ids.
+pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> crate::scheduler::JobSpec {
+    use crate::scheduler::{JobName, JobSpec};
+    JobSpec {
+        name: JobName::BlurbRewrite,
+        every_ms: REWRITE_THROTTLE_MS,
+        // Early: the whole point of the kick was that blurbs are ready
+        // before anyone opens the model picker, and the job can be earlier
+        // still — a minute lets the instance come up first.
+        first_run_delay_ms: Some(60_000),
+        // One harness call over a batch of ten candidates.
+        max_run_ms: Some(2 * 60_000),
+        per_instance: false,
+        run: std::sync::Arc::new(move || {
+            let deps = deps.clone();
+            Box::pin(async move {
+                let written = rewrite_pending_blurbs(&deps.state, REWRITE_BATCH).await?;
+                // Zero is a quiet pass — every registered model already has
+                // its org-voice blurb, which is the steady state.
+                Ok(if written == 0 {
+                    None
+                } else {
+                    Some(format!("{written} model blurb(s) written in the org voice"))
+                })
+            })
+        }),
+    }
+}
+
+/// Declare the sweep to the scheduler — the function the flip calls from
+/// boot. When the job arms, the route's `maybe_rewrite_blurbs` kick retires
+/// (the flip slice removes it): both run the same pass, and a kick AND a job
+/// on the same throttle is two model calls for one batch of pending ids.
+pub fn register_blurb_rewrite_job(deps: std::sync::Arc<BlurbDeps>) {
+    crate::scheduler::register_job(blurb_rewrite_job_spec(deps));
+}
+
+/// The job's runtime values: the state the pass reads the catalog and writes
+/// the rows through.
+pub struct BlurbDeps {
+    pub state: crate::state::AppState,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +619,41 @@ mod tests {
         // Exactly 200 units passes through untouched.
         let fits = format!("{}😀", "x".repeat(198));
         assert_eq!(clamp_200(&fits), fits);
+    }
+
+    // ── the registered job's declared timings ────────────────────────────────
+
+    #[tokio::test]
+    async fn the_job_spec_carries_the_declared_timings() {
+        // Real but lazy state — the pool dials nothing, and the spec test
+        // never runs the job (same posture as the work-session tests).
+        use crate::state::AppState;
+        let url = "postgres://blurb-spec-test@localhost:5432/blurb-spec-test";
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy(url)
+            .expect("a lazy pool connects to nothing");
+        let cfg = crate::config::Config::from_parts(
+            url.into(),
+            "redis://blurb-spec-test@localhost:6379".into(),
+            "test-root".into(),
+            String::new(),
+            String::new(),
+            "0".into(),
+        )
+        .expect("the test config is valid on its face");
+        let deps = std::sync::Arc::new(BlurbDeps {
+            state: AppState::new(pg, std::sync::Arc::new(cfg)),
+        });
+        let spec = blurb_rewrite_job_spec(deps);
+        assert_eq!(spec.name.as_str(), "blurb-rewrite");
+        // The kick's throttle was always the intended cadence; the job just
+        // owns it instead of the request path.
+        assert_eq!(spec.every_ms, 10 * 60_000);
+        assert_eq!(spec.first_run_delay_ms, Some(60_000));
+        assert_eq!(spec.max_run_ms, Some(2 * 60_000));
+        assert!(
+            !spec.per_instance,
+            "model_blurbs is a fleet-shared table; it takes the lease"
+        );
     }
 }
