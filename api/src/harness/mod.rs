@@ -66,7 +66,16 @@
 // budget cut short, is OUR defect and cannot be scored — which is why
 // `CheckCtx` carries the world half: `failure`, what the task's oracle said
 // about the files as the model left them, and `exhausted`, whether the loop
-// stopped on its own ceiling).
+// stopped on its own ceiling), and `defs/distiller` (the last pass a
+// conversation ever gets — comms-decay distills, indexes into the owner's
+// private brain, and archives the chat, refusing to archive what it could
+// not summarize, which is why this def's failure policy is Null and nothing
+// else: there is no safe placeholder for "we lost it"; its fixtures are the
+// calibrated ones — the reversal check that must not fail a recorded
+// reversal, the compression ratio that abstains below 600 characters, the
+// nothing-durable check that scores invention in proper nouns rather than
+// vocabulary — and its `restated` is the second speller of a Gap verdict
+// after workbench's tool-syntax gaps).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step

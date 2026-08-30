@@ -10,6 +10,7 @@
 pub mod blurb_writer;
 pub mod channel_plan;
 pub mod concluder;
+pub mod distiller;
 pub mod judge;
 pub mod librarian;
 pub mod outreach;
