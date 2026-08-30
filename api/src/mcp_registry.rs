@@ -24,6 +24,7 @@
 // accepted-and-ignored; it crosses with the first caller that has a user behind
 // it, together with workspace-secrets itself.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -385,6 +386,120 @@ pub fn parse_mcp_response(text: &str) -> Option<Value> {
         }
     }
     None
+}
+
+// ── serversForAgent — the render's registry view ─────────────────────────────
+// (mcp-registry.ts serversForAgent + the three row checks it consults.) This
+// one legitimately answers about a THIRD PARTY — fleet-render and the /api/mcp
+// admin listing ask "what should <model> carry?" with no caller in hand — so
+// a bare model string stays accepted. It grants nothing on its own: the
+// credential is never rendered, only a gateway URL, and the gateway re-derives
+// access per request through `effectiveMcpFor`.
+
+/// Does this server have OAuth tokens for a subject ('org' or a user id)?
+async fn has_oauth_tokens(
+    pg: &PgPool,
+    server_id: &str,
+    subject: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "select 1 from mcp_oauth_tokens where server_id::text = $1 and subject = $2",
+    )
+    .bind(server_id)
+    .bind(subject)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Does this server have per-user credentials stored for a user?
+async fn has_user_credentials(
+    pg: &PgPool,
+    server_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "select 1 from mcp_user_credentials where server_id::text = $1 and user_id::text = $2",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// model → owner_user_id for every PERSONAL assistant (users.ts
+/// personalAssistantOwners). The render passes a bare model string — proven
+/// by construction there — so the owner map is the whole lookup.
+async fn personal_assistant_owners(pg: &PgPool) -> Result<HashMap<String, String>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select model, owner_user_id::text from agent_defs where owner_user_id is not null",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentServer {
+    pub name: String,
+    pub timeout_secs: Option<i64>,
+}
+
+/// Every server an agent should carry in its rendered config (gateway URLs).
+pub async fn servers_for_agent(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<Vec<AgentServer>, sqlx::Error> {
+    // (name, timeout_secs, auth_mode, oauth_enabled, id)
+    let rows: Vec<(String, Option<i64>, String, bool, String)> = sqlx::query_as(
+        "select s.name, s.timeout_secs::int8, s.auth_mode, (s.oauth is not null), s.id::text \
+         from mcp_servers s \
+         where s.enabled and not s.builtin and (s.all_agents or exists ( \
+           select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = $1 \
+         )) \
+         order by s.name",
+    )
+    .bind(agent_model)
+    .fetch_all(pg)
+    .await?;
+    let owner = personal_assistant_owners(pg)
+        .await?
+        .get(agent_model)
+        .cloned();
+    let mut out = Vec::new();
+    for (name, timeout_secs, auth_mode, oauth_enabled, id) in rows {
+        if auth_mode == "per-user" {
+            // Only rendered once the acting user actually connected an account.
+            let Some(owner) = &owner else {
+                continue;
+            };
+            let connected = if oauth_enabled {
+                has_oauth_tokens(pg, &id, owner).await?
+            } else {
+                has_user_credentials(pg, &id, owner).await?
+            };
+            if !connected {
+                continue;
+            }
+        } else if oauth_enabled && !has_oauth_tokens(pg, &id, "org").await? {
+            continue; // org account not connected yet — keep it out of configs
+        } else if let Some(owner) = &owner {
+            // A PA skips servers its owner is explicitly denied.
+            let access: Option<(bool,)> = sqlx::query_as(
+                "select allowed from mcp_user_access where server_id::text = $1 and user_id::text = $2",
+            )
+            .bind(&id)
+            .bind(owner)
+            .fetch_optional(pg)
+            .await?;
+            if access.is_some_and(|(allowed,)| !allowed) {
+                continue;
+            }
+        }
+        out.push(AgentServer { name, timeout_secs });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
