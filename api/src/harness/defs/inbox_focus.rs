@@ -961,6 +961,14 @@ pub fn inbox_reply_harness() -> HarnessDefinition {
     // record. Mutations that need a human sign-off keep their own path: they
     // are Inbox queue-card actions, proposed through the command branch and
     // confirmed by a click — never this conversation.
+    //
+    // The floor is empty ON PURPOSE and the note says so: a plainer answer
+    // from a small model is still an answer, and this harness refuses on
+    // nothing. (This note is what the registry's names-itself-for-a-human
+    // check reads — it caught this port arriving without one.)
+    d.floor = RoleFloor::runs_anyway(
+        "Runs on anything; a plainer answer from a small model is still an answer.",
+    );
     d.tools = Some(ToolPolicy::Own);
     d.guard = Some(GuardDecl {
         rules: Some(vec!["zero_tool_claim", "secret_leak", "pii_leak"]),

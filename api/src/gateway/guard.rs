@@ -1001,6 +1001,16 @@ fn rule_enabled(config: &GuardConfig, rule: &RuleDef) -> bool {
 /// RULES id gets an explicit entry so the narrowed config's `checks` is a
 /// total map — absent would fall back to the default, which is not what a
 /// def that omitted a rule means.
+/// Every rule id in the registry. Its consumer is the harness registry's
+/// declaration test: a def naming a rule id that does not exist does not
+/// disable one rule — `narrow_guard_config` below turns a rule on only when
+/// the def NAMES it, so a typo disables ALL of them, with no error anywhere
+/// and a `guard` block in the file that still reads as protection. That test
+/// needs the live ids, not a copy that could drift from `RULES`.
+pub fn rule_ids() -> Vec<&'static str> {
+    RULES.iter().map(|r| r.id).collect()
+}
+
 pub fn narrow_guard_config(config: &GuardConfig, rules: Option<&[&str]>) -> GuardConfig {
     let Some(rules) = rules else {
         return config.clone();

@@ -135,13 +135,26 @@
 // context on every run — the stream redactor it rides is linear-time and
 // pinned by a ratio test, and the ticket's date anchor tolerates a stale
 // clock only up to STALE_CLOCK_MS before `date_anchor_issue` fires, the
-// port of NOW_IN_CONTEXT).
+// port of NOW_IN_CONTEXT), and `registry` (crossed LAST, as it had to —
+// registering is the last step of a port — with all twenty-nine defs that
+// exist here, in the admin panel's two-block order, plus the tests that hold
+// the executable half and `PLATFORM_AGENTS` together: the misspelled-rule-id
+// check, the no-anonymous-guard check, the empty-chain lock on every
+// subject-of-the-call harness, and the VERIFY CENSUS — grown by the three
+// muse zod refines that crossed as `verify` closures because Rust's `Schema`
+// has no post-parse refine hook; its first live consumer is the scheduler's
+// `builtin_by_id`, and the very first run of its names-itself-for-a-human
+// check caught a ported def — inbox-reply — that had arrived without its
+// floor note, which is the registry doing exactly its job on exactly its
+// first day).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
-// does `RunContext.signal`), `registry` (LAST — registering is the last step
-// of a port, and it crosses once every def is here to fill it), and the rest
-// of harness/defs/ — plus the eval-case/dry-run plane, which crosses with the
-// fitness suite.
+// does `RunContext.signal`), the registry's APP LAYER and its merge entry
+// point (a build-time `import.meta.glob` over app TS modules — app code stays
+// TS, so its loader does), the `evals`/`evalNames`/`bandOf` half of a
+// registration (it crosses with the fitness suite, which is also what the
+// six still-TS defs — the hermes family and `secrets:handles` — are waiting
+// on), and the dry-run plane.
 
 pub mod define;
 pub mod defs;
@@ -149,6 +162,7 @@ pub mod json;
 pub mod json_schema;
 pub mod prompt_rules;
 pub mod recorded;
+pub mod registry;
 pub mod run;
 pub mod schema;
 pub mod text;
