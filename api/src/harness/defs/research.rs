@@ -43,19 +43,14 @@
 // `guardSynthesis` hand-pass is gone: one pass, one findings row per
 // fabricated link, one place to look.
 //
-// WHAT DID NOT CROSS YET, with the batch-5 fleet/MCP plane: `searchTransport`
-// (the sonar-native call whose out-of-band `search_results` the runner's own
-// transport would throw away - the sources are the product), the
-// `toolSearchTransport` tool loop (its call edge is `callMcpTool` /
-// `callPlatformTool`), `harvestSources` / `sourcesFromPayload` /
-// `nativeSearchBody`, and the `SearchSource` type they share - plus the
-// eleven transport tests that grade them. What crossed instead is everything
-// those transports SERVE: the three defs, the pure helpers, the fixtures, and
-// the runner-driven tests - which needed one harness-layer change recorded
-// here because the search floor is the first SUPPLIABLE floor in the tree:
-// `RecordedWorld.reach` used to be hardcoded empty, so the question the floor
-// asks ("can the RUN reach search through a registered tool?") had no test
-// answer. It is a map now.
+// THE TRANSPORTS CROSSED NEXT (below, §4), ahead of the run plane that drives
+// them - the research run definition and its domain stay TS until the runs
+// batch's research slice, so nothing on the Rust side calls these yet. They
+// crossed early because they are the leaves with the EDGES: the sonar-native
+// call and the tool-driven loop, their MCP/platform call doors
+// (mcp_registry.rs, capability_platform.rs), and their clients (search.rs,
+// web_search.rs, native_search.rs, source_registry.rs). The eleven transport
+// tests that grade the loop crossed with them, into the module's suite.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
@@ -1798,6 +1793,493 @@ pub fn synth_fixtures() -> Vec<TextFixture> {
     ]
 }
 
+// ── 4. The search stage's transports ─────────────────────────────────────────
+//
+// Both live BESIDE their harnesses rather than in the runner's transport slot
+// because the SOURCES are the product: the runner's own gateway transport
+// answers with text and its tool loop is the MODEL'S, not ours, while these
+// two push what they find into the run's sink on the way past. A search stage
+// that arrives at synthesis with findings but no sources has already failed
+// `ungrounded_ref` — the sink is where the citations come from.
+
+use serde_json::Map;
+
+use crate::capability_platform::{call_platform_tool, is_platform_server};
+use crate::capability_reach::Supplier;
+use crate::gateway::registry::resolve_route;
+use crate::gateway::upstream::{build_upstream, fetch_upstream};
+use crate::gateway::usage::{TokenCounts, record_gateway_usage};
+use crate::harness::define::Role;
+use crate::harness::run::{BoxFut, TransportFn};
+use crate::harness::transport::{
+    ToolCall, ToolDefinition, ToolPolicy, TransportKind, TransportReply, TransportRequest,
+    gateway_tools_refusal, gateway_transport, tool_call_id_of, tool_policy_of,
+};
+use crate::mcp_registry::call_mcp_tool;
+use crate::native_search::{harvest_sources, native_search_body};
+use crate::search::real_deps;
+use crate::state::AppState;
+use crate::web_search::results_from_payload;
+
+/// A source as the search stages hand it to the sink, before the registry
+/// numbers it (research.ts `SearchSource` — `title`/`snippet` are optional
+/// because the walker's `|| null` turns an empty string into absence).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchSource {
+    pub url: String,
+    pub title: Option<String>,
+    pub snippet: Option<String>,
+}
+
+/// Where the search stages push what they find. One sink per run, shared by
+/// every query's transport, read by the adapter when the stage ends.
+pub type SearchSink = Arc<std::sync::Mutex<Vec<SearchSource>>>;
+
+/// Anything in a tool payload that looks like a source: the envelope walker in
+/// `web_search.rs`, projected onto the citable few.
+///
+/// FILTERED AFTER THE CAP RATHER THAN BEFORE, on purpose: the cap bounds what
+/// the walker pulls out of ONE payload, and spending part of that budget on
+/// pages that cannot be cited is the waste, not the point. Taking the cap
+/// first and dropping the unusable ones after keeps this a projection of what
+/// the tool actually returned.
+pub fn sources_from_payload(payload: &Value, cap: usize) -> Vec<SearchSource> {
+    results_from_payload(payload, "tool", cap)
+        .into_iter()
+        .filter(|r| citable_source(&r.url))
+        .map(|r| SearchSource {
+            url: r.url,
+            // `title || null` — truthiness: an empty title is absence.
+            title: if r.title.is_empty() {
+                None
+            } else {
+                Some(r.title)
+            },
+            snippet: if r.snippet.is_empty() {
+                None
+            } else {
+                Some(r.snippet)
+            },
+        })
+        .collect()
+}
+
+// The loop budget and the three prompts. Verbatim from research.ts — every
+// sentence in them was paid for by a sweep fixture, so none of them is
+// wording to improve in passing.
+
+const MAX_TOOL_ROUNDS: usize = 3;
+const MAX_TOOL_CALLS_PER_ROUND: usize = 3;
+
+const FINAL_ANSWER_ASK: &str = "That is all the searching there is time for. Write your findings NOW from the results above — do not search again.\nBe specific: dates, numbers, names and versions exactly as the results gave them, and attribute every claim to something above.\nIf the results only partly answer the question, say what they did and did not establish. Do not fill any gap from memory.";
+
+/// The system prompt the tool loop replaces the request's with. REPLACED, not
+/// appended to: the stage's question is the only thing this turn is for.
+fn tool_search_system(tool: &str) -> String {
+    format!(
+        "You research one question using the `{tool}` tool, which searches the live web.\n\
+         You have NO current knowledge of your own: your training data is stale and the question may be about something that changed yesterday. Call `{tool}` before you answer — always, even when you think you know."
+    )
+}
+
+const SYNTHESIS_RULES: &str = "Now write dense, factual findings from what came back: prefer primary sources and recent data, and state dates and numbers precisely. Attribute every claim to something the tool returned. If the results do not answer the question, say what they did and did not establish rather than filling the gap from memory. Search again first if you need to.";
+
+const SEARCH_TOOL_DESCRIPTION: &str =
+    "Search the live web and return passages with their source URLs.";
+
+fn search_tool_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string", "description": "What to look up on the live web." }
+        },
+        "required": ["query"]
+    })
+}
+
+/// THE SONAR-NATIVE CALL — one completion, no tool loop, the sources read out
+/// of the reply's out-of-band `search_results` / `citations` annotations that
+/// the runner's own transport would throw away (it maps the message and
+/// nothing else). `tools: 'own'` is refused with the gateway sentence for the
+/// same reason every transport refuses it: silently dropping the field would
+/// run a tool-loop harness as a single-shot completion, which does not read
+/// as broken.
+pub fn search_transport(state: AppState, run_id: String, sink: SearchSink) -> TransportFn {
+    Arc::new(move |req: TransportRequest| {
+        let state = state.clone();
+        let sink = sink.clone();
+        let run_id = run_id.clone();
+        Box::pin(async move {
+            if tool_policy_of(&req) == ToolPolicy::Own {
+                return Err(gateway_tools_refusal(&req.model));
+            }
+            let Some(route) = resolve_route(&state.pg, &req.model)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                return Err(format!("search model \"{}\" is not routable", req.model));
+            };
+
+            let mut body = Map::new();
+            body.insert("model".into(), Value::String(req.model.clone()));
+            body.insert("stream".into(), Value::Bool(false));
+            // FLAT MESSAGES — this transport never offers tools, so there is
+            // no tool channel to render and `{role, content}` is the shape.
+            body.insert(
+                "messages".into(),
+                Value::Array(
+                    req.messages
+                        .iter()
+                        .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
+                        .collect(),
+                ),
+            );
+            // `!== undefined` in TS: a temperature of 0.0 is sent.
+            if let Some(t) = req.temperature {
+                body.insert("temperature".into(), serde_json::json!(t));
+            }
+            for (k, v) in native_search_body(Some(route.endpoint.provider.as_str())) {
+                body.insert(k, v);
+            }
+
+            let mut call = build_upstream(&state, &route, &Value::Object(body)).await?;
+            let reply = fetch_upstream(&state.pg, &mut call, Some(&route)).await?;
+            if !reply.is_ok() {
+                let status = reply.status();
+                let head: String = reply.text().await.chars().take(300).collect();
+                return Err(format!("search stage {status}: {head}"));
+            }
+            let j: Value = serde_json::from_str(&reply.text().await)
+                .map_err(|_| "search stage 200: the reply body was not JSON".to_string())?;
+
+            // METERED, DETACHED, SWALLOWED — the sources are the product; a
+            // metering write that cannot happen costs nothing. TS `if (j.usage)`
+            // is truthy: a present object counts, null does not.
+            if let Some(u) = j.get("usage").filter(|u| !u.is_null()) {
+                let prompt = u.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(0);
+                let completion = u
+                    .get("completion_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let pg = state.pg.clone();
+                let (endpoint_name, endpoint_class, upstream_model) = (
+                    route.endpoint.name.clone(),
+                    route.endpoint.class.clone(),
+                    route.upstream_model.clone(),
+                );
+                let caller = format!("research:{run_id}");
+                tokio::spawn(async move {
+                    let _ = record_gateway_usage(
+                        &pg,
+                        &caller,
+                        &endpoint_name,
+                        &endpoint_class,
+                        &upstream_model,
+                        &TokenCounts {
+                            prompt_tokens: prompt,
+                            completion_tokens: completion,
+                            cache_write_tokens: 0,
+                            cache_read_tokens: 0,
+                            reasoning_tokens: 0,
+                        },
+                        false,
+                    )
+                    .await;
+                });
+            }
+
+            for s in harvest_sources(&j) {
+                sink.lock().unwrap().push(SearchSource {
+                    url: s.url,
+                    title: s.title,
+                    snippet: s.snippet,
+                });
+            }
+            Ok(TransportReply {
+                kind: TransportKind::Gateway,
+                text: j
+                    .pointer("/choices/0/message/content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                tool_names: Vec::new(),
+                tool_calls: None,
+                usage: None,
+                contract_dropped: false,
+            })
+        })
+    })
+}
+
+/// One tool call's flattened result, the shape both dispatch edges agree on
+/// (`McpToolResult` and `PlatformToolResult` narrowed to what a caller reads).
+pub struct ToolOutput {
+    pub text: String,
+    pub structured: Option<Value>,
+}
+
+/// The tool edge, injectable: `(server, tool, args)` → result. Mirrors the TS
+/// deps slot so the loop's tests drive the whole transport with no model and
+/// no server.
+pub type CallToolFn =
+    Arc<dyn Fn(&str, &str, Map<String, Value>) -> BoxFut<Result<ToolOutput, String>> + Send + Sync>;
+
+/// THE TOOL EDGE AND THE TURN EDGE, injectable so the eleven loop tests below
+/// run the whole transport with neither a model nor a server. `None` means
+/// the real thing: the platform/MCP dispatch for the tool, the gateway
+/// transport for the turns.
+#[derive(Clone)]
+pub struct ToolSearchDeps {
+    pub call_tool: Option<CallToolFn>,
+    pub base: Option<TransportFn>,
+}
+
+/// THE TOOL-DRIVEN SEARCH TRANSPORT — the same job as `search_transport`
+/// above, for every model that is not a search engine: offer ONE tool, run
+/// the loop OURSELVES, and refuse to conclude unless the tool actually ran.
+///
+/// TWO PLACES A TOOL CALL CAN GO, and sending one to the other is silent
+/// breakage: Talaria's own tools dispatch in-process (`capability_platform`),
+/// everything registered dispatches over the org's MCP door (`mcp_registry`).
+/// The supplier says which, and the default edge below honors it.
+pub fn tool_search_transport(
+    state: AppState,
+    run_id: String,
+    sink: SearchSink,
+    supplier: Supplier,
+    deps: ToolSearchDeps,
+) -> TransportFn {
+    let call_tool: CallToolFn = deps.call_tool.unwrap_or_else(|| {
+        let state = state.clone();
+        Arc::new(move |server: &str, tool: &str, args: Map<String, Value>| {
+            let state = state.clone();
+            let server = server.to_string();
+            let tool = tool.to_string();
+            Box::pin(async move {
+                if is_platform_server(&server) {
+                    let out = call_platform_tool(&state.pg, &tool, &args, &real_deps()).await?;
+                    Ok(ToolOutput {
+                        text: out.text,
+                        structured: out.structured,
+                    })
+                } else {
+                    let out = call_mcp_tool(&state.pg, &server, &tool, &args).await?;
+                    Ok(ToolOutput {
+                        text: out.text,
+                        structured: out.structured,
+                    })
+                }
+            })
+        })
+    });
+    let base: TransportFn = deps.base.unwrap_or_else(|| {
+        let state = state.clone();
+        Arc::new(move |req: TransportRequest| {
+            let state = state.clone();
+            Box::pin(async move { gateway_transport(&state, &req).await })
+        })
+    });
+
+    Arc::new(move |req: TransportRequest| {
+        let call_tool = call_tool.clone();
+        let base = base.clone();
+        let sink = sink.clone();
+        let supplier = supplier.clone();
+        let run_id = run_id.clone();
+        Box::pin(async move {
+            if tool_policy_of(&req) == ToolPolicy::Own {
+                return Err(gateway_tools_refusal(&req.model));
+            }
+
+            // SYSTEM REPLACED, not stacked: the search framing and whatever the
+            // request carried are two different jobs.
+            let asked: Vec<Message> = req
+                .messages
+                .iter()
+                .filter(|m| m.role != Role::System)
+                .cloned()
+                .collect();
+            // THE STAGE IS ONE QUESTION, and this is it — the fallback argument
+            // when the model calls the tool with junk.
+            let query = asked
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
+
+            let tool_defs = vec![ToolDefinition {
+                name: supplier.tool.clone(),
+                description: SEARCH_TOOL_DESCRIPTION.into(),
+                parameters: search_tool_schema(),
+            }];
+            let caller = format!("research:{run_id}");
+            let mut convo: Vec<Message> = vec![Message::system(tool_search_system(&supplier.tool))];
+            convo.extend(asked);
+
+            let mut text = String::new();
+            let mut called: usize = 0;
+            for round in 0..MAX_TOOL_ROUNDS {
+                let reply = (base)(TransportRequest {
+                    messages: convo.clone(),
+                    tool_defs: tool_defs.clone(),
+                    caller: caller.clone(),
+                    ..req.clone()
+                })
+                .await?;
+                let calls = reply.tool_calls.clone().unwrap_or_default();
+
+                if calls.is_empty() {
+                    // AN EMPTY TURN IS NOT AN ANSWER, and it is not a refusal
+                    // either — it is a turn that did not happen, so spending
+                    // another round on it is the honest reading. Only on the
+                    // LAST round does the loop have to take what it got.
+                    if reply.text.trim().is_empty() && round < MAX_TOOL_ROUNDS - 1 {
+                        continue;
+                    }
+                    text = reply.text;
+                    break;
+                }
+
+                // ONE ASSISTANT TURN WITH ALL ITS CALLS, replayed on the tool
+                // channel — never as prose a model can imitate (see the
+                // `deepseek-v4-flash` note in the TS suite: models that read a
+                // narrated call return the narration as their final answer).
+                let used: Vec<ToolCall> = calls
+                    .iter()
+                    .take(MAX_TOOL_CALLS_PER_ROUND)
+                    .cloned()
+                    .collect();
+                convo.push(Message {
+                    role: Role::Assistant,
+                    content: reply.text,
+                    tool_calls: used.clone(),
+                    tool_call_id: None,
+                });
+                for (index, c) in used.iter().enumerate() {
+                    called += 1;
+                    // TS `JSON.parse(args) || {}` with a catch — unparseable
+                    // AND non-object both land on an empty map. (On a
+                    // primitive-JSON body TS's strict-mode `args.query = …`
+                    // would throw; the empty map is the useful reading of the
+                    // same intent, and the only one a tool can act on.)
+                    let mut args: Map<String, Value> = match serde_json::from_str::<Value>(&c.args)
+                    {
+                        Ok(Value::Object(m)) => m,
+                        _ => Map::new(),
+                    };
+                    // A call without a usable query is not a reason to waste
+                    // the call: the stage's own question stands in.
+                    if !args
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .is_some_and(|q| !q.trim().is_empty())
+                    {
+                        args.insert(
+                            "query".into(),
+                            Value::String(truncate_utf16(&query, 400).to_string()),
+                        );
+                    }
+                    // THE CALL GOES TO THE SUPPLIER'S SERVER under the name the
+                    // model actually used — and a failure is a tool RESULT, not
+                    // a failed stage: the model is told, the run survives, the
+                    // sources list stays honest.
+                    let out = match (call_tool)(&supplier.server, &c.name, args).await {
+                        Ok(o) => o,
+                        Err(msg) => ToolOutput {
+                            text: format!("The search tool failed: {msg}"),
+                            structured: None,
+                        },
+                    };
+                    // `structured ?? text`: a plain-string payload yields
+                    // nothing from the walker (it descends objects and arrays
+                    // only) — mirrored, not fixed.
+                    let payload = out
+                        .structured
+                        .clone()
+                        .unwrap_or(Value::String(out.text.clone()));
+                    for s in sources_from_payload(&payload, 12) {
+                        sink.lock().unwrap().push(s);
+                    }
+                    convo.push(Message {
+                        role: Role::Tool,
+                        content: truncate_utf16(&out.text, 12_000).to_string(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: Some(tool_call_id_of(c, index)),
+                    });
+                }
+                // ONCE, with the first results — not every round: by round two
+                // the model has already seen them once.
+                if round == 0 {
+                    convo.push(Message {
+                        role: Role::User,
+                        content: SYNTHESIS_RULES.into(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                    });
+                }
+            }
+
+            // A MODEL THAT NEVER CALLED THE TOOL either never answered (and
+            // says nothing about its research — the DEPLOYMENT failed, not the
+            // model's judgement, and the sentence has to say so) or answered
+            // from memory, which is precisely what this stage exists to catch:
+            // prose from training data is indistinguishable from prose from
+            // the web by looking at it, so the distinction is made here, where
+            // it is still visible.
+            if called == 0 {
+                if text.trim().is_empty() {
+                    return Err(format!(
+                        "\"{}\" returned an empty turn every round with \"{}\" offered — it never \
+                         answered and never searched, so nothing here measures its research. This \
+                         is the deployment, not the model's judgement.",
+                        req.model, supplier.tool
+                    ));
+                }
+                return Err(format!(
+                    "\"{}\" answered the search query without calling \"{}\" — the finding would \
+                     have no sources behind it",
+                    req.model, supplier.tool
+                ));
+            }
+
+            // ONE TURN TO ACTUALLY ANSWER. A model still searching when the
+            // rounds ran out has gathered the evidence and was never asked to
+            // use it — the interstitial prose is NOT the finding. NO
+            // tool_defs override on this turn: it carries the request's own
+            // (research carries none), because leaving the search tool on is
+            // an invitation to spend the final turn on another search and
+            // arrive back here with nothing.
+            if text.trim().is_empty() {
+                let mut closing_messages = convo.clone();
+                closing_messages.push(Message {
+                    role: Role::User,
+                    content: FINAL_ANSWER_ASK.into(),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                });
+                text = (base)(TransportRequest {
+                    messages: closing_messages,
+                    caller,
+                    ..req.clone()
+                })
+                .await?
+                .text;
+            }
+
+            Ok(TransportReply {
+                kind: TransportKind::Gateway,
+                text,
+                tool_names: vec![supplier.tool.clone()],
+                tool_calls: None,
+                usage: None,
+                contract_dropped: false,
+            })
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2513,5 +2995,540 @@ mod tests {
         assert_eq!(qb.iter().sum::<u32>(), 2 + 5 * 2 + 5 * 3, "planner bands");
         assert_eq!(bands(&search_fixtures()), 2 + 4 * 2 + 3 * 3, "search bands");
         assert_eq!(bands(&synth_fixtures()), 1 + 4 * 2 + 4 * 3, "synth bands");
+    }
+
+    // ── the search transports ────────────────────────────────────────────────
+    // Ported from research.test.ts's `toolSearchTransport` suite, one for one,
+    // with the same scripted base/tool edges the TS deps slot provides.
+
+    use crate::harness::transport::tool_wire_message;
+
+    fn msg(role: Role, content: &str) -> Message {
+        Message {
+            role,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    fn turn_req(model: &str, messages: Vec<Message>) -> TransportRequest {
+        TransportRequest {
+            model: model.into(),
+            messages,
+            temperature: None,
+            json_mode: false,
+            json_schema: None,
+            tools: None,
+            tool_defs: Vec::new(),
+            ledger: None,
+            effort: None,
+            hold_ms: None,
+            caller: "t".into(),
+        }
+    }
+
+    fn text_reply(text: &str) -> TransportReply {
+        TransportReply {
+            kind: TransportKind::Gateway,
+            text: text.into(),
+            tool_names: Vec::new(),
+            tool_calls: None,
+            usage: None,
+            contract_dropped: false,
+        }
+    }
+
+    fn call_reply(text: &str, calls: Vec<ToolCall>) -> TransportReply {
+        TransportReply {
+            kind: TransportKind::Gateway,
+            text: text.into(),
+            tool_names: vec!["web_search".into()],
+            tool_calls: Some(calls),
+            usage: None,
+            contract_dropped: false,
+        }
+    }
+
+    fn call(args: &str) -> ToolCall {
+        ToolCall {
+            name: "web_search".into(),
+            id: None,
+            args: args.into(),
+        }
+    }
+
+    fn call_as(id: &str, args: &str) -> ToolCall {
+        ToolCall {
+            name: "web_search".into(),
+            id: Some(id.into()),
+            args: args.into(),
+        }
+    }
+
+    /// The scripted tool edge: one fixed result for every call.
+    fn tool_ok(text: &str, structured: Option<Value>) -> CallToolFn {
+        let text = text.to_string();
+        Arc::new(
+            move |_server: &str, _tool: &str, _args: Map<String, Value>| {
+                let text = text.clone();
+                let structured = structured.clone();
+                Box::pin(async move { Ok(ToolOutput { text, structured }) })
+            },
+        )
+    }
+
+    /// A base that answers with the scripted replies in order, repeating the
+    /// last one if the loop asks further, recording every request it saw.
+    fn scripted_base(
+        replies: Vec<TransportReply>,
+    ) -> (TransportFn, Arc<std::sync::Mutex<Vec<TransportRequest>>>) {
+        let seen: Arc<std::sync::Mutex<Vec<TransportRequest>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let transport: TransportFn = {
+            let seen = seen.clone();
+            Arc::new(move |req: TransportRequest| {
+                let seen = seen.clone();
+                let replies = replies.clone();
+                Box::pin(async move {
+                    let idx = {
+                        let mut g = seen.lock().unwrap();
+                        let i = g.len();
+                        g.push(req);
+                        i
+                    };
+                    Ok(replies
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| replies.last().cloned().expect("at least one reply")))
+                })
+            })
+        };
+        (transport, seen)
+    }
+
+    fn lazy_state() -> AppState {
+        let url = "postgres://research-transport-test@localhost:5432/research-transport-test";
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy(url)
+            .expect("a lazy pool connects to nothing");
+        let cfg = crate::config::Config::from_parts(
+            url.into(),
+            "redis://research-transport-test@localhost:6379".into(),
+            "test-root".into(),
+            String::new(),
+            String::new(),
+            "0".into(),
+        )
+        .expect("a test config has nothing to reject");
+        AppState::new(pg, Arc::new(cfg))
+    }
+
+    fn sink() -> SearchSink {
+        Arc::new(std::sync::Mutex::new(Vec::new()))
+    }
+
+    fn supplier() -> Supplier {
+        Supplier {
+            server: "exa".into(),
+            tool: "web_search".into(),
+        }
+    }
+
+    fn tool_transport(sink: SearchSink, base: TransportFn, call_tool: CallToolFn) -> TransportFn {
+        tool_search_transport(
+            lazy_state(),
+            "run-1".into(),
+            sink,
+            supplier(),
+            ToolSearchDeps {
+                call_tool: Some(call_tool),
+                base: Some(base),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn answers_the_call_with_the_id_the_assistant_turn_actually_carried() {
+        // THE BUG, AND IT COST EVERY TOOL-LOOP HARNESS ON ANTHROPIC AND OPENAI.
+        // When a provider omits the tool-call id, two files invented their own
+        // and disagreed: the wire renderer wrote `call_0` into the assistant
+        // turn while this loop wrote the tool NAME into the result — the replay
+        // then referred to a call the provider had never been shown, and the
+        // sweep filed it as "could not reach this model". One shared fallback;
+        // a fabricated id is fine, two of them is not.
+        let (base, seen) = scripted_base(vec![
+            call_reply("", vec![call("{}")]),
+            text_reply("answered"),
+        ]);
+        let transport = tool_transport(sink(), base, tool_ok("results", None));
+        transport(turn_req("sonnet", vec![msg(Role::User, "q")]))
+            .await
+            .unwrap();
+
+        // ASSERTED ON THE WIRE FORM, which is where the two halves have to
+        // agree — `tool_wire_message` is what fills the assistant turn's id,
+        // so comparing the in-memory Messages would compare one side before
+        // it is rendered.
+        let replay = seen.lock().unwrap()[1].messages.clone();
+        let assistant = replay
+            .iter()
+            .find(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+            .unwrap();
+        let result = replay.iter().find(|m| m.role.is_tool()).unwrap();
+        let assistant_wire = tool_wire_message(assistant);
+        let result_wire = tool_wire_message(result);
+        let id = assistant_wire["tool_calls"][0]["id"].as_str().unwrap();
+        assert!(!id.is_empty());
+        assert_eq!(result_wire["tool_call_id"].as_str().unwrap(), id);
+    }
+
+    #[tokio::test]
+    async fn replays_tool_calls_on_the_tool_channel_never_as_prose() {
+        // THE FAILURE THIS PREVENTS, verbatim from a live sweep: the loop used
+        // to push `Called web_search({...})` as ASSISTANT TEXT, deepseek read
+        // that transcript, concluded that is what an assistant turn looks like
+        // here, and returned the narration as its FINAL ANSWER on fixture
+        // after fixture. Changing the wording moves the imitation; only the
+        // channel ends it.
+        let (base, seen) = scripted_base(vec![
+            call_reply("", vec![call_as("call_7", r#"{"query":"node 24 eol"}"#)]),
+            text_reply("Node.js 24 reaches end of life on 2028-04-30."),
+        ]);
+        let transport = tool_transport(sink(), base, tool_ok("EOL 2028-04-30", None));
+        transport(turn_req("deepseek", vec![msg(Role::User, "node 24 eol")]))
+            .await
+            .unwrap();
+
+        let replay = seen.lock().unwrap()[1].messages.clone();
+        // NOTHING NARRATES A CALL IN PROSE — that is the string models copy.
+        assert!(
+            replay
+                .iter()
+                .all(|m| !m.content.contains("Called web_search("))
+        );
+        // The call rides the assistant turn's own channel...
+        let assistant = replay
+            .iter()
+            .find(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+            .unwrap();
+        assert_eq!(assistant.tool_calls[0].name, "web_search");
+        // ...and the result is a tool message answering it by id, not a user
+        // turn pretending to be a person reading search results aloud.
+        let result = replay.iter().find(|m| m.role.is_tool()).unwrap();
+        assert_eq!(result.tool_call_id.as_deref(), Some("call_7"));
+        assert!(result.content.contains("EOL 2028-04-30"));
+    }
+
+    #[tokio::test]
+    async fn spends_another_round_on_an_empty_turn_rather_than_concluding() {
+        // THE MOST MISLEADING ERROR IN THE SUITE, now that it is gone: a model
+        // that returned no text and no tool call used to break the loop with
+        // the "answered without calling" accusation — the opposite of what
+        // happened — wrapped as "could not reach", which reads as a connection
+        // error. An empty turn is a turn that did not happen.
+        let (base, _seen) = scripted_base(vec![
+            text_reply(""),
+            call_reply("", vec![call_as("c1", "{}")]),
+            text_reply("Node.js 24 reaches end of life on 2028-04-30."),
+        ]);
+        let transport = tool_transport(sink(), base, tool_ok("EOL 2028-04-30", None));
+        let reply = transport(turn_req("deepseek", vec![msg(Role::User, "node 24 eol")]))
+            .await
+            .unwrap();
+        assert!(reply.text.contains("2028-04-30"));
+    }
+
+    #[tokio::test]
+    async fn says_the_deployment_failed_when_every_round_comes_back_empty() {
+        // The other half: a model that never answers and never searches has
+        // told us nothing about its research, and the sentence has to say so
+        // rather than blame its judgement — that is the difference between a
+        // red cell an admin should act on and one they should ignore.
+        let (base, _seen) = scripted_base(vec![text_reply("")]);
+        let transport = tool_transport(sink(), base, tool_ok("", None));
+        let err = transport(turn_req("deepseek", vec![msg(Role::User, "node 24 eol")]))
+            .await
+            .unwrap_err();
+        assert!(err.contains("empty turn every round"), "{err}");
+        assert!(
+            err.contains("This is the deployment, not the model"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn asks_for_an_answer_when_the_round_budget_runs_out_mid_search() {
+        // A model still searching when the rounds ran out had its
+        // INTERSTITIAL turn recorded as its finding — nine of nine
+        // research-search fixtures failed on text like "Let me try more
+        // targeted queries": the model had gathered the evidence and was
+        // never asked to use it.
+        let searching = || {
+            call_reply(
+                "Let me try more targeted queries.",
+                vec![call(r#"{"query":"ai act gpai"}"#)],
+            )
+        };
+        let (base, seen) = scripted_base(vec![
+            searching(),
+            searching(),
+            searching(),
+            text_reply("The GPAI obligations apply from 2025-08-02."),
+        ]);
+        let transport = tool_transport(
+            sink(),
+            base,
+            tool_ok(
+                "GPAI obligations apply from 2 August 2025.",
+                Some(serde_json::json!({
+                    "results": [{ "url": "https://eur-lex.europa.eu/ai-act", "title": "AI Act" }]
+                })),
+            ),
+        );
+        let reply = transport(turn_req(
+            "deepseek",
+            vec![msg(Role::User, "when do EU AI Act GPAI rules apply")],
+        ))
+        .await
+        .unwrap();
+
+        // The answer, not the preamble.
+        assert!(reply.text.contains("2025-08-02"));
+        assert!(!reply.text.contains("more targeted queries"));
+        // NO TOOLS ON THE CLOSING TURN: leaving them on is an invitation to
+        // spend it on a fourth search and arrive back with nothing again.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        let closing = seen.last().unwrap();
+        assert!(closing.tool_defs.is_empty());
+        assert!(
+            closing
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("do not search again")
+        );
+    }
+
+    #[tokio::test]
+    async fn never_records_a_tool_calling_turns_prose_as_the_finding() {
+        // The narrower half of the same rule: even when the model DOES stop on
+        // its own, the text has to come from the turn that stopped — not from
+        // an earlier turn that was still working.
+        let (base, _seen) = scripted_base(vec![
+            call_reply("First I will check the release schedule.", vec![call("{}")]),
+            text_reply("Node.js 24 reaches end of life on 2028-04-30."),
+        ]);
+        let transport = tool_transport(sink(), base, tool_ok("EOL 2028-04-30", None));
+        let reply = transport(turn_req("deepseek", vec![msg(Role::User, "node 24 eol")]))
+            .await
+            .unwrap();
+        assert_eq!(reply.text, "Node.js 24 reaches end of life on 2028-04-30.");
+    }
+
+    #[tokio::test]
+    async fn calls_the_tool_harvests_its_sources_and_answers() {
+        let s = sink();
+        let (base, seen) = scripted_base(vec![
+            call_reply("", vec![call(r#"{"query":"node 24 eol"}"#)]),
+            text_reply("Node.js 24 reaches end of life on 2028-04-30."),
+        ]);
+        let transport = tool_transport(
+            s.clone(),
+            base,
+            tool_ok(
+                "Node 24 EOL is 2028-04-30.",
+                Some(serde_json::json!({
+                    "results": [{
+                        "url": "https://github.com/nodejs/Release",
+                        "title": "nodejs/Release",
+                        "snippet": "Node 24 …"
+                    }]
+                })),
+            ),
+        );
+        let reply = transport(turn_req(
+            "deepseek",
+            vec![msg(Role::User, "node 24 end of life")],
+        ))
+        .await
+        .unwrap();
+        assert!(reply.text.contains("2028-04-30"));
+        // The sources are the product: without them the synthesis stage has
+        // nothing to cite and `ungrounded_ref` has nothing to ground against.
+        assert_eq!(
+            *s.lock().unwrap(),
+            vec![SearchSource {
+                url: "https://github.com/nodejs/Release".into(),
+                title: Some("nodejs/Release".into()),
+                snippet: Some("Node 24 …".into()),
+            }]
+        );
+        // The tool definition was actually offered, and the native
+        // "you ARE a search engine" framing was replaced rather than stacked.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].tool_defs[0].name, "web_search");
+        assert_eq!(
+            seen[0]
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::System)
+                .count(),
+            1
+        );
+        assert!(seen[0].messages[0].content.contains("web_search"));
+    }
+
+    #[tokio::test]
+    async fn fails_a_model_that_answered_without_searching() {
+        // The precise failure the search floor exists to prevent: prose from
+        // training data is indistinguishable from prose from the web by
+        // looking at it, so the distinction is made here, where it is still
+        // visible.
+        let (base, _seen) = scripted_base(vec![text_reply(
+            "Node 24 reaches EOL in April 2028, I believe.",
+        )]);
+        let transport = tool_transport(sink(), base, tool_ok("", None));
+        let err = transport(turn_req("deepseek", vec![msg(Role::User, "q")]))
+            .await
+            .unwrap_err();
+        assert!(err.contains("without calling"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn finds_sources_in_whatever_envelope_the_server_used() {
+        // MCP search servers disagree about the wrapper and agree about the
+        // leaf, which is an object with a URL on it.
+        let s = sink();
+        let (base, _seen) = scripted_base(vec![
+            call_reply("", vec![call(r#"{"query":"q"}"#)]),
+            text_reply("done"),
+        ]);
+        let transport = tool_transport(
+            s.clone(),
+            base,
+            tool_ok(
+                "",
+                Some(serde_json::json!({
+                    "data": { "hits": [
+                        { "link": "https://a.example/x", "name": "A" },
+                        { "href": "https://b.example/y" }
+                    ] }
+                })),
+            ),
+        );
+        transport(turn_req("deepseek", vec![msg(Role::User, "q")]))
+            .await
+            .unwrap();
+        let urls: Vec<String> = s.lock().unwrap().iter().map(|x| x.url.clone()).collect();
+        assert_eq!(urls, vec!["https://a.example/x", "https://b.example/y"]);
+    }
+
+    #[tokio::test]
+    async fn keeps_going_when_the_tool_itself_fails_and_says_so() {
+        // One dead tool call costs one angle, not the run — the same posture
+        // the round loop takes around the whole stage.
+        let s = sink();
+        let (base, seen) = scripted_base(vec![
+            call_reply("", vec![call("{}")]),
+            text_reply("The search tool was unavailable, so I could not verify this."),
+        ]);
+        let failing: CallToolFn = Arc::new(|_s: &str, _t: &str, _a: Map<String, Value>| {
+            Box::pin(async { Err("upstream 503".to_string()) })
+        });
+        let transport = tool_transport(s.clone(), base, failing);
+        let reply = transport(turn_req("deepseek", vec![msg(Role::User, "q")]))
+            .await
+            .unwrap();
+        assert!(reply.text.contains("could not verify"));
+        // ANYWHERE IN THE REPLAY, not at a fixed position: the synthesis rules
+        // arrive with the first results, so the tool's failure is no longer
+        // the last message. The assertion is that the model SEES the failure.
+        let joined = seen.lock().unwrap()[1]
+            .messages
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("upstream 503"));
+        assert!(s.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn supplies_the_stages_own_question_when_the_model_calls_with_junk_arguments() {
+        let got: Arc<std::sync::Mutex<Option<Map<String, Value>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let g = got.clone();
+        let recording: CallToolFn =
+            Arc::new(move |_s: &str, _t: &str, args: Map<String, Value>| {
+                let g = g.clone();
+                Box::pin(async move {
+                    *g.lock().unwrap() = Some(args);
+                    Ok(ToolOutput {
+                        text: String::new(),
+                        structured: None,
+                    })
+                })
+            });
+        let (base, _seen) = scripted_base(vec![
+            call_reply("", vec![call("not json at all")]),
+            text_reply("ok"),
+        ]);
+        let transport = tool_transport(sink(), base, recording);
+        transport(turn_req(
+            "deepseek",
+            vec![msg(Role::User, "node 24 end of life")],
+        ))
+        .await
+        .unwrap();
+        let args = got.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            args.get("query").and_then(Value::as_str),
+            Some("node 24 end of life")
+        );
+    }
+
+    #[tokio::test]
+    async fn search_transport_refuses_a_tools_own_request_without_touching_the_network() {
+        // `search_transport` stays beside its harness because the SOURCES are
+        // the product and the runner's own transport throws the provider's
+        // `search_results` away. That makes it the one place a request field
+        // could be dropped instead of refused — the exact failure the five
+        // deleted shims kept making — so it throws on `tools: 'own'` the way
+        // `gateway_transport` does, before any routing or dialing.
+        let transport = search_transport(lazy_state(), "run-1".into(), sink());
+        let mut req = turn_req("sonar-pro", vec![msg(Role::User, "q")]);
+        req.tools = Some(ToolPolicy::Own);
+        req.caller = "research:run-1".into();
+        let err = transport(req).await.unwrap_err();
+        assert!(err.contains("ORG GATEWAY"), "{err}");
+    }
+
+    #[test]
+    fn sources_from_payload_takes_the_cap_first_and_drops_the_uncitable_after() {
+        let rows: Vec<Value> = (0..20)
+            .map(|i| serde_json::json!({ "url": format!("https://s{i}.test"), "title": format!("s{i}") }))
+            .collect();
+        let got = sources_from_payload(&Value::Array(rows), 12);
+        assert_eq!(got.len(), 12);
+        // `|| null`: an empty-string title or snippet is absence on the far
+        // side, even though the walker itself keeps it (it is a string the
+        // server sent).
+        let got = sources_from_payload(
+            &serde_json::json!({
+                "results": [{ "url": "https://a.test", "title": "", "snippet": "" }]
+            }),
+            12,
+        );
+        assert_eq!(
+            got,
+            vec![SearchSource {
+                url: "https://a.test".into(),
+                title: None,
+                snippet: None
+            }]
+        );
     }
 }

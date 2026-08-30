@@ -22,7 +22,6 @@
 // blaming the model.
 
 use crate::capability::{CapabilityFact, get_capabilities};
-use crate::gateway::provider::http;
 use crate::gateway::settings::get_setting;
 use crate::model_roles::resolve_role_model;
 use futures_util::future::join_all;
@@ -385,58 +384,28 @@ pub async fn reach_for<D: ReachDeps + Sync>(
 /// harness's own turn budget would have failed on anyway.
 const CHECK_MS: Duration = Duration::from_millis(4_000);
 
-/// THE CANARY QUERY, deliberately a common word rather than "talaria". A
-/// health check has to fail only when SEARCH is broken — a rare term that
-/// genuinely has no hits on a small indie index would make a working instance
-/// report itself down.
-const CANARY: &str = "wikipedia";
-
-/// Where SearXNG lives, in search.ts's precedence: env, then the in-app
-/// setting, then the compose service default. Trailing slash trimmed, and an
-/// empty configured value counts as unconfigured.
-async fn search_url(pg: &PgPool) -> String {
-    let configured = std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty());
-    let configured = match configured {
-        Some(u) => Some(u),
-        None => get_setting(pg, "search_url", serde_json::Value::String(String::new()))
-            .await
-            .as_str()
-            .map(String::from)
-            .filter(|s| !s.is_empty()),
-    };
-    configured
-        .unwrap_or_else(|| "http://127.0.0.1:8888".to_string())
-        .trim_end_matches('/')
-        .to_string()
-}
+// The canary word itself ("wikipedia" — a common term, so a working small
+// index cannot report itself down) is search.rs's own constant now, with the
+// reasoning beside it. So is where SearXNG lives (search.rs `search_url`):
+// the reach probe and a live search can never disagree about where the engine
+// is, because there is one spelling.
 
 /// `searchReachable` reduced to the question platform supply asks: is the
-/// org's web-search backend answering with results? The canary is ONE GET —
-/// the same request `searchWeb` makes — bounded by CHECK_MS so a dead
-/// instance cannot stall the reach edge. The full search client (snippets,
-/// engine lists, the 403 sentence) crosses with the retrieval batch; when it
-/// does, this probe moves onto it rather than staying a second spelling.
+/// org's web-search backend answering with results? ONE canary query through
+/// the real client (search.rs) — bounded here by CHECK_MS so a dead instance
+/// cannot stall the reach edge. This probe USED to be a second spelling of the
+/// GET; it rides the full client now, which is what its own note said would
+/// happen when the client crossed.
 async fn search_canary_ok(pg: &PgPool) -> bool {
-    let base = search_url(pg).await;
-    let url = format!("{base}/search?q={CANARY}&format=json");
-    let Ok(res) = http()
-        .get(&url)
-        .header("accept", "application/json")
-        .timeout(CHECK_MS)
-        .send()
-        .await
-    else {
-        return false;
-    };
-    if !res.status().is_success() {
-        return false;
+    match tokio::time::timeout(
+        CHECK_MS,
+        crate::search::search_reachable(pg, &crate::search::real_deps()),
+    )
+    .await
+    {
+        Ok(reply) => reply.ok,
+        Err(_) => false,
     }
-    let Ok(body) = res.json::<serde_json::Value>().await else {
-        return false;
-    };
-    body.get("results")
-        .and_then(|r| r.as_array())
-        .is_some_and(|r| !r.is_empty())
 }
 
 /// HOW LONG AN ANSWER IS GOOD FOR. This is not an optimisation, it is a
