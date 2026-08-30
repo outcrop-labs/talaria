@@ -82,6 +82,7 @@ pub mod password;
 pub mod password_accounts;
 pub mod permissions;
 pub mod persona;
+pub mod personal_agent;
 pub mod plan_drafts;
 pub mod platform_agents;
 pub mod price_oracle;

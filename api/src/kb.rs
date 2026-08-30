@@ -1058,7 +1058,7 @@ pub struct SearchViewer<'a> {
     pub who: Option<&'a str>,
 }
 
-fn guarded_of_space(sp: &KbSpace) -> Guarded {
+pub fn guarded_of_space(sp: &KbSpace) -> Guarded {
     Guarded {
         owner_user_id: sp.owner_user_id.clone(),
         created_by: sp.created_by.clone(),

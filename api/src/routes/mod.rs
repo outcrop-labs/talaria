@@ -42,6 +42,7 @@ pub mod cost;
 pub mod fleet_create;
 pub mod fleet_hires;
 pub mod health;
+pub mod history;
 pub mod kb_comments_id;
 pub mod kb_docs_id;
 pub mod kb_docs_id_backlinks;
@@ -336,6 +337,10 @@ pub fn router(state: AppState) -> Router {
                 .put(notifications::put)
                 .patch(notifications::patch)
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
+        )
+        .route(
+            "/api/history",
+            get(history::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/channels/{id}/plan",

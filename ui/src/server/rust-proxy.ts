@@ -115,6 +115,10 @@ const EXACT = new Set([
   '/api/admin/rag',
   '/api/fleet/create',
   '/api/fleet/hires',
+  // The version-history read plane — one route file over two stores
+  // (internal_versions snapshots, agent_versions). No sub-routes hide under
+  // this path, and nothing else in the tree starts with "/api/history".
+  '/api/history',
 ])
 
 // Parameterized whole-route migrations: the route crossed, but its siblings

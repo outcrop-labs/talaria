@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use sqlx::PgPool;
 use std::sync::OnceLock;
 
+use crate::agent_auth::epoch_ms_to_iso;
 use crate::gateway::registry::{LlmEndpoint, list_endpoints};
 
 /// Agent slug / department alphabets (agent-defs.ts:13-14). `create_agent`
@@ -84,6 +85,8 @@ pub struct AgentVersionRow {
     pub config: Value,
     pub note: Option<String>,
     pub created_by: Option<String>,
+    /// ISO via epoch-ms — postgres.js hands TS a Date, json() stringifies it.
+    pub created_at: String,
 }
 
 /// A def row, the columns the create path hands around (the run's HiredDef
@@ -168,10 +171,11 @@ type VersionTuple = (
     Value,
     Option<String>,
     Option<String>,
+    i64,
 );
 
 fn version_row(
-    (id, agent_id, version, soul, config, note, created_by): VersionTuple,
+    (id, agent_id, version, soul, config, note, created_by, created_ms): VersionTuple,
 ) -> AgentVersionRow {
     AgentVersionRow {
         id,
@@ -181,6 +185,7 @@ fn version_row(
         config,
         note,
         created_by,
+        created_at: epoch_ms_to_iso(created_ms),
     }
 }
 
@@ -190,7 +195,8 @@ pub async fn list_versions(
     agent_id: &str,
 ) -> Result<Vec<AgentVersionRow>, sqlx::Error> {
     let rows: Vec<VersionTuple> = sqlx::query_as(
-        "select id::text, agent_id::text, version, soul, config, note, created_by::text \
+        "select id::text, agent_id::text, version, soul, config, note, created_by, \
+             (trunc(extract(epoch from created_at) * 1000))::bigint \
              from agent_versions where agent_id = $1::uuid order by version desc",
     )
     .bind(agent_id)
