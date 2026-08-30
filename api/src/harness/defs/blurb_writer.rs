@@ -576,6 +576,8 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
         }),
         Output::Json {
             schema: Schema::Record(Box::new(Schema::string())),
+            // No envelope to unwrap: a record IS the reply's top level.
+            preprocess: None,
             // The runner's default: one repair turn.
             repair: None,
             // `verify` is the KEYS — the half of this contract a schema is

@@ -40,6 +40,7 @@
 // enough to be one, so serde_json's wording is accepted and the TS corpus
 // does not pin it.
 
+use super::define::PreFn;
 use super::schema::{self, Schema};
 use regex::Regex;
 use serde_json::Value;
@@ -401,7 +402,7 @@ fn describe_issues(issues: &[(Vec<schema::Seg>, schema::Issue)], root: &Value) -
 /// array", "missing required field 'verdict'" — and never carries a stack
 /// trace, a schema dump, or an internal type name. `raw` is what was
 /// extracted, for logs, and is None when nothing complete was found at all.
-pub fn parse_json(text: &str, schema: &Schema) -> ParseResult {
+pub fn parse_json(text: &str, schema: &Schema, pre: Option<&PreFn>) -> ParseResult {
     let mut first_valid: Option<(String, String)> = None; // (error, raw)
     let mut first_broken: Option<(String, String)> = None; // (reason, raw)
 
@@ -414,6 +415,16 @@ pub fn parse_json(text: &str, schema: &Schema) -> ParseResult {
                 }
                 continue;
             }
+        };
+        // z.preprocess: the def's own restructure of the PARSED value before
+        // validation — the one place a harness may repackage a correct answer
+        // that arrived in the wrong envelope, because the alternative is a
+        // repair turn spent telling a model to stop doing what the provider's
+        // strict-JSON mode obliges it to do. Runs per candidate span, exactly
+        // where zod runs it: after parse, before validate.
+        let parsed = match pre {
+            Some(f) => f(&parsed),
+            None => parsed,
         };
         let (value, issues) = schema::validate(schema, &parsed);
         if issues.is_empty() {
@@ -719,7 +730,7 @@ mod tests {
 
     #[test]
     fn validates_the_extracted_value_against_the_schema() {
-        let result = parse_json(FENCED_THEN_PROSE, &verdict_schema());
+        let result = parse_json(FENCED_THEN_PROSE, &verdict_schema(), None);
         match result {
             ParseResult::Ok(v) => assert_eq!(
                 v,
@@ -734,7 +745,8 @@ mod tests {
         assert!(
             parse_json(
                 "{\"verdict\": \"pass\", \"summary\": \"ok\", \"issues\": [],}",
-                &verdict_schema()
+                &verdict_schema(),
+                None
             )
             .ok()
         );
@@ -742,7 +754,7 @@ mod tests {
 
     #[test]
     fn names_the_missing_field_and_carries_the_raw() {
-        let result = parse_json("{\"summary\": \"ok\"}", &verdict_schema());
+        let result = parse_json("{\"summary\": \"ok\"}", &verdict_schema(), None);
         match result {
             ParseResult::Ok(_) => panic!("expected failure"),
             ParseResult::Err { error, raw } => {
@@ -761,7 +773,7 @@ mod tests {
             "plan",
             Schema::Object(vec![schema::Field::required("title", Schema::string())]),
         )]);
-        match parse_json("{\"plan\": {}}", &schema) {
+        match parse_json("{\"plan\": {}}", &schema, None) {
             ParseResult::Err { error, .. } => assert!(
                 error.contains("missing required field 'plan.title'"),
                 "{error}"
@@ -775,6 +787,7 @@ mod tests {
         match parse_json(
             "{\"verdict\": \"pass\", \"summary\": 42}",
             &verdict_schema(),
+            None,
         ) {
             ParseResult::Err { error, .. } => assert!(
                 error.contains("field 'summary' should be string, got number"),
@@ -789,6 +802,7 @@ mod tests {
         match parse_json(
             "{\"verdict\": \"pass\", \"summary\": \"ok\", \"issues\": [\"a\", 7]}",
             &verdict_schema(),
+            None,
         ) {
             ParseResult::Err { error, .. } => assert!(
                 error.contains("field 'issues[1]' should be string, got number"),
@@ -803,6 +817,7 @@ mod tests {
         match parse_json(
             "[{\"verdict\": \"pass\", \"summary\": \"ok\"}]",
             &verdict_schema(),
+            None,
         ) {
             ParseResult::Err { error, .. } => {
                 assert!(error.contains("expected object, got array"), "{error}")
@@ -816,6 +831,7 @@ mod tests {
         match parse_json(
             "{\"verdict\": \"maybe\", \"summary\": \"ok\"}",
             &verdict_schema(),
+            None,
         ) {
             ParseResult::Err { error, .. } => {
                 assert!(error.contains("field 'verdict' must be one of"), "{error}");
@@ -831,7 +847,7 @@ mod tests {
         // what tells them apart, which is why validation drives the walk.
         let text = "According to [1], the queries are:\n[\"alpha\", \"beta\"]";
         let schema = Schema::Array(Box::new(Schema::string()));
-        match parse_json(text, &schema) {
+        match parse_json(text, &schema, None) {
             ParseResult::Ok(v) => assert_eq!(v, json!(["alpha", "beta"])),
             ParseResult::Err { error, .. } => panic!("expected ok, got {error}"),
         }
@@ -842,6 +858,7 @@ mod tests {
         match parse_json(
             "{\"verdict\": \"pass\", \"summary\": \"the fix looks",
             &verdict_schema(),
+            None,
         ) {
             ParseResult::Err { error, raw } => {
                 assert_eq!(
@@ -856,7 +873,11 @@ mod tests {
 
     #[test]
     fn reports_prose_with_no_json_at_all_with_no_extracted_raw() {
-        match parse_json("I could not safely determine that.", &verdict_schema()) {
+        match parse_json(
+            "I could not safely determine that.",
+            &verdict_schema(),
+            None,
+        ) {
             ParseResult::Err { error, raw } => {
                 assert_eq!(error, "no JSON object or array was found in the response");
                 assert_eq!(raw, None);
@@ -874,7 +895,7 @@ mod tests {
             schema::Field::required("d", Schema::string()),
             schema::Field::required("e", Schema::string()),
         ]);
-        match parse_json("{}", &schema) {
+        match parse_json("{}", &schema, None) {
             ParseResult::Err { error, .. } => assert_eq!(error.split(";").count(), 3),
             ParseResult::Ok(_) => panic!("expected failure"),
         }
@@ -885,6 +906,7 @@ mod tests {
         match parse_json(
             "{\"verdict\": \"pass\", \"summary\": 42}",
             &verdict_schema(),
+            None,
         ) {
             ParseResult::Err { error, .. } => {
                 assert!(!error.contains("ZodError"));

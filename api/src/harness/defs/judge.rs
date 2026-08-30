@@ -50,7 +50,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::truncate_utf16;
+use crate::body::{js_string, truncate_utf16};
 use crate::harness::define::{
     EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
     Widen, define_harness,
@@ -140,47 +140,6 @@ const MAX_ISSUES: usize = 20;
 /// the lenience is ported with it: `null` becomes `"null"` (a truthy string —
 /// kept, exactly as TS kept it), an object becomes `"[object Object]"`, an
 /// array joins like `Array.prototype.toString`.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => js_number(n),
-        Value::String(s) => s.clone(),
-        Value::Object(_) => "[object Object]".into(),
-        Value::Array(items) => items
-            .iter()
-            // null and undefined members print as the empty string.
-            .map(|v| {
-                if v.is_null() {
-                    String::new()
-                } else {
-                    js_string(v)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-    }
-}
-
-/// JS number-to-string for the members that reach `js_string`. Whole numbers
-/// lose the fraction (`String(1.0)` is `"1"`); everything else takes
-/// Rust's shortest round-trip formatting, which agrees with JS on the shapes
-/// an issue list actually carries.
-fn js_number(n: &serde_json::Number) -> String {
-    if let Some(i) = n.as_i64() {
-        return i.to_string();
-    }
-    if let Some(u) = n.as_u64() {
-        return u.to_string();
-    }
-    let f = n.as_f64().unwrap_or(f64::NAN);
-    if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e15 {
-        format!("{}", f as i64)
-    } else {
-        f.to_string()
-    }
-}
-
 /// The transform's home: the validated verdict value, clamped to what gets
 /// persisted. See the module header for why these bound rather than reject.
 pub fn narrow_verdict(value: &Value) -> Result<JudgeVerdict, String> {
@@ -624,6 +583,9 @@ pub fn judge_harness() -> HarnessDefinition {
             ])
         }),
         Output::Json {
+            // No envelope to unwrap: the verdict object IS the reply's top
+            // level, and a wrapper around it is a repair turn.
+            preprocess: None,
             // RAW_VERDICT, not JUDGE_VERDICT: the clamps live in
             // `narrow_verdict` (see the module header). Lenient on purpose in
             // both directions — `issues` optional because a clean "pass" has

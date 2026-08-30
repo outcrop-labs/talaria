@@ -551,7 +551,9 @@ fn apply_output(def: &HarnessDefinition, raw: &str, input: &Value, ctx: &RenderC
 
 fn parse_value(def: &HarnessDefinition, raw: &str) -> Applied {
     match &def.output {
-        Output::Json { schema, .. } => match parse_json(raw, schema) {
+        Output::Json {
+            schema, preprocess, ..
+        } => match parse_json(raw, schema, preprocess.as_ref()) {
             ParseResult::Ok(v) => Applied::Ok(v),
             ParseResult::Err { error, .. } => Applied::Err(error),
         },
@@ -1564,6 +1566,7 @@ mod tests {
             }),
             Output::Json {
                 schema: verdict_schema(),
+                preprocess: None,
                 repair: None,
                 verify: None,
             },
@@ -1635,6 +1638,7 @@ mod tests {
                 Ok(vec![Message::user(format!("Describe: {}", ids.join(", ")))])
             }),
             Output::Json {
+                preprocess: None,
                 schema: Schema::Record(Box::new(Schema::string())),
                 repair: None,
                 verify: Some(Arc::new(
@@ -1912,6 +1916,7 @@ mod tests {
         let mut patient = judge();
         patient.output = Output::Json {
             schema: verdict_schema(),
+            preprocess: None,
             repair: Some(2),
             verify: None,
         };
@@ -2415,6 +2420,7 @@ mod tests {
         let mut def = blurber();
         def.output = Output::Json {
             schema: Schema::Record(Box::new(Schema::string())),
+            preprocess: None,
             repair: None,
             verify: Some(Arc::new(move |_value, input, _ctx| {
                 recording.lock().expect("seen").push(input.clone());
@@ -2442,6 +2448,7 @@ mod tests {
         let mut boom = blurber();
         boom.output = Output::Json {
             schema: Schema::Record(Box::new(Schema::string())),
+            preprocess: None,
             repair: None,
             verify: Some(Arc::new(|_value, _input, _ctx| {
                 Err("Cannot read properties of undefined (reading 'length')".to_string())
@@ -2468,6 +2475,7 @@ mod tests {
         let mut def = blurber();
         def.output = Output::Json {
             schema: Schema::Record(Box::new(Schema::string())),
+            preprocess: None,
             repair: None,
             verify: Some(Arc::new(move |_value, _input, _ctx| {
                 *counting.lock().expect("calls") += 1;
@@ -2508,6 +2516,7 @@ mod tests {
         });
         strict.output = Output::Json {
             schema: Schema::Record(Box::new(Schema::string())),
+            preprocess: None,
             repair: None,
             verify: Some(Arc::new(|value, _input, _ctx| {
                 let tainted = value

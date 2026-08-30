@@ -835,6 +835,92 @@ mod datetime_tests {
     }
 }
 
+// ── JS coercion semantics ─────────────────────────────────────────────────────
+//
+// Structured replies are coerced the way the TS transforms coerced them, which
+// is the way JavaScript does: a lenient member goes through `String(x)` and an
+// index member through `Number(x)`, and the difference from Rust's own
+// `to_string` is observable — `null` becomes the truthy string "null" and is
+// KEPT, an object becomes "[object Object]", an array joins, and whole
+// numbers lose the fraction. Reproducing JS here is not nostalgia; it is the
+// difference between a member the TS transform kept and one this port would
+// silently drop.
+
+/// JS `String(x)`.
+pub fn js_string(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => js_number_string(n),
+        Value::String(s) => s.clone(),
+        Value::Object(_) => "[object Object]".into(),
+        Value::Array(items) => items
+            .iter()
+            // null and undefined members print as the empty string.
+            .map(|v| {
+                if v.is_null() {
+                    String::new()
+                } else {
+                    js_string(v)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+    }
+}
+
+/// JS number-to-string for the numbers that reach `js_string`. Whole numbers
+/// lose the fraction (`String(1.0)` is `"1"`); everything else takes Rust's
+/// shortest round-trip formatting, which agrees with JS on the shapes a
+/// structured reply actually carries.
+fn js_number_string(n: &serde_json::Number) -> String {
+    if let Some(i) = n.as_i64() {
+        return i.to_string();
+    }
+    if let Some(u) = n.as_u64() {
+        return u.to_string();
+    }
+    let f = n.as_f64().unwrap_or(f64::NAN);
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e15 {
+        format!("{}", f as i64)
+    } else {
+        f.to_string()
+    }
+}
+
+/// JS `Number(x)` — the coercion an index field goes through before it is
+/// looked up. `null` is 0 and `""` is 0, a single-member array unwraps, and
+/// anything unparseable is NaN (which never matches an index). Hex literals
+/// and `Infinity` parse in JS and not here; no model emits those into a
+/// `dependsOn` list.
+pub fn js_number(value: &Value) -> f64 {
+    match value {
+        Value::Null => 0.0,
+        Value::Bool(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                0.0
+            } else {
+                t.parse::<f64>().unwrap_or(f64::NAN)
+            }
+        }
+        Value::Array(a) => match a.as_slice() {
+            [] => 0.0,
+            [one] => js_number(one),
+            _ => f64::NAN,
+        },
+        Value::Object(_) => f64::NAN,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

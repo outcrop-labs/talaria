@@ -295,6 +295,19 @@ pub type RenderFn =
 /// handed back half-scrubbed.
 pub type CleanFn = Arc<dyn Fn(&str) -> Result<Option<Value>, String> + Send + Sync>;
 
+/// z.preprocess — the def's own restructure of a PARSED reply before the
+/// schema sees it. One job in the tree needs this and it is not decoration:
+/// when a provider is asked for JSON at the protocol level,
+/// `response_format: {"type":"json_object"}` obliges some models to emit a
+/// top-level OBJECT, which makes an envelope (`{"tickets": [...]}`) the only
+/// shape a correct answer can arrive in for an array-shaped contract. The
+/// harness unwraps it here rather than spending a repair turn telling the
+/// model to stop doing what its provider's strict mode compels.
+///
+/// Runs per candidate span, exactly where zod runs it: after parse, before
+/// validation. Pure and cheap — it is on the same hot path as the parser.
+pub type PreFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+
 /// THE RELATION BETWEEN THE INPUT AND THE OUTPUT — the half of a harness
 /// contract a schema is structurally incapable of stating.
 ///
@@ -430,6 +443,9 @@ pub enum Output {
     },
     Json {
         schema: Schema,
+        /// See `PreFn` — the envelope unwrap that runs between parse and
+        /// validation. `None` for every def whose answer is not packaged.
+        preprocess: Option<PreFn>,
         /// Repair turns the runner may spend on this harness. `None` is the
         /// runner's default (one), spelled as a default so the def that needs
         /// none can say `Some(0)` deliberately.
@@ -871,6 +887,7 @@ mod tests {
             },
             Arc::new(|_i, _ctx| Ok(vec![Message::user("blurbs please")])),
             Output::Json {
+                preprocess: None,
                 schema: Schema::Record(Box::new(Schema::string())),
                 repair: None,
                 verify: None,
@@ -893,6 +910,7 @@ mod tests {
             },
             Arc::new(|_i, _ctx| Ok(vec![Message::user("judge")])),
             Output::Json {
+                preprocess: None,
                 schema: Schema::string(),
                 repair: None,
                 verify: None,
@@ -918,6 +936,7 @@ mod tests {
             },
             Arc::new(|_i, _ctx| Ok(vec![Message::user("draft")])),
             Output::Json {
+                preprocess: None,
                 schema: Schema::string(),
                 repair: None,
                 verify: None,
