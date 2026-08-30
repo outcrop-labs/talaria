@@ -112,10 +112,10 @@ pub fn fire_hour(config: &BriefConfig) -> i64 {
 /// it in the same query as the user row. A blank stored value counts as unset,
 /// so a hand-emptied row follows the workspace rather than throwing at every
 /// format call.
-pub fn zone_for(stored: Option<&str>, config: &BriefConfig) -> String {
+pub fn zone_for(stored: Option<&str>, workspace_zone: &str) -> String {
     match stored.map(str::trim).filter(|s| !s.is_empty()) {
         Some(zone) => zone.to_string(),
-        None => config.time_zone.clone(),
+        None => workspace_zone.to_string(),
     }
 }
 
@@ -347,7 +347,10 @@ mod tests {
 
     #[test]
     fn zone_for_lets_the_stored_zone_win() {
-        assert_eq!(zone_for(Some("Asia/Tokyo"), &base()), "Asia/Tokyo");
+        assert_eq!(
+            zone_for(Some("Asia/Tokyo"), &base().time_zone),
+            "Asia/Tokyo"
+        );
     }
 
     #[test]
@@ -357,7 +360,7 @@ mod tests {
             ..base()
         };
         for unset in [None, Some(""), Some("   ")] {
-            assert_eq!(zone_for(unset, &denver), "America/Denver");
+            assert_eq!(zone_for(unset, &denver.time_zone), "America/Denver");
         }
     }
 }

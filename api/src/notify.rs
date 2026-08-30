@@ -1097,17 +1097,28 @@ pub async fn drain_notification_mail(deps: &DrainDeps, budget_ms: i64) -> MailDr
 
 // ── The email itself ─────────────────────────────────────────────────────────
 
-/// Absolute URL for an in-app path, or None when this deployment has no
-/// verified domain to build one from (instance.ts instanceBaseUrl).
-async fn app_url(pg: &PgPool, path: &str) -> Option<String> {
+/// This deployment's canonical base URL, or None when it has no VERIFIED
+/// domain (instance.ts instanceBaseUrl). Every absolute in-app link in a mail
+/// is built on it — the digest's deep links and its button, the notification
+/// mail's settings link — so "no verified domain" has to mean "no links",
+/// never "links that do not resolve".
+pub(crate) async fn instance_base_url(pg: &PgPool) -> Option<String> {
     let cfg = crate::instance::get_instance_domain(pg).await;
     let verified = cfg.get("verified") == Some(&Value::Bool(true));
     let domain = cfg.get("domain").and_then(|d| d.as_str()).unwrap_or("");
     if !verified || domain.is_empty() {
         return None;
     }
+    Some(format!("https://{domain}"))
+}
+
+/// Absolute URL for an in-app path, or None when this deployment has no
+/// verified domain to build one from.
+async fn app_url(pg: &PgPool, path: &str) -> Option<String> {
     let slash = if path.starts_with('/') { "" } else { "/" };
-    Some(format!("https://{domain}{slash}{path}"))
+    instance_base_url(pg)
+        .await
+        .map(|base| format!("{base}{slash}{path}"))
 }
 
 pub const NOTIFY_SETTINGS_PATH: &str = "/settings/notifications";

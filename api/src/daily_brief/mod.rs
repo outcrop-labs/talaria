@@ -978,7 +978,7 @@ pub async fn sweep_brief(
     let stored = get_timezone(&deps.state.pg, &user.id)
         .await
         .map_err(|e| format!("timezone read: {e}"))?;
-    let zone = zone_for(stored.as_deref(), &config);
+    let zone = zone_for(stored.as_deref(), &config.time_zone);
     let date = brief_window(&config, &zone, at_ms).date;
     let Some(row) = load_row(&deps.state.pg, &user.id, &date)
         .await
@@ -1367,7 +1367,7 @@ pub async fn run_brief_pass(deps: &BriefDeps) -> BriefPassResult {
     };
 
     for user in users {
-        let zone = zone_for(user.timezone.as_deref(), &config);
+        let zone = zone_for(user.timezone.as_deref(), &config.time_zone);
         let window = brief_window(&config, &zone, deps.now_ms);
         let existing = load_row(&deps.state.pg, &user.id, &window.date).await;
         match existing {
@@ -1420,11 +1420,23 @@ fn sweep_due(row: &BriefRow, config: &BriefConfig, at_ms: i64) -> bool {
 /// calendar door, the harness runner) plus the realtime edge the append
 /// publishes on. `now_ms` is a field, not a clock call — the house rule that
 /// keeps the pass testable.
+#[derive(Clone)]
 pub struct BriefDeps {
     pub state: AppState,
     pub realtime: RealtimeDeps,
     pub notify: NotifyDeps,
     pub now_ms: i64,
+}
+
+/// The wall clock, stamped ONCE PER TICK by the job closure. Constructing the
+/// deps with it would freeze the boot instant for the process's whole life —
+/// a scheduler armed at 09:00 and left for a week would open a week of briefs
+/// against Monday's clock.
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub async fn real_brief_deps(state: &AppState) -> Arc<BriefDeps> {
@@ -1434,7 +1446,7 @@ pub async fn real_brief_deps(state: &AppState) -> Arc<BriefDeps> {
         state: state.clone(),
         realtime: notify.realtime.clone(),
         notify,
-        now_ms: 0,
+        now_ms: wall_ms(),
     })
 }
 
@@ -1475,6 +1487,12 @@ pub fn daily_brief_job_spec(deps: Arc<BriefDeps>) -> crate::scheduler::JobSpec {
             let run: crate::scheduler::JobFn = Arc::new(move || {
                 let deps = deps.clone();
                 Box::pin(async move {
+                    // The tick's clock, stamped HERE and not at boot — see
+                    // `wall_ms`. Everything in the pass reads this one instant.
+                    let deps = BriefDeps {
+                        now_ms: wall_ms(),
+                        ..deps.as_ref().clone()
+                    };
                     let r = run_brief_pass(&deps).await;
                     if r.opened == 0 && r.swept == 0 && r.failed == 0 {
                         return Ok(None);
