@@ -37,8 +37,12 @@ pub enum ReachVia {
     Tool,
 }
 
-/// The registered tool that supplies a capability (`via == Tool`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The registered tool that supplies a capability (`via == Tool`). Serializable
+/// because it rides in a run's CHECKPOINT: a research run resolved to the tool
+/// path must keep driving through the same supplier across re-entries, and the
+/// checkpoint column is where that resolution survives (serde shape = the TS
+/// `{ server, tool }` exactly, so TS-written rows re-enter here and back).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Supplier {
     pub server: String,
     pub tool: String,

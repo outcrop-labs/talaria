@@ -304,6 +304,31 @@ pub async fn agent_category_folder(
         .ok()
 }
 
+/// attachArtifact — link an artifact to anything. `on conflict do nothing` is
+/// the idempotency handle research's two-reports guard leans on: the link is
+/// what makes a created artifact findable by the next entry, so it is written
+/// in the same breath as the create with nothing between (see the research
+/// def's `createReport`).
+pub async fn attach_artifact(
+    pg: &PgPool,
+    artifact_id: &str,
+    target_type: &str,
+    target_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into artifact_links (artifact_id, target_type, target_id, created_by) \
+         values ($1::uuid, $2, $3::uuid, $4) on conflict do nothing",
+    )
+    .bind(artifact_id)
+    .bind(target_type)
+    .bind(target_id)
+    .bind(actor)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// The patch fields saveArtifact's brief-mirror call carries. The double
 /// Option is TS's `!== undefined`: the outer layer says whether the field was
 /// in the patch at all, the inner whether it is null.
@@ -312,6 +337,10 @@ pub struct SaveArtifactPatch<'a> {
     pub title: Option<Option<&'a str>>,
     pub body: Option<&'a str>,
     pub folder_id: Option<Option<&'a str>>,
+    /// `'private' | 'org' | 'public'` — the research report's write step is the
+    /// caller that carries it (ownership decides reach: a personal run's report
+    /// stays private to its owner, an org run's publishes org-visible).
+    pub visibility: Option<&'a str>,
 }
 
 /// saveArtifact, restricted to the patch legs the mirror exercises (see the
@@ -357,6 +386,18 @@ pub async fn save_artifact(
             .bind(actor)
             .execute(pg)
             .await?;
+    }
+    if let Some(visibility) = patch.visibility {
+        sqlx::query("update artifacts set visibility = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(visibility)
+            .execute(pg)
+            .await?;
+        // TS also mints a public_slug here when visibility becomes 'public'
+        // and none exists. No Rust caller can reach that leg yet — the research
+        // plane writes only 'private'/'org', and the artifacts routes (the
+        // public-publishing surface) cross in batch 5, which is where the slug
+        // mint lands with them.
     }
     let next = get_artifact(pg, id).await?;
     if let Some(a) = &next

@@ -40,6 +40,11 @@ pub mod models;
 pub mod models_efforts;
 pub mod notifications;
 pub mod plans_id_draft;
+pub mod research;
+pub mod research_id;
+pub mod research_id_conversation;
+pub mod research_id_decide;
+pub mod research_id_members;
 pub mod runs_events;
 pub mod tasks_id;
 pub mod tasks_id_comments;
@@ -318,6 +323,33 @@ pub fn router(state: AppState) -> Router {
                 .patch(plans_id_draft::patch)
                 .delete(plans_id_draft::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
+        )
+        .route(
+            "/api/research",
+            get(research::get)
+                .post(research::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/research/{id}",
+            get(research_id::get)
+                .delete(research_id::delete)
+                .fallback(|| async { method_not_allowed("GET, DELETE") }),
+        )
+        .route(
+            "/api/research/{id}/members",
+            get(research_id_members::get)
+                .post(research_id_members::post)
+                .delete(research_id_members::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/research/{id}/conversation",
+            post(research_id_conversation::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/research/{id}/decide",
+            post(research_id_decide::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me",

@@ -3,4 +3,5 @@
 // drives; the registry itself is define.rs.
 
 pub mod plan_draft;
+pub mod research;
 pub mod work_session;

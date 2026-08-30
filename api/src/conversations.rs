@@ -150,3 +150,35 @@ pub async fn prior_messages(
         .filter(|m| !m.content.trim().is_empty())
         .collect())
 }
+
+/// Create a conversation for a user + agent (conversations.ts
+/// createConversation). An explicit plan template (plan surface only) is the
+/// highest link in the template resolution chain; null falls through to the
+/// agent's binding — and a non-plan kind never carries one, decided here so
+/// no caller re-decides it.
+pub async fn create_conversation(
+    pg: &PgPool,
+    user_id: &str,
+    agent_model: &str,
+    title: &str,
+    kind: &str,
+    plan_template_id: Option<&str>,
+) -> Result<String, sqlx::Error> {
+    let template = if kind == "plan" {
+        plan_template_id
+    } else {
+        None
+    };
+    let row: Option<(String,)> = sqlx::query_as(
+        "insert into conversations (user_id, agent_model, title, kind, plan_template_id) \
+         values ($1::uuid, $2, $3, $4, $5::uuid) returning id::text",
+    )
+    .bind(user_id)
+    .bind(agent_model)
+    .bind(title)
+    .bind(kind)
+    .bind(template)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.expect("insert … returning always yields a row").0)
+}

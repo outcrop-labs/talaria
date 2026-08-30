@@ -42,7 +42,7 @@ pub static MARKER_RE: LazyLock<Regex> =
 /// `research_sources` stores it (research.ts ResearchSource — the run's
 /// RegistrySource was this same shape under a second name, and the
 /// duplicate is gone on both sides of the port).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResearchSource {
     pub idx: u64,
     pub url: String,

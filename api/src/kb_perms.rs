@@ -64,6 +64,46 @@ pub async fn list_editors(
         .collect())
 }
 
+/// setEditors — replace an item's whole editor list in one transaction: delete,
+/// then upsert each grant. Research's write step is the caller that needs it
+/// (sharing a run grants the members editor on the report doc — the only way
+/// anyone else sees a private run's artifact); the sharing surfaces themselves
+/// cross with the kb/artifacts planes in batch 5, extending this in place.
+pub async fn set_editors(
+    pg: &PgPool,
+    item_type: &str,
+    item_id: &str,
+    grants: &[EditorGrant],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("delete from kb_editors where item_type = $1 and item_id = $2::uuid")
+        .bind(item_type)
+        .bind(item_id)
+        .execute(&mut *tx)
+        .await?;
+    for g in grants {
+        sqlx::query(
+            "insert into kb_editors (item_type, item_id, principal_type, principal_id, role) \
+             values ($1, $2::uuid, $3, $4::uuid, $5) \
+             on conflict (item_type, item_id, principal_type, principal_id) \
+             do update set role = excluded.role",
+        )
+        .bind(item_type)
+        .bind(item_id)
+        .bind(&g.principal_type)
+        .bind(&g.principal_id)
+        .bind(if g.role == "editor" {
+            "editor"
+        } else {
+            "viewer"
+        })
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// True if the human (by user id / author string) owns the item. Falls back to
 /// the author string for items created before owner ids were tracked. Only the
 /// owner may re-share (change visibility / edit policy / editor list).

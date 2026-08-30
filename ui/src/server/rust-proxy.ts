@@ -51,6 +51,12 @@ const PREFIXES = [
   // tasks were the last two files under either path; both are all-Rust now.
   '/api/boards',
   '/api/tasks',
+  // The research group: research.ts (the list + start) is the only route at
+  // the bare path. The parameterized half of the family ({id}, {id}/members,
+  // {id}/conversation, {id}/decide) crossed with it and is matched by SHAPES
+  // below — a prefix alone would 404 nothing, but the shapes keep the two
+  // halves of one family in one file, read together.
+  '/api/research',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite
@@ -90,6 +96,15 @@ const SHAPES = [
   // entry would strand them on a Rust 404.
   /^\/api\/channels\/[^/]+\/plan$/,
   /^\/api\/plans\/[^/]+\/draft$/,
+  // research.ts + research.$id{,.members,.conversation,.decide}.ts — the
+  // research plane crossed whole (domain, def and routes together). The
+  // bare /api/research is a PREFIXES entry (see above); these shapes are the
+  // parameterized rest of the family. Nothing else lives under /api/research,
+  // so the shape set IS the family.
+  /^\/api\/research\/[^/]+$/,
+  /^\/api\/research\/[^/]+\/members$/,
+  /^\/api\/research\/[^/]+\/conversation$/,
+  /^\/api\/research\/[^/]+\/decide$/,
 ] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
