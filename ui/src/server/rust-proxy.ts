@@ -68,6 +68,15 @@ const PREFIXES = [
   // engine (kb_perms) is shared shape with the rag collections registry, so
   // the family crossed as one.
   '/api/kb',
+  // The artifacts plane — the Files surface. THREE prefixes, not one:
+  // '/api/artifacts' does not prefix-match '/api/artifact-folders' (the
+  // match is character-by-character: 's' vs '-' at position 13), and
+  // '/api/uploads' is its own family the file artifacts point at. Links,
+  // public slugs and the Google Drive export all live under the artifacts
+  // prefix proper.
+  '/api/artifacts',
+  '/api/artifact-folders',
+  '/api/uploads',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite

@@ -56,6 +56,51 @@ impl BucketTarget {
     }
 }
 
+/// targetReady — the four fields a signed request cannot live without.
+pub fn target_ready(t: &BucketTarget) -> bool {
+    t.ready()
+}
+
+/// refuseDevSecret — the published dev password may never gate production
+/// bytes. The Rust api's production is the same NODE_ENV=production posture.
+pub fn refuse_dev_secret(t: &BucketTarget) -> Result<(), String> {
+    if std::env::var("NODE_ENV").as_deref() == Ok("production")
+        && t.secret_access_key == DEV_S3_SECRET
+    {
+        return Err(
+            "internal storage refused: TALARIA_S3_SECRET_KEY is unset in production, and the fallback is the published \
+             dev password. Set a real secret (openssl rand -hex 24) and update the minio container to match."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Where writes go (activeTarget): the internal container, the configured
+/// bucket, or None for local disk. Internal ensures its bucket exists
+/// (idempotent, process-cached).
+pub async fn active_target(cfg: &StorageConfig) -> Result<Option<(BucketTarget, bool)>, String> {
+    if cfg.mode == "internal" {
+        let target = internal_target();
+        refuse_dev_secret(&target)?;
+        ensure_bucket(&target).await?;
+        return Ok(Some((target, true)));
+    }
+    if cfg.mode == "s3" && target_ready(&cfg.target) {
+        return Ok(Some((cfg.target.clone(), false)));
+    }
+    Ok(None)
+}
+
+/// The enabled + fully-configured replica, if any (replicaTarget).
+pub fn replica_target(cfg: &StorageConfig) -> Option<BucketTarget> {
+    if cfg.replica_enabled && target_ready(&cfg.replica) {
+        Some(cfg.replica.clone())
+    } else {
+        None
+    }
+}
+
 /// The whole config (StorageConfig): the primary target's fields flat, the
 /// mode, and the optional replica — the exact shape `storage_config` holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +395,145 @@ fn signed_get(t: &BucketTarget, key: &str, amz_date: &str) -> (String, String) {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The signed PUT. The canonical request carries the payload's own hash and,
+/// when a content-type rides the request, that header too — TS signs exactly
+/// `Object.keys(headers).sort()`, which puts content-type FIRST, and the
+/// signature is over that ordering.
+fn signed_put(
+    t: &BucketTarget,
+    key: &str,
+    payload_hash: &str,
+    content_type: &str,
+    amz_date: &str,
+) -> (String, String) {
+    let (url, path, host) = object_url(t, key);
+    let date_stamp = &amz_date[..8];
+    let region = region_for(t);
+    let canonical_headers = format!(
+        "content-type:{content_type}\nhost:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+    );
+    let signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date";
+    let canonical_request =
+        format!("PUT\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+    let scope = format!("{date_stamp}/{region}/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        sha256_hex(canonical_request.as_bytes())
+    );
+    let k_date = hmac_sha256(
+        format!("AWS4{}", t.secret_access_key).as_bytes(),
+        date_stamp.as_bytes(),
+    );
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, b"s3");
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex(&hmac_sha256(&k_signing, string_to_sign.as_bytes()));
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
+        t.access_key_id
+    );
+    (url, authorization)
+}
+
+/// s3Put: the same sentence TS throws on failure (`storage PUT {status}:
+/// {body ≤300}`).
+pub async fn s3_put(t: &BucketTarget, key: &str, bytes: &[u8], mime: &str) -> Result<(), String> {
+    let content_type = if mime.is_empty() {
+        "application/octet-stream"
+    } else {
+        mime
+    };
+    let amz_date = amz_now();
+    let payload_hash = sha256_hex(bytes);
+    let (url, authorization) = signed_put(t, key, &payload_hash, content_type, &amz_date);
+    let res = http()
+        .put(&url)
+        .header("content-type", content_type)
+        .header("x-amz-content-sha256", payload_hash)
+        .header("x-amz-date", amz_date)
+        .header("authorization", authorization)
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .map_err(|e| format!("storage PUT: {e}"))?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.bytes().await.unwrap_or_default();
+        let text = String::from_utf8_lossy(&body);
+        return Err(format!(
+            "storage PUT {}: {}",
+            status.as_u16(),
+            crate::body::truncate_utf16(text.trim(), 300)
+        ));
+    }
+    Ok(())
+}
+
+/// CreateBucket, tolerant of "already exists" (ensureBucket). Cached per
+/// process per target so internal mode doesn't re-check on every upload —
+/// TS survives HMR via globalThis; the Rust api doesn't reload, a static set.
+static ENSURED_BUCKETS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+pub async fn ensure_bucket(t: &BucketTarget) -> Result<(), String> {
+    let id = format!("{}|{}", t.endpoint, t.bucket);
+    if ENSURED_BUCKETS.lock().expect("bucket set").contains(&id) {
+        return Ok(());
+    }
+    // The bucket PUT signs an empty payload and no content-type — the plain
+    // GET's three headers with the PUT verb.
+    let amz_date = amz_now();
+    let (url, path, host) = object_url(t, "");
+    let date_stamp = &amz_date[..8];
+    let region = region_for(t);
+    let payload_hash = sha256_hex(b"");
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_request =
+        format!("PUT\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+    let scope = format!("{date_stamp}/{region}/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        sha256_hex(canonical_request.as_bytes())
+    );
+    let k_date = hmac_sha256(
+        format!("AWS4{}", t.secret_access_key).as_bytes(),
+        date_stamp.as_bytes(),
+    );
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, b"s3");
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex(&hmac_sha256(&k_signing, string_to_sign.as_bytes()));
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
+        t.access_key_id
+    );
+    let res = http()
+        .put(&url)
+        .header("x-amz-content-sha256", payload_hash)
+        .header("x-amz-date", amz_date)
+        .header("authorization", authorization)
+        .send()
+        .await
+        .map_err(|e| format!("storage create-bucket: {e}"))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.bytes().await.unwrap_or_default();
+        let text = String::from_utf8_lossy(&body);
+        // The same two "fine, it exists" spellings TS accepts.
+        if !(text.contains("BucketAlreadyOwnedByYou") || text.contains("BucketAlreadyExists")) {
+            return Err(format!(
+                "storage create-bucket {}: {}",
+                status.as_u16(),
+                crate::body::truncate_utf16(text.trim(), 300)
+            ));
+        }
+    }
+    ENSURED_BUCKETS.lock().expect("bucket set").insert(id);
+    Ok(())
 }
 
 /// s3Get: 404 is Ok(None); anything else not-ok is the same sentence TS

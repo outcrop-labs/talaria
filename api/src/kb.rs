@@ -1102,8 +1102,9 @@ pub async fn get_backlinks(pg: &PgPool, doc_id: &str) -> Result<Vec<KbBacklink>,
 }
 
 /// randomBytes(8).toString('hex') — the 16-char public slug, minted on first
-/// publish. Same private-hex convention as llm_keys/storage.
-fn random_slug() -> String {
+/// publish. Shared with the artifacts plane (its first-publish slug mint is
+/// the same shape).
+pub(crate) fn random_slug() -> String {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).expect("system rng");
     let mut out = String::with_capacity(16);

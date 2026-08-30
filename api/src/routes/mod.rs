@@ -11,6 +11,15 @@ pub mod admin_rag;
 pub mod agent_role_templates;
 pub mod agents;
 pub mod apps;
+pub mod artifact_folders;
+pub mod artifact_folders_id;
+pub mod artifacts;
+pub mod artifacts_for;
+pub mod artifacts_id;
+pub mod artifacts_id_export_google;
+pub mod artifacts_id_links;
+pub mod artifacts_public_slug;
+pub mod artifacts_public_slug_download;
 pub mod auth_claim;
 pub mod auth_google;
 pub mod auth_google_callback;
@@ -73,6 +82,8 @@ pub mod tasks_id_watchers;
 pub mod teams;
 pub mod teams_id;
 pub mod teams_id_members;
+pub mod uploads;
+pub mod uploads_id;
 pub mod users;
 pub mod workflows;
 pub mod workflows_id;
@@ -512,6 +523,71 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/kb/public/{slug}",
             get(kb_public::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The artifacts plane — the Files surface. The list/create pair, one
+        // artifact's whole state machine (sharing, official curation, brain
+        // routing), its links and Drive export, folder CRUD, the no-auth
+        // public slug reads, and the uploads the file artifacts point at.
+        // Static paths (/for, /public/…) must beat /{id}, and in matchit they
+        // always do; the two PREFIXES families ('/api/artifacts' does not
+        // cover '/api/artifact-folders') are separate proxy entries.
+        .route(
+            "/api/artifacts",
+            get(artifacts::get)
+                .post(artifacts::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/artifacts/for",
+            get(artifacts_for::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/artifacts/public/{slug}",
+            get(artifacts_public_slug::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/artifacts/public/{slug}/download",
+            get(artifacts_public_slug_download::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/artifacts/{id}",
+            get(artifacts_id::get)
+                .put(artifacts_id::put)
+                .delete(artifacts_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/artifacts/{id}/links",
+            post(artifacts_id_links::post)
+                .delete(artifacts_id_links::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/artifacts/{id}/export/google",
+            post(artifacts_id_export_google::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/artifact-folders",
+            get(artifact_folders::get)
+                .post(artifact_folders::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/artifact-folders/{id}",
+            get(artifact_folders_id::get)
+                .put(artifact_folders_id::put)
+                .delete(artifact_folders_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/uploads",
+            post(uploads::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/uploads/{id}",
+            get(uploads_id::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/rag/collections/{id}",

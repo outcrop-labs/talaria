@@ -153,6 +153,7 @@ pub async fn mirror_brief_artifact(
             body: Some(&body),
             folder_id: Some(folder_id.as_deref().or(cabinet.as_deref())),
             visibility: None,
+            ..Default::default()
         },
         actor,
     )

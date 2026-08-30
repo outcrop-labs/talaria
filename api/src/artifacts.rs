@@ -4,10 +4,8 @@
 // policy); versioning reuses internal_versions (kind 'artifact'). Flat, so no
 // folder inheritance — an artifact carries its own audience.
 //
-// Port of ui/src/server/artifacts.ts, read half: the row shape, the reader,
-// and the markdown rendering the refs cone clips into chips. The write plane
-// (create/save/versions/the official→KB mirror) is batch 5 and extends this
-// file in place.
+// Port of ui/src/server/artifacts.ts — the whole plane: rows, folders, links,
+// the official→KB mirror, public slugs, and the plan-doc activity index.
 
 use sqlx::PgPool;
 
@@ -147,7 +145,7 @@ pub async fn artifacts_for_target(
     let sql = format!(
         "select {COLS_A} from artifacts a \
          join artifact_links l on l.artifact_id = a.id \
-         where l.target_type = $1 and l.target_id = $2::uuid \
+         where l.target_type = $1 and l.target_id = $2 \
          order by l.created_at desc"
     );
     let rows: Vec<ArtifactRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
@@ -194,6 +192,30 @@ pub async fn get_artifact(pg: &PgPool, id: &str) -> Result<Option<Artifact>, sql
     Ok(row.map(Artifact::from))
 }
 
+/// Every artifact, newest first (artifacts.ts listArtifacts) — the raw list;
+/// every caller filters to what its viewer can read.
+pub async fn list_artifacts(pg: &PgPool) -> Result<Vec<Artifact>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's COLS column list.
+    let sql = format!("select {COLS} from artifacts order by updated_at desc");
+    let rows: Vec<ArtifactRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .fetch_all(pg)
+        .await?;
+    Ok(rows.into_iter().map(Artifact::from).collect())
+}
+
+/// The public-artifact read behind /api/artifacts/public/{slug} — only
+/// artifacts set to 'public' resolve, by slug.
+pub async fn get_public_artifact(pg: &PgPool, slug: &str) -> Result<Option<Artifact>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's COLS column list.
+    let sql =
+        format!("select {COLS} from artifacts where public_slug = $1 and visibility = 'public'");
+    let row: Option<ArtifactRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(slug)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(Artifact::from))
+}
+
 /// Render an artifact's content as markdown for the KB mirror.
 pub fn artifact_to_markdown(a: &Artifact) -> String {
     match a.kind.as_str() {
@@ -235,24 +257,208 @@ pub async fn create_artifact(
     Ok(Artifact::from(row))
 }
 
-/// createFolder — the shape the agent cabinet path uses: ownerless and
-/// org-visible (the workspace's).
-async fn create_folder(
+// ── Folders (organize artifacts into a nestable tree) ──────────────────────
+
+/// An artifact folder (artifacts.ts ArtifactFolder) — wire order.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactFolder {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+    pub parent_id: Option<String>,
+    pub visibility: String,
+    pub edit_policy: String,
+    pub owner_user_id: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+}
+
+const FOLDER_COLS: &str = "id::text, name, icon, parent_id::text, visibility, edit_policy, \
+                           owner_user_id::text, created_by::text, \
+                           (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
+
+#[derive(sqlx::FromRow)]
+struct FolderRow {
+    id: String,
+    name: String,
+    icon: Option<String>,
+    parent_id: Option<String>,
+    visibility: String,
+    edit_policy: String,
+    owner_user_id: Option<String>,
+    created_by: Option<String>,
+    created_ms: i64,
+}
+
+impl From<FolderRow> for ArtifactFolder {
+    fn from(r: FolderRow) -> Self {
+        ArtifactFolder {
+            created_at: epoch_ms_to_iso(r.created_ms),
+            id: r.id,
+            name: r.name,
+            icon: r.icon,
+            parent_id: r.parent_id,
+            visibility: r.visibility,
+            edit_policy: r.edit_policy,
+            owner_user_id: r.owner_user_id,
+            created_by: r.created_by,
+        }
+    }
+}
+
+/// A folder in the shape the permission checks want (guardedFolder). Folders
+/// carry the same three access columns as docs, spaces and artifacts, so the
+/// same functions answer "can this person read it / re-share it" for all four.
+pub fn guarded_folder(f: &ArtifactFolder) -> Guarded {
+    Guarded {
+        owner_user_id: f.owner_user_id.clone(),
+        created_by: f.created_by.clone(),
+        visibility: f.visibility.clone(),
+        edit_policy: f.edit_policy.clone(),
+    }
+}
+
+pub async fn list_folders(pg: &PgPool) -> Result<Vec<ArtifactFolder>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's FOLDER_COLS column list.
+    let sql = format!("select {FOLDER_COLS} from artifact_folders order by name asc");
+    let rows: Vec<FolderRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .fetch_all(pg)
+        .await?;
+    Ok(rows.into_iter().map(ArtifactFolder::from).collect())
+}
+
+pub async fn get_folder(pg: &PgPool, id: &str) -> Result<Option<ArtifactFolder>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's FOLDER_COLS column list.
+    let sql = format!("select {FOLDER_COLS} from artifact_folders where id = $1::uuid");
+    let row: Option<FolderRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(id)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(ArtifactFolder::from))
+}
+
+/// createFolder. `owner_user_id` is what separates a person's folder from the
+/// workspace's: a human making a folder owns it; the find-or-create path
+/// agents use passes nothing, so agent cabinets stay ownerless and org-visible
+/// — the workspace's, which is exactly what they are.
+pub async fn create_folder(
+    pg: &PgPool,
+    name: &str,
+    parent_id: Option<&str>,
+    created_by: &str,
+    owner_user_id: Option<&str>,
+    visibility: Option<&str>,
+) -> Result<ArtifactFolder, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's FOLDER_COLS column list.
+    let sql = format!(
+        "insert into artifact_folders (name, parent_id, created_by, owner_user_id, visibility) \
+         values ($1, $2::uuid, $3, $4::uuid, $5) returning {FOLDER_COLS}"
+    );
+    let row: FolderRow = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(name)
+        .bind(parent_id)
+        .bind(created_by)
+        .bind(owner_user_id)
+        .bind(visibility.unwrap_or("org"))
+        .fetch_one(pg)
+        .await?;
+    Ok(ArtifactFolder::from(row))
+}
+
+/// Rename / set icon / reparent / re-share a folder (updateFolder). Rejects
+/// parent cycles with None — the route answers that as `invalid` at 400.
+pub async fn update_folder(
+    pg: &PgPool,
+    id: &str,
+    name: Option<&str>,
+    icon: Option<Option<&str>>,
+    parent_id: Option<Option<&str>>,
+    visibility: Option<&str>,
+    edit_policy: Option<&str>,
+) -> Result<Option<ArtifactFolder>, sqlx::Error> {
+    // The cycle walk runs BEFORE any write when the patch reparents: up the
+    // ancestor chain from the new parent, 100 hops max (deeper than any real
+    // tree; the cap keeps a forged cycle from hanging the request).
+    if let Some(Some(parent)) = parent_id {
+        if parent == id {
+            return Ok(None);
+        }
+        let mut cur = Some(parent.to_string());
+        for _ in 0..100 {
+            let Some(node) = cur else { break };
+            if node == id {
+                return Ok(None); // cycle
+            }
+            let row: Option<(Option<String>,)> =
+                sqlx::query_as("select parent_id::text from artifact_folders where id = $1::uuid")
+                    .bind(&node)
+                    .fetch_optional(pg)
+                    .await?;
+            cur = row.and_then(|(v,)| v);
+        }
+    }
+    if let Some(name) = name {
+        sqlx::query("update artifact_folders set name = $2 where id = $1::uuid")
+            .bind(id)
+            .bind(name)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(icon) = icon {
+        sqlx::query("update artifact_folders set icon = $2 where id = $1::uuid")
+            .bind(id)
+            .bind(icon)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(parent) = parent_id {
+        sqlx::query("update artifact_folders set parent_id = $2::uuid where id = $1::uuid")
+            .bind(id)
+            .bind(parent)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(visibility) = visibility {
+        sqlx::query("update artifact_folders set visibility = $2 where id = $1::uuid")
+            .bind(id)
+            .bind(visibility)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(edit_policy) = edit_policy {
+        sqlx::query("update artifact_folders set edit_policy = $2 where id = $1::uuid")
+            .bind(id)
+            .bind(edit_policy)
+            .execute(pg)
+            .await?;
+    }
+    get_folder(pg, id).await
+}
+
+/// Delete a folder — its artifacts and child folders fall back to the root
+/// (on delete set null), so nothing is lost.
+pub async fn delete_folder(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from artifact_folders where id = $1::uuid")
+        .bind(id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// createFolder's ownerless org-visible shape — the one the agent cabinet path
+/// uses (the workspace's).
+async fn create_org_folder(
     pg: &PgPool,
     name: &str,
     parent_id: Option<&str>,
     created_by: &str,
 ) -> Result<String, sqlx::Error> {
-    let id: (String,) = sqlx::query_as(
-        "insert into artifact_folders (name, parent_id, created_by, owner_user_id, visibility) \
-         values ($1, $2::uuid, $3, null, 'org') returning id::text",
+    Ok(
+        create_folder(pg, name, parent_id, created_by, None, Some("org"))
+            .await?
+            .id,
     )
-    .bind(name)
-    .bind(parent_id)
-    .bind(created_by)
-    .fetch_one(pg)
-    .await?;
-    Ok(id.0)
 }
 
 /// Find-or-create a folder by name under a parent (case-insensitive).
@@ -273,7 +479,13 @@ async fn find_or_create_folder(
     if let Some((id,)) = existing {
         return Ok(id);
     }
-    create_folder(pg, name, parent_id, created_by).await
+    create_org_folder(pg, name, parent_id, created_by).await
+}
+
+/// Find-or-create a folder by NAME at the root — the "file this under X"
+/// spelling agents use. Never throws (None = root).
+pub async fn named_root_folder(pg: &PgPool, name: &str, created_by: &str) -> Option<String> {
+    find_or_create_folder(pg, name, None, created_by).await.ok()
 }
 
 /// The single root every agent cabinet hangs under. One folder per agent at the
@@ -281,6 +493,16 @@ async fn find_or_create_folder(
 /// fleet grew; the Files browser now opens on your folders, with the whole
 /// fleet's output one click away.
 pub const AGENTS_ROOT: &str = "Agents";
+
+/// The category folders agent_category_folder writes.
+pub const AGENT_CATEGORIES: [&str; 6] = [
+    "Documents",
+    "Media",
+    "Chat summaries",
+    "Plans",
+    "Research",
+    "Briefs",
+];
 
 /// The agent's filing cabinet: "Agents/&lt;Agent label&gt;/&lt;Category&gt;",
 /// created on demand. Auto-created artifacts (plan docs, research reports,
@@ -318,7 +540,7 @@ pub async fn attach_artifact(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into artifact_links (artifact_id, target_type, target_id, created_by) \
-         values ($1::uuid, $2, $3::uuid, $4) on conflict do nothing",
+         values ($1::uuid, $2, $3, $4) on conflict do nothing",
     )
     .bind(artifact_id)
     .bind(target_type)
@@ -329,37 +551,292 @@ pub async fn attach_artifact(
     Ok(())
 }
 
-/// The patch fields saveArtifact's brief-mirror call carries. The double
-/// Option is TS's `!== undefined`: the outer layer says whether the field was
-/// in the patch at all, the inner whether it is null.
+/// detachArtifact — remove one link.
+pub async fn detach_artifact(
+    pg: &PgPool,
+    artifact_id: &str,
+    target_type: &str,
+    target_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "delete from artifact_links \
+         where artifact_id = $1::uuid and target_type = $2 and target_id = $3",
+    )
+    .bind(artifact_id)
+    .bind(target_type)
+    .bind(target_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Set an artifact's RAG routing ('auto' | 'none' | a custom brain id) —
+/// setArtifactRouting. The caller applies the re-placement
+/// (retrieval::artifact_routing) — split to keep this module free of
+/// retrieval imports. A garbage brain id fails the uuid cast and answers with
+/// the PG sentence, exactly like the TS's untyped parameter against the uuid
+/// column; the route maps it to 400.
+pub async fn set_artifact_routing(
+    pg: &PgPool,
+    id: &str,
+    routing: &str,
+    actor: &str,
+) -> Result<Option<Artifact>, String> {
+    if routing != "auto" && routing != "none" {
+        let ok: Option<(i32,)> =
+            sqlx::query_as("select 1 from rag_collections where id = $1::uuid and kind = 'custom'")
+                .bind(routing)
+                .fetch_optional(pg)
+                .await
+                .map_err(|e| crate::error::pg_message(&e))?;
+        if ok.is_none() {
+            return Err("unknown brain".into());
+        }
+    }
+    sqlx::query(
+        "update artifacts set rag_routing = $2, updated_by = $3::text, updated_at = now() \
+         where id = $1::uuid",
+    )
+    .bind(id)
+    .bind(routing)
+    .bind(actor)
+    .execute(pg)
+    .await
+    .map_err(|e| crate::error::pg_message(&e))?;
+    get_artifact(pg, id)
+        .await
+        .map_err(|e| crate::error::pg_message(&e))
+}
+
+/// The things an artifact is attached to (its "Attached to" list) —
+/// (targetType, targetId) pairs in link order.
+pub async fn targets_for_artifact(
+    pg: &PgPool,
+    artifact_id: &str,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select target_type, target_id::text from artifact_links where artifact_id = $1::uuid",
+    )
+    .bind(artifact_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows)
+}
+
+// ── Promotion to the knowledgebase ──────────────────────────────────────────
+// "Making an artifact official" mirrors it into the KB (as an official doc in
+// a system "Artifacts" space) so it grounds the org brain. The link is kept
+// in artifacts.kb_doc_id; un-officializing removes the mirror.
+
+const ARTIFACTS_SPACE: &str = "Artifacts";
+
+async fn ensure_artifacts_space(pg: &PgPool, actor: &str) -> Result<String, sqlx::Error> {
+    if let Some(existing) = crate::kb::list_spaces(pg)
+        .await?
+        .into_iter()
+        .find(|s| s.name == ARTIFACTS_SPACE)
+    {
+        return Ok(existing.id);
+    }
+    let space = crate::kb::create_space(
+        pg,
+        &crate::kb::NewSpace {
+            name: ARTIFACTS_SPACE.into(),
+            icon: Some("◆".into()),
+            description: Some("Official artifacts, mirrored into the knowledgebase.".into()),
+            created_by: actor.to_string(),
+            owner_user_id: None,
+        },
+    )
+    .await?;
+    Ok(space.id)
+}
+
+/// setArtifactOfficial — official=true mirrors (or re-mirrors) the artifact
+/// into the Artifacts space as an official KB doc; false removes the mirror.
+pub async fn set_artifact_official(
+    pg: &PgPool,
+    qd: &crate::retrieval::qdrant::QdrantDeps,
+    ed: &crate::retrieval::embed::EmbedDeps,
+    id: &str,
+    official: bool,
+    actor: &str,
+) -> Result<Option<Artifact>, sqlx::Error> {
+    let Some(a) = get_artifact(pg, id).await? else {
+        return Ok(None);
+    };
+    if official {
+        let space_id = ensure_artifacts_space(pg, actor).await?;
+        let md = artifact_to_markdown(&a);
+        // Reuse the recorded mirror while it still exists.
+        let kb_doc_id = match &a.kb_doc_id {
+            Some(kb) if matches!(crate::kb::get_doc(pg, kb).await, Ok(Some(_))) => kb.clone(),
+            _ => {
+                crate::kb::create_doc(
+                    pg,
+                    &crate::kb::NewDoc {
+                        space_id,
+                        parent_id: None,
+                        title: Some(a.title.clone()),
+                        kind: Some("human".into()),
+                        created_by: actor.to_string(),
+                        owner_user_id: a.owner_user_id.clone(),
+                    },
+                )
+                .await?
+                .id
+            }
+        };
+        crate::kb::save_doc(
+            pg,
+            qd,
+            ed,
+            &kb_doc_id,
+            &crate::kb::DocPatch {
+                title: Some(a.title.clone()),
+                body: Some(md),
+                ..Default::default()
+            },
+            actor,
+        )
+        .await?;
+        crate::kb::set_official(pg, qd, ed, &kb_doc_id, true, actor).await?; // → org brain
+        sqlx::query(
+            "update artifacts set official = true, kb_doc_id = $2::uuid, updated_at = now() \
+             where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(&kb_doc_id)
+        .execute(pg)
+        .await?;
+    } else {
+        if let Some(kb) = &a.kb_doc_id {
+            let _ = crate::kb::delete_doc(pg, qd, ed, kb).await;
+        }
+        sqlx::query(
+            "update artifacts set official = false, kb_doc_id = null, updated_at = now() \
+             where id = $1::uuid",
+        )
+        .bind(id)
+        .execute(pg)
+        .await?;
+    }
+    get_artifact(pg, id).await
+}
+
+/// Record where an artifact was mirrored into Google Drive (last export wins).
+pub async fn record_google_export(
+    pg: &PgPool,
+    id: &str,
+    file_id: &str,
+    url: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update artifacts set google_file_id = $2, google_file_url = $3, updated_at = now() \
+         where id = $1::uuid",
+    )
+    .bind(id)
+    .bind(file_id)
+    .bind(url)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Keep the KB mirror fresh when an already-official artifact's content
+/// changes (remirrorIfOfficial). Errors are the caller's .catch — swallowed.
+async fn remirror_if_official(pg: &PgPool, a: &Artifact, actor: &str) -> Result<(), sqlx::Error> {
+    if a.official
+        && let Some(kb_doc_id) = &a.kb_doc_id
+    {
+        let _ = crate::kb::save_doc(
+            pg,
+            &crate::retrieval::qdrant::real_deps(),
+            &crate::retrieval::embed::real_deps(),
+            kb_doc_id,
+            &crate::kb::DocPatch {
+                title: Some(a.title.clone()),
+                body: Some(artifact_to_markdown(a)),
+                ..Default::default()
+            },
+            actor,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// indexPlanDoc (plan-doc.ts) — the artifact's retrievable copy, as the
+/// plan-doc activity flow: auto-routing only, payload keyed to the plan so
+/// the activity index's ACL can resolve reach.
+pub async fn index_plan_doc(
+    pg: &PgPool,
+    qd: &crate::retrieval::qdrant::QdrantDeps,
+    ed: &crate::retrieval::embed::EmbedDeps,
+    doc: &Artifact,
+    conversation_id: &str,
+) -> Result<(), String> {
+    if !doc.rag_routing.is_empty() && doc.rag_routing != "auto" {
+        return Ok(());
+    }
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "planId".into(),
+        serde_json::Value::String(conversation_id.to_string()),
+    );
+    payload.insert(
+        "planOwnerId".into(),
+        doc.owner_user_id
+            .clone()
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    let _ = crate::retrieval::sources::index_activity(
+        pg,
+        qd,
+        ed,
+        &crate::retrieval::index::IndexDoc {
+            source_type: "plan-doc".into(),
+            source_id: doc.id.clone(),
+            title: Some(doc.title.clone()),
+            text: format!("{}\n\n{}", doc.title, doc.body),
+            payload: Some(payload),
+            // Deep-linked: a retrieval hit is a pointer to ONE document, and
+            // the id is right here.
+            href: Some(format!("/artifacts?a={}", doc.id)),
+        },
+    )
+    .await;
+    Ok(())
+}
+
+/// The full saveArtifact patch. The double Option is TS's `!== undefined`:
+/// the outer layer says whether the field was in the patch at all, the inner
+/// whether it is null.
 #[derive(Default)]
 pub struct SaveArtifactPatch<'a> {
     pub title: Option<Option<&'a str>>,
     pub body: Option<&'a str>,
+    pub icon: Option<Option<&'a str>>,
+    pub storage_ref: Option<Option<&'a str>>,
+    pub content_type: Option<Option<&'a str>>,
     pub folder_id: Option<Option<&'a str>>,
-    /// `'private' | 'org' | 'public'` — the research report's write step is the
-    /// caller that carries it (ownership decides reach: a personal run's report
-    /// stays private to its owner, an org run's publishes org-visible).
+    /// `'private' | 'org' | 'public'` — publishing mints the public slug.
     pub visibility: Option<&'a str>,
+    /// `'owner' | 'org' | 'restricted'`.
+    pub edit_policy: Option<&'a str>,
 }
 
-/// saveArtifact, restricted to the patch legs the mirror exercises (see the
-/// write-half note above): folder, title, body, then the re-read, the version
-/// snapshot on a content change, and the official→KB re-mirror.
-///
-/// RECORDED DIVERGENCE (RUST-MIGRATION.md): the TS `remirrorIfOfficial` —
-/// which pushes an official artifact's new body into its KB doc and re-routes
-/// RAG — is a checked, loudly-logged NO-OP here until the retrieval plane
-/// crosses in batch 5. The version snapshot IS ported, so history is whole;
-/// what diverges is the KB/RAG copy of an official artifact edited through the
-/// brief's mirror, which stays stale until that plane exists.
+/// saveArtifact — every patch leg in the TS's write order (folder, title,
+/// body, icon, storage, contentType, editPolicy, visibility), then the re-read,
+/// the version snapshot on a content change, and the official→KB re-mirror.
 pub async fn save_artifact(
     pg: &PgPool,
     id: &str,
     patch: SaveArtifactPatch<'_>,
     actor: &str,
 ) -> Result<Option<Artifact>, sqlx::Error> {
-    let Some(_prev) = get_artifact(pg, id).await? else {
+    let Some(prev) = get_artifact(pg, id).await? else {
         return Ok(None);
     };
     if let Some(folder) = patch.folder_id {
@@ -387,17 +864,57 @@ pub async fn save_artifact(
             .execute(pg)
             .await?;
     }
+    if let Some(icon) = patch.icon {
+        sqlx::query("update artifacts set icon = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(icon)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(storage_ref) = patch.storage_ref {
+        sqlx::query("update artifacts set storage_ref = $2::uuid, updated_by = $3::text, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(storage_ref)
+            .bind(actor)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(content_type) = patch.content_type {
+        sqlx::query(
+            "update artifacts set content_type = $2, updated_at = now() where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(content_type)
+        .execute(pg)
+        .await?;
+    }
+    if let Some(edit_policy) = patch.edit_policy {
+        sqlx::query(
+            "update artifacts set edit_policy = $2, updated_at = now() where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(edit_policy)
+        .execute(pg)
+        .await?;
+    }
     if let Some(visibility) = patch.visibility {
         sqlx::query("update artifacts set visibility = $2, updated_at = now() where id = $1::uuid")
             .bind(id)
             .bind(visibility)
             .execute(pg)
             .await?;
-        // TS also mints a public_slug here when visibility becomes 'public'
-        // and none exists. No Rust caller can reach that leg yet — the research
-        // plane writes only 'private'/'org', and the artifacts routes (the
-        // public-publishing surface) cross in batch 5, which is where the slug
-        // mint lands with them.
+        // First publish mints the share slug; the `is null` guard makes a
+        // concurrent publish keep one slug, not flip it mid-share.
+        if visibility == "public" && prev.public_slug.is_none() {
+            sqlx::query(
+                "update artifacts set public_slug = $2 \
+                 where id = $1::uuid and public_slug is null",
+            )
+            .bind(id)
+            .bind(crate::kb::random_slug())
+            .execute(pg)
+            .await?;
+        }
     }
     let next = get_artifact(pg, id).await?;
     if let Some(a) = &next
@@ -413,18 +930,30 @@ pub async fn save_artifact(
             Some(actor),
         )
         .await;
-        // The recorded divergence: TS would push this body into the KB doc
-        // (saveDoc → syncDocEffective → RAG re-route). That plane has not
-        // crossed; the artifact and its KB mirror will diverge until it
-        // does, and this line is how anyone finds out why from the logs.
-        if a.official && a.kb_doc_id.is_some() {
-            tracing::warn!(
-                "[daily-brief] artifact {} is official with a KB doc; the KB re-mirror is not ported yet (batch 5) — the KB copy is now stale",
-                a.id
-            );
-        }
+        // Keep the KB mirror fresh — TS's remirrorIfOfficial, .catch'd.
+        let _ = remirror_if_official(pg, a, actor).await;
     }
     Ok(next)
+}
+
+/// deleteArtifact — the KB mirror dies with the artifact (its RAG copy goes
+/// via delete_doc's unindex), then the row.
+pub async fn delete_artifact(
+    pg: &PgPool,
+    qd: &crate::retrieval::qdrant::QdrantDeps,
+    ed: &crate::retrieval::embed::EmbedDeps,
+    id: &str,
+) -> Result<(), sqlx::Error> {
+    if let Ok(Some(a)) = get_artifact(pg, id).await
+        && let Some(kb_doc_id) = &a.kb_doc_id
+    {
+        let _ = crate::kb::delete_doc(pg, qd, ed, kb_doc_id).await;
+    }
+    sqlx::query("delete from artifacts where id = $1::uuid")
+        .bind(id)
+        .execute(pg)
+        .await?;
+    Ok(())
 }
 
 /// JS `String(c ?? '')` — how a sheet cell stringifies. Numbers and booleans

@@ -9,7 +9,9 @@ rust-version = "1.97"
 publish = false
 
 [dependencies]
-axum = "0.8"
+# "multipart" for the uploads route's streamed form read (axum keeps the
+# feature opt-in; the cap-before-buffer discipline is the route's own).
+axum = { version = "0.8", features = ["multipart"] }
 # "sync" for the OnceCell-style serialization of capability-store writes.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
 tower = "0.5"
