@@ -1,6 +1,8 @@
 // Channels — the port of ui/src/server/channels.ts, grown slice by slice.
 // The role read landed with the runs watch gate; `insert_channel_message`
 // lands here because the brief's delegation layer sends replies through it.
+// The agents listing and the message-page read land with the plan-draft
+// plane (a channel draft reads the room's main flow as its transcript).
 // The CRUD, read-marking, and stream-fill planes land with the chat/channels
 // family's own batch.
 
@@ -141,6 +143,74 @@ pub async fn insert_channel_message(
     // and rings the bell; it does not sweep.
     briefs_follow_message(deps.clone(), channel_id.to_string());
     Ok(inserted)
+}
+
+/// A channel's roster of agent models (channels.ts listChannelAgents) — the
+/// set the plan-draft POST checks membership in. Empty for a non-uuid id
+/// rather than a database error, exactly as TS guards it (see is_channel_id).
+pub async fn list_channel_agents(
+    pg: &PgPool,
+    channel_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    if !is_channel_id(channel_id) {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "select agent_model from channel_agents where channel_id = $1::uuid order by agent_model",
+    )
+    .bind(channel_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().map(|(m,)| m).collect())
+}
+
+/// One row of a channel's MAIN flow, in the columns a transcript reads
+/// (channels.ts ChannelMessage, reduced to what planFromChannel consumes).
+#[derive(Debug, Clone)]
+pub struct ChannelMessage {
+    pub author_type: String,
+    pub author: String,
+    pub status: String,
+    pub content: String,
+}
+
+/// The main flow (thread replies excluded), oldest first — channels.ts
+/// listChannelMessages for the one call shape the plan draft makes:
+/// `listChannelMessages(channelId, -1, 80)`, which is the LAST 80 main-flow
+/// messages (the query is `order by seq desc limit 80`, reversed).
+///
+/// DECORATION DELIBERATELY SKIPPED: decorateMessages bolts reaction rollups
+/// and thread rollups onto each row, and the transcript reads none of them —
+/// it filters on `status`/`content` and interpolates `authorType`/`author`.
+/// Skipping the two extra queries is byte-identical output for this caller;
+/// when a decorated reader crosses (the chat family), this grows the full
+/// row and the decoration in place.
+pub async fn list_channel_messages(
+    pg: &PgPool,
+    channel_id: &str,
+    since_seq: i64,
+    limit: i64,
+) -> Result<Vec<ChannelMessage>, sqlx::Error> {
+    let mut rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "select author_type, author, status, content from channel_messages \
+         where channel_id = $1::uuid and seq > $2 and thread_root_id is null \
+         order by seq desc limit $3",
+    )
+    .bind(channel_id)
+    .bind(since_seq)
+    .bind(limit)
+    .fetch_all(pg)
+    .await?;
+    rows.reverse();
+    Ok(rows
+        .into_iter()
+        .map(|(author_type, author, status, content)| ChannelMessage {
+            author_type,
+            author,
+            status,
+            content,
+        })
+        .collect())
 }
 
 #[cfg(test)]

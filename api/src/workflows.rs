@@ -1,10 +1,11 @@
 // Task workflows — the hook layer between "an agent got a ticket" and "the
 // agent works it the right way". Port of ui/src/server/workflows.ts: the
-// CRUD half, and (since the runs engine crossed) the match/ classifiers that
-// decide which hook a ticket pulls in. SQL verbatim, only the uuid cast
-// added for sqlx. match/skills/toolkits/env are jsonb passed through
-// untouched — the DB's canonical key order is the wire order on both
-// runtimes.
+// CRUD half, the match/ classifiers that decide which hook a ticket pulls
+// in (since the runs engine crossed), and the routing map a plan draft
+// reads to route its proposals (since the plan-draft plane crossed). SQL
+// verbatim, only the uuid cast added for sqlx. match/skills/toolkits/env
+// are jsonb passed through untouched — the DB's canonical key order is the
+// wire order on both runtimes.
 
 use sqlx::PgPool;
 
@@ -266,6 +267,190 @@ pub async fn workflows_for_task(
     Ok(workflows_from(&all, t))
 }
 
+// ── The routing map ──────────────────────────────────────────────────────────
+
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
+
+/// The skill-name grammar (agent-skills.ts NAME_RE) — a directory under a
+/// skills root is a skill only when its name matches. Same constant as
+/// runs/defs/work_session.rs, kept local: a routing map and a work session
+/// ask the same question of the same tree, and neither should reach into the
+/// other's module for a one-line grammar.
+static SKILL_NAME_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new("^[a-z0-9][a-z0-9._-]*$").unwrap());
+
+/// One skill owner's name set (agent-skills.ts owners(), name-only): the
+/// shared root first, then every enabled agent. routingContext asks only
+/// "who carries this skill", so the SKILL.md summaries, the platform set,
+/// and the queued regeneration listAllSkills drags in are deliberately not
+/// read — a name-only dir listing answers it without firing the summarizer.
+async fn skill_owners(pg: &PgPool) -> Result<Vec<(String, String, HashSet<String>)>, sqlx::Error> {
+    let fleet = crate::gateway::provider::fleet_dir();
+    let defs: Vec<(String, String)> =
+        sqlx::query_as("select slug, display_name from agent_defs where enabled order by slug")
+            .fetch_all(pg)
+            .await?;
+    let mut out = Vec::with_capacity(defs.len() + 1);
+    out.push((
+        "shared".into(),
+        "Shared (all agents)".into(),
+        skill_names(&fleet.join("skills")).await,
+    ));
+    for (slug, display_name) in defs {
+        out.push((
+            slug.clone(),
+            display_name,
+            skill_names(&fleet.join("agents").join(slug).join("skills")).await,
+        ));
+    }
+    Ok(out)
+}
+
+async fn skill_names(root: &std::path::Path) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+        return names; // no root yet is no skills, not an error — TS readdir catch, same
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Ok(file_type) = entry.file_type().await
+            && file_type.is_dir()
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if SKILL_NAME_RE.is_match(&name) {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+/// A workflow declares a facet when the array is present and non-empty —
+/// `Object.values(w.match ?? {}).some((v) => v?.length)`, where a string's
+/// length also counts (a match value is a string array in every writer, but
+/// jsonb is not contractually one).
+fn match_facets(m: &serde_json::Value) -> Vec<(&'static str, Vec<&str>)> {
+    let facet = |key: &str| -> Vec<&str> {
+        m.get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default()
+    };
+    vec![
+        ("boards", facet("boards")),
+        ("labels", facet("labels")),
+        ("keywords", facet("keywords")),
+    ]
+}
+
+/// A compact, model-readable map of the org's routing (workflows.ts
+/// routingContext): enabled workflows with match rules, bound skills, and
+/// which agents carry those skills — the context a plan draft (and the plan
+/// surface's aside) reads to route ticket work. Empty string when there is
+/// nothing to route by; callers omit the section.
+///
+/// The first TWENTY workflows render — the map is context, not an index. A
+/// skill the shared root carries says "any agent" and stops the walk there
+/// (shared is first in the owner list), because then every agent has it;
+/// anything else accumulates every carrying agent's label.
+pub async fn routing_context(pg: &PgPool) -> Result<String, sqlx::Error> {
+    let all: Vec<Workflow> = list_workflows(pg)
+        .await?
+        .into_iter()
+        .filter(|w| {
+            w.enabled
+                && (w.skills.as_array().is_some_and(|s| !s.is_empty())
+                    || match_facets(&w.r#match).iter().any(|(_, v)| !v.is_empty()))
+        })
+        .collect();
+    if all.is_empty() {
+        return Ok(String::new());
+    }
+    let boards: Vec<(String, String)> =
+        sqlx::query_as("select id::text, name from boards where archived_at is null")
+            .fetch_all(pg)
+            .await?;
+    let board_name: HashMap<String, String> = boards.into_iter().collect();
+    let owners = skill_owners(pg).await?;
+    let carriers = |skill: &str| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (owner, label, names) in &owners {
+            if !names.contains(skill) {
+                continue;
+            }
+            if owner == "shared" {
+                return vec!["any agent".into()];
+            }
+            out.push(label.clone());
+        }
+        out
+    };
+    let lines: Vec<String> = all
+        .iter()
+        .take(20)
+        .map(|w| {
+            let facets = match_facets(&w.r#match);
+            let named = |key: &str| {
+                facets
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.clone())
+            };
+            let rules = [
+                named("boards").filter(|b| !b.is_empty()).map(|b| {
+                    format!(
+                        "boards: {}",
+                        b.iter()
+                            .map(|id| board_name
+                                .get(*id)
+                                .cloned()
+                                .unwrap_or_else(|| id.to_string()))
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    )
+                }),
+                named("labels")
+                    .filter(|l| !l.is_empty())
+                    .map(|l| format!("labels: {}", l.join(", "))),
+                named("keywords")
+                    .filter(|k| !k.is_empty())
+                    .map(|k| format!("keywords: {}", k.join(", "))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; ");
+            let skills = w
+                .skills
+                .as_array()
+                .filter(|s| !s.is_empty())
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|s| s.as_str())
+                        .map(|sk| {
+                            let c = carriers(sk);
+                            if c.is_empty() {
+                                format!("{sk} (no agent carries this yet)")
+                            } else {
+                                format!("{sk} ({})", c.join(", "))
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "(no skills bound)".into());
+            format!(
+                "- {} — matches [{}] → skills: {}",
+                w.name,
+                if rules.is_empty() { "no rules" } else { &rules },
+                skills
+            )
+        })
+        .collect();
+    Ok(lines.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +589,30 @@ mod tests {
             delivered[0].toolkits,
             json!([{ "server": "github", "tools": ["issues"] }])
         );
+    }
+
+    #[test]
+    fn match_facets_read_the_three_named_arrays_and_skip_everything_else() {
+        // Non-array / absent / non-string facets are empty, exactly the
+        // `v?.length` read on a zod-validated row.
+        let rules = json!({
+            "boards": ["b-1", "b-2"],
+            "labels": [],
+            "keywords": "not an array",
+            "other": ["unknown facet"]
+        });
+        let f = match_facets(&rules);
+        assert_eq!(f[0], ("boards", vec!["b-1", "b-2"]));
+        assert!(f[1].1.is_empty());
+        assert!(f[2].1.is_empty());
+        // null/absent match → all three empty.
+        for m in [json!(null), json!({})] {
+            assert!(match_facets(&m).iter().all(|(_, v)| v.is_empty()));
+        }
+        // A facet holding non-strings keeps only the strings — the join in
+        // the rendered line never sees a Value.
+        let mixed = json!({"labels": [1, "support", true]});
+        let f = match_facets(&mixed);
+        assert_eq!(f[1].1, vec!["support"]);
     }
 }

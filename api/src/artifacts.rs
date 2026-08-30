@@ -127,6 +127,53 @@ impl From<ArtifactRow> for Artifact {
     }
 }
 
+/// The same columns for queries that join (artifacts.ts COLS_A): the table
+/// needs its alias, the row shape does not change.
+const COLS_A: &str = "a.id::text, a.kind, a.title, a.icon, a.body, a.content_type, a.storage_ref, \
+                      a.visibility, a.edit_policy, a.public_slug, a.official, a.kb_doc_id::text, \
+                      a.folder_id::text, a.owner_user_id::text, a.rag_routing, a.google_file_id, \
+                      a.google_file_url, a.created_by::text, a.updated_by::text, \
+                      (trunc(extract(epoch from a.created_at) * 1000))::bigint as created_ms, \
+                      (trunc(extract(epoch from a.updated_at) * 1000))::bigint as updated_ms";
+
+/// Every artifact linked to a target (artifacts.ts artifactsForTarget) — the
+/// join a plan surface walks to find its document, newest link first.
+pub async fn artifacts_for_target(
+    pg: &PgPool,
+    target_type: &str,
+    target_id: &str,
+) -> Result<Vec<Artifact>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's COLS_A column list.
+    let sql = format!(
+        "select {COLS_A} from artifacts a \
+         join artifact_links l on l.artifact_id = a.id \
+         where l.target_type = $1 and l.target_id = $2::uuid \
+         order by l.created_at desc"
+    );
+    let rows: Vec<ArtifactRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(target_type)
+        .bind(target_id)
+        .fetch_all(pg)
+        .await?;
+    Ok(rows.into_iter().map(Artifact::from).collect())
+}
+
+/// The plan's linked document (plan-doc.ts planDocFor): the first `doc`
+/// among the plan's linked artifacts. The document IS that artifact — there
+/// is no separate model — and the draft reads it as seed context. The rest
+/// of plan-doc.ts (ensure/sync/mentions) crosses with the chat family in
+/// batch 5; this read crosses now because the plan-draft transcript wants
+/// the document's current body beside the conversation.
+pub async fn plan_doc_for(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<Artifact>, sqlx::Error> {
+    Ok(artifacts_for_target(pg, "plan", conversation_id)
+        .await?
+        .into_iter()
+        .find(|a| a.kind == "doc"))
+}
+
 /// The Guarded view a permission check needs.
 pub fn guarded(a: &Artifact) -> Guarded {
     Guarded {

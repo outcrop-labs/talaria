@@ -2247,6 +2247,18 @@ const MIGRATIONS: string[] = [
   `alter table llm_api_keys add column if not exists spend_cap_usd numeric`,
   `alter table llm_api_keys add column if not exists rate_limit_per_minute integer`,
 
+  // ── The plan-draft key is a conversation OR a channel ─────────────────────
+  // plan_drafts.conversation_id was born referencing conversations(id), but
+  // the same commit that created it also wired the CHANNEL Plan button to
+  // store the channel id there (channels are not conversations) — so every
+  // channel draft insert died on this constraint: the POST answered 500 with
+  // an orphaned queued run behind it, which the sweep then drove (a billed
+  // model call whose saveResult updated zero rows). Found while porting the
+  // plan-draft plane to Rust. Dropped rather than re-pointed: nothing hard-
+  // deletes conversations (the cascade never fired), and channel deletion
+  // was never covered by this constraint in the first place.
+  `alter table plan_drafts drop constraint if exists plan_drafts_conversation_id_fkey`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

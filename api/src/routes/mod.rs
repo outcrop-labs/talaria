@@ -27,6 +27,7 @@ pub mod boards_id_statuses;
 pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
+pub mod channels_id_plan;
 pub mod cost;
 pub mod health;
 pub mod keys;
@@ -38,6 +39,7 @@ pub mod me_events;
 pub mod models;
 pub mod models_efforts;
 pub mod notifications;
+pub mod plans_id_draft;
 pub mod runs_events;
 pub mod tasks_id;
 pub mod tasks_id_comments;
@@ -300,6 +302,22 @@ pub fn router(state: AppState) -> Router {
                 .put(notifications::put)
                 .patch(notifications::patch)
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
+        )
+        .route(
+            "/api/channels/{id}/plan",
+            get(channels_id_plan::get)
+                .post(channels_id_plan::post)
+                .patch(channels_id_plan::patch)
+                .delete(channels_id_plan::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
+        )
+        .route(
+            "/api/plans/{id}/draft",
+            get(plans_id_draft::get)
+                .post(plans_id_draft::post)
+                .patch(plans_id_draft::patch)
+                .delete(plans_id_draft::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
         )
         .route(
             "/api/me",

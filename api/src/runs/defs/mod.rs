@@ -2,4 +2,5 @@
 // kind registers from the module that owns the work, next to the thing it
 // drives; the registry itself is define.rs.
 
+pub mod plan_draft;
 pub mod work_session;

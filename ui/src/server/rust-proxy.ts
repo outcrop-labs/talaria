@@ -83,6 +83,13 @@ const SHAPES = [
   // ACL. The rest of /api/runs (the list, the detail, cancel, decide) is
   // still TS until the runs surface crosses as a group.
   /^\/api\/runs\/[^/]+\/events$/,
+  // channels.$id.plan.ts + plans.$id.draft.ts — the plan-draft plane, one
+  // domain split across two route files. Neither path's siblings crossed:
+  // the channels family (list, create, messages) and the plans family
+  // (messages, title, doc) stay TS until the chat batch, so a PREFIXES
+  // entry would strand them on a Rust 404.
+  /^\/api\/channels\/[^/]+\/plan$/,
+  /^\/api\/plans\/[^/]+\/draft$/,
 ] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
