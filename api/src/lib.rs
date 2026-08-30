@@ -36,6 +36,8 @@ pub mod kb;
 pub mod kb_perms;
 pub mod labels;
 pub mod llm_keys;
+pub mod mcp_icons;
+pub mod mcp_library;
 pub mod me;
 pub mod mentions;
 pub mod model_access;
