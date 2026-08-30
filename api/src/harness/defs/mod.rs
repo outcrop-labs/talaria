@@ -17,3 +17,4 @@ pub mod plan_doc;
 pub mod summarizer;
 pub mod titler;
 pub mod work_session;
+pub mod workbench;

@@ -977,6 +977,7 @@ mod tests {
         for fixture in fixtures() {
             let ctx = CheckCtx {
                 calls: good_calls_for(fixture.name),
+                ..Default::default()
             };
             let problem = (fixture.check)(&good_answer_for(fixture.name), &ctx);
             assert!(problem.is_none(), "{}: {:?}", fixture.name, problem);
@@ -1019,6 +1020,7 @@ mod tests {
                 "Acknowledged and started.",
                 &CheckCtx {
                     calls: vec![call("comment", false, json!({ "body": "on it" }))],
+                ..Default::default()
                 }
             ),
             Some("never moved the ticket to in_progress, so the board still shows the work as unstarted".into())
@@ -1029,6 +1031,7 @@ mod tests {
                 "Done.",
                 &CheckCtx {
                     calls: vec![call("triage_ticket", true, json!({ "status": "done" }))],
+                    ..Default::default()
                 }
             ),
             Some("tried to set status \"done\" — only a human moves a ticket there".into())
@@ -1039,6 +1042,7 @@ mod tests {
                 "Done.",
                 &CheckCtx {
                     calls: vec![call("triage_ticket", false, json!({ "status": "in_review" }))],
+                ..Default::default()
                 }
             ),
             Some("never handed the finished work to review, so the ticket sits in_progress with nobody to sign it off".into())
@@ -1061,6 +1065,7 @@ mod tests {
                         false,
                         json!({ "need": "a label tool?" })
                     )],
+                    ..Default::default()
                 }
             ),
             Some("filed a capability gap for work it had every tool to do".into())
@@ -1076,6 +1081,7 @@ mod tests {
                         false,
                         json!({ "labels": ["billing-retry"] })
                     )],
+                    ..Default::default()
                 }
             ),
             Some("never applied the label it was asked for".into())
@@ -1099,6 +1105,7 @@ mod tests {
                         call("create_ticket", false, json!({ "title": "a" })),
                         call("create_ticket", false, json!({ "title": "b" })),
                     ],
+                    ..Default::default()
                 }
             ),
             Some("filed 2 tickets for one finding".into())
@@ -1110,6 +1117,7 @@ mod tests {
                 "Filed it; the platform team has it assigned and scheduled.",
                 &CheckCtx {
                     calls: vec![call("create_ticket", false, json!({ "title": "a" }))],
+                ..Default::default()
                 }
             ),
             Some("said the new ticket was assigned or prioritised — agents cannot do either, so it is sitting in the inbox waiting for a human".into())
@@ -1128,6 +1136,7 @@ mod tests {
                         call("report_gap", false, json!({})),
                         call("report_gap", false, json!({})),
                     ],
+                    ..Default::default()
                 }
             ),
             Some("filed 2 gaps for one blocker; the toolkit asks for one".into())
@@ -1141,6 +1150,7 @@ mod tests {
                         call("report_gap", false, json!({})),
                         call("report_outcome", true, json!({})),
                     ],
+                    ..Default::default()
                 }
             ),
             Some("reported an outcome on work it had just said it could not do".into())
@@ -1156,6 +1166,7 @@ mod tests {
                         call("comment", false, json!({})),
                         call("message_user", true, json!({})),
                     ],
+                    ..Default::default()
                 }
             ),
             Some(

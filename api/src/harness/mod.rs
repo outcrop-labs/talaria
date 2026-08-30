@@ -57,7 +57,16 @@
 // to the description's fence rather than stating it globally, and its
 // fixtures are the ones that promoted `CheckCall`/`CheckCtx` into define.rs's
 // fixture-floor section, because grading a work session means reading
-// `args.status`, `args.tags` and whether the read preceded the write).
+// `args.status`, `args.tags` and whether the read preceded the write), and
+// `defs/workbench` (the coding harnesses — three definitions over one builder,
+// one per `code-*` role, because the fitness matrix binds a harness to a slot
+// by running the real resolver over its `ModelSpec`, and one harness fills one
+// column; the port's first `Gap` verdicts live here — a reply that NAMES a
+// tool we offered in a syntax the loop does not parse, or a run the turn
+// budget cut short, is OUR defect and cannot be scored — which is why
+// `CheckCtx` carries the world half: `failure`, what the task's oracle said
+// about the files as the model left them, and `exhausted`, whether the loop
+// stopped on its own ceiling).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step

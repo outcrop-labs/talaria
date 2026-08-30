@@ -846,6 +846,7 @@ mod tests {
             NOTHING_TO_SURFACE,
             &CheckCtx {
                 calls: vec![call("post_to_channel", false)],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -858,6 +859,7 @@ mod tests {
             NOTHING_TO_SURFACE,
             &CheckCtx {
                 calls: vec![call("list_tickets", true), call("comment", false)],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -876,6 +878,7 @@ mod tests {
                     call("message_user", false),
                     call("get_ticket", false),
                 ],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -890,6 +893,7 @@ mod tests {
                 "t-77 is blocked on the vendor key, 52h idle now.",
                 &CheckCtx {
                     calls: vec![call("comment", true), call("message_user", false)],
+                    ..Default::default()
                 },
             ),
             None
@@ -903,6 +907,7 @@ mod tests {
                     call("message_user", false),
                     call("post_to_channel", false),
                 ],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -915,6 +920,7 @@ mod tests {
             NOTHING_TO_SURFACE,
             &CheckCtx {
                 calls: vec![call("report_gap", false)],
+                ..Default::default()
             },
         )
         .unwrap();

@@ -889,9 +889,19 @@ pub struct CheckCall {
 }
 
 /// Everything a behavioural fixture's `check` is handed besides the reply.
+///
+/// The `calls` half crosses complete. The two fields after it are the WORLD
+/// half — what the dry run's sandbox says about the state the model left
+/// behind — modeled here so a fixture table that reads them is complete and
+/// testable now, exactly as the TS's `EvalContext.world`/`.exhausted` were:
+/// `failure` is the workspace oracle's verdict on the files as the model left
+/// them (`ctx.world.failure`; a missing world reads as no failure), and
+/// `exhausted` is the turn-budget flag, false on every run that finished.
 #[derive(Debug, Clone, Default)]
 pub struct CheckCtx {
     pub calls: Vec<CheckCall>,
+    pub failure: Option<String>,
+    pub exhausted: bool,
 }
 
 impl CheckCtx {
@@ -936,6 +946,19 @@ impl CheckCtx {
             }
         }
         seen.join(", ")
+    }
+}
+
+/// The two-verdict checks of the defs that cannot gap ARE this enum's
+/// `Pass`/`Fail` half — `None` is a pass, `Some` is a fail — so this
+/// conversion is how the fitness plane folds those tables onto `CheckResult`
+/// when it crosses.
+impl From<Option<String>> for CheckResult {
+    fn from(problem: Option<String>) -> Self {
+        match problem {
+            None => CheckResult::Pass,
+            Some(p) => CheckResult::Fail(p),
+        }
     }
 }
 
