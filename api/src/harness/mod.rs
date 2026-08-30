@@ -104,7 +104,20 @@
 // channel_plan and the inbox JSON defs would have asked a model measured
 // `json: false` anyway — the wrap now happens LAST, as the TS's
 // `defineHarness` always did, and each of those defs carries a tripwire
-// test pinning the floor).
+// test pinning the floor), and `defs/research` (the three-stage research
+// plane — the planner whose typed query elements are the fix for the
+// non-greedy regex that once read a `[2]` CITATION MARKER as the query
+// list, the search stage whose floor is the first SUPPLIABLE floor in the
+// tree and the whole of audit 1.6 (a model with no live search does not
+// fail, it answers from memory in the same confident voice — so the floor
+// refuses on a measured `search: false` unless the install can reach
+// search through a registered tool, which is why `RecordedWorld.reach`
+// had to become injectable), and the synthesis stage, the one harness in
+// Talaria that genuinely HAS a tool record — the search hits ARE the
+// turn's tool results — so it declares `ground` and `ungrounded_ref`
+// fires through the runner instead of the deleted hand-pass; its search
+// TRANSPORTS stay TS with the batch-5 fleet/MCP plane, which is also
+// where their eleven tests cross).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step

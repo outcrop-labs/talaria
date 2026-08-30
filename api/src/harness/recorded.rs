@@ -42,6 +42,7 @@ use super::run::{
 };
 use super::transport::{TransportKind, TransportReply, TransportRequest};
 use crate::capability::{CapabilityFact, capability_key};
+use crate::capability_reach::{Reach, ReachVia, Supplier};
 use crate::gateway::guard::{self, Finding, GuardConfig, GuardMode};
 use crate::harness_model::ModelChainStep;
 use crate::persona::{PersonaRow, persona_index};
@@ -139,6 +140,11 @@ pub struct RecordedWorld {
     /// how a case asserts WHICH model the runner consulted, which no other
     /// edge can say.
     pub persona_asks: Option<Arc<Mutex<Vec<String>>>>,
+    /// Registered tools standing in for a capability, by capability name —
+    /// the `reach` edge's answer for a floor's `suppliable` question. Empty
+    /// means nothing in the install reaches anything, which is the posture a
+    /// refusal test wants. The supplier names are opaque to the runner.
+    pub reach: HashMap<String, Supplier>,
     /// How much the fake clock advances per reading, in ms. Every latency a
     /// recorded run reports is a multiple of this, so a test asserts on a
     /// number it chose rather than on how fast the machine happened to be.
@@ -164,6 +170,7 @@ impl Default for RecordedWorld {
             transport_error: None,
             empty_routing: false,
             persona_asks: None,
+            reach: HashMap::new(),
             tick: 7,
         }
     }
@@ -345,7 +352,31 @@ impl RecordedRun {
                     Box::pin(async move { facts_for(&world, &key) })
                 })
             },
-            reach: Arc::new(|_keys, _wanted| Box::pin(async { HashMap::new() })),
+            reach: {
+                let world = world.clone();
+                Arc::new(move |_keys, wanted| {
+                    let world = world.clone();
+                    Box::pin(async move {
+                        wanted
+                            .iter()
+                            .filter_map(|cap| {
+                                world.reach.get(cap).map(|s| {
+                                    (
+                                        cap.clone(),
+                                        Reach {
+                                            capability: cap.clone(),
+                                            reached: true,
+                                            via: Some(ReachVia::Tool),
+                                            supplier: Some(s.clone()),
+                                            detail: String::new(),
+                                        },
+                                    )
+                                })
+                            })
+                            .collect()
+                    })
+                })
+            },
             transport: {
                 let world = world.clone();
                 Arc::new(move |req| {

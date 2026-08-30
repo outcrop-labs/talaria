@@ -17,6 +17,7 @@ pub mod judge;
 pub mod librarian;
 pub mod outreach;
 pub mod plan_doc;
+pub mod research;
 pub mod summarizer;
 pub mod titler;
 pub mod work_session;
