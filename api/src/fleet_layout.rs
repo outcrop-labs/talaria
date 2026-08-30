@@ -29,7 +29,7 @@ pub fn mcp_gw_base() -> String {
 }
 
 /// The port the app server listens on (vite/prod PORT, 5273 in dev).
-fn app_port() -> String {
+pub(crate) fn app_port() -> String {
     std::env::var("PORT").unwrap_or_else(|_| "5273".into())
 }
 

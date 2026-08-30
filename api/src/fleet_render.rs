@@ -1059,6 +1059,10 @@ pub async fn render_fleet(
     .join("\n\n");
     let coach_on = crate::guard_coaching::coach_enabled(pg).await;
 
+    // Agents' configs point at the toolkit MCP — make sure it's actually up,
+    // and that the compose env can interpolate each agent's key into the
+    // header.
+    crate::mcp_service::ensure_mcp_service();
     ensure_fleet_env_key(pg).await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
     seed_shared_skills().await?;

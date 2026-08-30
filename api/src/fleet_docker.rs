@@ -5,12 +5,10 @@
 //
 // SCOPE, deliberately: only what the agent-hire run's boot stage reaches —
 // slot naming, active-slot resolution, the external network guarantee, `up`,
-// and the healthcheck wait. The rest of the TS module (stop/restart/remove,
-// the 5s-cached `docker ps` status the roster and Home poll, bundled-skill
-// pruning) is read-plane surface for routes that still serve from TS; each
-// crosses with its caller. The one behavioral gap left open HERE is noted at
-// `fleet_up`: TS kicks a fleet preflight after an up, and that module ports
-// in this same arc, before anything arms the hire run that calls this.
+// the post-up reachability kick, and the healthcheck wait. The rest of the TS
+// module (stop/restart/remove, the 5s-cached `docker ps` status the roster
+// and Home poll, bundled-skill pruning) is read-plane surface for routes that
+// still serve from TS; each crosses with its caller.
 //
 // Rolling slots: each agent runs as `agent-<dept>` (slot a) or
 // `agent-<dept>-b` (slot b). Callers pass a department as always — the
@@ -144,17 +142,20 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// Bring a department's managed agent up. Answers with compose's stderr
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it, but the shape is what TS handed back.
-///
-/// THE PREFLIGHT KICK TS fires after an up (`void import('./fleet-preflight')
-/// .then(m => m.runFleetPreflight())`) is not here YET: fleet_preflight ports
-/// in this same arc, before the hire run arms, because a boot that produced
-/// no reachability verdict would leave alerts.ts reading a stale one.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
     ensure_fleet_network().await?;
     let svc = slot_service(department, active_slot(pg, department).await);
     let args: Vec<String> = compose_args(&["up", "-d", &svc]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (_, stderr) = docker(&refs, Duration::from_secs(120)).await?;
+    // Bringing an agent up is the moment to ask whether it can reach us — from
+    // the fleet network, not from here. Detached: a preflight must never be
+    // able to fail a start, and its whole value is that it writes a verdict
+    // somebody reads later (alerts) rather than that this caller waits for it.
+    let pool = pg.clone();
+    tokio::spawn(async move {
+        let _ = crate::fleet_preflight::run_fleet_preflight(&pool).await;
+    });
     Ok(stderr.trim().to_string())
 }
 
