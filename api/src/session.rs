@@ -366,6 +366,13 @@ pub fn actor_of(user: &SessionUser) -> String {
         .unwrap_or_else(|| user.id.clone())
 }
 
+/// The kb ACLs' author string (`user.email ?? user.name` in the kb routes):
+/// who the row's created_by falls back to for ownership. None when both are
+/// null — the ACLs treat that as "no author claim".
+pub fn who_of(user: &SessionUser) -> Option<String> {
+    user.email.clone().or_else(|| user.name.clone())
+}
+
 /// Who a request acts AS (users.ts ActingUser): the signed-in human — or, for
 /// a PERSONAL assistant calling with the fleet key, its owner (the
 /// identity-proxy model: your assistant manages your boards for you).

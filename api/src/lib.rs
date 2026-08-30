@@ -53,6 +53,8 @@ pub mod invites;
 pub mod jobs;
 pub mod judge;
 pub mod kb;
+pub mod kb_comments;
+pub mod kb_okf;
 pub mod kb_perms;
 pub mod labels;
 pub mod llm_keys;

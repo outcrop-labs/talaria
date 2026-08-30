@@ -33,6 +33,18 @@ pub mod cost;
 pub mod fleet_create;
 pub mod fleet_hires;
 pub mod health;
+pub mod kb_comments_id;
+pub mod kb_docs_id;
+pub mod kb_docs_id_backlinks;
+pub mod kb_docs_id_comments;
+pub mod kb_docs_id_live;
+pub mod kb_docs_id_move;
+pub mod kb_public;
+pub mod kb_public_space;
+pub mod kb_search;
+pub mod kb_spaces;
+pub mod kb_spaces_id;
+pub mod kb_spaces_id_docs;
 pub mod keys;
 pub mod keys_id;
 pub mod llm_chat;
@@ -69,7 +81,7 @@ use crate::state::AppState;
 use axum::Router;
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use std::time::Duration;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -432,6 +444,74 @@ pub fn router(state: AppState) -> Router {
             get(rag_collections::get)
                 .post(rag_collections::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        // The knowledgebase plane: folders (spaces), their doc trees, the
+        // docs themselves (with comments/backlinks/move/live-presence
+        // sub-routes), full-text search, and the two no-auth public slug
+        // reads. One family under /api/kb — the whole tree crossed together.
+        .route(
+            "/api/kb/spaces",
+            get(kb_spaces::get)
+                .post(kb_spaces::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/kb/spaces/{id}",
+            get(kb_spaces_id::get)
+                .put(kb_spaces_id::put)
+                .delete(kb_spaces_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/kb/spaces/{id}/docs",
+            get(kb_spaces_id_docs::get)
+                .post(kb_spaces_id_docs::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/kb/docs/{id}",
+            get(kb_docs_id::get)
+                .put(kb_docs_id::put)
+                .delete(kb_docs_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/kb/docs/{id}/comments",
+            get(kb_docs_id_comments::get)
+                .post(kb_docs_id_comments::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/kb/docs/{id}/backlinks",
+            get(kb_docs_id_backlinks::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/kb/docs/{id}/move",
+            post(kb_docs_id_move::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/kb/docs/{id}/live",
+            get(kb_docs_id_live::get)
+                .put(kb_docs_id_live::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/kb/comments/{id}",
+            patch(kb_comments_id::patch)
+                .delete(kb_comments_id::delete)
+                .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
+        )
+        .route(
+            "/api/kb/search",
+            get(kb_search::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/kb/public/space/{slug}",
+            get(kb_public_space::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/kb/public/{slug}",
+            get(kb_public::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/rag/collections/{id}",

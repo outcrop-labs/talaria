@@ -62,6 +62,12 @@ const PREFIXES = [
   // family under this path — the admin console for it lives at
   // /api/admin/rag, already in EXACT.
   '/api/rag',
+  // The knowledgebase plane, whole: spaces and their doc trees, docs with
+  // comments/backlinks/move/live-presence, full-text search, and the two
+  // public slug reads. Every kb.* route file crossed together — the ACL
+  // engine (kb_perms) is shared shape with the rag collections registry, so
+  // the family crossed as one.
+  '/api/kb',
   // The admin console's wave-1 groups. Each prefix IS the whole group — no
   // TS sub-routes hide under any of these paths. '/api/admin/google-client'
   // covers its own /login sibling. Still TS: admin/invites (createInvite

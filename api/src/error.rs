@@ -137,6 +137,17 @@ pub fn house_error(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// The bare Postgres sentence under a sqlx error — what postgres.js puts in
+/// `e.message` and TS routes that catch-and-answer (`(e as Error).message`)
+/// therefore put on the wire. sqlx's own Display wraps it ("error returned
+/// from database: … at line N"), which no TS surface ever shows.
+pub fn pg_message(e: &sqlx::Error) -> String {
+    match e {
+        sqlx::Error::Database(db) => db.message().to_string(),
+        _ => e.to_string(),
+    }
+}
+
 /// The house error with a `message` field beside it — agent-auth's migration
 /// refusals carry the fix as a second field ({error, message}); the pipe is
 /// that exact shape, never a merged sentence.

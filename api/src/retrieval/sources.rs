@@ -378,7 +378,7 @@ pub async fn resync_space_docs(
     Ok(docs.len())
 }
 
-fn kb_doc_of(r: &sqlx::postgres::PgRow) -> KbDocSync {
+pub(crate) fn kb_doc_of(r: &sqlx::postgres::PgRow) -> KbDocSync {
     KbDocSync {
         id: r.try_get("id").unwrap_or_default(),
         space_id: r.try_get("spaceId").unwrap_or(None),
