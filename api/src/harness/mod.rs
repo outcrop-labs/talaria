@@ -38,7 +38,12 @@
 // and `defs/plan_doc` (the living plan document, whose output contract is the
 // whole document rather than a patch — which is why it owns the data-loss
 // guard `plan_doc_regression` and answers a bad reply with Null, keeping the
-// document the team already had).
+// document the team already had), and `defs/channel_plan` (the ticket drafter,
+// the port that made the contract layer grow `PreFn`: a provider asked for
+// JSON at the protocol level is obliged to answer an array contract with a
+// top-level OBJECT, so the envelope the array arrives wrapped in is unwrapped
+// before the schema sees it — while a bare single ticket, which carries a
+// `title`, is deliberately left for the repair turn).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step
