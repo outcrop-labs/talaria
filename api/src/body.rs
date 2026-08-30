@@ -95,6 +95,28 @@ pub(crate) fn truncate_utf16(s: &str, max: usize) -> &str {
     s
 }
 
+/// JS `s.slice(start, end)` under a UTF-16 budget — the windowed sibling of
+/// `truncate_utf16` (the retrieval chunker hard-splits an oversized paragraph
+/// into fixed windows). A window that would split a surrogate pair rounds at
+/// char boundaries: a char belongs to the window iff it fits entirely inside
+/// it, so a lone-surrogate half never escapes this crate.
+pub(crate) fn utf16_substr(s: &str, start: usize, end: usize) -> &str {
+    let mut units = 0;
+    let mut from = None;
+    let mut to = 0;
+    for (i, c) in s.char_indices() {
+        let width = c.len_utf16();
+        if units >= start && units + width <= end {
+            if from.is_none() {
+                from = Some(i);
+            }
+            to = i + c.len_utf8();
+        }
+        units += width;
+    }
+    from.map_or("", |f| &s[f..to])
+}
+
 /// A required string member with min/max checks, in zod's order: type, then
 /// length. `min`/`max` are the inclusive bounds exactly as zod prints them.
 pub fn string_member(

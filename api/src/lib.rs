@@ -68,6 +68,7 @@ pub mod price_oracle;
 pub mod ratelimit;
 pub mod realtime;
 pub mod refs;
+pub mod retrieval;
 pub mod routes;
 pub mod runs;
 pub mod safe_fetch;
