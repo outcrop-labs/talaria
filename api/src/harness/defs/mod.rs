@@ -8,6 +8,7 @@
 // The registry itself crosses once the defs are here to fill it.
 
 pub mod blurb_writer;
+pub mod briefer;
 pub mod channel_plan;
 pub mod concluder;
 pub mod distiller;

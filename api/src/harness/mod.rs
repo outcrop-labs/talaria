@@ -75,7 +75,15 @@
 // reversal, the compression ratio that abstains below 600 characters, the
 // nothing-durable check that scores invention in proper nouns rather than
 // vocabulary — and its `restated` is the second speller of a Gap verdict
-// after workbench's tool-syntax gaps).
+// after workbench's tool-syntax gaps), and `defs/briefer` (the daily brief's
+// three writes — the opening lede, the one-line delta note, and the reply
+// drafted in a colleague's thread, which is the highest-stakes thing any
+// briefer write reaches: it goes to SOMEBODY ELSE, under a standing grant,
+// with never-decide and never-write-as-them checked on every case rather
+// than left to whichever fixture remembered; and the only fixed-model
+// family in the product — an EMPTY chain, because `PLATFORM_AGENTS.briefer`
+// is `assignable: false` and the owner's own assistant is the point, so
+// there is no correct second choice to fall back to).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step
