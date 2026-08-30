@@ -155,7 +155,7 @@ pub fn ref_blocks(attachments: &Value) -> String {
                 "artifact"
             };
             format!(
-                "\n\n--- Attached {}: \"{}\" ({} {})\n{}",
+                "\n\n--- Attached {}: \"{}\" ({} {}) ---\n{}",
                 kind,
                 r["filename"].as_str().unwrap_or_default(),
                 r["refType"].as_str().unwrap_or_default(),
@@ -193,8 +193,8 @@ mod tests {
         assert_eq!(
             ref_blocks(&attachments),
             concat!(
-                "\n\n--- Attached knowledge doc: \"Spec\" (kb-doc d-1)\nthe spec",
-                "\n\n--- Attached artifact: \"Grid\" (artifact a-1)\n| a |"
+                "\n\n--- Attached knowledge doc: \"Spec\" (kb-doc d-1) ---\nthe spec",
+                "\n\n--- Attached artifact: \"Grid\" (artifact a-1) ---\n| a |"
             )
         );
         // No chips, or not an array → nothing.
