@@ -9,6 +9,7 @@
 
 pub mod blurb_writer;
 pub mod concluder;
+pub mod judge;
 pub mod librarian;
 pub mod summarizer;
 pub mod titler;

@@ -32,7 +32,10 @@
 // every def's tests and the coming fitness sweep drive) — and the first defs:
 // `defs/titler`, `defs/summarizer`, `defs/concluder` (the port's first widen
 // branch), `defs/blurb_writer` (the only many-keyed one), `defs/librarian`
-// (whose hybrid value is why `CleanFn` yields a `Value`). Still TS: the fleet turn and the picker
+// (whose hybrid value is why `CleanFn` yields a `Value`), and `defs/judge`
+// (the one that refuses below its floor, escalates on an unreadable verdict,
+// and pins nothing — the configured pick arrives as a RunContext override).
+// Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step
 // of a port, and it crosses once every def is here to fill it), and the rest
