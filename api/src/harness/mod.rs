@@ -49,7 +49,15 @@
 // hand-written transport, and whose quiet answer is a fallback rather than a
 // null: a silent model lands on the same NOTHING_TO_SURFACE token the prompt
 // asks for, with `schema_valid` false so the fitness matrix still sees the
-// miss).
+// miss), and `defs/work_session` (the highest-stakes output in the product —
+// the reply that says a ticket is DONE, unguarded until audit 1.5 because it
+// reached the persona gateway by a path the per-call-site guard wiring never
+// covered; its turn is a tool loop too, its dispatch prompt is the one prompt
+// that interpolates content a stranger wrote and so scopes the trust clause
+// to the description's fence rather than stating it globally, and its
+// fixtures are the ones that promoted `CheckCall`/`CheckCtx` into define.rs's
+// fixture-floor section, because grading a work session means reading
+// `args.status`, `args.tags` and whether the read preceded the write).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step

@@ -869,6 +869,76 @@ pub fn below_answer_floor(value: &str, floor: &AnswerFloor) -> Option<String> {
     ))
 }
 
+/// One tool call the fitness suite's dry run observed — the half of a
+/// behavioural fixture that prose cannot see. `errored` is the JS
+/// `error === null` test flipped (false is a call that succeeded); `args` is
+/// what the call was made with, kept raw because every fixture that reads it
+/// reads one field (`args.status`, `args.tags`).
+///
+/// A THIRD fixture-floor helper, and modeled here for the same reason the
+/// other two crossed: `EvalContext` stays behind with the fitness plane (see
+/// the header), but a fixture table that cannot state what a check-in DID is
+/// a table of upper bounds — the one-sided shape the garbage census exists to
+/// catch. When the fitness plane crosses, its `calls` field maps onto this
+/// record and the fixture tables that read it move across unchanged.
+#[derive(Debug, Clone)]
+pub struct CheckCall {
+    pub tool: String,
+    pub errored: bool,
+    pub args: Value,
+}
+
+/// Everything a behavioural fixture's `check` is handed besides the reply.
+#[derive(Debug, Clone, Default)]
+pub struct CheckCtx {
+    pub calls: Vec<CheckCall>,
+}
+
+impl CheckCtx {
+    /// `ctx.calls.filter(c => c.tool === t)` — every call to one tool,
+    /// failures included.
+    pub fn calls_of(&self, tool: &str) -> Vec<&CheckCall> {
+        self.calls.iter().filter(|c| c.tool == tool).collect()
+    }
+
+    /// …with `c.error === null` on top of it.
+    pub fn successful(&self, tool: &str) -> Vec<&CheckCall> {
+        self.calls
+            .iter()
+            .filter(|c| c.tool == tool && !c.errored)
+            .collect()
+    }
+
+    pub fn any_call(&self, tool: &str) -> bool {
+        self.calls.iter().any(|c| c.tool == tool)
+    }
+
+    /// The fitness toolbox's `calledBefore`: did a call to `first` precede a
+    /// call to `second`? The read-before-write assertions lean on it —
+    /// earliest `first` against latest `second` is exactly "some pair, in
+    /// order".
+    pub fn called_before(&self, first: &str, second: &str) -> bool {
+        match (
+            self.calls.iter().position(|c| c.tool == first),
+            self.calls.iter().rposition(|c| c.tool == second),
+        ) {
+            (Some(i), Some(j)) => i < j,
+            _ => false,
+        }
+    }
+
+    /// `[...new Set(tools)].join(', ')` — a sentence names each tool once.
+    pub fn distinct_tools<'a>(calls: impl IntoIterator<Item = &'a CheckCall>) -> String {
+        let mut seen: Vec<&str> = Vec::new();
+        for c in calls {
+            if !seen.contains(&c.tool.as_str()) {
+                seen.push(c.tool.as_str());
+            }
+        }
+        seen.join(", ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

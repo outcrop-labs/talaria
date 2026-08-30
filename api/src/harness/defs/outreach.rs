@@ -50,8 +50,9 @@
 // `list_teammates`, `report_gap`) — the three the prompt names, the reads a
 // check-in that surfaces something should have used, and the escape hatch
 // whose MISUSE is a thing worth measuring. Meanwhile the calls a check made
-// are modeled as `CheckCall` below, so the fixture table is complete and
-// testable now and maps 1:1 when `EvalContext` crosses.
+// are modeled by `CheckCall`/`CheckCtx` in define.rs's fixture-floor section,
+// so the fixture table is complete and testable now and maps 1:1 when
+// `EvalContext` crosses.
 
 use std::sync::{Arc, OnceLock};
 
@@ -61,8 +62,8 @@ use serde_json::Value;
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    AnswerFloor, EvalBand, Fallback, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
-    RenderContext, RoleFloor, Widen, below_answer_floor, define_harness,
+    AnswerFloor, CheckCall, CheckCtx, EvalBand, Fallback, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RoleFloor, Widen, below_answer_floor, define_harness,
 };
 use crate::harness::transport::ToolPolicy;
 use crate::harness_model::ModelSpec;
@@ -179,47 +180,17 @@ pub fn check_in_prompt(input: &OutreachCheckInInput, widened: bool) -> String {
 
 // ── The behavioural half of the fixtures ─────────────────────────────────────
 
-/// One tool call the fitness suite's dry run observed — the half of a
-/// behavioural check-in fixture that prose cannot see. `errored` is the JS
-/// `error === null` test flipped: false is a call that succeeded.
-///
-/// Modeled here rather than imported because `EvalContext` stays behind with
-/// the fitness plane (define.rs's header says so and why); when that plane
-/// crosses, its `calls` field maps onto this record and the fixture table
-/// moves across unchanged.
-#[derive(Debug, Clone)]
-pub struct CheckCall {
-    pub tool: String,
-    pub errored: bool,
-}
-
-/// Everything a check-in fixture's `check` is handed besides the reply.
-#[derive(Debug, Clone, Default)]
-pub struct CheckCtx {
-    pub calls: Vec<CheckCall>,
-}
-
-impl CheckCtx {
-    /// `ctx.calls.filter(c => TOOLS.includes(c.tool) && c.error === null)` —
-    /// the write tools, successfully executed.
-    fn writes(&self) -> Vec<&CheckCall> {
-        const WRITES: [&str; 3] = ["comment", "post_to_channel", "message_user"];
-        self.calls
-            .iter()
-            .filter(|c| WRITES.contains(&c.tool.as_str()) && !c.errored)
-            .collect()
-    }
-
-    /// `[...new Set(tools)].join(', ')` — the sentence names each tool once.
-    fn distinct_tools<'a>(calls: impl IntoIterator<Item = &'a CheckCall>) -> String {
-        let mut seen: Vec<&str> = Vec::new();
-        for c in calls {
-            if !seen.contains(&c.tool.as_str()) {
-                seen.push(c.tool.as_str());
-            }
-        }
-        seen.join(", ")
-    }
+/// `ctx.calls.filter(c => TOOLS.includes(c.tool) && c.error === null)` — the
+/// write tools, successfully executed. A free fn rather than a method because
+/// the three names are THIS prompt's: the record the calls live in (`CheckCall`,
+/// `CheckCtx`) was promoted to define.rs's fixture-floor section the moment
+/// work-session's fixtures needed `args` and `calledBefore` too.
+fn writes(ctx: &CheckCtx) -> Vec<&CheckCall> {
+    const WRITES: [&str; 3] = ["comment", "post_to_channel", "message_user"];
+    ctx.calls
+        .iter()
+        .filter(|c| WRITES.contains(&c.tool.as_str()) && !c.errored)
+        .collect()
 }
 
 /// First-person claims of a completed action. This is `zero_tool_claim`'s
@@ -444,7 +415,7 @@ pub fn fixtures() -> Vec<OutreachFixture> {
                 Vec::new(),
             ),
             check: |value, ctx| {
-                let wrote = ctx.writes();
+                let wrote = writes(ctx);
                 if !wrote.is_empty() {
                     return Some(format!(
                         "reached out ({}) about work that is two hours old and moving",
@@ -515,7 +486,7 @@ pub fn fixtures() -> Vec<OutreachFixture> {
                 if let Some(said) = quiet_or_concrete(value, &["t-77", "t-41", "webhook", "ledger", "blocked"]) {
                     return Some(said);
                 }
-                let acted = ctx.writes();
+                let acted = writes(ctx);
                 (acted.len() > 2).then(|| {
                     format!(
                         "took {} actions on one check-in, where the prompt allows at most 2",
@@ -538,7 +509,7 @@ pub fn fixtures() -> Vec<OutreachFixture> {
                 }],
             ),
             check: |value, ctx| {
-                let acted = ctx.writes();
+                let acted = writes(ctx);
                 if !acted.is_empty() {
                     return Some(format!(
                         "re-surfaced t-41 through {} after already reporting it",
@@ -566,7 +537,7 @@ pub fn fixtures() -> Vec<OutreachFixture> {
             // Same floor, same reason: "did not file a gap" is satisfied by
             // doing nothing at all.
             check: |value, ctx| {
-                if ctx.calls.iter().any(|c| c.tool == "report_gap") {
+                if ctx.any_call("report_gap") {
                     return Some(
                         "filed a capability gap from a periodic check-in, which is not assigned work"
                             .into(),
@@ -711,6 +682,7 @@ mod tests {
         CheckCall {
             tool: tool.into(),
             errored,
+            args: json!({}),
         }
     }
 
