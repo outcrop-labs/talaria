@@ -78,7 +78,9 @@ const PREFIXES = [
 // besides the route itself still belongs to TS. '/api/agents' has register +
 // heartbeat sub-routes (the fleet plane, a later batch), and '/api/apps' is
 // the app-server gateway (apps.$app.$ dispatches into app server modules —
-// TS until cutover by construction). '/api/me' is exact for the same reason:
+// the gateway is host plumbing and may cross some day, but the modules it
+// dispatches into are app authors' TS/node code and stay TS by the port's
+// rule 10, not by backlog). '/api/me' is exact for the same reason:
 // me.mcp and me.assistant are their own planes (fleet, agents) that migrate
 // whole with those batches. '/api/me/events' is whole-path too — this
 // person's own SSE firehose, which crossed with the realtime slice while the

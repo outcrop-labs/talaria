@@ -73,6 +73,17 @@ runtimes at once, not just the one being edited.
    with `cargo test -- --ignored`, never in CI. `bun run verify` never scans
    `api/`; the crate's gates are `bun run api:check` (fmt + clippy `-D warnings`
    + test) and the `api` CI job.
+10. **App modules are customer code, not port surface.** Building a microapp
+   with the SDK stays a TS/node experience: an app's internal APIs are the
+   app author's own code, talking to the host through the same `/api` and UI
+   surfaces everyone else uses, and the port never reaches into
+   `apps/<slug>/` to rewrite that. The app-server gateway (`/api/apps`,
+   `apps.$app.$` dispatch) may cross to Rust as HOST plumbing, but the
+   modules it dispatches into keep their TS/node runtime forever — that is
+   the accessibility promise, not a migration debt. Rust API modules are the
+   advanced tier: a self-contained option an app author can opt into, which
+   coexists with (never replaces) the TS default. Rule 2's
+   one-runtime-per-group governs the host's routes, never app-owned code.
 
 ## How coexistence works
 
