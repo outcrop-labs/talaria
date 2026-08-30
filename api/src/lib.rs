@@ -51,6 +51,7 @@ pub mod password_accounts;
 pub mod permissions;
 pub mod persona;
 pub mod platform_agents;
+pub mod price_oracle;
 pub mod ratelimit;
 pub mod realtime;
 pub mod refs;

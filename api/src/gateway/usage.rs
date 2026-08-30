@@ -706,12 +706,6 @@ pub struct UsageInput<'a> {
 /// recordUsage — insert one usage_events row, attributed by the classify
 /// plane. Classification failure is swallowed to null here (TS:
 /// `.catch(() => null)`): the row still lands, unattributed.
-///
-/// NOT YET CROSSED: TS follows a cloud row without a price with a
-/// `nudgeAutoPrices()` cue (detached, throttled, idempotent) — that oracle
-/// lives on the scheduler plane and crosses with it. Until then the oracle's
-/// look-again trigger is one cue short; rows still price retroactively when
-/// prices land.
 pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::Error> {
     let cls = classify_agent(pg, u.agent_model, u.tier)
         .await
@@ -737,7 +731,35 @@ pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::E
     .bind(cls.as_ref().and_then(|c| c.endpoint.clone()))
     .execute(pg)
     .await
-    .map(|_| ())
+    .map(|_| ())?;
+
+    // A cloud row landing without a price is the oracle's cue to look again —
+    // detached, throttled, and idempotent, so the hot path never feels it. A
+    // probe that itself fails nudges nothing (TS: `.catch(() => {})`).
+    if let Some(cls) = cls
+        && cls.endpoint_class.as_deref() == Some("cloud")
+        && cls.endpoint.is_some()
+        && !cls.llm_model.is_empty()
+    {
+        let pg = pg.clone();
+        let endpoint = cls.endpoint.clone().unwrap_or_default();
+        let model = cls.llm_model.clone();
+        tokio::spawn(async move {
+            let priced = sqlx::query(
+                "select 1 as ok from llm_endpoints \
+                 where name = $1 \
+                   and (model_prices ? $2 or auto_prices ? $2 or price_in_per_mtok is not null)",
+            )
+            .bind(&endpoint)
+            .bind(&model)
+            .fetch_optional(&pg)
+            .await;
+            if matches!(priced, Ok(None)) {
+                crate::price_oracle::nudge_auto_prices(&pg);
+            }
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
