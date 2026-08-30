@@ -116,3 +116,4 @@ pub mod workbench;
 pub mod workbench_harnesses;
 pub mod workflows;
 pub mod workspace_handles;
+pub mod yaml_string;
