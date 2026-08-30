@@ -57,6 +57,7 @@ pub mod realtime;
 pub mod refs;
 pub mod routes;
 pub mod runs;
+pub mod safe_fetch;
 pub mod scheduler;
 pub mod secretbox;
 pub mod session;
