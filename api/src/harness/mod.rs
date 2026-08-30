@@ -117,7 +117,25 @@
 // turn's tool results — so it declares `ground` and `ungrounded_ref`
 // fires through the runner instead of the deleted hand-pass; its search
 // TRANSPORTS stay TS with the batch-5 fleet/MCP plane, which is also
-// where their eleven tests cross).
+// where their eleven tests cross), and `defs/muse` (the drafting plane —
+// six harnesses over one model spec: the CRON drifter, whose schedule
+// grammar rejects both a six-field cron and `every two days at 9` with the
+// exact sentences the TS tests pin; the AGENT form whose derived fields
+// (handle from name, department from handle) are the floor for a model
+// that answers the ask it wished it had received; the TICKET patch, a
+// tri-state merge where a field the model never mentions stays untouched
+// and `only_changed` diffs against the RENDERED prior state, not the
+// stored one; the SKILL and TEMPLATE forms, whose verify closures carry
+// the coercion floors — a model that returns the bare word `ok` when the
+// contract asked for `{name, description}` gets repaired, not accepted;
+// and the DRAFT harness, whose guard runs on prose rather than JSON and
+// whose redaction is the 1.5 audit fix made permanent: a drafted soul
+// carrying an Anthropic key is flagged, redacted, and the clean value is
+// what reaches the caller, because a soul is rendered into an agent's
+// context on every run — the stream redactor it rides is linear-time and
+// pinned by a ratio test, and the ticket's date anchor tolerates a stale
+// clock only up to STALE_CLOCK_MS before `date_anchor_issue` fires, the
+// port of NOW_IN_CONTEXT).
 // Still TS: the fleet turn and the picker
 // (`pickTransport`; they cross with the fleet/streaming planes in batch 5, as
 // does `RunContext.signal`), `registry` (LAST — registering is the last step

@@ -15,6 +15,7 @@ pub mod distiller;
 pub mod inbox_focus;
 pub mod judge;
 pub mod librarian;
+pub mod muse;
 pub mod outreach;
 pub mod plan_doc;
 pub mod research;
