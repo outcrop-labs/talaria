@@ -29,6 +29,8 @@ pub mod effort_prefs;
 pub mod email;
 pub mod error;
 pub mod fleet;
+pub mod fleet_docker;
+pub mod fleet_layout;
 pub mod gateway;
 pub mod google_calendar;
 pub mod google_client;

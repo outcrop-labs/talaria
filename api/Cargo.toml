@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 axum = "0.8"
 # "sync" for the OnceCell-style serialization of capability-store writes.
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
 tower = "0.5"
 # No `cors` feature on purpose: same-origin throughout (the repo's
 # same-origin-fetch invariant). The browser only ever talks to the TS app; the
@@ -58,3 +58,4 @@ chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
 # breeds — encoded-word subjects, quoted-printable, multipart/alternative
 # boundaries. tokio1 + rustls keeps the no-OpenSSL invariant (alpine runtime).
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+serde_yaml_ng = "0.10.0"

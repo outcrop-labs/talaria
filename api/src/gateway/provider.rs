@@ -43,15 +43,12 @@ pub fn key_env_allowed(env_var: &str) -> bool {
         .is_match(env_var)
 }
 
-/// FLEET_DIR (fleet-render.ts:38) — the render output tree whose fleet.json is
-/// the transport table of where each agent's gateway lives.
+/// FLEET_DIR — the render output tree whose fleet.json is the transport table
+/// of where each agent's gateway lives. The path rule lives in fleet_layout
+/// now that the write plane resolves through it too; this is the read side's
+/// alias for the same one definition.
 pub(crate) fn fleet_dir() -> std::path::PathBuf {
-    if let Ok(d) = std::env::var("TALARIA_FLEET_DIR") {
-        return std::path::PathBuf::from(d);
-    }
-    std::env::current_dir()
-        .map(|c| c.join("../fleet"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("../fleet"))
+    crate::fleet_layout::fleet_dir()
 }
 
 fn fleet_env_path() -> std::path::PathBuf {
