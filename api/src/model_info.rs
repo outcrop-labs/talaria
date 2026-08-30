@@ -1,19 +1,15 @@
-// Human-readable model identity, populated automatically — port of the read
-// half of model-info.ts. OpenRouter's public catalog (no key) carries a
-// pretty name + description for essentially every major model; we match
-// registered ids against it the same way the price oracle does (full id for
-// slashed ids, unambiguous suffix for bare ones) and serve a display label +
-// a one-line "what it's good at" blurb. Unknown models (e.g. self-hosted)
-// simply have no blurb — nothing is invented.
-//
-// The org-voice rewrite pass (maybeRewriteBlurbs and its harness sweep) DOES
-// NOT RUN FROM RUST: it is a harness run, and harness runs port with the runs
-// plane. The degradation is cosmetic and self-healing — the TS scheduler
-// keeps writing model_blurbs rows while it owns the plane, and the rows are
-// read here either way.
+// Human-readable model identity, populated automatically — port of
+// model-info.ts (both halves: the catalog read and the org-voice rewrite
+// pass). OpenRouter's public catalog (no key) carries a pretty name +
+// description for essentially every major model; we match registered ids
+// against it the same way the price oracle does (full id for slashed ids,
+// unambiguous suffix for bare ones) and serve a display label + a one-line
+// "what it's good at" blurb. Unknown models (e.g. self-hosted) simply have
+// no blurb — nothing is invented.
 
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -256,6 +252,193 @@ pub fn clear_model_info_cache() {
     }
 }
 
+// ── The org-voice rewrite pass ───────────────────────────────────────────────
+//
+// One batched completion through the Catalog writer turns the vendor's
+// marketing line into the org's own voice, cached in model_blurbs. The pass
+// is OPPORTUNISTIC: any catalog read may kick it, throttled, detached, never
+// blocking the request — the TS shape exactly.
+
+const REWRITE_BATCH: usize = 10;
+const REWRITE_THROTTLE_MS: u64 = 10 * 60_000;
+
+/// The TS `blurb.trim().slice(0, 200)` — UTF-16 units, because `slice` is.
+/// Cutting a string Rust can't hold half of means stopping at the last whole
+/// character that fits (only reachable when an astral character straddles
+/// unit 200).
+fn clamp_200(s: &str) -> String {
+    let mut units = 0usize;
+    let mut end = 0usize;
+    for (i, c) in s.char_indices() {
+        let w = c.len_utf16();
+        if units + w > 200 {
+            break;
+        }
+        units += w;
+        end = i + c.len_utf8();
+    }
+    s[..end].to_string()
+}
+
+/// The pass's whole write policy, on its own so it can be pinned without a
+/// model or a database: string values only, trimmed-nonempty only, clamped to
+/// 200 UTF-16 units, one row per pending id in batch order. A wrong type or a
+/// blank line is skipped, not salvaged — the harness's contract already
+/// rejected the shapes worth repairing, and a blank blurb is worse than the
+/// catalog line it would replace. What is left here is tolerance: one bad
+/// line must not cost the other nine.
+fn written_rows(
+    reply: &serde_json::Map<String, serde_json::Value>,
+    pending: &[crate::harness::defs::blurb_writer::BlurbCandidate],
+) -> Vec<(String, String)> {
+    pending
+        .iter()
+        .filter_map(|p| {
+            let blurb = reply.get(&p.id)?.as_str()?.trim();
+            if blurb.is_empty() {
+                return None;
+            }
+            Some((p.id.clone(), clamp_200(blurb)))
+        })
+        .collect()
+}
+
+/// Rewrite catalog blurbs for registered models that don't have one yet —
+/// port of rewritePendingBlurbs. Returns how many were written. A PARTIAL
+/// batch is still a good pass: the models the reply skipped stay pending and
+/// come back around on the next kick, which is why the row selection walks
+/// `pending` rather than iterating whatever the model returned. The harness
+/// run's own failure is a no-write pass (warned, not propagated): TS's runner
+/// answers `{ value: null }` rather than throwing, and the kick's `.catch`
+/// swallows even a genuine throw — the worst outcome TS allowed was "nothing
+/// written this pass", and the port keeps exactly that ceiling.
+pub async fn rewrite_pending_blurbs(
+    state: &crate::state::AppState,
+    batch: usize,
+) -> Result<usize, String> {
+    use crate::harness::defs::blurb_writer::{BlurbBatch, BlurbCandidate, blurb_writer_harness};
+    use crate::harness::run::{RunContext, run_harness};
+    use crate::model_access::gateway_models;
+
+    let all = gateway_models(&state.pg)
+        .await
+        .map_err(|e| format!("gateway catalog read failed: {e}"))?;
+    // Bare ids only — a qualified "<endpoint>/<model>" pin is a routing
+    // decision about one endpoint, not an identity the org voice rewrites.
+    let bare: Vec<String> = all
+        .iter()
+        .filter(|m| !m.qualified)
+        .map(|m| m.id.clone())
+        .collect();
+    if bare.is_empty() {
+        return Ok(0);
+    }
+    let done: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+        "select model_id from model_blurbs where model_id = any($1)",
+    )
+    .bind(&bare)
+    .fetch_all(&state.pg)
+    .await
+    .map_err(|e| format!("model_blurbs read failed: {e}"))?
+    .into_iter()
+    .collect();
+
+    // TS awaits catalogInfo per id; the catalog fetch is cached, so the Rust
+    // pass resolves every id against the one snapshot the cache hands back.
+    // No catalog → no pending candidate resolves → nothing to do.
+    let cat = catalog().await;
+    let mut pending: Vec<BlurbCandidate> = Vec::new();
+    for id in &bare {
+        if done.contains(id) || pending.len() >= batch {
+            continue;
+        }
+        if let Some(info) = cat.as_ref().and_then(|c| info_in(c, id)) {
+            pending.push(BlurbCandidate {
+                id: id.clone(),
+                name: info.label.clone(),
+                description: info.blurb.clone(),
+            });
+        }
+    }
+    if pending.is_empty() {
+        return Ok(0);
+    }
+
+    let org_name =
+        crate::gateway::settings::get_setting(&state.pg, "org_name", serde_json::json!(""))
+            .await
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+    let input = serde_json::to_value(BlurbBatch {
+        org_name,
+        models: pending.clone(),
+    })
+    .map_err(|e| format!("blurb batch encode failed: {e}"))?;
+    let run = run_harness(
+        state,
+        &blurb_writer_harness(),
+        &input,
+        RunContext {
+            caller: "platform:blurb-writer".into(),
+            user_id: None,
+            model: None,
+            step: None,
+            tier: None,
+            effort: None,
+            ledger: None,
+            deps: None,
+        },
+    )
+    .await;
+    let Some(reply) = run
+        .map_err(|e| {
+            tracing::warn!("[model-blurbs] the Catalog writer run failed: {e}");
+            e
+        })
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_object().cloned())
+    else {
+        return Ok(0);
+    };
+
+    let rows = written_rows(&reply, &pending);
+    for (id, blurb) in &rows {
+        // AssertSqlSafe: static statement, binds only.
+        sqlx::query(
+            "insert into model_blurbs (model_id, blurb) values ($1, $2) \
+             on conflict (model_id) do update set blurb = excluded.blurb",
+        )
+        .bind(id)
+        .bind(blurb)
+        .execute(&state.pg)
+        .await
+        .map_err(|e| format!("model_blurbs write failed for {id}: {e}"))?;
+    }
+    Ok(rows.len())
+}
+
+/// The throttled kick — port of maybeRewriteBlurbs. Any catalog read may fire
+/// it; ten minutes is the floor; the pass runs detached and never blocks the
+/// request it was kicked from. A failed pass only logs: the next kick retries
+/// in ten minutes, and nothing about a missing blurb is worth a 500.
+static LAST_KICK: AtomicU64 = AtomicU64::new(0);
+
+pub fn maybe_rewrite_blurbs(state: &crate::state::AppState) {
+    let now = now_ms();
+    if now.saturating_sub(LAST_KICK.load(Ordering::Relaxed)) < REWRITE_THROTTLE_MS {
+        return;
+    }
+    LAST_KICK.store(now, Ordering::Relaxed);
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = rewrite_pending_blurbs(&state, REWRITE_BATCH).await {
+            tracing::warn!("[model-blurbs] rewrite pass failed: {e}");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +496,74 @@ mod tests {
         assert!(info_in(&cat, "never-heard-of").is_none());
         // Normalize: dots become dashes on lookup too.
         assert!(info_in(&cat, "qwen/qwen3.14b").is_some());
+    }
+
+    // ── the rewrite pass's write policy ─────────────────────────────────────
+
+    use crate::harness::defs::blurb_writer::BlurbCandidate;
+
+    fn cand(id: &str) -> BlurbCandidate {
+        BlurbCandidate {
+            id: id.into(),
+            name: format!("{id} pretty"),
+            description: format!("{id} catalog line"),
+        }
+    }
+
+    fn reply(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn written_rows_keeps_only_trimmed_nonempty_strings_in_pending_order() {
+        let pending = vec![cand("a"), cand("b"), cand("c"), cand("d")];
+        let rows = written_rows(
+            &reply(json!({
+                // good
+                "a": "Runs cheap and quiet",
+                // whitespace-only → a blank blurb is worse than the catalog line
+                "b": "   ",
+                // wrong type → skipped, not salvaged (the contract repaired
+                // what was repairable; this is the tolerance that is left)
+                "c": { "line": "nested" },
+                // never answered — stays pending, comes back next pass
+                "e": "an id the batch never asked for",
+            })),
+            &pending,
+        );
+        assert_eq!(
+            rows,
+            vec![("a".to_string(), "Runs cheap and quiet".to_string())]
+        );
+        // d has no entry at all → absent from the rows, like c and b.
+    }
+
+    #[test]
+    fn written_rows_trims_and_clamps_to_200_utf16_units() {
+        let pending = vec![cand("a"), cand("b")];
+        let rows = written_rows(
+            &reply(json!({
+                // trim() happens before the clamp
+                "a": "  padded  ",
+                "b": "x".repeat(300),
+            })),
+            &pending,
+        );
+        assert_eq!(rows[0].1, "padded");
+        assert_eq!(utf16_len(&rows[1].1), 200);
+        assert_eq!(rows[1].1.len(), 200); // all-ascii: units == bytes
+    }
+
+    #[test]
+    fn the_clamp_cuts_at_a_whole_astral_character() {
+        // 😀 is two UTF-16 units. 199 ascii + 😀 = 201 units; the clamp stops
+        // BEFORE the pair rather than splitting it, so 199.
+        let s = format!("{}{}", "x".repeat(199), "😀");
+        let clamped = clamp_200(&s);
+        assert_eq!(utf16_len(&clamped), 199);
+        assert!(clamped.ends_with('x'));
+        // Exactly 200 units passes through untouched.
+        let fits = format!("{}😀", "x".repeat(198));
+        assert_eq!(clamp_200(&fits), fits);
     }
 }

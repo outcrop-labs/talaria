@@ -4,19 +4,11 @@
 // what the admin allowlist permits; admins see everything. Each model carries
 // a pretty label + a "what it's good at" blurb when the public catalog knows
 // it. Also says which model the caller's muse would use.
-//
-// ONE RECORDED DEGRADATION: TS calls maybeRewriteBlurbs() here — the
-// org-voice blurb rewrite sweep (one batched harness completion, results
-// cached in model_blurbs). That sweep runs a harness, so it ports with the
-// runs plane (batch 4), not with this read. Until then the sweep does not
-// fire from this route: labels and provider blurbs serve unchanged, written
-// overrides still read, and the sweep self-heals anything pending once it
-// lands. Cosmetic, on purpose, recorded in docs/RUST-MIGRATION.md.
 
 use crate::error::house_error;
 use crate::harness_model::muse_model_for;
 use crate::model_access::gateway_models_for;
-use crate::model_info::model_info;
+use crate::model_info::{maybe_rewrite_blurbs, model_info};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -30,6 +22,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(u) => u,
         Err(gate) => return gate,
     };
+    // New registered models get their org-voice blurb (throttled, detached —
+    // the pass never blocks the request it was kicked from).
+    maybe_rewrite_blurbs(&state);
     let catalog = match gateway_models_for(&state.pg, &user.role).await {
         Ok(c) => c,
         Err(e) => {
