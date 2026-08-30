@@ -1,6 +1,7 @@
 // LLM gateway — the ported route groups of /api/llm/v1/*.
 
 pub mod budget;
+pub mod fleet_chat;
 pub mod guard;
 pub mod models;
 pub mod params;

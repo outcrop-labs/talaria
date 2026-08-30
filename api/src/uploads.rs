@@ -139,6 +139,17 @@ fn file_candidates(attachments: &serde_json::Value) -> Vec<&serde_json::Value> {
         .collect()
 }
 
+/// uploads.ts attachmentAsDataUrl: one image upload as a `data:<mime>;base64`
+/// URL — the block a vision model sees. A missing row or a lost blob is None
+/// (the caller's `.catch(() => null)` skip), never an error.
+pub async fn attachment_as_data_url(pg: &PgPool, sb: &SecretBox, id: &str) -> Option<String> {
+    let (bytes, mime, _filename) = get_upload(pg, sb, id).await.ok()??;
+    use base64::Engine as _;
+    let mut url = format!("data:{mime};base64,");
+    base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut url);
+    Some(url)
+}
+
 /// The prompt block a message's textual file uploads contribute
 /// (attachmentTextBlocks): up to `max_files` text-mime attachments, each
 /// re-read from storage and clipped. Ref chips are NOT file uploads (they

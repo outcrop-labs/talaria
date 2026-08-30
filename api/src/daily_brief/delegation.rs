@@ -178,10 +178,18 @@ pub async fn draft_reply(
     // write door lives — so a delegated reply is scanned and redacted on the
     // same path as every other agent-authored message, rather than on a second
     // one written here that would drift.
-    let message =
-        insert_channel_message(notify, req.channel_id, "agent", req.agent_model, &content)
-            .await
-            .map_err(|e| format!("send: {e}"))?;
+    let message = insert_channel_message(
+        notify,
+        req.channel_id,
+        "agent",
+        req.agent_model,
+        &content,
+        "complete",
+        &serde_json::json!([]),
+        None,
+    )
+    .await
+    .map_err(|e| format!("send: {e}"))?;
     sqlx::query("update assistant_reply_drafts set message_id = $2::uuid, decided_at = now() where id = $1::uuid")
         .bind(&draft_id)
         .bind(&message.id)
@@ -245,6 +253,9 @@ pub async fn release_drafts(
             "agent",
             agent_model.as_deref().unwrap_or("assistant"),
             &content,
+            "complete",
+            &serde_json::json!([]),
+            None,
         )
         .await
         .map_err(|e| format!("send: {e}"))?;

@@ -1318,6 +1318,8 @@ pub(crate) async fn execute(
             input_text: &ground_text,
             policed_hosts: &config.policed_hosts,
             grounding: &grounding,
+            // The harness pass is the gateway turn's sibling — 1:1, contained.
+            spread: guard::Spread::Contained,
         };
         let hits = guard::run_guardrails(&gctx, &narrowed, &available);
         merge_findings(&mut findings, hits);

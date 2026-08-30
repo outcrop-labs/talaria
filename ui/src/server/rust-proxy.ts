@@ -87,6 +87,13 @@ const PREFIXES = [
   '/api/admin/google-client',
   '/api/admin/instance',
   '/api/admin/permissions',
+  // The comms plane, whole: the channel list/create, one channel and its
+  // members/agents/read-cursor, messages (with edit/delete/reactions/threads),
+  // the Relay conclude, the live SSE events, and the plan-draft mount that
+  // crossed earlier (its SHAPES entry below is subsumed by this prefix).
+  // conversations and dms are their own route families and stay TS until the
+  // chat batch.
+  '/api/channels',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it
@@ -130,12 +137,10 @@ const SHAPES = [
   // ACL. The rest of /api/runs (the list, the detail, cancel, decide) is
   // still TS until the runs surface crosses as a group.
   /^\/api\/runs\/[^/]+\/events$/,
-  // channels.$id.plan.ts + plans.$id.draft.ts — the plan-draft plane, one
-  // domain split across two route files. Neither path's siblings crossed:
-  // the channels family (list, create, messages) and the plans family
-  // (messages, title, doc) stay TS until the chat batch, so a PREFIXES
-  // entry would strand them on a Rust 404.
-  /^\/api\/channels\/[^/]+\/plan$/,
+  // plans.$id.draft.ts — the plan-draft plane's other half. The channels
+  // mount crossed with the channels family (now a PREFIXES entry above); the
+  // plans family (messages, title, doc) stays TS until the chat batch, so a
+  // PREFIXES entry would strand them on a Rust 404.
   /^\/api\/plans\/[^/]+\/draft$/,
   // research.ts + research.$id{,.members,.conversation,.decide}.ts — the
   // research plane crossed whole (domain, def and routes together). The

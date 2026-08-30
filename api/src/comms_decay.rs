@@ -3,10 +3,10 @@
 // brain (owner-scoped), then archive out of the sidebar — context survives,
 // scrollback doesn't.
 //
-// Port of comms-decay.ts, REDUCED to the scheduled half: the sweep and its
-// job registration. `concludeRelay` is the comms family's own surface (its
-// caller is a channel route that stays TS until batch 5) and crosses with it;
-// the concluder harness itself is already here.
+// Port of comms-decay.ts: the scheduled half (the sweep and its job
+// registration) crossed with batch 4, and `concludeRelay` — the comms
+// family's own surface, whose caller is the conclude route — crossed with
+// the channels family that owns that route.
 //
 // THE ACCOUNTING IS THE MODULE. Two of distillation's three outcomes mean
 // "archived NOTHING", and both used to be counted as archives — the sweep
@@ -358,6 +358,118 @@ fn decay_message(r: &DecaySweepResult) -> Result<Option<String>, String> {
         ));
     }
     Ok(Some(line))
+}
+
+// ── Conclude a Relay ─────────────────────────────────────────────────────────
+
+/// Conclude a Relay: post + index a summary of what was decided, then archive.
+/// Returns the summary so the UI can show it after the relay leaves the list.
+///
+/// The Err strings are USER-FACING COPY shown by the conclude button (the
+/// route maps them onto its 502 body verbatim) — not developer messages.
+pub async fn conclude_relay(
+    state: &AppState,
+    channel_id: &str,
+    by_user_id: &str,
+    channel_name: &str,
+) -> Result<String, String> {
+    let deps = crate::notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+    let history = crate::channels::list_channel_messages(&deps.pg, channel_id, -1, 500, true)
+        .await
+        .map_err(|e| format!("message read failed: {e}"))?;
+    let transcript = clip(
+        &history
+            .iter()
+            .filter(|m| m.status == "complete" && !m.content.is_empty())
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    if m.author_type == "agent" {
+                        describe_agent(&m.author).label
+                    } else {
+                        m.author.clone()
+                    },
+                    m.content
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        60_000,
+    );
+    if transcript.trim().is_empty() {
+        return Err("nothing to conclude: the relay has no messages".into());
+    }
+
+    // The model chain and the empty-reply check moved into the concluder
+    // harness. The failures are still mapped BY HAND rather than with an
+    // onFailure-throw policy, and the reason is down to one: these strings
+    // are user-facing copy, not a developer's error message.
+    let run = run_harness(
+        state,
+        &crate::harness::defs::concluder::concluder_harness(),
+        &json!({ "channelName": channel_name, "transcript": transcript }),
+        RunContext {
+            caller: format!("platform:concluder:{by_user_id}"),
+            user_id: Some(by_user_id.to_string()),
+            ..RunContext::default()
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if run.model.is_none() {
+        return Err("no model configured to summarize with. Add an endpoint on /models.".into());
+    }
+    // THREE outcomes, not two. The runner also returns for a transport
+    // failure, and folding that into "came back empty" told a user whose
+    // provider was rate limiting to try again — into the same rate limit.
+    // `answered` is "did the model speak" under its own name; the runner's
+    // sentence is the right copy whenever it never did.
+    if !run.answered
+        && let Some(error) = run.error
+    {
+        return Err(error);
+    }
+    let Some(serde_json::Value::String(text)) = run.value else {
+        return Err("the summary came back empty. Try again.".into());
+    };
+
+    // The summary is the relay's last word: posted into history (visible if
+    // the relay is ever revisited) and indexed for retrieval
+    // (channel-membership ACL).
+    let agents = crate::channels::list_channel_agents(&deps.pg, channel_id)
+        .await
+        .map_err(|e| format!("agent list read failed: {e}"))?;
+    crate::channels::insert_channel_message(
+        &deps,
+        channel_id,
+        "agent",
+        agents.first().map(String::as_str).unwrap_or("talaria"),
+        &format!("**Relay concluded**. Summary:\n\n{text}"),
+        "complete",
+        &json!([]),
+        None,
+    )
+    .await
+    .map_err(|e| format!("summary post failed: {e}"))?;
+    let doc = IndexDoc {
+        source_type: "relay-summary".into(),
+        source_id: channel_id.to_string(),
+        title: Some(format!("Relay concluded: {channel_name}")),
+        text: text.clone(),
+        payload: Some(
+            vec![("channelId".to_string(), json!(channel_id))]
+                .into_iter()
+                .collect(),
+        ),
+        href: Some("/comms".into()),
+    };
+    let qd = qdrant::real_deps();
+    let ed = embed::real_deps();
+    index_activity(&deps.pg, &qd, &ed, &doc).await?;
+    crate::channels::archive_channel(&deps, channel_id)
+        .await
+        .map_err(|e| format!("archive failed: {e}"))?;
+    Ok(text)
 }
 
 // ── The registration ────────────────────────────────────────────────────────

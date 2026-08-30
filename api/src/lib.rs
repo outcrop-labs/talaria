@@ -20,6 +20,7 @@ pub mod capability;
 pub mod capability_platform;
 pub mod capability_reach;
 pub mod channel_plan;
+pub mod channel_replies;
 pub mod channels;
 pub mod claim;
 pub mod comms_decay;

@@ -42,16 +42,19 @@ pub fn describe_agent(id: &str) -> AgentModel {
     }
 }
 
-/// fleet.json — the render OUTPUT table of {model, url, key} per agent. Only
-/// `model` is read here; the keys never leave the fleet plane.
+/// fleet.json — the render OUTPUT table of {model, url, key} per agent. The
+/// url/key halves are the comms transport's (gateway/fleet_chat.rs); here only
+/// `model` is read, and the keys never leave the fleet plane.
 #[derive(serde::Deserialize)]
-struct ManifestEntry {
-    model: String,
+pub struct ManifestEntry {
+    pub model: String,
+    pub url: String,
+    pub key: Option<String>,
 }
 
 /// readManifest: a missing or unparseable manifest is an EMPTY fleet, and says
 /// so — it never falls back to invented agents (gateway.ts).
-async fn read_manifest() -> Vec<ManifestEntry> {
+pub async fn read_manifest() -> Vec<ManifestEntry> {
     let Ok(raw) =
         tokio::fs::read_to_string(crate::gateway::provider::fleet_dir().join("fleet.json")).await
     else {

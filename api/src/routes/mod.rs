@@ -37,7 +37,17 @@ pub mod boards_id_statuses;
 pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
+pub mod channels;
+pub mod channels_id;
+pub mod channels_id_agents;
+pub mod channels_id_conclude;
+pub mod channels_id_events;
+pub mod channels_id_members;
+pub mod channels_id_messages;
+pub mod channels_id_messages_msgid;
+pub mod channels_id_messages_msgid_reactions;
 pub mod channels_id_plan;
+pub mod channels_id_read;
 pub mod cost;
 pub mod fleet_create;
 pub mod fleet_hires;
@@ -342,6 +352,60 @@ pub fn router(state: AppState) -> Router {
             "/api/history",
             get(history::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        // The comms plane: channels/relays/DMs and their messages (with edit,
+        // delete, reactions, threads, read cursors), membership, fleet-agent
+        // membership, and the Relay conclude. The SSE attach point
+        // ({id}/events) rides the streaming stack below, like every stream.
+        .route(
+            "/api/channels",
+            get(channels::get)
+                .post(channels::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/channels/{id}",
+            get(channels_id::get)
+                .put(channels_id::put)
+                .delete(channels_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/channels/{id}/agents",
+            post(channels_id_agents::post)
+                .delete(channels_id_agents::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/channels/{id}/conclude",
+            post(channels_id_conclude::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/channels/{id}/members",
+            post(channels_id_members::post)
+                .delete(channels_id_members::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/channels/{id}/messages",
+            get(channels_id_messages::get)
+                .post(channels_id_messages::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/channels/{id}/messages/{msgId}",
+            axum::routing::patch(channels_id_messages_msgid::patch)
+                .delete(channels_id_messages_msgid::delete)
+                .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
+        )
+        .route(
+            "/api/channels/{id}/messages/{msgId}/reactions",
+            post(channels_id_messages_msgid_reactions::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/channels/{id}/read",
+            post(channels_id_read::post).fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/channels/{id}/plan",
             get(channels_id_plan::get)
@@ -645,6 +709,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/me/events",
             get(me_events::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // A channel's live events — the multiplayer-chat SSE stream.
+        .route(
+            "/api/channels/{id}/events",
+            get(channels_id_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())

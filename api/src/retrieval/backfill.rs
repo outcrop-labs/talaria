@@ -5,11 +5,11 @@
 // (retrieval/backfill.ts), the durable repair runs next door in
 // runs/defs/reindex.ts.
 //
-// WHAT HAS CROSSED: `rag_health`, and the read plane (`backfill_status`) the
+// WHAT HAS CROSSED: `rag_health`, the read plane (`backfill_status`) the
 // admin rag route projects — the run row IS the truth now, not an
-// app_settings blob beside it. What STAYS TS is the 15-minute sweep
-// (`sweepNewActivity`/`maybeRagSweep`) — it crosses with its callers (the
-// comms/search reads) rather than landing as unreachable code.
+// app_settings blob beside it — and the 15-minute sweep
+// (`sweepNewActivity`/`maybeRagSweep`), whose kick lives on the comms read
+// (/api/channels) that crossed with the channels family.
 // Port of ui/src/server/retrieval/backfill.ts.
 
 use serde::Serialize;
@@ -17,7 +17,12 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use crate::retrieval::embed::{EmbedDeps, embed_one};
+use crate::retrieval::index::IndexDoc;
 use crate::retrieval::qdrant::QdrantDeps;
+use crate::retrieval::sources::{
+    EFFECTIVE_DOC_SELECT, KbDocSync, TicketSrc, index_activity, index_personal, index_ticket,
+    kb_doc_of, sync_kb_doc,
+};
 use crate::runs::define::RunState;
 use crate::runs::defs::reindex::BACKFILL_KIND;
 use crate::runs::store::{KindRunView, latest_run_of_kind};
@@ -151,6 +156,221 @@ pub async fn backfill_status(pg: &PgPool) -> BackfillStatus {
             .flatten()
             .as_ref(),
     )
+}
+
+// ── Incremental catch-up sweep ────────────────────────────────────────────────
+// Event-driven indexing is the primary path; this 15-minute sweep re-indexes
+// anything CREATED/UPDATED since the last high-water mark, so rows written
+// while the services were down get picked up when they return. Content hashes
+// make the overlap free. Crossed with the comms read that kicks it
+// (/api/channels) — the TS header's "crosses with its callers" note.
+
+/// The app_settings key holding the last sweep's high-water mark.
+const SWEEP_KEY: &str = "rag_sweep_watermark";
+const SWEEP_INTERVAL_MS: i64 = 15 * 60_000;
+
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// `Option<String>` → JSON string-or-null, preserving the key when absent
+/// (the TS object literal keeps `null` valued keys, and the payload feeds the
+/// content hash).
+fn opt_json(v: &Option<String>) -> Value {
+    match v {
+        Some(s) => Value::String(s.clone()),
+        None => Value::Null,
+    }
+}
+
+pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) -> u32 {
+    let health = rag_health(qd, ed).await;
+    if !health.qdrant || !health.embeddings {
+        return 0;
+    }
+    let watermark = crate::gateway::settings::get_setting(
+        pg,
+        SWEEP_KEY,
+        serde_json::json!("1970-01-01T00:00:00.000Z"), // new Date(0).toISOString()
+    )
+    .await
+    .as_str()
+    .unwrap_or("1970-01-01T00:00:00.000Z")
+    .to_string();
+    let now = crate::agent_auth::epoch_ms_to_iso(wall_ms());
+    let mut indexed: u32 = 0;
+
+    // Effective visibility, exactly as the live save path resolves it — a doc
+    // inheriting from a private space must never reach the org brain.
+    // AssertSqlSafe: the interpolated fragment is this crate's EFFECTIVE_DOC_SELECT.
+    let doc_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "{EFFECTIVE_DOC_SELECT} where d.updated_at > $1"
+    )))
+    .bind(&watermark)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let docs: Vec<KbDocSync> = doc_rows.iter().map(kb_doc_of).collect();
+    for d in &docs {
+        let _ = sync_kb_doc(pg, qd, ed, d).await;
+        indexed += 1;
+    }
+
+    let msgs: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+        "select m.id::text, m.channel_id::text, m.author_type, m.author, m.content, c.name \
+         from channel_messages m join channels c on c.id = m.channel_id \
+         where m.status = 'complete' and m.content <> '' and c.kind <> 'dm' \
+           and m.created_at > $1",
+    )
+    .bind(&watermark)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for (id, channel_id, author_type, author, content, name) in &msgs {
+        let who = if author_type == "agent" {
+            crate::fleet::describe_agent(author).label
+        } else {
+            author.clone()
+        };
+        let _ = index_activity(
+            pg,
+            qd,
+            ed,
+            &IndexDoc {
+                source_type: "channel".into(),
+                source_id: id.clone(),
+                title: Some(format!("#{name} · {who}")),
+                text: content.clone(),
+                payload: Some(serde_json::Map::from_iter([(
+                    "channelId".to_string(),
+                    Value::String(channel_id.clone()),
+                )])),
+                href: Some("/channels".into()),
+            },
+        )
+        .await;
+        indexed += 1;
+    }
+
+    let tasks: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "select t.id::text, t.board_id::text, t.title, t.description \
+         from tasks t where t.archived_at is null and t.updated_at > $1",
+    )
+    .bind(&watermark)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for (id, board_id, title, description) in &tasks {
+        let _ = index_ticket(
+            pg,
+            qd,
+            ed,
+            &TicketSrc {
+                id,
+                board_id,
+                ticket_ref: None, // the sweep row selects no ref — "Ticket" default
+                title,
+                description: description.as_deref(),
+            },
+        )
+        .await;
+        indexed += 1;
+    }
+
+    #[allow(clippy::type_complexity)] // the artifact row's own columns, one each
+    type ArtifactRow = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let arts: Vec<ArtifactRow> = sqlx::query_as(
+        "select a.id::text, a.title, a.body, a.visibility, a.owner_user_id::text, a.rag_routing, \
+                l.target_type, l.target_id::text \
+         from artifacts a \
+         left join artifact_links l on l.artifact_id = a.id and l.target_type in ('plan', 'research') \
+         where a.kind = 'doc' and a.body <> '' and a.updated_at > $1 and l.target_type is not null",
+    )
+    .bind(&watermark)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for (id, title, body, visibility, owner_id, rag_routing, target_type, target_id) in &arts {
+        if rag_routing
+            .as_deref()
+            .is_some_and(|r| !r.is_empty() && r != "auto")
+        {
+            // Routed artifact: re-place it by its routing rule, not the default.
+            if let Ok(Some(full)) = crate::artifacts::get_artifact(pg, id).await {
+                crate::retrieval::artifact_routing::apply_artifact_routing(pg, qd, ed, &full).await;
+            }
+            indexed += 1;
+            continue;
+        }
+        let is_plan = target_type.as_deref() == Some("plan");
+        // The TS object literals keep null valued keys (`planId: a.targetId`
+        // with targetId null serializes `"planId":null`) — and the payload
+        // feeds the content hash, so presence must match or a TS-written point
+        // churns on its first Rust re-index.
+        let mut payload = serde_json::Map::new();
+        if is_plan {
+            payload.insert("planId".into(), opt_json(target_id));
+            payload.insert("planOwnerId".into(), opt_json(owner_id));
+        } else if owner_id.is_some() {
+            payload.insert("runId".into(), opt_json(target_id));
+        } else {
+            payload.insert("runId".into(), opt_json(target_id));
+            payload.insert("orgWide".into(), Value::Bool(true));
+        }
+        let doc = IndexDoc {
+            source_type: if is_plan { "plan-doc" } else { "research" }.into(),
+            source_id: id.clone(),
+            title: Some(title.clone()),
+            text: format!("{title}\n\n{body}"),
+            payload: Some(payload),
+            href: Some(if is_plan {
+                "/artifacts".into()
+            } else {
+                format!("/research/{}", target_id.clone().unwrap_or_default())
+            }),
+        };
+        if !is_plan && visibility == "private" {
+            if let Some(owner) = owner_id {
+                index_personal(pg, qd, ed, owner, &doc).await;
+            }
+        } else {
+            let _ = index_activity(pg, qd, ed, &doc).await;
+        }
+        indexed += 1;
+    }
+
+    let _ = crate::gateway::settings::set_setting(pg, SWEEP_KEY, &Value::String(now)).await;
+    indexed
+}
+
+/// Opportunistic scheduling: any comms/search read may kick a sweep, at most
+/// every 15 minutes, never blocking. Process-local, like the TS module boolean.
+static LAST_SWEEP_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn maybe_rag_sweep(state: crate::state::AppState) {
+    let now = wall_ms();
+    let last = LAST_SWEEP_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if now - last < SWEEP_INTERVAL_MS {
+        return;
+    }
+    LAST_SWEEP_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+    tokio::spawn(async move {
+        let qd = crate::retrieval::qdrant::real_deps();
+        let ed = crate::retrieval::embed::real_deps();
+        let _ = sweep_new_activity(&state.pg, &qd, &ed).await;
+    });
 }
 
 #[cfg(test)]

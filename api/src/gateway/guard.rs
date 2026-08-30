@@ -750,7 +750,10 @@ pub enum Groundable {
     FindingAndRedaction,
 }
 
-#[derive(Debug, Clone)]
+/// Serialized for the callers that PIN findings to their own rows
+/// (`channel_messages.guard`): key order is the TS interface's, and `grounded`
+/// is absent-when-false exactly as the TS optional is.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Finding {
     pub check: &'static str,
     pub severity: &'static str,
@@ -760,7 +763,26 @@ pub struct Finding {
     /// The flagged span was already in the turn's input — not evidence about
     /// the model. Kept only so `needs_redaction` still says yes; never
     /// recorded, never disclosed.
+    #[serde(skip_serializing_if = "is_false")]
     pub grounded: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The audience a reply is about to reach (guardrails.ts `GuardContext.spread`).
+/// CONTAINED is the 1:1 default — a DM back to the person who pasted the data.
+/// BROADCAST is a channel: the reply lands in front of everyone in the room and
+/// in the retrieval index behind it, an audience the source material never
+/// had, so the "it is already in the ticket anyway" grounding exemption does
+/// not hold — a grounded finding+redaction hit SURVIVES (as grounded: it still
+/// is not evidence about the model), and redaction under broadcast passes no
+/// grounding at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spread {
+    Contained,
+    Broadcast,
 }
 
 /// What a caller can honestly say about the turn's tool results. A path with
@@ -855,13 +877,14 @@ const RULES: &[RuleDef] = &[
 /// only); `grounding` is its normalized form for span grounding. The gateway
 /// always supplies the full input (`grounding_text_of`), so GuardContext's
 /// narrow `userMessage` fallback has no caller here. `spread` is Contained on
-/// every gateway path.
+/// every gateway path; the comms reply loop is the broadcast caller.
 pub struct GuardContext<'a> {
     pub answer: &'a str,
     pub tool_record: &'a ToolRecord,
     pub input_text: &'a str,
     pub policed_hosts: &'a [String],
     pub grounding: &'a Grounding,
+    pub spread: Spread,
 }
 
 /// A rule's raw hit, before the confidence threshold and grounding decision.
@@ -954,8 +977,18 @@ fn evaluate(rule: &RuleDef, ctx: &GuardContext, config: &GuardConfig) -> Option<
             grounded: true,
             ..finding
         }),
-        // Contained (the gateway's only spread): both halves drop.
-        Groundable::FindingAndRedaction => None,
+        // Contained: both halves drop — the data came from this person and is
+        // going back to this person. Broadcast REVERSES it (guardrails.ts
+        // `GuardContext.spread`): the audience argument no longer holds, so
+        // the finding survives as grounded (still not evidence about the
+        // model) and the persisted copy still gets scrubbed.
+        Groundable::FindingAndRedaction => match ctx.spread {
+            Spread::Contained => None,
+            Spread::Broadcast => Some(Finding {
+                grounded: true,
+                ..finding
+            }),
+        },
     }
 }
 
@@ -1120,6 +1153,7 @@ pub async fn guard_completion(
     let ctx = GuardContext {
         answer,
         tool_record: &tool_record,
+        spread: Spread::Contained,
         input_text: &input_text,
         policed_hosts: &config.policed_hosts,
         grounding: &grounding,
@@ -1146,6 +1180,79 @@ pub async fn guard_completion(
 ///
 /// Never fails: a guard that errored loudly on a database hiccup would take
 /// down commenting, posting and DMs alongside it.
+/// The comms reply guard (guardrails.ts `guardChatReply`): a streamed reply
+/// the caller holds a TOOL NAMES list for — not the full record, so the record
+/// is the derived one (`overflowed` — results were too big to inspect, fail
+/// open on grounding) and `available` honestly says neither half is supplied.
+/// `spread` is the audience argument; a CHANNEL IS A BROADCAST.
+///
+/// Returns the findings and the mode; `record_findings` inside drops grounded
+/// ones, exactly as the TS `.catch(() => {})` call does.
+pub async fn guard_chat_reply(
+    pg: &PgPool,
+    answer: &str,
+    tool_names: &[String],
+    user_message: &str,
+    caller: &str,
+    model: &str,
+    spread: Spread,
+) -> (Vec<Finding>, GuardMode) {
+    let config = guard_config(pg).await;
+    if config.mode == GuardMode::Off || answer.is_empty() {
+        return (Vec::new(), config.mode);
+    }
+    let backing_tools: Vec<String> = tool_names
+        .iter()
+        .filter(|n| !n.is_empty() && !nonbacking().contains(n.as_str()))
+        .cloned()
+        .collect();
+    let tool_record = ToolRecord {
+        backing_tools,
+        results_text: String::new(),
+        any_error: false,
+        overflowed: true,
+    };
+    let grounding = Grounding::new(user_message);
+    let ctx = GuardContext {
+        answer,
+        tool_record: &tool_record,
+        input_text: user_message,
+        policed_hosts: &config.policed_hosts,
+        grounding: &grounding,
+        spread,
+    };
+    let findings = run_guardrails(
+        &ctx,
+        &config,
+        &Available {
+            results: false,
+            error_info: false,
+        },
+    );
+    record_findings(pg, &findings, caller, model, Some("fleet"), config.mode).await;
+    (findings, config.mode)
+}
+
+/// redactFindings: scrub each finding's SNIPPET in place — a pinned finding
+/// carries a verbatim excerpt of the flagged span, and `zero_tool_claim` does
+/// not truncate its own. Contained redaction with no grounding: the snippet is
+/// evidence, and broadcast already stripped the exemption upstream.
+pub fn redact_findings(findings: &[Finding]) -> Vec<Finding> {
+    findings
+        .iter()
+        .map(|f| {
+            if f.snippet.is_empty() {
+                f.clone()
+            } else {
+                Finding {
+                    snippet: redact_secrets(&f.snippet, None).0,
+                    ..f.clone()
+                }
+            }
+        })
+        .collect()
+}
+
 pub async fn guard_text(pg: &PgPool, text: &str, input: Option<&str>) -> Vec<Finding> {
     if text.trim().is_empty() {
         return Vec::new();
@@ -1173,6 +1280,7 @@ pub fn gate_safe(config: &GuardConfig, text: &str, input: Option<&str>) -> Vec<F
         input_text,
         policed_hosts: &config.policed_hosts,
         grounding: &grounding,
+        spread: Spread::Contained,
     };
     RULES
         .iter()
@@ -1261,6 +1369,7 @@ mod tests {
             input_text: input,
             policed_hosts: &[],
             grounding: g,
+            spread: Spread::Contained,
         }
     }
 

@@ -56,16 +56,40 @@ describe('maybeProxy', () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
-    // Channels is a batch-5 group — nothing under /api/channels has crossed,
-    // so the whole path stays TS. (Boards and tasks used to live here; they
-    // crossed whole and moved to the prefix list above.)
-    expect(await maybeProxy(req('/api/channels'), '/api/channels')).toBeNull()
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
     // Admin groups still on TS — invites sends email from its handler,
     // model-fitness is the probe suite's own plane.
     expect(await maybeProxy(req('/api/admin/invites'), '/api/admin/invites')).toBeNull()
     expect(await maybeProxy(req('/api/admin/model-fitness'), '/api/admin/model-fitness')).toBeNull()
+    // The comms siblings are NOT under the channels prefix — conversations and
+    // dms are their own route families and stay TS until the chat batch.
+    expect(await maybeProxy(req('/api/conversations'), '/api/conversations')).toBeNull()
+    expect(await maybeProxy(req('/api/dms'), '/api/dms')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards the comms plane whole — every channels.* route under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/channels',
+      '/api/channels/00000000-0000-4000-8000-000000000000',
+      '/api/channels/00000000-0000-4000-8000-000000000000/agents',
+      '/api/channels/00000000-0000-4000-8000-000000000000/conclude',
+      '/api/channels/00000000-0000-4000-8000-000000000000/events',
+      '/api/channels/00000000-0000-4000-8000-000000000000/members',
+      '/api/channels/00000000-0000-4000-8000-000000000000/messages',
+      '/api/channels/00000000-0000-4000-8000-000000000000/messages/00000000-0000-4000-8000-000000000000',
+      '/api/channels/00000000-0000-4000-8000-000000000000/messages/00000000-0000-4000-8000-000000000000/reactions',
+      '/api/channels/00000000-0000-4000-8000-000000000000/read',
+      // The plan-draft mount that crossed earlier — the prefix subsumes the
+      // SHAPES entry it used to need.
+      '/api/channels/00000000-0000-4000-8000-000000000000/plan',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(11)
   })
 
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {

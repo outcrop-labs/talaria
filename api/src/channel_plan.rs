@@ -114,7 +114,10 @@ async fn plan_from_transcript(
         transcript: transcript.to_string(),
         // TS gates each on the TRIMMED value but interpolates the raw one —
         // whitespace-only context is no context.
-        plan_doc: opts.plan_doc.filter(|d| !d.trim().is_empty()).map(str::to_string),
+        plan_doc: opts
+            .plan_doc
+            .filter(|d| !d.trim().is_empty())
+            .map(str::to_string),
         template_prompt: opts.template_prompt.filter(|t| !t.is_empty()),
         // Never fatal: an org with no workflows, or a failed read, just means
         // no routing labels. Same posture this call has always had.
@@ -204,7 +207,7 @@ pub async fn plan_from_channel(
     routed_model: &str,
     tpl: &DraftTemplateCtx<'_>,
 ) -> Result<PlanOutcome, String> {
-    let history = list_channel_messages(&state.pg, channel_id, -1, 80)
+    let history = list_channel_messages(&state.pg, channel_id, -1, 80, false)
         .await
         .map_err(|e| e.to_string())?;
     let transcript = history
