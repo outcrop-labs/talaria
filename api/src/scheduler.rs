@@ -337,8 +337,9 @@ fn disabled_by_env(value: Option<&str>) -> bool {
 /// THE FLIP as a pure read — `TALARIA_SCHEDULER=rust` means this process owns
 /// the schedule (see the header). Every behavior that changes at the handoff
 /// reads this one predicate, so there is exactly one sentence to get right:
-/// `work_dispatch::dispatch_deps` builds the real driver edges, the four
-/// enqueue sites drive inline again, the models route's blurb kick stands
+/// `work_dispatch::dispatch_deps` builds the real driver edges, the five
+/// enqueue sites drive inline again (the admin rag route's two kicks became
+/// live ones when it crossed), the models route's blurb kick stands
 /// down for the blurb job, and `main` arms.
 fn schedule_owned_here(value: Option<&str>) -> bool {
     value == Some("rust")

@@ -9,10 +9,11 @@
 //   sources           the convenience indexers and the KB doc ↔ RAG routing
 //   rerank            the precision stage — best-effort by contract, never fatal
 //   artifact_routing  artifact ↔ brain placement (auto / none / explicit)
-//   backfill          the health probes (the repair runs live in runs/defs)
+//   backfill          the health probe + the backfill run's read shape
+//   migrate           the reindex run's read shape + the 60s upgrade status
 //
 // WHY A DIRECTORY AND NOT FLAT FILES. The crate's flat modules are single
-// concerns (search.rs, mcp_registry.rs); this is a seven-file family with
+// concerns (search.rs, mcp_registry.rs); this is a nine-file family with
 // internal dependencies, which is exactly what gateway/ and runs/ already
 // model. The TS side keeps the same family under server/retrieval/.
 //
@@ -29,6 +30,7 @@ pub mod backfill;
 pub mod collections;
 pub mod embed;
 pub mod index;
+pub mod migrate;
 pub mod qdrant;
 pub mod rerank;
 pub mod sources;

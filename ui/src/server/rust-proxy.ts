@@ -87,6 +87,11 @@ const EXACT = new Set([
   '/api/me',
   '/api/me/events',
   '/api/admin/model-roles',
+  // The retrieval console. EXACT because the /api/admin/rag path names one
+  // route file — the bare /api/rag/* family (collections, search) is a
+  // different path that stays TS, and a PREFIXES entry here would not touch
+  // it anyway, but exactness keeps that boundary stated.
+  '/api/admin/rag',
   '/api/fleet/create',
   '/api/fleet/hires',
 ])

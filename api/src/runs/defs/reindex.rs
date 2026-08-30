@@ -1101,13 +1101,13 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
                 })
             })
         },
-        // TS's invalidate resets a 60s upgrade-status cache that lives in
-        // process-local TS state (retrieval/migrate.ts) — state no Rust code
-        // holds, so there is nothing here to invalidate YET. The edge gets
-        // its real body the moment the upgrade-status surface crosses (its
-        // route owns the cache then); until then a no-op is the honest port,
-        // not a stub.
-        invalidate: Arc::new(|| {}),
+        // The upgrade-status cache drop. The 60s cache crossed with the
+        // admin rag route and lives in retrieval/migrate.rs now — one per
+        // process, exactly like TS's module state — so this process's run
+        // drops this process's cache after every collection it rebuilds: a
+        // cached "needs reindex" surviving the rebuild that fixed it is an
+        // alarm that trains people to ignore alarms.
+        invalidate: Arc::new(crate::retrieval::migrate::invalidate_upgrade_status),
         backfill: real_backfill_deps(state.clone()),
     }
 }

@@ -7,6 +7,7 @@ pub mod admin_instance;
 pub mod admin_model_roles;
 pub mod admin_password_accounts;
 pub mod admin_permissions;
+pub mod admin_rag;
 pub mod agent_role_templates;
 pub mod agents;
 pub mod apps;
@@ -409,6 +410,16 @@ pub fn router(state: AppState) -> Router {
             get(admin_model_roles::get)
                 .put(admin_model_roles::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        // The retrieval console — the route that kicks the rag-backfill and
+        // rag-reindex runs and reads their projections. The bare /api/rag/*
+        // routes (collections, search) are a different family, still TS.
+        .route(
+            "/api/admin/rag",
+            get(admin_rag::get)
+                .put(admin_rag::put)
+                .post(admin_rag::post)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
         )
         // The two fleet routes that own the hire lifecycle (the other 18
         // fleet.* files — status, stop/start, logs, env — still serve from TS;

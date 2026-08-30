@@ -133,6 +133,37 @@ pub const RERANK_PROVIDERS: &[RerankProviderMeta] = &[
     },
 ];
 
+/// The wire view of the provider catalog — the admin rag GET's `providers`
+/// array. Same fields as the meta, in the TS key order the panel was built
+/// against (id, label, country, needsUrl, needsKey, fallbackModels,
+/// liveCatalog).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankProviderPublic {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub country: &'static str,
+    pub needs_url: bool,
+    pub needs_key: bool,
+    pub fallback_models: &'static [&'static str],
+    pub live_catalog: bool,
+}
+
+pub fn providers_public() -> Vec<RerankProviderPublic> {
+    RERANK_PROVIDERS
+        .iter()
+        .map(|p| RerankProviderPublic {
+            id: p.id,
+            label: p.label,
+            country: p.country,
+            needs_url: p.needs_url,
+            needs_key: p.needs_key,
+            fallback_models: p.fallback_models,
+            live_catalog: p.live_catalog,
+        })
+        .collect()
+}
+
 /// The stored shape. Serialized camelCase with absent fields OMITTED, byte
 /// for byte the row the TS side writes — the same app_settings key is read
 /// and written by both runtimes during coexistence.
@@ -162,14 +193,27 @@ fn defaults() -> RerankConfig {
     }
 }
 
+/// TS's `DEFAULTS = { provider: 'off', candidates: 30 }` — key order and all,
+/// because the admin surfaces below carry the row through verbatim rather
+/// than re-shaping it onto a struct.
+fn defaults_value() -> Value {
+    json!({"provider": "off", "candidates": 30})
+}
+
+/// The stored row verbatim — TS's `rows[0]?.value ?? fallback`. The column is
+/// jsonb, so the keys come back in Postgres's own canonical order (shortest
+/// key first); that is the order TS's JSON.parse keeps, and it flows straight
+/// onto the admin wire below.
+async fn stored_config(pg: &PgPool) -> Value {
+    get_setting(pg, KEY, defaults_value()).await
+}
+
 pub async fn get_rerank_config(pg: &PgPool) -> RerankConfig {
-    let fallback = serde_json::to_value(defaults()).expect("the default config is plain data");
-    let v = get_setting(pg, KEY, fallback).await;
-    // TS carries the stored row as-is (`rows[0]?.value ?? fallback`); a row
-    // whose shape no longer parses falls back to the defaults here rather
-    // than poisoning every search — recorded divergence, unreachable unless
-    // the key is hand-edited.
-    serde_json::from_value(v).unwrap_or_else(|_| defaults())
+    // The typed view the SEARCH path reads. TS carries the stored row as-is
+    // (`rows[0]?.value ?? fallback`); a row whose shape no longer parses
+    // falls back to the defaults here rather than poisoning every search —
+    // recorded divergence, unreachable unless the key is hand-edited.
+    serde_json::from_value(stored_config(pg).await).unwrap_or_else(|_| defaults())
 }
 
 /// The patch the admin route sends. TS distinguishes `undefined` (leave the
@@ -183,59 +227,99 @@ pub struct RerankPatch {
     pub candidates: Option<i64>,
 }
 
-pub async fn set_rerank_config(
-    state: &AppState,
+/// TS's `setRerankConfig` is a spread, not a merge onto a fixed shape:
+/// `{...cur}` starts from the stored row's own key order, assigning an
+/// existing key keeps its position while a NEW key appends, and the
+/// `?? undefined` / apiKey-ternary paths leave the key ABSENT
+/// (JSON.stringify drops undefined) rather than nulled. `key_sealed` is the
+/// already-sealed token (or the clear) — sealing needs the box, so the
+/// caller resolves it before this pure fold runs.
+fn apply_patch(
+    next: &mut serde_json::Map<String, Value>,
     patch: RerankPatch,
-) -> Result<RerankConfig, String> {
-    let mut next = get_rerank_config(&state.pg).await;
+    key_sealed: Option<Option<String>>,
+) {
     if let Some(p) = patch.provider {
-        next.provider = p;
+        next.insert("provider".into(), json!(p));
     }
     if let Some(u) = patch.url {
-        next.url = u;
-    }
-    if let Some(m) = patch.model {
-        next.model = m;
-    }
-    if let Some(c) = patch.candidates {
-        next.candidates = Some(c.clamp(5, 100));
-    }
-    if let Some(k) = patch.api_key {
-        next.key_sealed = match k {
-            Some(plaintext) => {
-                let sb = state.secretbox().await?;
-                Some(sb.seal(&plaintext).map_err(|e| e.to_string())?)
+        match u {
+            Some(url) => {
+                next.insert("url".into(), json!(url));
             }
-            None => None, // null clears
+            None => {
+                next.remove("url");
+            }
         };
     }
-    let v = serde_json::to_value(&next).expect("the config is plain data");
+    if let Some(m) = patch.model {
+        match m {
+            Some(model) => {
+                next.insert("model".into(), json!(model));
+            }
+            None => {
+                next.remove("model");
+            }
+        };
+    }
+    if let Some(c) = patch.candidates {
+        next.insert("candidates".into(), json!(c.clamp(5, 100)));
+    }
+    if let Some(k) = key_sealed {
+        match k {
+            Some(sealed) => {
+                next.insert("keySealed".into(), json!(sealed));
+            }
+            None => {
+                next.remove("keySealed");
+            }
+        };
+    }
+}
+
+pub async fn set_rerank_config(state: &AppState, patch: RerankPatch) -> Result<Value, String> {
+    // Seal BEFORE anything touches the row — a broken box must not leave a
+    // half-written config behind.
+    let key_sealed = match &patch.api_key {
+        Some(Some(plaintext)) => {
+            let sb = state.secretbox().await?;
+            Some(Some(sb.seal(plaintext).map_err(|e| e.to_string())?))
+        }
+        Some(None) => Some(None), // null clears
+        None => None,
+    };
+    let mut next = match stored_config(&state.pg).await {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    apply_patch(&mut next, patch, key_sealed);
+    let v = Value::Object(next);
     set_setting(&state.pg, KEY, &v)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(next)
+    // The column re-orders canonically on the write; the returned value is
+    // the same pre-normalization `next` object TS's caller holds.
+    Ok(v)
 }
 
-/// Redacted view for the admin UI.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RerankConfigPublic {
-    pub provider: String,
-    pub url: Option<String>,
-    pub model: Option<String>,
-    pub candidates: Option<i64>,
-    pub has_key: bool,
+/// The public fold: `const { keySealed, ...rest } = cfg; return { ...rest,
+/// hasKey: !!keySealed }` — the stored row's own keys in their own order,
+/// keySealed gone, hasKey appended last. A passthrough, not a re-shaped
+/// struct: the wire's key order is the jsonb row's order, nothing else.
+fn public_of(stored: Value) -> Value {
+    let mut map = match stored {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let has_key = map.get("keySealed").is_some_and(|k| !k.is_null());
+    map.remove("keySealed");
+    map.insert("hasKey".into(), json!(has_key));
+    Value::Object(map)
 }
 
-pub async fn rerank_config_public(pg: &PgPool) -> RerankConfigPublic {
-    let cfg = get_rerank_config(pg).await;
-    RerankConfigPublic {
-        provider: cfg.provider,
-        url: cfg.url,
-        model: cfg.model,
-        candidates: cfg.candidates,
-        has_key: cfg.key_sealed.is_some(),
-    }
+/// Redacted view for the admin UI — never carries keySealed.
+pub async fn rerank_config_public(pg: &PgPool) -> Value {
+    public_of(stored_config(pg).await)
 }
 
 /// The jsonFetch port: 15s, non-ok is `"{status}: {first 200 chars}"`.
@@ -914,6 +998,116 @@ mod tests {
                 candidates: Some(30),
                 ..Default::default()
             }
+        );
+    }
+
+    fn map_of(v: Value) -> serde_json::Map<String, Value> {
+        match v {
+            Value::Object(m) => m,
+            _ => unreachable!("the fixture is an object"),
+        }
+    }
+
+    #[test]
+    fn the_public_config_is_the_stored_row_in_its_own_order() {
+        // jsonb's canonical order (shortest key first) is what TS reads back
+        // and spreads — these bytes are the live dev row's, diffed against
+        // the TS route.
+        assert_eq!(
+            public_of(
+                json!({"model": "x", "provider": "tei", "candidates": 10, "keySealed": "v1:a:b:c"})
+            )
+            .to_string(),
+            r#"{"model":"x","provider":"tei","candidates":10,"hasKey":true}"#
+        );
+        // No row at all: DEFAULTS plus hasKey false, in DEFAULTS' order.
+        assert_eq!(
+            public_of(defaults_value()).to_string(),
+            r#"{"provider":"off","candidates":30,"hasKey":false}"#
+        );
+        // A null keySealed is as falsy as an absent one.
+        assert_eq!(
+            public_of(json!({"provider": "tei", "keySealed": null})).to_string(),
+            r#"{"provider":"tei","hasKey":false}"#
+        );
+    }
+
+    #[test]
+    fn the_patch_folds_a_spread_not_a_reshape() {
+        // Against DEFAULTS: an existing key keeps its position, a fresh key
+        // appends, and the sealed key lands last. (`api_key` stays None in
+        // the struct — the caller seals and hands the token in separately.)
+        let mut next = map_of(defaults_value());
+        apply_patch(
+            &mut next,
+            RerankPatch {
+                provider: Some("tei".into()),
+                url: None,
+                model: Some(Some("x".into())),
+                api_key: None,
+                candidates: Some(10),
+            },
+            Some(Some("v1:a:b:c".into())),
+        );
+        assert_eq!(
+            Value::Object(next).to_string(),
+            r#"{"provider":"tei","candidates":10,"model":"x","keySealed":"v1:a:b:c"}"#
+        );
+
+        // Against a full row: a null url/apiKey REMOVES the keys outright
+        // (`?? undefined`, dropped by JSON.stringify), and candidates clamps
+        // to the TS bounds Math.min(100, Math.max(5, n)).
+        let mut again = map_of(json!({
+            "model": "x", "provider": "tei", "candidates": 10,
+            "url": "http://tei.local", "keySealed": "v1:a:b:c",
+        }));
+        apply_patch(
+            &mut again,
+            RerankPatch {
+                provider: None,
+                url: Some(None),
+                model: None,
+                api_key: None,
+                candidates: Some(500),
+            },
+            Some(None),
+        );
+        assert_eq!(
+            Value::Object(again).to_string(),
+            r#"{"model":"x","provider":"tei","candidates":100}"#
+        );
+    }
+
+    #[test]
+    fn the_provider_catalog_serializes_the_ts_wire_shape() {
+        let all = providers_public();
+        assert_eq!(all.len(), RERANK_PROVIDERS.len());
+        // The first entry, byte for byte the object the TS table declares —
+        // camelCase keys, declaration order, the empty list rides as [].
+        assert_eq!(
+            serde_json::to_value(&all[0]).unwrap(),
+            json!({
+                "id": "tei",
+                "label": "Self-hosted (TEI)",
+                "country": "your hardware",
+                "needsUrl": true,
+                "needsKey": false,
+                "fallbackModels": [],
+                "liveCatalog": false,
+            })
+        );
+        // A catalog-carrying entry keeps its documented list verbatim.
+        assert_eq!(
+            serde_json::to_value(&all[1]).unwrap(),
+            json!({
+                "id": "openrouter",
+                "label": "OpenRouter",
+                "country": "US",
+                "needsUrl": false,
+                "needsKey": true,
+                "fallbackModels": ["cohere/rerank-v3.5", "baai/bge-reranker-v2-m3"],
+                "liveCatalog": true,
+            })
         );
     }
 
