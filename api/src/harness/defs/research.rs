@@ -2063,7 +2063,11 @@ pub fn tool_search_transport(
                         structured: out.structured,
                     })
                 } else {
-                    let out = call_mcp_tool(&state.pg, &server, &tool, &args).await?;
+                    let sb = state
+                        .secretbox()
+                        .await
+                        .map_err(|e| format!("secretbox unavailable: {e}"))?;
+                    let out = call_mcp_tool(&state.pg, &sb, &server, &tool, &args).await?;
                     Ok(ToolOutput {
                         text: out.text,
                         structured: out.structured,

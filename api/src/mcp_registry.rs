@@ -10,107 +10,156 @@
 // gateway URLs, and the gateway filters tools/list + rejects tools/call outside
 // the allowed set. Config can't be jailbroken past the registry.
 //
-// BOUNDED PORT: what crosses here is the ORG'S OWN DOOR — `getMcpServer` +
-// `callMcpTool` + the one JSON-RPC conversation under them — because that is
-// the edge the research tool-search transport needs. The admin CRUD, the
-// assignment/access rows, per-user credentials, and the gateway's
-// `effectiveMcpFor` brain stay TS until their routes cross (batch 5).
-//
-// THE CALLER EDGE TS HAS AND THIS DOES NOT: `callMcpTool` takes an optional
-// `caller`, and a caller is the trigger for WORKSPACE-SECRET resolution — a
-// model holding «secret:deploy.github_pat» spends it here, on its way out to a
-// tool. The one ported caller (the research search step) passes NO caller, so
-// the boundary is inert on this side and the parameter is omitted rather than
-// accepted-and-ignored; it crosses with the first caller that has a user behind
-// it, together with workspace-secrets itself.
+// IDENTITY: "the acting user" here is a HUMAN, and on a per-user server this
+// module hands out that human's connected credentials (an OAuth bearer token,
+// verbatim, in upstream_headers) — owner-proxying, resolved through
+// `assistant_owner_for(subject)`, which refuses a legacy shared-key caller and
+// never through the bare model map, whose string key reads as proven.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
+use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model, subject_proven};
 use crate::gateway::provider::http;
 use crate::safe_fetch::{SafeFetch, safe_fetch};
+use crate::secretbox::SecretBox;
 
 /// The protocol revision Talaria speaks at the MCP handshake. TS home:
-/// ui/src/server/mcp-protocol.ts.
-const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
+/// ui/src/server/mcp-protocol.ts — one revision for both directions of the
+/// conversation (what our dispatchers answer and what every client asks).
+/// The literal lives in mcp_jsonrpc (the leaf every dispatcher shares);
+/// re-exported here because the registry is where TS kept it.
+pub use crate::mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 
-/// A registry row, bounded to the fields a call needs (the TS `McpServer`
-/// carries the admin surface too — tools, required headers, labels — which
-/// cross with the MCP routes that read them).
-pub struct McpServerRow {
+/// The column list every full-row read spells (mcp-registry.ts ROW) — the
+/// wire's field order IS this order.
+const ROW: &str = "id::text, name, label, description, url, headers, timeout_secs::int8, enabled, \
+                   all_agents, auth_mode::text, tools, \
+                   (trunc(extract(epoch from tools_refreshed_at) * 1000))::bigint as tools_refreshed_ms, \
+                   required_headers, (oauth is not null) as oauth_enabled, builtin, \
+                   app_slug::text, created_by, \
+                   (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
+
+/// A registry row, every column (the TS `McpServer`). The jsonb columns ride
+/// as the raw Value — pg owns their key order and the wire answer must carry
+/// it byte-for-byte.
+pub struct McpServer {
     pub id: String,
     pub name: String,
+    pub label: String,
+    pub description: Option<String>,
     pub url: String,
     /// PLAINTEXT jsonb — org-level headers an admin typed, sealed nowhere.
     pub headers: Map<String, Value>,
     pub timeout_secs: Option<i64>,
     pub enabled: bool,
+    pub all_agents: bool,
     /// 'org' = shared org headers; 'per-user' = each user connects their own.
     pub auth_mode: String,
+    /// Cached tool catalog (refresh_mcp_tools writes it).
+    pub tools: Value,
+    pub tools_refreshed_ms: Option<i64>,
+    /// Header declarations captured at install (drive per-user connect forms).
+    pub required_headers: Value,
     /// The server negotiates OAuth (discovered from its 401 challenge).
     pub oauth_enabled: bool,
     /// Talaria's own toolkit — governable here, but not removable/reconfigurable.
     pub builtin: bool,
-    /// Set when a Talaria app publishes this server — its calls dispatch
-    /// in-process, which no Rust stage can do.
+    /// Set when a Talaria APP publishes this server — its calls dispatch
+    /// in-process on the TS side (port rule 10).
     pub app_slug: Option<String>,
+    pub created_by: Option<String>,
+    pub created_ms: i64,
+}
+
+/// A registry row as it comes off the wire, in ROW order. A derived struct,
+/// not a tuple — sqlx stops implementing FromRow for tuples at 16 elements
+/// and this row carries 18.
+#[derive(sqlx::FromRow)]
+struct ServerRow {
+    id: String,
+    name: String,
+    label: String,
+    description: Option<String>,
+    url: String,
+    headers: Value,
+    timeout_secs: Option<i64>,
+    enabled: bool,
+    all_agents: bool,
+    auth_mode: String,
+    tools: Value,
+    tools_refreshed_ms: Option<i64>,
+    required_headers: Value,
+    oauth_enabled: bool,
+    builtin: bool,
+    app_slug: Option<String>,
+    created_by: Option<String>,
+    created_ms: i64,
+}
+
+fn server_of_row(r: ServerRow) -> McpServer {
+    McpServer {
+        id: r.id,
+        name: r.name,
+        label: r.label,
+        description: r.description,
+        url: r.url,
+        headers: r.headers.as_object().cloned().unwrap_or_default(),
+        timeout_secs: r.timeout_secs,
+        enabled: r.enabled,
+        all_agents: r.all_agents,
+        auth_mode: r.auth_mode,
+        tools: r.tools,
+        tools_refreshed_ms: r.tools_refreshed_ms,
+        required_headers: r.required_headers,
+        oauth_enabled: r.oauth_enabled,
+        builtin: r.builtin,
+        app_slug: r.app_slug,
+        created_by: r.created_by,
+        created_ms: r.created_ms,
+    }
+}
+
+/// The row as the routes answer it — the ROW column order, timestamps as the
+/// ISO strings `JSON.stringify(new Date(...))` produces.
+pub fn server_wire(s: &McpServer) -> Value {
+    serde_json::json!({
+        "id": s.id,
+        "name": s.name,
+        "label": s.label,
+        "description": s.description,
+        "url": s.url,
+        "headers": Value::Object(s.headers.clone()),
+        "timeoutSecs": s.timeout_secs,
+        "enabled": s.enabled,
+        "allAgents": s.all_agents,
+        "authMode": s.auth_mode,
+        "tools": s.tools,
+        "toolsRefreshedAt": s.tools_refreshed_ms.map(epoch_ms_to_iso),
+        "requiredHeaders": s.required_headers,
+        "oauthEnabled": s.oauth_enabled,
+        "builtin": s.builtin,
+        "appSlug": s.app_slug,
+        "createdBy": s.created_by,
+        "createdAt": epoch_ms_to_iso(s.created_ms),
+    })
 }
 
 /// `getMcpServer`: id OR name, one row.
 pub async fn get_mcp_server(
     pg: &PgPool,
     id_or_name: &str,
-) -> Result<Option<McpServerRow>, sqlx::Error> {
-    type Row = (
-        String,         // id
-        String,         // name
-        String,         // url
-        Value,          // headers
-        Option<i64>,    // timeout_secs
-        bool,           // enabled
-        String,         // auth_mode
-        bool,           // oauth_enabled
-        bool,           // builtin
-        Option<String>, // app_slug
-    );
-    let row: Option<Row> = sqlx::query_as(
-        "select id::text, name, url, headers, timeout_secs, enabled, auth_mode::text, \
-                (oauth is not null) as oauth_enabled, builtin, app_slug::text \
-         from mcp_servers where id::text = $1 or name = $1",
-    )
-    .bind(id_or_name)
-    .fetch_optional(pg)
-    .await?;
-    let Some((
-        id,
-        name,
-        url,
-        headers,
-        timeout_secs,
-        enabled,
-        auth_mode,
-        oauth_enabled,
-        builtin,
-        app_slug,
-    )) = row
-    else {
-        return Ok(None);
-    };
-    Ok(Some(McpServerRow {
-        id,
-        name,
-        url,
-        headers: headers.as_object().cloned().unwrap_or_default(),
-        timeout_secs,
-        enabled,
-        auth_mode,
-        oauth_enabled,
-        builtin,
-        app_slug,
-    }))
+) -> Result<Option<McpServer>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's ROW column list.
+    let sql = format!("select {ROW} from mcp_servers where id::text = $1 or name = $1");
+    let row: Option<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(id_or_name)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(server_of_row))
 }
 
 /// One tool result, flattened to the two things a caller needs: the text the
@@ -139,14 +188,14 @@ pub struct McpToolResult {
 /// instead would act as a shared identity on a server explicitly configured to
 /// never be one. Better to fail and say so.
 ///
-/// AND REFUSES TWO MORE EDGES THE TS SIDE DISPATCHES IN-PROCESS, each named so
-/// the failure reads as a port gap rather than a misconfigured registry: an
-/// APP-PUBLISHED server dispatches through the compiled app module, and an
-/// OAUTH server's org bearer lives sealed in `mcp_oauth_tokens` with a refresh
-/// leg. Both cross in the batch-5 fleet/MCP plane; both are ledger items in
-/// RUST-MIGRATION.md until then.
+/// AND REFUSES ONE EDGE THE TS SIDE DISPATCHES IN-PROCESS, named so the
+/// failure reads as the port rule it is: an APP-PUBLISHED server dispatches
+/// through the compiled app module (apps/*/mcp.ts — authors' TS/node code,
+/// never port surface; docs/RUST-MIGRATION.md rule 10). OAuth servers no
+/// longer refuse here — their org bearer rides `org_session` like TS.
 pub async fn call_mcp_tool(
     pg: &PgPool,
+    sb: &SecretBox,
     server_name: &str,
     tool: &str,
     args: &Map<String, Value>,
@@ -169,18 +218,18 @@ pub async fn call_mcp_tool(
     if let Some(slug) = &server.app_slug {
         return Err(format!(
             "MCP server \"{server_name}\" is published by the app \"{slug}\" and dispatches \
-             in-process through the app runtime, which has not crossed to Rust yet"
-        ));
-    }
-    if server.oauth_enabled {
-        return Err(format!(
-            "MCP server \"{server_name}\" negotiates OAuth, and its org token lives sealed in \
-             mcp_oauth_tokens, which has not crossed to Rust yet"
+             in-process through the app runtime, which stays TS by the port's rule 10"
         ));
     }
 
+    let bearer = if server.oauth_enabled {
+        crate::mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
+    } else {
+        None
+    };
     let init = org_call(
         &server,
+        bearer.as_deref(),
         &serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -202,6 +251,7 @@ pub async fn call_mcp_tool(
     }
     let res = org_call(
         &server,
+        bearer.as_deref(),
         &serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -230,16 +280,44 @@ struct OrgReply {
     status: u16,
 }
 
-/// One POST of the conversation: org headers plus session, JSON or SSE-framed
-/// reply parsed, the session header carried forward.
+/// One POST of the conversation: org headers plus session plus (on OAuth
+/// servers) the org bearer, JSON or SSE-framed reply parsed, the session
+/// header carried forward.
+/// undici's rejection message, which is what the TS org session handed its
+/// catch: transport failures read bare "fetch failed" (the cause chain carries
+/// the detail, `(e as Error).message` does not) and an AbortSignal.timeout
+/// expiry reads like every other DOM timeout.
+fn undici_message(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "The operation was aborted due to timeout".into()
+    } else {
+        "fetch failed".into()
+    }
+}
+
+/// The same shapes for the safe-fetch leg — with one exception: a blocked URL
+/// throws BlockedUrlError on both sides, and its refusal sentence is the
+/// message that surfaces, so it passes through verbatim.
+fn undici_safe_message(e: crate::safe_fetch::SafeError) -> String {
+    match e {
+        crate::safe_fetch::SafeError::Timeout => {
+            "The operation was aborted due to timeout".into()
+        }
+        crate::safe_fetch::SafeError::Blocked(b) => b.to_string(),
+        crate::safe_fetch::SafeError::Fetch(_) => "fetch failed".into(),
+    }
+}
+
 async fn org_call(
-    server: &McpServerRow,
+    server: &McpServer,
+    bearer: Option<&str>,
     body: &Value,
     session_id: Option<&str>,
 ) -> Result<OrgReply, String> {
     // Header assembly in the TS order — content-type, accept, org headers,
-    // builtin identity, session — so a later spread overriding an earlier key
-    // (a session header named in `headers`, say) overrides the same way.
+    // builtin identity, bearer, session — so a later spread overriding an
+    // earlier key (a session header named in `headers`, say) overrides the
+    // same way.
     let mut pairs: Vec<(String, String)> = vec![
         ("content-type".into(), "application/json".into()),
         (
@@ -261,6 +339,9 @@ async fn org_call(
             std::env::var("TALARIA_AGENT_KEY").unwrap_or_default(),
         ));
     }
+    if let Some(bearer) = bearer {
+        pairs.push(("authorization".into(), format!("Bearer {bearer}")));
+    }
     if let Some(session) = session_id {
         pairs.push(("mcp-session-id".into(), session.to_string()));
     }
@@ -277,10 +358,10 @@ async fn org_call(
         for (k, v) in &pairs {
             req = req.header(k, v);
         }
-        let res = req.body(payload).send().await.map_err(|e| e.to_string())?;
+        let res = req.body(payload).send().await.map_err(|e| undici_message(&e))?;
         let status = res.status().as_u16();
         let headers = res.headers().clone();
-        let text = res.text().await.map_err(|e| e.to_string())?;
+        let text = res.text().await.map_err(|e| undici_message(&e))?;
         (status, headers, text)
     } else {
         let borrowed: Vec<(&str, &str)> = pairs
@@ -298,7 +379,7 @@ async fn org_call(
             },
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(undici_safe_message)?;
         (
             res.status,
             res.headers,
@@ -388,7 +469,679 @@ pub fn parse_mcp_response(text: &str) -> Option<Value> {
     None
 }
 
-// ── serversForAgent — the render's registry view ─────────────────────────────
+// ── The registry write half ─────────────────────────────────────────────────
+
+/// The Talaria toolkit as a governable system row: every agent carries it,
+/// and the same per-agent/per-person tool subsets apply — enforced by the
+/// gateway like any other server. Identity/lifecycle stay locked.
+pub async fn ensure_builtin_mcp(pg: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into mcp_servers (name, label, description, url, all_agents, builtin, created_by) \
+         values ('talaria', 'Talaria toolkit', \
+                 'Talaria''s own tools: tickets, documents, knowledge, channels, research, media.', \
+                 $1, true, true, 'talaria') \
+         on conflict (name) do update set builtin = true, all_agents = true, enabled = true",
+    )
+    .bind(format!("http://127.0.0.1:{}/mcp", crate::mcp_service::mcp_port()))
+    .execute(pg)
+    .await?;
+    // The Workbench surface — in-process like app servers, but NOT all_agents:
+    // access is an explicit per-agent grant like any other governed capability.
+    let tools = workbench_catalog();
+    sqlx::query(
+        "insert into mcp_servers (name, label, description, url, all_agents, created_by, tools, tools_refreshed_at) \
+         values ('workbench', 'Workbench', \
+                 'Sandboxed execution for granted agents: jobs, branches, and PRs under the platform-owned git flow.', \
+                 'talaria-workbench://core', false, 'talaria', $1, now()) \
+         on conflict (name) do update set tools = $1, tools_refreshed_at = now(), enabled = true",
+    )
+    .bind(&tools)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The Workbench tool catalog as the registry caches it (name + description
+/// capped at 300, exactly WORKBENCH_TOOLS.map in mcp-registry.ts).
+fn workbench_catalog() -> Value {
+    Value::Array(
+        crate::workbench_mcp::workbench_tools()
+            .into_iter()
+            .map(|t| {
+                let mut e = Map::new();
+                e.insert(
+                    "name".into(),
+                    Value::String(
+                        t.get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                );
+                if let Some(d) = t.get("description").and_then(Value::as_str) {
+                    e.insert("description".into(), Value::String(utf16_slice(d, 300)));
+                }
+                Value::Object(e)
+            })
+            .collect(),
+    )
+}
+
+/// JS `String.prototype.slice(0, n)` — UTF-16 code units, not chars.
+fn utf16_slice(s: &str, n: usize) -> String {
+    let mut out = String::new();
+    let mut units = 0usize;
+    for c in s.chars() {
+        units += c.len_utf16();
+        if units > n {
+            return out;
+        }
+        out.push(c);
+    }
+    out
+}
+
+pub async fn list_mcp_servers(pg: &PgPool) -> Result<Vec<McpServer>, sqlx::Error> {
+    let _ = ensure_builtin_mcp(pg).await; // best-effort, exactly TS's .catch(() => {})
+    // AssertSqlSafe: the interpolation is this crate's ROW column list.
+    let sql = format!("select {ROW} from mcp_servers order by builtin desc, name");
+    let rows: Vec<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .fetch_all(pg)
+        .await?;
+    Ok(rows.into_iter().map(server_of_row).collect())
+}
+
+/// Input to [`create_mcp_server`] — the zod-parsed POST body, schema order.
+pub struct NewServer<'a> {
+    pub name: &'a str,
+    pub label: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub url: &'a str,
+    pub headers: Option<&'a Map<String, Value>>,
+    pub timeout_secs: Option<i64>,
+    pub auth_mode: &'a str,
+    /// Declared header forms; defaults fill in exactly TS's normalization.
+    pub required_headers: &'a Value,
+    pub created_by: &'a str,
+}
+
+pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<McpServer, String> {
+    // `(input.requiredHeaders ?? []).map(...)` — name/description/isSecret/
+    // placeholder, with the nullish defaults baked in.
+    let declared: Vec<Value> = input
+        .required_headers
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|h| {
+                    serde_json::json!({
+                        "name": h.get("name").cloned().unwrap_or(Value::Null),
+                        "description": h.get("description").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        // `h.isSecret ?? false` — absent AND null both land on false.
+                        "isSecret": h.get("isSecret").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Bool(false)),
+                        "placeholder": h.get("placeholder").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // AssertSqlSafe: the interpolation is this crate's ROW column list.
+    let sql = format!(
+        "insert into mcp_servers (name, label, description, url, headers, timeout_secs, auth_mode, required_headers, created_by) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning {ROW}"
+    );
+    let row: Option<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+    .bind(input.name)
+    .bind(input.label.unwrap_or(input.name))
+    .bind(input.description)
+    .bind(input.url)
+    .bind(serde_json::Value::Object(
+        input.headers.cloned().unwrap_or_default(),
+    ))
+    .bind(input.timeout_secs)
+    .bind(input.auth_mode)
+    .bind(Value::Array(declared))
+    .bind(input.created_by)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    row.map(server_of_row).ok_or_else(|| "insert returned no row".to_string())
+}
+
+/// The updatable config fields — `None` = key absent from the patch. The
+/// nullish fields (`description`, `timeoutSecs`) are `Option<Option<_>>`:
+/// sending `null` CLEARS the column, which is a different request from
+/// omitting the key.
+#[derive(Default)]
+pub struct ServerPatch {
+    pub label: Option<String>,
+    pub description: Option<Option<String>>,
+    pub url: Option<String>,
+    pub headers: Option<Map<String, Value>>,
+    pub timeout_secs: Option<Option<i64>>,
+    pub enabled: Option<bool>,
+    pub all_agents: Option<bool>,
+    pub auth_mode: Option<String>,
+}
+
+pub async fn update_mcp_server(
+    pg: &PgPool,
+    id: &str,
+    patch: &ServerPatch,
+) -> Result<(), String> {
+    let row: Option<(bool, Option<String>)> = sqlx::query_as(
+        "select builtin, app_slug::text from mcp_servers where id::text = $1",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((builtin, app_slug)) = row else {
+        return Ok(()); // updates below match zero rows, same no-op as TS
+    };
+    if builtin
+        && (patch.url.is_some()
+            || patch.headers.is_some()
+            || patch.enabled.is_some()
+            || patch.all_agents.is_some()
+            || patch.auth_mode.is_some())
+    {
+        // The toolkit's identity and lifecycle are Talaria's; only access
+        // rules (assignments/user access, handled elsewhere) are governable.
+        return Err("the built-in Talaria toolkit cannot be reconfigured".into());
+    }
+    if app_slug.is_some()
+        && (patch.url.is_some()
+            || patch.headers.is_some()
+            || patch.enabled.is_some()
+            || patch.auth_mode.is_some())
+    {
+        // App servers have no upstream to point elsewhere and follow the app's
+        // lifecycle; allAgents/access stay governable like any server.
+        return Err("this server is published by an app; disable the app instead".into());
+    }
+    if let Some(label) = &patch.label {
+        sqlx::query("update mcp_servers set label = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(label).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(description) = &patch.description {
+        sqlx::query("update mcp_servers set description = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(description).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(timeout_secs) = &patch.timeout_secs {
+        sqlx::query("update mcp_servers set timeout_secs = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(timeout_secs).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(url) = &patch.url {
+        // A repointed server's cached catalog is stale by definition.
+        sqlx::query("update mcp_servers set url = $2, tools = '[]', tools_refreshed_at = null, updated_at = now() where id::text = $1")
+            .bind(id).bind(url).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(headers) = &patch.headers {
+        sqlx::query("update mcp_servers set headers = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(Value::Object(headers.clone())).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(enabled) = patch.enabled {
+        sqlx::query("update mcp_servers set enabled = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(enabled).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(all_agents) = patch.all_agents {
+        sqlx::query("update mcp_servers set all_agents = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(all_agents).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    if let Some(auth_mode) = &patch.auth_mode {
+        sqlx::query("update mcp_servers set auth_mode = $2, updated_at = now() where id::text = $1")
+            .bind(id).bind(auth_mode).execute(pg).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
+    let row: Option<(bool, Option<String>)> = sqlx::query_as(
+        "select builtin, app_slug::text from mcp_servers where id::text = $1",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((builtin, app_slug)) = row else {
+        return Ok(()); // delete below matches zero rows, same no-op as TS
+    };
+    if builtin {
+        return Err("the built-in Talaria toolkit cannot be removed".into());
+    }
+    if app_slug.is_some() {
+        return Err("this server is published by an app; disable or uninstall the app instead".into());
+    }
+    sqlx::query("delete from mcp_servers where id::text = $1") // assignments/access/credentials cascade
+        .bind(id)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Assignments + user access ───────────────────────────────────────────────
+
+pub async fn list_assignments(
+    pg: &PgPool,
+    server_id: &str,
+) -> Result<Vec<(String, Option<Vec<String>>)>, sqlx::Error> {
+    let rows: Vec<(String, Option<Vec<String>>)> = sqlx::query_as(
+        "select agent_model, tools from mcp_server_agents where server_id::text = $1 order by agent_model",
+    )
+    .bind(server_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn set_assignment(
+    pg: &PgPool,
+    server_id: &str,
+    agent_model: &str,
+    tools: Option<&[String]>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into mcp_server_agents (server_id, agent_model, tools) values ($1::uuid, $2, $3) \
+         on conflict (server_id, agent_model) do update set tools = $3",
+    )
+    .bind(server_id)
+    .bind(agent_model)
+    .bind(tools)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+pub async fn remove_assignment(
+    pg: &PgPool,
+    server_id: &str,
+    agent_model: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from mcp_server_agents where server_id::text = $1 and agent_model = $2")
+        .bind(server_id)
+        .bind(agent_model)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+pub async fn list_user_access(
+    pg: &PgPool,
+    server_id: &str,
+) -> Result<Vec<(String, bool, Option<Vec<String>>)>, sqlx::Error> {
+    let rows: Vec<(String, bool, Option<Vec<String>>)> = sqlx::query_as(
+        "select user_id::text, allowed, tools from mcp_user_access where server_id::text = $1",
+    )
+    .bind(server_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn set_user_access(
+    pg: &PgPool,
+    server_id: &str,
+    user_id: &str,
+    allowed: Option<bool>,
+    tools: Option<&[String]>,
+) -> Result<(), sqlx::Error> {
+    if allowed.is_none() {
+        sqlx::query("delete from mcp_user_access where server_id::text = $1 and user_id::text = $2")
+            .bind(server_id)
+            .bind(user_id)
+            .execute(pg)
+            .await?;
+        return Ok(());
+    }
+    sqlx::query(
+        "insert into mcp_user_access (server_id, user_id, allowed, tools) values ($1::uuid, $2::uuid, $3, $4) \
+         on conflict (server_id, user_id) do update set allowed = $3, tools = $4",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .bind(allowed)
+    .bind(tools)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+// ── Per-user connected accounts ─────────────────────────────────────────────
+
+pub async fn set_user_credentials(
+    pg: &PgPool,
+    sb: &SecretBox,
+    server_id: &str,
+    user_id: &str,
+    headers: Option<&Map<String, Value>>,
+) -> Result<(), String> {
+    if headers.is_none() || headers.is_some_and(|h| h.is_empty()) {
+        sqlx::query(
+            "delete from mcp_user_credentials where server_id::text = $1 and user_id::text = $2",
+        )
+        .bind(server_id)
+        .bind(user_id)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let sealed = sb
+        .seal(&Value::Object(headers.cloned().expect("checked non-empty")).to_string())
+        .map_err(|e| format!("credential seal failed: {e}"))?;
+    sqlx::query(
+        "insert into mcp_user_credentials (server_id, user_id, headers_enc) values ($1::uuid, $2::uuid, $3) \
+         on conflict (server_id, user_id) do update set headers_enc = $3, updated_at = now()",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .bind(&sealed)
+    .execute(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn has_user_credentials(
+    pg: &PgPool,
+    server_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "select 1 from mcp_user_credentials where server_id::text = $1 and user_id::text = $2",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.is_some())
+}
+
+pub async fn get_user_credentials(
+    pg: &PgPool,
+    sb: &SecretBox,
+    server_id: &str,
+    user_id: &str,
+) -> Result<Option<Map<String, Value>>, String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select headers_enc from mcp_user_credentials where server_id::text = $1 and user_id::text = $2",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((enc,)) = row else {
+        return Ok(None);
+    };
+    let opened = sb.open(&enc).map_err(|e| e.to_string())?;
+    // A failed parse reads as "no connected account" (TS returns null), which
+    // the caller treats as no access — never a thrown 500.
+    Ok(serde_json::from_str(&opened).ok())
+}
+
+// ── Effective resolution (the gateway's brain) ──────────────────────────────
+
+/// The human an AGENT CALLER may act for — its owner when it is a personal
+/// assistant, None otherwise (users.ts assistantOwnerFor). A legacy caller
+/// gets None: identified, but not proven to BE that assistant — and this
+/// resolution hands out that human's connected account.
+async fn assistant_owner_for(pg: &PgPool, subject: &AgentSubject) -> Result<Option<String>, sqlx::Error> {
+    if !subject_proven(subject) {
+        return Ok(None);
+    }
+    Ok(personal_assistant_owners(pg)
+        .await?
+        .get(subject_model(subject))
+        .cloned())
+}
+
+pub struct EffectiveMcp {
+    pub server: McpServer,
+    /// None = all tools; otherwise the enforced allowlist.
+    pub tools: Option<Vec<String>>,
+    /// Headers to speak upstream with (org's, or the acting user's sealed
+    /// set) — ordered pairs, JS object order.
+    pub upstream_headers: Vec<(String, String)>,
+}
+
+fn intersect(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, b) => b,
+        (a, None) => a,
+        (Some(a), Some(b)) => {
+            let bs: HashSet<String> = b.into_iter().collect();
+            Some(a.into_iter().filter(|t| bs.contains(t)).collect())
+        }
+    }
+}
+
+/// What one AGENT may do on one server: assignment ∩ (for a personal
+/// assistant) its owner's user access — with the owner's credentials on
+/// per-user servers. None = no access at all.
+pub async fn effective_mcp_for(
+    pg: &PgPool,
+    sb: &SecretBox,
+    subject: &AgentSubject,
+    server_name: &str,
+) -> Result<Option<EffectiveMcp>, String> {
+    let agent_model = subject_model(subject);
+    let Some(server) = get_mcp_server(pg, server_name)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    if !server.enabled {
+        return Ok(None);
+    }
+
+    let rows: Vec<(Option<Vec<String>>,)> = sqlx::query_as(
+        "select tools from mcp_server_agents where server_id::text = $1 and agent_model = $2",
+    )
+    .bind(&server.id)
+    .bind(agent_model)
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    // All-agents servers carry everyone; assignment rows become per-agent
+    // tool OVERRIDES. Scoped servers require a row outright.
+    let agent_tools = if rows.is_empty() {
+        if !server.all_agents {
+            return Ok(None);
+        }
+        None
+    } else {
+        rows[0].0.clone()
+    };
+
+    let owner = assistant_owner_for(pg, subject)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut user_tools: Option<Vec<String>> = None;
+    let mut upstream_headers: Vec<(String, String)> = server
+        .headers
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+        .collect();
+    if let Some(owner) = &owner {
+        let access: Option<(bool, Option<Vec<String>>)> = sqlx::query_as(
+            "select allowed, tools from mcp_user_access where server_id::text = $1 and user_id::text = $2",
+        )
+        .bind(&server.id)
+        .bind(owner)
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+        if access.as_ref().is_some_and(|(allowed, _)| !allowed) {
+            return Ok(None);
+        }
+        user_tools = access.and_then(|(_, tools)| tools);
+        if server.auth_mode == "per-user" {
+            if server.oauth_enabled {
+                let Some(bearer) =
+                    crate::mcp_oauth::oauth_token_for(pg, sb, &server.id, owner).await?
+                else {
+                    return Ok(None); // not connected — the server doesn't exist for this assistant yet
+                };
+                set_header(&mut upstream_headers, "authorization", &format!("Bearer {bearer}"));
+            } else {
+                let Some(creds) = get_user_credentials(pg, sb, &server.id, owner).await? else {
+                    return Ok(None);
+                };
+                for (k, v) in &creds {
+                    if let Some(v) = v.as_str() {
+                        set_header(&mut upstream_headers, k, v);
+                    }
+                }
+            }
+        }
+    } else if server.auth_mode == "per-user" {
+        // Org agents have no single acting user to be — per-user servers are
+        // personal-assistant territory by definition.
+        return Ok(None);
+    }
+    // Org-auth OAuth servers speak with the shared org connection.
+    if server.auth_mode == "org" && server.oauth_enabled {
+        let Some(bearer) = crate::mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
+        else {
+            return Ok(None); // nobody connected the org account yet
+        };
+        set_header(&mut upstream_headers, "authorization", &format!("Bearer {bearer}"));
+    }
+
+    Ok(Some(EffectiveMcp {
+        server,
+        tools: intersect(agent_tools, user_tools),
+        upstream_headers,
+    }))
+}
+
+/// `{...a, k: v}` — an existing key keeps its position and takes the value;
+/// a new one appends (the JS object spread rule preserve_order already
+/// implements; this is the pairs-list spelling of it).
+fn set_header(pairs: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some((_, v)) = pairs.iter_mut().find(|(k, _)| k == key) {
+        *v = value.to_string();
+    } else {
+        pairs.push((key.to_string(), value.to_string()));
+    }
+}
+
+// ── Discovery ───────────────────────────────────────────────────────────────
+
+/// Ask the upstream for its tool catalog (initialize + tools/list) and cache
+/// it. Ok(tools) is the refreshed catalog; Err is the route's 502 sentence.
+pub async fn refresh_mcp_tools(
+    pg: &PgPool,
+    sb: &SecretBox,
+    id: &str,
+) -> Result<Vec<Value>, String> {
+    let Some(server) = get_mcp_server(pg, id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("not found".into());
+    };
+    if server.app_slug.is_some() {
+        // App servers: the catalog comes from the compiled module — authors'
+        // TS/node code, never port surface (rule 10). Named so the 502 reads
+        // as the port boundary it is.
+        return Err(format!(
+            "app \"{}\" publishes its catalog from the app module, which stays TS by the port's rule 10",
+            server.app_slug.unwrap_or_default()
+        ));
+    }
+    // The Workbench is IN-PROCESS, and `talaria-workbench://core` is a routing
+    // token rather than an endpoint — there is nothing to connect to. The
+    // catalog reads the way the module exports it.
+    let non_http = !server.url.to_lowercase().starts_with("http://")
+        && !server.url.to_lowercase().starts_with("https://");
+    if non_http {
+        let tools = workbench_catalog();
+        store_catalog(pg, id, &tools).await?;
+        return Ok(tools.as_array().cloned().unwrap_or_default());
+    }
+    // The built-in toolkit runs as a child of this process, spawned
+    // opportunistically (renders, comms reads). On a freshly booted instance
+    // none of those has happened, so start it and wait rather than probing a
+    // port nothing is listening on.
+    if server.builtin && !crate::mcp_service::await_mcp_service(8_000).await {
+        return Err("the Talaria toolkit service did not start; check the app logs".into());
+    }
+    let bearer = if server.oauth_enabled {
+        crate::mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
+    } else {
+        None
+    };
+    let run = async {
+        let init = org_call(
+            &server,
+            bearer.as_deref(),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "talaria", "version": "1.0" },
+                },
+            }),
+            None,
+        )
+        .await?;
+        if init.status >= 400 {
+            return Err(format!("upstream {}", init.status));
+        }
+        let list = org_call(
+            &server,
+            bearer.as_deref(),
+            &serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
+            init.session.as_deref(),
+        )
+        .await?;
+        let tools: Vec<Value> = list
+            .json
+            .as_ref()
+            .and_then(|j| j.pointer("/result/tools"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|t| {
+                        let mut e = Map::new();
+                        e.insert(
+                            "name".into(),
+                            t.get("name").cloned().unwrap_or(Value::Null),
+                        );
+                        if let Some(d) = t.get("description").and_then(Value::as_str) {
+                            e.insert("description".into(), Value::String(utf16_slice(d, 300)));
+                        }
+                        Value::Object(e)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        store_catalog(pg, id, &Value::Array(tools.clone())).await?;
+        Ok(tools)
+    };
+    run.await
+}
+
+async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), String> {
+    sqlx::query(
+        "update mcp_servers set tools = $2, tools_refreshed_at = now(), updated_at = now() where id::text = $1",
+    )
+    .bind(id)
+    .bind(tools)
+    .execute(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // (mcp-registry.ts serversForAgent + the three row checks it consults.) This
 // one legitimately answers about a THIRD PARTY — fleet-render and the /api/mcp
 // admin listing ask "what should <model> carry?" with no caller in hand — so
@@ -412,21 +1165,8 @@ async fn has_oauth_tokens(
     Ok(row.is_some())
 }
 
-/// Does this server have per-user credentials stored for a user?
-async fn has_user_credentials(
-    pg: &PgPool,
-    server_id: &str,
-    user_id: &str,
-) -> Result<bool, sqlx::Error> {
-    let row: Option<(i32,)> = sqlx::query_as(
-        "select 1 from mcp_user_credentials where server_id::text = $1 and user_id::text = $2",
-    )
-    .bind(server_id)
-    .bind(user_id)
-    .fetch_optional(pg)
-    .await?;
-    Ok(row.is_some())
-}
+// (Does this server have per-user credentials stored? — the pub
+// has_user_credentials earlier in this file is that same read.)
 
 /// model → owner_user_id for every PERSONAL assistant (users.ts
 /// personalAssistantOwners). The render passes a bare model string — proven

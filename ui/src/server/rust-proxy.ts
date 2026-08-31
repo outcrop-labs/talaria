@@ -131,7 +131,24 @@ const PREFIXES = [
   // route files. The workbench MCP dispatcher the fleet's agents speak
   // crossed with them in the same crate.
   '/api/workbench',
+  // The MCP registry plane: the roster read, server CRUD (with oauth
+  // sniffing), the marketplace library/icon pair, the admin probe, and the
+  // OAuth start/callback pair — every mcp.* route file EXCEPT the gateway's
+  // app-server dispatch, which STAY_TS below holds back (app servers are
+  // named `app-{slug}` in the registry, so their gateway URL is
+  // /api/mcp/gw/app-… and the path prefix alone would swallow them).
+  '/api/mcp',
 ] as const
+
+// Holes carved OUT of the prefixes above: paths that match one of these stay
+// on TS even though a PREFIXES entry covers them. The only resident is the
+// port's rule 10 — app modules are app authors' TS/node code, dispatched
+// in-process by the TS gateway; Rust answers a fixed sentence if hit directly
+// (dev setups that point agents straight at :5274), but the proxy never
+// routes an app server's tool traffic anywhere but the runtime that can
+// actually dispatch it. This is permanent, not backlog: the modules are
+// customer code, never port surface.
+const STAY_TS = [/^\/api\/mcp\/gw\/app-/] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it
 // besides the route itself still belongs to TS. '/api/agents' has register +
@@ -166,6 +183,10 @@ const EXACT = new Set([
   // The durable chat: one POST route, whole-path — nothing else lives at
   // /api/chat, and a prefix would be the same set anyway.
   '/api/chat',
+  // The per-user MCP connect surface — the "your servers" pane. Whole-path
+  // because /api/me itself is exact (see above): me.mcp is its own plane and
+  // crossed with the mcp family, not the me family.
+  '/api/me/mcp',
 ])
 
 // Parameterized whole-route migrations: the route crossed, but its siblings
@@ -191,6 +212,11 @@ const SHAPES = [
   /^\/api\/research\/[^/]+\/members$/,
   /^\/api\/research\/[^/]+\/conversation$/,
   /^\/api\/research\/[^/]+\/decide$/,
+  // fleet.defs.$id.mcp.ts — the fleet version-edit hook for an agent's MCP
+  // grants (+add/-remove, versioned). The rest of /api/fleet/defs (list,
+  // detail, versions) is still TS; the two EXACT fleet entries above are the
+  // hire pair only, so this shape is the family's third and lone crossing.
+  /^\/api\/fleet\/defs\/[^/]+\/mcp$/,
 ] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
@@ -215,7 +241,8 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
-  if (!base || (!EXACT.has(pathname) && !PREFIXES.some((p) => pathname.startsWith(p)) && !SHAPES.some((r) => r.test(pathname)))) return null
+  if (!base || STAY_TS.some((r) => r.test(pathname))) return null
+  if (!EXACT.has(pathname) && !PREFIXES.some((p) => pathname.startsWith(p)) && !SHAPES.some((r) => r.test(pathname))) return null
 
   const incoming = new URL(request.url)
   const target = base + incoming.pathname + incoming.search

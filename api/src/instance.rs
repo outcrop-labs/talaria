@@ -43,6 +43,17 @@ pub async fn get_instance_domain(pg: &PgPool) -> serde_json::Value {
     get_setting(pg, DOMAIN_KEY, serde_json::Value::Null).await
 }
 
+/// Canonical base URL when a verified hosting domain exists; else None (the
+/// caller falls back to the request origin).
+pub async fn instance_base_url(pg: &PgPool) -> Option<String> {
+    let cfg = get_instance_domain(pg).await;
+    let domain = cfg.get("domain").and_then(|d| d.as_str())?;
+    if !cfg.get("verified").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    Some(format!("https://{domain}"))
+}
+
 /// Hand-rolled `/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+(:\d+)?$/`
 /// — labels of 1–63 [a-z0-9-] with no leading/trailing dash, two or more of
 /// them (a bare host is not a hosting domain), optional numeric port.

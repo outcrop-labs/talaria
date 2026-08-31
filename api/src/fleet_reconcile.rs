@@ -1,0 +1,100 @@
+// Fleet reconciliation — port of ui/src/server/fleet-reconcile.ts's rollAgent
+// (the module's other exports are read-plane surface that crosses with the
+// fleet-status routes). A ROLL is the blue/green cutover: render the incoming
+// slot alongside the active one, bring it up, wait for real health, flip the
+// manifest, drain, retire the old container. In-flight replies never hit a
+// dead container, and an unhealthy replacement never takes over — the old
+// container keeps serving and the roll reports why.
+
+use sqlx::PgPool;
+
+use crate::fleet_docker::{self, Slot};
+use crate::fleet_render::{RollOverlay, next_free_port, render_fleet};
+use crate::secretbox::SecretBox;
+
+/// How long the old container keeps serving after cutover so in-flight
+/// replies drain (fleet-reconcile.ts ROLL_DRAIN_MS).
+fn roll_drain_ms() -> u64 {
+    std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(45.0)
+        .max(0.0) as u64
+        * 1000
+}
+
+/// The roll verdict. `Err` is a thrown step (the caller decides what that
+/// means); `Ok(Some(error))` is TS's `{ ok: false, error }` — a deliberate
+/// soft failure with a sentence for the UI.
+///
+/// Everything a running agent's config bakes in at process start — MCP
+/// servers above all — becomes live only through this.
+pub async fn roll_agent(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<Option<String>, String> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "select slug, display_name, active_slot from agent_defs \
+         where department = $1 and managed and enabled",
+    )
+    .bind(department)
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((slug, display_name, active)) = rows.first().cloned() else {
+        return Ok(Some(format!(
+            "no managed agent in department \"{department}\""
+        )));
+    };
+    let old_slot = if active.as_deref() == Some("b") {
+        Slot::B
+    } else {
+        Slot::A
+    };
+    let new_slot = if old_slot == Slot::A { Slot::B } else { Slot::A };
+    let new_port = next_free_port(pg).await.map_err(|e| e.to_string())?;
+
+    // 1. Overlay render: both slots in the compose file; manifest still old.
+    render_fleet(
+        pg,
+        sb,
+        Some(RollOverlay {
+            slug: &slug,
+            slot: new_slot,
+            port: new_port,
+        }),
+    )
+    .await?;
+    // 2. Bring the incoming slot up and wait for real health.
+    fleet_docker::fleet_up_slot(pg, department, new_slot).await?;
+    if !fleet_docker::wait_healthy_slot(department, new_slot, 120_000).await {
+        let _ = fleet_docker::remove_container_by_name(&fleet_docker::slot_container(
+            department, new_slot,
+        ))
+        .await;
+        render_fleet(pg, sb, None).await?; // back to steady state; the old container never blinked
+        return Ok(Some(format!(
+            "{display_name}: replacement never became healthy — kept the old container"
+        )));
+    }
+    // Toolkit-first by default: strip the image's bundled note-tool skills the
+    // moment the newcomer is healthy (Talaria-managed skills are untouched).
+    let _ = fleet_docker::prune_bundled_skills(department, new_slot).await;
+    // 3. Cutover: incoming slot becomes active (new port), manifest re-renders.
+    sqlx::query("update agent_defs set active_slot = $2, gateway_port = $3 where slug = $1")
+        .bind(&slug)
+        .bind(if new_slot == Slot::B { "b" } else { "a" })
+        .bind(new_port)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+    render_fleet(pg, sb, None).await?;
+    // 4. Drain in-flight replies on the old container, then retire it.
+    tokio::time::sleep(std::time::Duration::from_millis(roll_drain_ms())).await;
+    let _ = fleet_docker::remove_container_by_name(&fleet_docker::slot_container(
+        department, old_slot,
+    ))
+    .await;
+    Ok(None)
+}

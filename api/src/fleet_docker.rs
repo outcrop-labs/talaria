@@ -143,8 +143,19 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it, but the shape is what TS handed back.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
+    let slot = active_slot(pg, department).await;
+    fleet_up_slot(pg, department, slot).await
+}
+
+/// The roll's spelling: address a SPECIFIC slot (the incoming one), not the
+/// active one (fleet-docker.ts fleetUp(department, slot)).
+pub async fn fleet_up_slot(
+    pg: &PgPool,
+    department: &str,
+    slot: Slot,
+) -> Result<String, String> {
     ensure_fleet_network().await?;
-    let svc = slot_service(department, active_slot(pg, department).await);
+    let svc = slot_service(department, slot);
     let args: Vec<String> = compose_args(&["up", "-d", &svc]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (_, stderr) = docker(&refs, Duration::from_secs(120)).await?;
@@ -164,7 +175,13 @@ pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
 /// knows how to show it. A docker error mid-wait means the container is not
 /// created YET; the deadline, not the error, ends the wait.
 pub async fn wait_healthy(pg: &PgPool, department: &str, timeout_ms: u64) -> bool {
-    let name = slot_container(department, active_slot(pg, department).await);
+    let slot = active_slot(pg, department).await;
+    wait_healthy_slot(department, slot, timeout_ms).await
+}
+
+/// The roll's spelling: wait on a SPECIFIC slot (waitHealthy(department, slot)).
+pub async fn wait_healthy_slot(department: &str, slot: Slot, timeout_ms: u64) -> bool {
+    let name = slot_container(department, slot);
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     while tokio::time::Instant::now() < deadline {
         if let Ok((stdout, _)) = docker(
@@ -182,6 +199,46 @@ pub async fn wait_healthy(pg: &PgPool, department: &str, timeout_ms: u64) -> boo
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
     false
+}
+
+/// Remove a container by exact name — used to retire the old slot after a
+/// roll: it's no longer in the compose file by then, so compose can't address
+/// it (fleet-docker.ts removeContainerByName).
+pub async fn remove_container_by_name(name: &str) -> Result<(), String> {
+    docker(&["rm", "-f", name], Duration::from_secs(60))
+        .await
+        .map(|_| ())
+}
+
+/// Bundled skill packs that CONFLICT with the Talaria toolkit — they pitch a
+/// parallel system of record (external note vaults, ungoverned email) and
+/// send agents flailing. Removed explicitly because the seed marks packs
+/// "user-modified", which opt-out --remove preserves.
+const CONFLICTING_SKILL_PACKS: [&str; 5] = [
+    "note-taking", // obsidian — Talaria KB is the knowledgebase
+    "productivity/notion",
+    "productivity/airtable",
+    "productivity/google-workspace", // Talaria's Google integration is confirm-send governed
+    "email", // draft_email/read_recent_email govern mail through Talaria
+];
+
+/// Strip the image's conflicting bundled skills from a slot's container
+/// (pruneBundledSkills). Surgical — only the conflict list goes; the rest of
+/// the bundled packs are genuinely useful and stay. Best-effort by contract:
+/// the caller treats false as "skip", never as failure.
+pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
+    let name = slot_container(department, slot);
+    let paths = CONFLICTING_SKILL_PACKS
+        .iter()
+        .map(|p| format!("/opt/data/skills/{p}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    docker(
+        &["exec", &name, "sh", "-c", &format!("rm -rf {paths}")],
+        Duration::from_secs(30),
+    )
+    .await
+    .is_ok()
 }
 
 #[cfg(test)]

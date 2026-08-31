@@ -419,7 +419,7 @@ pub async fn add_version_if_changed(
     let mut tx = pg.begin().await?;
     sqlx::query(
         "insert into agent_versions (agent_id, version, soul, config, note, created_by) \
-         values ($1::uuid, $2, $3, $4, $5, $6::uuid)",
+         values ($1::uuid, $2, $3, $4, $5, $6::text)",
     )
     .bind(agent_id)
     .bind(next)

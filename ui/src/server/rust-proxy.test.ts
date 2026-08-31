@@ -297,11 +297,55 @@ describe('maybeProxy', () => {
     // me/events crossed with the realtime slice — the person's own SSE
     // firehose, served by Rust's dedicated-subscriber streams.
     expect(await maybeProxy(req('/api/me/events'), '/api/me/events')).not.toBeNull()
-    // The remaining me.* siblings are their own planes — mcp (fleet render)
-    // and assistant (agent start) — and stay TS until those batches.
-    expect(await maybeProxy(req('/api/me/mcp'), '/api/me/mcp')).toBeNull()
+    // me/mcp crossed with the mcp family — it's EXACT on its own line now.
+    expect(await maybeProxy(req('/api/me/mcp'), '/api/me/mcp')).not.toBeNull()
+    // me.assistant is still its own plane (agent start) and stays TS.
     expect(await maybeProxy(req('/api/me/assistant'), '/api/me/assistant')).toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('forwards the mcp family whole — but the app-server gateway dispatch stays TS (rule 10)', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    // The registry plane: the roster read, server CRUD, the marketplace
+    // library/icon pair, the admin probe, and the OAuth start/callback pair.
+    expect(await maybeProxy(req('/api/mcp'), '/api/mcp')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/servers'), '/api/mcp/servers')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/servers/abc'), '/api/mcp/servers/abc')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/library'), '/api/mcp/library')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/icon?domain=example.com'), '/api/mcp/icon')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/test'), '/api/mcp/test')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/oauth/start?server=x&scope=me'), '/api/mcp/oauth/start')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/oauth/callback?code=x&state=y'), '/api/mcp/oauth/callback')).not.toBeNull()
+    // The gateway itself crossed — registry-published and builtin servers
+    // relay through Rust, whose effective-mcp resolver enforces the grants.
+    expect(await maybeProxy(req('/api/mcp/gw/github'), '/api/mcp/gw/github')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/gw/talaria'), '/api/mcp/gw/talaria')).not.toBeNull()
+    // …but app servers (registry rows named `app-{slug}`) dispatch in-process
+    // through the app module — authors' TS/node code, the port's rule 10.
+    // STAY_TS carves them out; a hit is served by TS, never proxied.
+    expect(await maybeProxy(req('/api/mcp/gw/app-contacts'), '/api/mcp/gw/app-contacts')).toBeNull()
+    expect(await maybeProxy(req('/api/mcp/gw/app-anything/at/all'), '/api/mcp/gw/app-anything/at/all')).toBeNull()
+    // The carve-out is anchored to the app- name shape: a registry server
+    // literally named "app-x" is indistinguishable, but "appendix" is not.
+    expect(await maybeProxy(req('/api/mcp/gw/appendix'), '/api/mcp/gw/appendix')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(11)
+  })
+
+  it('forwards the fleet defs MCP hook by path SHAPE — the version edit, not the defs surface', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(
+      await maybeProxy(req('/api/fleet/defs/00000000-0000-4000-8000-000000000000/mcp'), '/api/fleet/defs/00000000-0000-4000-8000-000000000000/mcp'),
+    ).not.toBeNull()
+    // The rest of the defs surface (list, detail, versions) is still TS, and
+    // the shape is anchored both ends.
+    expect(await maybeProxy(req('/api/fleet/defs'), '/api/fleet/defs')).toBeNull()
+    expect(await maybeProxy(req('/api/fleet/defs/00000000-0000-4000-8000-000000000000'), '/api/fleet/defs/00000000-0000-4000-8000-000000000000')).toBeNull()
+    expect(await maybeProxy(req('/api/fleet/defs/x/mcp/tail'), '/api/fleet/defs/x/mcp/tail')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   it('forwards the run watch stream by path SHAPE — the id is in the path, and the rest of /api/runs is still TS', async () => {

@@ -59,6 +59,7 @@ pub mod conversations_id;
 pub mod cost;
 pub mod dms;
 pub mod fleet_create;
+pub mod fleet_defs_id_mcp;
 pub mod fleet_hires;
 pub mod health;
 pub mod history;
@@ -106,8 +107,18 @@ pub mod keys;
 pub mod keys_id;
 pub mod llm_chat;
 pub mod llm_models;
+pub mod mcp;
+pub mod mcp_gw_server;
+pub mod mcp_icon;
+pub mod mcp_library;
+pub mod mcp_oauth_callback;
+pub mod mcp_oauth_start;
+pub mod mcp_servers;
+pub mod mcp_servers_id;
+pub mod mcp_test;
 pub mod me;
 pub mod me_events;
+pub mod me_mcp;
 pub mod models;
 pub mod models_efforts;
 pub mod notifications;
@@ -1002,6 +1013,58 @@ pub fn router(state: AppState) -> Router {
                 .put(workbench_repos_agent_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
+        // The MCP family — the registry plane: the roster read (agent wire +
+        // the fleet's own config), server CRUD with oauth sniffing, the
+        // per-user connect surface, the fleet version-edit hook, the
+        // marketplace library/icon pair, the admin probe, and the OAuth
+        // start/callback pair (the callback is unauthenticated by design —
+        // identity is bound into the single-use state row).
+        .route(
+            "/api/mcp",
+            get(mcp::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/servers",
+            get(mcp_servers::get)
+                .post(mcp_servers::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/mcp/servers/{id}",
+            put(mcp_servers_id::put)
+                .delete(mcp_servers_id::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
+        .route(
+            "/api/me/mcp",
+            get(me_mcp::get)
+                .put(me_mcp::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/fleet/defs/{id}/mcp",
+            post(fleet_defs_id_mcp::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/library",
+            get(mcp_library::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/icon",
+            get(mcp_icon::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/test",
+            post(mcp_test::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/oauth/start",
+            get(mcp_oauth_start::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/oauth/callback",
+            get(mcp_oauth_callback::get).fallback(|| async { method_not_allowed("GET") }),
+        )
         .fallback(api_not_found)
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -1036,6 +1099,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/channels/{id}/events",
             get(channels_id_events::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The MCP gateway — both verbs. A tools/call may legitimately hold
+        // for the upstream's own 120s timeout, and the GET is a streamable-
+        // HTTP notification stream whose lifetime is the client's: neither
+        // belongs under the 30s layer.
+        .route(
+            "/api/mcp/gw/{server}",
+            post(mcp_gw_server::post)
+                .get(mcp_gw_server::get)
+                .fallback(|| async { method_not_allowed("POST, GET") }),
         )
         // The Inbox panel's command run — named SSE events for one assistant
         // turn. Same stack as the watch streams: the turn's lifetime is the

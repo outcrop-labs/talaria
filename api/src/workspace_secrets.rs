@@ -22,6 +22,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::PgPool;
 use sqlx::Row;
 
@@ -537,6 +538,97 @@ fn audit_spend(pg: &PgPool, actor: &str, name: &str, label: &str, after: serde_j
         )
         .await;
     });
+}
+
+// ── The tool-call spend boundary ─────────────────────────────────────────────
+
+/// The audit's view of one spent entry — `used` in the gateway's spend report.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SpendEntry {
+    pub name: String,
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct SpendOutcome {
+    /// Whether `rpc.params.arguments` was rewritten in place with the
+    /// substituted values.
+    pub changed: bool,
+    pub used: Vec<SpendEntry>,
+    pub unresolved: Vec<UnresolvedHandle>,
+}
+
+/// Resolve handle mentions INSIDE a gateway `tools/call` arguments object,
+/// rewriting `rpc.params.arguments` in place (spendHandlesInToolCall). The
+/// gateway's one spend boundary: a credential is spent exactly when it rides
+/// an outbound tool call, and the report (`used`, names never values) is what
+/// the relay route logs.
+///
+/// Non-`tools/call` rpcs and rpcs without an `arguments` object are returned
+/// untouched — a notification or a tools/list cannot spend anything. A value
+/// that breaks the JSON round trip forwards the call UNRESOLVED (the tool will
+/// refuse the raw handle) but still reports the spend, because it happened.
+pub async fn spend_handles_in_tool_call(
+    pg: &PgPool,
+    sb: &SecretBox,
+    rpc: &mut Value,
+    caller: &str,
+) -> Result<SpendOutcome, String> {
+    if rpc.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return Ok(SpendOutcome::default());
+    }
+    // `!rpc.params?.arguments` — JS truthiness: absent, null, false, 0 and ""
+    // don't spend; anything else (object, array, non-empty string) does.
+    let js_truthy = |v: &Value| match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
+        Value::String(s) => !s.is_empty(),
+        _ => true,
+    };
+    let Some(arguments) = rpc
+        .get_mut("params")
+        .and_then(|p| p.get_mut("arguments"))
+        .filter(|a| js_truthy(a))
+    else {
+        return Ok(SpendOutcome::default());
+    };
+    let payload = arguments.to_string();
+    let resolved = resolve_handles(pg, sb, &payload, caller).await?;
+    let used = resolved
+        .used
+        .iter()
+        .map(|u| SpendEntry {
+            name: u.name.clone(),
+            key: u.key.clone(),
+            label: u.label.clone(),
+        })
+        .collect();
+    if resolved.used.is_empty() {
+        return Ok(SpendOutcome {
+            changed: false,
+            used,
+            unresolved: resolved.unresolved,
+        });
+    }
+    // `rpc.params.arguments = JSON.parse(resolved.text)` — the assignment is
+    // whatever parses back, not necessarily an object.
+    match serde_json::from_str::<Value>(&resolved.text) {
+        Ok(next) => {
+            *arguments = next;
+            Ok(SpendOutcome {
+                changed: true,
+                used,
+                unresolved: resolved.unresolved,
+            })
+        }
+        Err(_) => Ok(SpendOutcome {
+            changed: false,
+            used,
+            unresolved: resolved.unresolved,
+        }),
+    }
 }
 
 // ── WORKING SECRETS: read, share, unshare ────────────────────────────────────

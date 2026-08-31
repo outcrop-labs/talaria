@@ -41,7 +41,7 @@ pub fn array_msg(received: &str) -> String {
     format!("Invalid input: expected array, received {received}")
 }
 
-fn string_msg(received: &str) -> String {
+pub fn string_msg(received: &str) -> String {
     format!("Invalid input: expected string, received {received}")
 }
 
@@ -435,13 +435,51 @@ pub fn zod_email_ok(s: &str) -> bool {
     })
 }
 
+/// `z.string().url()` — zod v3's own check is `new URL(value)` in a
+/// try/catch, i.e. the WHATWG URL parser, which is what `reqwest::Url`
+/// (the `url` crate) implements on this side. Message as zod prints it.
+pub fn zod_url_ok(s: &str) -> bool {
+    reqwest::Url::parse(s).is_ok()
+}
+
+/// A required `z.string().url().max(n)` member: type, then URL, then length
+/// — zod runs checks in declaration order, and every schema that bounds a
+/// URL declares `.url()` first. First use: the MCP registry family.
+pub fn url_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| string_msg("undefined"))?;
+    let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?;
+    if !zod_url_ok(s) {
+        return Err("Invalid URL".into());
+    }
+    if utf16_len(s) > max {
+        return Err(too_big_msg(max));
+    }
+    Ok(s.to_string())
+}
+
+/// The `.optional()` flavor of [`url_member`].
+pub fn optional_url_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(_) => url_member(obj, key, max).map(Some),
+    }
+}
+
 /// A required boolean member — zod's type message only (no bounds to check).
 pub fn boolean_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<bool, String> {
     let v = obj.get(key).ok_or_else(|| boolean_msg("undefined"))?;
     v.as_bool().ok_or_else(|| boolean_msg(zod_type_name(v)))
 }
 
-fn boolean_msg(received: &str) -> String {
+pub fn boolean_msg(received: &str) -> String {
     format!("Invalid input: expected boolean, received {received}")
 }
 
