@@ -116,3 +116,271 @@ pub async fn get_org_access_token(
     .await;
     Ok(Some(access_token))
 }
+
+// ── The admin/status half (org-connection.ts) ────────────────────────────────
+
+use serde::Serialize;
+
+/// The org connection's public face: the status shape plus the build targets.
+/// Wire order pinned — `{available, connected, email, scope, connectedAt,
+/// targets}` is what the admin panel reads.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsWire {
+    pub drive_folder_id: Option<String>,
+    pub calendar_id: Option<String>,
+    pub send_as: Option<String>,
+    pub shared_drive_id: Option<String>,
+}
+
+impl From<&OrgTargets> for TargetsWire {
+    fn from(t: &OrgTargets) -> Self {
+        TargetsWire {
+            drive_folder_id: t.drive_folder_id.clone(),
+            calendar_id: t.calendar_id.clone(),
+            send_as: t.send_as.clone(),
+            shared_drive_id: t.shared_drive_id.clone(),
+        }
+    }
+}
+
+/// GoogleConnectionStatus & { targets } — getOrgConnectionStatus.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgStatus {
+    pub connected: bool,
+    pub email: Option<String>,
+    pub scope: Vec<String>,
+    pub connected_at: Option<String>,
+    pub targets: TargetsWire,
+}
+
+/// One row of the connection, read whole (email, scope, refresh cipher,
+/// the four targets, created-at epoch ms).
+#[allow(clippy::type_complexity)]
+type OrgStatusRow = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+);
+
+async fn org_status_row(pg: &PgPool) -> Result<Option<OrgStatusRow>, sqlx::Error> {
+    sqlx::query_as(
+        "select email, scope, refresh_token_enc, drive_folder_id, calendar_id, send_as, \
+                shared_drive_id, (trunc(extract(epoch from created_at) * 1000))::bigint \
+         from google_org_connection where id = 1",
+    )
+    .fetch_optional(pg)
+    .await
+}
+
+/// The shared org connection's full status. No row, or a row without a
+/// refresh token, is the unconfigured zero shape (TS truthiness: a blank
+/// cipher counts as not connected).
+pub async fn get_org_connection_status(pg: &PgPool) -> Result<OrgStatus, sqlx::Error> {
+    let row = org_status_row(pg).await?;
+    let (email, scope, refresh, drive_folder_id, calendar_id, send_as, shared_drive_id, created_ms) =
+        row.unwrap_or((None, None, None, None, None, None, None, 0));
+    let targets = TargetsWire {
+        drive_folder_id,
+        calendar_id,
+        send_as,
+        shared_drive_id,
+    };
+    let connected = refresh.is_some_and(|s| !s.is_empty());
+    if !connected {
+        return Ok(OrgStatus {
+            connected: false,
+            email: None,
+            scope: vec![],
+            connected_at: None,
+            targets,
+        });
+    }
+    Ok(OrgStatus {
+        connected: true,
+        email,
+        scope: scope
+            .map(|s| {
+                s.split(' ')
+                    .filter(|p| !p.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        connected_at: (created_ms != 0).then(|| epoch_ms_to_iso(created_ms)),
+        targets,
+    })
+}
+
+/// A partial targets patch: `None` = the field was ABSENT from the body (not
+/// written); `Some(None)` = written null (cleared). Only the fields PRESENT
+/// in the patch are written — a caller setting one target must not silently
+/// clear the other three (the admin form sends all three; provisioning sends
+/// one). The Shared Drive id has its own writer.
+#[derive(Default)]
+pub struct OrgTargetsPatch {
+    pub drive_folder_id: Option<Option<String>>,
+    pub calendar_id: Option<Option<String>>,
+    pub send_as: Option<Option<String>>,
+}
+
+/// Update the org build targets (admin). Empty/blank values clear to null.
+pub async fn set_org_targets(pg: &PgPool, patch: &OrgTargetsPatch) -> Result<(), sqlx::Error> {
+    let norm = |v: Option<String>| {
+        v.and_then(|v| {
+            let t = v.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        })
+    };
+    if let Some(drive_folder_id) = patch.drive_folder_id.clone() {
+        sqlx::query(
+            "update google_org_connection set drive_folder_id = $2, updated_at = now() where id = 1",
+        )
+        .bind(norm(drive_folder_id))
+        .execute(pg)
+        .await?;
+    }
+    if let Some(calendar_id) = patch.calendar_id.clone() {
+        sqlx::query(
+            "update google_org_connection set calendar_id = $2, updated_at = now() where id = 1",
+        )
+        .bind(norm(calendar_id))
+        .execute(pg)
+        .await?;
+    }
+    if let Some(send_as) = patch.send_as.clone() {
+        sqlx::query(
+            "update google_org_connection set send_as = $2, updated_at = now() where id = 1",
+        )
+        .bind(norm(send_as))
+        .execute(pg)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Record the provisioned Shared Drive (null clears).
+pub async fn set_org_shared_drive(pg: &PgPool, id: Option<&str>) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update google_org_connection set shared_drive_id = $2, updated_at = now() where id = 1",
+    )
+    .bind(id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// What an org OAuth exchange hands the saver.
+pub struct SaveOrgConnection<'a> {
+    pub google_sub: &'a str,
+    pub email: Option<&'a str>,
+    pub scope: &'a str,
+    pub refresh_token: Option<&'a str>,
+    pub access_token: Option<&'a str>,
+    pub expires_in_seconds: Option<i64>,
+    pub connected_by: Option<&'a str>,
+    pub now_ms: i64,
+}
+
+/// Store the SHARED org connection (id=1 upsert; a missing refresh token
+/// preserves the stored one, same coalesce as the per-user save).
+pub async fn save_org_connection(
+    pg: &PgPool,
+    sb: &SecretBox,
+    input: &SaveOrgConnection<'_>,
+) -> Result<(), String> {
+    let seal_opt = |v: Option<&str>| -> Result<Option<String>, String> {
+        match v {
+            Some(v) => Ok(Some(
+                sb.seal(v)
+                    .map_err(|e| format!("google org token seal: {e}"))?,
+            )),
+            None => Ok(None),
+        }
+    };
+    let refresh_enc = seal_opt(input.refresh_token)?;
+    let access_enc = seal_opt(input.access_token)?;
+    let expires_at = match (input.access_token, input.expires_in_seconds) {
+        (Some(t), Some(secs)) if !t.is_empty() && secs != 0 => {
+            Some(epoch_ms_to_iso(input.now_ms + secs * 1000))
+        }
+        _ => None,
+    };
+    sqlx::query(
+        "insert into google_org_connection \
+             (id, google_sub, email, scope, refresh_token_enc, access_token_enc, access_expires_at, connected_by, updated_at) \
+         values (1, $1, $2, $3, $4, $5, $6, $7::uuid, now()) \
+         on conflict (id) do update set \
+             google_sub = excluded.google_sub, \
+             email = excluded.email, \
+             scope = excluded.scope, \
+             refresh_token_enc = coalesce(excluded.refresh_token_enc, google_org_connection.refresh_token_enc), \
+             access_token_enc = excluded.access_token_enc, \
+             access_expires_at = excluded.access_expires_at, \
+             connected_by = excluded.connected_by, \
+             updated_at = now()",
+    )
+    .bind(input.google_sub)
+    .bind(input.email)
+    .bind(input.scope)
+    .bind(refresh_enc)
+    .bind(access_enc)
+    .bind(expires_at)
+    .bind(input.connected_by)
+    .execute(pg)
+    .await
+    .map_err(|e| format!("google org connection save: {e}"))?;
+    Ok(())
+}
+
+/// Forget the org connection and best-effort revoke its token at Google.
+pub async fn disconnect_org(pg: &PgPool, sb: &SecretBox) {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select refresh_token_enc from google_org_connection where id = 1")
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten();
+    if let Some((Some(enc),)) = row
+        && let Ok(token) = sb.open(&enc)
+    {
+        // Dropped before the await — the Serializer's encoder fn-pointer is
+        // not Send (same note as request_refresh).
+        let body = {
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            form.append_pair("token", &token);
+            form.finish()
+        };
+        let _ = crate::gateway::provider::http()
+            .post("https://oauth2.googleapis.com/revoke")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(body)
+            .send()
+            .await;
+    }
+    let _ = sqlx::query("delete from google_org_connection where id = 1")
+        .execute(pg)
+        .await;
+}
+
+/// The connected org account's email alone, or null. The aliasing derivation
+/// reads this on the send path — plus-addresses hang off the org account, so
+/// no connection means no derived addresses (an agent's override still wins).
+pub async fn get_org_email(pg: &PgPool) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("select email, refresh_token_enc from google_org_connection where id = 1")
+            .fetch_optional(pg)
+            .await?;
+    Ok(row
+        .filter(|(_, refresh)| refresh.as_deref().is_some_and(|s| !s.is_empty()))
+        .and_then(|(email, _)| email))
+}

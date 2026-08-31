@@ -69,6 +69,27 @@ pub mod inbox_focus_conversations;
 pub mod inbox_focus_conversations_id;
 pub mod inbox_focus_state;
 pub mod inbox_focus_summary;
+pub mod integrations_google;
+pub mod integrations_google_agent_calendar;
+pub mod integrations_google_agent_drive;
+pub mod integrations_google_agent_gmail;
+pub mod integrations_google_agent_gmail_id;
+pub mod integrations_google_agent_gmail_labels;
+pub mod integrations_google_agent_gmail_organize;
+pub mod integrations_google_calendar_events;
+pub mod integrations_google_callback;
+pub mod integrations_google_connect;
+pub mod integrations_google_drive_files;
+pub mod integrations_google_drive_import;
+pub mod integrations_google_gmail_messages;
+pub mod integrations_google_gmail_send;
+pub mod integrations_google_org;
+pub mod integrations_google_org_callback;
+pub mod integrations_google_org_connect;
+pub mod integrations_google_org_health;
+pub mod integrations_google_org_provision;
+pub mod integrations_google_pending;
+pub mod integrations_google_pending_id;
 pub mod kb_comments_id;
 pub mod kb_docs_id;
 pub mod kb_docs_id_backlinks;
@@ -541,6 +562,121 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/secrets/share",
             post(secrets_share::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The integrations/google family — the personal AND org Google planes:
+        // connect/callback pairs, the org targets + provisioning + health, the
+        // pending-action approval queue, and the per-surface reads/mutations
+        // (calendar, drive, gmail) in both flavors — as the signed-in user,
+        // and as the agent acting for its owner or the org.
+        .route(
+            "/api/integrations/google",
+            get(integrations_google::get)
+                .delete(integrations_google::delete)
+                .fallback(|| async { method_not_allowed("GET, DELETE") }),
+        )
+        .route(
+            "/api/integrations/google/connect",
+            get(integrations_google_connect::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/callback",
+            get(integrations_google_callback::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/org",
+            get(integrations_google_org::get)
+                .put(integrations_google_org::put)
+                .delete(integrations_google_org::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/integrations/google/org/connect",
+            get(integrations_google_org_connect::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/org/callback",
+            get(integrations_google_org_callback::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/org/health",
+            get(integrations_google_org_health::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/org/provision",
+            get(integrations_google_org_provision::get)
+                .post(integrations_google_org_provision::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/integrations/google/pending",
+            get(integrations_google_pending::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/pending/{id}",
+            post(integrations_google_pending_id::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/calendar/events",
+            get(integrations_google_calendar_events::get)
+                .post(integrations_google_calendar_events::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/files",
+            get(integrations_google_drive_files::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/drive/import",
+            post(integrations_google_drive_import::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/gmail/messages",
+            get(integrations_google_gmail_messages::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/gmail/send",
+            post(integrations_google_gmail_send::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/calendar",
+            get(integrations_google_agent_calendar::get)
+                .post(integrations_google_agent_calendar::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/drive",
+            get(integrations_google_agent_drive::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/gmail",
+            get(integrations_google_agent_gmail::get)
+                .post(integrations_google_agent_gmail::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/gmail/labels",
+            get(integrations_google_agent_gmail_labels::get)
+                .post(integrations_google_agent_gmail_labels::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/gmail/organize",
+            post(integrations_google_agent_gmail_organize::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/gmail/{id}",
+            get(integrations_google_agent_gmail_id::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/plans/{id}/draft",

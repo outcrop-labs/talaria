@@ -230,3 +230,135 @@ pub async fn get_access_token(
     .await;
     Ok(Some(access_token))
 }
+
+// ── The connect flow's writers (connections.ts saveConnection/disconnect) ────
+
+/// What an OAuth exchange hands the saver. A missing refresh token (Google
+/// omits it when the user re-consents without prompt=consent) preserves the
+/// one already stored, so a re-connect never silently drops offline access.
+pub struct SaveConnection<'a> {
+    pub google_sub: &'a str,
+    pub email: Option<&'a str>,
+    pub scope: &'a str,
+    pub refresh_token: Option<&'a str>,
+    pub access_token: Option<&'a str>,
+    pub expires_in_seconds: Option<i64>,
+    pub now_ms: i64,
+}
+
+/// Upsert a connection after an OAuth exchange.
+pub async fn save_connection(
+    pg: &PgPool,
+    sb: &SecretBox,
+    user_id: &str,
+    input: &SaveConnection<'_>,
+) -> Result<(), String> {
+    let seal_opt = |v: Option<&str>| -> Result<Option<String>, String> {
+        match v {
+            Some(v) => Ok(Some(
+                sb.seal(v).map_err(|e| format!("google token seal: {e}"))?,
+            )),
+            None => Ok(None),
+        }
+    };
+    let refresh_enc = seal_opt(input.refresh_token)?;
+    let access_enc = seal_opt(input.access_token)?;
+    let expires_at = match (input.access_token, input.expires_in_seconds) {
+        // TS's truthiness: an empty-string token or a zero/null expiry writes
+        // no expiry at all.
+        (Some(t), Some(secs)) if !t.is_empty() && secs != 0 => Some(
+            crate::agent_auth::epoch_ms_to_iso(input.now_ms + secs * 1000),
+        ),
+        _ => None,
+    };
+    sqlx::query(
+        "insert into google_connections \
+             (user_id, google_sub, email, scope, refresh_token_enc, access_token_enc, access_expires_at, updated_at) \
+         values ($1::uuid, $2, $3, $4, $5, $6, $7, now()) \
+         on conflict (user_id) do update set \
+             google_sub = excluded.google_sub, \
+             email = excluded.email, \
+             scope = excluded.scope, \
+             refresh_token_enc = coalesce(excluded.refresh_token_enc, google_connections.refresh_token_enc), \
+             access_token_enc = excluded.access_token_enc, \
+             access_expires_at = excluded.access_expires_at, \
+             updated_at = now()",
+    )
+    .bind(user_id)
+    .bind(input.google_sub)
+    .bind(input.email)
+    .bind(input.scope)
+    .bind(refresh_enc)
+    .bind(access_enc)
+    .bind(expires_at)
+    .execute(pg)
+    .await
+    .map_err(|e| format!("google connection save: {e}"))?;
+    Ok(())
+}
+
+/// Forget a user's connection and best-effort revoke the token at Google.
+/// Revocation failing (network, already-revoked) still drops the row — the
+/// stored state and Google's may disagree for the token's remaining lifetime,
+/// which is the safer direction of the two to disagree in.
+pub async fn disconnect(pg: &PgPool, sb: &SecretBox, user_id: &str) {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select refresh_token_enc from google_connections where user_id = $1::uuid")
+            .bind(user_id)
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten();
+    if let Some((Some(enc),)) = row
+        && let Ok(token) = sb.open(&enc)
+    {
+        // Built — and dropped — before the await: the Serializer's encoder
+        // fn-pointer is not Send, and a binding still in scope at the await
+        // would make this future non-Send.
+        let body = {
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            form.append_pair("token", &token);
+            form.finish()
+        };
+        let _ = http()
+            .post("https://oauth2.googleapis.com/revoke")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await;
+    }
+    let _ = sqlx::query("delete from google_connections where user_id = $1::uuid")
+        .bind(user_id)
+        .execute(pg)
+        .await;
+}
+
+/// requireToken's failure: `NotConnected` is the GoogleNotConnected throw
+/// (getAccessToken answered null — a state); `Failed` is everything the
+/// refresh path can throw.
+#[derive(Debug)]
+pub enum RequireError {
+    NotConnected,
+    Failed(String),
+}
+
+impl From<TokenError> for RequireError {
+    fn from(e: TokenError) -> Self {
+        RequireError::Failed(e.to_string())
+    }
+}
+
+/// A valid access token, or the caller-friendly GoogleNotConnected throw
+/// (connections.ts requireToken). Drive, Gmail, and Calendar all read through
+/// this one door — the error KIND the routes branch on comes from here, once.
+pub async fn require_token(
+    pg: &PgPool,
+    sb: &SecretBox,
+    user_id: &str,
+    now_ms: i64,
+) -> Result<String, RequireError> {
+    match get_access_token(pg, sb, user_id, now_ms).await? {
+        Some(token) => Ok(token),
+        None => Err(RequireError::NotConnected),
+    }
+}

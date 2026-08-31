@@ -165,6 +165,40 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(7)
   })
 
+  it('forwards the integrations/google family whole — both connect/callback pairs, the org plane, the approvals, and every surface in both flavors', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/integrations/google',
+      '/api/integrations/google/connect',
+      '/api/integrations/google/callback?code=x&state=y',
+      '/api/integrations/google/org',
+      '/api/integrations/google/org/connect',
+      '/api/integrations/google/org/callback',
+      '/api/integrations/google/org/health',
+      '/api/integrations/google/org/provision',
+      '/api/integrations/google/pending',
+      '/api/integrations/google/pending/00000000-0000-4000-8000-000000000000',
+      '/api/integrations/google/calendar/events',
+      '/api/integrations/google/drive/files?q=name',
+      '/api/integrations/google/drive/import',
+      '/api/integrations/google/gmail/messages?q=in%3Ainbox',
+      '/api/integrations/google/gmail/send',
+      '/api/integrations/google/agent/calendar',
+      '/api/integrations/google/agent/drive',
+      '/api/integrations/google/agent/gmail',
+      // Static segments win the matchit priority — labels and organize are
+      // their own routes, and the {id} shape catches everything else.
+      '/api/integrations/google/agent/gmail/labels',
+      '/api/integrations/google/agent/gmail/organize',
+      '/api/integrations/google/agent/gmail/18c9f4a2b7e3d501',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(21)
+  })
+
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

@@ -76,3 +76,44 @@ pub async fn resolve_agent_google(
         _ => None,
     }
 }
+
+/// The Talaria user an agent is the personal assistant OF, or None for a
+/// general fleet agent. Calendar/Gmail acting-as is owner-only — general
+/// agents don't get to read/send a human's mail or calendar.
+pub async fn resolve_agent_owner_user(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select owner_user_id::text from agent_defs where model = $1 limit 1")
+            .bind(agent_model)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(owner,)| owner))
+}
+
+/// Who an agent drafts/acts FOR — without needing a live token (used for
+/// queuing a pending action). Personal assistant → its owner; general agent →
+/// the org.
+pub struct AgentPrincipal {
+    /// true → the shared org account; false → the owner_user_id's account.
+    pub is_org: bool,
+    pub owner_user_id: Option<String>,
+}
+
+pub async fn resolve_agent_principal(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<AgentPrincipal, sqlx::Error> {
+    let owner = resolve_agent_owner_user(pg, agent_model).await?;
+    Ok(match owner {
+        Some(owner_user_id) => AgentPrincipal {
+            is_org: false,
+            owner_user_id: Some(owner_user_id),
+        },
+        None => AgentPrincipal {
+            is_org: true,
+            owner_user_id: None,
+        },
+    })
+}

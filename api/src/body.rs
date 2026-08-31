@@ -259,6 +259,52 @@ pub fn optional_string_array_member(
     Ok(Some(out))
 }
 
+/// A REQUIRED array-of-strings member (`z.array(z.string().min(a).max(b))
+/// .min(lo).max(hi)`): absent answers the array type message on undefined,
+/// same as `uuid_array_member`; the empty array draws the too-small message
+/// (zod checks min before max). The organize route's ids.
+pub fn string_array_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    elem_min: usize,
+    elem_max: usize,
+    min_items: usize,
+    max_items: usize,
+) -> Result<Vec<String>, String> {
+    let out = optional_string_array_member(obj, key, elem_min, elem_max, max_items)?
+        .ok_or_else(|| array_msg("undefined"))?;
+    if out.len() < min_items {
+        return Err(array_too_small_msg(min_items));
+    }
+    Ok(out)
+}
+
+/// An optional array-of-emails member (`z.array(z.string().email()).max(n)
+/// .optional()`): elements before length, zod's order — a bad email outranks
+/// an over-long array. The calendar draft's attendees.
+pub fn optional_email_array_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max_items: usize,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None); // absent — what `.optional()` admits
+    };
+    let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for el in arr {
+        let s = el.as_str().ok_or_else(|| string_msg(zod_type_name(el)))?;
+        if !zod_email_ok(s) {
+            return Err("Invalid email address".into());
+        }
+        out.push(s.to_string());
+    }
+    if arr.len() > max_items {
+        return Err(array_too_big_msg(max_items));
+    }
+    Ok(Some(out))
+}
+
 /// An optional array-of-uuids member (`z.array(Uuid).max(n).optional()`):
 /// element type first (the string message), then the format.
 pub fn optional_uuid_array_member(

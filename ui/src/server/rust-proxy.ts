@@ -117,6 +117,13 @@ const PREFIXES = [
   // and the resolve path it serves is what MCP tool-call substitution uses,
   // so the whole feature reads and writes one Rust process's tables.
   '/api/secrets',
+  // The integrations/google family, whole: both connect/callback pairs
+  // (personal and org), the org targets/provisioning/health, the
+  // pending-action approval queue, and the per-surface reads and mutations
+  // (calendar, drive, gmail) in both flavors — as the user, and as the agent
+  // acting for its owner or the org. The family crossed with the google
+  // engines; every /api/integrations/* route file is in this set.
+  '/api/integrations',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it

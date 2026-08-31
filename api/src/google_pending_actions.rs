@@ -1,20 +1,30 @@
-// google/pending-actions.ts — the confirm-send half the Inbox reads.
+// google/pending-actions.ts — confirm-sends: outbound Google actions an agent
+// drafted, held for approval. Reads and drafts are free; anything that leaves
+// the building (an email, a calendar invite) waits here until a human approves
+// — then it executes.
 //
-// `queueAction` (the agent-drafting writer, with its approval announce) stays
-// TS-side until the integrations plane crosses: the fleet app-server still
-// queues through it. What the focus queue needs is `listPending` (the approval
-// source) and `decideAction` (the execute/reject arm of `executeAction`).
+//   personal action (a personal assistant, bound to its owner) → the OWNER approves
+//   org action (a general agent, on the shared org account)     → an ADMIN approves
 
-use base64::Engine;
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use std::sync::Arc;
 
-use crate::gateway::provider::http;
+use crate::approvals::{ApprovalDeps, announce_approval};
+use crate::gmail::{SendInput, send_message_with_token};
+use crate::google_calendar::{CreateEventInput, create_event_with_token};
 use crate::google_connections::get_access_token;
-use crate::google_org::{get_org_access_token, get_org_targets};
+use crate::google_org::{get_org_access_token, get_org_email, get_org_targets};
+use crate::realtime::RealtimeDeps;
+use crate::runs::define::run_definition;
 use crate::secretbox::SecretBox;
 
-const GMAIL_BASE: &str = "https://www.googleapis.com/gmail/v1/users/me";
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// One held outbound action (PendingAction). `created_ms` epoch — every caller
 /// renders it through `as_iso`, which is what postgres.js + `toISOString`
@@ -30,6 +40,108 @@ pub struct PendingAction {
     pub is_org: bool,
     pub status: String,
     pub created_ms: i64,
+}
+
+/// What a queueing carries. `payload` is the engine input verbatim — a
+/// SendInput's to/subject/body/cc/bcc or a CreateEventInput's fields — stored
+/// as drafted and executed as stored at approve time.
+pub struct QueueAction<'a> {
+    pub kind: &'a str,
+    pub summary: &'a str,
+    pub payload: &'a Value,
+    pub agent_model: &'a str,
+    /// Personal actions carry the owner; org actions leave it null and set
+    /// `is_org` (an admin approves those).
+    pub owner_user_id: Option<&'a str>,
+    pub is_org: bool,
+}
+
+/// `queueAction` — an agent-drafted outbound action lands here, pending.
+/// `realtime` is the fan-out the announce rides; the announce itself is
+/// detached and silent (see the spawn below).
+pub async fn queue_action(
+    pg: &PgPool,
+    realtime: RealtimeDeps,
+    input: &QueueAction<'_>,
+) -> Result<PendingAction, String> {
+    #[allow(clippy::type_complexity)] // the queued row's own columns, one each
+    let row: (
+        String,
+        String,
+        Option<String>,
+        Value,
+        Option<String>,
+        Option<String>,
+        bool,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        "insert into google_pending_actions (kind, summary, payload, agent_model, owner_user_id, is_org) \
+         values ($1, $2, $3, $4, $5::uuid, $6) \
+         returning id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, status, \
+                   (trunc(extract(epoch from created_at) * 1000))::bigint",
+    )
+    .bind(input.kind)
+    .bind(input.summary)
+    .bind(input.payload)
+    .bind(input.agent_model)
+    .bind(input.owner_user_id)
+    .bind(input.is_org)
+    .fetch_one(pg)
+    .await
+    .map_err(|e| format!("google pending action insert: {e}"))?;
+    let (id, kind, summary, payload, agent_model, owner_user_id, is_org, status, created_ms) = row;
+    let action = PendingAction {
+        id: id.clone(),
+        kind,
+        summary,
+        payload,
+        agent_model,
+        owner_user_id,
+        is_org,
+        status,
+        created_ms,
+    };
+
+    // The row IS an approval the instant it lands, and the agent that drafted
+    // it is stopped in front of it. Until this call existed the first a human
+    // heard was the approval sweep's next tick — up to five minutes of an
+    // agent waiting on a decision that takes four seconds, and before the
+    // sweep existed, the next morning's digest.
+    //
+    // Detached: this function is servicing an agent's request and must not
+    // wait on notification writes, nor fail because one of them failed.
+    // Idempotent against the sweep — both mark `approval_announce_state` by
+    // key, and the mark is merged in the database rather than written over,
+    // so this is latency removed and never a second notification. Failures
+    // inside the announce log themselves; the sweep is the floor either way.
+    let announce_pg = pg.clone();
+    tokio::spawn(async move {
+        let deps = ApprovalDeps::new(
+            announce_pg,
+            realtime,
+            Arc::new(run_definition),
+            Arc::new(wall_ms),
+        );
+        announce_approval(&deps, &format!("google_action:{id}")).await;
+    });
+    Ok(action)
+}
+
+/// A pending row as the route answers it — COLS' camelCase, createdAt the
+/// ISO instant postgres.js's Date went through JSON.stringify as.
+pub fn pending_wire(a: &PendingAction) -> Value {
+    json!({
+        "id": a.id,
+        "kind": a.kind,
+        "summary": a.summary,
+        "payload": a.payload,
+        "agentModel": a.agent_model,
+        "ownerUserId": a.owner_user_id,
+        "isOrg": a.is_org,
+        "status": a.status,
+        "createdAt": crate::agent_auth::epoch_ms_to_iso(a.created_ms),
+    })
 }
 
 /// `listPending` — the actions a user should decide: their own personal ones,
@@ -230,16 +342,52 @@ pub async fn decide_action(
         None
     };
 
-    let executed = if kind == "gmail_send" {
+    // The payload IS the engine input (SendInput / CreateEventInput) — read
+    // back exactly as it was queued.
+    let executed: Result<Value, String> = if kind == "gmail_send" {
+        let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
+        let input = SendInput {
+            to: s("to"),
+            subject: s("subject"),
+            body: s("body"),
+            cc: payload.get("cc").and_then(Value::as_str),
+            bcc: payload.get("bcc").and_then(Value::as_str),
+        };
         send_message_with_token(
             &token,
-            &payload,
+            &input,
             agent_from.as_deref().or(targets.send_as.as_deref()),
         )
         .await
         .map(|(id, thread_id)| json!({ "id": id, "threadId": thread_id }))
+        .map_err(|e| e.to_string())
     } else if kind == "calendar_create" {
-        create_event_with_token(&token, &payload, targets.calendar_id.as_deref()).await
+        let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
+        let input = CreateEventInput {
+            summary: s("summary"),
+            description: payload.get("description").and_then(Value::as_str),
+            location: payload.get("location").and_then(Value::as_str),
+            start: s("start"),
+            end: s("end"),
+            all_day: payload
+                .get("allDay")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            attendees: payload
+                .get("attendees")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        create_event_with_token(&token, &input, targets.calendar_id.as_deref())
+            .await
+            .map(|e| serde_json::to_value(&e).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string())
     } else {
         Err(format!("unknown action kind: {kind}"))
     };
@@ -284,162 +432,6 @@ pub async fn decide_action(
     }
 }
 
-// ── The two executions ───────────────────────────────────────────────────────
-
-/// RFC 2047 encode a header value if it has non-ASCII characters.
-fn encode_header(value: &str) -> String {
-    if value.is_ascii() {
-        return value.to_string();
-    }
-    let b64 = base64::engine::general_purpose::STANDARD.encode(value);
-    format!("=?UTF-8?B?{b64}?=")
-}
-
-/// `sendMessageWithToken` — a plain-text email through the Gmail API. Headers
-/// in the TS order, `\r\n` joined, base64url raw.
-async fn send_message_with_token(
-    token: &str,
-    payload: &Value,
-    from: Option<&str>,
-) -> Result<(String, String), String> {
-    let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
-    let mut headers = vec![format!("To: {}", s("to"))];
-    if let Some(from) = from {
-        headers.push(format!("From: {from}"));
-    }
-    if !s("cc").is_empty() {
-        headers.push(format!("Cc: {}", s("cc")));
-    }
-    if !s("bcc").is_empty() {
-        headers.push(format!("Bcc: {}", s("bcc")));
-    }
-    headers.push(format!("Subject: {}", encode_header(s("subject"))));
-    headers.push("MIME-Version: 1.0".to_string());
-    headers.push("Content-Type: text/plain; charset=\"UTF-8\"".to_string());
-    headers.push("Content-Transfer-Encoding: 8bit".to_string());
-    // Headers, a blank separator line, then the body.
-    let mime = format!("{}\r\n\r\n{}", headers.join("\r\n"), s("body"));
-    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime.as_bytes());
-
-    let res = http()
-        .post(format!("{GMAIL_BASE}/messages/send"))
-        .bearer_auth(token)
-        .header("content-type", "application/json")
-        .body(json!({ "raw": raw }).to_string())
-        .send()
-        .await
-        .map_err(|e| format!("gmail send request: {e}"))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let text = res.text().await.unwrap_or_default();
-        return Err(format!("gmail send failed: {status} {text}"));
-    }
-    let sent: Value = res
-        .json()
-        .await
-        .map_err(|e| format!("gmail send body: {e}"))?;
-    Ok((
-        sent.get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        sent.get("threadId")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-    ))
-}
-
-/// `createEventWithToken` — an event on the target calendar, normalized to the
-/// CalendarEvent shape for the result column.
-async fn create_event_with_token(
-    token: &str,
-    payload: &Value,
-    calendar_id: Option<&str>,
-) -> Result<Value, String> {
-    let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
-    let all_day = payload
-        .get("allDay")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let time_field = if all_day { "date" } else { "dateTime" };
-    let mut start = serde_json::Map::new();
-    start.insert(
-        time_field.to_string(),
-        Value::String(s("start").to_string()),
-    );
-    let mut end = serde_json::Map::new();
-    end.insert(time_field.to_string(), Value::String(s("end").to_string()));
-    let attendees: Vec<Value> = payload
-        .get("attendees")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str())
-                .map(|e| json!({ "email": e }))
-                .collect()
-        })
-        .unwrap_or_default();
-    let body = json!({
-        "summary": s("summary"),
-        "description": s("description"),
-        "location": s("location"),
-        "start": start,
-        "end": end,
-        "attendees": attendees,
-    });
-    let cal = encode_uri_component(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
-    let res = http()
-        .post(format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?sendUpdates=all"
-        ))
-        .bearer_auth(token)
-        .header("content-type", "application/json")
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| format!("calendar create request: {e}"))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let text = res.text().await.unwrap_or_default();
-        return Err(format!("calendar create failed: {status} {text}"));
-    }
-    let created: Value = res
-        .json()
-        .await
-        .map_err(|e| format!("calendar create body: {e}"))?;
-    Ok(normalize_event(&created))
-}
-
-/// calendar.ts `normalize` — the CalendarEvent jsonb the result column stores.
-fn normalize_event(e: &Value) -> Value {
-    let start = e.get("start");
-    let end = e.get("end");
-    let date_of = |o: Option<&Value>| -> Option<String> {
-        o.and_then(|o| o.get("dateTime"))
-            .or_else(|| o.and_then(|o| o.get("date")))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
-    let all_day = start
-        .and_then(|o| o.get("date"))
-        .is_some_and(Value::is_string)
-        && start.and_then(|o| o.get("dateTime")).is_none();
-    json!({
-        "id": e.get("id").and_then(Value::as_str).unwrap_or_default(),
-        "summary": e.get("summary").and_then(Value::as_str).unwrap_or("(no title)"),
-        "start": date_of(start),
-        "end": date_of(end),
-        "allDay": all_day,
-        "location": e.get("location").and_then(Value::as_str),
-        "htmlLink": e.get("htmlLink").and_then(Value::as_str),
-        "attendees": e.get("attendees").and_then(Value::as_array).map(|a| {
-            a.iter().filter_map(|x| x.get("email").and_then(Value::as_str))
-                .filter(|s| !s.is_empty()).collect::<Vec<_>>()
-        }).unwrap_or_default(),
-    })
-}
-
 // ── Org agent addressing (aliasing.ts, the send-path half) ───────────────────
 
 /// `agentAddressIdentity` — the agent's slug + stored alias override.
@@ -455,23 +447,11 @@ async fn agent_address_identity(
     Ok(row)
 }
 
-/// `getOrgEmail` — the connected org account's email alone, or null. The
-/// aliasing derivation reads this on the send path — plus-addresses hang off
-/// the org account, so no connection means no derived addresses (an agent's
-/// override still wins).
-async fn get_org_email(pg: &PgPool) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(Option<String>, Option<String>)> =
-        sqlx::query_as("select email, refresh_token_enc from google_org_connection where id = 1")
-            .fetch_optional(pg)
-            .await?;
-    Ok(row
-        .filter(|(_, refresh)| refresh.is_some())
-        .and_then(|(email, _)| email))
-}
-
 /// `orgAgentFromAddress` — the From address an org agent sends as: its alias
-/// override, else its derived plus-address of the org account. null when
-/// neither resolves — the caller falls back to the org sendAs target.
+/// override, else its derived plus-address of the org account
+/// (google_org::get_org_email — plus-addresses hang off the org account, so
+/// no connection means no derived addresses; an override still wins). null
+/// when neither resolves — the caller falls back to the org sendAs target.
 async fn org_agent_from_address(
     pg: &PgPool,
     agent_model: &str,
@@ -526,8 +506,9 @@ fn plus_address(org_email: &str, tag: &str) -> Option<String> {
 
 /// aliasing.ts `agentFromAddress` — override, else derived plus-address, else
 /// null. Never called for personal assistants — they send as their owner's
-/// account, where no alias applies.
-fn agent_from_address(
+/// account, where no alias applies. Public for the provisioning read, which
+/// shows every org agent's effective address.
+pub fn agent_from_address(
     slug: &str,
     email_alias: Option<&str>,
     org_email: Option<&str>,
@@ -538,25 +519,6 @@ fn agent_from_address(
     }
     let org = org_email?;
     plus_address(org, slug)
-}
-
-/// encodeURIComponent — the calendar id rides a path segment, so its own
-/// special characters (an email-shaped id's `@`) must be escaped.
-fn encode_uri_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        let unreserved = b.is_ascii_alphanumeric()
-            || matches!(
-                b,
-                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-            );
-        if unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -598,25 +560,5 @@ mod tests {
             agent_from_address("triage", Some("   "), Some("jon@x.com")).as_deref(),
             Some("jon+triage@x.com")
         );
-    }
-
-    #[test]
-    fn header_encoding() {
-        assert_eq!(encode_header("hello"), "hello");
-        assert_eq!(encode_header("Réunion"), "=?UTF-8?B?UsOpdW5pb24=?=");
-    }
-
-    #[test]
-    fn event_normalization() {
-        let raw = json!({
-            "id": "e1",
-            "start": { "date": "2026-09-01" },
-            "end": { "date": "2026-09-02" },
-            "attendees": [{ "email": "a@x.com" }, { "email": "" }, {}],
-        });
-        let n = normalize_event(&raw);
-        assert_eq!(n["allDay"], json!(true));
-        assert_eq!(n["summary"], json!("(no title)"));
-        assert_eq!(n["attendees"], json!(["a@x.com"]));
     }
 }

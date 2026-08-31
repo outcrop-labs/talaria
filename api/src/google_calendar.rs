@@ -1,7 +1,7 @@
-// Google Calendar read — the agenda half of
-// ui/src/server/google/calendar.ts (listUpcomingEvents + normalize + the event
-// type filter). The create-event leg ports with the integrations plane; the
-// brief only ever reads.
+// Google Calendar — port of ui/src/server/google/calendar.ts: read the
+// connected identity's upcoming agenda and create events, acting strictly as
+// that identity (per-user OAuth, or the org account through an
+// already-resolved token).
 //
 // The connection door is the shared one (google_connections::get_access_token):
 // `NotConnected` is a normal answer the brief renders as "no calendar section",
@@ -10,11 +10,16 @@
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::gateway::provider::http;
 use crate::google_connections::get_access_token;
+use crate::google_errors::GoogleError;
+use crate::google_oauth::encode_uri_component;
 use crate::secretbox::SecretBox;
+use serde_json::Value;
 use sqlx::PgPool;
 
-/// One agenda entry, folded to the fields the brief reads.
-#[derive(Debug, Clone)]
+/// One agenda entry — wire order pinned (id, summary, start, end, allDay,
+/// location, htmlLink, attendees).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
     pub summary: String,
@@ -49,7 +54,8 @@ impl std::fmt::Display for CalendarError {
 
 /// The exact URLSearchParams serialization TS sends (parameter order included),
 /// so the request is byte-identical to the one the TS brief issued.
-fn events_url_with_params(now_ms: i64, max_results: usize) -> String {
+/// `calendar_id` empty/None reads 'primary' (calendar.ts eventsUrl).
+fn events_url_with_params(calendar_id: Option<&str>, now_ms: i64, max_results: usize) -> String {
     let wanted = max_results.clamp(1, 50);
     let mut params = url::form_urlencoded::Serializer::new(String::new());
     params
@@ -59,8 +65,9 @@ fn events_url_with_params(now_ms: i64, max_results: usize) -> String {
         .append_pair("maxResults", &wanted.saturating_mul(3).min(50).to_string())
         .append_pair("singleEvents", "true")
         .append_pair("orderBy", "startTime");
+    let cal = encode_uri_component(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
     format!(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events?{}",
+        "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?{}",
         params.finish()
     )
 }
@@ -79,16 +86,17 @@ pub async fn list_upcoming_events(
     else {
         return Err(CalendarError::NotConnected);
     };
-    list_upcoming_events_with_token(&token, now_ms, max_results).await
+    list_upcoming_events_with_token(&token, now_ms, max_results, None).await
 }
 
 pub async fn list_upcoming_events_with_token(
     token: &str,
     now_ms: i64,
     max_results: usize,
+    calendar_id: Option<&str>,
 ) -> Result<Vec<CalendarEvent>, CalendarError> {
     let res = http()
-        .get(events_url_with_params(now_ms, max_results))
+        .get(events_url_with_params(calendar_id, now_ms, max_results))
         .bearer_auth(token)
         .send()
         .await
@@ -170,6 +178,107 @@ fn normalize(e: &serde_json::Value) -> Option<CalendarEvent> {
     })
 }
 
+// ── Create (calendar.ts createEvent) ─────────────────────────────────────────
+
+/// CreateEventInput — the route body's fields, validation already applied.
+pub struct CreateEventInput<'a> {
+    pub summary: &'a str,
+    pub description: Option<&'a str>,
+    pub location: Option<&'a str>,
+    /// RFC3339 dateTime (timed) or YYYY-MM-DD (all-day).
+    pub start: &'a str,
+    pub end: &'a str,
+    pub all_day: bool,
+    pub attendees: Vec<String>,
+}
+
+/// Create an event on the user's primary calendar.
+pub async fn create_event(
+    pg: &PgPool,
+    sb: &SecretBox,
+    user_id: &str,
+    now_ms: i64,
+    input: &CreateEventInput<'_>,
+) -> Result<CalendarEvent, GoogleError> {
+    let token = crate::google_connections::require_token(pg, sb, user_id, now_ms)
+        .await
+        .map_err(GoogleError::from)?;
+    create_event_with_token(&token, input, None).await
+}
+
+/// Create an event using an already-resolved token (per-user or org).
+/// `calendar_id` empty/None targets 'primary'. sendUpdates=all: a created
+/// event that never told its attendees is a meeting nobody comes to.
+pub async fn create_event_with_token(
+    token: &str,
+    input: &CreateEventInput<'_>,
+    calendar_id: Option<&str>,
+) -> Result<CalendarEvent, GoogleError> {
+    // allDay → date, else dateTime; the same field name on both ends. The
+    // optional fields ride only when present — TS's JSON.stringify drops
+    // undefined keys, and the body should read like the TS one on the wire.
+    let time_field = if input.all_day { "date" } else { "dateTime" };
+    let time_obj = |v: &str| {
+        serde_json::Map::from_iter([(
+            time_field.to_string(),
+            serde_json::Value::String(v.to_string()),
+        )])
+    };
+    let mut body = serde_json::Map::new();
+    body.insert("summary".into(), serde_json::json!(input.summary));
+    if let Some(d) = input.description {
+        body.insert("description".into(), serde_json::json!(d));
+    }
+    if let Some(l) = input.location {
+        body.insert("location".into(), serde_json::json!(l));
+    }
+    body.insert("start".into(), Value::Object(time_obj(input.start)));
+    body.insert("end".into(), Value::Object(time_obj(input.end)));
+    body.insert(
+        "attendees".into(),
+        Value::Array(
+            input
+                .attendees
+                .iter()
+                .map(|email| serde_json::json!({ "email": email }))
+                .collect(),
+        ),
+    );
+    let body = Value::Object(body);
+    let cal = encode_uri_component(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
+    let res = http()
+        .post(format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?sendUpdates=all"
+        ))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("calendar create request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "calendar create failed: {status} {text}"
+        )));
+    }
+    let created: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("calendar create body: {e}")))?;
+    Ok(normalize(&created).unwrap_or(CalendarEvent {
+        id: String::new(),
+        summary: String::new(),
+        start: None,
+        end: None,
+        all_day: false,
+        location: None,
+        html_link: None,
+        attendees: vec![],
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,13 +353,20 @@ mod tests {
         // Parameter order and values exactly as calendar.ts's URLSearchParams:
         // timeMin first, over-fetched maxResults, singleEvents, orderBy.
         assert_eq!(
-            events_url_with_params(1_788_045_420_000, 12),
+            events_url_with_params(None, 1_788_045_420_000, 12),
             "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-08-29T23%3A17%3A00.000Z&maxResults=36&singleEvents=true&orderBy=startTime"
         );
         // The over-fetch saturates at Google's own 50 ceiling.
         assert!(
-            events_url_with_params(0, 50)
+            events_url_with_params(None, 0, 50)
                 .ends_with("maxResults=50&singleEvents=true&orderBy=startTime")
+        );
+        // A named calendar rides in the path, encoded — never a query param.
+        assert!(
+            events_url_with_params(Some("outcrop.co.uk_av1@group.calendar.google.com"), 0, 10)
+                .starts_with(
+                    "https://www.googleapis.com/calendar/v3/calendars/outcrop.co.uk_av1%40group.calendar.google.com/events?"
+                )
         );
     }
 }
