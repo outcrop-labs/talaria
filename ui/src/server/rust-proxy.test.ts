@@ -130,6 +130,23 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(8)
   })
 
+  it('forwards the brief family whole — the document read, the cursor, the line verdict, and the delegation trio', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/brief',
+      '/api/brief?tz=America/New_York',
+      '/api/brief/delegate',
+      '/api/brief/item',
+      '/api/brief/read',
+      '/api/brief/reply',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(6)
+  })
+
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

@@ -1,9 +1,9 @@
 // The daily brief — one document per person per day, opened before their
-// workday and APPENDED TO for the rest of it. Port of the job plane of
-// ui/src/server/daily-brief.ts: open_brief, sweep_brief, append_entries, and
-// the scheduled pass. The reader-facing halves (getBrief's absence kinds,
-// markBriefRead/Item, the delegation routes) are TS-served until the brief
-// route family crosses and port then.
+// workday and APPENDED TO for the rest of it. Port of
+// ui/src/server/daily-brief.ts: the job plane (open_brief, sweep_brief,
+// append_entries, the scheduled pass) and the reader plane (get_brief's
+// absence kinds, mark_brief_read/item, sweep_if_due). The delegation routes'
+// engine halves live in delegation.rs; the document assembly in view.rs.
 //
 // WHY THIS REPLACES THE INBOX
 //   The focus queue answered "what is the single next decision", which is the
@@ -37,6 +37,7 @@ pub mod config;
 pub mod delegation;
 pub mod focus;
 pub mod types;
+pub mod view;
 
 use std::collections::{HashMap, HashSet};
 
@@ -48,8 +49,8 @@ use crate::agent_auth::epoch_ms_to_iso;
 use crate::daily_brief::comms::{CommsLine, comms_lines};
 use crate::daily_brief::config::{BriefConfig, brief_config, brief_window, zone_for};
 use crate::daily_brief::focus::{
-    BriefEvidence, RawFocusItem, approval_items, dedupe_items, evidence_value, notification_items,
-    sort_items, task_items,
+    BriefEvidence, RawFocusItem, approval_items, as_iso, dedupe_items, evidence_value,
+    notification_items, sort_items, task_items,
 };
 use crate::daily_brief::types::{BriefEntry, BriefLine, NewEntry, fold_entries};
 use crate::google_calendar::list_upcoming_events;
@@ -196,10 +197,14 @@ impl From<EntryRow> for BriefEntry {
 
 /// The entry columns, as `load_brief_entries` selects them and the append's
 /// RETURNING hands them back — one const so the two cannot disagree.
-const ENTRY_COLS: &str = "id::text, seq, batch, kind, section, source_key, source_type, \
-                          source_id, source_href, fingerprint, supersedes, priority, \
+const ENTRY_COLS: &str = "id::text, seq, batch::text, kind, section, source_key, source_type, \
+                          source_id, source_href, fingerprint, supersedes::text, priority, \
                           status_label, badge, title, body, evidence, \
                           (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
+// NOTE: batch and supersedes are uuid columns — both cast to text here because
+// the row decodes them as Option<String>, the shape postgres.js hands TS (a
+// uuid arrives as its text spelling). An uncast uuid column is a decode error
+// the first time a row actually carries one.
 
 /// The brief's entry log, oldest first — the one read every consumer of the
 /// document (the sweep, the artifact mirror, the deferred reader) shares.
@@ -238,6 +243,23 @@ impl BriefUser {
     }
 }
 
+impl From<&crate::session::SessionUser> for BriefUser {
+    /// The route plane's cut: the session fields, and the timezone LEFT OUT on
+    /// purpose — `get_brief` and `mark_brief_item` read the stored zone from
+    /// the row themselves (getTimezone), so a copy carried here would be a
+    /// second version of the same fact that could go stale between login and
+    /// read. The scheduled pass fills it in from its own query.
+    fn from(user: &crate::session::SessionUser) -> Self {
+        BriefUser {
+            id: user.id.clone(),
+            email: user.email.clone(),
+            name: user.name.clone(),
+            role: user.role.clone(),
+            timezone: None,
+        }
+    }
+}
+
 /// users.ts getTimezone — the stored preference, null when unset.
 async fn get_timezone(pg: &PgPool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
     let tz: Option<(Option<String>,)> =
@@ -270,7 +292,8 @@ pub fn reader_zone(stored: Option<&str>, tz: Option<&str>, config: &BriefConfig)
 
 // ── The assistant ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BriefAssistant {
     pub configured: bool,
     pub model: Option<String>,
@@ -700,7 +723,7 @@ async fn append_entries(
     let count = rows.len() as i64;
 
     let end: Option<i64> = sqlx::query_scalar(
-        "update daily_briefs set last_seq = last_seq + $2 where id = $1::uuid returning last_seq",
+        "update daily_briefs set last_seq = last_seq + $2::int where id = $1::uuid returning last_seq::int8",
     )
     .bind(brief_id)
     .bind(count)
@@ -1306,6 +1329,404 @@ async fn write_note(
     .await?;
     let value = run.value.and_then(|v| v.as_str().map(str::to_string));
     Ok(value.map(|body| NewEntry::narrative("note", "action", "", body)))
+}
+
+// ── The reader ───────────────────────────────────────────────────────────────
+//
+// The route-facing half of daily-brief.ts: the surface's one read (with its
+// three kinds of nothing), the cursor, the owner's verdict on a line, and the
+// sweep-if-due the read performs first. The document assembly itself lives in
+// `view.rs`; this section is the branching around it.
+
+/// An open in flight for this person, by user id. The unique key on (user_id,
+/// brief_date) already makes a double-open harmless — the loser's insert
+/// conflicts and it returns the winner's id — but the reader's fast poll while
+/// a brief is 'writing' would re-kick one open PER POLL, each costing an
+/// assistant lookup and a doomed insert. This set makes the re-kick a no-op
+/// while any open for that person is still running.
+static OPENS_IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+
+/// Kick today's open, detached, at most one at a time per person. The caller
+/// answers the read with 'writing' immediately; `append_entries` publishes the
+/// brief event that turns the surface into the document.
+fn open_brief_detached(deps: Arc<BriefDeps>, user: BriefUser, tz: Option<String>) {
+    {
+        let mut guard = OPENS_IN_FLIGHT.lock().expect("opens-in-flight lock");
+        if guard.contains(&user.id) {
+            return;
+        }
+        guard.insert(user.id.clone());
+    }
+    tokio::spawn(async move {
+        let at = wall_ms();
+        if let Err(e) = open_brief(&deps, &user, at, tz.as_deref()).await {
+            tracing::error!("[daily-brief] on-demand open failed for {}: {e}", user.id);
+        }
+        OPENS_IN_FLIGHT
+            .lock()
+            .expect("opens-in-flight lock")
+            .remove(&user.id);
+    });
+}
+
+/// The person's most recent brief, when it is recent enough to still be "the
+/// current one" (48h, matching markBriefStale's window). None otherwise.
+async fn load_recent_row(
+    pg: &PgPool,
+    user_id: &str,
+    at_ms: i64,
+) -> Result<Option<BriefRow>, sqlx::Error> {
+    // Cutoff computed here rather than as SQL `created_at - interval` — a
+    // parameterized timestamp does not participate in interval arithmetic
+    // without a cast, and a JS boundary is the same fact with no cast to get
+    // wrong.
+    let since = epoch_ms_to_iso(at_ms - 48 * 3_600_000);
+    // AssertSqlSafe: the interpolation is ROW_COLS, this module's column list.
+    let sql = format!(
+        "select {ROW_COLS} from daily_briefs \
+         where user_id = $1::uuid and last_seq > 0 and created_at > $2 \
+         order by brief_date desc limit 1"
+    );
+    let row: Option<BriefRowTuple> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(user_id)
+        .bind(&since)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(BriefRow::from_row))
+}
+
+/// The read-side assembly shared by the today row and the recent-brief
+/// fallback: live comms state plus the fold. One function because the two
+/// callers must not drift — a fallback that forgot the comms controls would
+/// serve a read-only page for the same document depending on the clock.
+///
+/// `comms_lines` reads fresh because a draft's approvability and a grant's
+/// existence are present-tense facts — the log can only say what was true when
+/// it was written, and acting on that would offer to send a draft the owner
+/// already discarded. (comms_lines swallows its own failure and answers empty
+/// — a failure there costs the controls, never the document.)
+async fn document_view(
+    pg: &PgPool,
+    row: &BriefRow,
+    agent: &BriefAssistant,
+) -> Result<view::BriefViewWire, sqlx::Error> {
+    let entries = load_brief_entries(pg, &row.id).await?;
+    let live = comms_lines(pg, &row.user_id, row.agent_model.as_deref()).await;
+    let comms = live.iter().map(view::comms_state).collect();
+    Ok(view::view(row, &entries, agent, comms))
+}
+
+/// The surface's one read (getBrief): the day's document, or WHICH kind of
+/// nothing — the absences render differently and collapsing them into one
+/// empty state is how a surface tells a person "you are all clear" over a
+/// brief that simply has not been written yet.
+///
+/// THE READ OPENS, and that is the fix for the blank day. The scheduled pass
+/// is still the ordinary way a brief starts, but a tick can be missed for
+/// reasons that have nothing to do with this reader — a Redis lease skipped,
+/// a deploy window, an assistant configured at noon — and "the hour passed and
+/// nothing was written" used to be a state the person stared at until
+/// tomorrow. Now the first read past the due hour kicks the open itself; the
+/// reader sees 'writing' for the few seconds it takes, and the append's
+/// publish turns the page into the document without them touching anything.
+pub enum BriefRead {
+    // Boxed: the document dwarfs the absent arm, and the read answers one per
+    // request — the indirection is free where a fat enum value would pad
+    // every BriefRead in flight.
+    Document(Box<view::BriefViewWire>),
+    /// (which absence, next open ISO when knowable, the assistant) — every
+    /// absent literal carries `agent`, because the surface offers assistant
+    /// settings from the empty state too. The three kinds: 'pending' the hour
+    /// has not arrived; 'no-agent' nothing can write one; 'writing' it is
+    /// being written right now.
+    Absent(&'static str, Option<String>, BriefAssistant),
+}
+
+pub async fn get_brief(
+    deps: &BriefDeps,
+    user: &BriefUser,
+    tz: Option<&str>,
+) -> Result<BriefRead, String> {
+    let at = wall_ms();
+    let pg = &deps.state.pg;
+    let config = brief_config(pg).await;
+    let stored = get_timezone(pg, &user.id)
+        .await
+        .map_err(|e| format!("timezone read: {e}"))?;
+    let zone = reader_zone(stored.as_deref(), tz, &config);
+    let window = brief_window(&config, &zone, at);
+    let row = load_row(pg, &user.id, &window.date)
+        .await
+        .map_err(|e| format!("brief read: {e}"))?;
+    let agent = brief_assistant(pg, &user.id)
+        .await
+        .map_err(|e| format!("assistant read: {e}"))?;
+
+    if let Some(row) = row {
+        // BIRTH, NOT A DOCUMENT. `open_brief` inserts the row first and
+        // appends the lede and first items in one batch afterwards, so
+        // last_seq == 0 is only reachable while that first append is in
+        // flight. Rendering it as a brief would show an empty page —
+        // "nothing is waiting on you", asserted by a surface whose document
+        // has not arrived. It is the same 'writing' the reader gets before
+        // the row exists, because it is the same fact.
+        if row.last_seq == 0 {
+            return Ok(BriefRead::Absent("writing", None, agent.clone()));
+        }
+        let doc = document_view(pg, &row, &agent)
+            .await
+            .map_err(|e| format!("document read: {e}"))?;
+        return Ok(BriefRead::Document(Box::new(doc)));
+    }
+    if !agent.configured {
+        return Ok(BriefRead::Absent("no-agent", None, agent));
+    }
+    if window.due {
+        open_brief_detached(
+            Arc::new(BriefDeps {
+                state: deps.state.clone(),
+                realtime: deps.realtime.clone(),
+                notify: deps.notify.clone(),
+                now_ms: at,
+            }),
+            user.clone(),
+            tz.map(str::to_string),
+        );
+        return Ok(BriefRead::Absent("writing", None, agent));
+    }
+    // NEVER 'pending' OVER A READABLE DOCUMENT. The window said "not due yet",
+    // which is a statement about the NEXT brief — not a reason to hide the
+    // last one. A person opening the surface in their evening (or from a
+    // timezone the org config disagrees with) still has yesterday's page,
+    // titled with its own date, and anything they check off or reply to there
+    // is real work.
+    let recent = load_recent_row(pg, &user.id, at)
+        .await
+        .map_err(|e| format!("recent brief read: {e}"))?;
+    if let Some(recent) = recent {
+        let doc = document_view(pg, &recent, &agent)
+            .await
+            .map_err(|e| format!("document read: {e}"))?;
+        return Ok(BriefRead::Document(Box::new(doc)));
+    }
+    Ok(BriefRead::Absent(
+        "pending",
+        Some(as_iso(config::next_brief_at(&config, &zone, at))),
+        agent,
+    ))
+}
+
+/// The sweep the read performs first — BEFORE the read, not after, and only if
+/// the throttle allows it. A person opening the surface is the one moment
+/// latency is visible, and sweeping afterwards would hand them the stale page
+/// and the fresh one a realtime nudge later — a document that visibly rewrites
+/// itself on arrival, which is the exact impression an append-only brief must
+/// never give. None means "nothing to do" (no row, birth in flight, or the
+/// throttle refusing); the route logs an Err and reads anyway.
+pub async fn sweep_if_due(
+    deps: &BriefDeps,
+    user: &BriefUser,
+) -> Result<Option<SweepResult>, String> {
+    let at = wall_ms();
+    let config = brief_config(&deps.state.pg).await;
+    let stored = get_timezone(&deps.state.pg, &user.id)
+        .await
+        .map_err(|e| format!("timezone read: {e}"))?;
+    let zone = zone_for(stored.as_deref(), &config.time_zone);
+    let date = brief_window(&config, &zone, at).date;
+    let row = load_row(&deps.state.pg, &user.id, &date)
+        .await
+        .map_err(|e| format!("brief read: {e}"))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    if row.last_seq == 0 || !sweep_due(&row, &config, at) {
+        return Ok(None);
+    }
+    sweep_brief(deps, user, at).await.map(Some)
+}
+
+/// Move the reader's cursor. The only update this feature performs on a brief,
+/// and it describes the READER, not the document. Monotonic — `greatest` — so
+/// a second tab that loaded an older page cannot walk the cursor backwards and
+/// re-flag everything as new.
+pub async fn mark_brief_read(
+    pg: &PgPool,
+    user_id: &str,
+    brief_id: &str,
+    seq: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update daily_briefs set read_seq = greatest(read_seq, $1) \
+         where id = $2::uuid and user_id = $3::uuid",
+    )
+    .bind(seq)
+    .bind(brief_id)
+    .bind(user_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// markBriefItem's verdict: ok, or the reason the route answers 404 with.
+#[derive(Debug, Clone)]
+pub struct ItemMark {
+    pub ok: bool,
+    pub reason: Option<String>,
+}
+
+impl ItemMark {
+    fn done() -> Self {
+        ItemMark {
+            ok: true,
+            reason: None,
+        }
+    }
+    fn refused(reason: &str) -> Self {
+        ItemMark {
+            ok: false,
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
+/// Close a line by hand, or reopen one — the owner's own verdict, scoped to
+/// the caller's own brief inside this function (a key belonging to somebody
+/// else's day resolves to no line rather than to theirs).
+///
+/// AN APPEND, NOT AN EDIT, like everything else here. Checking something off
+/// does not delete it or set a flag on it — it writes a new row that supersedes
+/// the one on the page, so the line stays visible, struck through, with its
+/// whole history intact. `restore` is the same move in reverse rather than an
+/// undo: it appends a row carrying the last live state, because the way to
+/// take something back in an append-only log is to say the next thing, not to
+/// remove the last one.
+///
+/// THE FINGERPRINT IS CARRIED FORWARD, and that is what makes a dismissal
+/// stick. `sweep_brief` skips a line whose source fingerprint has not moved,
+/// so copying it onto the closing row means the next sweep sees a dismissed
+/// line against an unchanged source and leaves it alone. Drop it and the
+/// sweep finds a mismatch every five minutes and reopens what the owner just
+/// closed.
+pub async fn mark_brief_item(
+    deps: &BriefDeps,
+    user: &BriefUser,
+    source_key: &str,
+    action: &str,
+    tz: Option<&str>,
+) -> Result<ItemMark, String> {
+    let at = wall_ms();
+    let pg = &deps.state.pg;
+    let config = brief_config(pg).await;
+    let stored = get_timezone(pg, &user.id)
+        .await
+        .map_err(|e| format!("timezone read: {e}"))?;
+    let zone = reader_zone(stored.as_deref(), tz, &config);
+    let date = brief_window(&config, &zone, at).date;
+    let row = load_row(pg, &user.id, &date)
+        .await
+        .map_err(|e| format!("brief read: {e}"))?;
+    let Some(row) = row else {
+        return Ok(ItemMark::refused("no brief today"));
+    };
+
+    let entries = load_brief_entries(pg, &row.id)
+        .await
+        .map_err(|e| format!("entries read: {e}"))?;
+    let folded = fold_entries(entries, row.read_seq);
+    // The apostrophe is U+2019 — the sentence is bytes the surface renders
+    // verbatim, not prose to re-type.
+    let Some(line) = folded.lines.iter().find(|l| l.key == source_key) else {
+        return Ok(ItemMark::refused("that line is not on today’s brief"));
+    };
+
+    if action == "restore" {
+        if !line.resolved {
+            return Ok(ItemMark::done());
+        }
+        // The last state the line had before anything closed it. Searched from
+        // the end so a line closed, reopened and closed again restores to the
+        // most recent LIVE row rather than to the one it started the day with.
+        let live = line
+            .history
+            .iter()
+            .rev()
+            .find(|e| !types::is_terminal(&e.kind));
+        let Some(live) = live else {
+            return Ok(ItemMark::refused("nothing to restore this line to"));
+        };
+        append_entries(
+            deps,
+            &row.id,
+            &user.id,
+            vec![NewEntry {
+                kind: "change".into(),
+                section: live.section.clone(),
+                source_key: Some(live.source_key.clone().unwrap_or_default()),
+                source_type: live.source_type.clone(),
+                source_id: live.source_id.clone(),
+                source_href: live.source_href.clone(),
+                fingerprint: live.fingerprint.clone(),
+                supersedes: Some(line.current.id.clone()),
+                priority: live.priority.clone(),
+                status_label: live.status_label.clone(),
+                badge: live.badge.clone(),
+                title: live.title.clone(),
+                body: live.body.clone(),
+                evidence: live.evidence.clone(),
+            }],
+        )
+        .await?;
+        return Ok(ItemMark::done());
+    }
+
+    // Already closed — by the source, or by an earlier click. Nothing to add,
+    // and appending anyway would put two identical strike-throughs in the
+    // timeline for one double-click.
+    if line.resolved {
+        return Ok(ItemMark::done());
+    }
+
+    let current = &line.current;
+    // The closing literal sets NO badge and NO evidence — the strike-through
+    // is the whole row; append_entries defaults evidence to [] as TS's
+    // `row.evidence ?? []` does.
+    append_entries(
+        deps,
+        &row.id,
+        &user.id,
+        vec![NewEntry {
+            kind: if action == "check" {
+                "checked"
+            } else {
+                "dismissed"
+            }
+            .into(),
+            section: current.section.clone(),
+            source_key: current.source_key.clone(),
+            source_type: current.source_type.clone(),
+            source_id: current.source_id.clone(),
+            source_href: current.source_href.clone(),
+            fingerprint: current.fingerprint.clone(),
+            supersedes: Some(current.id.clone()),
+            priority: Some("ok".into()),
+            status_label: Some(
+                if action == "check" {
+                    "CHECKED OFF"
+                } else {
+                    "DISMISSED"
+                }
+                .into(),
+            ),
+            badge: None,
+            title: current.title.clone(),
+            body: String::new(),
+            evidence: Value::Array(Vec::new()),
+        }],
+    )
+    .await?;
+    Ok(ItemMark::done())
 }
 
 // ── The scheduled pass ───────────────────────────────────────────────────────

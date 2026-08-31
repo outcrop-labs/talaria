@@ -37,6 +37,11 @@ pub mod boards_id_statuses;
 pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
+pub mod brief;
+pub mod brief_delegate;
+pub mod brief_item;
+pub mod brief_read;
+pub mod brief_reply;
 pub mod channels;
 pub mod channels_id;
 pub mod channels_id_agents;
@@ -473,6 +478,30 @@ pub fn router(state: AppState) -> Router {
             get(inbox_focus_conversations_id::get)
                 .delete(inbox_focus_conversations_id::delete)
                 .fallback(|| async { method_not_allowed("GET, DELETE") }),
+        )
+        // The brief family — the assistant's morning document, its read
+        // cursor, the owner's verdict on a line, and the delegation trio.
+        .route(
+            "/api/brief",
+            get(brief::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/brief/delegate",
+            get(brief_delegate::get)
+                .post(brief_delegate::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/brief/item",
+            post(brief_item::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/brief/read",
+            post(brief_read::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/brief/reply",
+            post(brief_reply::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/plans/{id}/draft",

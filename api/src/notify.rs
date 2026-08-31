@@ -265,7 +265,7 @@ pub async fn mark_brief_stale(deps: &NotifyDeps, user_ids: &[String]) -> Result<
     let rows: Vec<(String, String, i64)> = sqlx::query_as(
         "update daily_briefs set last_swept_at = null \
          where user_id = any($1::uuid[]) and created_at > now() - interval '48 hours' \
-         returning id::text, user_id::text, last_seq",
+         returning id::text, user_id::text, last_seq::int8",
     )
     .bind(&ids)
     .fetch_all(&deps.pg)

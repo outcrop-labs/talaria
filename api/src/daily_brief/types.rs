@@ -9,6 +9,7 @@
 // The artifact mirror renders the same fold, which is the other reason it
 // cannot live in the core module.
 
+use serde::Serialize;
 use serde_json::Value;
 
 /// The five places a line can land in the document. Ordered as the document
@@ -39,7 +40,12 @@ pub fn is_terminal(kind: &str) -> bool {
 /// materially different — supersedes the last; resolved the source stopped
 /// needing the owner — supersedes the last; note the assistant narrating a
 /// batch of appends.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` is the WIRE shape (camelCase, declaration order — the same
+/// order the TS interface spells): one struct serves the log and the document,
+/// because the document is the log folded, not a projection of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BriefEntry {
     pub id: String,
     pub seq: i64,
@@ -123,7 +129,8 @@ impl NewEntry {
 /// `history` is why the fold exists rather than a `select distinct on`. The
 /// document shows where a thing stands; the thread underneath shows how it got
 /// there, and both are read off the same log.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BriefLine {
     pub key: String,
     pub section: String,
@@ -139,7 +146,8 @@ pub struct BriefLine {
 
 /// An append event, as the day's timeline shows it: one sweep's worth of
 /// entries under the assistant's note about them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BriefUpdate {
     pub seq: i64,
     pub at: String,

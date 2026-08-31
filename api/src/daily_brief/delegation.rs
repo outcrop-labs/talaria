@@ -1,8 +1,7 @@
-// Letting your assistant answer for you — port of the sweep-facing half of
-// ui/src/server/daily-brief-delegation.ts (mayReply, draftReply,
-// releaseDrafts). The grant/decide ROUTES (list, grant, revoke, approve,
-// discard) are TS-served until the brief route family crosses and port with
-// it; the sweep only needs the three functions here.
+// Letting your assistant answer for you — port of
+// ui/src/server/daily-brief-delegation.ts whole: the sweep-facing half
+// (mayReply, draftReply, releaseDrafts) and the route-facing half (listGrants,
+// grantReply, revokeReply, decideDraft).
 //
 // THE LINE THIS DOES NOT CROSS. A delegated reply is posted with
 // `author_type = 'agent'` under the assistant's own name — never as the owner.
@@ -272,4 +271,216 @@ pub async fn release_drafts(
         sent += 1;
     }
     Ok(sent)
+}
+
+// ── The grant routes' engine ─────────────────────────────────────────────────
+
+/// A live grant as the wire serves it (ReplyGrant) — camelCase, TS field
+/// order. `grantedAt` is an ISO string: postgres hands TS a Date and
+/// JSON.stringify renders it with millisecond precision.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyGrant {
+    pub id: String,
+    /// Null = every conversation.
+    pub channel_id: Option<String>,
+    pub granted_at: String,
+}
+
+pub async fn list_grants(pg: &PgPool, user_id: &str) -> Result<Vec<ReplyGrant>, sqlx::Error> {
+    let rows: Vec<(String, Option<String>, f64)> = sqlx::query_as(
+        "select id::text, channel_id::text, \
+                (trunc(extract(epoch from granted_at) * 1000))::float8 \
+         from assistant_reply_grants where user_id = $1::uuid and revoked_at is null \
+         order by granted_at desc",
+    )
+    .bind(user_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, channel_id, granted_ms)| ReplyGrant {
+            id,
+            channel_id,
+            granted_at: crate::agent_auth::epoch_ms_to_iso(granted_ms as i64),
+        })
+        .collect())
+}
+
+/// Grant reply authority. `channel_id: None` is the standing grant.
+///
+/// The owner's own decision, so the only authority check is that this is their
+/// conversation — verified here rather than trusted from the route, because a
+/// grant on somebody else's DM would let an agent speak in a room its owner
+/// cannot even read. None IS that refusal: the route answers its 403.
+pub async fn grant_reply(
+    pg: &PgPool,
+    user_id: &str,
+    channel_id: Option<&str>,
+) -> Result<Option<ReplyGrant>, sqlx::Error> {
+    if let Some(channel_id) = channel_id {
+        let member: Option<(i32,)> = sqlx::query_as(
+            "select 1 from channel_members where channel_id = $1::uuid and user_id = $2::uuid",
+        )
+        .bind(channel_id)
+        .bind(user_id)
+        .fetch_optional(pg)
+        .await?;
+        if member.is_none() {
+            return Ok(None);
+        }
+    }
+    let granted: Option<(String, Option<String>, f64)> = sqlx::query_as(
+        "insert into assistant_reply_grants (user_id, channel_id) values ($1::uuid, $2::uuid) \
+         on conflict do nothing \
+         returning id::text, channel_id::text, (trunc(extract(epoch from granted_at) * 1000))::float8",
+    )
+    .bind(user_id)
+    .bind(channel_id)
+    .fetch_optional(pg)
+    .await?;
+    if let Some((id, channel_id, granted_ms)) = granted {
+        return Ok(Some(ReplyGrant {
+            id,
+            channel_id,
+            granted_at: crate::agent_auth::epoch_ms_to_iso(granted_ms as i64),
+        }));
+    }
+    // The partial unique indexes make a re-grant a no-op; return the live one
+    // so the caller sees the state rather than a None it would read as
+    // failure. `is not distinct from` — the standing grant matches on NULL.
+    let existing: Option<(String, Option<String>, f64)> = sqlx::query_as(
+        "select id::text, channel_id::text, (trunc(extract(epoch from granted_at) * 1000))::float8 \
+         from assistant_reply_grants \
+         where user_id = $1::uuid and revoked_at is null and channel_id is not distinct from $2::uuid",
+    )
+    .bind(user_id)
+    .bind(channel_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(existing.map(|(id, channel_id, granted_ms)| ReplyGrant {
+        id,
+        channel_id,
+        granted_at: crate::agent_auth::epoch_ms_to_iso(granted_ms as i64),
+    }))
+}
+
+/// Revoke it. Kept as a row with `revoked_at` — who was allowed to speak for
+/// someone, and when that stopped, is exactly the history you want when a
+/// reply turns out to have been wrong.
+pub async fn revoke_reply(
+    pg: &PgPool,
+    user_id: &str,
+    channel_id: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "update assistant_reply_grants set revoked_at = now() \
+         where user_id = $1::uuid and revoked_at is null and channel_id is not distinct from $2::uuid \
+         returning id::text",
+    )
+    .bind(user_id)
+    .bind(channel_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(!rows.is_empty())
+}
+
+// ── Deciding a parked draft ──────────────────────────────────────────────────
+
+/// What a decide did; the route maps each shape to its wire answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftOutcome {
+    Sent,
+    Rejected,
+    /// They have said something since the draft was written.
+    Stale(&'static str),
+    /// Not found — or not the caller's; indistinguishable on purpose.
+    Gone,
+}
+
+/// Approve or discard a parked reply.
+///
+/// A STALE DRAFT IS REFUSED RATHER THAN SENT, and this is the one branch worth
+/// reading twice: between the draft being written and the owner clicking
+/// approve, the other person may have said something else. Posting the old
+/// answer then is worse than posting nothing, because it reads as a reply to
+/// the newest message and is not one. The refusal is not an error state — the
+/// caller re-drafts against what the thread now says.
+///
+/// Sending goes through `insert_channel_message`, which is where the agent
+/// write door lives — a delegated reply is scanned and redacted on the same
+/// path as every other agent-authored message, rather than on a second one
+/// written here that would drift.
+pub async fn decide_draft(
+    notify: &NotifyDeps,
+    user_id: &str,
+    draft_id: &str,
+    approve: bool,
+) -> Result<DraftOutcome, String> {
+    // Scoped to `user_id` in the query, so somebody else's draft is
+    // indistinguishable from one that does not exist — which is the right
+    // amount to disclose.
+    let rows: Vec<ParkedDraft> = sqlx::query_as(
+        "select d.id::text, d.channel_id::text, d.content, d.agent_model, d.in_reply_to_seq, \
+                (select max(m.seq) from channel_messages m
+                  where m.channel_id = d.channel_id and m.status = 'complete'
+                    and not (m.author_type = 'user' and m.author = (select coalesce(email, name, 'user') from users where id = $1::uuid))
+                    and not (m.author_type = 'agent' and m.author = d.agent_model)) \
+         from assistant_reply_drafts d \
+         where d.id = $2::uuid and d.user_id = $1::uuid and d.status = 'pending'",
+    )
+    .bind(user_id)
+    .bind(draft_id)
+    .fetch_all(&notify.pg)
+    .await
+    .map_err(|e| format!("draft read: {e}"))?;
+    let Some((id, channel, content, agent_model, seq, their_latest)) = rows.into_iter().next()
+    else {
+        return Ok(DraftOutcome::Gone);
+    };
+
+    if !approve {
+        sqlx::query(
+            "update assistant_reply_drafts \
+             set status = 'rejected', decided_at = now(), decided_by = $1::uuid \
+             where id = $2::uuid",
+        )
+        .bind(user_id)
+        .bind(&id)
+        .execute(&notify.pg)
+        .await
+        .map_err(|e| format!("draft mark rejected: {e}"))?;
+        return Ok(DraftOutcome::Rejected);
+    }
+
+    if their_latest.is_some_and(|latest| latest > seq) {
+        return Ok(DraftOutcome::Stale(
+            "They have said something since this was written, so it would answer the wrong message. Ask for a fresh draft.",
+        ));
+    }
+
+    let message = insert_channel_message(
+        notify,
+        &channel,
+        "agent",
+        agent_model.as_deref().unwrap_or("assistant"),
+        &content,
+        "complete",
+        &serde_json::json!([]),
+        None,
+    )
+    .await
+    .map_err(|e| format!("send: {e}"))?;
+    sqlx::query(
+        "update assistant_reply_drafts \
+         set status = 'sent', message_id = $2::uuid, decided_at = now(), decided_by = $1::uuid \
+         where id = $3::uuid",
+    )
+    .bind(user_id)
+    .bind(&message.id)
+    .bind(&id)
+    .execute(&notify.pg)
+    .await
+    .map_err(|e| format!("draft mark sent: {e}"))?;
+    Ok(DraftOutcome::Sent)
 }

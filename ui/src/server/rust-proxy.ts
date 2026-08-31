@@ -104,6 +104,13 @@ const PREFIXES = [
   // together — the focus engine's process-local lock spans the command stream
   // and the state route, so the family is one plane.
   '/api/inbox/focus',
+  // The brief family, whole: the document read (with its three kinds of
+  // nothing), the read cursor, the owner's verdict on a line, and the
+  // delegation trio (grants list, grant/revoke, decide a parked reply). The
+  // engine's sweep half crossed earlier with the scheduler — this adds the
+  // reader plane, and the read's sweep-if-due must land on the same Rust
+  // process as the engine that owns it.
+  '/api/brief',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it

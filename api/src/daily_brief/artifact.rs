@@ -59,7 +59,7 @@ pub async fn mirror_brief_artifact(
 ) -> Result<(), sqlx::Error> {
     let row: Option<MirrorRow> = sqlx::query_as(
         "select to_char(b.brief_date, 'YYYY-MM-DD'), b.artifact_id::text, a.folder_id::text, \
-                b.read_seq, b.agent_name, u.email, u.name \
+                b.read_seq::int8, b.agent_name, u.email, u.name \
          from daily_briefs b join users u on u.id = b.user_id \
          left join artifacts a on a.id = b.artifact_id \
          where b.id = $1::uuid and b.user_id = $2::uuid",
