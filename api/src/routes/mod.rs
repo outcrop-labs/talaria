@@ -100,6 +100,12 @@ pub mod research_id_conversation;
 pub mod research_id_decide;
 pub mod research_id_members;
 pub mod runs_events;
+pub mod secrets;
+pub mod secrets_folders;
+pub mod secrets_git_credential;
+pub mod secrets_relay;
+pub mod secrets_reveal;
+pub mod secrets_share;
 pub mod tasks_id;
 pub mod tasks_id_comments;
 pub mod tasks_id_dependencies;
@@ -502,6 +508,39 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/brief/reply",
             post(brief_reply::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The secrets family — the sealed vault's six surfaces: the working
+        // secrets a person saves and reads back, their folders, the one
+        // reveal verb, sharing, the one-shot relay, and git's own way in.
+        .route(
+            "/api/secrets",
+            get(secrets::get)
+                .post(secrets::post)
+                .patch(secrets::patch)
+                .delete(secrets::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
+        )
+        .route(
+            "/api/secrets/folders",
+            get(secrets_folders::get)
+                .post(secrets_folders::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/secrets/git-credential",
+            post(secrets_git_credential::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/secrets/relay",
+            post(secrets_relay::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/secrets/reveal",
+            post(secrets_reveal::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/secrets/share",
+            post(secrets_share::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/plans/{id}/draft",

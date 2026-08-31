@@ -58,6 +58,26 @@ pub fn array_too_big_msg(max: usize) -> String {
     format!("Too big: expected array to have <={max} items")
 }
 
+/// The min twin — the entries array's `.min(1)`. Element issues surface
+/// before either length check, as the probes pinned.
+pub fn array_too_small_msg(min: usize) -> String {
+    format!("Too small: expected array to have >={min} items")
+}
+
+/// A required string with NO bounds of its own — for members whose checks
+/// live with the caller in an order the folded helpers cannot express (the
+/// vault entry's key puts its regex BEFORE the max; a long key of bad
+/// characters answers the regex sentence, and only a long key of good ones
+/// answers the bound).
+pub fn string_value_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| string_msg("undefined"))?;
+    let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?;
+    Ok(s.to_string())
+}
+
 /// zod's record type message — "record", not "object", is the received word
 /// (a z.record that isn't given one).
 pub fn record_msg(received: &str) -> String {

@@ -147,6 +147,24 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(6)
   })
 
+  it('forwards the secrets family whole — the vault, its folders, the reveal, the share, the relay, and git\'s door', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/secrets',
+      '/api/secrets?folder=00000000-0000-4000-8000-000000000000',
+      '/api/secrets/folders',
+      '/api/secrets/reveal',
+      '/api/secrets/share',
+      '/api/secrets/relay',
+      '/api/secrets/git-credential',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(7)
+  })
+
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
@@ -290,5 +308,32 @@ describe('maybeProxy', () => {
     const res = await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')
     expect(res!.status).toBe(401) // a 401 from Rust is a 401 to the caller
     expect(await res!.text()).toBe('{"error":{"message":"invalid API key"}}')
+  })
+
+  it('carries the no-store triad the secrets routes answer with — pragma and referrer-policy ride through', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('{"value":"x"}', {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              'cache-control': 'no-store, no-cache, must-revalidate, private',
+              pragma: 'no-cache',
+              'referrer-policy': 'no-referrer',
+              // A header the allow-list does not name: the Rust api's own
+              // business, not ours to re-claim under this origin.
+              server: 'talaria-api',
+            },
+          }),
+      ),
+    )
+    const res = await maybeProxy(req('/api/secrets/reveal'), '/api/secrets/reveal')
+    expect(res!.headers.get('cache-control')).toBe('no-store, no-cache, must-revalidate, private')
+    expect(res!.headers.get('pragma')).toBe('no-cache')
+    expect(res!.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(res!.headers.get('server')).toBeNull()
   })
 })

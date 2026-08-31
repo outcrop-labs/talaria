@@ -111,6 +111,12 @@ const PREFIXES = [
   // reader plane, and the read's sweep-if-due must land on the same Rust
   // process as the engine that owns it.
   '/api/brief',
+  // The secrets family, whole: the working secrets a person saves and reads
+  // back, their folders, the one reveal verb, sharing, the one-shot relay,
+  // and git's credential helper door. The vault engine crossed with them —
+  // and the resolve path it serves is what MCP tool-call substitution uses,
+  // so the whole feature reads and writes one Rust process's tables.
+  '/api/secrets',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it
@@ -188,7 +194,10 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 // OAuth routes answer in redirects, and the conversation/message ids because
 // /api/chat answers a NEW conversation's id in a header: the SPA learns it
 // from X-Conversation-Id, and stripping it would strand a first turn.
-const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id']
+// `pragma` and `referrer-policy` joined with the secrets family: reveal and
+// git-credential answer with no-store/no-cache/no-referrer triads, and an
+// allow-list that eats two of the three is a cache hint waiting to happen.
+const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy']
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()

@@ -42,6 +42,9 @@ sha2 = "0.11"
 # SigV4's HMAC-SHA256 (storage.ts's createHmac) — same RustCrypto family as
 # sha2/aes-gcm/scrypt; hand-rolling HMAC buys nothing.
 hmac = "0.13"
+# The GitHub App JWT (github.ts appJwt) is RS256 — RSA-SHA256 over a PKCS#8
+# PEM. Same RustCrypto family; the sha2 feature wires the digest in.
+rsa = { version = "0.9", features = ["sha2"] }
 scrypt = "0.12"
 aes-gcm = "0.11"
 base64 = "0.23"
