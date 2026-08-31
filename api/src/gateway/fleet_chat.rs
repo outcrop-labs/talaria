@@ -34,6 +34,13 @@ pub struct ChatStream {
     pub status: u16,
     pub content_type: String,
     pub body: ByteStream,
+    /// `"mock"` / `"hold"` when this is a CANNED stream — the TS proxyChat's
+    /// CANNED_STREAM_HEADER. A canned stream is an outage wearing a 200: right
+    /// for a human chat window, indistinguishable from a model reply to
+    /// everything downstream of `ok()`. The persona transport reads this and
+    /// fails the call so the sentence can never be persisted as an agent's
+    /// work.
+    pub canned: Option<&'static str>,
 }
 
 impl ChatStream {
@@ -44,6 +51,19 @@ impl ChatStream {
     }
 }
 
+/// The chat plane's payload — `{model, messages}` plus the honored effort when
+/// one was picked (TS: `{ model, messages, ...(effort ? { reasoning_effort:
+/// effort } : {}) })`, key order and all).
+pub fn chat_payload(model: &str, messages: &Value, effort: Option<&str>) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("model".into(), json!(model));
+    payload.insert("messages".into(), messages.clone());
+    if let Some(effort) = effort {
+        payload.insert("reasoning_effort".into(), json!(effort));
+    }
+    Value::Object(payload)
+}
+
 /// proxyChat: send one chat turn to the agent's container. Seals every
 /// message's content through a per-call vault (an image turn's text part is as
 /// credential-prone as any prose turn), retries while the agent's gateway is
@@ -51,34 +71,36 @@ impl ChatStream {
 /// minutes — past the deadline the reply is the honest canned sentence, so
 /// history shows what happened rather than a silent failure.
 ///
-/// `messages` is the OpenAI history (system + turns, content string or parts);
-/// `effort` rides as `reasoning_effort` when the turn picked a level (the TS
-/// spreads the whole payload, and the field is simply absent otherwise).
-pub async fn proxy_chat(model: &str, messages: &Value, effort: Option<&str>) -> ChatStream {
+/// `payload` is the WHOLE request body the agent's gateway sees, spread like
+/// the TS `{ ...payload, stream: true, stream_options: … }` — a persona turn's
+/// `temperature`/`response_format` ride alongside model and messages, so the
+/// one mapping that decides them (`persona_payload`) is the only place they
+/// can be dropped. `messages` is the OpenAI history (system + turns, content
+/// string or parts). `wait_ms` is the hold window (TS `opts.waitMs`; None is
+/// the two-minute default).
+pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     // CREDENTIALS DO NOT LEAVE THIS PROCESS, PERSONA EDITION: the vault is
     // per-call and discarded when this returns — nothing downstream of a
     // persona turn spends a handle.
     let mut vault = SecretVault::default();
-    let messages = if let Some(list) = messages.as_array() {
-        let sealed: Vec<Value> = list
-            .iter()
-            .map(|m| {
-                let mut m = m.clone();
-                if m.get("content").is_some() {
-                    m["content"] = seal_content(&m["content"], &mut vault);
-                }
-                m
-            })
-            .collect();
-        Value::Array(sealed)
-    } else {
-        messages.clone()
-    };
+    let mut payload = payload.clone();
+    if let Some(list) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+        for m in list.iter_mut() {
+            if let Some(content) = m.get_mut("content") {
+                *content = seal_content(&content.clone(), &mut vault);
+            }
+        }
+    }
     for s in &vault.sealed {
         tracing::warn!("[secrets] sealed {} out of a turn to {model}", s.label);
     }
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms.unwrap_or(120_000));
     let mut attempt: u32 = 0;
     loop {
         let manifest = read_manifest().await;
@@ -86,17 +108,15 @@ pub async fn proxy_chat(model: &str, messages: &Value, effort: Option<&str>) -> 
         // Two strikes with no manifest row at all → mock mode: no agents are
         // rendered yet, and the reply says so instead of hanging.
         if entry.is_none() && attempt >= 2 {
-            return canned_chat_stream(&mock_reply(model));
+            return canned_chat_stream(&mock_reply(&model), "mock");
         }
 
         if let Some(entry) = entry {
-            let mut request = json!({ "model": model, "messages": messages, "stream": true });
+            let mut request = payload.clone();
             // include_usage: the final chunk reports token counts for the
             // ledger (gateways that don't support it just ignore the option).
+            request["stream"] = json!(true);
             request["stream_options"] = json!({ "include_usage": true });
-            if let Some(effort) = effort {
-                request["reasoning_effort"] = json!(effort);
-            }
             let mut req = http()
                 .post(format!("{}/v1/chat/completions", entry.url))
                 .header("content-type", "application/json")
@@ -120,13 +140,14 @@ pub async fn proxy_chat(model: &str, messages: &Value, effort: Option<&str>) -> 
                         status,
                         content_type,
                         body: Box::pin(upstream.bytes_stream()),
+                        canned: None,
                     };
                 }
             }
         }
 
         if tokio::time::Instant::now() >= deadline {
-            return canned_chat_stream(&unavailable_reply(model));
+            return canned_chat_stream(&unavailable_reply(&model), "hold");
         }
         attempt += 1;
         tokio::time::sleep(Duration::from_millis(
@@ -154,8 +175,9 @@ fn mock_reply(model: &str) -> String {
 }
 
 /// A canned SSE reply in OpenAI chunk format, one word per 35ms tick — the
-/// same cadence the TS canned stream types at.
-fn canned_chat_stream(text: &str) -> ChatStream {
+/// same cadence the TS canned stream types at. `canned` names WHICH outage
+/// this is, in the TS header's vocabulary.
+fn canned_chat_stream(text: &str, canned: &'static str) -> ChatStream {
     let words: Vec<String> = text.split(' ').map(|w| format!("{w} ")).collect();
     let body = futures_util::stream::iter(words)
         .then(|w| async move {
@@ -173,6 +195,7 @@ fn canned_chat_stream(text: &str) -> ChatStream {
         status: 200,
         content_type: "text/event-stream".into(),
         body,
+        canned: Some(canned),
     }
 }
 
@@ -512,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn canned_stream_reads_back_word_chunks_then_done() {
-        let stream = canned_chat_stream("one two");
+        let stream = canned_chat_stream("one two", "mock");
         assert_eq!(stream.status, 200);
         let collected: Vec<_> = stream
             .body

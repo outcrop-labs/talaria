@@ -509,7 +509,7 @@ static CHANNEL_HREF: LazyLock<Regex> = LazyLock::new(|| {
 /// removed from cannot re-enter their list as a line that 403s when opened.
 /// Every other href — app surfaces like /research — passes: it is linkable,
 /// and its accessibility is the surface's own route rule, not a membership.
-async fn accessible_notification_hrefs(
+pub(crate) async fn accessible_notification_hrefs(
     pg: &PgPool,
     user_id: &str,
     hrefs: &[String],

@@ -57,6 +57,13 @@ pub mod fleet_create;
 pub mod fleet_hires;
 pub mod health;
 pub mod history;
+pub mod inbox_focus;
+pub mod inbox_focus_actions;
+pub mod inbox_focus_command;
+pub mod inbox_focus_conversations;
+pub mod inbox_focus_conversations_id;
+pub mod inbox_focus_state;
+pub mod inbox_focus_summary;
 pub mod kb_comments_id;
 pub mod kb_docs_id;
 pub mod kb_docs_id_backlinks;
@@ -436,6 +443,37 @@ pub fn router(state: AppState) -> Router {
             "/api/dms",
             post(dms::post).fallback(|| async { method_not_allowed("POST") }),
         )
+        // The Inbox focus family (queue, summary, state, actions, the
+        // segmented conversations). The SSE command route lives in the
+        // streaming stack below.
+        .route(
+            "/api/inbox/focus",
+            get(inbox_focus::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/inbox/focus/summary",
+            get(inbox_focus_summary::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/inbox/focus/state",
+            put(inbox_focus_state::put).fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
+            "/api/inbox/focus/actions",
+            post(inbox_focus_actions::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/inbox/focus/conversations",
+            get(inbox_focus_conversations::get)
+                .post(inbox_focus_conversations::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/inbox/focus/conversations/{id}",
+            get(inbox_focus_conversations_id::get)
+                .delete(inbox_focus_conversations_id::delete)
+                .fallback(|| async { method_not_allowed("GET, DELETE") }),
+        )
         .route(
             "/api/plans/{id}/draft",
             get(plans_id_draft::get)
@@ -736,6 +774,13 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/channels/{id}/events",
             get(channels_id_events::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The Inbox panel's command run — named SSE events for one assistant
+        // turn. Same stack as the watch streams: the turn's lifetime is the
+        // model's, and the Inbox lock rides inside the stream task.
+        .route(
+            "/api/inbox/focus/command",
+            post(inbox_focus_command::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())

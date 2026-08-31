@@ -21,7 +21,7 @@ use crate::conversations::{
 };
 use crate::error::house_error;
 use crate::fleet::{routed_model_for, usable_agent_gate};
-use crate::gateway::fleet_chat::proxy_chat;
+use crate::gateway::fleet_chat::{chat_payload, proxy_chat};
 use crate::model_efforts::efforts_for_model;
 use crate::permissions::has_perm;
 use crate::persona::persona_configured_effort;
@@ -533,9 +533,12 @@ pub async fn post(
     }
 
     let upstream = proxy_chat(
-        &routed_model,
-        &Value::Array(messages.clone()),
-        effort.as_deref(),
+        &chat_payload(
+            &routed_model,
+            &Value::Array(messages.clone()),
+            effort.as_deref(),
+        ),
+        None,
     )
     .await;
 

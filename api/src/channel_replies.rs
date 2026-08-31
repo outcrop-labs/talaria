@@ -20,7 +20,7 @@ use crate::channels::{
     list_channel_messages, list_thread_messages, set_channel_message_guard, update_channel_message,
 };
 use crate::fleet::{describe_agent, routed_model_for};
-use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, proxy_chat};
+use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payload, proxy_chat};
 use crate::gateway::guard::{
     GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
@@ -477,7 +477,8 @@ async fn stream_reply(
     routed_model: &str,
     messages: &Value,
 ) {
-    let upstream = proxy_chat(routed_model, messages, None).await; // the comms loop picks no effort level
+    // the comms loop picks no effort level
+    let upstream = proxy_chat(&chat_payload(routed_model, messages, None), None).await;
     if !(200..300).contains(&upstream.status) {
         let _ = update_channel_message(
             deps,

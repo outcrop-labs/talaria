@@ -6,8 +6,8 @@
 // and the streamed pair — over the gateway pieces that crossed with the chat
 // relay (`resolve_route`, `build_upstream`, `fetch_upstream`,
 // `record_gateway_usage`). The FLEET half (the persona turn, the persona
-// stream pump, and the `pickTransport` rule) crosses with the fleet tail in
-// batch 5: `proxyChat` and `listAgents` do not exist on this side yet.
+// stream pump, and the `pickTransport` rule) lives at the bottom of the file,
+// over `proxy_chat` and `list_agents`.
 //
 // WHY THIS FILE EXISTS — ONE MISSING FEATURE THAT WORE FIVE COATS. Five files
 // USED TO hand-write their own persona transport because `runHarness` could
@@ -619,11 +619,9 @@ pub fn replays_tools(req: &TransportRequest) -> bool {
 // ── The gateway transports, async over the pieces that crossed with the relay ─
 //
 // The GATEWAY half of the async layer, on `resolve_route` / `build_upstream` /
-// `fetch_upstream` / `record_gateway_usage`. The FLEET half (the persona turn,
-// `pump_personaStream`, and the `pickTransport` rule that chooses between the
-// sides) crosses with the fleet tail in batch 5 — `proxyChat` and `listAgents`
-// do not exist on this side yet, and the picker that needs both would arrive
-// half-blind.
+// `fetch_upstream` / `record_gateway_usage`. The FLEET half — the persona
+// turn, `pump_persona_stream`, and the `transport_kind` rule that chooses
+// between the sides — lives at the bottom of this file.
 
 use crate::gateway::registry::resolve_route;
 use crate::gateway::upstream::{Reply, build_upstream, fetch_upstream};
@@ -1073,6 +1071,248 @@ pub async fn gateway_stream(
         contract_dropped: call.contract_drops.iter().any(|d| d.capability == "json"),
         text,
     })
+}
+
+// ── The FLEET half — a persona turn through the agent's own gateway ──────────
+
+use crate::fleet::list_agents;
+use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, ByteStream, proxy_chat};
+use crate::gateway::usage::{UsageInput, record_usage};
+use crate::me::gateway_models;
+
+/// A persona turn's assembled result (`PersonaTurn`). The parser reports
+/// reasoning text too; TS ignores it the same way — only content, tool names
+/// and usage feed the turn.
+struct PersonaTurn {
+    text: String,
+    tool_names: Vec<String>,
+    usage: Option<TokenPair>,
+}
+
+impl PersonaTurn {
+    fn fold(&mut self, ev: AgentStreamEvent, emit: &mut Option<&mut (dyn FnMut(&str) + Send)>) {
+        match ev {
+            AgentStreamEvent::Content { text } => {
+                self.text.push_str(&text);
+                if let Some(emit) = emit.as_mut() {
+                    emit(&text);
+                }
+            }
+            AgentStreamEvent::Tool { name, .. } => self.tool_names.push(name),
+            AgentStreamEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+            } => {
+                self.usage = Some(TokenPair {
+                    prompt_tokens,
+                    completion_tokens,
+                });
+            }
+            AgentStreamEvent::Reasoning { .. } => {}
+        }
+    }
+}
+
+/// Drain a persona stream into text, tool names and usage, emitting each delta
+/// on the way past (`pumpPersonaStream`). `emit` is the ONLY thing the
+/// streaming caller does differently — one loop, not five copies of it.
+async fn pump_persona_stream(
+    mut body: ByteStream,
+    mut emit: Option<&mut (dyn FnMut(&str) + Send)>,
+) -> Result<PersonaTurn, String> {
+    let mut parser = AgentStreamParser::new();
+    let mut turn = PersonaTurn {
+        text: String::new(),
+        tool_names: Vec::new(),
+        usage: None,
+    };
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|e| format!("persona stream: {e}"))?;
+        for ev in parser.feed(&chunk) {
+            turn.fold(ev, &mut emit);
+        }
+    }
+    for ev in parser.finish() {
+        turn.fold(ev, &mut emit);
+    }
+    Ok(turn)
+}
+
+/// The ledger row for a persona turn (`meterPersonaTurn`). It meters because
+/// nothing else will: a harness turn on a persona writes no chat, channel or
+/// ticket row, so this is the only place the spend can enter. TS:
+/// `.catch(() => {})` — a ledger hiccup never fails a turn that succeeded.
+async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &PersonaTurn) {
+    let led = ledger_of(req);
+    let counts = match turn.usage {
+        Some(u) => TokenCounts {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            ..TokenCounts::default()
+        },
+        None => TokenCounts {
+            prompt_tokens: estimate_tokens(req.prompt_chars()),
+            completion_tokens: estimate_tokens(crate::body::utf16_len(&turn.text)),
+            ..TokenCounts::default()
+        },
+    };
+    let _ = record_usage(
+        pg,
+        &UsageInput {
+            agent_model: &led.agent_model,
+            source: led.source.as_str(),
+            ref_id: led.ref_id.as_deref(),
+            task_id: led.task_id.as_deref(),
+            tier: led.tier.as_deref(),
+            counts,
+            estimated: turn.usage.is_none(),
+        },
+    )
+    .await;
+}
+
+/// Streaming completion against a FLEET PERSONA's own gateway (`personaTurn`).
+/// The persona runs a tool loop we do not control, so this transport collects
+/// the tool names the stream reports and nothing more — which is precisely
+/// what the guard pass is told about it later.
+async fn persona_turn(
+    state: &AppState,
+    req: &TransportRequest,
+    emit: Option<&mut (dyn FnMut(&str) + Send)>,
+) -> Result<TransportReply, String> {
+    // See `fleet_tool_defs_refusal`: the loop on the other side of the proxy
+    // is the agent's, so a definition we send is neither guaranteed to arrive
+    // nor visible when it is called. Refused here rather than in the two
+    // exported transports so the streamed persona path cannot grow a quiet
+    // exception.
+    if !tool_defs_of(req).is_empty() {
+        return Err(fleet_tool_defs_refusal(&req.model));
+    }
+    let upstream = proxy_chat(&persona_payload(req), req.hold_ms).await;
+    if !upstream.ok() {
+        return Err(format!("persona gateway {}", upstream.status));
+    }
+    // A CANNED STREAM IS AN OUTAGE WEARING A 200 — see `ChatStream.canned`.
+    // It is a failed call, so it fails like one: the harness gets the error,
+    // and the sentence can never be persisted as an agent's work.
+    if let Some(canned) = upstream.canned {
+        return Err(match canned {
+            "mock" => format!(
+                "\"{}\" is not a rendered agent (the agents service answered in mock mode)",
+                req.model
+            ),
+            _ => format!(
+                "persona \"{}\" did not come back within the hold window",
+                req.model
+            ),
+        });
+    }
+    let turn = pump_persona_stream(upstream.body, emit).await?;
+    meter_persona_turn(&state.pg, req, &turn).await;
+    Ok(TransportReply {
+        kind: TransportKind::Fleet,
+        text: turn.text,
+        tool_names: turn.tool_names,
+        tool_calls: None,
+        usage: turn.usage,
+        contract_dropped: false,
+    })
+}
+
+/// `fleetTransport` — the blocking fleet side.
+pub async fn fleet_transport(
+    state: &AppState,
+    req: &TransportRequest,
+) -> Result<TransportReply, String> {
+    persona_turn(state, req, None).await
+}
+
+/// `fleetStream` — the same call, with each delta handed on as it lands. This
+/// is what the briefing panel's tee was: one branch to the owner's screen, one
+/// to the guard. Streaming is a property of the TRANSPORT, never of the
+/// harness contract.
+pub async fn fleet_stream(
+    state: &AppState,
+    req: &TransportRequest,
+    emit: impl FnMut(&str) + Send,
+) -> Result<TransportReply, String> {
+    let mut emit = emit;
+    persona_turn(state, req, Some(&mut emit)).await
+}
+
+/// Which side of the house a model lives on (`transportKind`). The rule,
+/// stated once:
+///
+///    a model the ORG GATEWAY serves goes through `gateway_transport`;
+///    a model that is a LIVE FLEET PERSONA goes through the proxy;
+///    the gateway wins when a model is somehow both.
+///
+/// The gateway wins because it is the metered, fully-inspectable path: it
+/// knows the endpoint, it writes the ledger row itself, and the runner gets
+/// the whole message history to guard against. A persona's tool loop runs
+/// inside the agent container, so that path can only ever offer tool names.
+///
+/// "Live" is load-bearing — `list_agents` returns an empty vec when the fleet
+/// has never been rendered, so a mock manifest matches nothing here and the
+/// call lands on the gateway, which says so precisely.
+///
+/// TIERS ROUTE TOO. The Plan modal's model-tier dropdown and `routed_model_for`
+/// turn out ids like `<live agent id>-<alias>`, split at the LAST hyphen —
+/// `list_agents` HIDES tier entries from the picker, so matching on its list
+/// alone would classify a tier as a gateway model and fail the call with
+/// "model X is not on the gateway". A caller that KNOWS it is routing a tier
+/// should still say so with `RunContext.tier`, which needs no inference.
+pub async fn transport_kind(state: &AppState, model: &str) -> TransportKind {
+    if gateway_models(&state.pg)
+        .await
+        .map(|models| models.iter().any(|m| m.id == model))
+        .unwrap_or(false)
+    {
+        return TransportKind::Gateway;
+    }
+    let fleet = list_agents().await;
+    if fleet.iter().any(|a| a.id == model) {
+        return TransportKind::Fleet;
+    }
+    if let Some(cut) = model.rfind('-')
+        && cut > 0
+        && fleet.iter().any(|a| a.id == model[..cut])
+    {
+        return TransportKind::Fleet;
+    }
+    // Neither: let the gateway say so. `gateway_transport` throws a precise
+    // "model X is not on the gateway", which is a better failure than a
+    // persona stream that looks like an answer.
+    TransportKind::Gateway
+}
+
+/// `pickTransport` — the blocking picker. THE TRANSPORT RULE in one place so
+/// no harness author ever restates it.
+pub async fn dispatch_transport(
+    state: &AppState,
+    req: &TransportRequest,
+) -> Result<TransportReply, String> {
+    match transport_kind(state, &req.model).await {
+        TransportKind::Fleet => fleet_transport(state, req).await,
+        TransportKind::Gateway => gateway_transport(state, req).await,
+    }
+}
+
+/// `pickStreamingTransport` — the same choice for the streaming pair. It
+/// resolves the kind through the one function above rather than repeating the
+/// gateway/fleet/tier lookup, because two copies of "which side is this model
+/// on" is how a blocking call and a streaming call of the SAME model end up on
+/// different transports — and that failure looks like the stream being broken
+/// rather than like a routing bug.
+pub async fn dispatch_stream(
+    state: &AppState,
+    req: &TransportRequest,
+    emit: impl FnMut(&str) + Send,
+) -> Result<TransportReply, String> {
+    match transport_kind(state, &req.model).await {
+        TransportKind::Fleet => fleet_stream(state, req, emit).await,
+        TransportKind::Gateway => gateway_stream(state, req, emit).await,
+    }
 }
 
 #[cfg(test)]

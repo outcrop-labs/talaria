@@ -22,10 +22,12 @@
 //     transport; `TransportRequest` has no slot for one until the streaming
 //     surfaces cross (batch 5), so cancellation lands with them rather than as
 //     a dead field here.
-//   - the real transport edge is `gateway_transport` — the gateway turn. The
-//     fleet transport, the streamed pair and `pickTransport` cross with the
-//     fleet/streaming planes in batch 5; until then a caller that needs them
-//     injects the edge, which is what the seam is for.
+//   - the real transport edge is `dispatch_transport` — `pickTransport`,
+//     gateway or fleet persona by `transport_kind`. The STREAMED pair crosses
+//     with the streaming surfaces (a harness that streams asks for it via
+//     `StreamOptions`, and the inbox focus assistant is its first caller);
+//     until then a caller that needs one injects the edge, which is what the
+//     seam is for.
 //
 // THREE RULES THIS FILE OBEYS, restated from guardrails.ts because the runner
 // is where they bite:
@@ -55,7 +57,7 @@ use super::json::{ParseResult, parse_json, repair_prompt};
 use super::json_schema::{WireSchema, prompt_shape, wire_schema_of};
 use super::transport::{
     LedgerAttribution, LedgerSource, TransportKind, TransportReply, TransportRequest,
-    gateway_transport, tool_wire_message,
+    dispatch_transport, tool_wire_message,
 };
 use crate::capability::{CapabilityFact, capability_key, get_capabilities, missing_capabilities};
 use crate::capability_reach::{Reach, reach_for_keys};
@@ -302,7 +304,7 @@ pub fn real_deps(state: &AppState) -> HarnessDeps {
             let st = st.clone();
             Arc::new(move |req| {
                 let st = st.clone();
-                Box::pin(async move { gateway_transport(&st, &req).await })
+                Box::pin(async move { dispatch_transport(&st, &req).await })
             })
         },
         guard_config: {

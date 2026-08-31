@@ -97,6 +97,13 @@ const PREFIXES = [
   // is its own one-route family.
   '/api/conversations',
   '/api/dms',
+  // The inbox.focus family, whole: the queue read, the badge summary, the
+  // viewed/snooze state write, the assistant actions (with the confirmation
+  // reissue), the SSE command stream, and the segmented conversation picker
+  // with its {id} timeline/archive. Every inbox.focus* route file crossed
+  // together — the focus engine's process-local lock spans the command stream
+  // and the state route, so the family is one plane.
+  '/api/inbox/focus',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it

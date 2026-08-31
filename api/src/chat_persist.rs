@@ -20,7 +20,7 @@ use crate::conversations::{
 };
 use crate::fleet::{describe_agent, routed_model_for};
 use crate::gateway::fleet_chat::{
-    AgentStreamEvent, AgentStreamParser, ToolCall, merge_tool, proxy_chat,
+    AgentStreamEvent, AgentStreamParser, ToolCall, chat_payload, merge_tool, proxy_chat,
 };
 use crate::gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
@@ -152,7 +152,11 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         .iter()
         .map(|m| content_js_length(&m["content"]))
         .sum();
-    let upstream = proxy_chat(&routed, &Value::Array(messages), honored.as_deref()).await;
+    let upstream = proxy_chat(
+        &chat_payload(&routed, &Value::Array(messages), honored.as_deref()),
+        None,
+    )
+    .await;
     let usage_meta = PersistMeta {
         agent_model: meta.agent_model.clone(),
         prompt_chars,

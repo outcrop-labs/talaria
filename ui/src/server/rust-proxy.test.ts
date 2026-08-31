@@ -109,6 +109,27 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(5)
   })
 
+  it('forwards the inbox.focus family whole — the queue, the state write, the actions, the SSE command, and the conversations', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/inbox/focus',
+      '/api/inbox/focus/summary',
+      '/api/inbox/focus/state',
+      '/api/inbox/focus/actions',
+      // The SSE command stream — the prefix carries it into the streaming
+      // hop; the route itself lives in Rust's no-timeout router.
+      '/api/inbox/focus/command',
+      '/api/inbox/focus/conversations',
+      '/api/inbox/focus/conversations/current',
+      '/api/inbox/focus/conversations/00000000-0000-4000-8000-000000000000',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(8)
+  })
+
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

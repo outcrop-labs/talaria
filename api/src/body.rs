@@ -167,6 +167,21 @@ pub fn optional_max_string_member(
     Ok(Some(s.to_string()))
 }
 
+/// A max-only NULLISH string (`z.string().max(n).nullable().optional()`):
+/// absent and null both fold to None — the focus panel's `surface: null`
+/// means "no surface", not "clear the surface" — and the empty string is a
+/// legal value.
+pub fn nullish_max_string_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => optional_max_string_member(obj, key, max),
+    }
+}
+
 /// The trimmed string member (`z.string().trim().min(n).max(m)`): the trim
 /// runs BEFORE the length checks, so a 79-char name padded to 81 raw passes
 /// and a spaces-only name is the min failure. The returned value is trimmed.
@@ -590,6 +605,27 @@ pub fn present_nullable_uuid_member(
         None => Ok(None),
         Some(Value::Null) => Ok(Some(None)),
         Some(_) => uuid_member(obj, key).map(|s| Some(Some(s))),
+    }
+}
+
+/// An ISO datetime whose NULL IS A VALUE (`z.string().datetime()
+/// .nullable().optional()`): absent is "don't touch", present-null is "clear
+/// it", a present string must satisfy the datetime regex. inbox.focus.state's
+/// `snoozedUntil` uses the three states to distinguish clearing a snooze
+/// from leaving it alone.
+pub fn present_nullable_datetime_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<Option<String>>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(_) => match nullish_datetime_member(obj, key)? {
+            Some(s) => Ok(Some(Some(s))),
+            // The present, non-null case always yields a value; this arm is
+            // only for the type-checker.
+            None => Ok(Some(None)),
+        },
     }
 }
 
