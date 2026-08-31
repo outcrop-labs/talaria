@@ -15,6 +15,7 @@
 // active slot resolves here — and only the roll orchestration addresses a
 // slot explicitly.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use sqlx::PgPool;
@@ -199,6 +200,30 @@ pub async fn wait_healthy_slot(department: &str, slot: Slot, timeout_ms: u64) ->
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
     false
+}
+
+/// Which departments have a RUNNING slot container right now — the
+/// `managed?.state === 'running'` half of containerStatus (the full
+/// projection crosses with the fleet-status routes). One `docker ps` sweep,
+/// never cached: the roll loop wants this fresh.
+pub async fn running_departments(departments: &[String]) -> Result<Vec<String>, String> {
+    let (out, _) = docker(
+        &["ps", "-a", "--format", "{{.Names}}\t{{.State}}"],
+        Duration::from_secs(20),
+    )
+    .await?;
+    let by_name: HashMap<&str, &str> = out.lines().filter_map(|l| l.split_once('\t')).collect();
+    Ok(departments
+        .iter()
+        .filter(|d| {
+            [Slot::A, Slot::B].iter().any(|slot| {
+                by_name
+                    .get(slot_container(d, *slot).as_str())
+                    .is_some_and(|state| *state == "running")
+            })
+        })
+        .cloned()
+        .collect())
 }
 
 /// Remove a container by exact name — used to retire the old slot after a

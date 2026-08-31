@@ -21,6 +21,10 @@ pub struct Config {
 pub struct SecretRoot {
     material: String,
     source: RootSource,
+    /// The env NAME (or file path) the material came from — rootSource()'s
+    /// `name`, which the admin secrets inventory reports so an operator knows
+    /// which variable to fix. Provenance only, never the material.
+    name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +47,10 @@ impl SecretRoot {
     }
     pub fn source(&self) -> RootSource {
         self.source
+    }
+    /// rootSource()'s `name`: the env var (or file path) in force.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -88,27 +96,31 @@ impl Config {
         // Root precedence is secretbox.ts's, verbatim: SECRET_KEY, then the
         // FILE contents, then AUTH_SECRET. The file is only read when the env
         // value is absent, so a broken file path only matters when it matters.
-        let (material, source) = if !secret_key.is_empty() {
-            (secret_key, RootSource::SecretKey)
+        let (material, source, name) = if !secret_key.is_empty() {
+            (secret_key, RootSource::SecretKey, "TALARIA_SECRET_KEY")
         } else if !secret_key_file.is_empty() {
             match std::fs::read_to_string(&secret_key_file) {
-                Ok(contents) => (contents.trim().to_string(), RootSource::SecretKeyFile),
+                Ok(contents) => (
+                    contents.trim().to_string(),
+                    RootSource::SecretKeyFile,
+                    secret_key_file.as_str(),
+                ),
                 Err(e) => {
                     problems.push(format!(
                         "TALARIA_SECRET_KEY_FILE ({secret_key_file}) could not be read: {e}"
                     ));
-                    (String::new(), RootSource::SecretKey)
+                    (String::new(), RootSource::SecretKey, "TALARIA_SECRET_KEY")
                 }
             }
         } else if !auth_secret.is_empty() {
-            (auth_secret, RootSource::AuthSecretFallback)
+            (auth_secret, RootSource::AuthSecretFallback, "AUTH_SECRET")
         } else {
             problems.push(
                 "an encryption root is required: set TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE, \
                  or AUTH_SECRET) — it must match what sealed this database's secrets"
                     .into(),
             );
-            (String::new(), RootSource::SecretKey)
+            (String::new(), RootSource::SecretKey, "TALARIA_SECRET_KEY")
         };
 
         let port = if port.is_empty() {
@@ -136,7 +148,11 @@ impl Config {
         Ok(Config {
             database_url,
             redis_url,
-            secret_root: SecretRoot { material, source },
+            secret_root: SecretRoot {
+                material,
+                source,
+                name: name.to_string(),
+            },
             bind: SocketAddr::from(([127, 0, 0, 1], port)),
         })
     }

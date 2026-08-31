@@ -50,3 +50,51 @@ pub async fn list_judge_reviews(
         )
         .collect())
 }
+
+// ── Config (judge.ts getJudgeConfig / setJudgeConfig) ────────────────────────
+// One row in app_settings decides whether the gate runs, on which model, and
+// with what global stance. The admin routes own the writes; every runner on
+// either side of the coexistence line reads the same row.
+
+const CONFIG_KEY: &str = "judge_config";
+
+/// The judge's config in wire order ({enabled, model, mode}) — DEFAULT_CONFIG
+/// merged over the stored partial, TS's `{...DEFAULT_CONFIG, ...stored}`. A
+/// stored value of the wrong type falls to the default per field.
+pub async fn get_judge_config(pg: &PgPool) -> serde_json::Value {
+    let stored = crate::gateway::settings::get_setting(pg, CONFIG_KEY, serde_json::json!({})).await;
+    let mut out = serde_json::Map::new();
+    out.insert(
+        "enabled".into(),
+        serde_json::Value::Bool(
+            stored
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        ),
+    );
+    out.insert(
+        "model".into(),
+        match stored.get("model") {
+            Some(serde_json::Value::String(m)) => serde_json::Value::String(m.clone()),
+            _ => serde_json::Value::Null,
+        },
+    );
+    out.insert(
+        "mode".into(),
+        serde_json::Value::String(
+            stored
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .filter(|m| *m == "advisory" || *m == "enforcing")
+                .unwrap_or("enforcing")
+                .to_string(),
+        ),
+    );
+    serde_json::Value::Object(out)
+}
+
+/// Store the whole config (setJudgeConfig is a full-object write).
+pub async fn set_judge_config(pg: &PgPool, config: &serde_json::Value) {
+    let _ = crate::gateway::settings::set_setting(pg, CONFIG_KEY, config).await;
+}

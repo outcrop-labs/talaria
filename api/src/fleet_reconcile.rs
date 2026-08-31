@@ -8,6 +8,8 @@
 
 use sqlx::PgPool;
 
+use std::collections::HashSet;
+
 use crate::fleet_docker::{self, Slot};
 use crate::fleet_render::{RollOverlay, next_free_port, render_fleet};
 use crate::secretbox::SecretBox;
@@ -97,4 +99,43 @@ pub async fn roll_agent(
     ))
     .await;
     Ok(None)
+}
+
+/// Propagate an identity-level change (e.g. the org profile) to the live
+/// fleet: re-render every managed soul, then ROLL running agents one at a
+/// time so nobody's conversation ever hits a dead container. Agents someone
+/// deliberately stopped stay stopped (they read the new render on next
+/// start).
+pub async fn roll_running_agents(
+    pg: &PgPool,
+    sb: &SecretBox,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let render = render_fleet(pg, sb, None).await?;
+    let managed: Vec<(String, String)> = sqlx::query_as(
+        "select department, display_name from agent_defs where managed and enabled order by slug",
+    )
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let running: HashSet<String> = if managed.is_empty() {
+        HashSet::new()
+    } else {
+        fleet_docker::running_departments(&managed.iter().map(|m| m.0.clone()).collect::<Vec<_>>())
+            .await?
+            .into_iter()
+            .collect()
+    };
+    let mut rolled = Vec::new();
+    let mut warnings = render.warnings;
+    for (department, display_name) in &managed {
+        if !running.contains(department) {
+            continue;
+        }
+        match roll_agent(pg, sb, department).await {
+            Ok(None) => rolled.push(display_name.clone()),
+            Ok(Some(error)) => warnings.push(error),
+            Err(e) => warnings.push(e),
+        }
+    }
+    Ok((rolled, warnings))
 }

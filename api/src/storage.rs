@@ -4,11 +4,11 @@
 // attachments (uploads.ts attachmentTextBlocks → getUpload → readBlob), so a
 // Rust-driven run has to find the same bytes the TS one did, wherever they
 // live — local disk, the configured bucket, or the replica behind it. The
-// WRITE half (s3Put/s3Delete, ensureBucket, the admin test action) stays TS
-// with batch 5's uploads family; nothing here can mutate a bucket.
+// WRITE half (s3Put/s3Delete, ensureBucket, the admin test action, the
+// config writes) crossed with the admin storage surface.
 //
 // No SDK, by house rule: any S3-compatible endpoint (AWS, B2, R2, MinIO, …)
-// behind a hand-rolled SigV4 GET, the same no-SDK fetch pattern as the
+// behind hand-rolled SigV4 verbs, the same no-SDK fetch pattern as the
 // gateway's providers. Config lives in app_settings (`storage_config`) with
 // the secret sealed by secretbox; uploads.path records where each blob
 // actually lives (`s3://bucket/key` vs a filesystem path), so a read by
@@ -230,6 +230,70 @@ pub async fn get_storage_config(pg: &PgPool, sb: &SecretBox) -> StorageConfig {
     cfg.target.secret_access_key = unseal(sb, &cfg.target.secret_access_key);
     cfg.replica.secret_access_key = unseal(sb, &cfg.replica.secret_access_key);
     cfg
+}
+
+/// setStorageConfig — the whole config, secrets SEALED at rest. An empty
+/// secret stays empty (local mode has none to keep).
+pub async fn set_storage_config(pg: &PgPool, sb: &SecretBox, cfg: &StorageConfig) {
+    let seal = |plain: &str| -> String {
+        if plain.is_empty() {
+            String::new()
+        } else {
+            sb.seal(plain).unwrap_or_default()
+        }
+    };
+    let t = &cfg.target;
+    let r = &cfg.replica;
+    let value = serde_json::json!({
+        "mode": cfg.mode,
+        "endpoint": t.endpoint,
+        "region": t.region,
+        "bucket": t.bucket,
+        "accessKeyId": t.access_key_id,
+        "secretAccessKey": seal(&t.secret_access_key),
+        "pathStyle": t.path_style,
+        "prefix": t.prefix,
+        "replica": {
+            "enabled": cfg.replica_enabled,
+            "endpoint": r.endpoint,
+            "region": r.region,
+            "bucket": r.bucket,
+            "accessKeyId": r.access_key_id,
+            "secretAccessKey": seal(&r.secret_access_key),
+            "pathStyle": r.path_style,
+            "prefix": r.prefix,
+        },
+    });
+    let _ = crate::gateway::settings::set_setting(pg, KEY, &value).await;
+}
+
+/// publicStorageConfig — the admin GET's masked view: never the secrets, only
+/// whether each is set. Wire order is the TS destructure's ({...rest} then
+/// hasSecret), the replica object likewise.
+pub async fn public_storage_config(pg: &PgPool, sb: &SecretBox) -> serde_json::Value {
+    let cfg = get_storage_config(pg, sb).await;
+    let t = &cfg.target;
+    let r = &cfg.replica;
+    serde_json::json!({
+        "mode": cfg.mode,
+        "endpoint": t.endpoint,
+        "region": t.region,
+        "bucket": t.bucket,
+        "accessKeyId": t.access_key_id,
+        "pathStyle": t.path_style,
+        "prefix": t.prefix,
+        "hasSecret": !t.secret_access_key.is_empty(),
+        "replica": {
+            "enabled": cfg.replica_enabled,
+            "endpoint": r.endpoint,
+            "region": r.region,
+            "bucket": r.bucket,
+            "accessKeyId": r.access_key_id,
+            "pathStyle": r.path_style,
+            "prefix": r.prefix,
+            "hasSecret": !r.secret_access_key.is_empty(),
+        },
+    })
 }
 
 // ── URL + region ─────────────────────────────────────────────────────────────
@@ -563,6 +627,72 @@ pub async fn s3_get(t: &BucketTarget, key: &str) -> Result<Option<Vec<u8>>, Stri
         ));
     }
     Ok(Some(body.to_vec()))
+}
+
+/// s3Delete — signed DELETE. The probe's cleanup step; a failure there is
+/// swallowed by the caller (TS: `.catch(() => {})`), so this surfaces the
+/// error for anyone who does care.
+pub async fn s3_delete(t: &BucketTarget, key: &str) -> Result<(), String> {
+    let amz_date = amz_now();
+    // DELETE signs exactly like the GET — same three headers, empty payload.
+    let (url, authorization) = signed_get(t, key, &amz_date);
+    let res = http()
+        .delete(&url)
+        .header("x-amz-content-sha256", sha256_hex(b""))
+        .header("x-amz-date", amz_date)
+        .header("authorization", authorization)
+        .send()
+        .await
+        .map_err(|e| format!("storage DELETE: {e}"))?;
+    let status = res.status();
+    if !status.is_success() && status.as_u16() != 404 {
+        let body = res.bytes().await.unwrap_or_default();
+        let text = String::from_utf8_lossy(&body);
+        return Err(format!(
+            "storage DELETE {}: {}",
+            status.as_u16(),
+            crate::body::truncate_utf16(text.trim(), 300)
+        ));
+    }
+    Ok(())
+}
+
+/// testStorage — the round-trip probe: PUT a tiny object, GET it back, DELETE
+/// it. Returns a human-readable failure reason rather than throwing, for the
+/// admin panel.
+pub async fn test_storage(t: &BucketTarget) -> serde_json::Value {
+    if !target_ready(t) {
+        return serde_json::json!({
+            "ok": false,
+            "detail": "endpoint, bucket, access key, and secret are all required",
+        });
+    }
+    let key = format!("{}talaria-storage-probe", t.prefix);
+    let payload = b"talaria storage probe";
+    let probe = async {
+        s3_put(t, &key, payload, "text/plain").await?;
+        let back = s3_get(t, &key).await?;
+        if back.as_deref() != Some(payload.as_slice()) {
+            return Err("wrote the probe object but read back different bytes".to_string());
+        }
+        Ok(())
+    }
+    .await;
+    match probe {
+        Ok(()) => {
+            // cleanup failure isn't a config failure
+            let _ = s3_delete(t, &key).await;
+            serde_json::json!({
+                "ok": true,
+                "detail": format!(
+                    "bucket \"{}\" is reachable and writable (region {})",
+                    t.bucket,
+                    region_for(t)
+                ),
+            })
+        }
+        Err(e) => serde_json::json!({ "ok": false, "detail": e }),
+    }
 }
 
 /// YYYYMMDDTHHMMSS.mmmZ — `new Date().toISOString()` with the punctuation

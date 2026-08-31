@@ -28,7 +28,6 @@ pub fn role_slot(role: &str) -> String {
     format!("role:{role}")
 }
 
-#[allow(dead_code)]
 pub fn agent_slot(id: &str) -> String {
     format!("agent:{id}")
 }

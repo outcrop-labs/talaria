@@ -332,6 +332,95 @@ impl SecretBox {
     pub fn kek(&self) -> Option<&Key> {
         self.kek.as_ref()
     }
+
+    // ── Status surface (secret-health's reads) ──────────────────────────────
+    // All of these answer rather than throw: an inventory of every secret on a
+    // broken instance is the one read that MUST work while it is broken.
+
+    /// tokenReadable — a v2:<ver> token names its DEK, so the answer is a map
+    /// lookup; v1 and legacy unversioned v2 have to actually try.
+    pub fn token_readable(&self, token: &str) -> bool {
+        let parts: Vec<&str> = token.split(':').collect();
+        if parts.first() == Some(&"v2") && parts.len() == 5 {
+            return parts[1]
+                .parse::<u32>()
+                .map(|v| self.deks.contains_key(&v))
+                .unwrap_or(false);
+        }
+        self.open(token).is_ok()
+    }
+
+    /// activeKeyVersion — the active DEK version, or None when there isn't one.
+    pub fn active_key_version(&self) -> Option<u32> {
+        self.active
+    }
+
+    /// loadedVersions — every DEK version in memory, ascending (JS Map key
+    /// order is insertion order = load order = version order).
+    pub fn loaded_versions(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.deks.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    // ── Rotation surface (secret-rotation's writes) ─────────────────────────
+
+    /// currentKeyVersion — the version a rotation's successor gets. Throws
+    /// like TS's active(): rotation is a write, and a write on an unusable
+    /// key set SHOULD fail loudly.
+    pub fn current_key_version(&self) -> Result<u32, SecretboxError> {
+        Ok(self.active()?.1)
+    }
+
+    /// rewrapVersion — re-wrap an in-memory DEK under a KEK derived from new
+    /// root material (the DB row keeps the old wrap; the same transaction
+    /// overwrites it with this).
+    pub fn rewrap_version(&self, version: u32, root_material: &str) -> Result<String, SecretboxError> {
+        let dek = self.dek(version)?;
+        wrap_dek(&derive_kek(root_material), dek)
+    }
+
+    /// sealWith — encrypt with an explicit DEK + version (re-encryption under
+    /// the new key; the box's own active version is not consulted).
+    pub fn seal_with(&self, dek: &Key, version: u32, plaintext: &str) -> Result<String, SecretboxError> {
+        let (iv, tag, data) = enc_raw(dek, &random_iv()?, plaintext)?;
+        Ok(["v2", &version.to_string(), &iv, &tag, &data].join(":"))
+    }
+
+    /// wrapDekFor — wrap a DEK under the current KEK, or one derived from new
+    /// root material when the rotation also moves the root.
+    pub fn wrap_dek_for(&self, dek: &Key, root_material: Option<&str>) -> Result<String, SecretboxError> {
+        match root_material {
+            Some(m) => Ok(wrap_dek(&derive_kek(m), dek)?),
+            None => Ok(wrap_dek(
+                self.kek
+                    .as_ref()
+                    .ok_or_else(|| SecretboxError::Unusable("no KEK".into()))?,
+                dek,
+            )?),
+        }
+    }
+
+    /// installActiveKey as a NEW box (secretbox.ts mutates globals; this
+    /// process's box is swapped atomically instead). Keeps every prior version;
+    /// moves the KEK when the root changed.
+    pub fn installed(&self, dek: Key, version: u32, root_material: Option<&str>) -> SecretBox {
+        let mut next = self.clone();
+        if let Some(m) = root_material {
+            next.kek = Some(derive_kek(m));
+        }
+        next.deks.insert(version, dek);
+        next.active = Some(version);
+        next
+    }
+}
+
+/// newDek — a fresh random 256-bit data key.
+pub fn new_dek() -> Result<Key, SecretboxError> {
+    let mut dek = [0u8; KEK_LEN];
+    getrandom::fill(&mut dek)
+        .map_err(|e| SecretboxError::Crypto(format!("no entropy for a new data key: {e}")))?;
+    Ok(dek)
 }
 
 #[cfg(test)]

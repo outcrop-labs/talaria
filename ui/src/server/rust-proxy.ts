@@ -77,16 +77,30 @@ const PREFIXES = [
   '/api/artifacts',
   '/api/artifact-folders',
   '/api/uploads',
-  // The admin console's wave-1 groups. Each prefix IS the whole group — no
-  // TS sub-routes hide under any of these paths. '/api/admin/google-client'
-  // covers its own /login sibling. Still TS: admin/invites (createInvite
-  // sends email), admin/model-fitness (the probe suite's plane), and the
-  // rest of admin/*.
+  // The admin console. Each prefix IS the whole group — no TS sub-routes
+  // hide under any of these paths. '/api/admin/google-client' covers its own
+  // /login sibling. Still TS: admin/model-fitness (the probe suite's plane),
+  // admin.update, and the app-MCP dispatchers under /api/mcp/gw.
   '/api/agent-role-templates',
-  '/api/admin/password-accounts',
+  '/api/admin/apps',
+  '/api/admin/domains',
+  '/api/admin/email',
+  '/api/admin/encryption',
   '/api/admin/google-client',
+  '/api/admin/guardrails',
   '/api/admin/instance',
+  '/api/admin/invites',
+  '/api/admin/judge',
+  '/api/admin/outreach',
+  '/api/admin/password-accounts',
   '/api/admin/permissions',
+  '/api/admin/platform-agents',
+  '/api/admin/search',
+  '/api/admin/secrets',
+  '/api/admin/settings',
+  '/api/admin/storage',
+  '/api/admin/users',
+  '/api/admin/workspace-secrets',
   // The comms plane, whole: the channel list/create, one channel and its
   // members/agents/read-cursor, messages (with edit/delete/reactions/threads),
   // the Relay conclude, the live SSE events, and the plan-draft mount that

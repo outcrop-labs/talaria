@@ -18,7 +18,7 @@ use crate::gateway::settings::get_setting;
 use crate::state::AppState;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -140,7 +140,7 @@ const MANAGE_VIEW_ROUTES: [&str; 6] = [
 
 /// Apps' slug rule (apps.ts SLUG_RE): lowercase letters, digits, dashes; a
 /// letter-or-digit head; ≤64 chars total.
-fn slug_ok(s: &str) -> bool {
+pub(crate) fn slug_ok(s: &str) -> bool {
     let b = s.as_bytes();
     if b.is_empty() || b.len() > 64 {
         return false;
@@ -155,7 +155,7 @@ fn slug_ok(s: &str) -> bool {
 /// Where app codebases live (apps.ts appsDir): TALARIA_APPS_DIR, else
 /// <cwd>/../apps — the repo's apps/ dir when the process runs from ui/ (TS)
 /// or api/ (here).
-fn apps_dir() -> PathBuf {
+pub(crate) fn apps_dir() -> PathBuf {
     match std::env::var("TALARIA_APPS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => std::env::current_dir()
@@ -166,23 +166,23 @@ fn apps_dir() -> PathBuf {
     }
 }
 
-struct DiscoveredApp {
-    slug: String,
-    name: String,
-    icon: String,
-    description: String,
-    version: String,
-    work: Option<String>,
-    manage: Option<String>,
-    settings: Option<String>,
+pub(crate) struct DiscoveredApp {
+    pub(crate) slug: String,
+    pub(crate) name: String,
+    pub(crate) icon: String,
+    pub(crate) description: String,
+    pub(crate) version: String,
+    pub(crate) work: Option<String>,
+    pub(crate) manage: Option<String>,
+    pub(crate) settings: Option<String>,
     /// The app publishes MCP tools for agents (apps/<slug>/mcp.ts).
-    mcp: bool,
+    pub(crate) mcp: bool,
 }
 
 /// The manifests on disk, sorted by app name — this port's discoveredApps().
 /// Any unreadable/unparseable directory is skipped, like the glob that sees
 /// nothing there. Defaults follow the TS String(x ?? default) coercion.
-fn discovered_apps() -> Vec<DiscoveredApp> {
+pub(crate) fn discovered_apps() -> Vec<DiscoveredApp> {
     let Ok(entries) = std::fs::read_dir(apps_dir()) else {
         return Vec::new();
     };
@@ -356,6 +356,185 @@ pub async fn denied_views(
     Ok(out)
 }
 
+// ── Admin console writes (users.ts listUsersAdmin and the set* family) ───────
+
+/// One row of the admin console's user list, in the TS select's wire order.
+/// Hand-built JSON for that order (node-pg's row is a literal of the SELECT);
+/// timestamps take the epoch-ms → ISO route to stay byte-exact with node's
+/// Date serialization.
+pub async fn list_users_admin(pg: &PgPool) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let rows = sqlx::query(
+        "select u.id::text, u.email, u.name, u.role, u.can_mint_keys, u.denied_views, \
+                coalesce(u.allowed_manage_views, '{}'), \
+                (trunc(extract(epoch from u.last_seen_at) * 1000))::bigint, \
+                (trunc(extract(epoch from u.created_at) * 1000))::bigint, \
+                exists(select 1 from user_password_credentials c where c.user_id = u.id), \
+                coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}'), \
+                min(d.model), coalesce(bool_or(d.elevated), false) \
+           from users u \
+           left join user_agent_access a on a.user_id = u.id \
+           left join agent_defs d on d.owner_user_id = u.id \
+          group by u.id \
+          order by lower(coalesce(u.email, u.name, '')) asc",
+    )
+    .fetch_all(pg)
+    .await?;
+    use crate::agent_auth::epoch_ms_to_iso;
+    use serde_json::Value;
+    let iso = |ms: Option<i64>| match ms {
+        Some(ms) => Value::String(epoch_ms_to_iso(ms)),
+        None => Value::Null,
+    };
+    let mut out = Vec::new();
+    for r in &rows {
+        let mut f = serde_json::Map::new();
+        f.insert("id".into(), Value::String(r.try_get(0)?));
+        f.insert(
+            "email".into(),
+            r.try_get::<Option<String>, _>(1)?.map(Value::String).unwrap_or(Value::Null),
+        );
+        f.insert(
+            "name".into(),
+            r.try_get::<Option<String>, _>(2)?.map(Value::String).unwrap_or(Value::Null),
+        );
+        f.insert("role".into(), Value::String(r.try_get(3)?));
+        f.insert("canMintKeys".into(), Value::Bool(r.try_get(4)?));
+        f.insert(
+            "deniedViews".into(),
+            serde_json::to_value(r.try_get::<Vec<String>, _>(5)?).unwrap_or(Value::Array(vec![])),
+        );
+        f.insert(
+            "allowedManageViews".into(),
+            serde_json::to_value(r.try_get::<Vec<String>, _>(6)?).unwrap_or(Value::Array(vec![])),
+        );
+        f.insert("lastSeenAt".into(), iso(r.try_get(7)?));
+        f.insert("createdAt".into(), iso(r.try_get(8)?));
+        f.insert("hasPasswordAccount".into(), Value::Bool(r.try_get(9)?));
+        f.insert(
+            "agentModels".into(),
+            serde_json::to_value(r.try_get::<Vec<String>, _>(10)?).unwrap_or(Value::Array(vec![])),
+        );
+        f.insert(
+            "assistantModel".into(),
+            r.try_get::<Option<String>, _>(11)?.map(Value::String).unwrap_or(Value::Null),
+        );
+        f.insert("assistantElevated".into(), Value::Bool(r.try_get(12)?));
+        out.push(Value::Object(f));
+    }
+    Ok(out)
+}
+
+pub async fn set_user_role(pg: &PgPool, user_id: &str, role: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("update users set role = $1 where id = $2::uuid")
+        .bind(role)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Admins currently holding the role — the last-admin guard's input.
+pub async fn admin_count(pg: &PgPool) -> Result<i32, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, i32>("select count(*)::int from users where role = 'admin'")
+        .fetch_one(pg)
+        .await
+        .unwrap_or(0))
+}
+
+/// Grant/revoke the ability to mint LLM-gateway API keys (admins always may).
+pub async fn set_user_can_mint_keys(
+    pg: &PgPool,
+    user_id: &str,
+    can_mint: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update users set can_mint_keys = $1 where id = $2::uuid")
+        .bind(can_mint)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Replace a user's agent allow-list. Empty = all agents (open by default).
+pub async fn set_user_agent_access(
+    pg: &PgPool,
+    user_id: &str,
+    models: &[String],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("delete from user_agent_access where user_id = $1::uuid")
+        .bind(user_id)
+        .execute(tx.as_mut())
+        .await?;
+    for m in models {
+        sqlx::query(
+            "insert into user_agent_access (user_id, agent_model) values ($1::uuid, $2) \
+             on conflict do nothing",
+        )
+        .bind(user_id)
+        .bind(m)
+        .execute(tx.as_mut())
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Replace a member's granted Manage views — filtered to the valid routes,
+/// so a stale id typed into a request body can't manufacture a grant.
+pub async fn set_allowed_manage_views(
+    pg: &PgPool,
+    user_id: &str,
+    views: &[String],
+) -> Result<(), sqlx::Error> {
+    let valid: Vec<String> = MANAGE_VIEW_ROUTES
+        .into_iter()
+        .map(String::from)
+        .chain(app_view_routes(pg).await)
+        .collect();
+    let filtered: Vec<&str> = views
+        .iter()
+        .filter(|v| valid.contains(v))
+        .map(String::as_str)
+        .collect();
+    sqlx::query("update users set allowed_manage_views = $1 where id = $2::uuid")
+        .bind(&filtered)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_denied_views(
+    pg: &PgPool,
+    user_id: &str,
+    views: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update users set denied_views = $1 where id = $2::uuid")
+        .bind(views)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Flip org-wide elevation on a user's personal assistant. Returns false if
+/// the user has no assistant. Elevating requires the owner to be an admin
+/// (the route checks that half).
+pub async fn set_assistant_elevated(
+    pg: &PgPool,
+    user_id: &str,
+    elevated: bool,
+) -> Result<bool, sqlx::Error> {
+    let n = sqlx::query("update agent_defs set elevated = $1 where owner_user_id = $2::uuid")
+        .bind(elevated)
+        .bind(user_id)
+        .execute(pg)
+        .await?
+        .rows_affected();
+    Ok(n > 0)
+}
+
 // ── Permissions (permissions.ts) ─────────────────────────────────────────────
 // The catalog and the resolution chain live in permissions.rs since the admin
 // console routes landed — one source for the admin GET's full entries and the
@@ -365,6 +544,7 @@ pub use crate::permissions::{has_perm, user_permissions};
 
 // ── Who a request acts AS (users.ts actingUser and the assistant grants) ─────
 
+#[allow(dead_code)] // crosses with the write-plane batches' act-as routes
 #[derive(Debug, Clone)]
 pub struct ActingUser {
     pub id: String,
@@ -383,6 +563,7 @@ pub struct ActingUser {
 /// governance actions stay human(-proxied). An agent-credential REJECTION
 /// also resolves to None (TS: `instanceof Response → null`) — the dual-auth
 /// routes that need the refusal itself read `agent_caller` directly.
+#[allow(dead_code)] // crosses with the write-plane batches' act-as routes
 pub async fn acting_user(
     state: &AppState,
     headers: &HeaderMap,
@@ -500,11 +681,13 @@ pub async fn assistant_owner_for(
         .cloned())
 }
 
+#[allow(dead_code)] // acting_user's error arm
 fn internal(e: &sqlx::Error) -> Response {
     tracing::error!("[users] database read failed: {e}");
     internal_msg()
 }
 
+#[allow(dead_code)] // acting_user's error arm
 fn internal_msg() -> Response {
     crate::error::thrown_internal_error()
 }

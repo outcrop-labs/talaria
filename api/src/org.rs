@@ -35,6 +35,18 @@ pub async fn org_profile(pg: &PgPool) -> OrgProfile {
     }
 }
 
+/// setOrgProfile — each present field is a trimmed write; absent fields
+/// stay. The org lives in every rendered soul, so the settings route that
+/// calls this also rolls the running fleet.
+pub async fn set_org_profile(pg: &PgPool, name: Option<&str>, about: Option<&str>) {
+    if let Some(name) = name {
+        let _ = crate::gateway::settings::set_setting(pg, "org_name", &json!(name.trim())).await;
+    }
+    if let Some(about) = about {
+        let _ = crate::gateway::settings::set_setting(pg, "org_about", &json!(about.trim())).await;
+    }
+}
+
 /// One prompt-ready sentence, or None when the org isn't configured yet.
 pub fn org_line(p: &OrgProfile) -> Option<String> {
     if p.name.is_empty() {

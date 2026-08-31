@@ -64,3 +64,8 @@ chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
 # boundaries. tokio1 + rustls keeps the no-OpenSSL invariant (alpine runtime).
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 serde_yaml_ng = "0.10.0"
+# DNS TXT lookups for org-domain verification (org-domains.ts resolveTxt).
+# Async against the system resolver, like node:dns — no need for a DoH
+# profile; a verifier that cannot reach DNS reports unverifiable, which is
+# the honest answer for that operator anyway.
+hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }

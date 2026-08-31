@@ -943,6 +943,63 @@ pub async fn get_secret_doc(pg: &PgPool, name: &str) -> Result<Option<SecretDoc>
     }))
 }
 
+/// Every doc, newest first (listSecretDocs) — the admin console's inventory.
+/// SecretDoc already serializes in the TS wire shape; this is the same data
+/// the reading routes serve, so console and agent see one truth.
+pub async fn list_secret_docs(pg: &PgPool) -> Result<Vec<SecretDoc>, String> {
+    let names: Vec<(String,)> =
+        sqlx::query_as("select name from workspace_secrets order by created_at desc")
+            .fetch_all(pg)
+            .await
+            .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(names.len());
+    for (name,) in names {
+        if let Some(doc) = get_secret_doc(pg, &name).await? {
+            out.push(doc);
+        }
+    }
+    Ok(out)
+}
+
+/// Which handles does one agent hold, and how (handlesHeldBy) — direct
+/// grants plus folder grants, gated on expiry and remaining uses. The
+/// admin console's per-agent security view.
+pub async fn handles_held_by(pg: &PgPool, agent_model: &str) -> Result<Vec<Value>, String> {
+    let rows = sqlx::query(
+        "select s.name, s.title, e.key, e.label, \
+                (g.agent_model is not null) as \"direct\", \
+                f.name as folder \
+           from workspace_secrets s \
+           join workspace_secret_entries e on e.secret_id = s.id \
+           left join workspace_secret_grants g \
+                  on g.secret_id = s.id and g.agent_model = $1 \
+           left join secret_folder_grants fg \
+                  on fg.folder_id = s.secret_folder_id and fg.agent_model = $1 \
+           left join secret_folders f on f.id = s.secret_folder_id \
+          where (g.agent_model is not null or fg.agent_model is not null) \
+            and (s.expires_at is null or s.expires_at > now()) \
+            and (s.uses_remaining is null or s.uses_remaining > 0) \
+          order by s.title, e.key",
+    )
+    .bind(agent_model)
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": cell_str(r, "name"),
+                "title": cell_str(r, "title"),
+                "key": cell_str(r, "key"),
+                "label": cell_str(r, "label"),
+                "via": if cell_bool(r, "direct") { "direct" } else { "folder" },
+                "folder": cell_opt_str(r, "folder"),
+            })
+        })
+        .collect())
+}
+
 /// Create a doc. `relay` docs default to a single use, which is what makes
 /// them relays rather than secrets somebody forgot to delete.
 pub struct CreateSecret {

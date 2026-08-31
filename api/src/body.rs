@@ -804,8 +804,9 @@ pub fn js_num(v: f64) -> serde_json::Number {
 }
 
 /// A bound as zod prints it — these schemas use whole-number bounds and zod
-/// never shows "1000000000.0".
-fn fmt_bound(b: f64) -> String {
+/// never shows "1000000000.0". Public for routes that build a bound message
+/// the folded helpers don't cover (a nested nullable object's own limits).
+pub(crate) fn fmt_bound(b: f64) -> String {
     if b.fract() == 0.0 && b.abs() < 1e15 {
         format!("{}", b as i64)
     } else {

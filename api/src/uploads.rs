@@ -6,8 +6,8 @@
 // serveUpload's inline/download decision). Metadata sits in `uploads`, bytes
 // wherever the storage config says (local disk default, or any S3-compatible
 // bucket); each row's `path` records where ITS bytes live, so changing the
-// mode never strands existing files. The admin migrate/sync surface stays
-// with the admin storage console.
+// mode never strands existing files. The admin storage console's stats and
+// detached migrate/sync jobs live here too.
 
 use axum::extract::multipart::Multipart;
 use axum::http::header;
@@ -611,6 +611,221 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
 /// The `not found` both upload routes answer — house envelope, 404.
 pub fn upload_not_found() -> Response {
     crate::error::house_error(StatusCode::NOT_FOUND, "not found")
+}
+
+// ── The admin storage console (uploads.ts uploadStats + migrate/sync) ────────
+
+/// Where every blob lives, by path prefix (uploadStats): `s3://…` external,
+/// `s3+internal://…` the bundled bucket, anything else local disk — plus the
+/// local-disk byte total.
+pub async fn upload_stats(pg: &PgPool) -> serde_json::Value {
+    let row: Result<(i64, i64, i64, i64), _> = sqlx::query_as(
+        "select count(*) filter (where path like 's3://%'), \
+                count(*) filter (where path like 's3+internal://%'), \
+                count(*) filter (where path not like 's3%'), \
+                coalesce(sum(size) filter (where path not like 's3%'), 0)::bigint \
+         from uploads",
+    )
+    .fetch_one(pg)
+    .await;
+    match row {
+        Ok((s3, internal, local, local_bytes)) => serde_json::json!({
+            "local": local,
+            "s3": s3,
+            "internal": internal,
+            "localBytes": local_bytes,
+        }),
+        Err(_) => serde_json::json!({ "local": 0, "s3": 0, "internal": 0, "localBytes": 0 }),
+    }
+}
+
+/// One detached job's progress, as the console polls it (MigrateStatus).
+/// Hand-built so `error`/`finishedAt` are OMITTED until they exist, exactly
+/// like TS's optional fields.
+#[derive(Clone)]
+struct JobStatus {
+    running: bool,
+    moved: i64,
+    failed: i64,
+    total: i64,
+    error: Option<String>,
+    finished_ms: Option<i64>,
+}
+
+impl JobStatus {
+    fn to_json(&self) -> serde_json::Value {
+        let mut f = serde_json::Map::new();
+        f.insert("running".into(), self.running.into());
+        f.insert("moved".into(), self.moved.into());
+        f.insert("failed".into(), self.failed.into());
+        f.insert("total".into(), self.total.into());
+        if let Some(e) = &self.error {
+            f.insert("error".into(), e.clone().into());
+        }
+        if let Some(ms) = self.finished_ms {
+            f.insert(
+                "finishedAt".into(),
+                crate::agent_auth::epoch_ms_to_iso(ms).into(),
+            );
+        }
+        serde_json::Value::Object(f)
+    }
+
+    async fn save(&self, pg: &PgPool, key: &str) {
+        let _ = crate::gateway::settings::set_setting(pg, key, &self.to_json()).await;
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+const MIGRATE_KEY: &str = "storage_migrate_status";
+const SYNC_KEY: &str = "storage_sync_status";
+
+/// The last recorded migrate status, or null when it never ran.
+pub async fn migrate_status(pg: &PgPool) -> serde_json::Value {
+    crate::gateway::settings::get_setting(pg, MIGRATE_KEY, serde_json::Value::Null).await
+}
+
+/// The last recorded sync status, or null when it never ran.
+pub async fn sync_status(pg: &PgPool) -> serde_json::Value {
+    crate::gateway::settings::get_setting(pg, SYNC_KEY, serde_json::Value::Null).await
+}
+
+/// Move every local-disk blob into the active bucket (internal or external).
+/// Runs DETACHED; the caller polls migrateStatus(). Local files are left in
+/// place (the row's path is the source of truth) — uploads-dir cleanup is the
+/// operator's call. A job already running is returned, not double-started.
+pub async fn migrate_uploads_to_s3(
+    pg: &PgPool,
+    sb: &SecretBox,
+) -> Result<serde_json::Value, String> {
+    let prior = migrate_status(pg).await;
+    if prior.get("running") == Some(&serde_json::Value::Bool(true)) {
+        return Ok(prior);
+    }
+    let cfg = storage::get_storage_config(pg, sb).await;
+    let Some((target, internal)) = storage::active_target(&cfg).await? else {
+        return Err("object storage is not configured".into());
+    };
+    let scheme = if internal { "s3+internal" } else { "s3" };
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "select id::text, path, mime from uploads where path not like 's3%' order by created_at asc",
+    )
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let status = JobStatus {
+        running: true,
+        moved: 0,
+        failed: 0,
+        total: rows.len() as i64,
+        error: None,
+        finished_ms: None,
+    };
+    status.save(pg, MIGRATE_KEY).await;
+    let initial = status.to_json();
+    let pg = pg.clone();
+    let mut job = status.clone();
+    tokio::spawn(async move {
+        for (id, path, mime) in rows {
+            let step = async {
+                let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+                let key = format!("{}uploads/{}{}", target.prefix, id, safe_ext(&path));
+                storage::s3_put(&target, &key, &bytes, &mime).await?;
+                let recorded = format!("{scheme}://{}/{}", target.bucket, key);
+                sqlx::query("update uploads set path = $1 where id = $2::uuid")
+                    .bind(&recorded)
+                    .bind(&id)
+                    .execute(&pg)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            };
+            match step.await {
+                Ok(()) => job.moved += 1,
+                Err(_) => job.failed += 1,
+            }
+            if (job.moved + job.failed) % 10 == 0 {
+                job.save(&pg, MIGRATE_KEY).await;
+            }
+        }
+        job.running = false;
+        job.finished_ms = Some(JobStatus::now_ms());
+        job.save(&pg, MIGRATE_KEY).await;
+    });
+    Ok(initial)
+}
+
+/// blobBasename — the last path segment, for a disk path or an s3:// URI
+/// alike (`path.slice(path.lastIndexOf('/') + 1)`).
+fn blob_basename(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(i) => &path[i + 1..],
+        None => path,
+    }
+}
+
+/// Copy EVERY blob (disk, internal, external — wherever each lives) into the
+/// replica bucket, keyed canonically so per-upload mirror writes and this
+/// full sync land on the same objects. Runs DETACHED; poll syncStatus().
+pub async fn sync_uploads_to_replica(
+    pg: &PgPool,
+    sb: &SecretBox,
+) -> Result<serde_json::Value, String> {
+    let prior = sync_status(pg).await;
+    if prior.get("running") == Some(&serde_json::Value::Bool(true)) {
+        return Ok(prior);
+    }
+    let cfg = storage::get_storage_config(pg, sb).await;
+    let Some(replica) = storage::replica_target(&cfg) else {
+        return Err("replica is not configured (enable it and fill in every field)".into());
+    };
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("select id::text, path, mime from uploads order by created_at asc")
+            .fetch_all(pg)
+            .await
+            .map_err(|e| e.to_string())?;
+    let status = JobStatus {
+        running: true,
+        moved: 0,
+        failed: 0,
+        total: rows.len() as i64,
+        error: None,
+        finished_ms: None,
+    };
+    status.save(pg, SYNC_KEY).await;
+    let initial = status.to_json();
+    let pg = pg.clone();
+    let sb = sb.clone();
+    let mut job = status.clone();
+    tokio::spawn(async move {
+        for (_id, path, mime) in rows {
+            let step = async {
+                let bytes = storage::read_blob(&pg, &sb, &path)
+                    .await
+                    .ok_or_else(|| "unreadable".to_string())?;
+                let key = format!("{}uploads/{}", replica.prefix, blob_basename(&path));
+                storage::s3_put(&replica, &key, &bytes, &mime).await?;
+                Ok::<(), String>(())
+            };
+            match step.await {
+                Ok(()) => job.moved += 1,
+                Err(_) => job.failed += 1,
+            }
+            if (job.moved + job.failed) % 10 == 0 {
+                job.save(&pg, SYNC_KEY).await;
+            }
+        }
+        job.running = false;
+        job.finished_ms = Some(JobStatus::now_ms());
+        job.save(&pg, SYNC_KEY).await;
+    });
+    Ok(initial)
 }
 
 #[cfg(test)]

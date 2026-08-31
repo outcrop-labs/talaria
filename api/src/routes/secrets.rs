@@ -34,13 +34,13 @@ use crate::workspace_secrets::{
 /// One entry of the create body. `key`'s regex sits BEFORE the max in the
 /// schema chain, so a long key of bad characters answers the regex sentence
 /// and only a long key of good ones answers the bound.
-struct EntryBody {
-    key: String,
-    label: String,
-    value: String,
+pub(crate) struct EntryBody {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    pub(crate) value: String,
 }
 
-fn parse_entry(el: &Value) -> Result<EntryBody, String> {
+pub(crate) fn parse_entry(el: &Value) -> Result<EntryBody, String> {
     let obj = el
         .as_object()
         .ok_or_else(|| object_msg(zod_type_name(el)))?;
@@ -59,7 +59,7 @@ fn parse_entry(el: &Value) -> Result<EntryBody, String> {
 }
 
 /// `^[a-z0-9][a-z0-9_-]*$` — first character may not be - or _.
-fn entry_key_ok(s: &str) -> bool {
+pub(crate) fn entry_key_ok(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty()
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())

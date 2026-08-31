@@ -12,6 +12,19 @@ use std::collections::HashMap;
 
 const KEY: &str = "member_model_allowlist";
 
+/// setMemberModelAllowlist — trim, drop empties, dedupe (TS's
+/// `[...new Set(...)]`; insertion order preserved, which is the order the
+/// admin UI saved).
+pub async fn set_member_model_allowlist(pg: &PgPool, ids: &[String]) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let cleaned: Vec<String> = ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect();
+    let _ = crate::gateway::settings::set_setting(pg, KEY, &serde_json::json!(cleaned)).await;
+}
+
 /// The picker's one-row-per-target catalog — GatewayModel. Serialization
 /// order (id, endpoints, qualified) is the /api/models wire order.
 #[derive(Debug, Clone)]
@@ -44,9 +57,7 @@ impl GatewayModel {
 /// target no single qualified id can express. One endpoint, and the bare
 /// name is not a second target — it is a second name for the first.
 ///
-/// Same recorded divergence as the /llm/v1 catalog: TS sorts `localeCompare`,
-/// this is byte order — agrees on ASCII ids, which is every registered id's
-/// neighborhood, and the order is not contractual.
+/// Order is `localeCompare`'s, via [collating_cmp] below.
 pub async fn gateway_models(pg: &PgPool) -> Result<Vec<GatewayModel>, sqlx::Error> {
     let eps = list_endpoints(pg).await?;
     let mut out = Vec::new();
@@ -76,8 +87,34 @@ pub async fn gateway_models(pg: &PgPool) -> Result<Vec<GatewayModel>, sqlx::Erro
             });
         }
     }
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.sort_by(|a, b| collating_cmp(&a.id, &b.id));
     Ok(out)
+}
+
+/// `String.prototype.localeCompare` — default locale, ICU root collation —
+/// for the id alphabet Talaria actually registers (ASCII letters, digits,
+/// `/ . - _`). Byte order is NOT it: case is a tertiary difference there, so
+/// `Z.ai/glm-5.3` sorts at its lowercased position, after every `o...` id,
+/// while a byte sort hoists the uppercase Z to the front. Fold case first;
+/// where folding ties, lowercase wins (ICU's default case-first), and a full
+/// tie falls back to bytes for a total order.
+pub fn collating_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let fold = a
+        .chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase));
+    if fold != Ordering::Equal {
+        return fold;
+    }
+    let case = a
+        .chars()
+        .map(|c| c.is_uppercase() as u8)
+        .cmp(b.chars().map(|c| c.is_uppercase() as u8));
+    if case != Ordering::Equal {
+        return case;
+    }
+    a.cmp(b)
 }
 
 /// Bare model ids members may use. Empty = no restriction. Non-string

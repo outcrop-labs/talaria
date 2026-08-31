@@ -87,9 +87,12 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // three candidates so ui/.env's arrangement works whichever one it uses.
   // TALARIA_SCHEDULER rides along so ui/.env is the ONE place the scheduler
   // handoff is declared: the Rust api reads it to arm, vite (which loads the
-  // same file) reads it to stand down.
+  // same file) reads it to stand down. SEARXNG_URL rides for the same reason —
+  // vite hands it to the TS routes (admin.search reports fromEnv by it), and
+  // the Rust read of the same name must see the same value or the two servers
+  // disagree about whether search is env-pinned.
   const env: Record<string, string> = {}
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER']) {
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }

@@ -464,13 +464,12 @@ fn warn_legacy(model: &str) {
     );
 }
 
-/// Shared-key sightings since this process started, model-sorted. (TS sorts
-/// `localeCompare`; fleet model ids are ASCII `slug-dept`, where that and
-/// byte order agree.)
+/// Shared-key sightings since this process started, model-sorted —
+/// `localeCompare`'s order, via the shared collating comparator.
 pub fn legacy_usage() -> Vec<LegacySighting> {
     let seen = LEGACY_SEEN.lock().expect("legacy sightings");
     let mut out: Vec<LegacySighting> = seen.values().cloned().collect();
-    out.sort_by(|a, b| a.model.cmp(&b.model));
+    out.sort_by(|a, b| crate::model_access::collating_cmp(&a.model, &b.model));
     out
 }
 

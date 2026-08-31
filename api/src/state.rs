@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::secretbox::SecretBox;
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 
@@ -21,8 +21,11 @@ pub struct AppState {
     /// getRedis()).
     redis: Arc<OnceCell<ConnectionManager>>,
     /// Lazily-loaded secretbox keys. Nothing in the models slice needs a key;
-    /// the chat relay unseals endpoint credentials through it.
-    sb: Arc<OnceCell<SecretBox>>,
+    /// the chat relay unseals endpoint credentials through it. The RwLock
+    /// inside the cell is for ROTATION (admin.encryption): the whole key set
+    /// is swapped in one write after the re-encryption transaction commits —
+    /// secretbox.ts mutates its globals in place, which a OnceCell cannot.
+    sb: Arc<OnceCell<RwLock<SecretBox>>>,
     started: Instant,
 }
 
@@ -34,6 +37,17 @@ impl AppState {
             redis: Arc::new(OnceCell::new()),
             sb: Arc::new(OnceCell::new()),
             started: Instant::now(),
+        }
+    }
+
+    /// installSecretKey — swap in the rotated key set (admin.encryption).
+    /// Only ever called after the re-encryption transaction committed, and
+    /// only with a box whose DEKs include every version that transaction
+    /// resealed. The cell is necessarily initialized by then (rotation had to
+    /// read the old keys through it).
+    pub fn install_secretbox(&self, next: SecretBox) {
+        if let Some(lock) = self.sb.get() {
+            *lock.write().expect("secretbox lock") = next;
         }
     }
 
@@ -70,13 +84,17 @@ impl AppState {
     }
 
     /// The loaded secretbox, loading `secret_keys` on first use. SecretBox is
-    /// Clone (plain key maps) and loaded at most once per process.
+    /// Clone (plain key maps) and loaded at most once per process — or swapped
+    /// whole by a rotation, which is the one writer of the lock inside.
     pub async fn secretbox(&self) -> Result<SecretBox, String> {
-        self.sb
+        let cell = self
+            .sb
             .get_or_try_init(|| async {
-                Ok::<_, String>(SecretBox::load(&self.pg, self.cfg.secret_root.material()).await)
+                Ok::<_, String>(RwLock::new(
+                    SecretBox::load(&self.pg, self.cfg.secret_root.material()).await,
+                ))
             })
-            .await
-            .cloned()
+            .await?;
+        Ok(cell.read().expect("secretbox lock").clone())
     }
 }

@@ -67,6 +67,47 @@ fn parse_config(stored: &Value) -> OutreachConfig {
     }
 }
 
+/// setOutreachConfig — a full-object write of the three knobs.
+pub async fn set_outreach_config(pg: &PgPool, c: &OutreachConfig) {
+    let _ = crate::gateway::settings::set_setting(
+        pg,
+        "outreach_config",
+        &json!({
+            "enabled": c.enabled,
+            "intervalMinutes": c.interval_minutes,
+            "dailyDmCap": c.daily_dm_cap,
+        }),
+    )
+    .await;
+}
+
+/// The sweep's recent activity (outreach.ts recentOutreachEvents), newest
+/// first — what an admin sees when they ask "is this thing doing anything".
+pub async fn recent_outreach_events(pg: &PgPool, limit: i64) -> Vec<serde_json::Value> {
+    #[allow(clippy::type_complexity)] // the select's four columns, in order
+    let rows: Result<Vec<(String, String, Option<String>, i64)>, _> = sqlx::query_as(
+        "select agent_model, kind, note, (trunc(extract(epoch from created_at) * 1000))::bigint \
+         from outreach_events order by created_at desc limit $1",
+    )
+    .bind(limit)
+    .fetch_all(pg)
+    .await;
+    match rows {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|(agent_model, kind, note, created_ms)| {
+                json!({
+                    "agentModel": agent_model,
+                    "kind": kind,
+                    "note": note,
+                    "createdAt": crate::agent_auth::epoch_ms_to_iso(created_ms),
+                })
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub async fn get_outreach_config(pg: &PgPool) -> OutreachConfig {
     parse_config(&get_setting(pg, "outreach_config", json!({})).await)
 }

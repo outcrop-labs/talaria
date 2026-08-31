@@ -5,8 +5,23 @@ pub mod activity;
 pub mod admin_google_client;
 pub mod admin_instance;
 pub mod admin_model_roles;
+pub mod admin_apps;
 pub mod admin_password_accounts;
+pub mod admin_platform_agents;
+pub mod admin_domains;
+pub mod admin_email;
+pub mod admin_encryption;
+pub mod admin_invites;
+pub mod admin_guardrails;
+pub mod admin_judge;
+pub mod admin_outreach;
 pub mod admin_permissions;
+pub mod admin_search;
+pub mod admin_settings;
+pub mod admin_secrets;
+pub mod admin_storage;
+pub mod admin_users;
+pub mod admin_workspace_secrets;
 pub mod admin_rag;
 pub mod agent_role_templates;
 pub mod agents;
@@ -775,6 +790,102 @@ pub fn router(state: AppState) -> Router {
                 .put(admin_instance::put)
                 .post(admin_instance::post)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
+        )
+        .route(
+            "/api/admin/apps",
+            get(admin_apps::get)
+                .put(admin_apps::put)
+                .post(admin_apps::post)
+                .delete(admin_apps::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/domains",
+            get(admin_domains::get)
+                .post(admin_domains::post)
+                .delete(admin_domains::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/email",
+            get(admin_email::get)
+                .put(admin_email::put)
+                .post(admin_email::post)
+                .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
+        )
+        .route(
+            "/api/admin/encryption",
+            get(admin_encryption::get)
+                .post(admin_encryption::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/admin/guardrails",
+            get(admin_guardrails::get)
+                .put(admin_guardrails::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/invites",
+            get(admin_invites::get)
+                .post(admin_invites::post)
+                .delete(admin_invites::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/judge",
+            get(admin_judge::get)
+                .put(admin_judge::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/outreach",
+            get(admin_outreach::get)
+                .put(admin_outreach::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/platform-agents",
+            get(admin_platform_agents::get)
+                .put(admin_platform_agents::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/search",
+            get(admin_search::get)
+                .put(admin_search::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/secrets",
+            get(admin_secrets::get)
+                .delete(admin_secrets::delete)
+                .fallback(|| async { method_not_allowed("GET, DELETE") }),
+        )
+        .route(
+            "/api/admin/settings",
+            get(admin_settings::get)
+                .put(admin_settings::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/storage",
+            get(admin_storage::get)
+                .put(admin_storage::put)
+                .post(admin_storage::post)
+                .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
+        )
+        .route(
+            "/api/admin/users",
+            get(admin_users::get)
+                .put(admin_users::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/workspace-secrets",
+            get(admin_workspace_secrets::get)
+                .post(admin_workspace_secrets::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/admin/permissions",
