@@ -477,7 +477,7 @@ async fn stream_reply(
     routed_model: &str,
     messages: &Value,
 ) {
-    let upstream = proxy_chat(routed_model, messages).await;
+    let upstream = proxy_chat(routed_model, messages, None).await; // the comms loop picks no effort level
     if !(200..300).contains(&upstream.status) {
         let _ = update_channel_message(
             deps,

@@ -289,14 +289,14 @@ pub async fn ensure_dm(
     .bind(&dm_key)
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| crate::error::pg_message(&e))?;
     if let Some((id, name, topic, kind, created_ms, updated_ms)) = existing {
         // Un-archive on revisit — a DM never really ends.
         sqlx::query("update channels set archived_at = null where id = $1::uuid and archived_at is not null")
             .bind(&id)
             .execute(pg)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| crate::error::pg_message(&e))?;
         return Ok(CreatedChannel {
             id,
             name,
@@ -307,7 +307,7 @@ pub async fn ensure_dm(
             role: "owner".into(),
         });
     }
-    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pg.begin().await.map_err(|e| crate::error::pg_message(&e))?;
     let (id, name, topic, kind, created_ms, updated_ms): (
         String,
         String,
@@ -327,7 +327,7 @@ pub async fn ensure_dm(
     .bind(user_id)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| crate::error::pg_message(&e))?;
     for member in [user_id, other_user_id] {
         sqlx::query(
             "insert into channel_members (channel_id, user_id, role) \
@@ -337,9 +337,11 @@ pub async fn ensure_dm(
         .bind(member)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::pg_message(&e))?;
     }
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit()
+        .await
+        .map_err(|e| crate::error::pg_message(&e))?;
     Ok(CreatedChannel {
         id,
         name,

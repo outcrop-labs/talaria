@@ -5,9 +5,9 @@
 // their question the moment they start.
 //
 // The sweep (retroactive + ongoing naming, hourly, kicked from the comms
-// read) crossed with the channels family — its kick lives on /api/channels.
-// The interactive `maybeRetitleConversation` walk belongs to the chat
-// family's plane and lands with it.
+// read) crossed with the channels family; the interactive
+// `maybeRetitleConversation` walk crossed with the chat family, whose
+// persist tail calls it after every completed reply.
 //
 // Everything here is fire-and-forget by contract: naming must never block or
 // fail the work it names, so `generate_title` answers None on every failure
@@ -54,12 +54,81 @@ pub async fn generate_title(state: &AppState, kind: TitleKind, text: &str) -> Op
 }
 
 /// The mechanical default chat.ts stamps at creation — a title still equal to
-/// it means nobody has named the conversation on purpose.
-fn mechanical_from(s: &str) -> String {
-    // JS: s.replace(/\s+/g, ' ').trim().slice(0, 80) — collapse runs of any
-    // whitespace to one space, trim, first 80 chars.
-    let collapsed: Vec<&str> = s.split_whitespace().collect();
-    collapsed.join(" ").chars().take(80).collect()
+/// it means nobody has named the conversation on purpose. (The shape lives in
+/// conversations.rs beside the stamp that writes it.)
+use crate::conversations::mechanical_from;
+
+/// Retitle a chat/plan once its first exchange completes
+/// (maybeRetitleConversation). Cheap early-outs: only within the first few
+/// messages, and only while the title is still the truncated first message
+/// (or the bare 'chat' fallback). Fire-and-forget friendly — never fails the
+/// work it names.
+pub async fn maybe_retitle_conversation(state: &AppState, conversation_id: &str) {
+    let conv: Option<(Option<String>, String, i64)> = sqlx::query_as(
+        "select c.title, c.kind, \
+                (select count(*) from messages m where m.conversation_id = c.id) \
+         from conversations c where c.id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&state.pg)
+    .await
+    .ok()
+    .flatten();
+    let Some((title, kind, count)) = conv else {
+        return;
+    };
+    if count > 4 {
+        return;
+    }
+    let msgs: Vec<(String, String)> = sqlx::query_as(
+        "select role, content from messages \
+         where conversation_id = $1::uuid and content <> '' order by seq asc limit 3",
+    )
+    .bind(conversation_id)
+    .fetch_all(&state.pg)
+    .await
+    .unwrap_or_default();
+    let first_user = msgs.iter().find(|(r, _)| r == "user");
+    let still_mechanical = match title.as_deref() {
+        None | Some("chat") => true,
+        Some(t) => first_user.is_some_and(|(_, c)| t == mechanical_from(c)),
+    };
+    if !still_mechanical {
+        return;
+    }
+    let transcript = msgs
+        .iter()
+        .map(|(role, content)| format!("{role}: {}", clip_chars(content, 1500)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let title = generate_title(
+        state,
+        if kind == "plan" {
+            TitleKind::Plan
+        } else {
+            TitleKind::Chat
+        },
+        &transcript,
+    )
+    .await;
+    // THE GATE IS CHECKED AGAINST A SNAPSHOT AND THE WRITE HAPPENS SECONDS
+    // LATER, so the write repeats the gate. `still_mechanical` was true when
+    // the row was read; a model call sits between that and here, and a rename
+    // landing in the gap was silently overwritten — permanently, because a
+    // model-written title no longer matches the mechanical truncation and
+    // neither retitle path ever revisits the row. `is not distinct from`
+    // because the mechanical state includes a NULL title.
+    if let Some(t) = title.clone() {
+        let _ = sqlx::query(
+            "update conversations set title = $1 \
+             where id = $2::uuid and title is not distinct from $3",
+        )
+        .bind(&t)
+        .bind(conversation_id)
+        .bind(title.as_deref())
+        .execute(&state.pg)
+        .await;
+    }
 }
 
 // ── The sweep: retroactive + ongoing naming ─────────────────────────────────

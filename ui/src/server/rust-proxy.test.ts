@@ -61,10 +61,10 @@ describe('maybeProxy', () => {
     // model-fitness is the probe suite's own plane.
     expect(await maybeProxy(req('/api/admin/invites'), '/api/admin/invites')).toBeNull()
     expect(await maybeProxy(req('/api/admin/model-fitness'), '/api/admin/model-fitness')).toBeNull()
-    // The comms siblings are NOT under the channels prefix — conversations and
-    // dms are their own route families and stay TS until the chat batch.
-    expect(await maybeProxy(req('/api/conversations'), '/api/conversations')).toBeNull()
-    expect(await maybeProxy(req('/api/dms'), '/api/dms')).toBeNull()
+    // The plans family is NOT part of the conversations crossing — its
+    // messages/title/doc routes are their own batch, so the bare path stays
+    // TS (only the {id}/draft shape has crossed).
+    expect(await maybeProxy(req('/api/plans'), '/api/plans')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
   })
 
@@ -90,6 +90,23 @@ describe('maybeProxy', () => {
       expect(await maybeProxy(req(p), p)).not.toBeNull()
     }
     expect(fetch).toHaveBeenCalledTimes(11)
+  })
+
+  it('forwards the conversations family — the list and detail prefixes, chat whole-path', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/conversations',
+      '/api/conversations?kind=plan',
+      '/api/conversations/00000000-0000-4000-8000-000000000000',
+      '/api/dms',
+      // The durable chat itself: whole-path EXACT, one POST route.
+      '/api/chat',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(5)
   })
 
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {

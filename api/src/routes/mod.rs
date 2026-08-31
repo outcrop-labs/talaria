@@ -48,7 +48,11 @@ pub mod channels_id_messages_msgid;
 pub mod channels_id_messages_msgid_reactions;
 pub mod channels_id_plan;
 pub mod channels_id_read;
+pub mod chat;
+pub mod conversations;
+pub mod conversations_id;
 pub mod cost;
+pub mod dms;
 pub mod fleet_create;
 pub mod fleet_hires;
 pub mod health;
@@ -413,6 +417,24 @@ pub fn router(state: AppState) -> Router {
                 .patch(channels_id_plan::patch)
                 .delete(channels_id_plan::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
+        )
+        .route(
+            "/api/chat",
+            post(chat::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations",
+            get(conversations::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/conversations/{id}",
+            get(conversations_id::get)
+                .patch(conversations_id::patch)
+                .fallback(|| async { method_not_allowed("GET, PATCH") }),
+        )
+        .route(
+            "/api/dms",
+            post(dms::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/plans/{id}/draft",

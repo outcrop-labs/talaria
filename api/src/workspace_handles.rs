@@ -16,6 +16,28 @@ pub fn handle_for(doc: &str, entry: Option<&str>) -> String {
     }
 }
 
+/// Does this text write a handle? (workspace-secrets.ts mentionsHandle — the
+/// same pattern the seal pass matches, case-insensitive.) The chat plane uses
+/// it to decide whether a turn needs the use-without-seeing briefing.
+pub fn mentions_handle(text: &str) -> bool {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // workspace-secrets.ts HANDLE — «secret:doc» / «secret:doc.entry»,
+        // name chars [a-z0-9][a-z0-9_-]*, case-insensitive (`/i`).
+        regex::Regex::new("(?i)«secret:([a-z0-9][a-z0-9_-]*)(?:\\.([a-z0-9][a-z0-9_-]*))?»")
+            .expect("handle pattern must compile")
+    })
+    .is_match(text)
+}
+
+/// The briefing a turn that WRITES a handle gets (workspace-secrets.ts
+/// HANDLE_TURN_NOTE, byte-identical — a paraphrase changes model behavior).
+/// Teaches the use-without-seeing contract: the handle IS the credential as
+/// far as the model is concerned, and asking for the real value is precisely
+/// the paste this whole arrangement exists to prevent.
+pub const HANDLE_TURN_NOTE: &str = "A handle written «secret:name» in this conversation is a credential you may USE without ever seeing it. Pass it exactly as written wherever the value would go — in a tool call, a command, a URL — and Talaria substitutes the real value at the boundary that spends it. Never ask anybody to send you the value instead, and do not treat the handle as a placeholder to fill in: it IS the credential as far as you are concerned. A one-shot handle works once, so use it for the errand it was given for and nothing else.";
+
 pub struct HandleRow {
     pub name: String,
     pub key: String,

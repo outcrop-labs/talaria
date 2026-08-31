@@ -91,9 +91,12 @@ const PREFIXES = [
   // members/agents/read-cursor, messages (with edit/delete/reactions/threads),
   // the Relay conclude, the live SSE events, and the plan-draft mount that
   // crossed earlier (its SHAPES entry below is subsumed by this prefix).
-  // conversations and dms are their own route families and stay TS until the
-  // chat batch.
   '/api/channels',
+  // The conversations family: the list and the {id} detail/rename. The
+  // durable chat itself (/api/chat) is whole-path — see EXACT — and /api/dms
+  // is its own one-route family.
+  '/api/conversations',
+  '/api/dms',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it
@@ -126,6 +129,9 @@ const EXACT = new Set([
   // (internal_versions snapshots, agent_versions). No sub-routes hide under
   // this path, and nothing else in the tree starts with "/api/history".
   '/api/history',
+  // The durable chat: one POST route, whole-path — nothing else lives at
+  // /api/chat, and a prefix would be the same set anyway.
+  '/api/chat',
 ])
 
 // Parameterized whole-route migrations: the route crossed, but its siblings
@@ -164,9 +170,11 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 
 // The response allow-list is the inverse posture: nothing the Rust api says
 // about itself (its server header, its date) is ours to re-claim under this
-// origin. These five are the ones callers can act on — `location` because the
-// OAuth routes answer in redirects.
-const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location']
+// origin. These are the ones callers can act on — `location` because the
+// OAuth routes answer in redirects, and the conversation/message ids because
+// /api/chat answers a NEW conversation's id in a header: the SPA learns it
+// from X-Conversation-Id, and stripping it would strand a first turn.
+const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id']
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()

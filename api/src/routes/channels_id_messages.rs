@@ -139,11 +139,9 @@ async fn page(
 ) -> Result<Vec<crate::channels::ChannelMessageWire>, String> {
     match thread {
         // The default page: limit 60, main flow only.
-        Some(root) => {
-            list_thread_messages(&state.pg, id, root)
-                .await
-                .map_err(|e| e.to_string())
-        }
+        Some(root) => list_thread_messages(&state.pg, id, root)
+            .await
+            .map_err(|e| e.to_string()),
         None => {
             // A fractional `since` reaches Postgres in the TS as text against
             // an int4 comparison and dies uncaught ("invalid input syntax"),

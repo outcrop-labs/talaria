@@ -23,14 +23,25 @@ use crate::gateway::vault::{SecretVault, seal_content};
 use std::pin::Pin;
 use std::time::Duration;
 
-type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>;
+pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>;
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
-/// `AgentStreamParser`.
+/// `AgentStreamParser`. `content_type` is what the upstream answered (the TS
+/// proxyChat's Response carries it through with a text/event-stream default —
+/// the chat route's own headers read it back).
 pub struct ChatStream {
     pub status: u16,
+    pub content_type: String,
     pub body: ByteStream,
+}
+
+impl ChatStream {
+    /// TS `upstream.ok` — a 2xx answer is the stream the caller wants; every
+    /// other status is the reply, body and all, but not one to persist.
+    pub fn ok(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
 }
 
 /// proxyChat: send one chat turn to the agent's container. Seals every
@@ -40,8 +51,10 @@ pub struct ChatStream {
 /// minutes — past the deadline the reply is the honest canned sentence, so
 /// history shows what happened rather than a silent failure.
 ///
-/// `messages` is the OpenAI history (system + turns, content string or parts).
-pub async fn proxy_chat(model: &str, messages: &Value) -> ChatStream {
+/// `messages` is the OpenAI history (system + turns, content string or parts);
+/// `effort` rides as `reasoning_effort` when the turn picked a level (the TS
+/// spreads the whole payload, and the field is simply absent otherwise).
+pub async fn proxy_chat(model: &str, messages: &Value, effort: Option<&str>) -> ChatStream {
     // CREDENTIALS DO NOT LEAVE THIS PROCESS, PERSONA EDITION: the vault is
     // per-call and discarded when this returns — nothing downstream of a
     // persona turn spends a handle.
@@ -81,6 +94,9 @@ pub async fn proxy_chat(model: &str, messages: &Value) -> ChatStream {
             // include_usage: the final chunk reports token counts for the
             // ledger (gateways that don't support it just ignore the option).
             request["stream_options"] = json!({ "include_usage": true });
+            if let Some(effort) = effort {
+                request["reasoning_effort"] = json!(effort);
+            }
             let mut req = http()
                 .post(format!("{}/v1/chat/completions", entry.url))
                 .header("content-type", "application/json")
@@ -94,8 +110,15 @@ pub async fn proxy_chat(model: &str, messages: &Value) -> ChatStream {
                 // — keep waiting. Any other answer (including a real error
                 // status) is the reply.
                 if ![502, 503, 504].contains(&status) {
+                    let content_type = upstream
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("text/event-stream")
+                        .to_string();
                     return ChatStream {
                         status,
+                        content_type,
                         body: Box::pin(upstream.bytes_stream()),
                     };
                 }
@@ -146,7 +169,11 @@ fn canned_chat_stream(text: &str) -> ChatStream {
             Ok(Bytes::from_static(b"data: [DONE]\n\n"))
         }))
         .boxed();
-    ChatStream { status: 200, body }
+    ChatStream {
+        status: 200,
+        content_type: "text/event-stream".into(),
+        body,
+    }
 }
 
 // ── The stream parser (lib/sse-parse.ts parseAgentStream) ────────────────────
@@ -166,11 +193,66 @@ pub enum AgentStreamEvent {
         id: Option<String>,
         name: String,
         label: String,
+        /// 'running' | 'completed' — a later frame for the same call flips it.
+        status: Option<String>,
     },
     Usage {
         prompt_tokens: i64,
         completion_tokens: i64,
     },
+}
+
+/// sse-parse.ts ToolCall — the shape persisted into `messages.tools` and
+/// rendered beside the reply. `id` is absent (not null) when the frame carried
+/// none, exactly as JSON.stringify drops the undefined key.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ToolCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub label: String,
+    pub status: String, // 'running' | 'completed'
+}
+
+/// sse-parse.ts mergeTool — fold a tool event into a running list (dedupe by
+/// id when the frame names one, else by name among the still-running). A later
+/// frame never overwrites a good label with an empty one.
+pub fn merge_tool(
+    tools: &[ToolCall],
+    id: Option<&str>,
+    name: &str,
+    label: &str,
+    status: Option<&str>,
+) -> Vec<ToolCall> {
+    let mut copy = tools.to_vec();
+    let idx = match id {
+        Some(id) => copy.iter().position(|t| t.id.as_deref() == Some(id)),
+        None => copy
+            .iter()
+            .position(|t| t.name == name && t.status == "running"),
+    };
+    match idx {
+        Some(i) => {
+            let existing = &copy[i];
+            copy[i] = ToolCall {
+                id: existing.id.clone(),
+                name: existing.name.clone(),
+                label: if label.is_empty() {
+                    existing.label.clone()
+                } else {
+                    label.to_string()
+                },
+                status: status.unwrap_or(&existing.status).to_string(),
+            };
+        }
+        None => copy.push(ToolCall {
+            id: id.map(str::to_string),
+            name: name.to_string(),
+            label: label.to_string(),
+            status: status.unwrap_or("running").to_string(),
+        }),
+    }
+    copy
 }
 
 /// Push parser over the raw SSE body: feed it bytes as they arrive, take the
@@ -290,10 +372,24 @@ fn parse_tool_progress(payload: &str) -> Option<AgentStreamEvent> {
         }
     };
     let id = (!id.is_empty()).then_some(id);
+    // The status word lowercased through the same map the TS reads: anything
+    // unrecognized stays None (merge keeps the prior value; a push says
+    // 'running').
+    let s = str_of("status").to_lowercase();
+    let status = match s.as_str() {
+        "running" => Some("running".to_string()),
+        "completed" | "complete" => Some("completed".to_string()),
+        _ => None,
+    };
     if label.is_empty() && id.is_none() {
         return None;
     }
-    Some(AgentStreamEvent::Tool { id, name, label })
+    Some(AgentStreamEvent::Tool {
+        id,
+        name,
+        label,
+        status,
+    })
 }
 
 #[cfg(test)]
@@ -353,8 +449,52 @@ mod tests {
             vec![AgentStreamEvent::Tool {
                 id: None,
                 name: "memory".into(),
-                label: "🧠".into()
+                label: "🧠".into(),
+                status: None,
             }]
+        );
+    }
+
+    #[test]
+    fn tool_progress_carries_the_status_word() {
+        let mut p = AgentStreamParser::new();
+        let events = p.feed(
+            "event: hermes.tool.progress\ndata: {\"tool\":\"search\",\"toolCallId\":\"c1\",\"status\":\"running\"}\n\n"
+                .as_bytes(),
+        );
+        assert_eq!(
+            events,
+            vec![AgentStreamEvent::Tool {
+                id: Some("c1".into()),
+                name: "search".into(),
+                label: String::new(),
+                status: Some("running".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_tool_dedupes_by_id_and_never_blanks_a_label() {
+        let tools = merge_tool(&[], Some("c1"), "search", "🔎", Some("running"));
+        // The completed frame carries no label — the good one survives.
+        let tools = merge_tool(&tools, Some("c1"), "search", "", Some("completed"));
+        assert_eq!(
+            tools,
+            vec![ToolCall {
+                id: Some("c1".into()),
+                name: "search".into(),
+                label: "🔎".into(),
+                status: "completed".into(),
+            }]
+        );
+        // No id: a second running frame of the same name merges, a completed
+        // one starts fresh only after the running entry flipped.
+        let anon = merge_tool(&[], None, "memory", "", None);
+        assert_eq!(anon[0].status, "running");
+        let serde = serde_json::to_value(&anon).unwrap();
+        assert_eq!(
+            serde,
+            serde_json::json!([{ "name": "memory", "label": "", "status": "running" }])
         );
     }
 
