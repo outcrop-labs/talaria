@@ -5,7 +5,7 @@
 // admitted by an admin when it was created; login checks the stored hash only.
 
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::password_accounts::{has_password_accounts, verify_password_login};
 use crate::ratelimit::{client_ip, rate_limit, rate_limit_reset};
 use crate::session::{SessionUser, WireUser, create_session, json_with_cookies, session_cookie};
@@ -45,7 +45,7 @@ pub async fn post(
         Ok(false) => return house_error(StatusCode::BAD_REQUEST, "Password login is disabled"),
         Err(e) => {
             tracing::error!("[auth/password] account probe failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
 
@@ -98,7 +98,7 @@ pub async fn post(
         }
         Err(e) => {
             tracing::error!("[auth/password] credential lookup failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -121,7 +121,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[auth/password] upsert failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let user = SessionUser {
@@ -137,7 +137,7 @@ pub async fn post(
         Ok(sid) => sid,
         Err(e) => {
             tracing::error!("[auth/password] session create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     json_with_cookies(

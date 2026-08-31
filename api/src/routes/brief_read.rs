@@ -10,7 +10,7 @@
 
 use crate::body::{NumKind, as_object, number_member, uuid_member};
 use crate::daily_brief::mark_brief_read;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -54,7 +54,7 @@ pub async fn post(
     };
     if let Err(e) = mark_brief_read(&state.pg, &user.id, &body.brief_id, body.seq as i64).await {
         tracing::error!("[brief] cursor move failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

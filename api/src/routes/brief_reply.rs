@@ -10,7 +10,7 @@
 
 use crate::body::{as_object, enum_member, uuid_member};
 use crate::daily_brief::delegation::{DraftOutcome, decide_draft};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -61,7 +61,7 @@ pub async fn post(
         Ok(o) => o,
         Err(e) => {
             tracing::error!("[brief] draft decide failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     match outcome {

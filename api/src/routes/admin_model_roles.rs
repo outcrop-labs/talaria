@@ -20,7 +20,7 @@ use crate::body::{
     present_nullable_string_member,
 };
 use crate::effort_prefs::{get_effort_prefs, role_slot, set_effort_pref};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::model_access::gateway_models;
 use crate::model_efforts::efforts_for_model;
 use crate::model_roles::{MODEL_ROLES, get_model_roles, role_assignment_issues, set_model_role};
@@ -88,7 +88,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[model-roles] gateway catalog read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
@@ -144,7 +144,7 @@ pub async fn put(
             Ok(all) => all.iter().any(|g| &g.id == m),
             Err(e) => {
                 tracing::error!("[model-roles] gateway catalog read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !on_gateway {
@@ -154,7 +154,7 @@ pub async fn put(
     if let Some(model_value) = &model {
         if let Err(e) = set_model_role(&state.pg, &role, model_value.as_deref()).await {
             tracing::error!("[model-roles] assignment write failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
         // after: { model: body.model } — the RAW parsed value, so present-null
         // audits {model: null} and an explicit "" audits {model: ""}.
@@ -193,7 +193,7 @@ pub async fn put(
             // null (or "") = clear the preference; nothing to validate.
             if let Err(e) = set_effort_pref(&state.pg, &role_slot(&role), None).await {
                 tracing::error!("[model-roles] effort pref write failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
             log_audit(
                 &state.pg,
@@ -227,7 +227,7 @@ pub async fn put(
         }
         if let Err(e) = set_effort_pref(&state.pg, &role_slot(&role), Some(chosen)).await {
             tracing::error!("[model-roles] effort pref write failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
         log_audit(
             &state.pg,

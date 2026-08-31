@@ -12,7 +12,7 @@ use crate::body::{
     optional_number_member, optional_string_array_member, optional_string_member,
     optional_uuid_array_member, optional_uuid_member, parse,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::mentions::{Mentionee, notify_mentions};
 use crate::notify::NotifyDeps;
 use crate::refs::{MessageRef, RefChip, RefUser, resolve_refs};
@@ -45,7 +45,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] full read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let caller = match agent_caller(&state.pg, &headers).await {
@@ -65,7 +65,7 @@ pub async fn get(
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[tasks] agent policy read on GET task failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !allowed {
@@ -81,7 +81,7 @@ pub async fn get(
             Ok(w) => w,
             Err(e) => {
                 tracing::error!("[tasks] workflow read on GET task failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         // TS spreads `{...full, workflows}` — the detail body plus the
@@ -90,7 +90,7 @@ pub async fn get(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[tasks] full detail serialize failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if let Some(obj) = body.as_object_mut() {
@@ -110,7 +110,7 @@ pub async fn get(
         Ok(None) => house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[tasks] role read on GET task failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -169,7 +169,7 @@ pub async fn put(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on PUT task failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let caller = match agent_caller(&state.pg, &headers).await {
@@ -190,7 +190,7 @@ pub async fn put(
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[tasks] agent policy read on PUT task failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !allowed {
@@ -211,7 +211,7 @@ pub async fn put(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("[tasks] role read on PUT task failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !can_edit(role.as_deref()) {
@@ -351,7 +351,7 @@ pub async fn put(
         Ok(Some(bad)) => return house_error(StatusCode::BAD_REQUEST, &bad),
         Err(e) => {
             tracing::error!("[tasks] assignee check on PUT task failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let attachments = if attachment_ids.is_some() || refs.is_some() {
@@ -364,7 +364,7 @@ pub async fn put(
                 Ok(u) => u,
                 Err(e) => {
                     tracing::error!("[tasks] attachment resolve failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
         let chips: Vec<RefChip> = if let Some(user) = session_user.as_ref() {
@@ -377,7 +377,7 @@ pub async fn put(
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("[tasks] ref resolve failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             }
         } else {
@@ -423,7 +423,7 @@ pub async fn put(
         Err(TaskError::Refusal(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
         Err(TaskError::Db(e)) => {
             tracing::error!("[tasks] update failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // NOT YET CROSSED: the two detached after-writes.
@@ -501,14 +501,14 @@ pub async fn delete(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on DELETE task failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[tasks] role read on DELETE task failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !can_edit(role.as_deref()) {
@@ -525,7 +525,7 @@ pub async fn delete(
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] delete failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

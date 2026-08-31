@@ -5,7 +5,7 @@
 // a pretty label + a "what it's good at" blurb when the public catalog knows
 // it. Also says which model the caller's muse would use.
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::harness_model::muse_model_for;
 use crate::model_access::gateway_models_for;
 use crate::model_info::{maybe_rewrite_blurbs, model_info};
@@ -13,7 +13,7 @@ use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -37,7 +37,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[models] gateway catalog read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let mut models = Vec::with_capacity(catalog.len());
@@ -54,7 +54,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             Ok(i) => i,
             Err(e) => {
                 tracing::error!("[models] blurb override read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         // TS spreads `{...m, label, blurb}` — the three catalog keys in their
@@ -75,7 +75,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[models] muse resolution failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "models": models, "effective": effective })).into_response()

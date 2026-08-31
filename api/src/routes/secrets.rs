@@ -23,7 +23,7 @@ use crate::body::{
     optional_uuid_array_member, optional_uuid_member, parse, string_member, string_value_member,
     too_big_msg, utf16_substr, zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
 use crate::workspace_secrets::{
@@ -134,7 +134,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => {
             tracing::error!("[secrets] list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -270,7 +270,7 @@ pub async fn patch(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[secrets] move failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !moved {
@@ -293,7 +293,7 @@ pub async fn patch(
         Ok(doc) => Json(json!({ "secret": doc })).into_response(),
         Err(e) => {
             tracing::error!("[secrets] move re-read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -321,7 +321,7 @@ pub async fn delete(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[secrets] delete read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(doc) = doc else {
@@ -335,7 +335,7 @@ pub async fn delete(
     }
     if let Err(e) = delete_secret_doc(&state.pg, &name).await {
         tracing::error!("[secrets] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,

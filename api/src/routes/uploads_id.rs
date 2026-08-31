@@ -6,11 +6,10 @@
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::http::StatusCode;
 use axum::response::Response;
 
 use crate::agent_auth::agent_caller;
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::session::{require_user, who_of};
 use crate::state::AppState;
 use crate::uploads::{UploadViewer, can_access_upload, get_upload, serve_upload, upload_not_found};
@@ -59,7 +58,7 @@ pub async fn get(
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[uploads] blob read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some((bytes, mime, filename)) = found else {

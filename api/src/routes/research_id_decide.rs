@@ -19,7 +19,7 @@
 // question is a 409, not a resume.
 
 use crate::body::{as_object, optional_string_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::realtime::RealtimeDeps;
 use crate::research::research_role;
 use crate::runs::decide::{DecideArgs, DecideRefusal, DecideResult, decide};
@@ -50,7 +50,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[research] role read on decide failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
 
@@ -75,7 +75,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[research] redis for decide deps unavailable: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let deps = real_decide_deps(
@@ -98,7 +98,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[research] decide on {id} failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     match res {

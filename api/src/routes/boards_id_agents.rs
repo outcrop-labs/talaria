@@ -8,7 +8,7 @@ use crate::boards::{
     BoardAgentConfig, board_role, can_edit, get_board_agent_config, set_board_agent_config,
 };
 use crate::body::{as_object, optional_boolean_member, optional_string_array_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{acting_user, require_user, unauthorized};
 use crate::state::AppState;
 use axum::Json;
@@ -36,14 +36,14 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on agents failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match get_board_agent_config(&state.pg, &id).await {
         Ok(cfg) => Json(json!(cfg)).into_response(),
         Err(e) => {
             tracing::error!("[boards] agent config read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -67,7 +67,7 @@ pub async fn put(
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on agent put failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -97,7 +97,7 @@ pub async fn put(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] agent config read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // Incremental spelling merges onto the current list: survivors first,
@@ -129,7 +129,7 @@ pub async fn put(
     });
     if let Err(e) = set_board_agent_config(&state.pg, &id, allow_all, &merged).await {
         tracing::error!("[boards] agent config write failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // The answer is the FRESH config — the write and the read agree because
     // they are the same two queries the TS handler runs in this order.
@@ -137,7 +137,7 @@ pub async fn put(
         Ok(cfg) => Json(json!(cfg)).into_response(),
         Err(e) => {
             tracing::error!("[boards] agent config re-read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

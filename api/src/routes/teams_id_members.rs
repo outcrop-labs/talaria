@@ -8,7 +8,7 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, email_member, enum_member, parse, uuid_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
 use crate::teams::{add_team_member, list_team_members, remove_team_member, team_role};
@@ -26,10 +26,7 @@ fn uuid_gate(id: &str, action: &str) -> Option<Response> {
         return None;
     }
     tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(house_error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "internal error",
-    ))
+    Some(thrown_internal_error())
 }
 
 /// The member gate: any role on the team passes (None = proceed).
@@ -44,10 +41,7 @@ async fn member_gate(
         Ok(None) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -64,10 +58,7 @@ async fn owner_gate(
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -91,7 +82,7 @@ pub async fn get(
         Ok(members) => Json(json!({ "members": members })).into_response(),
         Err(e) => {
             tracing::error!("[teams] member list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -135,7 +126,7 @@ pub async fn post(
         Ok(Some(sentence)) => return house_error(StatusCode::BAD_REQUEST, &sentence),
         Err(e) => {
             tracing::error!("[teams] member add failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     log_audit(
@@ -181,7 +172,7 @@ pub async fn delete(
     };
     if let Err(e) = remove_team_member(&state.pg, &id, &user_id).await {
         tracing::error!("[teams] member remove failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,

@@ -11,7 +11,7 @@ use crate::body::{
     optional_max_string_member, optional_uuid_member, parse, string_member, too_big_msg, utf16_len,
     zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::realtime::RealtimeDeps;
 use crate::runs::defs::agent_hire::{AgentHireInput, SkillSeed, agent_hire_run};
 use crate::runs::run::{EnqueueOptions, enqueue};
@@ -162,7 +162,7 @@ pub async fn post(
         Ok(t) => t,
         Err(e) => {
             tracing::error!("[fleet] taken-slug check failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if taken.is_some() {
@@ -205,7 +205,7 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[fleet] hire input serialize failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let row = match enqueue(
@@ -229,7 +229,7 @@ pub async fn post(
         Ok(row) => row,
         Err(e) => {
             tracing::error!("[fleet] hire enqueue failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({

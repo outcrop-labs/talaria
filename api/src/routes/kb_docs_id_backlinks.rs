@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::{effective_doc_perms, get_backlinks, get_doc};
 use crate::kb_perms::can_read;
 use crate::session::{require_user, who_of};
@@ -29,7 +29,7 @@ pub async fn get(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] doc read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(doc) = doc else {
@@ -39,7 +39,7 @@ pub async fn get(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[kb] perms read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -50,7 +50,7 @@ pub async fn get(
         Ok(backlinks) => Json(json!({ "backlinks": backlinks })).into_response(),
         Err(e) => {
             tracing::error!("[kb] backlink scan failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

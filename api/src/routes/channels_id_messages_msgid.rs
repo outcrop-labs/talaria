@@ -8,7 +8,7 @@ use crate::body::{as_object, trimmed_string_member};
 use crate::channels::{
     channel_role, delete_channel_message, edit_channel_message, get_channel_message,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::notify::NotifyDeps;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -36,7 +36,7 @@ pub async fn patch(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[channels] message read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(msg) = msg else {
@@ -63,7 +63,7 @@ pub async fn patch(
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = edit_channel_message(&notify, &id, &msg_id, &content).await {
         tracing::error!("[channels] message edit failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -81,7 +81,7 @@ pub async fn delete(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[channels] role read on message delete failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(role) = role else {
@@ -91,7 +91,7 @@ pub async fn delete(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[channels] message read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(msg) = msg else {
@@ -109,7 +109,7 @@ pub async fn delete(
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = delete_channel_message(&notify, &id, &msg_id).await {
         tracing::error!("[channels] message delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

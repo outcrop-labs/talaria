@@ -8,7 +8,7 @@ use crate::channels::{
     archive_channel, channel_role, delete_channel, list_channel_agents, list_channel_members,
     update_channel,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::notify::NotifyDeps;
 use crate::retrieval::qdrant;
 use crate::retrieval::sources::{ActivityField, purge_activity_by_field};
@@ -33,7 +33,7 @@ pub async fn get(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[channels] role read on GET failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(role) = role else {
@@ -43,14 +43,14 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] member read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let agents = match list_channel_agents(&state.pg, &id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] agent read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "role": role, "members": members, "agents": agents })).into_response()
@@ -97,7 +97,7 @@ pub async fn put(
     .await
     {
         tracing::error!("[channels] update failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -133,7 +133,7 @@ pub async fn delete(
     };
     if let Err(e) = result {
         tracing::error!("[channels] archive/delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // A hard delete removes the channel's messages — purge their activity
     // points too so nothing is orphaned in the index. (`void ... .catch`)

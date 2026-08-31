@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::agent_defs::{AgentVersionRow, list_versions};
 use crate::artifacts::{get_artifact, guarded};
 use crate::body::utf16_len;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::google_oauth::query_pairs;
 use crate::internal_history::{get_revision, list_history};
 use crate::kb::{effective_doc_perms, get_doc, get_space, guarded_of_space};
@@ -161,7 +161,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[history] versions read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if let Some(rev) = rev {
@@ -220,7 +220,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
             Err(e) => {
                 tracing::error!("[history] revision read failed: {e}");
-                house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                thrown_internal_error()
             }
         };
     }
@@ -228,7 +228,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(revisions) => Json(RevisionsBody { revisions }).into_response(),
         Err(e) => {
             tracing::error!("[history] snapshot list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

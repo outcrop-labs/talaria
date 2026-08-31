@@ -6,7 +6,7 @@
 
 use crate::channels::channel_role;
 use crate::comms_decay::conclude_relay;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -37,7 +37,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[channels] conclude read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some((name, kind)) = row else {

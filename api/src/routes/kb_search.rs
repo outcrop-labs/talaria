@@ -5,11 +5,11 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::kb::{SearchViewer, search_docs};
 use crate::session::{require_user, who_of};
 use crate::state::AppState;
@@ -43,7 +43,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(hits) => Json(json!({ "hits": hits })).into_response(),
         Err(e) => {
             tracing::error!("[kb] search failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

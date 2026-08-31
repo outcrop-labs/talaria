@@ -10,7 +10,7 @@
 // fields in sequence with no transaction, and the port does not invent one.
 
 use crate::body::{as_object, optional_string_member, parse, present_nullable_string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::me::{
     gateway_models, get_prefs, is_valid_time_zone, member_model_allowlist, model_allowed_for,
     set_preferred_effort, set_preferred_model, set_timezone, set_user_name,
@@ -67,7 +67,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[me] prefs read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({
@@ -104,7 +104,7 @@ pub async fn put(
         let name = raw.trim();
         if let Err(e) = set_user_name(&state.pg, &user.id, name).await {
             tracing::error!("[me] set name failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
         match update_session_user(&state, &headers, &json!({ "name": name })).await {
             Ok(Some(next)) => updated = next,
@@ -113,7 +113,7 @@ pub async fn put(
             Ok(None) => {}
             Err(e) => {
                 tracing::error!("[me] session patch failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -127,7 +127,7 @@ pub async fn put(
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("[me] catalog read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             if !model_allowed_for(&user.role, model, &allow, &catalog) {
@@ -139,7 +139,7 @@ pub async fn put(
         }
         if let Err(e) = set_preferred_model(&state.pg, &user.id, choice.as_deref()).await {
             tracing::error!("[me] set preferred model failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     if let Some(choice) = &patch.preferred_effort {
@@ -150,7 +150,7 @@ pub async fn put(
         // schema is the whole server-side contract.
         if let Err(e) = set_preferred_effort(&state.pg, &user.id, choice.as_deref()).await {
             tracing::error!("[me] set preferred effort failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     if let Some(choice) = &patch.timezone {
@@ -165,13 +165,13 @@ pub async fn put(
                 }
                 if let Err(e) = set_timezone(&state.pg, &user.id, Some(tz)).await {
                     tracing::error!("[me] set timezone failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             }
             None => {
                 if let Err(e) = set_timezone(&state.pg, &user.id, None).await {
                     tracing::error!("[me] clear timezone failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             }
         }

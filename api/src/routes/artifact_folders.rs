@@ -12,7 +12,7 @@ use crate::artifacts::{create_folder, guarded_folder, list_folders};
 use crate::body::{
     as_object, optional_enum_member, parse, present_nullable_uuid_member, string_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_perms::{can_read, granted_item_ids};
 use crate::session::{require_perm, require_user, who_of};
 use crate::state::AppState;
@@ -48,14 +48,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[folders] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let folders = match list_folders(&state.pg).await {
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[folders] list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let folders: Vec<_> = folders
@@ -106,7 +106,7 @@ pub async fn post(
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[folders] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "folder": folder })).into_response()

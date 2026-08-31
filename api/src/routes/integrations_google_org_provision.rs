@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::body::{as_object, optional_boolean_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::google_org::{get_org_connection_status, get_org_email};
 use crate::google_pending_actions::agent_from_address;
 use crate::google_provisioning::{provision_workspace, provisioning_readiness};
@@ -30,21 +30,21 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[integrations/google/org] readiness read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let status = match get_org_connection_status(&state.pg).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[integrations/google/org] status read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let org_email = match get_org_email(&state.pg).await {
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[integrations/google/org] org email read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // listAgentDefs' row, cut to the five columns this read uses, still
@@ -66,7 +66,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("[integrations/google/org] agent defs read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let agents: Vec<Value> = defs
@@ -147,7 +147,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         // Err here is a DB write it could not fold — the route's throw.
         Err(e) => {
             tracing::error!("[integrations/google/org] provision failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

@@ -4,7 +4,7 @@
 // list, so field order and the 401 envelope are pinned (error.rs tests).
 
 use crate::auth::{authenticate_key, bearer_secret};
-use crate::error::{house_error, openai_error};
+use crate::error::{openai_error, thrown_internal_error};
 use crate::gateway::models::{EndpointModels, catalog_of};
 use crate::state::AppState;
 use axum::Json;
@@ -41,7 +41,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             // TS has no envelope here — a throw reaches the platform's 500.
             // A fixed house sentence is the same posture: status only, no
             // driver text past the boundary.
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -82,7 +82,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .collect::<Vec<_>>(),
         Err(e) => {
             tracing::error!("[llm/v1/models] catalog query failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 

@@ -5,7 +5,7 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::llm_keys::{can_mint_keys, list_keys, mint_key};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
@@ -24,14 +24,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(k) => k,
         Err(e) => {
             tracing::error!("[keys] list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let can_mint = match can_mint_keys(&state.pg, &user.id, &user.role).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[keys] can-mint read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "keys": keys, "canMint": can_mint })).into_response()
@@ -56,7 +56,7 @@ pub async fn post(
         }
         Err(e) => {
             tracing::error!("[keys] can-mint read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -72,7 +72,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[keys] mint failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     log_audit(

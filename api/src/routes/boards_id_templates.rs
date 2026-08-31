@@ -7,7 +7,7 @@
 
 use crate::boards::{board_role, can_edit};
 use crate::body::{as_object, nullable_uuid_member, parse, uuid_array_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use crate::templates::{board_templates, set_board_templates};
@@ -34,14 +34,14 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on templates failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match board_templates(&state.pg, &id).await {
         Ok(bindings) => Json(json!({ "bindings": bindings })).into_response(),
         Err(e) => {
             tracing::error!("[boards] template bindings read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -64,7 +64,7 @@ pub async fn put(
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on template put failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -93,7 +93,7 @@ pub async fn put(
     if let Err(e) = set_board_templates(&state.pg, &id, &template_ids, default_id.as_deref()).await
     {
         tracing::error!("[boards] template bindings write failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // The fresh set rides back — the write and the answer are one read apart,
     // so a stale client cannot keep rendering a binding the board dropped.
@@ -101,7 +101,7 @@ pub async fn put(
         Ok(bindings) => Json(json!({ "bindings": bindings })).into_response(),
         Err(e) => {
             tracing::error!("[boards] template bindings reread failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

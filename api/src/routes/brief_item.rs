@@ -10,7 +10,7 @@
 
 use crate::body::{as_object, enum_member, nullable_optional_string_member, string_member};
 use crate::daily_brief::{BriefUser, mark_brief_item, real_brief_deps};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -81,7 +81,7 @@ pub async fn post(
         ),
         Err(e) => {
             tracing::error!("[brief] item mark failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

@@ -19,7 +19,7 @@ use crate::body::{
     zod_type_name,
 };
 use crate::channels::{channel_role, list_channel_agents};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::{routed_model_for, usable_agent_gate};
 use crate::harness::defs::channel_plan::{Effort, Priority};
 use crate::plan_drafts::{
@@ -203,14 +203,14 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on GET plan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match latest_draft_for(&state.pg, &id).await {
         Ok(draft) => Json(json!({ "draft": draft })).into_response(),
         Err(e) => {
             tracing::error!("[channels] draft read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -230,7 +230,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on POST plan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = crate::body::parse(&body);
@@ -250,7 +250,7 @@ pub async fn post(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[channels] agent list read on POST plan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !agents.iter().any(|a| a == &agent_model) {
@@ -260,7 +260,7 @@ pub async fn post(
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[channels] agent access read on POST plan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !gate(&agent_model) {
@@ -327,7 +327,7 @@ pub async fn patch(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on PATCH plan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = crate::body::parse(&body);
@@ -341,7 +341,7 @@ pub async fn patch(
     };
     if let Err(e) = save_draft_proposals(&state.pg, &id, &proposals).await {
         tracing::error!("[channels] save draft proposals failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -360,12 +360,12 @@ pub async fn delete(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on DELETE plan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     if let Err(e) = drop_draft(&state, &id).await {
         tracing::error!("[channels] drop draft failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

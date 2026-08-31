@@ -4,7 +4,7 @@
 // spending on a report nobody will open.
 
 use crate::agent_auth::{AgentSubject, agent_caller};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::research::{delete_research_run, get_research_run, research_role};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -31,7 +31,7 @@ pub async fn get(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("[research] owner resolve on run read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             }
         }
@@ -51,7 +51,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[research] role read on run read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match get_research_run(&state.pg, &id).await {
@@ -59,7 +59,7 @@ pub async fn get(
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[research] run read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -80,7 +80,7 @@ pub async fn delete(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[research] run read on delete failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some((run, _)) = found else {
@@ -94,7 +94,7 @@ pub async fn delete(
     // a run clears the queue entry, not the knowledge.
     if let Err(e) = delete_research_run(&state, &id).await {
         tracing::error!("[research] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

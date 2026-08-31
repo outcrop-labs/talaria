@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use crate::body::{as_object, enum_member, parse};
-use crate::error::{house_error, house_error_msg};
+use crate::error::{house_error, house_error_msg, thrown_internal_error};
 use crate::google_pending_actions::decide_action;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -52,7 +52,7 @@ pub async fn post(
         // rather than answered null) — the catch's 500.
         Err(e) => {
             tracing::error!("[integrations/google/pending] decide failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(outcome) = outcome else {

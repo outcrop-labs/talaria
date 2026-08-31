@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use crate::body::{as_object, boolean_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_comments::{delete_comment, set_resolved};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -39,7 +39,7 @@ pub async fn patch(
         Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[kb] resolve failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -58,7 +58,7 @@ pub async fn delete(
         Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[kb] comment delete failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

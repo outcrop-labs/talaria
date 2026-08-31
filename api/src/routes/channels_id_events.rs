@@ -4,7 +4,7 @@
 // realtime's (channel:<id> topic); this route is only the gate in front of it.
 
 use crate::channels::channel_role;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::realtime::{RealtimeDeps, channel_event_stream};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -26,7 +26,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on events failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let deps = RealtimeDeps::streams_only(&state.cfg.redis_url);

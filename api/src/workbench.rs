@@ -8,10 +8,11 @@
 // 'auto' attaches when a profile's fit rules match the agent (department /
 // role); 'on' forces the explicit profile (else best fit, else 'dev').
 //
-// Port of ui/src/server/workbench.ts's READ plane (mount safety, the seeded
-// 'dev' profile, listProfiles, resolveWorkbench) — what the fleet render
-// resolves through. The mutation surface (updateProfile, setAgentWorkbench,
-// setAgentWorkbenchTuning) crosses with the routes that own it.
+// Port of ui/src/server/workbench.ts: mount safety, the seeded 'dev'
+// profile, listProfiles, resolveWorkbench (the read plane the fleet render
+// resolves through), and updateProfile + the wire the /api/workbench routes
+// own. setAgentWorkbench / setAgentWorkbenchTuning stay TS with the
+// agent-settings surface that owns them.
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
@@ -32,6 +33,11 @@ pub struct WorkbenchProfile {
     /// Harness slugs this profile preinstalls.
     pub harnesses: Vec<String>,
     pub auto_attach: AutoAttach,
+    /// The column as stored, for the wire: postgres normalizes jsonb object
+    /// keys (shorter first, then bytewise) on write, and TS stringifies the
+    /// row's object verbatim — so `{"roles":…,"departments":…}` is the byte
+    /// order the SPA sees. The typed struct above is for matching, not wire.
+    pub auto_attach_wire: Value,
     /// Room for the later phases: creds scoping, toolkit verbs, effort map.
     pub config: Map<String, Value>,
     pub enabled: bool,
@@ -187,8 +193,9 @@ fn profile_of(r: ProfileTuple) -> Result<WorkbenchProfile, String> {
         mounts: serde_json::from_value(r.5.unwrap_or(Value::Array(Vec::new())))
             .map_err(|e| format!("profile mounts: {e}"))?,
         harnesses: serde_json::from_value(r.6).map_err(|e| format!("profile harnesses: {e}"))?,
-        auto_attach: serde_json::from_value(r.7)
+        auto_attach: serde_json::from_value(r.7.clone())
             .map_err(|e| format!("profile auto_attach: {e}"))?,
+        auto_attach_wire: r.7,
         config: r
             .8
             .and_then(|c| serde_json::from_value(c).ok())
@@ -229,6 +236,89 @@ pub fn fits(p: &WorkbenchProfile, department: &str, role: Option<&str>) -> bool 
             .iter()
             .any(|rule| r.contains(&rule.to_lowercase()))
     })
+}
+
+/// The profile as the /api/workbench routes answer it — the ROW select's
+/// column order (autoAttach last-but-two, config, enabled), env values
+/// verbatim. `mask_env` replaces every VALUE with '•••' in place for member
+/// reads: a profile's env is injected straight into agent containers and is
+/// the documented home for scoped credentials, so its values are not member-
+/// readable. Keys stay so the attachment UI can still explain itself.
+pub fn profile_wire(p: &WorkbenchProfile, mask_env: bool) -> Value {
+    let env: Map<String, Value> = if mask_env {
+        p.env
+            .iter()
+            .map(|(k, _)| (k.clone(), Value::String("•••".into())))
+            .collect()
+    } else {
+        p.env.clone()
+    };
+    serde_json::json!({
+        "slug": p.slug,
+        "name": p.name,
+        "description": p.description,
+        "image": p.image,
+        "env": env,
+        "mounts": p.mounts,
+        "harnesses": p.harnesses,
+        "autoAttach": p.auto_attach_wire,
+        "config": p.config,
+        "enabled": p.enabled,
+    })
+}
+
+/// The update patch — `None` keeps the column (the SQL's `coalesce(null,
+/// col)`), `Some` replaces it.
+#[derive(Default)]
+pub struct ProfilePatch {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub image: Option<String>,
+    pub env: Option<Map<String, Value>>,
+    pub mounts: Option<Vec<String>>,
+    pub harnesses: Option<Vec<String>>,
+    pub auto_attach: Option<AutoAttach>,
+    pub config: Option<Map<String, Value>>,
+    pub enabled: Option<bool>,
+}
+
+/// updateProfile — the coalesce update, returning whether the slug existed.
+pub async fn update_profile(
+    pg: &PgPool,
+    slug: &str,
+    patch: &ProfilePatch,
+) -> Result<bool, sqlx::Error> {
+    let auto_attach = patch
+        .auto_attach
+        .as_ref()
+        .map(|a| serde_json::json!({ "departments": a.departments, "roles": a.roles }));
+    let row = sqlx::query_scalar::<_, String>(
+        "update workbench_profiles set \
+           name = coalesce($2, name), \
+           description = coalesce($3, description), \
+           image = coalesce($4, image), \
+           enabled = coalesce($5, enabled), \
+           env = coalesce($6, env), \
+           mounts = coalesce($7, mounts), \
+           harnesses = coalesce($8, harnesses), \
+           auto_attach = coalesce($9, auto_attach), \
+           config = coalesce($10, config), \
+           updated_at = now() \
+         where slug = $1 returning slug",
+    )
+    .bind(slug)
+    .bind(&patch.name)
+    .bind(&patch.description)
+    .bind(&patch.image)
+    .bind(patch.enabled)
+    .bind(patch.env.as_ref().map(|e| Value::Object(e.clone())))
+    .bind(patch.mounts.as_ref().map(|m| serde_json::json!(m)))
+    .bind(patch.harnesses.as_ref().map(|h| serde_json::json!(h)))
+    .bind(auto_attach)
+    .bind(patch.config.as_ref().map(|c| Value::Object(c.clone())))
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.is_some())
 }
 
 /// The agent-side input to [`resolve_workbench`] — the three columns off
@@ -296,6 +386,7 @@ mod tests {
                 departments: departments.iter().map(|d| d.to_string()).collect(),
                 roles: roles.iter().map(|r| r.to_string()).collect(),
             },
+            auto_attach_wire: json!({}),
             config: Map::new(),
             enabled: true,
         }

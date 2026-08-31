@@ -11,7 +11,7 @@ use crate::body::{
     as_object, optional_string_member, parse, preprocessed_email_member, string_member,
 };
 use crate::claim::claim_admin;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::password::hash_password;
 use crate::ratelimit::{client_ip, rate_limit, rate_limit_reset};
 use crate::session::{SessionUser, WireUser, create_session, json_with_cookies, session_cookie};
@@ -73,7 +73,7 @@ pub async fn post(
         Ok(h) => h,
         Err(e) => {
             tracing::error!("[auth/claim] hash task panicked: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -99,7 +99,7 @@ pub async fn post(
         }
         Err(e) => {
             tracing::error!("[auth/claim] claim failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -142,7 +142,7 @@ pub async fn post(
         Ok(sid) => sid,
         Err(e) => {
             tracing::error!("[auth/claim] session create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     json_with_cookies(

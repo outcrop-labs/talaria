@@ -25,8 +25,8 @@
 
 use crate::auth::{authenticate_key, bearer_secret};
 use crate::error::{
-    BudgetFacts, house_error, js_num, log_upstream_error, openai_budget_error, openai_error,
-    openai_error_null_param, sanitized_upstream_body,
+    BudgetFacts, js_num, log_upstream_error, openai_budget_error, openai_error,
+    openai_error_null_param, sanitized_upstream_body, thrown_internal_error,
 };
 use crate::gateway::budget::{BudgetLimits, budget_message, check_budget};
 use crate::gateway::guard::{
@@ -75,7 +75,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         Ok(None) => return openai_error(StatusCode::UNAUTHORIZED, "invalid API key"),
         Err(e) => {
             tracing::error!("[llm/v1/chat] key lookup failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -151,7 +151,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         }
         Err(e) => {
             tracing::error!("[llm/v1/chat] route resolve failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 

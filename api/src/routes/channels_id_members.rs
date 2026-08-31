@@ -5,7 +5,7 @@
 
 use crate::body::{as_object, email_member, uuid_member};
 use crate::channels::{add_channel_member, channel_role, remove_channel_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::notify::NotifyDeps;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -45,7 +45,7 @@ pub async fn post(
         Ok(Some(error)) => house_error(StatusCode::BAD_REQUEST, &error),
         Err(e) => {
             tracing::error!("[channels] member add failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -64,7 +64,7 @@ pub async fn delete(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[channels] role read on member delete failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(role) = role else {
@@ -85,7 +85,7 @@ pub async fn delete(
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = remove_channel_member(&notify, &id, &user_id).await {
         tracing::error!("[channels] member remove failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

@@ -3,7 +3,7 @@
 // identity-proxy model); POST { name } → create (humans only: requireUser).
 
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{acting_user, require_user, unauthorized};
 use crate::state::AppState;
 use crate::teams::{create_team, list_teams};
@@ -23,7 +23,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(teams) => Json(json!({ "teams": teams })).into_response(),
         Err(e) => {
             tracing::error!("[teams] list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -50,7 +50,7 @@ pub async fn post(
         Ok(t) => t,
         Err(e) => {
             tracing::error!("[teams] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // TS spreads {id, name, createdAt} then role then memberCount — the

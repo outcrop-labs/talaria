@@ -8,7 +8,7 @@ use crate::body::{as_object, string_member};
 use crate::channels::{
     agent_may_access_channel, channel_role, get_channel_message, toggle_reaction,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::notify::NotifyDeps;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -38,7 +38,7 @@ pub async fn post(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[channels] message read on reactions failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if msg.is_none() {
@@ -58,7 +58,7 @@ pub async fn post(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("[channels] agent access read on reactions failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
         if !may {
@@ -68,7 +68,7 @@ pub async fn post(
             Ok(()) => Json(json!({ "ok": true })).into_response(),
             Err(e) => {
                 tracing::error!("[channels] agent reaction failed: {e}");
-                house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                thrown_internal_error()
             }
         };
     }
@@ -81,7 +81,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on reactions failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let actor = user
@@ -93,7 +93,7 @@ pub async fn post(
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => {
             tracing::error!("[channels] reaction failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

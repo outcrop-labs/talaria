@@ -40,7 +40,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             .into_response(),
         Err(e) => {
             tracing::error!("[conversations] list failed: {e}");
-            crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            crate::error::thrown_internal_error()
         }
     }
 }

@@ -3,7 +3,7 @@
 // TS takes no options here (the queue defaults: enrich, no snoozed), and the
 // query string is ignored entirely.
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::inbox_focus::{FocusQueueOptions, list_focus_queue};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -30,7 +30,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(queue) => (StatusCode::OK, Json(queue)).into_response(),
         Err(e) => {
             tracing::error!("[inbox-focus] queue read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

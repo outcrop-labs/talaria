@@ -8,7 +8,7 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
 use crate::teams::{delete_team, rename_team, team_role};
@@ -35,10 +35,7 @@ async fn owner_gate(
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -70,7 +67,7 @@ pub async fn patch(
     };
     if let Err(e) = rename_team(&state.pg, &id, &name).await {
         tracing::error!("[teams] rename failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,
@@ -105,7 +102,7 @@ pub async fn delete(
     }
     if let Err(e) = delete_team(&state.pg, &id).await {
         tracing::error!("[teams] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,

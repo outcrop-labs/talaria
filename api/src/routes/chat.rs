@@ -19,7 +19,7 @@ use crate::conversations::{
     insert_streaming_assistant, insert_user_message, list_plan_members, next_seq, prior_messages,
     title_from, touch_conversation,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::{routed_model_for, usable_agent_gate};
 use crate::gateway::fleet_chat::{chat_payload, proxy_chat};
 use crate::model_efforts::efforts_for_model;
@@ -143,7 +143,7 @@ pub async fn post(
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("[chat] conversation read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let Some(conv) = conv else {
@@ -184,7 +184,7 @@ pub async fn post(
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[chat] agent access read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !gate(&agent_model) {
@@ -197,7 +197,7 @@ pub async fn post(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[chat] tier routing read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(routed_model) = routed_model else {
@@ -301,7 +301,7 @@ pub async fn post(
             }
             Err(e) => {
                 tracing::error!("[chat] conversation create failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -321,7 +321,7 @@ pub async fn post(
         Ok(sb) => sb,
         Err(e) => {
             tracing::error!("[chat] secretbox unusable: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let prior = if queued {
@@ -331,7 +331,7 @@ pub async fn post(
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("[chat] history read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     };
@@ -339,7 +339,7 @@ pub async fn post(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[chat] seq read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // The effort pick rides the user's row: the queued-message contract. A
@@ -364,7 +364,7 @@ pub async fn post(
         Ok(id) => id,
         Err(e) => {
             tracing::error!("[chat] user turn persist failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let _ = touch_conversation(&state.pg, &conv_id, Some(&title)).await;
@@ -515,7 +515,7 @@ pub async fn post(
             Ok(id) => id,
             Err(e) => {
                 tracing::error!("[chat] assistant row create failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
 

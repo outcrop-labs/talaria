@@ -7,7 +7,7 @@
 use crate::audit::{AuditEntry, log_audit};
 use crate::auth_config::{get_auth_config, is_email_allowed};
 use crate::claim::{claim_admin, instance_claimable};
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::google_client::google_login_enabled;
 use crate::google_oauth::{
     PROVIDER, email_domain_of, exchange_google_code, google_redirect_uri, org_login_allowed,
@@ -209,12 +209,12 @@ async fn finish_login(
         Ok(sid) => redirect("/", &[session_cookie(&sid), clear_state_cookie()]),
         Err(e) => {
             tracing::error!("[auth/google] session create failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
 
 fn internal(e: &sqlx::Error) -> Response {
     tracing::error!("[auth/google] database read failed: {e}");
-    house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+    thrown_internal_error()
 }

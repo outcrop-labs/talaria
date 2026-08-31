@@ -7,7 +7,7 @@
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::boards::{board_allows_agent, board_role, can_edit};
 use crate::body::{as_object, parse, uuid_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use crate::tasks::{
@@ -42,7 +42,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on POST dependency failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let caller = match agent_caller(&state.pg, &headers).await {
@@ -65,7 +65,7 @@ pub async fn post(
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[tasks] agent policy read on POST dependency failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !allowed {
@@ -89,7 +89,7 @@ pub async fn post(
             Ok(Some(shut)) => return house_error(StatusCode::FORBIDDEN, &shut),
             Err(e) => {
                 tracing::error!("[tasks] agent authority on POST dependency failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
         (caller.model.clone(), Some(caller))
@@ -102,7 +102,7 @@ pub async fn post(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("[tasks] role read on POST dependency failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !can_edit(role.as_deref()) {
@@ -130,7 +130,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "must be a ticket on this board"),
         Err(e) => {
             tracing::error!("[tasks] blocker read on POST dependency failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if dep.board_id != task.board_id {
@@ -157,7 +157,7 @@ pub async fn post(
             }
             Err(e) => {
                 tracing::error!("[tasks] blocker authority on POST dependency failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -172,7 +172,7 @@ pub async fn post(
         Err(TaskError::Refusal(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
         Err(TaskError::Db(e)) => {
             tracing::error!("[tasks] dependency add failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -196,7 +196,7 @@ pub async fn delete(
         Ok(t) => t,
         Err(e) => {
             tracing::error!("[tasks] read on DELETE dependency failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let editable = match task.as_ref() {
@@ -204,7 +204,7 @@ pub async fn delete(
             Ok(r) => can_edit(r.as_deref()),
             Err(e) => {
                 tracing::error!("[tasks] role read on DELETE dependency failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         },
         None => false,
@@ -226,7 +226,7 @@ pub async fn delete(
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] dependency remove failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

@@ -14,7 +14,7 @@ use crate::body::{
     array_too_big_msg, as_object, enum_member, object_msg, optional_enum_member, parse,
     present_nullable_max_string_member, string_member, zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::{SpacePatch, delete_space, get_space, update_space};
 use crate::kb_perms::{
     EditorGrant, ITEM_SPACE, can_edit_human, can_govern, can_read, list_editors, set_editors,
@@ -103,7 +103,7 @@ pub async fn get(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(space) = space else {
@@ -117,7 +117,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] editor read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -142,7 +142,7 @@ pub async fn put(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(space) = space else {
@@ -169,7 +169,7 @@ pub async fn put(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] editor read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -193,7 +193,7 @@ pub async fn put(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] govern check failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let sharing_touched =
@@ -207,21 +207,21 @@ pub async fn put(
             .await
             .is_err()
     {
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     let actor = who_of(&user).unwrap_or_else(|| "user".into());
     let updated = match update_space(&state.pg, &id, &patch, Some(&actor)).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space update failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let editors_after = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] editor read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "space": updated, "editors": editors_json(&editors_after) })).into_response()
@@ -236,7 +236,7 @@ pub async fn delete(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(space) = space else {
@@ -250,7 +250,7 @@ pub async fn delete(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] editor read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -265,7 +265,7 @@ pub async fn delete(
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     if delete_space(&state.pg, &qd, &ed, &id).await.is_err() {
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     let (pg, actor) = (state.pg.clone(), actor_of(&user));
     tokio::spawn(async move {

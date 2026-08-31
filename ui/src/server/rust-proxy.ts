@@ -124,6 +124,13 @@ const PREFIXES = [
   // acting for its owner or the org. The family crossed with the google
   // engines; every /api/integrations/* route file is in this set.
   '/api/integrations',
+  // The workbench family, whole: the profile registry, the per-repo git flow,
+  // the org GitHub connection, the harness registry, the human side of
+  // workbench jobs (ticket strip + approve/reject/merge-to-testing), the
+  // repo-creation approval queue, and the per-agent repo grants — all seven
+  // route files. The workbench MCP dispatcher the fleet's agents speak
+  // crossed with them in the same crate.
+  '/api/workbench',
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it

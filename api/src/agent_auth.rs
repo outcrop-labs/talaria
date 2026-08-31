@@ -12,7 +12,7 @@
 // None for them.
 
 use crate::auth::sha256_hex;
-use crate::error::{house_error, house_error_msg};
+use crate::error::{house_error, house_error_msg, thrown_internal_error};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use sqlx::PgPool;
@@ -290,7 +290,7 @@ async fn resolve(
         .await
         .map_err(|e| {
             tracing::error!("[agent-auth] key lookup failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         })?;
         let Some((id, model, enabled)) = row else {
             return Err(house_error(
@@ -383,7 +383,7 @@ async fn resolve(
     .await
     .map_err(|e| {
         tracing::error!("[agent-auth] name lookup failed: {e}");
-        house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        thrown_internal_error()
     })?;
     let Some((_id, slug, model, enabled, personal, elevated)) = def else {
         return Err(house_error(

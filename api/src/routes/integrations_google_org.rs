@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use crate::body::{as_object, nullish_max_string_member, nullish_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::google_oauth::google_integration_enabled;
 use crate::google_org::{
     OrgTargetsPatch, disconnect_org, get_org_connection_status, set_org_targets,
@@ -31,7 +31,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[integrations/google/org] status read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // `{available, ...status}` — the spread's field order spelled out (targets
@@ -76,13 +76,13 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     if let Err(e) = set_org_targets(&state.pg, &patch).await {
         tracing::error!("[integrations/google/org] targets write failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     let status = match get_org_connection_status(&state.pg).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[integrations/google/org] status read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({

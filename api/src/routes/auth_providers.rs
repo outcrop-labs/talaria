@@ -8,13 +8,12 @@
 //   • claimable — zero admins: the login screen offers /claim instead.
 
 use crate::claim::instance_claimable;
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::google_client::google_login_enabled;
 use crate::password_accounts::has_password_accounts;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 #[derive(serde::Serialize)]
@@ -40,14 +39,14 @@ pub async fn get(State(state): State<AppState>) -> Response {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[auth/providers] account probe failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let claimable = match instance_claimable(&state.pg).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[auth/providers] claim probe failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let mut providers = Vec::new();

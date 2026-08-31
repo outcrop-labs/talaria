@@ -8,7 +8,7 @@
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::boards::{board_allows_agent, board_role, list_members};
 use crate::body::{as_object, optional_uuid_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::mentions::{Mentionee, notify_mentions};
 use crate::notify::NotifyDeps;
 use crate::session::{get_session_user, require_user};
@@ -44,10 +44,7 @@ async fn comment_reader(
                 Ok(a) => a,
                 Err(e) => {
                     tracing::error!("[tasks] agent policy read on GET comments failed: {e}");
-                    return Err(house_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal error",
-                    ));
+                    return Err(thrown_internal_error());
                 }
             };
         if !allowed {
@@ -65,10 +62,7 @@ async fn comment_reader(
         Ok(None) => Err(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[tasks] role read on GET comments failed: {e}");
-            Err(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Err(thrown_internal_error())
         }
     }
 }
@@ -101,10 +95,7 @@ async fn comment_author(
             Ok(Some(shut)) => return Err(house_error(StatusCode::FORBIDDEN, &shut)),
             Err(e) => {
                 tracing::error!("[tasks] agent authority on POST comment failed: {e}");
-                return Err(house_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error",
-                ));
+                return Err(thrown_internal_error());
             }
         }
     }
@@ -118,10 +109,7 @@ async fn comment_author(
         Ok(None) => Err(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[tasks] role read on POST comment failed: {e}");
-            Err(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Err(thrown_internal_error())
         }
     }
 }
@@ -139,7 +127,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on GET comments failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Err(gate) = comment_reader(&state, &headers, &task.board_id).await {
@@ -149,7 +137,7 @@ pub async fn get(
         Ok(comments) => Json(json!({ "comments": comments })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] comment list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -168,7 +156,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on POST comment failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let author = match comment_author(&state, &headers, &task).await {
@@ -193,7 +181,7 @@ pub async fn post(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[tasks] comment add failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // NOT YET CROSSED: TS indexes the comment into the ambient activity

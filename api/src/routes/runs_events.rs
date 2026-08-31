@@ -27,7 +27,7 @@
 // and lands with the scheduler slice later in this batch, at which point this
 // route is what puts it in the server graph.
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::realtime::{
     RealtimeDeps, RunWatchVerdict, may_watch_run, real_watch_deps, run_event_stream,
 };
@@ -50,7 +50,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[runs/events] watch gate failed for {run_id}: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if verdict != RunWatchVerdict::Ok {

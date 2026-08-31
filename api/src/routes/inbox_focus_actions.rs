@@ -12,7 +12,7 @@
 // rather than an error toast.
 
 use crate::body::{as_object, optional_string_member, optional_uuid_member, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::inbox_focus::{FocusActionInput, run_focus_action};
 use crate::inbox_focus_conversation::{acquire_inbox_focus_lock, attach_timeline_to_action_result};
 use crate::session::require_user;
@@ -81,14 +81,14 @@ pub async fn post(
         Ok(result) => result,
         Err(e) => {
             tracing::error!("[inbox-focus] action failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let result = match attach_timeline_to_action_result(&state, &user, result).await {
         Ok(result) => result,
         Err(e) => {
             tracing::error!("[inbox-focus] timeline attach failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let status = match result.get("status").and_then(Value::as_str) {

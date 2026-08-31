@@ -22,7 +22,7 @@ use crate::body::{
     as_object, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_perms::{
     ITEM_ARTIFACT, can_edit_agent, can_edit_human, can_govern, can_read, can_read_agent,
     list_editors, set_editors,
@@ -76,7 +76,7 @@ pub async fn get(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(artifact) = artifact else {
@@ -86,7 +86,7 @@ pub async fn get(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // Agents (over MCP) read org/public artifacts + ones granted to them.
@@ -126,7 +126,7 @@ pub async fn put(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(artifact) = artifact else {
@@ -145,7 +145,7 @@ pub async fn put(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let g = guarded(&artifact);
@@ -164,7 +164,7 @@ pub async fn put(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("[artifacts] elevation read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
         let may_edit = can_edit_agent(&name, &editors) || elevated;
@@ -199,7 +199,7 @@ pub async fn put(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[artifacts] govern check failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if body.visibility.as_deref() == Some("public")
@@ -234,7 +234,7 @@ pub async fn put(
             .await
             .is_err()
     {
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     let mut updated = match save_artifact(
         &state.pg,
@@ -259,7 +259,7 @@ pub async fn put(
         Ok(None) => return not_found(),
         Err(e) => {
             tracing::error!("[artifacts] save failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Some(official) = body.official
@@ -279,7 +279,7 @@ pub async fn put(
             Ok(None) => updated,
             Err(e) => {
                 tracing::error!("[artifacts] officialize failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let (pg, actor_, action, target_id, target_label) = (
@@ -359,7 +359,7 @@ pub async fn put(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "artifact": updated, "editors": editors_json(&editors) })).into_response()
@@ -374,7 +374,7 @@ pub async fn delete(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(artifact) = artifact else {
@@ -388,7 +388,7 @@ pub async fn delete(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !can_edit_human(
@@ -402,7 +402,7 @@ pub async fn delete(
     if let Err(e) = delete_artifact(&state.pg, &qdrant::real_deps(), &embed::real_deps(), &id).await
     {
         tracing::error!("[artifacts] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

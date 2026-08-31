@@ -13,7 +13,7 @@ use crate::channels::{
     agent_may_access_channel, channel_role, get_channel_message, insert_channel_message,
     inserted_wire, list_channel_messages, list_thread_messages,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::describe_agent;
 use crate::notify::NotifyDeps;
 use crate::refs::{MessageRef, RefUser, resolve_refs};
@@ -69,7 +69,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] agent access read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !may {
@@ -79,7 +79,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] message page read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // WITHOUT `guard`. An agent reads a channel through this route (the MCP
@@ -119,14 +119,14 @@ async fn get_as_user(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on GET messages failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match page(state, id, since, thread.as_deref()).await {
         Ok(messages) => Json(json!({ "messages": messages })).into_response(),
         Err(e) => {
             tracing::error!("[channels] message page read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -241,7 +241,7 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] agent access read on POST failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !may {
@@ -266,7 +266,7 @@ pub async fn post(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[channels] agent post insert failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let nm = channel_name(&state.pg, &id)
@@ -322,7 +322,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on POST messages failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     // A thread reply hangs off a ROOT in this channel; replying to a reply
@@ -333,7 +333,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("[channels] thread root read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let Some(root) = root else {
@@ -351,7 +351,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[channels] attachment resolve failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     let ref_chips = match resolve_refs(
@@ -368,7 +368,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] ref resolve failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let attachments: Vec<Value> = uploads
@@ -396,7 +396,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[channels] post insert failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -445,7 +445,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             // the insert and the detached triggers have already fired. Same shape.
             Err(e) => {
                 tracing::error!("[channels] kind read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     let sender_label = user.name.clone().unwrap_or_else(|| author.clone());

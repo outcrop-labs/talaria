@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use crate::artifacts::get_public_artifact;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::state::AppState;
 use crate::uploads::{get_upload, serve_upload};
 
@@ -19,7 +19,7 @@ pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Res
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] public read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(a) = a else {
@@ -37,7 +37,7 @@ pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Res
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[uploads] blob read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some((bytes, mime, filename)) = found else {

@@ -3,7 +3,7 @@
 // screen. The state cookie is double-submit CSRF proof — random in, random
 // back, compared constant-time at the callback.
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::google_client::{google_login_enabled, resolve_google_client};
 use crate::google_oauth::{google_auth_url, google_redirect_uri};
 use crate::session::{random_token, state_cookie};
@@ -21,7 +21,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         // The toggle and the client are gated together in google_login_enabled;
         // reaching here without a client is not a state either runtime built.
         tracing::error!("[auth/google] login enabled but no client resolved");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     };
     let public_url = crate::auth_config::get_auth_config().public_url;
     let state_token = random_token();

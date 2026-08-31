@@ -11,7 +11,7 @@ use crate::body::{
     as_object, optional_enum_member, optional_max_string_member, optional_string_member, parse,
     string_member, uuid_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -122,7 +122,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on views failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let rows: Vec<ViewRow> = match sqlx::query_as(
@@ -138,7 +138,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] view list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "views": rows.into_iter().map(view_of).collect::<Vec<_>>() })).into_response()
@@ -162,7 +162,7 @@ pub async fn post(
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on view post failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -203,7 +203,7 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] view create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "view": view_of(row) })).into_response()
@@ -227,7 +227,7 @@ pub async fn put(
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on view put failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -261,7 +261,7 @@ pub async fn put(
         .await
     {
         tracing::error!("[boards] view rename failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     if let Some(config) = &config
         && let Err(e) = sqlx::query(
@@ -275,7 +275,7 @@ pub async fn put(
         .await
     {
         tracing::error!("[boards] view config write failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -298,7 +298,7 @@ pub async fn delete(
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on view delete failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -318,7 +318,7 @@ pub async fn delete(
             .await
     {
         tracing::error!("[boards] view delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

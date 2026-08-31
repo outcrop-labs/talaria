@@ -9,7 +9,7 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, nullable_optional_string_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::google_client::{
     ClientConfigPatch, clear_google_client_config, google_client_status, google_login_enabled,
     google_login_pinned_by_env, set_google_client_config,
@@ -27,7 +27,7 @@ use serde_json::json;
 async fn secretbox_or_500(state: &AppState) -> Result<SecretBox, Response> {
     state.secretbox().await.map_err(|e| {
         tracing::error!("[admin/google-client] secretbox unavailable: {e}");
-        house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        thrown_internal_error()
     })
 }
 
@@ -57,7 +57,7 @@ pub async fn get(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[admin/google-client] connection read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({
@@ -115,7 +115,7 @@ pub async fn put(
         // throw escape the route (no catch, no boundary) and the server
         // answers an unstructured 500 — same landing, fixed sentence.
         tracing::error!("[admin/google-client] set failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // `after` carries hd only when the body's hd was a string ('' rides,
     // null/absent are dropped by JSON.stringify).
@@ -164,7 +164,7 @@ pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMa
     };
     if let Err(e) = clear_google_client_config(&state.pg).await {
         tracing::error!("[admin/google-client] clear failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,
@@ -221,7 +221,7 @@ pub async fn put_login(
     };
     if let Err(e) = crate::google_client::set_google_login_enabled(&state.pg, enabled).await {
         tracing::error!("[admin/google-client/login] set failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,

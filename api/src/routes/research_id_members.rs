@@ -4,7 +4,7 @@
 // { userId } → unshare (owner, or a collaborator leaving).
 
 use crate::body::{as_object, email_member, parse, uuid_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_perms::{EditorGrant, list_editors, set_editors};
 use crate::notify::{NotificationInput, add_notification};
 use crate::research::{
@@ -64,14 +64,14 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[research] role read on members failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match list_research_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members })).into_response(),
         Err(e) => {
             tracing::error!("[research] member list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -99,7 +99,7 @@ pub async fn post(
         }
         Err(e) => {
             tracing::error!("[research] role read on share failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -120,7 +120,7 @@ pub async fn post(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("[research] invitee lookup failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     let Some((invited_id,)) = invited else {
@@ -131,7 +131,7 @@ pub async fn post(
     }
     if let Err(e) = add_research_member(&state.pg, &id, &invited_id).await {
         tracing::error!("[research] member add failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     if let Err(e) = sync_report_grant(&state, &id, &invited_id, true).await {
         // The share landed; the grant sync is best-effort the way TS's
@@ -177,7 +177,7 @@ pub async fn post(
         Ok(members) => Json(json!({ "members": members })).into_response(),
         Err(e) => {
             tracing::error!("[research] member list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -201,7 +201,7 @@ pub async fn delete(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[research] role read on unshare failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let parsed = parse(&body);
@@ -219,7 +219,7 @@ pub async fn delete(
     }
     if let Err(e) = remove_research_member(&state.pg, &id, &leaving).await {
         tracing::error!("[research] member remove failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     if let Err(e) = sync_report_grant(&state, &id, &leaving, false).await {
         tracing::error!("[research] report grant sync on unshare failed: {e}");
@@ -228,7 +228,7 @@ pub async fn delete(
         Ok(members) => Json(json!({ "members": members })).into_response(),
         Err(e) => {
             tracing::error!("[research] member list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

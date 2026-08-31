@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{array_msg, as_object, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::retrieval::collections;
 use crate::retrieval::qdrant;
 use crate::session::{actor_of, require_admin};
@@ -55,13 +55,13 @@ pub async fn put(
     match collections::get_collection(&state.pg, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(_) => return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        Err(_) => return thrown_internal_error(),
     }
     if collections::set_bindings(&state.pg, &id, &bindings)
         .await
         .is_err()
     {
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     let (pg, actor, target_id) = (state.pg.clone(), actor_of(&user), id.clone());
     tokio::spawn(async move {
@@ -100,7 +100,7 @@ pub async fn delete(
         Err(msg) if msg == AUTO_DELETE_REFUSAL => {
             return house_error(StatusCode::BAD_REQUEST, &msg);
         }
-        Err(_) => return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        Err(_) => return thrown_internal_error(),
     }
     let (pg, actor, target_id) = (state.pg.clone(), actor_of(&user), id.clone());
     tokio::spawn(async move {

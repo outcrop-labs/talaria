@@ -7,12 +7,12 @@
 // written yet.
 
 use crate::daily_brief::{BriefRead, BriefUser, get_brief, real_brief_deps, sweep_if_due};
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -57,7 +57,7 @@ pub async fn get(
         }
         Err(e) => {
             tracing::error!("[brief] read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

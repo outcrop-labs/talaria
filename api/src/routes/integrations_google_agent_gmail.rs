@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use crate::body::{as_object, optional_max_string_member, parse, string_member};
-use crate::error::{house_error, house_error_msg};
+use crate::error::{house_error, house_error_msg, thrown_internal_error};
 use crate::gmail::list_recent_messages_with_token;
 use crate::google_agent::{resolve_agent_google, resolve_agent_principal};
 use crate::google_errors::google_fail;
@@ -97,7 +97,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(p) => p,
         Err(e) => {
             tracing::error!("[integrations/google/agent] principal read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // The payload IS the validated draft, stored as drafted and executed as
@@ -139,7 +139,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[integrations/google/agent] queue failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({

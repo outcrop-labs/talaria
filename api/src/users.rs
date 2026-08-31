@@ -16,7 +16,7 @@
 use crate::agent_auth::{AgentSubject, subject_model, subject_proven};
 use crate::gateway::settings::get_setting;
 use crate::state::AppState;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
@@ -506,7 +506,7 @@ fn internal(e: &sqlx::Error) -> Response {
 }
 
 fn internal_msg() -> Response {
-    crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+    crate::error::thrown_internal_error()
 }
 
 #[cfg(test)]

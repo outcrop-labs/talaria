@@ -8,13 +8,13 @@
 // its shape is frozen for the port.
 
 use crate::agent_auth::agent_caller;
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::session::require_user;
 use crate::state::AppState;
 use crate::users::list_users;
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 #[derive(serde::Serialize)]
@@ -51,7 +51,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .into_response(),
         Err(e) => {
             tracing::error!("[users] directory query failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

@@ -10,7 +10,7 @@ use crate::body::{
     as_object, optional_max_string_member, optional_string_member, parse, string_member,
     uuid_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::labels::{create_label, delete_label, list_labels, update_label};
 use crate::realtime::RealtimeDeps;
 use crate::session::require_user;
@@ -27,10 +27,7 @@ async fn role_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
         Ok(None) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[boards] role read on {action} failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -41,10 +38,7 @@ async fn edit_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[boards] role read on {action} failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -68,7 +62,7 @@ pub async fn get(
         Ok(labels) => Json(json!({ "labels": labels })).into_response(),
         Err(e) => {
             tracing::error!("[boards] label list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -109,7 +103,7 @@ pub async fn post(
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
         Err(e) => {
             tracing::error!("[boards] label create failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -162,7 +156,7 @@ pub async fn put(
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
         Err(e) => {
             tracing::error!("[boards] label update failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -195,7 +189,7 @@ pub async fn delete(
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     if let Err(e) = delete_label(&state.pg, &realtime, &id, &label_id).await {
         tracing::error!("[boards] label delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

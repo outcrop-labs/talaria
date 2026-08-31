@@ -2,12 +2,12 @@
 // workspace activity feed, scoped to the requesting user.
 
 use crate::activity::{KINDS, activity_feed};
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 
 #[derive(serde::Serialize)]
@@ -39,7 +39,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(events) => Json(ActivityBody { events }).into_response(),
         Err(e) => {
             tracing::error!("[activity] feed query failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

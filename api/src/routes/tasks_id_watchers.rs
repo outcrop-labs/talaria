@@ -17,7 +17,7 @@
 
 use crate::boards::{board_role, can_edit};
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{SessionUser, require_user};
 use crate::state::AppState;
 use crate::tasks::{WatchOutcome, add_watcher, get_task, list_watchers, remove_watcher};
@@ -59,14 +59,14 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on POST watcher failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[tasks] role read on POST watcher failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if role.is_none() {
@@ -92,14 +92,14 @@ pub async fn post(
         Ok(WatchOutcome::Refused(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
         Err(e) => {
             tracing::error!("[tasks] watcher add failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match list_watchers(&state.pg, &id).await {
         Ok(watchers) => Json(json!({ "watchers": watchers })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] watcher list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -122,7 +122,7 @@ pub async fn delete(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on DELETE watcher failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let parsed = parse(&body);
@@ -138,7 +138,7 @@ pub async fn delete(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[tasks] role read on DELETE watcher failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !is_self(&user, &watcher) && !can_edit(role.as_deref()) {
@@ -146,7 +146,7 @@ pub async fn delete(
     }
     if let Err(e) = remove_watcher(&state.pg, &id, &watcher).await {
         tracing::error!("[tasks] watcher remove failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // The unsubscribe hatch must not become a disclosure hatch: someone with
     // no membership gets confirmation that they are off the ticket, never
@@ -158,7 +158,7 @@ pub async fn delete(
         Ok(watchers) => Json(json!({ "watchers": watchers })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] watcher list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

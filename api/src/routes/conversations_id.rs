@@ -6,7 +6,7 @@
 
 use crate::body::{as_object, trimmed_string_member};
 use crate::conversations::get_conversation;
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -41,7 +41,7 @@ pub async fn get(
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[conversations] detail read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -68,7 +68,7 @@ pub async fn patch(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[conversations] gate read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = crate::body::parse(&body);
@@ -89,7 +89,7 @@ pub async fn patch(
         Ok(_) => (StatusCode::OK, Json(OkTrue { ok: true })).into_response(),
         Err(e) => {
             tracing::error!("[conversations] rename failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

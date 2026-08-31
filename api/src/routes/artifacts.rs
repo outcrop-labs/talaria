@@ -21,7 +21,7 @@ use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     as_object, optional_enum_member, optional_max_string_member, parse, too_big_msg, zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::describe_agent;
 use crate::kb_perms::{
     EditorGrant, ITEM_ARTIFACT, can_read, granted_item_ids, granted_item_ids_for_agent, set_editors,
@@ -79,14 +79,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             Ok(g) => g,
             Err(e) => {
                 tracing::error!("[artifacts] grants read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let artifacts = match list_artifacts(&state.pg).await {
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[artifacts] list failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         // Agents see org/public artifacts + ones they've been granted.
@@ -105,14 +105,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let artifacts = match list_artifacts(&state.pg).await {
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let artifacts: Vec<&Artifact> = artifacts
@@ -163,7 +163,7 @@ pub async fn post(
                 Ok(o) => o,
                 Err(e) => {
                     tracing::error!("[artifacts] owner lookup failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
         let folder_id = match body.folder.as_deref() {
@@ -192,7 +192,7 @@ pub async fn post(
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[artifacts] create failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if let Err(e) = set_editors(
@@ -208,7 +208,7 @@ pub async fn post(
         .await
         {
             tracing::error!("[artifacts] editor grant failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
         let updated = match save_artifact(
             &state.pg,
@@ -235,7 +235,7 @@ pub async fn post(
             Ok(u) => u,
             Err(e) => {
                 tracing::error!("[artifacts] save failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         return Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response();
@@ -259,7 +259,7 @@ pub async fn post(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let updated = if body.body.is_some() {
@@ -277,7 +277,7 @@ pub async fn post(
             Ok(u) => u,
             Err(e) => {
                 tracing::error!("[artifacts] save failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     } else {

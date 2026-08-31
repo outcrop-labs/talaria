@@ -13,7 +13,7 @@ use crate::body::{
     as_object, optional_boolean_member, optional_enum_member, optional_string_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{acting_user, require_user, unauthorized};
 use crate::state::AppState;
 use axum::Json;
@@ -69,7 +69,7 @@ pub async fn patch(
         Ok(r) => r.or_else(|| user.elevated.then(|| "editor".to_string())),
         Err(e) => {
             tracing::error!("[boards] role read on PATCH failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !can_edit(role.as_deref()) {
@@ -114,7 +114,7 @@ pub async fn patch(
                 }
                 Err(e) => {
                     tracing::error!("[boards] team-by-name read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             }
         };
@@ -135,7 +135,7 @@ pub async fn patch(
             Ok(Err(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
             Err(e) => {
                 tracing::error!("[boards] team move failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -145,19 +145,19 @@ pub async fn patch(
         && let Err(e) = rename_board(&state.pg, &id, name).await
     {
         tracing::error!("[boards] rename failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     if let Some(archived) = patch.archived
         && let Err(e) = archive_board(&state.pg, &id, archived).await
     {
         tracing::error!("[boards] archive failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     if let Some(mode) = &patch.judge_mode
         && let Err(e) = set_board_judge_mode(&state.pg, &id, mode).await
     {
         tracing::error!("[boards] judge mode failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -179,7 +179,7 @@ pub async fn delete(
         Ok(None) => false,
         Err(e) => {
             tracing::error!("[boards] role read on DELETE failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !is_owner {
@@ -187,7 +187,7 @@ pub async fn delete(
     }
     if let Err(e) = delete_board(&state.pg, &id).await {
         tracing::error!("[boards] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // Purge the board's tickets + comments from the activity brain — the
     // retrieval plane, batch 5. The TS leg is fire-and-forget with failures

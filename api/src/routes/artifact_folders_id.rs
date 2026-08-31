@@ -21,7 +21,7 @@ use crate::body::{
     as_object, enum_member, object_msg, optional_enum_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member, string_member, zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_perms::{
     EditorGrant, can_edit_human, can_govern, can_read, list_editors, set_editors,
 };
@@ -92,7 +92,7 @@ pub async fn get(
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[folders] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(folder) = folder else {
@@ -102,7 +102,7 @@ pub async fn get(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[folders] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !can_read(
@@ -141,7 +141,7 @@ pub async fn put(
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[folders] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(folder) = folder else {
@@ -151,7 +151,7 @@ pub async fn put(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[folders] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let g = guarded_folder(&folder);
@@ -168,7 +168,7 @@ pub async fn put(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[folders] govern check failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !governor {
@@ -188,7 +188,7 @@ pub async fn put(
                 .await
                 .is_err()
         {
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let updated = match update_folder(
@@ -206,7 +206,7 @@ pub async fn put(
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "invalid"),
         Err(e) => {
             tracing::error!("[folders] update failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "folder": updated })).into_response()
@@ -225,7 +225,7 @@ pub async fn delete(
         Ok(f) => f,
         Err(e) => {
             tracing::error!("[folders] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(folder) = folder else {
@@ -247,7 +247,7 @@ pub async fn delete(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[folders] govern check failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !governor {
@@ -255,7 +255,7 @@ pub async fn delete(
     }
     if let Err(e) = delete_folder(&state.pg, &id).await {
         tracing::error!("[folders] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

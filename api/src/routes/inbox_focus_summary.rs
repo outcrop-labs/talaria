@@ -2,7 +2,7 @@
 // GET → the one-screen summary of the caller's focus state: how many items
 // are queued (snoozed ones excluded), as {count}.
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::inbox_focus::focus_summary;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -21,7 +21,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(count) => (StatusCode::OK, Json(json!({ "count": count }))).into_response(),
         Err(e) => {
             tracing::error!("[inbox-focus] summary read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

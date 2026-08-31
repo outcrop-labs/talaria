@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::google_client::resolve_google_client;
 use crate::google_oauth::{
     WORKSPACE_SCOPES, google_connect_redirect_uri, google_connect_url, google_integration_enabled,
@@ -21,7 +21,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(e) => {
             tracing::error!("[integrations/google] session read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(_user) = user else {
@@ -38,7 +38,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         // The enabled check and the client resolve together; landing here
         // without a client is not a state either runtime built.
         tracing::error!("[integrations/google] integration enabled but no client resolved");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     };
     let public_url = crate::auth_config::get_auth_config().public_url;
     let state_token = random_token();

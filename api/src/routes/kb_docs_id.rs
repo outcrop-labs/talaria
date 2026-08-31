@@ -17,7 +17,7 @@ use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     as_object, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::{
     DocPatch, delete_doc, effective_doc_perms, get_doc, save_doc, set_doc_routing, set_official,
 };
@@ -56,7 +56,7 @@ pub async fn get(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] doc read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(doc) = doc else {
@@ -66,7 +66,7 @@ pub async fn get(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[kb] perms read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // Agents (over MCP) read by effective audience: org/public, or a grant.
@@ -96,7 +96,7 @@ pub async fn get(
             Ok(g) => g,
             Err(e) => {
                 tracing::error!("[kb] govern check failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     // Surface the effective visibility/policy so the UI shows what applies.
@@ -147,7 +147,7 @@ pub async fn put(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] doc read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(doc) = doc else {
@@ -166,7 +166,7 @@ pub async fn put(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[kb] perms read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 
@@ -192,7 +192,7 @@ pub async fn put(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("[kb] elevation read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
         let may_edit = doc.created_by.as_deref() == Some(name.as_str())
@@ -234,7 +234,7 @@ pub async fn put(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[kb] govern check failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let sharing = body.visibility.is_some()
@@ -260,7 +260,7 @@ pub async fn put(
         if body.perms_inherited == Some(true) {
             // Reset to inherit from the folder — drop the doc's own grants.
             if set_editors(&state.pg, ITEM_DOC, &id, &[]).await.is_err() {
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
             body.editors = None;
         } else if body.visibility.is_some() || body.edit_policy.is_some() || body.editors.is_some()
@@ -273,7 +273,7 @@ pub async fn put(
                     .await
                     .is_err()
             {
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -318,7 +318,7 @@ pub async fn put(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[kb] doc save failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Some(official) = body.official
@@ -329,7 +329,7 @@ pub async fn put(
             Ok(None) => updated,
             Err(e) => {
                 tracing::error!("[kb] officialize failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let (pg, actor_, action, target_id, target_label) = (
@@ -376,7 +376,7 @@ pub async fn put(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[kb] perms read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(
@@ -394,7 +394,7 @@ pub async fn delete(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] doc read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(doc) = doc else {
@@ -408,7 +408,7 @@ pub async fn delete(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[kb] perms read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -418,7 +418,7 @@ pub async fn delete(
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     if delete_doc(&state.pg, &qd, &ed, &id).await.is_err() {
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

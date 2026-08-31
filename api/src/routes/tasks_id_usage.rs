@@ -10,7 +10,7 @@ use crate::body::{
     NumKind, as_object, nullish_member, number_member, optional_boolean_member,
     optional_max_string_member, parse,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::gateway::usage::{TokenCounts, UsageInput, record_usage, task_usage};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -44,7 +44,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on GET usage failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let caller = match agent_caller(&state.pg, &headers).await {
@@ -64,7 +64,7 @@ pub async fn get(
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[tasks] agent policy read on GET usage failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !allowed {
@@ -80,7 +80,7 @@ pub async fn get(
             Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
             Err(e) => {
                 tracing::error!("[tasks] role read on GET usage failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -88,7 +88,7 @@ pub async fn get(
         Ok(usage) => Json(usage).into_response(),
         Err(e) => {
             tracing::error!("[tasks] usage rollup failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -107,7 +107,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on POST usage failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // Usage is agent-reported (agents know what they burned); humans don't
@@ -127,7 +127,7 @@ pub async fn post(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[tasks] agent policy read on POST usage failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !allowed {
@@ -163,7 +163,7 @@ pub async fn post(
         }
         Err(e) => {
             tracing::error!("[tasks] agent authority on POST usage failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -221,7 +221,7 @@ pub async fn post(
     };
     if let Err(e) = record_usage(&state.pg, &input).await {
         tracing::error!("[tasks] usage record failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     let total = prompt_tokens + completion_tokens;
     if let Err(e) = log_activity(
@@ -234,7 +234,7 @@ pub async fn post(
     .await
     {
         tracing::error!("[tasks] usage activity line failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(serde_json::json!({ "ok": true })).into_response()
 }

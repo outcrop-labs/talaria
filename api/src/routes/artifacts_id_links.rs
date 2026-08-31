@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::artifacts::{attach_artifact, detach_artifact, get_artifact, guarded};
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_perms::{ITEM_ARTIFACT, can_read, list_editors};
 use crate::session::{require_user, who_of};
 use crate::state::AppState;
@@ -45,10 +45,7 @@ async fn gate(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] read failed: {e}");
-            return Err(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ));
+            return Err(thrown_internal_error());
         }
     };
     let Some(artifact) = artifact else {
@@ -58,10 +55,7 @@ async fn gate(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return Err(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ));
+            return Err(thrown_internal_error());
         }
     };
     if !can_read(
@@ -99,7 +93,7 @@ pub async fn post(
         attach_artifact(&state.pg, &id, &body.target_type, &body.target_id, &actor).await
     {
         tracing::error!("[artifacts] link write failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -125,7 +119,7 @@ pub async fn delete(
     };
     if let Err(e) = detach_artifact(&state.pg, &id, &body.target_type, &body.target_id).await {
         tracing::error!("[artifacts] link delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

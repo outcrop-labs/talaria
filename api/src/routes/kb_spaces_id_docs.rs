@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, optional_max_string_member, optional_uuid_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::{NewDoc, create_doc, get_space, list_docs, save_doc};
 use crate::kb_perms::{
     ITEM_SPACE, can_read, can_read_agent, granted_item_ids, granted_item_ids_for_agent,
@@ -36,7 +36,7 @@ pub async fn get(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(space) = space else {
@@ -52,14 +52,14 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] doc list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let space_editors = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] editor read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Some(caller) = caller {
@@ -70,7 +70,7 @@ pub async fn get(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[kb] grant read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let docs: Vec<_> = docs
@@ -101,7 +101,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] grant read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let docs: Vec<_> = docs
@@ -173,7 +173,7 @@ pub async fn post(
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("[kb] space read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let readable = match (&space, list_editors(&state.pg, ITEM_SPACE, &id).await) {
@@ -192,7 +192,7 @@ pub async fn post(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("[kb] owner resolve failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
         let doc = match create_doc(
@@ -211,7 +211,7 @@ pub async fn post(
             Ok(d) => d,
             Err(e) => {
                 tracing::error!("[kb] doc create failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let saved = match &body_text {
@@ -249,7 +249,7 @@ pub async fn post(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(space) = space else {
@@ -259,7 +259,7 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] editor read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -288,7 +288,7 @@ pub async fn post(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] doc create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let saved = match &body_text {

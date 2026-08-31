@@ -9,7 +9,7 @@ use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     as_object, optional_string_member, parse, preprocessed_email_member, string_member, uuid_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::password_accounts::{
     WriteRefusal, create_password_account, list_password_accounts, remove_password_account,
     set_password_account_password,
@@ -30,7 +30,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         Ok(accounts) => Json(json!({ "accounts": accounts })).into_response(),
         Err(e) => {
             tracing::error!("[admin/password-accounts] list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -67,7 +67,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[admin/password-accounts] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let user_id = match result {
@@ -123,7 +123,7 @@ pub async fn put(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[admin/password-accounts] set failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let email = match result {
@@ -183,7 +183,7 @@ pub async fn delete(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "No password account for that user"),
         Err(e) => {
             tracing::error!("[admin/password-accounts] remove failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     log_audit(

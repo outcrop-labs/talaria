@@ -5,7 +5,7 @@
 
 use crate::boards::{board_role, can_edit};
 use crate::body::{as_object, optional_max_string_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use crate::statuses::status_meta;
@@ -34,14 +34,14 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[tasks] read on POST review failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[tasks] role read on POST review failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !can_edit(role.as_deref()) {
@@ -68,7 +68,7 @@ pub async fn post(
     let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_review(&deps, &id, &reviewer, &status, notes.as_deref()).await {
         tracing::error!("[tasks] review record failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     // Boards rename and recategorize their columns, so resolve the target
     // from the BOARD — hardcoding 'done'/'in_progress' 400s human sign-off
@@ -86,7 +86,7 @@ pub async fn post(
         Ok(m) => m,
         Err(e) => {
             tracing::error!("[tasks] status meta on POST review failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let approved = status == "approved";
@@ -128,7 +128,7 @@ pub async fn post(
         Ok(t2) => Json(json!({ "task": t2 })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] review move failed: {:?}", e.message());
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

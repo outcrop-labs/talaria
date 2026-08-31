@@ -11,7 +11,7 @@ use crate::boards::{
     unshare_board,
 };
 use crate::body::{as_object, email_member, enum_member, optional_uuid_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{ActingUser, acting_user, require_user, unauthorized};
 use crate::state::AppState;
 use axum::Json;
@@ -41,7 +41,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] agent gate on members failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !allowed {
@@ -51,7 +51,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] member list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "members": members })).into_response()
@@ -70,14 +70,14 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, id: &str) -> Respons
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on members failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let members = match list_members(&state.pg, id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] member list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "members": members })).into_response()
@@ -92,10 +92,7 @@ async fn write_gate(state: &AppState, user: &ActingUser, id: &str) -> Option<Res
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[boards] role read on member write failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -140,7 +137,7 @@ pub async fn post(
         Ok(ShareOutcome::Refused(msg)) => return house_error(StatusCode::BAD_REQUEST, msg),
         Err(e) => {
             tracing::error!("[boards] share failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     log_audit(
@@ -212,7 +209,7 @@ pub async fn delete(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[boards] email lookup failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let Some(row) = found else {
@@ -225,7 +222,7 @@ pub async fn delete(
     };
     if let Err(e) = unshare_board(&state.pg, &id, &user_id).await {
         tracing::error!("[boards] unshare failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     log_audit(
         &state.pg,

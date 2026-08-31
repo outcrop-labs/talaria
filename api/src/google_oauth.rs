@@ -633,10 +633,7 @@ pub async fn handle_connect_callback(
         Ok(u) => u,
         Err(e) => {
             tracing::error!("[{log_tag}] session read failed: {e}");
-            return crate::error::house_error(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            );
+            return crate::error::thrown_internal_error();
         }
     };
     let Some(user) = user else {

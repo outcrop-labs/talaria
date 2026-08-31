@@ -137,6 +137,22 @@ pub fn house_error(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// SvelteKit's fallback when a +server handler THROWS. defineApi has no catch,
+/// so an unhandled exception (a pg error above all) never reaches a json body:
+/// the framework answers `Internal Server Error` as text/plain to non-HTML
+/// accepts, dev and prod alike. Every port site that mirrors a TS throw
+/// answers this byte-for-byte — a house-shaped 500 there would be a body TS
+/// never sent. Routes that TS guards with its own catch-and-answer keep
+/// house_error with the sentence TS puts on the wire.
+pub fn thrown_internal_error() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(axum::http::header::CONTENT_TYPE, "text/plain")],
+        "Internal Server Error",
+    )
+        .into_response()
+}
+
 /// The bare Postgres sentence under a sqlx error — what postgres.js puts in
 /// `e.message` and TS routes that catch-and-answer (`(e as Error).message`)
 /// therefore put on the wire. sqlx's own Display wraps it ("error returned

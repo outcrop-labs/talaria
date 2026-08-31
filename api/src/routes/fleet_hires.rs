@@ -8,13 +8,13 @@
 // route never registered would be a run nothing can drive.
 
 use crate::agent_auth::epoch_ms_to_iso;
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::runs::defs::agent_hire::agent_hire_run;
 use crate::session::require_perm;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::Value;
@@ -69,7 +69,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[fleet] hires query failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
 

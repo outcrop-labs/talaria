@@ -7,13 +7,12 @@
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::collections::HashMap;
 
 use crate::artifacts::{artifacts_for_target, guarded};
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::kb_perms::can_read;
 use crate::session::{require_user, who_of};
 use crate::state::AppState;
@@ -37,7 +36,7 @@ pub async fn get(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] for-target read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);

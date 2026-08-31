@@ -418,7 +418,7 @@ pub async fn acting_user(
             .await
             .map_err(|e| {
                 tracing::error!("[session] acting-user lookup failed: {e}");
-                crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                crate::error::thrown_internal_error()
             })?;
             Ok(owner.map(|(id, role, email, name, elevated)| {
                 let for_label = email.clone().or(name).unwrap_or_else(|| id.clone());
@@ -444,10 +444,7 @@ pub async fn acting_user(
             Ok(None) => Ok(None),
             Err(e) => {
                 tracing::error!("[session] redis read failed: {e}");
-                Err(crate::error::house_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error",
-                ))
+                Err(crate::error::thrown_internal_error())
             }
         },
     }
@@ -461,10 +458,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
         Ok(None) => Err(unauthorized()),
         Err(e) => {
             tracing::error!("[session] redis read failed: {e}");
-            Err(crate::error::house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Err(crate::error::thrown_internal_error())
         }
     }
 }
@@ -496,7 +490,7 @@ pub async fn require_view(
             .await
             .map_err(|e| {
                 tracing::error!("[session] view-denial read failed: {e}");
-                crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                crate::error::thrown_internal_error()
             })?;
         if denied
             .iter()
@@ -523,7 +517,7 @@ pub async fn require_perm(
         .await
         .map_err(|e| {
             tracing::error!("[session] permission read failed: {e}");
-            crate::error::house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            crate::error::thrown_internal_error()
         })?
     {
         return Err(crate::error::house_error(

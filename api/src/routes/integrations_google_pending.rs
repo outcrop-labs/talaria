@@ -4,11 +4,11 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::google_pending_actions::{list_pending, pending_wire};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -22,7 +22,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(p) => p,
         Err(e) => {
             tracing::error!("[integrations/google/pending] list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "pending": pending.iter().map(pending_wire).collect::<Vec<_>>() })).into_response()

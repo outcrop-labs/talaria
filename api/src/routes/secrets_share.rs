@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{parse, too_big_msg, too_small_msg, zod_uuid_ok};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
 use crate::workspace_secrets::{
@@ -142,7 +142,7 @@ pub async fn post(
                 Ok(o) => o,
                 Err(e) => {
                     tracing::error!("[secrets] share failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             if !ok {
@@ -179,7 +179,7 @@ pub async fn post(
                 Ok(d) => d,
                 Err(e) => {
                     tracing::error!("[secrets] grant read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             let Some(doc) = doc else {
@@ -196,7 +196,7 @@ pub async fn post(
             };
             if let Err(e) = wrote {
                 tracing::error!("[secrets] grant failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
             log_audit(
                 &state.pg,
@@ -225,7 +225,7 @@ async fn secret_response(pg: &sqlx::PgPool, name: &str) -> Response {
         Ok(doc) => Json(json!({ "secret": doc })).into_response(),
         Err(e) => {
             tracing::error!("[secrets] share re-read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

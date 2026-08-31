@@ -199,6 +199,27 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(21)
   })
 
+  it('forwards the workbench family whole — profiles, flow, github, harnesses, the job strip, repo requests, and the per-agent grants', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/workbench',
+      '/api/workbench/flow',
+      '/api/workbench/github',
+      '/api/workbench/github?installations=1',
+      '/api/workbench/harnesses',
+      '/api/workbench/harnesses?slug=probe-harness',
+      '/api/workbench/jobs',
+      '/api/workbench/jobs?taskId=00000000-0000-4000-8000-000000000000',
+      '/api/workbench/repo-requests',
+      '/api/workbench/repos/00000000-0000-4000-8000-000000000000',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(10)
+  })
+
   it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

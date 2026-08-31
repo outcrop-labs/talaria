@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::get_public_doc;
 use crate::state::AppState;
 
@@ -18,7 +18,7 @@ pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Res
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] public doc read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(doc) = doc else {

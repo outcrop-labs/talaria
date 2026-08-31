@@ -13,7 +13,7 @@ use serde_json::json;
 use crate::agent_auth::agent_caller;
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, optional_max_string_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::{NewSpace, create_space, list_spaces};
 use crate::kb_perms::{can_read, can_read_agent, granted_item_ids, granted_item_ids_for_agent};
 use crate::session::{actor_of, require_perm, require_user, who_of};
@@ -39,7 +39,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] space list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Some(caller) = caller {
@@ -47,7 +47,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[kb] grant read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         let spaces: Vec<_> = all
@@ -70,7 +70,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] grant read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -118,7 +118,7 @@ pub async fn post(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[kb] space list failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
         .into_iter()
@@ -142,7 +142,7 @@ pub async fn post(
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("[kb] space create failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         return Json(json!({ "space": space })).into_response();
@@ -167,7 +167,7 @@ pub async fn post(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[kb] space create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let (pg, actor, target_id, target_label) = (

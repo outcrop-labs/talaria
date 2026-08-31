@@ -9,7 +9,7 @@ use crate::body::{
     as_object, optional_enum_member, present_nullable_max_string_member, string_member,
 };
 use crate::channels::{create_channel, list_channels, list_channels_for_agent};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::mcp_service::ensure_mcp_service;
 use crate::permissions::has_perm;
 use crate::retrieval::backfill::maybe_rag_sweep;
@@ -38,7 +38,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] agent listing failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "channels": channels })).into_response()
@@ -61,7 +61,7 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
         Ok(channels) => Json(json!({ "channels": channels })).into_response(),
         Err(e) => {
             tracing::error!("[channels] listing failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -102,7 +102,7 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[channels] permission read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !allowed {
@@ -123,7 +123,7 @@ pub async fn post(
         Ok(channel) => Json(json!({ "channel": channel })).into_response(),
         Err(e) => {
             tracing::error!("[channels] create failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

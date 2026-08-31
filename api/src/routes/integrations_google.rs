@@ -4,11 +4,11 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::google_connections::{disconnect, get_connection_status};
 use crate::google_oauth::google_integration_enabled;
 use crate::session::require_user;
@@ -26,7 +26,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(s) => s,
         Err(e) => {
             tracing::error!("[integrations/google] status read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // `{available, ...status}` — the spread's field order spelled out.

@@ -11,7 +11,7 @@ use crate::body::{
     optional_max_string_member, optional_string_array_member, optional_uuid_member, parse,
     string_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::mentions::{Mentionee, notify_mentions};
 use crate::notify::NotifyDeps;
 use crate::session::require_user;
@@ -54,7 +54,7 @@ async fn task_actor(
                 .await
                 .map_err(|e| {
                     tracing::error!("[tasks] agent policy read on {action} failed: {e}");
-                    house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                    thrown_internal_error()
                 })?;
         if !allowed {
             let model = caller.model.clone();
@@ -72,7 +72,7 @@ async fn task_actor(
         .await
         .map_err(|e| {
             tracing::error!("[tasks] role read on {action} failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         })?;
     let ok = if require_edit {
         can_edit(role.as_deref())
@@ -122,7 +122,7 @@ pub async fn get(
         Ok(tasks) => Json(json!({ "tasks": tasks })).into_response(),
         Err(e) => {
             tracing::error!("[tasks] board list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -222,7 +222,7 @@ pub async fn post(
         Ok(Some(bad)) => return house_error(StatusCode::BAD_REQUEST, &bad),
         Err(e) => {
             tracing::error!("[tasks] assignee check failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     // The mention test runs against the RAW body description (below), before
@@ -243,7 +243,7 @@ pub async fn post(
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("[tasks] template resolve on create failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -267,7 +267,7 @@ pub async fn post(
         Ok(t) => t,
         Err(crate::tasks::TaskError::Db(e)) => {
             tracing::error!("[tasks] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
         Err(e) => return e.into_response(),
     };

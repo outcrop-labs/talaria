@@ -10,7 +10,7 @@ use crate::body::{
     optional_max_string_member, optional_string_array_member, optional_uuid_array_member, parse,
     string_member, trimmed_string_member, zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_perm, require_user};
 use crate::state::AppState;
 use crate::workflows::{create_workflow, list_workflows};
@@ -145,7 +145,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(w) => w,
         Err(e) => {
             tracing::error!("[workflows] list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "workflows": workflows })).into_response()
@@ -187,7 +187,7 @@ pub async fn post(
         Ok(w) => w,
         Err(e) => {
             tracing::error!("[workflows] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "workflow": workflow })).into_response()

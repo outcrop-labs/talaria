@@ -17,7 +17,7 @@ use crate::body::{
     array_msg, array_too_big_msg, as_object, enum_member, object_msg, optional_max_string_member,
     parse, present_nullable_max_string_member, string_member, zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::retrieval::collections::{self, AccessBinding, RagCollection};
 use crate::retrieval::{embed, qdrant};
 use crate::session::{actor_of, require_admin, require_user};
@@ -97,7 +97,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let _ = collections::ensure_auto_collections(&state.pg, &qd, &ed).await;
     let list = match collections::list_collections(&state.pg).await {
         Ok(l) => l,
-        Err(_) => return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        Err(_) => return thrown_internal_error(),
     };
     // Members get names only — the doc "Brain" picker. Key order is the TS
     // literal's, and `bindings` is an EMPTY array, not omitted.

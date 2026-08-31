@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::body::{as_object, enum_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_comments::can_discuss_doc;
 use crate::session::{require_user, who_of};
 use crate::state::AppState;
@@ -50,7 +50,7 @@ pub async fn put(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[kb] presence redis failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Err(e) = redis::cmd("SET")
@@ -62,7 +62,7 @@ pub async fn put(
         .await
     {
         tracing::error!("[kb] presence write failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -84,7 +84,7 @@ pub async fn get(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[kb] presence redis failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let prefix = key_prefix(&id);
@@ -96,7 +96,7 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[kb] presence scan failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if keys.is_empty() {
@@ -107,7 +107,7 @@ pub async fn get(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[kb] presence read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     let ids: Vec<String> = keys.iter().map(|k| k[prefix.len()..].to_string()).collect();
@@ -120,7 +120,7 @@ pub async fn get(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[kb] presence users failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     let active: Vec<Value> = ids

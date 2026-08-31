@@ -7,7 +7,7 @@
 
 use super::workflows::{match_json, toolkits_json, validate_workflow_body};
 use crate::body::{as_object, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::params::uuid_gate;
 use crate::session::require_perm;
 use crate::state::AppState;
@@ -57,7 +57,7 @@ pub async fn put(
     }
     if let Err(e) = update_workflow(&state.pg, &id, &patch).await {
         tracing::error!("[workflows] update failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -75,7 +75,7 @@ pub async fn delete(
     }
     if let Err(e) = delete_workflow(&state.pg, &id).await {
         tracing::error!("[workflows] delete failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

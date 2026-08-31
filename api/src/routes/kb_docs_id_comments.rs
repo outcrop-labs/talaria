@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use crate::body::{as_object, optional_uuid_member, parse, trimmed_string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb_comments::{NewComment, add_comment, can_discuss_doc, list_comments};
 use crate::notify::NotifyDeps;
 use crate::session::{require_user, who_of};
@@ -35,7 +35,7 @@ pub async fn get(
         Ok(comments) => Json(json!({ "comments": comments })).into_response(),
         Err(e) => {
             tracing::error!("[kb] comment list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -98,7 +98,7 @@ pub async fn post(
         Ok(comment) => Json(json!({ "comment": comment })).into_response(),
         Err(e) => {
             tracing::error!("[kb] comment insert failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

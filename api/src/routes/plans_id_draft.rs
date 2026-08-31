@@ -14,7 +14,7 @@
 use super::channels_id_plan::{validate_save_body, validate_start};
 use crate::body::{as_object, parse};
 use crate::conversations::{accessible_conversation_agent, conversation_accessible};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::{routed_model_for, usable_agent_gate};
 use crate::params::uuid_gate;
 use crate::plan_drafts::{
@@ -47,14 +47,14 @@ pub async fn get(
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
         Err(e) => {
             tracing::error!("[plans] accessible read on GET draft failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match latest_draft_for(&state.pg, &id).await {
         Ok(draft) => Json(json!({ "draft": draft })).into_response(),
         Err(e) => {
             tracing::error!("[plans] draft read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -80,14 +80,14 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
         Err(e) => {
             tracing::error!("[plans] accessible read on POST draft failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[plans] agent access read on POST draft failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !gate(&agent_model) {
@@ -168,7 +168,7 @@ pub async fn patch(
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
         Err(e) => {
             tracing::error!("[plans] accessible read on PATCH draft failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = parse(&body);
@@ -182,7 +182,7 @@ pub async fn patch(
     };
     if let Err(e) = save_draft_proposals(&state.pg, &id, &proposals).await {
         tracing::error!("[plans] save draft proposals failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -204,12 +204,12 @@ pub async fn delete(
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
         Err(e) => {
             tracing::error!("[plans] accessible read on DELETE draft failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     if let Err(e) = drop_draft(&state, &id).await {
         tracing::error!("[plans] drop draft failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

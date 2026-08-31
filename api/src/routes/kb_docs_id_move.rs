@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{NumKind, as_object, nullable_uuid_member, number_member, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::kb::{effective_doc_perms, get_doc, move_doc};
 use crate::kb_perms::can_edit_human;
 use crate::session::{actor_of, require_perm, who_of};
@@ -30,7 +30,7 @@ pub async fn post(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[kb] doc read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(existing) = existing else {
@@ -44,7 +44,7 @@ pub async fn post(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[kb] perms read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let who = who_of(&user);
@@ -76,7 +76,7 @@ pub async fn post(
             Ok(d) => d,
             Err(e) => {
                 tracing::error!("[kb] parent read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         match parent_doc {
@@ -94,7 +94,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "invalid move"),
         Err(e) => {
             tracing::error!("[kb] move failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let (pg, actor, target_id, target_label, after) = (

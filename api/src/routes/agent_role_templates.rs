@@ -9,7 +9,7 @@ use crate::agent_role_templates::{
 };
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, kebab_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_admin, require_perm};
 use crate::state::AppState;
 use axum::Json;
@@ -31,7 +31,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         Ok(templates) => Json(json!({ "templates": templates })).into_response(),
         Err(e) => {
             tracing::error!("[agent-role-templates] list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -93,7 +93,7 @@ pub async fn put(
         Ok(t) => t,
         Err(e) => {
             tracing::error!("[agent-role-templates] upsert failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     log_audit(
@@ -129,7 +129,7 @@ pub async fn delete(
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[agent-role-templates] delete failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     log_audit(

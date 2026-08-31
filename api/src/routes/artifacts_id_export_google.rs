@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::agent_auth::{AgentSubject, agent_caller, refuse_legacy};
 use crate::artifacts::{get_artifact, guarded, record_google_export};
 use crate::audit::{AuditEntry, log_audit};
-use crate::error::{house_error, house_error_msg};
+use crate::error::{house_error, house_error_msg, thrown_internal_error};
 use crate::google_agent::resolve_agent_google;
 use crate::google_connections::get_connection_status;
 use crate::google_drive::{ExportError, export_artifact_to_drive, export_artifact_with_token};
@@ -69,7 +69,7 @@ pub async fn post(
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[artifacts] read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(artifact) = artifact else {
@@ -79,7 +79,7 @@ pub async fn post(
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[artifacts] grants read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let sb = state.secretbox().await.unwrap_or_default();

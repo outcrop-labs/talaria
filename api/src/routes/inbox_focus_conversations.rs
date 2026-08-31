@@ -4,7 +4,7 @@
 // Segmentation is the context strategy: a new instance is how old context is
 // shed, and it is the owner's choice to make (no budget imposes it).
 
-use crate::error::house_error;
+use crate::error::thrown_internal_error;
 use crate::inbox_focus_conversation::{create_inbox_conversation, list_inbox_conversations};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -27,7 +27,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .into_response(),
         Err(e) => {
             tracing::error!("[inbox-focus] conversation list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -47,7 +47,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
             .into_response(),
         Err(e) => {
             tracing::error!("[inbox-focus] conversation create failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

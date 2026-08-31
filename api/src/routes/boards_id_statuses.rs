@@ -10,7 +10,7 @@ use crate::body::{
     as_object, optional_boolean_member, optional_enum_member, optional_max_string_member,
     optional_string_member, parse, string_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::realtime::RealtimeDeps;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -41,10 +41,7 @@ async fn edit_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
             tracing::error!("[boards] role read on {action} failed: {e}");
-            Some(house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+            Some(thrown_internal_error())
         }
     }
 }
@@ -106,7 +103,7 @@ pub async fn get(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[boards] role read on GET statuses failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     // `diagnostics` rides along with the columns because it is a statement
@@ -121,7 +118,7 @@ pub async fn get(
         }
         Err(e) => {
             tracing::error!("[boards] status list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -170,7 +167,7 @@ pub async fn post(
         Ok(None) => {}
         Err(e) => {
             tracing::error!("[boards] conflict precheck on POST statuses failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
@@ -189,7 +186,7 @@ pub async fn post(
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
         Err(e) => {
             tracing::error!("[boards] status create failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -252,7 +249,7 @@ pub async fn put(
             Ok(None) => {}
             Err(e) => {
                 tracing::error!("[boards] conflict precheck on PUT statuses failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
         let patch = StatusPatch {
@@ -273,7 +270,7 @@ pub async fn put(
             Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
             Err(e) => {
                 tracing::error!("[boards] status update failed: {e}");
-                house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                thrown_internal_error()
             }
         }
     } else {
@@ -295,7 +292,7 @@ pub async fn put(
             Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
             Err(e) => {
                 tracing::error!("[boards] status reorder failed: {e}");
-                house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                thrown_internal_error()
             }
         }
     }
@@ -349,7 +346,7 @@ pub async fn delete(
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
         Err(e) => {
             tracing::error!("[boards] status delete failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

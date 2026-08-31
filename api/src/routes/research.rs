@@ -5,7 +5,7 @@
 
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::body::{as_object, optional_string_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::usable_agent_gate;
 use crate::harness::defs::research::ResearchDepth;
 use crate::permissions::has_perm;
@@ -59,14 +59,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[research] owner resolve on list failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
     match research::list_research_runs(&state.pg, viewer.as_deref(), 60).await {
         Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
         Err(e) => {
             tracing::error!("[research] list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -80,7 +80,7 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
         Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
         Err(e) => {
             tracing::error!("[research] list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -125,7 +125,7 @@ pub async fn post(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[research] owner resolve on start failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         (caller.model.clone(), owner, caller.model.clone())
@@ -141,7 +141,7 @@ pub async fn post(
             }
             Err(e) => {
                 tracing::error!("[research] perm read on start failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
         // Humans pick the agent (and need access to it); an agent-key caller
@@ -153,7 +153,7 @@ pub async fn post(
             Ok(g) => g,
             Err(e) => {
                 tracing::error!("[research] agent access read on start failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         };
         if !gate(&agent_model) {
@@ -183,7 +183,7 @@ pub async fn post(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("[research] duplicate check failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if let Some((id,)) = dupe {

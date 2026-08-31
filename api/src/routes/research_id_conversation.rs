@@ -15,7 +15,7 @@
 // a second permission: two answers to "may this person see this run" is how
 // they drift.
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::research::{ensure_research_conversation, research_role};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -42,7 +42,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => {
             tracing::error!("[research] role read on conversation failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     match ensure_research_conversation(&state.pg, &id).await {
@@ -57,7 +57,7 @@ pub async fn post(
             .into_response(),
         Err(e) => {
             tracing::error!("[research] conversation ensure failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

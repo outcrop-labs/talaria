@@ -9,7 +9,7 @@
 // GET holds the assistant lock while it reads: the timeline must not be
 // served half-way through the assistant's own write to it.
 
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::inbox_focus_conversation::{
     acquire_inbox_focus_lock, archive_inbox_conversation, get_inbox_conversation,
 };
@@ -54,7 +54,7 @@ pub async fn get(
         Ok(page) => (StatusCode::OK, Json(page)).into_response(),
         Err(e) => {
             tracing::error!("[inbox-focus] conversation read failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -73,7 +73,7 @@ pub async fn delete(
         Ok(false) => house_error(StatusCode::NOT_FOUND, "no such conversation"),
         Err(e) => {
             tracing::error!("[inbox-focus] conversation archive failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

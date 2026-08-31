@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{parse, too_big_msg, too_small_msg, zod_uuid_ok};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
 use crate::workspace_secrets::{
@@ -156,7 +156,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(folders) => Json(json!({ "folders": folders })).into_response(),
         Err(e) => {
             tracing::error!("[secrets] folder list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -190,7 +190,7 @@ pub async fn post(
                 Ok(f) => f,
                 Err(e) => {
                     tracing::error!("[secrets] folder create failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             log_audit(
@@ -213,7 +213,7 @@ pub async fn post(
                 Ok(o) => o,
                 Err(e) => {
                     tracing::error!("[secrets] folder rename failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             if !ok {
@@ -242,7 +242,7 @@ pub async fn post(
                 Ok(o) => o,
                 Err(e) => {
                     tracing::error!("[secrets] folder delete failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             if !ok {
@@ -288,7 +288,7 @@ pub async fn post(
                 Ok(o) => o,
                 Err(e) => {
                     tracing::error!("[secrets] folder share failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             if !ok {
@@ -328,7 +328,7 @@ async fn folders_response(pg: &sqlx::PgPool, user_id: &str) -> Response {
         Ok(folders) => Json(json!({ "folders": folders })).into_response(),
         Err(e) => {
             tracing::error!("[secrets] folder re-list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }

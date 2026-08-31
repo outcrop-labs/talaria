@@ -7,7 +7,7 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::permissions::{
     PERM_IDS, PERMISSIONS, get_org_default_perms, get_user_perm_overrides, set_org_default_perm,
     set_user_perm_override,
@@ -34,7 +34,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[admin/permissions] overrides read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let mut overrides = serde_json::Map::new();
@@ -151,7 +151,7 @@ pub async fn put(
         UnionBody::OrgDefault { perm, enabled } => {
             if let Err(e) = set_org_default_perm(&state.pg, &perm, enabled).await {
                 tracing::error!("[admin/permissions] org default write failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
             log_audit(
                 &state.pg,
@@ -179,7 +179,7 @@ pub async fn put(
         } => {
             if let Err(e) = set_user_perm_override(&state.pg, &user_id, &perm, allowed).await {
                 tracing::error!("[admin/permissions] override write failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
             log_audit(
                 &state.pg,
@@ -198,7 +198,7 @@ pub async fn put(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("[admin/permissions] overrides read failed: {e}");
-                    return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                    return thrown_internal_error();
                 }
             };
             Json(serde_json::json!({ "overrides": overrides })).into_response()

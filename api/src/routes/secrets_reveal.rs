@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use crate::body::{as_object, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
 use crate::workspace_secrets::reveal_entry;
@@ -54,14 +54,14 @@ pub async fn post(
         Ok(sb) => sb,
         Err(e) => {
             tracing::error!("[secrets] reveal failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let out = match reveal_entry(&state.pg, &sb, &name, &key, &user.id, Some(&actor)).await {
         Ok(o) => o,
         Err(e) => {
             tracing::error!("[secrets] reveal failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if out.value.is_none() {

@@ -4,7 +4,7 @@
 
 use crate::body::{as_object, string_member};
 use crate::channels::{add_channel_agent, channel_role, remove_channel_agent};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::usable_agent_gate;
 use crate::notify::NotifyDeps;
 use crate::session::require_user;
@@ -45,7 +45,7 @@ pub async fn post(
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[channels] agent access read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !gate(&model) {
@@ -54,7 +54,7 @@ pub async fn post(
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_channel_agent(&notify, &id, &model).await {
         tracing::error!("[channels] agent add failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -84,7 +84,7 @@ pub async fn delete(
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = remove_channel_agent(&notify, &id, &model).await {
         tracing::error!("[channels] agent remove failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

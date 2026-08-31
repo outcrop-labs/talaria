@@ -7,7 +7,7 @@ use crate::body::{
     as_object, enum_member, optional_boolean_member, present_nullable_datetime_member,
     string_member,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::inbox_focus::update_focus_state;
 use crate::inbox_focus_conversation::{acquire_inbox_focus_lock, record_inbox_snooze};
 use crate::inbox_focus_types::FOCUS_SOURCE_TYPES;
@@ -83,7 +83,7 @@ pub async fn put(
         Ok(ok) => ok,
         Err(e) => {
             tracing::error!("[inbox-focus] state write failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !updated {
@@ -107,7 +107,7 @@ pub async fn put(
             Ok(entry) => entry,
             Err(e) => {
                 tracing::error!("[inbox-focus] snooze record failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         },
         None => None,

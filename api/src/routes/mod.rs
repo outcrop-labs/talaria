@@ -139,6 +139,13 @@ pub mod teams_id_members;
 pub mod uploads;
 pub mod uploads_id;
 pub mod users;
+pub mod workbench;
+pub mod workbench_flow;
+pub mod workbench_github;
+pub mod workbench_harnesses;
+pub mod workbench_jobs;
+pub mod workbench_repo_requests;
+pub mod workbench_repos_agent_id;
 pub mod workflows;
 pub mod workflows_id;
 
@@ -943,6 +950,57 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fleet/hires",
             get(fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The workbench family — the agent sandbox plane: the profile
+        // registry (env masked for members, infra fields admin-only), the
+        // per-repo git flow, the org GitHub connection (status/installations/
+        // patch/disconnect — admin, it holds org credentials), the harness
+        // registry (merged builtin+custom defs), the human side of workbench
+        // jobs (the ticket strip + approve/reject/merge-to-testing), the repo
+        // -creation approval queue, and the per-agent repo grants.
+        .route(
+            "/api/workbench",
+            get(workbench::get)
+                .put(workbench::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/flow",
+            get(workbench_flow::get)
+                .put(workbench_flow::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/github",
+            get(workbench_github::get)
+                .put(workbench_github::put)
+                .delete(workbench_github::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/harnesses",
+            get(workbench_harnesses::get)
+                .put(workbench_harnesses::put)
+                .delete(workbench_harnesses::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/jobs",
+            get(workbench_jobs::get)
+                .put(workbench_jobs::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/repo-requests",
+            get(workbench_repo_requests::get)
+                .put(workbench_repo_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/repos/{agentId}",
+            get(workbench_repos_agent_id::get)
+                .put(workbench_repos_agent_id::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .fallback(api_not_found)
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

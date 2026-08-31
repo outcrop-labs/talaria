@@ -23,7 +23,7 @@ use serde_json::json;
 
 use crate::agent_auth::require_agent;
 use crate::body::{as_object, optional_max_string_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::github;
 use crate::state::AppState;
 use crate::workspace_secrets::{HostCredential, credential_for_host};
@@ -75,14 +75,14 @@ pub async fn post(
         Ok(sb) => sb,
         Err(e) => {
             tracing::error!("[secrets] credential read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let mut cred = match credential_for_host(&state.pg, &sb, &caller.model, &host).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[secrets] credential read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if cred.is_none()
@@ -106,7 +106,7 @@ pub async fn post(
             Ok(None) => {}
             Err(e) => {
                 tracing::error!("[secrets] github credential failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }

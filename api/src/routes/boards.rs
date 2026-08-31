@@ -10,7 +10,7 @@ use crate::boards::{
     AgentBoard, Board, create_board, list_all_boards, list_boards, list_boards_for_agent,
 };
 use crate::body::{as_object, optional_uuid_member, parse, string_member};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::permissions::has_perm;
 use crate::session::require_user;
 use crate::state::AppState;
@@ -46,7 +46,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] agent listing failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // Owner-proxying and org-wide reach key off the CALLER: a legacy
@@ -55,7 +55,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] owner lookup failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(owner_id) = owner_id else {
@@ -65,14 +65,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] owner listing failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let elevated = match is_elevated_assistant(&state.pg, &subject).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] elevation read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     // The merged listing is heterogeneous BY DESIGN: the owner's boards carry
@@ -91,7 +91,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("[boards] org-wide listing failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     } else {
@@ -134,7 +134,7 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Respon
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] list failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "boards": boards })).into_response()
@@ -155,7 +155,7 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("[boards] permission read failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     if !allowed {
@@ -183,7 +183,7 @@ pub async fn post(
             }
             Err(e) => {
                 tracing::error!("[boards] team role read failed: {e}");
-                return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+                return thrown_internal_error();
             }
         }
     }
@@ -191,7 +191,7 @@ pub async fn post(
         Ok(b) => b,
         Err(e) => {
             tracing::error!("[boards] create failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     Json(json!({ "board": board })).into_response()

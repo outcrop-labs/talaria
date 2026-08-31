@@ -3,7 +3,7 @@
 
 use crate::body::{NumKind, as_object, number_member};
 use crate::channels::{channel_role, mark_channel_read};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -27,7 +27,7 @@ pub async fn post(
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[channels] role read on read-cursor failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     }
     let parsed = crate::body::parse(&body);
@@ -45,11 +45,11 @@ pub async fn post(
     // overflow (an uncaught sql → 500). Same ceiling, same shape.
     if seq > 2_147_483_647.0 {
         tracing::error!("[channels] read cursor past int4: {seq}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     if let Err(e) = mark_channel_read(&state.pg, &id, &user.id, seq as i32).await {
         tracing::error!("[channels] read-cursor advance failed: {e}");
-        return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        return thrown_internal_error();
     }
     Json(json!({ "ok": true })).into_response()
 }

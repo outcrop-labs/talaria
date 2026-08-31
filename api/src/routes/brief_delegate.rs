@@ -11,7 +11,7 @@
 
 use crate::body::{as_object, boolean_member, nullable_uuid_member};
 use crate::daily_brief::delegation::{grant_reply, list_grants, release_drafts, revoke_reply};
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -46,7 +46,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(grants) => Json(json!({ "grants": grants })).into_response(),
         Err(e) => {
             tracing::error!("[brief] grant list failed: {e}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            thrown_internal_error()
         }
     }
 }
@@ -75,7 +75,7 @@ pub async fn post(
             Ok(revoked) => Json(json!({ "revoked": revoked })).into_response(),
             Err(e) => {
                 tracing::error!("[brief] revoke failed: {e}");
-                house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+                thrown_internal_error()
             }
         };
     }
@@ -83,7 +83,7 @@ pub async fn post(
         Ok(g) => g,
         Err(e) => {
             tracing::error!("[brief] grant failed: {e}");
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
     };
     let Some(grant) = grant else {

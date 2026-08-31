@@ -20,7 +20,7 @@ use crate::body::{
     present_nullable_max_string_member, too_big_msg, too_small_msg, utf16_len, uuid_member,
     zod_type_name,
 };
-use crate::error::house_error;
+use crate::error::{house_error, thrown_internal_error};
 use crate::retrieval::backfill::{backfill_status, rag_health};
 use crate::retrieval::embed;
 use crate::retrieval::migrate::{reindex_status, retrieval_upgrade_status};
@@ -84,7 +84,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     .unwrap_or(None),
             })
             .collect(),
-        Err(_) => return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        Err(_) => return thrown_internal_error(),
     };
     Json(json!({
         "health": health,
@@ -205,7 +205,7 @@ pub async fn put(
                 });
             }
             // TS lets setRerankConfig throw to the runtime's generic 500.
-            Err(_) => return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            Err(_) => return thrown_internal_error(),
         }
     }
 
@@ -217,7 +217,7 @@ pub async fn put(
                 .execute(&state.pg)
                 .await;
         if updated.is_err() {
-            return house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return thrown_internal_error();
         }
         // Existing docs move to their new home right away — detached, errors
         // swallowed exactly as TS's `.catch(() => {})`.
@@ -373,7 +373,7 @@ pub async fn post(
             // the runtime's generic 500.
             match rerank::rerank_models(&state, &http, &provider, key).await {
                 Ok(models) => Json(json!({ "models": models })).into_response(),
-                Err(_) => house_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+                Err(_) => thrown_internal_error(),
             }
         }
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
