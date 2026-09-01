@@ -7,17 +7,13 @@
 // task WORKFLOWS ride along; the plugin heartbeat remains the pull-side
 // safety net.
 //
-// THE COEXISTENCE POSTURE, and its flip. While TS owns the scheduler this
-// process enqueues the session and never drives it: the row is written with
-// `start: false` — insert and publish, no detached drive — and the TS sweep,
-// which still owns the real step, picks it up as a queued run with no lease.
-// At the flip (`TALARIA_SCHEDULER=rust`) the posture inverts, in
-// `dispatch_deps` and the `start` flag below together: this process drives
-// what it enqueues, exactly as TS always did. That is the shared-table shape
-// every crossed plane uses, with one addition the runs table makes possible:
-// the DERIVED id means both runtimes compute the same row id for the same
-// ticket+agent, so a TS dispatch and a Rust dispatch racing one ticket still
-// produce ONE session.
+// THE DRIVE POSTURE. This process enqueues the session and drives it —
+// insert, publish, and the detached drive, exactly as TS always did. The
+// coexistence-era alternative (row and publish with `start: false`, leaving
+// the drive to the TS sweep) left with that runtime in the cutover. The
+// shared-table shape stays: the runs table's DERIVED id means two
+// dispatchers racing one ticket still compute the same row id for the same
+// ticket+agent, so racing instances produce ONE session, never two.
 //
 // THE CLAIM, which is what `liveSessions` was:
 //   `session_run_id(task, agent, n)` is a DERIVED uuid, so two dispatchers
@@ -34,14 +30,11 @@
 //   inserted between our read and our write, and what they inserted is a live
 //   session for this exact ticket and agent, so standing down is correct.
 
-use crate::runs::define::{is_terminal, run_definition as registry_definition};
+use crate::runs::define::is_terminal;
 use crate::runs::defs::work_session::{session_run_id, work_session_run};
-use crate::runs::run::{EnqueueOptions, PauseArgs, PauseOutcome, RedisRunLease, RunDeps, enqueue};
-use crate::runs::store::{PgRunStore, WriteFailure};
+use crate::runs::run::{EnqueueOptions, RunDeps, enqueue};
 use crate::{realtime, statuses, tasks};
 use sqlx::PgPool;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG: &str = "[work-dispatch]";
 
@@ -74,61 +67,27 @@ pub struct DispatchTicket {
     pub archived_at: Option<String>,
 }
 
-/// The dispatch assembly, both postures of the flip in one function so no
-/// caller has to know which world it is in:
-///
-/// · `TALARIA_SCHEDULER=rust` — the FULL real assembly, `real_run_deps`: a
-///   run that parks a question actually parks, because the driver that will
-///   park it is this process.
-/// · anything else (coexistence) — the real store, the real publish, the
-///   registry lookup, and a `pause` that is the DRIVER's edge, which this
-///   process does not hold while TS owns the scheduler. Unreachable under
-///   `start: false` (enqueue never parks); if that analysis is ever wrong
-///   the pause says so at full volume rather than quietly doing the wrong
-///   thing.
+/// The dispatch assembly: the FULL real one, `real_run_deps`. A run that
+/// parks a question actually parks, because the driver that will park it is
+/// this process — the TS sweep the coexistence-era fallback deferred to
+/// never outlived the cutover. (That fallback was the real store, the real
+/// publish, and a `pause` that only warned at full volume; it left with the
+/// flip predicate.)
 pub fn dispatch_deps(
     pg: PgPool,
     redis: redis::aio::ConnectionManager,
     rt: realtime::RealtimeDeps,
 ) -> RunDeps {
-    if crate::scheduler::rust_owns_schedule() {
-        return crate::runs::real_run_deps(pg, redis, rt);
-    }
-    RunDeps {
-        store: Arc::new(PgRunStore::new(pg)),
-        lease: Arc::new(RedisRunLease::new(redis)),
-        publish: realtime::run_publish(rt),
-        pause: Arc::new(|_args: PauseArgs| {
-            Box::pin(async {
-                tracing::error!(
-                    "{LOG} pause reached under the coexistence assembly — Rust does not drive \
-                     work sessions yet; the TS sweep does. This edge is unreachable by design."
-                );
-                PauseOutcome::Refused {
-                    reason: WriteFailure::Missing,
-                    state: None,
-                }
-            })
-        }),
-        definition_for: Arc::new(registry_definition),
-        now: Arc::new(|| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0)
-        }),
-        new_id: Arc::new(|| uuid::Uuid::new_v4().to_string()),
-    }
+    crate::runs::real_run_deps(pg, redis, rt)
 }
 
 /// Drive one ticket with one agent as a SESSION. Fire-and-forget from task
 /// mutations; re-entry for the same ticket+agent is a no-op.
 ///
 /// IT DOES NOT WAIT FOR THE WORK. The session is a row before this function
-/// returns and a driver picks it up detached — the TS sweep during
-/// coexistence, the Rust scheduler after the handover — which is the same
-/// contract the old `void dispatchTicketWork(...)` call sites already
-/// assumed, except that now the session survives them.
+/// returns and a driver picks it up detached — this process's scheduler,
+/// which is the same contract the old `void dispatchTicketWork(...)` call
+/// sites already assumed, except that now the session survives them.
 pub async fn dispatch_ticket_work(
     deps: &RunDeps,
     task: &DispatchTicket,
@@ -183,13 +142,12 @@ pub async fn dispatch_ticket_work(
             subject_id: Some(task.id.clone()),
             phase: Some(format!("queued for {agent_model}")),
             id: Some(id),
-            // THE FLIP LINE. While TS owns the schedule: row and publish
-            // only, no detached drive — the TS sweep finds the row queued
-            // with no lease and takes it. When this process owns the
-            // schedule it drives what it enqueues, exactly as TS's dispatch
-            // always did (`start !== false` there); `dispatch_deps` above
-            // supplies the real step either way.
-            start: Some(crate::scheduler::rust_owns_schedule()),
+            // This process drives what it enqueues — it is the only runtime,
+            // so there is no sweep to hand the row to (`start !== false` was
+            // TS's own spelling of the same thing; the coexistence bridge —
+            // row and publish only, the TS sweep takes the queued row — left
+            // with the cutover).
+            start: Some(true),
         };
         match enqueue(def, input, opts, deps).await {
             Ok(_) => return,
@@ -291,13 +249,14 @@ mod tests {
     use super::*;
     use crate::runs::define::{DecisionAnswer, RunDecision, RunRow, RunState};
     use crate::runs::defs::work_session::WORK_SESSION_KIND;
-    use crate::runs::run::{LeaseClaim, LeaseRenewal, RunLease};
+    use crate::runs::run::{LeaseClaim, LeaseRenewal, PauseOutcome, RunLease};
     use crate::runs::store::{
-        AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteOutcome,
+        AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteFailure, WriteOutcome,
     };
     use futures_util::future::BoxFuture;
     use serde_json::Value;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     /// A store that answers `get` from a map and records inserts. Two modes

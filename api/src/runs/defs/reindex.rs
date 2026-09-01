@@ -1216,7 +1216,7 @@ async fn start_once(
                     subject_id: None,
                     phase: Some("queued".into()),
                     id: None,
-                    start: Some(crate::scheduler::rust_owns_schedule()),
+                    start: Some(true),
                 },
                 &deps,
             )

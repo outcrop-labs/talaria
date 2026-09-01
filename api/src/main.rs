@@ -1,8 +1,8 @@
-// talaria-api — the Rust successor to the TS fetch handler, taking over route
-// groups one prefix at a time (docs/RUST-MIGRATION.md). Process shell only:
-// config, tracing, pools, router, graceful shutdown. Everything observable
-// lives in the library (src/lib.rs) — the router itself in routes::router, so
-// integration tests drive the exact stack this serves.
+// talaria-api — the api: every /api/* route except the four permanent TS
+// residents (docs/RUST-MIGRATION.md tells the port's story). Process shell
+// only: config, tracing, pools, router, graceful shutdown. Everything
+// observable lives in the library (src/lib.rs) — the router itself in
+// routes::router, so integration tests drive the exact stack this serves.
 
 use std::sync::Arc;
 use talaria_api::{config, config::Config, db, jobs, routes, scheduler, state::AppState};
@@ -38,12 +38,18 @@ async fn main() {
     let bind = cfg.bind;
     let state = AppState::new(db::pool(&cfg), Arc::new(cfg));
 
-    // THE FLIP. `TALARIA_SCHEDULER=rust` moves the whole job schedule into
-    // this process: TS's startScheduler reads the same value and stands down,
-    // so one env declaration hands the schedule over, never a window where
-    // both runtimes arm. `arm` retries until Postgres and Redis answer — boot
-    // itself stays independent of both, exactly like TS's.
-    if scheduler::rust_owns_schedule() {
+    // The schedule is this process's — the only runtime left, so boot arms
+    // it unless the kill switch is set (`TALARIA_SCHEDULER=off`; see the
+    // arming-switch header in scheduler.rs). `arm` retries until Postgres
+    // and Redis answer — boot itself stays independent of both, exactly
+    // like the TS entry's probe-before-arm always was. The off posture logs
+    // HERE: nothing downstream of the gate runs, so nothing else could say
+    // why the schedule is silent.
+    if scheduler::scheduler_disabled() {
+        tracing::warn!(
+            "[scheduler] disabled by TALARIA_SCHEDULER=off — no background jobs will run on this instance"
+        );
+    } else {
         let st = state.clone();
         tokio::spawn(async move { jobs::arm(st).await });
     }
@@ -53,7 +59,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| panic!("cannot bind {bind}: {e}"));
-    tracing::info!("talaria-api listening on http://{bind} (migration coexistence service)");
+    tracing::info!("talaria-api listening on http://{bind}");
 
     // Graceful shutdown on SIGTERM (compose/systemd) and Ctrl-C (dev): stop
     // accepting, let in-flight requests finish, then drain the pool.
@@ -66,13 +72,12 @@ async fn main() {
             std::process::exit(1);
         }
     }
-    // When the schedule is this process's, draining means its drain too: no
-    // new runs armed, in-flight job work given its grace, then the pool. A
-    // job that ARCHIVES conversations or MESSAGES people must not be killed
-    // half a second from either.
-    if scheduler::rust_owns_schedule() {
-        scheduler::stop_scheduler(30_000).await;
-    }
+    // Draining means the scheduler's drain too: no new runs armed, in-flight
+    // job work given its grace, then the pool. A job that ARCHIVES
+    // conversations or MESSAGES people must not be killed half a second from
+    // either. (No-op when nothing was armed — the kill switch, or a boot
+    // whose arm loop never finished.)
+    scheduler::stop_scheduler(30_000).await;
     state.pg.close().await;
 }
 

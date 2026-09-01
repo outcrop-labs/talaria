@@ -49,16 +49,17 @@
 //   the only one that produces no error to log.
 //
 // THE ARMING SWITCH
-//   `TALARIA_SCHEDULER` is one variable both runtimes read, with three
-//   postures. Unset (or anything unrecognized) is today's world: TS arms,
-//   Rust arms nothing. `off` is the kill switch on either runtime — the one
-//   to deploy behind if a job ever misbehaves. `rust` is THE FLIP: this
-//   process registers and arms the whole table (jobs::arm, from main) while
-//   TS's startScheduler stands down, so the handoff is one value in one env
-//   file, never a window where both runtimes think a period is theirs. The
-//   'sched' lease namespace is shared besides, so even a botched flip is a
-//   contest between holders of the same keys, not a double-fire: the loser
-//   of a lease attempt skips that interval.
+//   `TALARIA_SCHEDULER` is the kill switch, and that is all it is now.
+//   Unset (or anything unrecognized) arms: the TS runtime that used to own
+//   the default posture is deleted with the cutover, so this process is the
+//   only scheduler a deployment has, and booting without a declaration has
+//   to mean the schedule runs. `off` arms nothing — the switch to deploy
+//   behind if a job ever misbehaves. (The coexistence era's third value,
+//   `rust`, handed the schedule over from TS's startScheduler to this
+//   process; that runtime is gone, so the value now means the same as
+//   unset.) The 'sched' lease namespace the two runtimes shared survives as
+//   the multi-instance guard: two api processes contest the same keys, and
+//   the loser of a lease attempt skips that interval.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -76,8 +77,9 @@ use crate::runs::lease::{
 
 const LOG: &str = "[scheduler]";
 const DEFAULT_MAX_RUN_MS: u64 = 10 * 60_000;
-/// The lease namespace TS and Rust share, so the flip is a handoff between
-/// holders of the same keys.
+/// The lease namespace every api instance shares, so two replicas (or an
+/// old and a new process during a rolling deploy) contest the same keys
+/// instead of double-firing a period.
 const SCHED_LEASE_NS: &str = "sched";
 
 /// Every job this deployment expects to be running. Adding a variant here
@@ -334,20 +336,14 @@ fn disabled_by_env(value: Option<&str>) -> bool {
     value == Some("off")
 }
 
-/// THE FLIP as a pure read — `TALARIA_SCHEDULER=rust` means this process owns
-/// the schedule (see the header). Every behavior that changes at the handoff
-/// reads this one predicate, so there is exactly one sentence to get right:
-/// `work_dispatch::dispatch_deps` builds the real driver edges, the five
-/// enqueue sites drive inline again (the admin rag route's two kicks became
-/// live ones when it crossed), the models route's blurb kick stands
-/// down for the blurb job, and `main` arms.
-fn schedule_owned_here(value: Option<&str>) -> bool {
-    value == Some("rust")
-}
-
-/// The env-read half of the flip predicate.
-pub fn rust_owns_schedule() -> bool {
-    schedule_owned_here(std::env::var("TALARIA_SCHEDULER").ok().as_deref())
+/// The env-read half of the kill switch. During the port this file also had
+/// a flip predicate (`TALARIA_SCHEDULER=rust`, this process owns the
+/// schedule or TS does) that gated arming, the enqueue sites' inline drive,
+/// and the models route's blurb kick; the cutover deleted the TS runtime,
+/// so all of that is this process's behavior unconditionally and only the
+/// kill switch reads the env at all.
+pub fn scheduler_disabled() -> bool {
+    disabled_by_env(std::env::var("TALARIA_SCHEDULER").ok().as_deref())
 }
 
 fn job_lease_key(name: JobName) -> String {
@@ -1215,19 +1211,6 @@ mod tests {
         assert!(disabled_by_env(Some("off")));
         assert!(!disabled_by_env(Some("on")));
         assert!(!disabled_by_env(None));
-    }
-
-    #[test]
-    fn the_flip_value_is_rust_and_only_rust() {
-        // Exactly one spelling moves the schedule, and the two other
-        // postures do not: 'off' disables both runtimes, unset leaves it
-        // with TS — so a typo in an env file can never half-flip a
-        // deployment into both-armed or neither-armed.
-        assert!(schedule_owned_here(Some("rust")));
-        assert!(!schedule_owned_here(Some("off")));
-        assert!(!schedule_owned_here(None));
-        assert!(!schedule_owned_here(Some("Rust")));
-        assert!(!schedule_owned_here(Some("on")));
     }
 
     #[test]

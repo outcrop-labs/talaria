@@ -217,10 +217,9 @@ pub async fn post(
             subject_type: Some("agent-hire".into()),
             subject_id: Some(body.slug),
             phase: Some("queued".into()),
-            // The coexistence bridge: no drive while TS owns the sweep — the
-            // row is written and published and the TS sweep drives it; inline
-            // drive (TS's own behavior) once this process does.
-            start: Some(crate::scheduler::rust_owns_schedule()),
+            // The drive is inline: this process is the only runtime, so
+            // enqueue means row + publish + drive.
+            start: Some(true),
         },
         &deps,
     )
