@@ -6,6 +6,486 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Changed
 
+- **The tail crosses — the last 27 TS route files proxy to Rust; coverage
+  closes at 216 of 219.** The remaining singles and the fleet defs detail
+  trio crossed as one sweep: the alert feed, home cards, global search (the
+  hand-rolled SearXNG federation over a local FTS pass), the Muse, the
+  inference ledger read, the join-code claim, the instance card at
+  `well-known/talaria-instance`, `me/assistant` (the agent-start trio), the
+  gap ledger (list + `{id}` resolve), the template library (list/create +
+  `{id}` patch/delete), the skill registry (list + `{owner}/{name}` CRUD),
+  the plans doc/members pair (with the plan-engine trio
+  `ensure_plan_doc`/`plan_tier`/`sync_plan_doc`), the agent plane under one
+  character prefix (`agent/gap`, `agent/problem`, `agent/message-user` — the
+  refusal paths 403 on a fake taskId before any ticket/board write — plus
+  `agent-media` both files and the role templates), the image describer
+  `/api/vision/describe`, the remembered-facts plane `memory/{id}`, and the
+  hire editor's versioned trio (`defs/{id}`, `/edit`, `/versions` —
+  `revertTo` of the current version writes nothing and answers
+  `created:false`; a fake endpoint 400s before any write). With the sweep
+  the proxy's residents are exactly three, all permanent: `admin/update`
+  (it rebuilds `ui/dist` and restarts the bun process it runs in —
+  redesign at cutover), the rule-10 app dispatch, and `healthz` (served by
+  both, never proxied). The byte-diff harness — 85 rows, 0 fail, 3
+  documented world-dependent divergences (alerts/home read rows their own
+  loops wrote; search federates live engines) — found four port bugs, all
+  fixed: zod's enum message for template kinds (`Invalid option: expected
+  one of "ticket"|"plan"` via `enum_member`), the skills file order (node's
+  readdir SORTS where tokio's `read_dir` returns raw getdents order — both
+  listing sites now sort), `me/assistant` PATCH's render propagation
+  (`renderFleet()` has no catch in `updatePersonalAgent`, so a render
+  failure 400s the whole PATCH with the version row already written and
+  standing; only docker restart/up stays best-effort), and the bare
+  secretbox message (`ensureAgentApiKey` propagates `open(existing.keyEnc)`
+  unwrapped — no wrapper sentence).
+- **The fleet plane speaks Rust — every remaining `/api/fleet` route
+  plus the agents register/heartbeat pair.** Sixteen route files
+  crossed as one unit: the ops overview (`/api/fleet` — heartbeats
+  seeded from defs, container reality filling the liveness gap so the
+  online count can't disagree with the roster dots), containers, the
+  defs listing, crons fleet-wide and per-agent with the per-job trio
+  (delete/edit/pause-resume-run), the per-agent secrets vault door
+  (PUT set, DELETE with its query-param fallback when the body won't
+  parse), the seven-verb control union (up/stop/restart/roll/retire/
+  unretire/delete with the audit-before-act discipline and the catch
+  arm that flattens every interior failure into the generic 500),
+  render, endpoints CRUD (create/patch/delete/available), federate,
+  and reconcile — plus `/api/agents/register` and
+  `/api/agents/{id}/heartbeat`, the shared-key fleet plane, now
+  reading `TALARIA_AGENT_KEY` in the Rust process too. Two wire rules
+  the byte-diff pinned down and now hold crate-wide: pg `numeric`
+  columns ride the TS wire as STRINGS (postgres.js passes them through
+  unparsed — a stored 3 is `"3"` — so the endpoints listing selects
+  `::text`), and timestamptz-to-ms TRUNCATES where a pg cast would
+  round (JS `Date` drops the fractional millisecond — the overview's
+  last-used is `trunc(extract(epoch …)·1000)::bigint`). The heartbeat's
+  non-uuid path 500s on both sides for different reasons that meet in
+  the same envelope (postgres.js's throw vs the `$1::uuid` cast) —
+  byte-verified. Verified by a 64-case byte-diff against TS (every GET
+  × admin/member/anon gates, the zod 400 tables, the render POST, the
+  endpoints CRUD round-trip on per-side fixtures, `available` against
+  an unreachable baseUrl, fake-id 404s, and the register→heartbeat
+  round-trip with the real org key): 64 byte-identical, 0 normalized,
+  0 unexplained; lifecycle verbs on real agents stayed SKIP-listed
+  (container writes on the shared dev box). One divergence recorded:
+  a permissions-read failure at the crons/secrets gate answers
+  fail-closed 403 where TS would 500. The defs detail trio
+  (`defs/$id`, `/edit`, `/versions`) stays TS for the next slice.
+- **The fitness plane speaks Rust — the probe/eval/adversarial battery,
+  its run engine, its archive, and the whole verdict surface.**
+  `/api/admin/model-fitness` crossed as one route over six engine
+  slices: the matrix (every gateway model against every harness),
+  capabilities, health, value (the money view — workload shares, the
+  USD-per-ready-run arithmetic), detail with its live-run block and
+  stale-run sweeping, estimate (fixture arithmetic over the last
+  archived report), and transcripts, plus the action union —
+  start/stop/clear/forget with the arming ladder (role checks, the
+  adversary-may-not-be-the-candidate refusal, concurrency 1..8).
+  Three port principles came out of it and now hold crate-wide. Stored
+  jsonb never rides a typed struct to the wire: Postgres keeps object
+  keys in its own canonical order and TS passes the parsed blob
+  through untouched, so every stored-object passthrough (the detail
+  `record`, run rows, both views' `index`) rides the raw
+  `serde_json::Value` while typed parses serve decisions only.
+  `JSON.stringify` prints whole floats as integers (`1`, not `1.0`),
+  so responses go through a `js_numberify` walk. And serde_json's
+  default float parse is best-effort — it can land one ULP off the
+  parsed digits, which a 456KB otherwise byte-identical body proved on
+  a stored `0.9090909090909091` — so the `float_roundtrip` feature is
+  on for every float the API parses. Verified by a 27-case byte-diff
+  against TS (all seven views × archived/unarchived/missing models,
+  the estimate query-param folds, the anon/member gates, and eleven
+  POST bodies): 21 byte-identical, 6 exactly the app-harness boundary
+  (app-shipped harnesses are TS-only by rule 10, so their counts and
+  arithmetic differ on any install with an enabled app — recorded
+  under divergences), 0 unexplained. The start body's zod union was
+  probed against the verbatim TS schema: any parse failure collapses
+  to the union's `"Invalid input"`, and only bound failures surface
+  the arm's own sentence, in field order. The diff also found a TS
+  bug, not a port one: `clear` 500s on TS for every model
+  (`setSetting(key, null)` writes SQL NULL into a NOT NULL column) —
+  Rust keeps the working behavior and the bug is flagged for the TS
+  side.
+
+- **The admin tail speaks Rust — all fifteen admin routes, the secrets
+  inventory, and the engine halves behind them.** Settings, users, the
+  secrets inventory, encryption, domains, invites, email, search, judge,
+  outreach, guardrails, platform-agents, storage, apps, and the
+  workspace-secrets admin console crossed together, carrying their engines:
+  `secret_health` (presence and provenance over every store that holds a
+  sealed value — never the value), the rotation engine (unit-verified, not
+  fired on a shared dev box), invites with their email half, the email
+  config and test send, search reachability, the apps discovery/enable
+  plane, and the nine-action workspace-secrets union. The slice's real work
+  was fidelity to zod's own rejections: every body was re-probed against the
+  TS oracle and rewritten onto the grown `body.rs` helper set (the enum's
+  `Invalid option: expected one of` with no received clause, `expected int,
+  received number`, the literal's `expected true`, custom grammar sentences,
+  and the tri-state `nullish_member` that tells an absent patch key from a
+  null one). Verified by a 60-case byte-diff; the diff caught a silent-200
+  bug (an invalid role enum value was dropped, not refused), a doubled
+  backslash in SQL that 500'd the encryption GET, and the guard findings'
+  float4 confidence decoding into an empty list. `talaria dev` now lifts
+  `SEARXNG_URL` for the Rust process so the search panel's env flag agrees
+  with its own probe.
+
+- **The mcp family speaks Rust — the org registry, the per-user connect
+  plane, the OAuth pair, and the agent gateway that relays (or refuses)
+  every tool call.** Eleven route files crossed: the per-agent roster
+  (members get server names only), the registry pair with its
+  create-and-sniff (a 401 challenge with resource metadata flips OAuth on),
+  me/mcp connect/disconnect with credentials sealed at rest, the
+  fleet-defs versioned MCP hook, the OAuth start/callback ladder, the test
+  probe, the icon fallback, the library shelf, and `/api/mcp/gw/{server}`
+  POST+GET — registered on the streaming router, because a legitimate
+  tools/call holds up to 120s and the GET is a live SSE stream. The
+  gateway keeps the family's security lines: identity resolved from the
+  credential (never the claimed name), the caller's OAuth token spent only
+  through the effective-server resolver, secret handles resolved on the way
+  OUT and never on results, the per-assignment tools gate, in-process
+  dispatch for the workbench, and SSE tools/list filtering that
+  re-serializes only `data:` frames. App servers stay TS by the port's
+  rule 10 — a STAY_TS hole in the coexistence proxy carves
+  `/api/mcp/gw/app-*` back out of the family's prefix. Verified by a
+  75-case byte-diff against TS with every network touch pinned to a
+  deterministic answer (loopback refused, `.invalid` DNS, and the real
+  loopback services: the builtin toolkit relay and the workbench's
+  in-process dispatch). The diff caught five port bugs the unit tests
+  could not: unaliased computed columns in the registry's row read (every
+  full-row read 500'd — sqlx's derived FromRow matches by output column
+  name), `created_by` bound with a uuid cast against a text column (every
+  created agent version 500'd), zod's `Invalid URL` sentence casing, the
+  icon route's bare 404 (no body, no content-type), and org discovery's
+  transport errors, which must read undici's shapes (`fetch failed`) --
+  reqwest's messages never reach a TS caller.
+
+- **The workbench family speaks Rust — all seven routes, github's REST
+  half, and the MCP dispatcher the fleet's agents speak.** The profile
+  registry (member reads mask env values to `•••`, the image/mounts
+  infrastructure fields stay admin-only), the per-repo git flow, the org
+  GitHub connection's read plane, the harness registry (declarative
+  custom definitions stored in probed zod shape order, builtins
+  undeletable), the human side of workbench jobs (the ticket strip, the
+  approve/reject gate through board editors, merge-to-testing through
+  the engine with both failure flavors folded into the TS `.catch()`'s
+  one 400), the repo-creation approval queue, and the per-agent repo
+  grants. Verified by a 123-case byte-diff against TS — the largest
+  family harness yet: gate tables for anon/member/admin, the full zod
+  400 tables for all seven bodies, restore-safe mutation cycles, twelve
+  SQL-seeded jobs with fixed ids and timestamps (approve/reject ±note,
+  the re-approve's `job is started`, the null-task 403, both merge
+  refusals on the unconfigured connection), and the repo-request reject
+  ladder. The diff caught three things the unit tests could not: the
+  THROWN-500 shape — defineApi has no catch, so a TS handler that throws
+  answers SvelteKit's text/plain `Internal Server Error`, and all 498
+  port sites mirroring a TS throw were swept to that shape port-wide;
+  the profile autoAttach wire, which is the stored column's jsonb
+  canonical order, not the parser's shape order; and the harness list's
+  custom order, which no runtime orders at all (no ORDER BY) — the
+  harness pins the builtin prefix and compares the customs as a set.
+
+- **The integrations/google family speaks Rust — the whole OAuth pair, the
+  org plane, the user surfaces, the approval queue, and the agent plane,
+  twenty-one routes under one prefix.** Every door reads the same
+  connection rows, so the family crossed whole: the personal
+  connect+callback ladder (five deterministic refusal rungs), the org
+  plane (its own connect pair, status/targets/disconnect, provisioning,
+  live health probes), the per-surface user reads with their query-param
+  folds, the three user writes that draft through the approval queue
+  rather than send, the pending decide, and the agent surfaces —
+  `refuse_legacy` first, the `x-agent-name` must-equal-model check, then
+  a resolution rule where a personal assistant acts strictly as its
+  owner's connection and a fleet agent as the shared org account. The
+  gmail engine crossed as its own module; verified by a 69-case byte-diff
+  against TS on the same sessions plus two agent keys, including live
+  reads against the real org connection (calendar, drive, gmail, labels,
+  one full message) and the one designed round-trip: an agent drafts a
+  send, a member's verdict is refused, the admin's reject retires it —
+  nothing leaves the building. The diff caught two port bugs: the
+  targets wire's key order (embed the typed struct — its declaration
+  order is the wire order) and the provisioning filter that seats only
+  org agents in the send-as table. Also the port's first silent-trait
+  lesson: a non-`Send` form serializer held across an await in an engine
+  fn fails every handler that awaits it with a bodyless E0277 — scoped
+  and finished before the await now.
+
+- **The secrets family speaks Rust — the working vault crosses whole, and
+  the port's first cross-runtime cipher proof lands with it.** Six routes
+  under one proxy prefix: the collection (list/create/file/move/delete),
+  the folders pair (create/rename/delete/share in one union body), the
+  reveal (with its refusal ladder and the no-store header triad), the
+  share pair for people and agents, the one-shot relay, and the git
+  credential helper — the agent's door to `git.example.com`, which spends
+  a workspace credential or a minted relay and falls through to the GitHub
+  app token. The engine crossed with them: the vault's seal/open, the
+  credential selection that makes a single-entry doc a token
+  (`x-access-token`), the relay burn, and the folders' reveal-vs-spend
+  asymmetry. Verified by a 127-case byte-diff against TS on the same
+  sessions, with the interop proof as its centerpiece: both runtimes share
+  one database, so the harness seals the same literal through each
+  runtime and reveals it through both — the same value back every time,
+  which is what the secretbox port was for. GitHub app JWTs gained a
+  cross-language vector file (a committed fixture key, three clock
+  instants, byte-equality both ways). The diff caught three port bugs:
+  the listing's `distinct`/`order by` (Postgres requires the ordered
+  column in the select list — every listing 500'd), the move route's
+  admin thread (owner-only even for admins, as TS passes no isAdmin),
+  and the union body sentence (zod unions flatten every failure — a
+  non-object body included — to plain "Invalid input").
+
+- **The brief family speaks Rust — the assistant's morning document crosses
+  with its reader.** Five routes under one proxy prefix: the document read
+  (sweep-if-due, then the fold), the line verdict (check/dismiss/restore
+  with its three 404 sentences), the read cursor (monotonic — it only ever
+  advances), the delegation pair (grant/revoke the reply-without-asking
+  privilege, where granting permission for an already-written reply means
+  sending it), and the draft verdict — the one route in the family that
+  causes something to leave, so it is the one that refuses on staleness
+  (409 "They have said something since this was written…" rather than a
+  400). The engine's reader plane crossed with them: the absent literal
+  `{absent, nextAt, agent}` across all three kinds, the fold as typed
+  structs in TS declaration order (a resolved line sinks but is never
+  dropped), and the delegation state machine. Verified by a 39-case
+  byte-diff against TS on the same sessions — the document read literally
+  (all three `tz` variants), every validation shape, the check-off
+  idempotence and the restore ladder, the grant→release(sent:1)→revoke
+  cycle, the foreign-channel 403, and the reply ladder. The brief is one
+  document per person per day, so the harness warms the shared document
+  first and then works per-side probe rows and seeded resolved pairs. The
+  diff caught four decode bugs on its first run — the same two families as
+  before (uuid columns decoded as `Option<String>` need `::text`; INT4 seq
+  columns decoded as i64 need `::int8`). The `pending` absent kind is
+  unreachable at the harness's hours and is pinned at the engine level
+  only.
+
+- **The inbox.focus family speaks Rust — the assistant's attention plane
+  crosses whole.** The focus queue, badge summary, viewed/snooze state,
+  card actions (with their confirmation tokens), the SSE command stream
+  that runs an instruction through the focus assistant, and the segmented
+  conversation picker serve from Rust under one proxy prefix — the
+  family's per-user lock spans the command stream and the state route, so
+  the prefix carries all eight paths. The engine crossed with them: the
+  four-source queue builder (approvals, tasks, comms, notifications) with
+  buckets and briefs, the action policy, the timeline, and the approvals
+  read; the assistant itself is a harness def and became the streaming
+  seam's first caller (`dispatch_transport` — gateway or fleet persona by
+  kind — plus `StreamOptions`). One recorded divergence, documented at the
+  route: on a client disconnect TS leaves the assistant row `streaming`
+  while the port finishes and persists the reply (the chat family's tee
+  philosophy). Verified by a 31-case byte-diff against TS on the same
+  sessions — the reads across anon/member/admin, the validation shapes,
+  and the writes through per-side seeded rows (mark_read consumes its row,
+  so each runtime acts on its own notification), plus three SSE command
+  streams byte-identical via a manifest-absent model's canned reply. The
+  diff caught six port bugs, worst among them a member leak in the
+  approvals source: TS splices the admin arm out of the WHERE clause for
+  members entirely, and the port's first shape (`or is_org = $2`) matched
+  every other person's personal actions. Also fixed: SSE frames carrying
+  `conversationId` snake_case (an enum's `rename_all` camelCases only the
+  variant tags — `rename_all_fields` does the fields; pinned by a test
+  because the compiler cannot see the difference), two Postgres
+  param-type 500s and a UUID-decode 500 in the picker, the summary's key
+  order, and the command stream's header order.
+
+- **The conversations family speaks Rust — the durable chat crosses.**
+  `/api/chat` (whole-path, the family's only EXACT proxy entry), the
+  `/api/conversations` list and `{id}` detail/rename, and `/api/dms` serve
+  from Rust. The engine crossed as `chat_persist`: the gateway stream is
+  teed through a bounded channel whose receiver is the client's SSE body,
+  while the drain that persists history runs detached — an in-progress reply
+  survives a client hang-up. The persist half carries the throttle (400ms,
+  first event immediate), the token ledger (real usage or a char estimate),
+  the confab guard awaited AHEAD of the plan-brain index and the @mention
+  mail (strict mode redacts before either takes its copy), the Titler's
+  first-exchange rename, and the queued-message continuation chain — a
+  message that landed mid-stream starts the next turn, honoring the effort
+  stamped on its own row against the model that will actually run it. The
+  proxy's response-header allow-list gained `x-conversation-id` and
+  `x-message-id`: the SPA learns a new conversation's id from the header.
+  Verified by a 69-case byte-diff against TS (reads across chat/plan/
+  research access, the dms table, the zod 400 table, a write cycle through
+  both runtimes including a queued 202 and a collaborator's rename, and
+  the SSE streams byte-identical via a manifest-absent model's canned
+  reply), plus a live-agent turn proving stream → persist → ledger with
+  real token counts end to end. The diff caught three port bugs: the
+  detail select's one nullable column (`guard` — null on the wire, not
+  `[]`), the DM's foreign-key 400 carrying sqlx's decorated message where
+  TS answers the bare Postgres sentence, and the SSE header order
+  (`cache-control` belongs above `content-type`).
+
+- **The channels family speaks Rust — the comms plane crosses whole**: all
+  ten `/api/channels*` route files (list/create, `{id}` detail/rename/
+  archive/hard-delete, the agents pair, conclude, the SSE events stream, the
+  members pair, messages GET/POST, message PATCH/DELETE, reactions, read)
+  serve from Rust under one proxy prefix, which subsumes the plan-draft
+  mount's old path-shape entry. The engine crossed with them (the message
+  insert/list/edit/delete, members, agents, the reaction toggle, read
+  cursors, the relay-summary conclude, the hard-delete's detached qdrant
+  purge) plus the reply plane it drags along — @mention notifications, the
+  DM peer notify, and `trigger_agent_replies` with its streamed replies.
+  The POST's echo carries a different wire shape than the list (the insert's
+  RETURNING selects no guard/editedAt — the keys are absent, not null), so
+  the port serializes the page shape and projects the insert shape from it;
+  the agent GET strips `guard` outright, keeping findings — flagged
+  content's verbatim excerpt — out of model contexts. Verified by a
+  102-case byte-diff against TS on the same sessions (reads across the
+  channel kinds, a restore-safe write cycle through both runtimes, the 405
+  `allow` tables, the zod 400 table with its parse-order probes), which
+  caught three port bugs the unit tests hadn't — a mis-numbered bind that
+  500'd every message edit, the rename's min-length bound, and a fractional
+  `since` that floored where TS fails.
+
+- **The port's end state corrected: Rust is the backend, not the UI host.**
+  The roadmap's cutover batch said Rust would serve the SPA and `bun run
+  start` would become the Rust binary — that was never the ask. SvelteKit
+  keeps serving the SPA, its pages, and routing (TanStack stays the client
+  layer, untouched). Cutover now deletes the TS API — `ui/src/routes/api`
+  and the backend of `ui/src/server` — while the SvelteKit server remains
+  the one public origin, handing every `/api/*` request to Rust on loopback
+  (same-origin cookies, so the proxy hop graduates from scaffolding to the
+  permanent architecture). The musl build stage stays: it builds the Rust
+  backend process the prod image runs alongside the frontend server.
+
+- **The model-identity plane speaks Rust, closing batch 3**: `/api/models`
+  (the picker catalog — gateway rows carrying label and blurb from
+  OpenRouter's public catalog, plus the persona-resolved `effective` model),
+  `/api/models/efforts` (the composer's effort ladder for a persona or
+  catalog id, with the agent-configured default held against the levels the
+  model actually publishes), and `/api/admin/model-roles` (the Model Roles
+  panel — assignments, fitness issues, per-role effort preference, GET and
+  PUT). The three stand on one harness persona engine, so they crossed as
+  one slice and the engine came with them: the persona index's two-pass
+  claim (base ids first; alias tiers second with NO main-configured gate; no
+  main, no keys; every pool carries the fallbacks the runner can land on),
+  the effort ladder (provider catalog plus the admin declaration, which
+  replaces and never merges, with the once-only backfill for catalogs stored
+  before effort extraction existed), the model-info matcher (6h
+  stale-on-failure cache, `model_blurbs` override whose read error
+  propagates exactly as TS's `Promise.all` does), and the resolution chains
+  behind `effective` (pin→role→utility→env→first-routable; the member
+  allowlist gates every link except pin and env). Verified by a 37-case
+  byte-diff against TS on the same sessions — the full zod 400 table behind
+  the PUT, restore-safe write cycles run through both runtimes with the
+  audit rows mirroring, the 405s with their `allow` headers, a duplicate
+  `?model=` (URLSearchParams.get is first-wins), and the persona-configured
+  default read through a live config mutation after both runtimes' persona
+  caches expired. Three cases differ in array order alone — the recorded
+  localeCompare divergence, seen for the first time now that an endpoint
+  name carries a capital letter (TS collates `Z.ai/glm-5.3` last, byte
+  order puts it first). Two divergences recorded: the org-voice blurb
+  sweep's only TS trigger was the `/api/models` handler the proxy now
+  shadows, so it is dark in proxied environments until it ports as a real
+  scheduler job (batch 4) — Rust reads the rows, never writes them — and
+  the blurb clamp cuts at a char boundary where TS's UTF-16 `slice` can
+  split a surrogate pair.
+
+- **The profile speaks Rust**: `/api/me` — the three preference reads
+  (preferred model, platform-default reasoning effort, IANA zone) and the
+  profile PUT: display name (users row AND the live session, via the
+  KEEPTTL patch — the SPA's corner never waits for a re-login), the member
+  model gate (enforced at the route, not just hidden in the picker), and the
+  zone check. The zone validator is a probed contract, not a regex: TS asks
+  Intl to resolve the name, and node's and bun's ICUs were probed on a
+  100+-spelling table where they agreed on every row — IANA names match
+  CASE-INSENSITIVELY ("utc", "Etc/gmt+5" resolve), offset forms `±HH`,
+  `±HH:MM`, `±HHMM` resolve up to hour 23 / minute 59, and `Factory` is
+  refused. The port mirrors that grammar (chrono-tz's tzdb + a hand-rolled
+  offset parser) and pins the same table in its tests. The route migrates
+  by EXACT pathname — the me.* siblings (mcp, assistant, events) are their
+  own planes that move whole with their batches. Byte-diffed against TS on
+  the same DB: the full zod 400 table, the trim corners (a spaces-only name
+  is legal to zod and stores ""; a padded zone trims before it validates),
+  the application order (a name in one PUT lands before a refused
+  model/zone answers the same PUT — TS applies fields in sequence and the
+  port invents no transaction), the member gate's exact 403 sentence with no
+  write behind it, and the 405s.
+
+- **Notifications speak Rust**: `/api/notifications` — the bell's one read
+  (inbox, unread count, routing prefs, the digest answer, the instance email
+  switch, and whether this user may flip it), mark-read by ids or all, the
+  per-class routing patch, and the admin delivery switch. The mail side of
+  the prefs (sendGatedMail, the bounded outbox, the drain) is scheduler
+  plane and stays TS until batch 5; the port ends at the rows and switches
+  the SPA reads and writes, plus the brief-nudge without its SSE publish.
+  The prefs patch is the port's first zod record body — its full 400 table
+  probed against the ui's own zod and pinned in Rust tests — and the route's
+  ordering invariants held byte-for-byte against TS on the same DB: ids
+  absent and ids empty both mean "mark all of mine", the member's delivery
+  403 fires after the 400s and before any write (one PATCH never
+  half-applies), and the admin flips write identical audit rows on both
+  runtimes.
+
+- **Task workflows speak Rust**: `/api/workflows` and `/api/workflows/{id}` —
+  the list (any member; workflows ground what agents will be told), create,
+  the field-at-a-time patch, and delete. The match/skills/toolkits payload
+  rides as jsonb the DB itself orders, so both runtimes read the same bytes
+  back; and the group's quiet corners held: there is no 404 (a missed id
+  still answers ok), and an empty patch runs no SQL at all — which is why it
+  answers ok even for a garbage `{id}` while a one-field patch takes the
+  recorded platform-500 divergence. The zod array surface behind the body
+  (element checks before array length, trim before length, unknown keys
+  stripped at every level) is probed against the ui's own zod and pinned in
+  the api's tests.
+- **Teams speak Rust, and the identity-proxy model crosses with them**:
+  `/api/teams`, `/api/teams/{id}`, and `/api/teams/{id}/members` — the list
+  (with live member counts), create/rename/delete (owner-gated; boards
+  survive team deletion as personal boards), and the member plane (add by
+  email with re-role on conflict, remove that never removes an owner). The
+  list is the port's first ACTING-user surface: a personal assistant calling
+  with its `tak_` key acts as its owner, a general agent or a rejected
+  credential resolves to nobody, and the owner's admin role gates the
+  assistant's elevation. Byte-diffed against TS for anon, member, and admin
+  callers plus both agent shapes — reads, write cycles, the 405s with their
+  `allow` headers, and the full 400 table (the plain-Email check, the enum
+  role with its `.default('member')`, and the uuid body member).
+- **API keys speak Rust**: `/api/keys` and `/api/keys/{id}` — the list with
+  its `canMint` gate, minting (the `tlk_` secret answered exactly once),
+  revocation, and the self-imposed policy plane (#265: token/USD caps and a
+  per-minute ceiling, where 0 means unlimited in the row but echoes back as
+  the 0 its owner sent). The policy PUT is the port's first nullish
+  `z.number()` body: the whole 400 table (safe-int guard bounds, a max
+  breach that says "number" even on an int field, fractional-vs-int, type
+  messages) was probed against zod 4.3.6 and pinned in Rust tests. Numbers
+  now ride every Rust wire through one `js_num` helper (hoisted from the
+  ledger) so an integral cap prints `1000`, never `1000.0`. Byte-diffed
+  against TS for anon, member (no grant → 403), and admin callers, with the
+  caps written by each runtime read back through both. One recorded
+  divergence generalized into the migration doc: a non-uuid `{id}` (like
+  TS's other uncaught route throws) answers the house 500 envelope, not the
+  platform's plain-text sentence.
+- **The admin console's first five groups speak Rust**:
+  `/api/agent-role-templates` (built-in + own role templates, the shadowing
+  rules), `/api/admin/password-accounts` (create/reset/remove — the password
+  hashes itself never ride the audit log), `/api/admin/google-client` and its
+  `/login` sibling (status, sealed client config, login toggle), and
+  `/api/admin/instance` (the hosting domain and its self-fetch verification).
+  `/api/admin/permissions` joins them, and its PUT body is the port's first
+  zod union: probed against zod 4.3.6, only a string userId failing the uuid
+  format check surfaces its own message (`Invalid UUID`) — every other
+  both-branches-fail shape collapses to `Invalid input` — and that table is
+  pinned in the Rust tests. All five byte-diffed against TS across anon,
+  member, and admin callers, including the 405s with their `allow` headers,
+  the full 400 table, and restore-safe write cycles on both runtimes over the
+  same dev database. One recorded divergence (docs/RUST-MIGRATION.md):
+  clearing the instance domain works from Rust and cannot from TS, whose
+  driver writes JSON null as SQL NULL and answers the clear with a leaked
+  Postgres constraint sentence.
+- **The first product reads speak Rust**: `/api/agents` (the fleet list with
+  tiers and per-agent access), `/api/apps` (the enabled-app manifest),
+  `/api/activity` (the merged feed with the admins-only audit kind), and
+  `/api/cost` (the full ledger overview — priced windows, per-model,
+  per-agent, per-day) all serve from the Rust api, byte-diffed against TS on
+  the same sessions for admin, member, and anonymous callers. The proxy gains
+  an exact-match list alongside its prefixes: `/api/agents` and `/api/apps`
+  are whole-path migrations because their sub-routes (`register`,
+  `heartbeat`, the app-server gateway) stay TS until their batches.
+- **A Rust-served budgeted call was flying blind**: the priced-view SQL that
+  `spendSince` reads bound its cache multipliers as `$2`/`$3`, colliding with
+  the caller's own second bind — the statement couldn't even prepare
+  (`integer * text`), and the budget check's error-swallowing `.ok()?` turned
+  that into "no spend data" on every Rust-served gateway call with a budget
+  attached. The multipliers are values in the SQL text now, exactly as TS
+  interpolates them; the statement prepares and returns real spend.
 - **Research searches on proven capability, not on hope**: a model is only handed the
   search stage when something proves it can search — a probe or catalog that measured it
   browsing, or a checked search backend (SearXNG) the model can drive through a tool. An
@@ -38,6 +518,76 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **Google sign-in speaks Rust too — and with it the session batch is whole**:
+  `GET /api/auth/google` and its `/callback` are serving from the Rust api, the
+  OAuth dance hand-rolled over reqwest (no SDK — the identity comes from
+  Google's userinfo endpoint, never a locally-verified JWT). The consent URL
+  byte-matches TS's own `URLSearchParams` serialization (pinned by test, then
+  diffed live against the TS serializer with the same client record and state
+  token), the state cookie is the same double-submit CSRF token with its
+  10-minute TTL and constant-time compare, and every failure door bounces to
+  `/login` with the machine-readable reason the SPA already renders. Verified
+  against the live dev stack: the disabled gates byte-diffed equal on both
+  routes; the client-precedence rule (a complete Admin record beats env, and
+  the env pin is what enables login — the record alone never does) exercised
+  for real; bad-state and cookie-mismatch bounces equal; and a live token
+  exchange against Google with a garbage code returns the fixed
+  `exchange_failed` sentence with the provider's prose dead in the log — the
+  boundary rule, held. The happy path past Google's consent screen (claim,
+  org-domain gate, invites) needs a human signing in, so those doors are
+  verified to their last reachable hop, not past it. The coexistence proxy now
+  forwards the caller's origin (`x-forwarded-proto`/`host`) so the two runtimes
+  derive the same `redirect_uri` through it.
+- **Password login, the login screen's door list, and the first-run claim speak Rust too**:
+  the session batch's second slice — `POST /api/auth/password`, `GET /api/auth/providers`,
+  `POST /api/auth/claim` — is serving from the Rust api. The credential check is the same
+  scrypt contract both runtimes share (`scrypt$N$r$p$salt$hash` entries, parameters read
+  from the entry, the dummy-hash burn that keeps an unknown email exactly as slow as a
+  wrong password), run on the blocking pool where ~100ms of KDF never parks an async
+  worker. Zod's exact 400 messages ride through verbatim (probed against the ui's own zod
+  4.3.6 — the email pattern hand-rolled, and its truth table pinned), the login brakes
+  share one Redis counter space with TS (a Rust attempt and a TS attempt spend the same
+  budget; a success resets it), and the claim's advisory lock still makes a lost race a
+  409. Verified against the live dev stack: providers byte-identical between runtimes; a
+  Rust login verifying a node-hashed entry and returning the login body byte-identical to
+  TS's; either runtime's logout destroying the other's session; the claim limiter's 429
+  (message and Retry-After) agreeing across the shared counter; every validation error
+  path diffed equal.
+- **The session plane now speaks both runtimes**: the second port batch's first slice is
+  serving — Redis `sess:<sid>` sessions (the shared store both runtimes read while the
+  port runs), `GET /api/auth/session` (user + denied views + effective permissions, read
+  from the DB so an admin's change lands without re-login), `POST /api/auth/logout`, and
+  `GET /api/users` — the fleet-wide auth oracle every `mcp/` agent authenticates through,
+  ported with its agent-caller resolution: per-agent `tak_` keys where the key proves
+  identity and `x-agent-name` can only narrow it, and the org-wide legacy key resolving
+  identified-but-untrusted while refusing outright a name that carries human privilege.
+  The proxy now forwards `Set-Cookie` plural-safe (a comma-joined multi-cookie header is
+  a corrupt one, and an auth plane that cannot clear its cookie through the boundary is
+  not ported). Verified: `/api/auth/session` and `/api/users` responses byte-identical
+  across the TS and Rust servers against the same Redis sessions (admin, member,
+  anonymous); a Rust-served logout observed immediately by TS; the oracle's accept /
+  wrong-name-refusal / 401 paths against a real `tak_` key, `last_used_at` landing and
+  the row restored after.
+- **The API is moving to Rust, and the first slice is already serving**: a new `api/`
+  crate (axum + sqlx) ports the backend batch by batch while the app keeps working — a
+  loopback proxy in the TS server forwards migrated prefixes to it
+  (`TALARIA_RUST_API_URL`; unset is the byte-identical TS-serves-everything default, and
+  there is deliberately no fallback when it is set). Batch 1, the LLM gateway
+  (`/api/llm/v1/*`), is done: models and chat/completions — streaming included, with the
+  relay metering tokens and booking the ledger whichever end the stream comes to, so a
+  client that hangs up mid-stream is still recorded because the provider still bills —
+  per-key caps and throttling, rate limits, secretbox unseal pinned by two-way
+  cross-language vectors, and the confab guard riding the relay in all four postures
+  (observe records, annotate warns in-stream, strict scrubs). `talaria dev` gains
+  `TALARIA_API=on` to raise the api as a sidecar (adopting one already on the port,
+  degrading to a warn on a box without cargo), the devbox image carries the pinned
+  toolchain, and CI gates the crate (fmt + clippy + the pure unit suite —
+  service-dependent tests stay local, by the house rule). Roadmap and coexistence rules:
+  `docs/RUST-MIGRATION.md`. Verified: models byte-diffed against TS on the same dev DB;
+  live streaming and non-streaming completions through a real provider with
+  `usage_events` and `guard_findings` rows checked after each guard posture, including a
+  strict-mode redaction of a model-invented credential; the sidecar's spawn, adopt and
+  no-cargo paths; the devbox image building the whole crate, C toolchain and all.
 - **Creating an agent is a hire that runs in the background, not a request the modal has
   to babysit**: "Create agent" now enqueues a durable `agent-hire` run (create the def,
   write starter skills, render the fleet, boot the container, wait out the healthcheck)

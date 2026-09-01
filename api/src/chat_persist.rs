@@ -1,0 +1,514 @@
+// Server-side persistence of an assistant stream — port of
+// ui/src/server/chat-persist.ts. Runs detached from the client response (fed
+// by a teed branch), so an in-progress reply is saved even if the client
+// disconnects/reloads. Throttled flushes during streaming; final on end.
+// Also records the turn in the token ledger (real usage or a char estimate).
+
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+use axum::body::Bytes;
+use futures_util::StreamExt;
+use serde_json::{Value, json};
+use tokio::sync::mpsc;
+
+use crate::body::utf16_len;
+use crate::conversations::{
+    active_streaming_assistant, content_js_length, insert_streaming_assistant,
+    last_user_message_effort, next_seq, prior_messages, set_message_guard, touch_conversation,
+    update_assistant,
+};
+use crate::fleet::{describe_agent, routed_model_for};
+use crate::gateway::fleet_chat::{
+    AgentStreamEvent, AgentStreamParser, ToolCall, chat_payload, merge_tool, proxy_chat,
+};
+use crate::gateway::guard::{
+    Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
+};
+use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use crate::model_efforts::efforts_for_model;
+use crate::notify::NotifyDeps;
+use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
+use crate::retrieval::index::IndexDoc;
+use crate::retrieval::sources::index_activity;
+use crate::state::AppState;
+use crate::titler::maybe_retitle_conversation;
+use crate::workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
+
+/// chat-persist.ts TurnMeta.plan — set for plan conversations: replies feed
+/// the activity brain, owner-scoped.
+#[derive(Debug, Clone)]
+pub struct PlanMeta {
+    pub owner_user_id: String,
+    pub title: Option<String>,
+}
+
+/// chat-persist.ts TurnMeta.
+#[derive(Debug, Clone)]
+pub struct TurnMeta {
+    pub agent_model: String,
+    pub tier: Option<String>,
+    pub plan: Option<PlanMeta>,
+}
+
+// One continuation at a time per conversation (in-process guard — the check
+// below re-reads the DB, this just closes the tiny double-start window).
+static CONTINUING: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+
+/// Claude-style flow (continueConversation): messages sent while a reply
+/// streamed queued into history — start the NEXT turn covering them. Called
+/// when a reply finishes and when a queued message lands with nothing in
+/// flight; chains until the conversation goes quiet. No-op unless the last
+/// message is the user's.
+pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
+    {
+        let mut set = CONTINUING.lock().unwrap();
+        if set.contains(conversation_id) {
+            return;
+        }
+        set.insert(conversation_id.to_string());
+    }
+    let result = continue_inner(state, conversation_id, meta).await;
+    CONTINUING.lock().unwrap().remove(conversation_id);
+    result
+}
+
+async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
+    if active_streaming_assistant(&state.pg, conversation_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    // A broken secretbox means upload bytes are unreadable; the file leg of
+    // the history degrades to nothing per-row, but the box itself being
+    // unbuildable is a turn that cannot start.
+    let Ok(sb) = state.secretbox().await else {
+        return;
+    };
+    let prior = match prior_messages(&state.pg, &sb, conversation_id).await {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let Some(last) = prior.last() else {
+        return;
+    };
+    if last.role != "user" {
+        return;
+    }
+    // Chained plan turns carry the same plan-mode harness as live ones — and
+    // the same handle note, for the same reason /api/chat adds it: a relay
+    // minted while a reply was still streaming arrives on a QUEUED message,
+    // so the turn that finally reads it is this one.
+    let mut messages: Vec<Value> = Vec::new();
+    if meta.plan.is_some() {
+        let block = plan_routing_block(&state.pg).await;
+        messages.push(json!({ "role": "system", "content": format!("{PLAN_MODE_PROMPT}{block}") }));
+    }
+    if mentions_handle(&last.content) {
+        messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
+    }
+    messages.extend(
+        prior
+            .iter()
+            .map(|m| json!({ "role": m.role, "content": m.content })),
+    );
+    // A tier the agent no longer declares degrades to the base model rather
+    // than dying — a chained turn nobody is watching.
+    let routed = match meta.tier.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) => routed_model_for(&state.pg, &meta.agent_model, Some(t))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| meta.agent_model.clone()),
+        None => meta.agent_model.clone(),
+    };
+    let Ok(seq) = next_seq(&state.pg, conversation_id).await else {
+        return;
+    };
+    let Ok(assistant_id) =
+        insert_streaming_assistant(&state.pg, conversation_id, seq, &json!({})).await
+    else {
+        return;
+    };
+    // THE QUEUED MESSAGE'S OWN EFFORT, not the completed turn's: the message
+    // this chain exists to cover picked its level when it was sent (stamped
+    // on its row by /api/chat), and the model it will run on is only known
+    // now. Re-validated rather than trusted — an agent re-pointed
+    // mid-conversation leaves a stale pick on the row, and a chained turn
+    // nobody is watching degrades to the default rather than dying on a 400.
+    let stamped = last_user_message_effort(&state.pg, conversation_id)
+        .await
+        .ok()
+        .flatten();
+    let honored = match stamped {
+        Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
+        _ => None,
+    };
+    let prompt_chars: usize = messages
+        .iter()
+        .map(|m| content_js_length(&m["content"]))
+        .sum();
+    let upstream = proxy_chat(
+        &chat_payload(&routed, &Value::Array(messages), honored.as_deref()),
+        None,
+    )
+    .await;
+    // TS: `if (!upstream.ok …)` — the row is marked error and the chain STOPS
+    // HERE, before any persist. Persisting the error body instead parses zero
+    // events, flushes an EMPTY 'complete' row, and the tail re-chains — and
+    // prior_messages reads through empty rows, so "the last message is the
+    // user's" stays true forever: a provider answering 429 turned one queued
+    // message into a turn every ~550ms, 2,000 rows in ten minutes. The error
+    // row is the surfacing too — the UI renders it as the turn that failed.
+    if !(200..300).contains(&upstream.status) {
+        let _ = update_assistant(&state.pg, &assistant_id, "", "", &[], "error").await;
+        return;
+    }
+    let usage_meta = PersistMeta {
+        agent_model: meta.agent_model.clone(),
+        prompt_chars,
+        tier: meta.tier.clone(),
+        plan: meta.plan.clone(),
+    };
+    // Detached, as the TS `void` — the chain's own tail continues it. The
+    // plain-fn seam is load-bearing: this chain is continue → persist →
+    // continue …, and routing the spawn through a non-generic helper is what
+    // keeps either half's opaque future type from having to prove the other's
+    // Send-ness (E0391) — continue_inner sees only the helper's signature.
+    spawn_persist(
+        state.clone(),
+        upstream.body,
+        assistant_id,
+        conversation_id.to_string(),
+        usage_meta,
+    );
+}
+
+/// The detached persist kick, as its own function (see the call site for why).
+fn spawn_persist(
+    state: AppState,
+    body: crate::gateway::fleet_chat::ByteStream,
+    message_id: String,
+    conversation_id: String,
+    usage_meta: PersistMeta,
+) {
+    tokio::spawn(async move {
+        persist_assistant_stream(
+            state,
+            body,
+            message_id,
+            conversation_id,
+            Some(usage_meta),
+            None,
+        )
+        .await;
+    });
+}
+
+/// chat-persist.ts persistAssistantStream's usageMeta.
+#[derive(Debug, Clone)]
+pub struct PersistMeta {
+    pub agent_model: String,
+    pub prompt_chars: usize,
+    pub tier: Option<String>,
+    pub plan: Option<PlanMeta>,
+}
+
+/// Drain an assistant stream into the reply row (persistAssistantStream).
+/// `forward`, when present, is the client's teed branch: every chunk rides to
+/// the caller first (a send failure is the client hanging up — the drain
+/// keeps going, exactly what a tee does to its other branch), while the
+/// parser accumulates the persisted copy.
+#[allow(clippy::too_many_arguments)] // the persist's inputs name the turn's own facts
+pub async fn persist_assistant_stream(
+    state: AppState,
+    body: crate::gateway::fleet_chat::ByteStream,
+    message_id: String,
+    conversation_id: String,
+    usage_meta: Option<PersistMeta>,
+    forward: Option<mpsc::Sender<Result<Bytes, std::io::Error>>>,
+) {
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut tools: Vec<ToolCall> = Vec::new();
+    let mut usage: Option<(i64, i64)> = None;
+    // The agent gateway's failure frame, when one lands — the provider call
+    // died inside the container and the 200-stream carries the reason. Without
+    // this the turn reads as EMPTY COMPLETE, and the chain re-fires it forever
+    // (prior_messages sees through empty rows, so the user's message reads as
+    // forever unanswered).
+    let mut frame_error: Option<String> = None;
+    let mut last_flush: Option<Instant> = None;
+    let mut parser = AgentStreamParser::new();
+    let mut stream = body;
+
+    macro_rules! flush {
+        ($status:expr) => {
+            let _ = update_assistant(
+                &state.pg,
+                &message_id,
+                &content,
+                &reasoning,
+                &tools,
+                $status,
+            )
+            .await;
+        };
+    }
+    macro_rules! ledger {
+        () => {
+            if let Some(meta) = &usage_meta {
+                let counts = TokenCounts {
+                    prompt_tokens: usage
+                        .map(|u| u.0)
+                        .unwrap_or_else(|| estimate_tokens(meta.prompt_chars)),
+                    completion_tokens: usage.map(|u| u.1).unwrap_or_else(|| {
+                        estimate_tokens(utf16_len(&content) + utf16_len(&reasoning))
+                    }),
+                    ..TokenCounts::default()
+                };
+                let pg = state.pg.clone();
+                let agent_model = meta.agent_model.clone();
+                let tier = meta.tier.clone();
+                let ref_id = conversation_id.clone();
+                let estimated = usage.is_none();
+                tokio::spawn(async move {
+                    let _ = record_usage(
+                        &pg,
+                        &UsageInput {
+                            agent_model: &agent_model,
+                            source: "chat",
+                            ref_id: Some(&ref_id),
+                            task_id: None,
+                            tier: tier.as_deref(),
+                            counts,
+                            estimated,
+                        },
+                    )
+                    .await;
+                });
+            }
+        };
+    }
+
+    let errored = loop {
+        let Some(chunk) = stream.next().await else {
+            break false;
+        };
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(_) => {
+                if let Some(tx) = &forward {
+                    let _ = tx
+                        .send(Err(std::io::Error::other("upstream stream errored")))
+                        .await;
+                }
+                break true;
+            }
+        };
+        if let Some(tx) = &forward {
+            // The client's branch ends on hang-up; ours drains on.
+            let _ = tx.send(Ok(chunk.clone())).await;
+        }
+        for ev in parser.feed(&chunk) {
+            match ev {
+                AgentStreamEvent::Content { text } => content.push_str(&text),
+                AgentStreamEvent::Reasoning { text } => reasoning.push_str(&text),
+                AgentStreamEvent::Tool {
+                    id,
+                    name,
+                    label,
+                    status,
+                } => {
+                    tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+                }
+                AgentStreamEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => {
+                    usage = Some((prompt_tokens, completion_tokens));
+                }
+                AgentStreamEvent::Error { message } => {
+                    frame_error = frame_error.or(Some(message));
+                }
+            }
+            // TS: `Date.now() - lastFlush > 400` with lastFlush starting at
+            // 0 — the first event flushes immediately.
+            if last_flush.is_none_or(|t| t.elapsed() > Duration::from_millis(400)) {
+                last_flush = Some(Instant::now());
+                flush!("streaming");
+            }
+        }
+    };
+    for ev in parser.finish() {
+        match ev {
+            AgentStreamEvent::Content { text } => content.push_str(&text),
+            AgentStreamEvent::Reasoning { text } => reasoning.push_str(&text),
+            AgentStreamEvent::Tool {
+                id,
+                name,
+                label,
+                status,
+            } => {
+                tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+            }
+            AgentStreamEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+            } => {
+                usage = Some((prompt_tokens, completion_tokens));
+            }
+            AgentStreamEvent::Error { message } => {
+                frame_error = frame_error.or(Some(message));
+            }
+        }
+    }
+
+    // A failure frame ends the turn as an ERROR whose content IS the reason —
+    // the surfaced error Jon asked for, visible in the chat instead of an
+    // empty reply nobody can explain — and the tail chain does not fire:
+    // retrying a provider that just refused is the loop this closes.
+    if let Some(message) = frame_error {
+        content = format!("(agent error: {message})");
+        flush!("error");
+        ledger!();
+        return;
+    }
+    if errored {
+        flush!("error");
+        ledger!();
+        return;
+    }
+    flush!("complete");
+    let _ = touch_conversation(&state.pg, &conversation_id, None).await;
+    ledger!();
+    // First-exchange naming: the Titler upgrades the mechanical truncated
+    // title once there's a real exchange to name.
+    {
+        let state = state.clone();
+        let conversation_id = conversation_id.clone();
+        tokio::spawn(async move {
+            maybe_retitle_conversation(&state, &conversation_id).await;
+        });
+    }
+    // Confab guard on the final reply (structural). The fleet stream gives
+    // tool names, so zero-tool-claim + secret-leak apply here. annotate/strict
+    // pin the findings onto the message row (the UI renders a caveat;
+    // transcripts never see it); strict also redacts leaked secrets from the
+    // SAVED copy so future turns can't re-feed them.
+    //
+    // AWAITED, AND AHEAD OF THE INDEX AND THE NOTIFICATION, because both take
+    // a COPY of `content` — as detached tasks below them, strict mode scrubbed
+    // the `messages` row while `indexActivity` had already put the unredacted
+    // reply into the owner's brain, where nothing ever re-indexes it, and
+    // where `search_knowledge` hands it back to a model — the one thing
+    // guardrails' cardinal invariant forbids — and `notifyPlanMentions` had
+    // already mailed it. Failure here must not fail the persist, so the whole
+    // block is caught rather than flushed as errored.
+    if !content.is_empty()
+        && let Some(meta) = usage_meta.as_ref()
+    {
+        let guard = async {
+            let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+            let (findings, mode) = guard_chat_reply(
+                &state.pg,
+                &content,
+                &tool_names,
+                "",
+                &format!("chat:{}", meta.agent_model),
+                &meta.agent_model,
+                Spread::Contained,
+            )
+            .await;
+            if findings.is_empty() || (mode != GuardMode::Annotate && mode != GuardMode::Strict) {
+                return Ok(());
+            }
+            if mode == GuardMode::Strict && needs_redaction(&findings) {
+                content = redact_secrets(&content, None).0;
+                reasoning = redact_secrets(&reasoning, None).0;
+                flush!("complete");
+            }
+            // Scrubbed: a pinned finding carries a verbatim excerpt of the
+            // flagged span, and `zero_tool_claim` does not truncate its own.
+            let scrubbed: Vec<Finding> = redact_findings(&findings);
+            set_message_guard(&state.pg, &message_id, &scrubbed).await
+        };
+        let _ = guard.await;
+    }
+    if let Some(meta) = usage_meta
+        .as_ref()
+        .filter(|m| m.plan.is_some() && !content.trim().is_empty())
+    {
+        let plan = meta.plan.as_ref().expect("filtered above");
+        // The reply's ambient copy, plan-owner-scoped.
+        {
+            let pg = state.pg.clone();
+            let doc = IndexDoc {
+                source_type: "plan".into(),
+                source_id: message_id.clone(),
+                title: Some(format!(
+                    "Plan ({}) · {}",
+                    plan.title.clone().unwrap_or_else(|| "Untitled".into()),
+                    describe_agent(&meta.agent_model).label
+                )),
+                text: content.clone(),
+                payload: Some(
+                    vec![
+                        ("planId".to_string(), json!(conversation_id)),
+                        ("planOwnerId".to_string(), json!(plan.owner_user_id)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                href: Some("/plan".into()),
+            };
+            tokio::spawn(async move {
+                let qd = crate::retrieval::qdrant::real_deps();
+                let ed = crate::retrieval::embed::real_deps();
+                let _ = index_activity(&pg, &qd, &ed, &doc).await;
+            });
+        }
+        // An agent turn @mentioning a collaborator notifies like a human one.
+        {
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+            let conversation_id = conversation_id.clone();
+            let label = describe_agent(&meta.agent_model).label;
+            let content = content.clone();
+            let title = plan.title.clone();
+            let pg = state.pg.clone();
+            tokio::spawn(async move {
+                notify_plan_mentions(
+                    &notify,
+                    &pg,
+                    &conversation_id,
+                    "",
+                    &label,
+                    &content,
+                    title.as_deref(),
+                )
+                .await;
+            });
+        }
+    }
+    // Messages queued while this reply streamed become the next turn.
+    if let Some(meta) = usage_meta {
+        let state = state.clone();
+        let conversation_id = conversation_id.clone();
+        tokio::spawn(async move {
+            continue_conversation(
+                &state,
+                &conversation_id,
+                &TurnMeta {
+                    agent_model: meta.agent_model,
+                    tier: meta.tier,
+                    plan: meta.plan,
+                },
+            )
+            .await;
+        });
+    }
+}

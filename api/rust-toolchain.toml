@@ -1,0 +1,7 @@
+# The toolchain pin is the source of truth for devboxes and CI
+# (.github/workflows/ci.yml reads the same version — keep them in sync).
+# The host devbox runs distro rust at exactly this version, where this file is
+# inert; inside a devbox rustup honors it per-invocation.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

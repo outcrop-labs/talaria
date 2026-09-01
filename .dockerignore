@@ -17,6 +17,12 @@ node_modules
 **/dist
 **/coverage
 
+# Rust build output — the root Dockerfile's `COPY . .` build stage would
+# otherwise ship a devbox's compiled artifacts into the image layer. The Rust
+# build stage (docs/RUST-MIGRATION.md, prod-cutover phase) compiles from
+# source and needs no target/ from the context.
+api/target
+
 # Instance state — never bake a machine's data or credentials into a layer.
 fleet
 stack

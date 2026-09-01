@@ -73,13 +73,18 @@ async function gh(path: string, token: string, init: RequestInit = {}): Promise<
   return fetch(`${GH}${path}`, { ...init, headers: { ...HEADERS, authorization: `Bearer ${token}`, ...(init.headers ?? {}) } })
 }
 
-/** RS256 app JWT — GitHub Apps authenticate to /app endpoints with this. */
-function appJwt(appId: string, privateKeyPem: string): string {
-  const now = Math.floor(Date.now() / 1000)
+/** RS256 app JWT — GitHub Apps authenticate to /app endpoints with this.
+ *  `nowSecs` is injectable so the cross-language vectors (scripts/
+ *  gen-github-jwt-vectors.mjs) can pin the bytes; runtime always uses now. */
+export function appJwtAt(appId: string, privateKeyPem: string, nowSecs: number): string {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
-  const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iat: now - 60, exp: now + 9 * 60, iss: appId })}`
+  const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iat: nowSecs - 60, exp: nowSecs + 9 * 60, iss: appId })}`
   const sig = createSign('RSA-SHA256').update(unsigned).sign(privateKeyPem).toString('base64url')
   return `${unsigned}.${sig}`
+}
+
+function appJwt(appId: string, privateKeyPem: string): string {
+  return appJwtAt(appId, privateKeyPem, Math.floor(Date.now() / 1000))
 }
 
 let cachedInstallTokens = new Map<string, { token: string; expiresAt: number }>()

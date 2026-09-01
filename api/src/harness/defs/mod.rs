@@ -1,0 +1,31 @@
+// THE DEFS — port of harness/defs/*.ts, one Rust module per TS file. Each is
+// a prompt, an output contract, and what to do when the contract holds or
+// breaks, declared through `define.rs` and honored by nobody but `run.rs`.
+//
+// REGISTERING IS THE LAST STEP OF A PORT, not a follow-up: a def that is not
+// in the registry is invisible in the two ways that matter most (the fitness
+// suite cannot replay its fixtures; the admin panel cannot show its floor).
+// The registry itself crosses once the defs are here to fill it.
+
+pub mod blurb_writer;
+pub mod briefer;
+pub mod channel_plan;
+pub mod concluder;
+pub mod distiller;
+pub mod hermes_documents;
+pub mod hermes_google;
+pub mod hermes_governance;
+pub mod hermes_knowledge;
+pub mod hermes_research;
+pub mod inbox_focus;
+pub mod judge;
+pub mod librarian;
+pub mod muse;
+pub mod outreach;
+pub mod plan_doc;
+pub mod research;
+pub mod secret_handles;
+pub mod summarizer;
+pub mod titler;
+pub mod work_session;
+pub mod workbench;

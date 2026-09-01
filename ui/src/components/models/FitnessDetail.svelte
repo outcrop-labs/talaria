@@ -108,7 +108,7 @@
       )
     } else if (c.narrowedBecause && c.ended < c.requested) {
       out.push(
-        `This sweep started ${c.requested} fixtures wide and was down to ${c.ended} when it finished, after the provider pushed back ("${c.narrowedBecause}"). That is your deployment's ceiling, not a property of this model. Re-run at ${c.ended} or lower for a clean read.`,
+        `This sweep started ${c.requested} fixtures wide and was down to ${c.ended} when it finished, after the provider pushed back ("${c.narrowedBecause}"). That was this deployment's ceiling on ${new Date(record.at).toLocaleDateString()} — the run this record came from, not necessarily the deployment as it stands now — and it is not a property of this model. Re-run at ${c.ended} or lower for a clean read.`,
       )
     } else if (c.narrowedBecause) {
       // Narrowed and recovered. Said anyway, briefly: the timings in this run

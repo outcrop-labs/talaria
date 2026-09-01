@@ -33,9 +33,17 @@ holds no database and no identity — it authenticates connecting agents by aski
 (`GET /api/users` is the fleet-wide auth oracle; `agent-auth.ts` and `mcp/README.md` carry
 the warning). Two transports: stdio for one agent, streamable-HTTP for the whole fleet.
 
+**The Rust api (`api/`)** is the backend being ported to — a third plane only while the
+port runs: the app's TS handler forwards migrated `/api` prefixes to it on loopback
+(`server/rust-proxy.ts`, gated on `TALARIA_RUST_API_URL`; unset serves everything from TS,
+which stays the default). The LLM gateway is served from it today; the batch list, the
+coexistence rules and the end state (the TS server deleted) are
+[`docs/RUST-MIGRATION.md`](./RUST-MIGRATION.md).
+
 | Surface | Port | Notes |
 | :--- | :--- | :--- |
 | The app (dev and container) | 5273 | `PORT` in bare prod |
+| The Rust api (the port; axum) | 5274 | dev/coexistence only, loopback — see `docs/RUST-MIGRATION.md` |
 | talaria-mcp | 5280 | spawned by the app as a child process |
 | Postgres / Redis (dev) | 5544 / 6399 | dev infra, `--restart unless-stopped` |
 | Qdrant / TEI / MinIO / SearXNG (dev) | 6333 / 8055 / 9010 / 8888 | retrieval, embeddings, the built-in bucket, search |

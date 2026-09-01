@@ -1,0 +1,498 @@
+// The coexistence switch, tested without a Rust api (house rule: no
+// service-dependent tests). fetch is stubbed per case; what's under test is
+// the decision table — when to forward, what survives the hop, and the
+// no-fallback posture when the Rust side is down.
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { maybeProxy } from './rust-proxy'
+
+const req = (path: string, init?: RequestInit) =>
+  new Request(`http://talaria.test${path}`, init)
+
+describe('maybeProxy', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it('forwards nothing when the env is unset — byte-identical TS behavior', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', '')
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    // Even a migrated prefix: no env, no proxy, no fetch call.
+    expect(await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards migrated prefixes with query intact, hop-by-hop stripped', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    let sawTarget = ''
+    let sawHeaders: Headers | null = null
+    vi.stubGlobal(
+      'fetch',
+      (async (target: string, init: { headers: Headers }) => {
+        sawTarget = target
+        sawHeaders = init.headers
+        return new Response('{"object":"list"}', { status: 200, headers: { 'content-type': 'application/json' } })
+      }) as unknown as typeof globalThis.fetch,
+    )
+
+    const res = await maybeProxy(
+      req('/api/llm/v1/models?limit=2', { headers: { authorization: 'Bearer tlk_x', host: 'talaria.test:80' } }),
+      '/api/llm/v1/models',
+    )
+    expect(res).not.toBeNull()
+    expect(res!.status).toBe(200)
+
+    expect(sawTarget).toBe('http://127.0.0.1:5274/api/llm/v1/models?limit=2')
+    expect(sawHeaders!.get('authorization')).toBe('Bearer tlk_x') // rides through
+    expect(sawHeaders!.get('host')).toBeNull() // hop-by-hop dies here
+    // The response allow-list: content-type through, nothing the Rust api
+    // says about itself.
+    expect(res!.headers.get('content-type')).toBe('application/json')
+    expect(res!.headers.get('server')).toBeNull()
+  })
+
+  it('does not forward prefixes outside the switch list', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
+    // admin.update is the PERMANENT TS resident: it rebuilds ui/dist and
+    // restarts the bun process it runs in — it deploys the TS half itself.
+    expect(await maybeProxy(req('/api/admin/update'), '/api/admin/update')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards the R23 singles — the gap ledger, the template library, the skill registry, the plans family, and the agent plane under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/gaps',
+      '/api/gaps/00000000-0000-4000-8000-000000000000',
+      '/api/templates',
+      '/api/templates/00000000-0000-4000-8000-000000000000',
+      '/api/skills',
+      '/api/skills/talaria/seed-a-skill',
+      // The plans family is whole now: draft crossed with the channels
+      // mount, doc and members crossed with this batch.
+      '/api/plans/00000000-0000-4000-8000-000000000000/draft',
+      '/api/plans/00000000-0000-4000-8000-000000000000/doc',
+      '/api/plans/00000000-0000-4000-8000-000000000000/members',
+      // One prefix carries the whole agent plane: the agent-key verbs…
+      '/api/agent/gap',
+      '/api/agent/problem',
+      '/api/agent/message-user',
+      // …the persona media pair (matched by the same character prefix)…
+      '/api/agent-media/claude-3',
+      '/api/agent-media/claude-3/save',
+      // …and the image describer, its own one-file family.
+      '/api/vision/describe',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(15)
+  })
+
+  it('forwards the R23 one-route families exactly — alerts, home, search, the Muse, inference, join, the instance card, and me/assistant', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/alerts',
+      '/api/home',
+      '/api/search',
+      '/api/muse',
+      '/api/inference',
+      '/api/join',
+      '/api/well-known/talaria-instance',
+      '/api/me/assistant',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(8)
+  })
+
+  it('forwards the memory write by path SHAPE — the id is in the path, and the bare path has no route', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/memory/00000000-0000-4000-8000-000000000000'), '/api/memory/00000000-0000-4000-8000-000000000000')).not.toBeNull()
+    // Anchored both ends: deeper paths and the bare path do not match.
+    expect(await maybeProxy(req('/api/memory/x/tail'), '/api/memory/x/tail')).toBeNull()
+    expect(await maybeProxy(req('/api/memory'), '/api/memory')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards the comms plane whole — every channels.* route under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/channels',
+      '/api/channels/00000000-0000-4000-8000-000000000000',
+      '/api/channels/00000000-0000-4000-8000-000000000000/agents',
+      '/api/channels/00000000-0000-4000-8000-000000000000/conclude',
+      '/api/channels/00000000-0000-4000-8000-000000000000/events',
+      '/api/channels/00000000-0000-4000-8000-000000000000/members',
+      '/api/channels/00000000-0000-4000-8000-000000000000/messages',
+      '/api/channels/00000000-0000-4000-8000-000000000000/messages/00000000-0000-4000-8000-000000000000',
+      '/api/channels/00000000-0000-4000-8000-000000000000/messages/00000000-0000-4000-8000-000000000000/reactions',
+      '/api/channels/00000000-0000-4000-8000-000000000000/read',
+      // The plan-draft mount that crossed earlier — the prefix subsumes the
+      // SHAPES entry it used to need.
+      '/api/channels/00000000-0000-4000-8000-000000000000/plan',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(11)
+  })
+
+  it('forwards the conversations family — the list and detail prefixes, chat whole-path', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/conversations',
+      '/api/conversations?kind=plan',
+      '/api/conversations/00000000-0000-4000-8000-000000000000',
+      '/api/dms',
+      // The durable chat itself: whole-path EXACT, one POST route.
+      '/api/chat',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(5)
+  })
+
+  it('forwards the inbox.focus family whole — the queue, the state write, the actions, the SSE command, and the conversations', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/inbox/focus',
+      '/api/inbox/focus/summary',
+      '/api/inbox/focus/state',
+      '/api/inbox/focus/actions',
+      // The SSE command stream — the prefix carries it into the streaming
+      // hop; the route itself lives in Rust's no-timeout router.
+      '/api/inbox/focus/command',
+      '/api/inbox/focus/conversations',
+      '/api/inbox/focus/conversations/current',
+      '/api/inbox/focus/conversations/00000000-0000-4000-8000-000000000000',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(8)
+  })
+
+  it('forwards the brief family whole — the document read, the cursor, the line verdict, and the delegation trio', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/brief',
+      '/api/brief?tz=America/New_York',
+      '/api/brief/delegate',
+      '/api/brief/item',
+      '/api/brief/read',
+      '/api/brief/reply',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(6)
+  })
+
+  it('forwards the secrets family whole — the vault, its folders, the reveal, the share, the relay, and git\'s door', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/secrets',
+      '/api/secrets?folder=00000000-0000-4000-8000-000000000000',
+      '/api/secrets/folders',
+      '/api/secrets/reveal',
+      '/api/secrets/share',
+      '/api/secrets/relay',
+      '/api/secrets/git-credential',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(7)
+  })
+
+  it('forwards the integrations/google family whole — both connect/callback pairs, the org plane, the approvals, and every surface in both flavors', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/integrations/google',
+      '/api/integrations/google/connect',
+      '/api/integrations/google/callback?code=x&state=y',
+      '/api/integrations/google/org',
+      '/api/integrations/google/org/connect',
+      '/api/integrations/google/org/callback',
+      '/api/integrations/google/org/health',
+      '/api/integrations/google/org/provision',
+      '/api/integrations/google/pending',
+      '/api/integrations/google/pending/00000000-0000-4000-8000-000000000000',
+      '/api/integrations/google/calendar/events',
+      '/api/integrations/google/drive/files?q=name',
+      '/api/integrations/google/drive/import',
+      '/api/integrations/google/gmail/messages?q=in%3Ainbox',
+      '/api/integrations/google/gmail/send',
+      '/api/integrations/google/agent/calendar',
+      '/api/integrations/google/agent/drive',
+      '/api/integrations/google/agent/gmail',
+      // Static segments win the matchit priority — labels and organize are
+      // their own routes, and the {id} shape catches everything else.
+      '/api/integrations/google/agent/gmail/labels',
+      '/api/integrations/google/agent/gmail/organize',
+      '/api/integrations/google/agent/gmail/18c9f4a2b7e3d501',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(21)
+  })
+
+  it('forwards the workbench family whole — profiles, flow, github, harnesses, the job strip, repo requests, and the per-agent grants', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/workbench',
+      '/api/workbench/flow',
+      '/api/workbench/github',
+      '/api/workbench/github?installations=1',
+      '/api/workbench/harnesses',
+      '/api/workbench/harnesses?slug=probe-harness',
+      '/api/workbench/jobs',
+      '/api/workbench/jobs?taskId=00000000-0000-4000-8000-000000000000',
+      '/api/workbench/repo-requests',
+      '/api/workbench/repos/00000000-0000-4000-8000-000000000000',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(10)
+  })
+
+  it('forwards the model-identity plane — the picker catalog and the effort feed under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of ['/api/models', '/api/models/efforts']) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards the admin wave-1 groups, /login riding under its parent', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/agent-role-templates',
+      '/api/admin/password-accounts',
+      '/api/admin/google-client',
+      '/api/admin/google-client/login',
+      '/api/admin/instance',
+      '/api/admin/permissions',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(6)
+  })
+
+  it('forwards the keys group — the list and the id route under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of ['/api/keys', '/api/keys/00000000-0000-4000-8000-000000000000']) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards the teams group — list, id, and members under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/teams',
+      '/api/teams/00000000-0000-4000-8000-000000000000',
+      '/api/teams/00000000-0000-4000-8000-000000000000/members',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('forwards the workflows group — list and id under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of ['/api/workflows', '/api/workflows/00000000-0000-4000-8000-000000000000']) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards the notifications route — the bell and the settings panel under one path', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/notifications'), '/api/notifications')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards /api/me exactly — the profile and the firehose, not the other me.* planes', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/me'), '/api/me')).not.toBeNull()
+    // me/events crossed with the realtime slice — the person's own SSE
+    // firehose, served by Rust's dedicated-subscriber streams.
+    expect(await maybeProxy(req('/api/me/events'), '/api/me/events')).not.toBeNull()
+    // me/mcp crossed with the mcp family — it's EXACT on its own line now.
+    expect(await maybeProxy(req('/api/me/mcp'), '/api/me/mcp')).not.toBeNull()
+    // me.assistant crossed with the agent plane — EXACT on its own line too.
+    expect(await maybeProxy(req('/api/me/assistant'), '/api/me/assistant')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(4)
+  })
+
+  it('forwards the mcp family whole — but the app-server gateway dispatch stays TS (rule 10)', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    // The registry plane: the roster read, server CRUD, the marketplace
+    // library/icon pair, the admin probe, and the OAuth start/callback pair.
+    expect(await maybeProxy(req('/api/mcp'), '/api/mcp')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/servers'), '/api/mcp/servers')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/servers/abc'), '/api/mcp/servers/abc')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/library'), '/api/mcp/library')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/icon?domain=example.com'), '/api/mcp/icon')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/test'), '/api/mcp/test')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/oauth/start?server=x&scope=me'), '/api/mcp/oauth/start')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/oauth/callback?code=x&state=y'), '/api/mcp/oauth/callback')).not.toBeNull()
+    // The gateway itself crossed — registry-published and builtin servers
+    // relay through Rust, whose effective-mcp resolver enforces the grants.
+    expect(await maybeProxy(req('/api/mcp/gw/github'), '/api/mcp/gw/github')).not.toBeNull()
+    expect(await maybeProxy(req('/api/mcp/gw/talaria'), '/api/mcp/gw/talaria')).not.toBeNull()
+    // …but app servers (registry rows named `app-{slug}`) dispatch in-process
+    // through the app module — authors' TS/node code, the port's rule 10.
+    // STAY_TS carves them out; a hit is served by TS, never proxied.
+    expect(await maybeProxy(req('/api/mcp/gw/app-contacts'), '/api/mcp/gw/app-contacts')).toBeNull()
+    expect(await maybeProxy(req('/api/mcp/gw/app-anything/at/all'), '/api/mcp/gw/app-anything/at/all')).toBeNull()
+    // The carve-out is anchored to the app- name shape: a registry server
+    // literally named "app-x" is indistinguishable, but "appendix" is not.
+    expect(await maybeProxy(req('/api/mcp/gw/appendix'), '/api/mcp/gw/appendix')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(11)
+  })
+
+  it('forwards the fleet defs surface whole — the list, the detail trio, and the MCP version hook', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/fleet/defs',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000/edit',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000/versions',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000/mcp',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(5)
+  })
+
+  it('forwards the run watch stream by path SHAPE — the id is in the path, and the rest of /api/runs is still TS', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(
+      await maybeProxy(req('/api/runs/00000000-0000-4000-8000-000000000000/events'), '/api/runs/00000000-0000-4000-8000-000000000000/events'),
+    ).not.toBeNull()
+    // The shape is anchored: deeper or shallower paths do not match.
+    expect(await maybeProxy(req('/api/runs/x/events/tail'), '/api/runs/x/events/tail')).toBeNull()
+    expect(await maybeProxy(req('/api/runs/events'), '/api/runs/events')).toBeNull()
+    // The rest of the runs surface still belongs to TS — a /api/runs prefix
+    // would strand the list, the detail, cancel, and decide on a Rust 404.
+    expect(await maybeProxy(req('/api/runs'), '/api/runs')).toBeNull()
+    expect(await maybeProxy(req('/api/runs/00000000-0000-4000-8000-000000000000'), '/api/runs/00000000-0000-4000-8000-000000000000')).toBeNull()
+    expect(await maybeProxy(req('/api/runs/00000000-0000-4000-8000-000000000000/cancel'), '/api/runs/00000000-0000-4000-8000-000000000000/cancel')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards exact-match routes — and the agents sub-paths the agent prefix now carries', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    // The route IS the group…
+    expect(await maybeProxy(req('/api/agents'), '/api/agents')).not.toBeNull()
+    expect(await maybeProxy(req('/api/apps'), '/api/apps')).not.toBeNull()
+    expect(await maybeProxy(req('/api/admin/model-roles'), '/api/admin/model-roles')).not.toBeNull()
+    // …and register/heartbeat crossed on the fleet side: EXACT and SHAPES
+    // carry them (the '/api/agent' prefix reaches them too — every arm of
+    // the decision table says the same thing here).
+    expect(await maybeProxy(req('/api/agents/register'), '/api/agents/register')).not.toBeNull()
+    expect(await maybeProxy(req('/api/agents/x/heartbeat'), '/api/agents/x/heartbeat')).not.toBeNull()
+    // The app-server gateway's sub-paths still belong to TS — the modules it
+    // dispatches into are app authors' code (rule 10).
+    expect(await maybeProxy(req('/api/apps/contacts/x'), '/api/apps/contacts/x')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(5)
+  })
+
+  it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:5274')
+      }) as unknown as typeof globalThis.fetch,
+    )
+    const res = await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')
+    expect(res).not.toBeNull()
+    expect(res!.status).toBe(502)
+    // The exact boundary sentence from llm.v1.chat.completions.ts — the
+    // ECONNREFUSED text names the Rust api's host:port and must not leak.
+    expect(await res!.text()).toBe('{"error":{"message":"upstream unreachable"}}')
+  })
+
+  it('streams the upstream status and body through untouched', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"error":{"message":"invalid API key"}}', { status: 401 })),
+    )
+    const res = await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')
+    expect(res!.status).toBe(401) // a 401 from Rust is a 401 to the caller
+    expect(await res!.text()).toBe('{"error":{"message":"invalid API key"}}')
+  })
+
+  it('carries the no-store triad the secrets routes answer with — pragma and referrer-policy ride through', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('{"value":"x"}', {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              'cache-control': 'no-store, no-cache, must-revalidate, private',
+              pragma: 'no-cache',
+              'referrer-policy': 'no-referrer',
+              // A header the allow-list does not name: the Rust api's own
+              // business, not ours to re-claim under this origin.
+              server: 'talaria-api',
+            },
+          }),
+      ),
+    )
+    const res = await maybeProxy(req('/api/secrets/reveal'), '/api/secrets/reveal')
+    expect(res!.headers.get('cache-control')).toBe('no-store, no-cache, must-revalidate, private')
+    expect(res!.headers.get('pragma')).toBe('no-cache')
+    expect(res!.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(res!.headers.get('server')).toBeNull()
+  })
+})

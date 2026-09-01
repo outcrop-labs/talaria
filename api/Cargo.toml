@@ -1,0 +1,99 @@
+# talaria-api — the Rust successor to the TS fetch handler (ui/src/server).
+# Strangler-fig migration: this service takes over route groups one prefix at a
+# time; the TS app reverse-proxies migrated prefixes to it. docs/RUST-MIGRATION.md.
+[package]
+name = "talaria-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints.clippy]
+# await_holding_lock: the port maps TS's single-threaded bookkeeping onto tokio
+# — the guards this flags sit on leaf-scoped config/registry caches that are
+# never contended across the await they span (same pattern the TS original had
+# with plain object holds). Restructuring 80 sites to appease the lint would be
+# churn without a behavior change; revisit if a lock ever actually contends.
+await_holding_lock = "allow"
+# type_complexity: axum handler futures and the runs engine's dep structs are
+# honestly complex types; the TS originals were equally complex `Promise<...>`
+# chains that TS simply didn't make you spell out.
+type_complexity = "allow"
+
+[dependencies]
+# "multipart" for the uploads route's streamed form read (axum keeps the
+# feature opt-in; the cap-before-buffer discipline is the route's own).
+axum = { version = "0.8", features = ["multipart"] }
+# "sync" for the OnceCell-style serialization of capability-store writes.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
+tower = "0.5"
+# No `cors` feature on purpose: same-origin throughout (the repo's
+# same-origin-fetch invariant). The browser only ever talks to the TS app; the
+# TS→Rust hop is server-side.
+tower-http = { version = "0.7", features = ["trace", "timeout", "catch-panic", "request-id", "propagate-header"] }
+# NO "macros" feature, on purpose: runtime queries only during coexistence.
+# The schema moves with the TS MIGRATIONS array (ui/src/server/db/pg.ts —
+# append-only, sha256 checksums, advisory lock 8_314_207) and every devbox has
+# its own database, so compile-time statement checking would couple this build
+# to one devbox's schema. "derive" is for #[derive(FromRow)] structs only.
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+# rustls (not rustls-tls — renamed in reqwest 0.13) so nothing links OpenSSL;
+# the prod runtime image is bare alpine and must stay that way.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: Value::Object keeps INSERTION order, like a JS object. The
+# guard's annotate path does JSON.parse → mutate → stringify on an upstream
+# body and must not alphabetize it (TS preserves the upstream's key order);
+# merged upstream bodies likewise keep client-first order like TS's spread.
+#
+# float_roundtrip: parse floats at full accuracy. The DEFAULT is best-effort
+# and can land one ULP off the parsed digits — 0.9090909090909091 came back as
+# ...092 on the wire, a byte diff against the stored value TS reads back
+# exactly. Scores, prices and ratios all cross jsonb boundaries, so every
+# float this API parses (request bodies AND app_settings blobs) needs the
+# round-trip-exact parse, not the fast one.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+# serde_json's own ordered map only carries `Value`s (its methods live on
+# `Map<String, Value>`), but the fitness index is an ordered map of TYPED
+# entries — see the `FitnessIndex` alias in src/fitness/surface.rs. Already a
+# transitive dep of serde_json's preserve_order; named here for the typed map.
+indexmap = { version = "2", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+sha2 = "0.11"
+# skill_summaries' content key — node's createHash('sha1'). Same RustCrypto
+# family as sha2; only the digest width differs.
+sha1 = "0.10"
+# SigV4's HMAC-SHA256 (storage.ts's createHmac) — same RustCrypto family as
+# sha2/aes-gcm/scrypt; hand-rolling HMAC buys nothing.
+hmac = "0.13"
+# The GitHub App JWT (github.ts appJwt) is RS256 — RSA-SHA256 over a PKCS#8
+# PEM. Same RustCrypto family; the sha2 feature wires the digest in.
+rsa = { version = "0.9", features = ["sha2"] }
+scrypt = "0.12"
+aes-gcm = "0.11"
+base64 = "0.23"
+uuid = { version = "1", features = ["v4"] }
+getrandom = "0.3"
+regex = "1"
+url = "2"
+futures-util = "0.3"
+# Wall-clock reads in IANA zones (tz.ts localMoment + the brief/digest clocks).
+# std only — no clock/oldtime; "now" is always passed in as epoch ms (the house
+# rule that keeps the scheduler testable). Already in the tree via chrono-tz.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+# Transactional mail's SMTP leg (email.ts). Hand-rolling the dialect is one
+# page of RFC 5321, but hand-rolling the MIME is where silent corruption
+# breeds — encoded-word subjects, quoted-printable, multipart/alternative
+# boundaries. tokio1 + rustls keeps the no-OpenSSL invariant (alpine runtime).
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+serde_yaml_ng = "0.10.0"
+# DNS TXT lookups for org-domain verification (org-domains.ts resolveTxt).
+# Async against the system resolver, like node:dns — no need for a DoH
+# profile; a verifier that cannot reach DNS reports unverifiable, which is
+# the honest answer for that operator anyway.
+hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }
+boa_engine = { version = "0.22.0", default-features = false }

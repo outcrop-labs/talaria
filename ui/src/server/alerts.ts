@@ -262,6 +262,19 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         } timed by nothing and will never run. A job's module has to be in the runtime graph before startScheduler(): imported from the server entry, not lazily from a route.`,
       href: '/observability',
     })
+  } else if (unarmed.length === jobs.length && process.env.TALARIA_SCHEDULER === 'rust') {
+    // Not an emergency and not a bug: the schedule was handed to the Rust api
+    // (TALARIA_SCHEDULER=rust), which registers and arms its own table. This
+    // process arming too would double-fire per-instance jobs, so standing
+    // down is the healthy state — worth a line on /observability, not a
+    // pager.
+    alerts.push({
+      severity: 'info',
+      title: 'Background jobs run on the Rust api',
+      detail:
+        'TALARIA_SCHEDULER=rust, so this process arms nothing by design. The job table lives in the Rust api; its boot log says what it armed, and the same env value is what told this scheduler to stand down.',
+      href: '/observability',
+    })
   } else if (unarmed.length === jobs.length) {
     // Registered but never armed: `startScheduler()` was not called, or it
     // returned early. Expected on a developer's machine (`vite dev` does not

@@ -1,0 +1,729 @@
+{
+  "cases": [
+    {
+      "name": "null",
+      "input": "null",
+      "yaml": "null\n"
+    },
+    {
+      "name": "true",
+      "input": "true",
+      "yaml": "true\n"
+    },
+    {
+      "name": "false",
+      "input": "false",
+      "yaml": "false\n"
+    },
+    {
+      "name": "int",
+      "input": "25",
+      "yaml": "25\n"
+    },
+    {
+      "name": "neg-int",
+      "input": "-17",
+      "yaml": "-17\n"
+    },
+    {
+      "name": "float",
+      "input": "0.1",
+      "yaml": "0.1\n"
+    },
+    {
+      "name": "float-2",
+      "input": "3.5",
+      "yaml": "3.5\n"
+    },
+    {
+      "name": "exp-small",
+      "input": "1e-7",
+      "yaml": "1e-7\n"
+    },
+    {
+      "name": "exp-float",
+      "input": "1.5e-10",
+      "yaml": "1.5e-10\n"
+    },
+    {
+      "name": "exp-big",
+      "input": "1e+21",
+      "yaml": "1e+21\n"
+    },
+    {
+      "name": "exp-mid",
+      "input": "100000",
+      "yaml": "100000\n"
+    },
+    {
+      "name": "big-precision",
+      "input": "1.2345678901234568e+29",
+      "yaml": "1.2345678901234568e+29\n"
+    },
+    {
+      "name": "zero",
+      "input": "0",
+      "yaml": "0\n"
+    },
+    {
+      "name": "num-root-plain",
+      "input": "100000",
+      "yaml": "100000\n"
+    },
+    {
+      "name": "empty-map",
+      "input": "{}",
+      "yaml": "{}\n"
+    },
+    {
+      "name": "empty-seq",
+      "input": "[]",
+      "yaml": "[]\n"
+    },
+    {
+      "name": "null-val",
+      "input": "{\"a\":null}",
+      "yaml": "a: null\n"
+    },
+    {
+      "name": "all-null",
+      "input": "{\"a\":null,\"b\":null}",
+      "yaml": "a: null\nb: null\n"
+    },
+    {
+      "name": "mixed-null",
+      "input": "{\"a\":1,\"b\":null}",
+      "yaml": "a: 1\nb: null\n"
+    },
+    {
+      "name": "seq-null",
+      "input": "{\"k\":[null]}",
+      "yaml": "k:\n  - null\n"
+    },
+    {
+      "name": "empties-inline",
+      "input": "{\"m\":{},\"s\":[]}",
+      "yaml": "m: {}\ns: []\n"
+    },
+    {
+      "name": "seq-in-seq",
+      "input": "[[\"x\"]]",
+      "yaml": "- - x\n"
+    },
+    {
+      "name": "seq-deep",
+      "input": "[[[\"x\"]]]",
+      "yaml": "- - - x\n"
+    },
+    {
+      "name": "seq-mixed-nest",
+      "input": "[\"a\",[\"b\",[\"c\"]]]",
+      "yaml": "- a\n- - b\n  - - c\n"
+    },
+    {
+      "name": "seq-of-map",
+      "input": "[[{\"a\":1}]]",
+      "yaml": "- - a: 1\n"
+    },
+    {
+      "name": "map-seq-under-key",
+      "input": "{\"k\":[[1]]}",
+      "yaml": "k:\n  - - 1\n"
+    },
+    {
+      "name": "map-nest-agent",
+      "input": "{\"a\":[{\"b\":[\"c\",{\"d\":0}]}]}",
+      "yaml": "a:\n  - b:\n      - c\n      - d: 0\n"
+    },
+    {
+      "name": "single-pair-map",
+      "input": "{\"y\":1}",
+      "yaml": "y: 1\n"
+    },
+    {
+      "name": "empty",
+      "input": "\"\"",
+      "yaml": "\"\"\n"
+    },
+    {
+      "name": "space",
+      "input": "\" \"",
+      "yaml": "\" \"\n"
+    },
+    {
+      "name": "plain",
+      "input": "\"hello\"",
+      "yaml": "hello\n"
+    },
+    {
+      "name": "yes-stays-plain",
+      "input": "\"yes\"",
+      "yaml": "yes\n"
+    },
+    {
+      "name": "true-quoted",
+      "input": "\"True\"",
+      "yaml": "\"True\"\n"
+    },
+    {
+      "name": "mixed-case-bool",
+      "input": "\"tRue\"",
+      "yaml": "tRue\n"
+    },
+    {
+      "name": "tilde",
+      "input": "\"~\"",
+      "yaml": "\"~\"\n"
+    },
+    {
+      "name": "int-string",
+      "input": "\"123\"",
+      "yaml": "\"123\"\n"
+    },
+    {
+      "name": "neg-int-string",
+      "input": "\"-42\"",
+      "yaml": "\"-42\"\n"
+    },
+    {
+      "name": "plus-int-string",
+      "input": "\"+42\"",
+      "yaml": "\"+42\"\n"
+    },
+    {
+      "name": "oct-string",
+      "input": "\"0o17\"",
+      "yaml": "\"0o17\"\n"
+    },
+    {
+      "name": "bad-oct",
+      "input": "\"0o18\"",
+      "yaml": "0o18\n"
+    },
+    {
+      "name": "hex-string",
+      "input": "\"0xFF\"",
+      "yaml": "\"0xFF\"\n"
+    },
+    {
+      "name": "hex-lower",
+      "input": "\"0xab\"",
+      "yaml": "\"0xab\"\n"
+    },
+    {
+      "name": "binary-not-core",
+      "input": "\"0b101\"",
+      "yaml": "0b101\n"
+    },
+    {
+      "name": "underscore-num",
+      "input": "\"1_000\"",
+      "yaml": "1_000\n"
+    },
+    {
+      "name": "date-stays-plain",
+      "input": "\"2026-08-29\"",
+      "yaml": "2026-08-29\n"
+    },
+    {
+      "name": "time-colon",
+      "input": "\"3:30\"",
+      "yaml": "3:30\n"
+    },
+    {
+      "name": "dot-inf",
+      "input": "\".Inf\"",
+      "yaml": "\".Inf\"\n"
+    },
+    {
+      "name": "neg-inf",
+      "input": "\"-.INF\"",
+      "yaml": "\"-.INF\"\n"
+    },
+    {
+      "name": "plus-inf",
+      "input": "\"+.inf\"",
+      "yaml": "\"+.inf\"\n"
+    },
+    {
+      "name": "nan",
+      "input": "\".NaN\"",
+      "yaml": "\".NaN\"\n"
+    },
+    {
+      "name": "neg-nan-not-core",
+      "input": "\"-.NaN\"",
+      "yaml": "-.NaN\n"
+    },
+    {
+      "name": "dot-five",
+      "input": "\".5\"",
+      "yaml": "\".5\"\n"
+    },
+    {
+      "name": "five-dot",
+      "input": "\"5.\"",
+      "yaml": "\"5.\"\n"
+    },
+    {
+      "name": "exp-string",
+      "input": "\"1e3\"",
+      "yaml": "\"1e3\"\n"
+    },
+    {
+      "name": "exp-signed",
+      "input": "\"+.1E5\"",
+      "yaml": "\"+.1E5\"\n"
+    },
+    {
+      "name": "exp-neg",
+      "input": "\"-2.5e-3\"",
+      "yaml": "\"-2.5e-3\"\n"
+    },
+    {
+      "name": "bare-dot",
+      "input": "\".\"",
+      "yaml": ".\n"
+    },
+    {
+      "name": "dash-x",
+      "input": "\"-x\"",
+      "yaml": "-x\n"
+    },
+    {
+      "name": "dash-alone",
+      "input": "\"-\"",
+      "yaml": "\"-\"\n"
+    },
+    {
+      "name": "question-mark",
+      "input": "\"?\"",
+      "yaml": "\"?\"\n"
+    },
+    {
+      "name": "dash-space",
+      "input": "\"- x\"",
+      "yaml": "\"- x\"\n"
+    },
+    {
+      "name": "bang-x",
+      "input": "\"!x\"",
+      "yaml": "\"!x\"\n"
+    },
+    {
+      "name": "amp-x",
+      "input": "\"&x\"",
+      "yaml": "\"&x\"\n"
+    },
+    {
+      "name": "at-x",
+      "input": "\"@x\"",
+      "yaml": "\"@x\"\n"
+    },
+    {
+      "name": "backtick-x",
+      "input": "\"`x\"",
+      "yaml": "\"`x\"\n"
+    },
+    {
+      "name": "percent-x",
+      "input": "\"%x\"",
+      "yaml": "\"%x\"\n"
+    },
+    {
+      "name": "hash-x",
+      "input": "\"#x\"",
+      "yaml": "\"#x\"\n"
+    },
+    {
+      "name": "comma-x",
+      "input": "\",x\"",
+      "yaml": "\",x\"\n"
+    },
+    {
+      "name": "bracket-x",
+      "input": "\"[x\"",
+      "yaml": "\"[x\"\n"
+    },
+    {
+      "name": "quote-x",
+      "input": "\"'x\"",
+      "yaml": "\"'x\"\n"
+    },
+    {
+      "name": "dquote-x",
+      "input": "\"\\\"x\"",
+      "yaml": "'\"x'\n"
+    },
+    {
+      "name": "pipe-x",
+      "input": "\"|x\"",
+      "yaml": "\"|x\"\n"
+    },
+    {
+      "name": "gt-x",
+      "input": "\">x\"",
+      "yaml": "\">x\"\n"
+    },
+    {
+      "name": "double-space",
+      "input": "\"a  b\"",
+      "yaml": "a  b\n"
+    },
+    {
+      "name": "interior-tab",
+      "input": "\"a\\tb\"",
+      "yaml": "a\tb\n"
+    },
+    {
+      "name": "colon-space",
+      "input": "\"a: b\"",
+      "yaml": "\"a: b\"\n"
+    },
+    {
+      "name": "colon-eol",
+      "input": "\"a:\"",
+      "yaml": "\"a:\"\n"
+    },
+    {
+      "name": "colon-tab",
+      "input": "\"a:\\tb\"",
+      "yaml": "\"a:\\tb\"\n"
+    },
+    {
+      "name": "trail-colon",
+      "input": "\"a:\"",
+      "yaml": "\"a:\"\n"
+    },
+    {
+      "name": "space-before-hash",
+      "input": "\"a #c\"",
+      "yaml": "\"a #c\"\n"
+    },
+    {
+      "name": "dash-plain-mid",
+      "input": "\"a-b\"",
+      "yaml": "a-b\n"
+    },
+    {
+      "name": "contains-quotes",
+      "input": "\"a: 'x'\"",
+      "yaml": "\"a: 'x'\"\n"
+    },
+    {
+      "name": "single-wins",
+      "input": "\"say \\\"hi\\\"\"",
+      "yaml": "say \"hi\"\n"
+    },
+    {
+      "name": "both-quotes",
+      "input": "\"it's \\\"it\\\"\"",
+      "yaml": "it's \"it\"\n"
+    },
+    {
+      "name": "neither-quote",
+      "input": "\"plain value\"",
+      "yaml": "plain value\n"
+    },
+    {
+      "name": "nbsp",
+      "input": "\" x\"",
+      "yaml": " x\n"
+    },
+    {
+      "name": "u2028",
+      "input": "\" x\"",
+      "yaml": " x\n"
+    },
+    {
+      "name": "c1-raw",
+      "input": "\"x\"",
+      "yaml": "\"x\"\n"
+    },
+    {
+      "name": "del-raw",
+      "input": "\"\"",
+      "yaml": "\"\"\n"
+    },
+    {
+      "name": "ctl-1",
+      "input": "\"\\u0001ctl\"",
+      "yaml": "\"\\x01ctl\"\n"
+    },
+    {
+      "name": "ctl-1b",
+      "input": "\"\\u001b\"",
+      "yaml": "\"\\e\"\n"
+    },
+    {
+      "name": "crlf",
+      "input": "\"a\\r\\nb\"",
+      "yaml": "\"a\\r\\nb\"\n"
+    },
+    {
+      "name": "crlf-long",
+      "input": "\"a\\ryyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"",
+      "yaml": "\"a\\ryyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"\n"
+    },
+    {
+      "name": "num-key",
+      "input": "{\"5\":1}",
+      "yaml": "\"5\": 1\n"
+    },
+    {
+      "name": "empty-key",
+      "input": "{\"\":1}",
+      "yaml": "\"\": 1\n"
+    },
+    {
+      "name": "empty-key-nest",
+      "input": "{\"\":{\"\":1}}",
+      "yaml": "\"\":\n  \"\": 1\n"
+    },
+    {
+      "name": "long-key-explicit",
+      "input": "{\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\":1}",
+      "yaml": "? kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\n: 1\n"
+    },
+    {
+      "name": "long-key-implicit-edge",
+      "input": "{\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\":1}",
+      "yaml": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: 1\n"
+    },
+    {
+      "name": "long-key-fold0",
+      "input": "{\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\":\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\"}",
+      "yaml": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:\n  word word word word word word word word word word word word word word word\n  word word word word word word word word word word word word word word word\n"
+    },
+    {
+      "name": "quoted-key-value",
+      "input": "{\"k\":\"a: 'b'\"}",
+      "yaml": "k: \"a: 'b'\"\n"
+    },
+    {
+      "name": "marker-key",
+      "input": "{\"%dir\":1}",
+      "yaml": "\"%dir\": 1\n"
+    },
+    {
+      "name": "two-lines",
+      "input": "\"line1\\nline2\"",
+      "yaml": "|-\nline1\nline2\n"
+    },
+    {
+      "name": "trail-nl",
+      "input": "\"trail\\n\"",
+      "yaml": "|\ntrail\n"
+    },
+    {
+      "name": "keep-chomp",
+      "input": "\"a\\n\\n\"",
+      "yaml": "|+\na\n\n"
+    },
+    {
+      "name": "blank-mid",
+      "input": "\"a\\n\\nb\"",
+      "yaml": "|-\na\n\nb\n"
+    },
+    {
+      "name": "blank-mid-nl",
+      "input": "{\"k\":\"a\\n\\nb\\n\"}",
+      "yaml": "k: |\n  a\n\n  b\n"
+    },
+    {
+      "name": "only-newlines",
+      "input": "\"\\n\\n\"",
+      "yaml": "|+\n\n\n"
+    },
+    {
+      "name": "quoted-line",
+      "input": "\"a\\n\\\"b\\\"\"",
+      "yaml": "|-\na\n\"b\"\n"
+    },
+    {
+      "name": "tab-line",
+      "input": "{\"k\":\"a\\n\\tb\\n\"}",
+      "yaml": "k: |\n  a\n  \tb\n"
+    },
+    {
+      "name": "lead-space",
+      "input": "\" x\\ny\"",
+      "yaml": "|1-\n x\ny\n"
+    },
+    {
+      "name": "lead-space-nl",
+      "input": "\" \\nx\"",
+      "yaml": "|1-\n \nx\n"
+    },
+    {
+      "name": "lead-space-k",
+      "input": "{\"k\":\" x\\ny\"}",
+      "yaml": "k: |2-\n   x\n  y\n"
+    },
+    {
+      "name": "marker-dashes",
+      "input": "\"----\"",
+      "yaml": "|-\n  ----\n"
+    },
+    {
+      "name": "marker-dots",
+      "input": "\"...x\"",
+      "yaml": "|-\n  ...x\n"
+    },
+    {
+      "name": "marker-mid",
+      "input": "\"a\\n---x\"",
+      "yaml": "|-\n  a\n  ---x\n"
+    },
+    {
+      "name": "marker-mid-k",
+      "input": "{\"k\":\"a\\n---x\"}",
+      "yaml": "k: |-\n  a\n  ---x\n"
+    },
+    {
+      "name": "marker-nested-plain",
+      "input": "{\"k\":\"---x\"}",
+      "yaml": "k: ---x\n"
+    },
+    {
+      "name": "percent-line",
+      "input": "\"%YAML 1.2\\nx\"",
+      "yaml": "|-\n  %YAML 1.2\n  x\n"
+    },
+    {
+      "name": "keep-nested",
+      "input": "{\"k\":\"a\\n\\n\"}",
+      "yaml": "k: |+\n  a\n\n"
+    },
+    {
+      "name": "trail-ws-mixed",
+      "input": "\"a  \\n\\n\"",
+      "yaml": "|+\na  \n\n"
+    },
+    {
+      "name": "trail-ws-line",
+      "input": "\"a\\n \\n\"",
+      "yaml": "|+\na\n \n"
+    },
+    {
+      "name": "space-end-nl",
+      "input": "\"a \\n\"",
+      "yaml": "|\na \n"
+    },
+    {
+      "name": "ws-tail-ineligible",
+      "input": "\"x\\n \"",
+      "yaml": "\"x\\n \"\n"
+    },
+    {
+      "name": "ws-tail-space-run",
+      "input": "\"a\\n  \"",
+      "yaml": "\"a\\n  \"\n"
+    },
+    {
+      "name": "block-seq-item",
+      "input": "[\"a\\nb\"]",
+      "yaml": "- |-\n  a\n  b\n"
+    },
+    {
+      "name": "folded-basic",
+      "input": "\"a\\nword word word word word word word word word word word word word word word word word word word word\\n\"",
+      "yaml": ">\na\n\nword word word word word word word word word word word word word word word word\nword word word word\n"
+    },
+    {
+      "name": "folded-k",
+      "input": "{\"k\":\"a\\nword word word word word word word word word word word word word word word word word word word word\\n\"}",
+      "yaml": "k: >\n  a\n\n  word word word word word word word word word word word word word word word\n  word word word word word\n"
+    },
+    {
+      "name": "folded-unbreakable",
+      "input": "\"a\\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\nb\\n\"",
+      "yaml": "|\na\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nb\n"
+    },
+    {
+      "name": "folded-moreind",
+      "input": "\"a\\n  ind word word word word word word word word word word word word word word word word word word word word\\nb\\n\"",
+      "yaml": ">\na\n  ind word word word word word word word word word word word word word word word word word word word word\nb\n"
+    },
+    {
+      "name": "folded-start-space",
+      "input": "\" a\\nword word word word word word word word word word word word word word word word word word word word\\n\"",
+      "yaml": ">1\n a\nword word word word word word word word word word word word word word word word\nword word word word\n"
+    },
+    {
+      "name": "folded-blank-mid",
+      "input": "\"a\\n\\nword word word word word word word word word word word word word word word word word word word word\\n\\nb\\n\"",
+      "yaml": ">\na\n\n\nword word word word word word word word word word word word word word word word\nword word word word\n\n\nb\n"
+    },
+    {
+      "name": "plain-fold",
+      "input": "\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\"",
+      "yaml": "word word word word word word word word word word word word word word word word\nword word word word word word word word word word word word word word\n"
+    },
+    {
+      "name": "fold-after-long-word",
+      "input": "\"verylongwordhere yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"",
+      "yaml": "verylongwordhere\nyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n"
+    },
+    {
+      "name": "double-chunk",
+      "input": "\"zz: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+      "yaml": "\"zz:\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\nxxxxxxxxxxxxxxxxxxxxx\"\n"
+    },
+    {
+      "name": "double-chunk-k",
+      "input": "{\"k\":\"zz: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+      "yaml": "k: \"zz:\n  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\n  xxxxxxxxxxxxxxxxxxxxxxx\"\n"
+    },
+    {
+      "name": "double-chunk-seq",
+      "input": "[\"zz: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"]",
+      "yaml": "- \"zz:\n  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\n  xxxxxxxxxxxxxxxxxxxxxxx\"\n"
+    },
+    {
+      "name": "esc-cut-twice",
+      "input": "{\"k\":\"zz: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}",
+      "yaml": "k: \"zz:\n  yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\\n  yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\\n  yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"\n"
+    },
+    {
+      "name": "single-fold",
+      "input": "\"a: \\\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+      "yaml": "'a:\n\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'\n"
+    },
+    {
+      "name": "trail-space-fold",
+      "input": "\"word word word word word word word word word word word word word word word  finalword\"",
+      "yaml": "word word word word word word word word word word word word word word\nword  finalword\n"
+    },
+    {
+      "name": "fold-under-key",
+      "input": "{\"k\":\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\"}",
+      "yaml": "k: word word word word word word word word word word word word word word word\n  word word word word word word word word word word word word word word word\n"
+    },
+    {
+      "name": "fold-deep",
+      "input": "{\"a\":{\"b\":{\"c\":\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\"}}}",
+      "yaml": "a:\n  b:\n    c: word word word word word word word word word word word word word word word\n      word word word word word word word word word word word word word word word\n"
+    },
+    {
+      "name": "fold-long-key-map",
+      "input": "{\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\":\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\"}",
+      "yaml": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:\n  word word word word word word word word word word word word word word word\n  word word word word word word word word word word word word word word word\n"
+    },
+    {
+      "name": "double-mid-space",
+      "input": "\"zz: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"",
+      "yaml": "\"zz: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"\n"
+    },
+    {
+      "name": "agent-config",
+      "input": "{\"raw\":{\"model\":{\"model\":\"qwen-3.8-27b\",\"base_url\":\"https://infer.outcroplabs.com/v1\",\"provider\":\"custom\"},\"model_aliases\":{},\"fallback_providers\":[]},\"main\":{\"model\":\"qwen-3.8-27b\",\"endpoint\":\"outcrop-labs\"},\"aliases\":[],\"fallbacks\":[]}",
+      "yaml": "raw:\n  model:\n    model: qwen-3.8-27b\n    base_url: https://infer.outcroplabs.com/v1\n    provider: custom\n  model_aliases: {}\n  fallback_providers: []\nmain:\n  model: qwen-3.8-27b\n  endpoint: outcrop-labs\naliases: []\nfallbacks: []\n"
+    },
+    {
+      "name": "agent-config-strings",
+      "input": "{\"soul\":\"You are a careful assistant.\",\"quirks\":[\"yes\",\"no\",\"on\",\"off\"],\"ratio\":\"0.9e-3\",\"mtime\":\"2026-08-29T10:00:00Z\"}",
+      "yaml": "soul: You are a careful assistant.\nquirks:\n  - yes\n  - no\n  - on\n  - off\nratio: \"0.9e-3\"\nmtime: 2026-08-29T10:00:00Z\n"
+    }
+  ]
+}
