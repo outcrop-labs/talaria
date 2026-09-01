@@ -22,6 +22,32 @@ pub fn parse(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap_or(Value::Null)
 }
 
+/// The RESPONSE-side twin: print every whole float the way JavaScript's
+/// `JSON.stringify` does — `1`, never `1.0`. Rust computes scores, ratios and
+/// prices as f64, and serde prints an f64 with a decimal point even when the
+/// fraction is zero, so a view that is otherwise byte-identical to TS's reads
+/// `"score":1.0` against TS's `"score":1`. Whole floats within JS's safe
+/// integer range become integer numbers; genuine fractions and integer-typed
+/// numbers pass through untouched. (Numbers at or beyond 2^53 are left alone:
+/// JS prints full digits there, serde prints the same digits with a `.0`, and
+/// no view on this wire carries one — the pin is the range check, not luck.)
+pub fn js_numberify(v: &mut Value) {
+    match v {
+        Value::Array(items) => items.iter_mut().for_each(js_numberify),
+        Value::Object(map) => map.values_mut().for_each(js_numberify),
+        Value::Number(n) => {
+            if n.is_f64() {
+                if let Some(f) = n.as_f64() {
+                    if f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
+                        *n = serde_json::Number::from(f as i64);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn zod_type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
@@ -1088,6 +1114,22 @@ pub fn js_number(value: &Value) -> f64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn js_numberify_prints_whole_floats_as_integers_like_stringify() {
+        // The fitness diff's detail case: a score stored as 1.0 must read `1`
+        // on the wire, exactly as TS's JSON.stringify prints it.
+        let mut v = json!({ "score": 1.0, "ratio": 0.9090909090909091, "n": 3, "list": [2.0, 0.5] });
+        js_numberify(&mut v);
+        assert_eq!(v.to_string(), r#"{"score":1,"ratio":0.9090909090909091,"n":3,"list":[2,0.5]}"#);
+        // An integer-typed number and a genuine fraction pass through; so does
+        // a whole float beyond the safe range (nothing on this wire carries
+        // one, and printing it is a decision, not a default).
+        let mut big = json!({ "keep": 1e20, "small": -4.0 });
+        js_numberify(&mut big);
+        assert_eq!(big["small"], json!(-4));
+        assert_eq!(big["keep"].as_f64(), Some(1e20));
+    }
 
     #[test]
     fn zod_messages_are_verbatim() {

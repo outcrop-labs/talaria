@@ -233,6 +233,24 @@ pub async fn merge_capabilities(
     Ok(written)
 }
 
+/// THE FORGET BUTTON. Drops one key's whole entry — every capability, every
+/// source — and leaves every other key's facts untouched. Nothing recorded
+/// under the key is not a churn: the row is not rewritten at all, so a forget
+/// on a fresh install is free and a forget racing a probe write cannot lose
+/// the probe (same write lock, one read-modify-write either way).
+pub async fn forget_capabilities(pg: &PgPool, key: &str) -> Result<(), sqlx::Error> {
+    let _guard = write_lock().lock().await;
+    let mut all = get_setting(pg, KEY, serde_json::json!({})).await;
+    if !all.get(key).is_some() {
+        return Ok(());
+    }
+    if let Some(obj) = all.as_object_mut() {
+        obj.remove(key);
+    }
+    set_setting(pg, KEY, &all).await?;
+    Ok(())
+}
+
 /// The JSON shape `Date.now()` arithmetic never sees but tests do.
 #[cfg(test)]
 mod tests {

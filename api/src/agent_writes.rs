@@ -243,8 +243,8 @@ mod tests {
 
     fn secret_finding() -> Finding {
         Finding {
-            check: "secret_leak",
-            severity: "high",
+            check: "secret_leak".into(),
+            severity: "high".into(),
             confidence: 0.95,
             message: "Output appears to contain a live credential (Anthropic key).".into(),
             snippet: "Anthropic key: sk-ant-a…".into(),
@@ -293,7 +293,7 @@ mod tests {
     fn strict_without_a_redaction_worthy_finding_is_a_no_op() {
         // needs_redaction is false: nothing to scrub, whatever the mode.
         let finding = Finding {
-            check: "zero_tool_claim",
+            check: "zero_tool_claim".into(),
             grounded: false,
             ..secret_finding()
         };
@@ -346,7 +346,7 @@ mod tests {
         let input = "order 4111 1111 1111 1111 shipped";
         let text = format!("card 4111-1111-1111-1111 and key {KEY}");
         let pii = Finding {
-            check: "pii_leak",
+            check: "pii_leak".into(),
             grounded: true, // guard_text dropped this finding, in reality
             ..secret_finding()
         };

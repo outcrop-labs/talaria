@@ -491,8 +491,8 @@ impl RecordedRun {
 
 /// The check ids a result's findings carry — the vocabulary nearly every
 /// guard assertion in the def corpus spells.
-pub fn checks(res: &HarnessResult) -> Vec<&str> {
-    res.findings.iter().map(|f| f.check).collect()
+pub fn checks(res: &HarnessResult) -> Vec<String> {
+    res.findings.iter().map(|f| f.check.clone()).collect()
 }
 
 /// A transport that pumps deltas and never assembles the text itself — the

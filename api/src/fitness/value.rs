@@ -479,17 +479,17 @@ pub struct ArchivedRecord {
 }
 
 pub type ObservedFn =
-    Arc<dyn Fn() -> BoxFut<Result<Vec<ObservedHarness>, sqlx::Error>> + Send + Sync>;
+    Arc<dyn Fn() -> BoxFut<Result<Vec<ObservedHarness>, String>> + Send + Sync>;
 pub type HarnessesFn =
-    Arc<dyn Fn() -> BoxFut<Result<Vec<RegisteredHarness>, sqlx::Error>> + Send + Sync>;
+    Arc<dyn Fn() -> BoxFut<Result<Vec<RegisteredHarness>, String>> + Send + Sync>;
 pub type BindingsFn =
-    Arc<dyn Fn(Vec<RegisteredHarness>) -> BoxFut<Result<Vec<SlotBinding>, sqlx::Error>> + Send + Sync>;
-pub type IndexFn = Arc<dyn Fn() -> BoxFut<Result<FitnessIndex, sqlx::Error>> + Send + Sync>;
-pub type BudgetFn = Arc<dyn Fn() -> BoxFut<Result<TokenBudget, sqlx::Error>> + Send + Sync>;
+    Arc<dyn Fn(Vec<RegisteredHarness>) -> BoxFut<Result<Vec<SlotBinding>, String>> + Send + Sync>;
+pub type IndexFn = Arc<dyn Fn() -> BoxFut<Result<FitnessIndex, String>> + Send + Sync>;
+pub type BudgetFn = Arc<dyn Fn() -> BoxFut<Result<TokenBudget, String>> + Send + Sync>;
 pub type PriceFn =
-    Arc<dyn Fn(String) -> BoxFut<Result<Option<ModelPrice>, sqlx::Error>> + Send + Sync>;
+    Arc<dyn Fn(String) -> BoxFut<Result<Option<ModelPrice>, String>> + Send + Sync>;
 pub type RecordFn =
-    Arc<dyn Fn(String) -> BoxFut<Result<Option<ArchivedRecord>, sqlx::Error>> + Send + Sync>;
+    Arc<dyn Fn(String) -> BoxFut<Result<Option<ArchivedRecord>, String>> + Send + Sync>;
 
 pub struct ValueDeps {
     pub observed: ObservedFn,
@@ -556,7 +556,7 @@ pub struct ValueView {
     pub priced: bool,
 }
 
-pub async fn value_view(deps: &ValueDeps) -> Result<ValueView, sqlx::Error> {
+pub async fn value_view(deps: &ValueDeps) -> Result<ValueView, String> {
     let observed = (deps.observed)().await.unwrap_or_default();
     let registry = (deps.harnesses)().await?;
     let archived = (deps.index)().await?;
@@ -830,8 +830,8 @@ mod tests {
                 id: id.to_string(),
                 label: id.to_string(),
                 source: "builtin".to_string(),
-                output_kind: "json",
-                tools: "none",
+                output_kind: "json".into(),
+                tools: "none".into(),
                 requires: Vec::new(),
                 verifies: true,
                 repairable: true,
@@ -1390,7 +1390,7 @@ mod tests {
         // posture observed.rs takes for the matrix.
         let mut deps = deps_default();
         deps.observed = Arc::new(|| {
-            Box::pin(async { Err(sqlx::Error::RowNotFound) })
+            Box::pin(async { Err("telemetry query threw".into()) })
         });
 
         let view = value_view(&deps).await.unwrap();

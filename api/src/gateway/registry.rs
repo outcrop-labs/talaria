@@ -23,6 +23,18 @@ pub struct LlmEndpoint {
     /// it into the fresh config's main target.
     pub context_length: Option<i64>,
     pub models: Vec<String>,
+    /// `llm_endpoints.price_in_per_mtok` / `price_out_per_mtok` — the flat
+    /// $/MTok fallback when neither override names the model. Null when the
+    /// endpoint was never priced; the fitness estimate reads them through
+    /// `price_of` exactly as the TS surface did.
+    pub price_in_per_mtok: Option<f64>,
+    pub price_out_per_mtok: Option<f64>,
+    /// `llm_endpoints.model_prices` — an admin's per-model overrides, keyed by
+    /// upstream model id. Raw jsonb: `{ "deepseek-v4": {"in": 0.27, "out": …} }`.
+    pub model_prices: serde_json::Value,
+    /// `llm_endpoints.auto_prices` — the price oracle's fills, same shape.
+    /// Read-only; `model_prices` always wins.
+    pub auto_prices: serde_json::Value,
     pub request_defaults: serde_json::Value,
     /// `llm_endpoints.model_efforts` — an admin's declared effort ladder per
     /// upstream model id (`{"deepseek-v4": ["low","high"]}`), the second voice
@@ -48,11 +60,16 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
             Option<String>,
             Option<i64>,
             sqlx::types::Json<Vec<String>>,
+            Option<f64>,
+            Option<f64>,
+            Option<serde_json::Value>,
+            Option<serde_json::Value>,
             Option<serde_json::Value>,
             Option<serde_json::Value>,
         ),
     >(
-        "select id::text, name, provider, base_url, class, api_key_env, context_length, models, request_defaults, model_efforts \
+        "select id::text, name, provider, base_url, class, api_key_env, context_length, models, \
+         price_in_per_mtok::float8, price_out_per_mtok::float8, model_prices, auto_prices, request_defaults, model_efforts \
          from llm_endpoints order by (class = 'local') desc, name asc",
     )
     .fetch_all(pg)
@@ -69,6 +86,10 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                 api_key_env,
                 context_length,
                 models,
+                price_in_per_mtok,
+                price_out_per_mtok,
+                model_prices,
+                auto_prices,
                 request_defaults,
                 model_efforts,
             )| {
@@ -81,6 +102,11 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                     api_key_env,
                     context_length,
                     models: models.0,
+                    price_in_per_mtok,
+                    price_out_per_mtok,
+                    // TS reads `ep.modelPrices ?? {}` at use — same here.
+                    model_prices: model_prices.unwrap_or(serde_json::Value::Null),
+                    auto_prices: auto_prices.unwrap_or(serde_json::Value::Null),
                     // TS reads `ep.requestDefaults ?? {}` at use — same here.
                     request_defaults: request_defaults.unwrap_or(serde_json::Value::Null),
                     model_efforts: model_efforts.unwrap_or(serde_json::Value::Null),

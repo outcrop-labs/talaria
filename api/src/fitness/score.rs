@@ -68,7 +68,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::capability::CapabilityFact;
 use crate::capability_reach::{Reach, ReachVia};
@@ -118,7 +118,7 @@ pub enum FitnessBand {
 ///
 /// That is the largest single consumer of models in the product, and the page
 /// an admin uses to choose one said nothing about it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SlotKind {
     Role,
@@ -141,7 +141,7 @@ impl SlotKind {
 /// reads one owner's inbox and drafts in their voice, while a workspace agent
 /// works tickets and drives the toolkit against a shared board. A single column
 /// would average a model's fitness for both and be right about neither.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FleetSlotId {
     Assistant,
@@ -218,13 +218,14 @@ const FLEET_SLOTS: [FleetSlotDef; 2] = [
 /// `MODEL_ROLES` declares what a role's WORK needs (audit 1.6), while a
 /// platform agent declares nothing of the sort — its harnesses carry the
 /// requirement instead, and this file reads them there.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FitnessSlot {
     pub kind: SlotKind,
     pub id: String,
     pub label: String,
     pub hint: String,
-    pub requires: Vec<&'static str>,
+    pub requires: Vec<String>,
     /// False for a reserved role (`MODEL_ROLES[].wired === false`) or a
     /// non-assignable platform agent (the briefer, which is always the owner's
     /// own assistant). A verdict is still produced — telling an admin now that
@@ -254,7 +255,7 @@ pub fn fitness_slots() -> Vec<FitnessSlot> {
             id: r.role.to_string(),
             label: r.label.to_string(),
             hint: r.hint.to_string(),
-            requires: r.requires.to_vec(),
+            requires: r.requires.iter().map(|c| c.to_string()).collect(),
             live: r.wired,
         })
         .collect();
@@ -271,7 +272,7 @@ pub fn fitness_slots() -> Vec<FitnessSlot> {
         id: f.id.as_str().to_string(),
         label: f.label.to_string(),
         hint: f.hint.to_string(),
-        requires: f.requires.to_vec(),
+        requires: f.requires.iter().map(|c| c.to_string()).collect(),
         // Always live: every install with a fleet has these, and unlike a
         // reserved role there is no surface still to ship.
         live: true,
@@ -586,7 +587,7 @@ fn worst_band(bands: impl IntoIterator<Item = FitnessBand>, fallback: FitnessBan
 
 // ── The verdict shapes ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReasonKind {
     /// A required capability is recorded FALSE. The unfit case audit 1.6 is
@@ -649,7 +650,7 @@ impl ReasonKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FitnessReason {
     pub kind: ReasonKind,
@@ -679,7 +680,7 @@ pub struct FitnessReason {
 /// caution in the file header. Weighted BY CASE, so a harness with five
 /// fixtures counts five times as much as one with a single fixture, and never a
 /// mean of per-harness rates.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WeightedRate {
     pub rate: f64,
@@ -689,7 +690,7 @@ pub struct WeightedRate {
     pub label: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessVerdict {
     pub harness: String,
@@ -710,7 +711,7 @@ pub struct HarnessVerdict {
     pub reasons: Vec<FitnessReason>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlotVerdict {
     pub slot: FitnessSlot,
@@ -726,7 +727,7 @@ pub struct SlotVerdict {
     pub task: Option<WeightedRate>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FitnessReport {
     pub model: String,
@@ -1291,8 +1292,9 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
             // whole of finding 1.6.
             let mut slot_covered: HashSet<&str> = HashSet::new();
             for cap in binding.slot.requires.iter() {
-                let fact = capabilities.get(*cap);
-                let reached = reach.get(*cap);
+                let cap: &str = cap.as_str();
+                let fact = capabilities.get(cap);
+                let reached = reach.get(cap);
                 // Same correction as `harness_verdict`: the slot's requirement
                 // is about the WORK, and the work can be done by a model that
                 // reaches the capability through a registered tool. A role is
@@ -1316,7 +1318,7 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
                 }
                 match fact {
                     Some(f) if !f.value => {
-                        slot_covered.insert(*cap);
+                        slot_covered.insert(cap);
                         let detail_suffix = reached
                             .map(|r| format!(" ({})", r.detail))
                             .or_else(|| {
@@ -1568,8 +1570,8 @@ mod tests {
                 id: id.to_string(),
                 label: id.to_string(),
                 source: "builtin".to_string(),
-                output_kind: "json",
-                tools: "none",
+                output_kind: "json".into(),
+                tools: "none".into(),
                 requires: Vec::new(),
                 verifies: true,
                 repairable: true,
@@ -1709,7 +1711,7 @@ mod tests {
 
     fn slot_over(h: &RegisteredHarness, id: &'static str, label: &str, requires: &[&'static str]) -> Vec<SlotBinding> {
         vec![binding_of(
-            FitnessSlot { id: id.to_string(), label: label.to_string(), requires: requires.to_vec(), ..utility_slot() },
+            FitnessSlot { id: id.to_string(), label: label.to_string(), requires: requires.iter().map(|r| r.to_string()).collect::<Vec<_>>(), ..utility_slot() },
             &[h.def.id],
         )]
     }
@@ -2028,7 +2030,7 @@ mod tests {
         // repairable: false mirrors the runner allowing no repairs on text
         // output.
         sc.meta.repairable = false;
-        sc.meta.output_kind = "text";
+        sc.meta.output_kind = "text".into();
         sc.contract_rate = 0.4;
         sc.repair_rate = 0.4;
         s.harnesses = vec![sc];
@@ -2374,7 +2376,7 @@ mod tests {
                     id: "research-recon".to_string(),
                     label: "Research · Recon".to_string(),
                     hint: String::new(),
-                    requires: vec!["search"],
+                    requires: vec!["search".into()],
                     live: true,
                 },
                 &[],

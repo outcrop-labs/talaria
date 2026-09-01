@@ -1730,8 +1730,8 @@ mod tests {
         r.findings.lock().expect("findings").clone()
     }
 
-    fn checks(res: &HarnessResult) -> Vec<&str> {
-        res.findings.iter().map(|f| f.check).collect()
+    fn checks(res: &HarnessResult) -> Vec<String> {
+        res.findings.iter().map(|f| f.check.clone()).collect()
     }
 
     fn ticket(t: &str) -> Value {
@@ -2942,7 +2942,7 @@ mod tests {
         let res = run(&offering, &json!({ "transcript": "x" }), &r)
             .await
             .unwrap();
-        assert!(!checks(&res).contains(&"ungrounded_ref"));
+        assert!(!checks(&res).contains(&"ungrounded_ref".to_string()));
     }
 
     // ── Fleet personas ───────────────────────────────────────────────────────
@@ -3266,7 +3266,7 @@ mod tests {
         });
         let res = run(&judge(), &ticket("x"), &r).await.unwrap();
 
-        assert!(checks(&res).contains(&"secret_leak"));
+        assert!(checks(&res).contains(&"secret_leak".to_string()));
         assert!(recorded(&r).iter().any(|f| f.check == "secret_leak"));
         assert_eq!(run_at(&r, 0).findings, 1);
         // Observe mode never touches the value — that is the default posture.
@@ -3347,8 +3347,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!checks(&res).contains(&"ungrounded_ref"));
-        assert!(checks(&res).contains(&"zero_tool_claim"));
+        assert!(!checks(&res).contains(&"ungrounded_ref".to_string()));
+        assert!(checks(&res).contains(&"zero_tool_claim".to_string()));
     }
 
     // ── Grounding the guard against the run's own input ──────────────────────
@@ -3448,7 +3448,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(checks(&res).contains(&"pii_leak"));
+        assert!(checks(&res).contains(&"pii_leak".to_string()));
         assert!(
             res.value.unwrap()["summary"]
                 .as_str()
@@ -4051,7 +4051,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(checks(&res).contains(&"secret_leak"));
+        assert!(checks(&res).contains(&"secret_leak".to_string()));
         assert_eq!(
             res.value,
             Some(Value::String(
@@ -4273,7 +4273,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(checks(&res).contains(&"ungrounded_ref"));
+        assert!(checks(&res).contains(&"ungrounded_ref".to_string()));
         assert!(recorded(&r).iter().any(|f| f.check == "ungrounded_ref"));
     }
 
@@ -4312,7 +4312,7 @@ mod tests {
         let res = execute(&r.deps(), &synthesis(), &synthesis_input(false), c, None)
             .await
             .unwrap();
-        assert!(checks(&res).contains(&"ungrounded_ref"));
+        assert!(checks(&res).contains(&"ungrounded_ref".to_string()));
     }
 
     #[tokio::test]
@@ -4330,7 +4330,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!checks(&honest).contains(&"fabricated_outage"));
+        assert!(!checks(&honest).contains(&"fabricated_outage".to_string()));
 
         let invented_r = synthesis_world(claim);
         let mut invented_c = ctx(&invented_r);
@@ -4344,7 +4344,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(checks(&invented).contains(&"fabricated_outage"));
+        assert!(checks(&invented).contains(&"fabricated_outage".to_string()));
     }
 
     #[tokio::test]
@@ -4368,9 +4368,9 @@ mod tests {
         let res = execute(&r.deps(), &cagey, &synthesis_input(false), c, None)
             .await
             .unwrap();
-        assert!(!checks(&res).contains(&"fabricated_outage"));
+        assert!(!checks(&res).contains(&"fabricated_outage".to_string()));
         // …and the grounding it CAN supply still works.
-        assert!(!checks(&res).contains(&"ungrounded_ref"));
+        assert!(!checks(&res).contains(&"ungrounded_ref".to_string()));
     }
 
     // The hook must make honesty expressible, not optimism the default.
@@ -4473,6 +4473,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!checks(&res).contains(&"ungrounded_ref"));
+        assert!(!checks(&res).contains(&"ungrounded_ref".to_string()));
     }
 }

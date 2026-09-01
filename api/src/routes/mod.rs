@@ -4,6 +4,7 @@
 pub mod activity;
 pub mod admin_google_client;
 pub mod admin_instance;
+pub mod admin_model_fitness;
 pub mod admin_model_roles;
 pub mod admin_apps;
 pub mod admin_password_accounts;
@@ -837,6 +838,14 @@ pub fn router(state: AppState) -> Router {
             get(admin_judge::get)
                 .put(admin_judge::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        // The fitness plane — the probe/eval/adversarial battery over the
+        // gateway's models, its run engine, and its archive.
+        .route(
+            "/api/admin/model-fitness",
+            get(admin_model_fitness::get)
+                .post(admin_model_fitness::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/admin/outreach",

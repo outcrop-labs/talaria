@@ -267,17 +267,17 @@ pub struct UpstreamAttempt {
 
 /// Everything the sweep needs to know about a harness that is not a score.
 /// Split out so `score_harnesses` stays pure over recorded cases.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessMeta {
     pub id: String,
     pub label: String,
     /// The TS `HarnessSource` vocabulary, as the string the admin panel reads.
     pub source: String,
-    pub output_kind: &'static str,
+    pub output_kind: String,
     /// The model's-own-tool-loop policy, spelled "none"/"own". Read by
     /// `harness_skip_reason`, which needs it before the harness runs.
-    pub tools: &'static str,
+    pub tools: String,
     pub requires: Vec<String>,
     /// Does this harness declare the input-relational half of its contract?
     /// See `EvalCaseScore.optimistic`.
@@ -290,7 +290,7 @@ pub struct HarnessMeta {
 }
 
 /// The per-harness column of the fitness matrix.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessScore {
     #[serde(flatten)]
@@ -363,7 +363,7 @@ pub struct HarnessScore {
 
 /// The three band columns, in the registry's fixed order — the JSON shape the
 /// admin panel reads (`{ easy, standard, hard }`).
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BandScores {
     pub easy: Option<f64>,
     pub standard: Option<f64>,
@@ -441,7 +441,7 @@ pub struct EvalSweep {
     pub measured: Vec<EvalCaseScore>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SweepConcurrency {
     /// What the run asked for.
@@ -1331,12 +1331,13 @@ pub fn meta_of(h: &RegisteredHarness) -> HarnessMeta {
             crate::harness::registry::HarnessSource::App(slug) => format!("app:{slug}"),
             crate::harness::registry::HarnessSource::Custom => "custom".to_string(),
         },
-        output_kind: if h.def.output.is_json() { "json" } else { "text" },
+        output_kind: if h.def.output.is_json() { "json" } else { "text" }.to_string(),
         tools: h
             .def
             .tools
             .map(|t| t.as_str())
-            .unwrap_or("none"),
+            .unwrap_or("none")
+            .to_string(),
         requires: h.def.requires.iter().map(|r| r.to_string()).collect(),
         verifies: matches!(&h.def.output,
             Output::Json { verify: Some(_), .. } | Output::Text { verify: Some(_), .. }),
@@ -3884,8 +3885,8 @@ mod tests {
             id: "h".into(),
             label: "H".into(),
             source: "builtin".into(),
-            output_kind: "json",
-            tools: "none",
+            output_kind: "json".into(),
+            tools: "none".into(),
             requires: vec!["json".into()],
             verifies: true,
             repairable: true,
@@ -3969,7 +3970,7 @@ mod tests {
         // there would say "the repair turn rescued nothing" about a
         // round-trip that was never sent.
         let text = HarnessMeta {
-            output_kind: "text",
+            output_kind: "text".into(),
             repairable: false,
             ..meta()
         };

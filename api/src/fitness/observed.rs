@@ -240,14 +240,14 @@ async fn harness_run_groups(
       select
         harness,
         model,
-        count(*)::int                                                        as runs,
-        sum(case when schema_valid and repairs = 0 then 1 else 0 end)::int   as first_pass,
-        sum(case when schema_valid then 1 else 0 end)::int                   as held,
-        sum(case when schema_valid and repairs > 0 then 1 else 0 end)::int   as repaired,
-        sum(findings)::int                                                   as findings,
-        sum(case when widened then 1 else 0 end)::int                        as widened,
-        sum(case when error is not null then 1 else 0 end)::int              as errors,
-        coalesce(percentile_disc(0.5) within group (order by latency_ms), 0)::int as latency_p50,
+        count(*)::bigint as runs,
+        sum(case when schema_valid and repairs = 0 then 1 else 0 end)::bigint as first_pass,
+        sum(case when schema_valid then 1 else 0 end)::bigint                 as held,
+        sum(case when schema_valid and repairs > 0 then 1 else 0 end)::bigint as repaired,
+        sum(findings)::bigint                                             as findings,
+        sum(case when widened then 1 else 0 end)::bigint                    as widened,
+        sum(case when error is not null then 1 else 0 end)::bigint            as errors,
+        coalesce(percentile_disc(0.5) within group (order by latency_ms), 0)::bigint as latency_p50,
         (extract(epoch from max(created_at)) * 1000)::bigint                 as last_run_ms
       from harness_runs
       where created_at > now() - ($1 || ' days')::interval
@@ -288,7 +288,7 @@ async fn chain_step_groups(
     since_days: i64,
 ) -> Result<Vec<ChainStepGroup>, sqlx::Error> {
     let sql = r#"
-      select harness, model, chain_step as step, count(*)::int as runs
+      select harness, model, chain_step as step, count(*)::bigint as runs
       from harness_runs
       where created_at > now() - ($1 || ' days')::interval
       group by harness, model, chain_step
@@ -320,7 +320,7 @@ async fn guard_finding_groups(
     since_days: i64,
 ) -> Result<Vec<GuardFindingGroup>, sqlx::Error> {
     let sql = r#"
-      select model, check_type as "check", count(*)::int as n
+      select model, check_type as "check", count(*)::bigint as n
       from guard_findings
       where model is not null and created_at > now() - ($1 || ' days')::interval
       group by model, check_type

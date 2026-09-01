@@ -1218,7 +1218,7 @@ pub async fn work_session_step(
                         reply
                             .findings
                             .iter()
-                            .filter(|f| seen.insert(f.check))
+                            .filter(|f| seen.insert(f.check.clone()))
                             .map(|f| f.check.to_string())
                             .collect()
                     },

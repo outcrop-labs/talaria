@@ -2851,7 +2851,7 @@ mod tests {
             "# Postgres 17\n\nSlots survive failover [1]. Tracked internally at {INVENTED}."
         )));
         let res = run(synthesis_harness(), synth_pg17(), &r).await.unwrap();
-        assert!(checks(&res).contains(&"ungrounded_ref"));
+        assert!(checks(&res).contains(&"ungrounded_ref".to_string()));
         assert!(r.findings().iter().any(|f| f.check == "ungrounded_ref"));
     }
 
@@ -2861,7 +2861,7 @@ mod tests {
             "# Postgres 17\n\nFailover landed upstream; see the release schedule at {REAL} [1]."
         )));
         let res = run(synthesis_harness(), synth_pg17(), &r).await.unwrap();
-        assert!(!checks(&res).contains(&"ungrounded_ref"));
+        assert!(!checks(&res).contains(&"ungrounded_ref".to_string()));
         assert!(r.findings().is_empty());
     }
 
@@ -2894,7 +2894,7 @@ mod tests {
             "# Postgres 17\n\nSlots survive failover [1], tracked at {INVENTED}."
         )));
         let res = run(synthesis_harness(), input, &r).await.unwrap();
-        assert!(!checks(&res).contains(&"ungrounded_ref"));
+        assert!(!checks(&res).contains(&"ungrounded_ref".to_string()));
         assert!(r.findings().is_empty());
     }
 

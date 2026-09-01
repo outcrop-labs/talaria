@@ -34,7 +34,19 @@ serde = { version = "1", features = ["derive"] }
 # guard's annotate path does JSON.parse → mutate → stringify on an upstream
 # body and must not alphabetize it (TS preserves the upstream's key order);
 # merged upstream bodies likewise keep client-first order like TS's spread.
-serde_json = { version = "1", features = ["preserve_order"] }
+#
+# float_roundtrip: parse floats at full accuracy. The DEFAULT is best-effort
+# and can land one ULP off the parsed digits — 0.9090909090909091 came back as
+# ...092 on the wire, a byte diff against the stored value TS reads back
+# exactly. Scores, prices and ratios all cross jsonb boundaries, so every
+# float this API parses (request bodies AND app_settings blobs) needs the
+# round-trip-exact parse, not the fast one.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+# serde_json's own ordered map only carries `Value`s (its methods live on
+# `Map<String, Value>`), but the fitness index is an ordered map of TYPED
+# entries — see the `FitnessIndex` alias in src/fitness/surface.rs. Already a
+# transitive dep of serde_json's preserve_order; named here for the typed map.
+indexmap = { version = "2", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"

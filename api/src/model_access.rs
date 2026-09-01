@@ -91,6 +91,38 @@ pub async fn gateway_models(pg: &PgPool) -> Result<Vec<GatewayModel>, sqlx::Erro
     Ok(out)
 }
 
+/// A STORED SPELLING ONTO THE OFFERED ONE — port of canonicalModelId. The
+/// qualified form is the canonical id, but everything older than the catalog
+/// that offered it — role pins, an archived fitness report, a member
+/// allowlist — was written when both spellings existed, so plenty of it is
+/// bare. Those values keep routing; what they must not do is fail to LINE UP
+/// with the canonical row, or an admin sees a role assigned to a model that
+/// appears nowhere in the list and a paid run whose verdict lights up no cell.
+///
+/// So this maps a stored spelling onto the offered one instead of rewriting
+/// the database: cheaper than a migration, correct for values written after
+/// it, and it cannot corrupt anything if the catalog is momentarily wrong.
+/// Unresolvable ids come back unchanged — an id nothing serves is a fact to
+/// show, not one to guess at.
+pub fn canonical_model_id(id: &str, catalog: &[GatewayModel]) -> String {
+    if catalog.iter().any(|m| m.id == id) {
+        return id.to_string();
+    }
+    let suffix = format!("/{id}");
+    let pins: Vec<&GatewayModel> = catalog
+        .iter()
+        .filter(|m| m.qualified && m.id.ends_with(&suffix))
+        .collect();
+    // Exactly one, or it is genuinely ambiguous — two endpoints serving the
+    // same model is the pooled case, and picking one of them would silently
+    // reassign a role to half of what it had.
+    if pins.len() == 1 {
+        pins[0].id.clone()
+    } else {
+        id.to_string()
+    }
+}
+
 /// `String.prototype.localeCompare` — default locale, ICU root collation —
 /// for the id alphabet Talaria actually registers (ASCII letters, digits,
 /// `/ . - _`). Byte order is NOT it: case is a tertiary difference there, so

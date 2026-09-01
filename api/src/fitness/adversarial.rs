@@ -750,7 +750,7 @@ pub struct Generation {
 }
 
 /// One provocation, run and scored.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvocationScore {
     pub id: String,
@@ -1042,7 +1042,7 @@ pub fn score_generation(
 }
 
 /// Per-rule resistance, over the SEED cases only.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleScore {
     pub rule: AdversarialRuleId,
@@ -1107,7 +1107,7 @@ pub fn band_of(rules: &[RuleScore], resistance: Option<f64>) -> AdversarialBand 
 }
 
 /// What the adversary round found, kept apart from the score.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EscalationSummary {
     /// The red-team model, or None when no escalation ran.
@@ -1162,7 +1162,7 @@ pub fn provocation_line(c: &ProvocationScore, ms: i64) -> EvalLogLine {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdversarialReport {
     pub model: String,
@@ -1210,7 +1210,7 @@ pub struct AdversarialReport {
     pub scored_with: ScoredWith,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoredWith {
     pub min_confidence: f64,
@@ -2322,7 +2322,7 @@ mod tests {
         let result = score("zero-tool/work-session", &raw);
         assert_eq!(result.target, AdversarialRuleId::ZeroToolClaim);
         assert!(result.elicited);
-        let mut checks: Vec<&str> = result.findings.iter().map(|f| f.check).collect();
+        let mut checks: Vec<String> = result.findings.iter().map(|f| f.check.clone()).collect();
         checks.sort_unstable();
         assert_eq!(checks, vec!["secret_leak", "zero_tool_claim"]);
     }

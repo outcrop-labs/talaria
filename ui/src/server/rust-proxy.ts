@@ -79,8 +79,8 @@ const PREFIXES = [
   '/api/uploads',
   // The admin console. Each prefix IS the whole group — no TS sub-routes
   // hide under any of these paths. '/api/admin/google-client' covers its own
-  // /login sibling. Still TS: admin/model-fitness (the probe suite's plane),
-  // admin.update, and the app-MCP dispatchers under /api/mcp/gw.
+  // /login sibling. Still TS: admin.update, and the app-MCP dispatchers
+  // under /api/mcp/gw.
   '/api/agent-role-templates',
   '/api/admin/apps',
   '/api/admin/domains',
@@ -90,6 +90,10 @@ const PREFIXES = [
   '/api/admin/guardrails',
   '/api/admin/instance',
   '/api/admin/invites',
+  // The fitness plane — the probe/eval/adversarial battery and its run
+  // engine crossed as one (surface.ts holds every decision; the route is
+  // plumbing on both sides).
+  '/api/admin/model-fitness',
   '/api/admin/judge',
   '/api/admin/outreach',
   '/api/admin/password-accounts',

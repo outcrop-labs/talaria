@@ -178,7 +178,7 @@ pub async fn transcript_runs(pg: &PgPool, model: &str) -> Result<Vec<TranscriptR
     // AssertSqlSafe: every interpolation is a bound parameter.
     let sql = r#"
       select (extract(epoch from run_started_at) * 1000)::bigint as run_started_ms,
-             count(*)::int as cases
+             count(*)::bigint as cases
       from fitness_transcripts
       where model = $1
       group by run_started_at
@@ -212,9 +212,9 @@ pub async fn read_transcripts(
              (extract(epoch from run_started_at) * 1000)::bigint as run_started_ms,
              harness, case_name, band, verdict,
              prompt, raw, turns, tool_calls, upstream,
-             latency_ms, wall_ms,
+             latency_ms::int8, wall_ms::int8,
              (extract(epoch from started_at) * 1000)::bigint as started_ms,
-             prompt_tokens, completion_tokens,
+             prompt_tokens::int8, completion_tokens::int8,
              (extract(epoch from created_at) * 1000)::bigint as created_ms
       from fitness_transcripts
       where model = $1

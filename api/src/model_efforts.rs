@@ -340,6 +340,10 @@ mod tests {
             class: "cloud".into(),
             api_key_env: None,
             models: vec!["m".into()],
+            price_in_per_mtok: None,
+            price_out_per_mtok: None,
+            model_prices: serde_json::Value::Null,
+            auto_prices: serde_json::Value::Null,
             request_defaults: serde_json::Value::Null,
             model_efforts: declared,
         };

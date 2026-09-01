@@ -129,7 +129,7 @@ use crate::state::AppState;
 /// Declared in the TS union's order (not capability.rs's), so the registry test
 /// comparing this set against `ALL_CAPABILITIES` sorts both — a tenth member of
 /// the capability union with no probe has to fail there, whichever side adds it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProbeId {
     Json,
@@ -166,7 +166,8 @@ impl ProbeId {
 /// the model; counting it as a failure would write `search: false` — permanently
 /// — about a model that searched correctly. Inconclusive trials leave the
 /// denominator, and a probe with an empty denominator writes nothing.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Trial {
     pub name: String,
     pub ok: Option<bool>,
@@ -177,7 +178,8 @@ pub struct Trial {
 }
 
 /// The scored answer: what to write, or None for "we did not learn anything".
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProbeVerdict {
     pub value: bool,
     /// Pass rate over the CONCLUSIVE trials, 0..1.
@@ -186,7 +188,7 @@ pub struct ProbeVerdict {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ProbeOutcome {
     Scored {
@@ -2643,7 +2645,8 @@ pub async fn estimate_probes(
 
 // ── Latency and cost: the EXISTING ring, not a second clock ──────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LatencyReading {
     pub requests: i64,
     pub errors: i64,
@@ -2672,10 +2675,11 @@ pub fn latency_reading(usd: Option<f64>) -> LatencyReading {
 
 // ── The driver ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProbeResult {
     pub id: ProbeId,
-    pub label: &'static str,
+    pub label: String,
     pub outcome: ProbeOutcome,
 }
 
@@ -2709,7 +2713,8 @@ pub fn probe_line(r: &ProbeResult, ms: i64) -> EvalLogLine {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProbeReport {
     pub model: String,
     /// The keys the facts were written under. Empty when nothing was written.
@@ -2788,7 +2793,7 @@ pub async fn run_probes(state: &AppState, model: &str, opts: ProbeOpts) -> Resul
         if let Some(had) = had {
             let known = ProbeResult {
                 id: probe.id,
-                label: probe.label,
+                label: probe.label.to_string(),
                 outcome: ProbeOutcome::Known {
                     at: had.at,
                     trials: Vec::new(),
@@ -2830,7 +2835,7 @@ pub async fn run_probes(state: &AppState, model: &str, opts: ProbeOpts) -> Resul
             Ok(outcome) => outcome,
             Err(_elapsed) => errored(format!("the probe did not finish inside {}ms", budget.as_millis()), Vec::new()),
         };
-        let one = ProbeResult { id: probe.id, label: probe.label, outcome };
+        let one = ProbeResult { id: probe.id, label: probe.label.to_string(), outcome };
         note_live(model, probe_line(&one, mark.elapsed().as_millis() as i64));
         mark = std::time::Instant::now();
         results.push(one);

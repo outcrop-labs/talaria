@@ -753,10 +753,10 @@ pub enum Groundable {
 /// Serialized for the callers that PIN findings to their own rows
 /// (`channel_messages.guard`): key order is the TS interface's, and `grounded`
 /// is absent-when-false exactly as the TS optional is.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
-    pub check: &'static str,
-    pub severity: &'static str,
+    pub check: String,
+    pub severity: String,
     pub confidence: f64,
     pub message: String,
     pub snippet: String,
@@ -959,8 +959,8 @@ fn evaluate(rule: &RuleDef, ctx: &GuardContext, config: &GuardConfig) -> Option<
         return None;
     }
     let finding = Finding {
-        check: rule.id,
-        severity: rule.severity,
+        check: rule.id.to_string(),
+        severity: rule.severity.to_string(),
         confidence: hit.confidence,
         message: hit.message,
         snippet: hit.snippet,
@@ -1131,8 +1131,8 @@ pub async fn record_findings(
         .bind(model)
         .bind(endpoint)
         .bind(mode_str)
-        .bind(f.check)
-        .bind(f.severity)
+        .bind(f.check.as_str())
+        .bind(f.severity.as_str())
         .bind(f.confidence as f32)
         .bind(&f.message)
         .bind(&f.snippet)
@@ -1530,8 +1530,8 @@ mod tests {
     #[test]
     fn caveat_and_redaction_shapes() {
         let f = Finding {
-            check: "zero_tool_claim",
-            severity: "high",
+            check: "zero_tool_claim".into(),
+            severity: "high".into(),
             confidence: 0.8,
             message: "Claims a completed action.".into(),
             snippet: "I closed it.".into(),
@@ -1549,7 +1549,7 @@ mod tests {
         assert_eq!(caveat_for(std::slice::from_ref(&g)), "");
         // But it still warrants redaction.
         let secret = Finding {
-            check: "secret_leak",
+            check: "secret_leak".into(),
             ..g
         };
         assert!(needs_redaction(&[secret]));
@@ -1648,11 +1648,11 @@ mod tests {
             &tr,
             &g,
         );
-        let ids = |a: &Available| -> Vec<&'static str> {
+        let ids = |a: &Available| -> Vec<String> {
             run_guardrails(&c, &config, a)
                 .iter()
-                .map(|f| f.check)
-                .collect()
+                .map(|f| f.check.clone())
+                .collect::<Vec<String>>()
         };
         assert_eq!(ids(&FULL), vec!["ungrounded_ref", "fabricated_outage"]);
         // The harness guard pass's honest posture: tool NAMES are results, a
