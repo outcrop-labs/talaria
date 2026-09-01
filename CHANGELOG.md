@@ -6,6 +6,19 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Changed
 
+- **The port merges — the Rust API is the backend of record.** PR #290
+  landed on main (2026-09-01): 216 of 219 TS route files serve from the Rust
+  crate in any proxied environment, the parity battery closed at 370 route
+  pairs byte-diffed against the TS oracle on the shared dev DB (every pair
+  either byte-identical or a recorded divergence — that record is the
+  contract, `docs/RUST-MIGRATION.md`), and the scheduler flip is armed in
+  dev (`TALARIA_SCHEDULER=rust` — the whole job table from `api/src/jobs.rs`,
+  TS's `startScheduler` stood down on the same value). CI gained the `api`
+  job: rustfmt, clippy `-D warnings`, and the crate's tests on the pinned
+  1.97.1 toolchain (`bun run api:check` runs the same gates locally). The
+  three permanent residents stay TS (`admin/update`, the rule-10 app
+  dispatch, and `healthz`); cutover — deleting the TS API behind the proxy —
+  is the one remaining step.
 - **The tail crosses — the last 27 TS route files proxy to Rust; coverage
   closes at 216 of 219.** The remaining singles and the fleet defs detail
   trio crossed as one sweep: the alert feed, home cards, global search (the
@@ -335,6 +348,59 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   500'd every message edit, the rename's min-length bound, and a fractional
   `since` that floored where TS fails.
 
+- **Version history speaks Rust — and the port gained a byte-identical YAML
+  emitter.** `/api/history` serves both stores (`internal_versions` snapshots
+  and `agent_versions`) through the live items' own read models applied
+  backwards, every miss and every error reading 403 — fail-closed, or
+  history is a permission bypass. `kind=config` serves `stringifyYaml`
+  bytes, so the slice dragged `api/src/yaml_string.rs` across: a source port
+  of the npm `yaml` package's stringify pinned by 145 fixtures the REAL
+  package generates.
+- **Artifacts, folders, links, uploads, and the Drive export speak Rust.**
+  Eleven routes over three proxy prefixes (`/api/artifacts` does NOT
+  prefix-match `/api/artifact-folders` — character 13, `s` vs `-`), with the
+  write half of the engine: version snapshots, the official→KB mirror
+  through the real qdrant/embed deps, the first-publish slug mint, the
+  streamed multipart capped BEFORE it buffers (a declared over-cap
+  content-length answers 413 unread), and the Drive export proven live
+  against production Google from both runtimes. The diff's finds:
+  `artifact_links.target_id` is TEXT (three `::uuid` casts refused to match),
+  and the PUT's title tri-state — absent means don't-touch, never set-null.
+- **The knowledgebase speaks Rust — all twelve kb.* route files crossed
+  whole** (spaces, docs, comments, backlinks, move, presence, search, public
+  slugs) with the ACL engine they share. The 107-case byte-diff found four
+  port bugs the unit tests hadn't: uuid binds where the column wanted none,
+  the search hit's raw-row wire shape, the float4 rank decode (f32→f64
+  promotion prints `…584` where JS's parseFloat prints `…522` — the faithful
+  path is `::text` then parse), and PG's bare sentence where sqlx's Display
+  wraps it.
+- **The retrieval plane speaks Rust — the reindex pair, the admin console,
+  and the rag family.** rag-backfill/rag-reindex crossed with real deps (the
+  artifact routing and the health probe beside them), then `admin.rag`
+  (status + run projections, the reranker config, space↔brain bindings, the
+  enqueue kicks), then the `/api/rag` family whole — the collection registry
+  the MCP `search_knowledge` tool resolves principals against, the member's
+  blanked binding matrix, and the search itself. The upgrade-status cache
+  invalidates from inside the process that rebuilds it.
+- **The runs engine and the scheduler cross — the port's flip.** The
+  durable-run core (Redis leases with CAS renew/release, every `runs` write
+  a CAS on `(id, lease_owner, state)`, the step-budget lease TTL, the
+  `awaiting` guard that parks rather than fails), the six run kinds, the
+  boards family with its dispatch re-entry, the SSE streams, and the whole
+  registered job table — comms-decay, outreach-sweep, price-refresh,
+  daily-digest, approval-escalation, notification-mail, run-reclaim,
+  daily-brief, mcp-library-refresh, update-check, with `maybeRewriteBlurbs`
+  a REAL job at last (dark in every proxied environment until now — its
+  only TS trigger was the `/api/models` handler the proxy shadows).
+  `TALARIA_SCHEDULER=rust` hands the whole schedule over in one slice —
+  stop-TS, arm-Rust, never both — and the arm refuses to fire until the
+  census's run kinds all have definitions. Schema ownership handed to sqlx
+  with it: the same `schema_migrations` discipline (per-statement sha256
+  bookkeeping, the same advisory lock, growth-only re-arm) now lives in
+  `api/src/db.rs`, and the TS array is frozen. `update-check`'s apply half
+  is a deliberate hold — it rebuilds `ui/dist` and restarts the bun process
+  it runs in, choreography that cannot restart the Rust binary — so its
+  auto half returns at cutover.
 - **The port's end state corrected: Rust is the backend, not the UI host.**
   The roadmap's cutover batch said Rust would serve the SPA and `bun run
   start` would become the Rust binary — that was never the ask. SvelteKit

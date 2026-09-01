@@ -33,17 +33,19 @@ holds no database and no identity — it authenticates connecting agents by aski
 (`GET /api/users` is the fleet-wide auth oracle; `agent-auth.ts` and `mcp/README.md` carry
 the warning). Two transports: stdio for one agent, streamable-HTTP for the whole fleet.
 
-**The Rust api (`api/`)** is the backend being ported to — a third plane only while the
-port runs: the app's TS handler forwards migrated `/api` prefixes to it on loopback
+**The Rust api (`api/`)** is the backend of record — 216 of 219 route files serve from it
+(merged 2026-09-01): the app's TS handler forwards `/api` prefixes to it on loopback
 (`server/rust-proxy.ts`, gated on `TALARIA_RUST_API_URL`; unset serves everything from TS,
-which stays the default). The LLM gateway is served from it today; the batch list, the
-coexistence rules and the end state (the TS server deleted) are
+the posture unproxied installs keep until cutover). Dev runs it as a sidecar
+(`TALARIA_API=on`). The three residents are permanent (`admin/update`, app dispatch, and
+`healthz`); the rules, the batch record, the recorded divergences and the cutover end
+state (the TS API deleted, this hop staying) are
 [`docs/RUST-MIGRATION.md`](./RUST-MIGRATION.md).
 
 | Surface | Port | Notes |
 | :--- | :--- | :--- |
 | The app (dev and container) | 5273 | `PORT` in bare prod |
-| The Rust api (the port; axum) | 5274 | dev/coexistence only, loopback — see `docs/RUST-MIGRATION.md` |
+| The Rust api (the backend; axum) | 5274 | loopback behind the app — see `docs/RUST-MIGRATION.md` |
 | talaria-mcp | 5280 | spawned by the app as a child process |
 | Postgres / Redis (dev) | 5544 / 6399 | dev infra, `--restart unless-stopped` |
 | Qdrant / TEI / MinIO / SearXNG (dev) | 6333 / 8055 / 9010 / 8888 | retrieval, embeddings, the built-in bucket, search |
@@ -55,7 +57,10 @@ TEI embeddings, MinIO, SearXNG.
 ## Request lifecycle
 
 1. **Entry.** Node request → `Request` → `server/app.ts`'s fetch handler (prod), or the same
-   via `ssrLoadModule` (dev).
+   via `ssrLoadModule` (dev). The handler's first act is the proxy switch: a request under
+   a migrated prefix forwards to the Rust api on loopback (`rust-proxy.ts`, streamed
+   through, no fallback by design), and everything below this line describes the TS route
+   table that remains — the SPA shell and the three residents — until cutover.
 2. **Route table.** `app.ts` globs `routes/api/**/*.ts`, requires a `Route` export, sorts by
    static-segment count (`/api/boards/mine` beats `/api/boards/$id`). 405 with an `allow`
    header on the wrong method; unknown paths fall through to the SPA shell.
@@ -103,11 +108,13 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
 ## Data
 
 - **Postgres via `postgres.js`** — no ORM. Tagged-template `sql` fragments everywhere.
-- **Schema in one file, append-only by contract.** `MIGRATIONS` in `db/pg.ts` is an array of
-  idempotent statements; an entry's index is its identity. Inserting mid-array trips a
-  checksum and the app refuses to boot. Migrations run lazily on first query, once per
-  statement ever, under an advisory lock; a failed migration is cached — every request 500s
-  until restart. Bring the containers up before the app.
+- **Schema migrations, append-only by contract.** Ownership handed to the Rust api with the
+  port's batch 4: the TS `MIGRATIONS` array in `db/pg.ts` is FROZEN — it still applies
+  (lazily on first query, once per statement ever, under an advisory lock) but never
+  grows — and new migrations are sqlx's (`api/src/db.rs`: the same per-statement sha256
+  bookkeeping, the same advisory lock, each statement committing with its own bookkeeping
+  row). An entry's index is its identity; inserting mid-array trips a checksum and the
+  boot refuses. Bring the containers up before the app.
 - **Wire numerics arrive as strings** (`numeric`, `int8`) — read them through `PgNumeric` /
   `pgNum`, don't `Number()` blind.
 - **Redis** holds sessions, the realtime bus, scheduler leases, KB presence.
@@ -121,9 +128,11 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
 
 ## Realtime
 
-Redis pub/sub → SSE. No websockets anywhere (`realtime.ts`). One dedicated Redis subscriber
-per connected client; 25-second pings; four topics: `board:<id>`, `channel:<id>`,
-`run:<id>`, and `user:<id>` — the per-person firehose that makes runs multi-device.
+Redis pub/sub → SSE. No websockets anywhere (`realtime.ts` in TS, `api/src/realtime.rs` in
+the Rust api — the same bus and the same rule on both sides). One dedicated Redis
+subscriber per connected client; 25-second pings; four topics: `board:<id>`,
+`channel:<id>`, `run:<id>`, and `user:<id>` — the per-person firehose that makes runs
+multi-device.
 
 **The load-bearing rule: an event says *what changed*, never *what it says*** — the client
 re-fetches through the ordinary ACL'd route, so realtime can never widen a read. Payloads
@@ -198,12 +207,15 @@ Building them: `docs/APPS.md` + `docs/sdk/`.
 
 ## Jobs and durable runs
 
-One scheduler (`scheduler.ts`), registered jobs with named intervals, **exactly-once via a
-Redis lease** — one run per interval fleet-wide; unreachable Redis skips the tick rather
-than running unguarded. The first eight jobs are required: a missing registration fails
-boot. The scheduler runs in prod only — `vite dev` never arms it (`TALARIA_SCHEDULER=off`
-is the prod kill switch), which is why "my background job never fires locally" is usually
-not a bug. The app container warms the route graph with an in-process health check before
+One scheduler, two runtimes, one switch: `TALARIA_SCHEDULER` — unset arms TS's
+(`scheduler.ts`), `rust` arms the Rust api's (`api/src/jobs.rs`) while TS's stands down,
+`off` arms nobody. Registered jobs with named intervals, **exactly-once via a Redis lease**
+— one run per interval fleet-wide; unreachable Redis skips the tick rather than running
+unguarded. The first eight jobs are required: a missing registration fails boot. The TS
+scheduler runs in prod only — `vite dev` never arms it (`TALARIA_SCHEDULER=off` is the
+kill switch) — which is why "my background job never fires locally" is usually not a bug;
+a dev stack that proxies to Rust arms the Rust one instead (`TALARIA_SCHEDULER=rust` in
+the env). The app container warms the route graph with an in-process health check before
 listening, so jobs run only on an instance that can serve.
 
 The scheduled family: comms decay (distill idle threads), the daily digest and approval

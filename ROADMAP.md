@@ -91,6 +91,13 @@ The project management suite, the fleet engine, and auth are live and running:
   critical alert and a card chip instead of freezing chats — ledger blind spots, stuck work),
   `/inference` (local backends probed live + local throughput).
 
+- **The Rust API** ✅. The backend — every `/api` route (216 of 219 route files;
+  `admin/update`, app dispatch, and `healthz` stay TS), the SSE streams, and the scheduler —
+  runs on the Rust crate ([`api/`](./api)), merged 2026-09-01 and byte-diffed against the TS
+  oracle across 370 route pairs. The SvelteKit server stays the SPA host and hands `/api/*`
+  to Rust on loopback; unproxied installs serve the TS API until cutover.
+  ([`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md))
+
 ## Next / planned
 
 Roughly in the order we're chasing it. Full detail in
