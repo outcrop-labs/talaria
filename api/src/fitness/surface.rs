@@ -3134,10 +3134,8 @@ pub async fn read_fitness(
         // its last run gave the slot they are assigning, and a second round
         // trip for two dozen small cell maps would be a request per panel per
         // open.
-        let body = CapabilitiesView {
-            models: model_rows(deps).await?,
-            index: read_index_raw(deps).await?,
-        };
+        let (models, index) = tokio::try_join!(model_rows(deps), read_index_raw(deps))?;
+        let body = CapabilitiesView { models, index };
         return Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?);
     }
 

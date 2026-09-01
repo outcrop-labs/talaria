@@ -373,34 +373,44 @@ pub async fn list_recent_messages_with_token(
         })
         .unwrap_or_default();
 
-    // Fetch each message's metadata (headers + snippet) in parallel.
-    let mut msgs = Vec::with_capacity(ids.len());
-    for id in &ids {
-        // metadataHeaders appended in the TS's ['From','Subject','Date'] order.
-        // The serializer is finished INSIDE this scope — `Serializer` is not
-        // Send, and a bare one held across the await below would make every
-        // route awaiting this listing non-Send (Handler requires Send).
-        let meta_params = {
-            let mut p = url::form_urlencoded::Serializer::new(String::new());
-            p.append_pair("format", "metadata");
-            for h in ["From", "Subject", "Date"] {
-                p.append_pair("metadataHeaders", h);
+    // Fetch each message's metadata (headers + snippet) in parallel — TS's
+    // Promise.all over the id list. Sequential round-trips here cost the
+    // listing N×RTT to Google (+700ms at 25 messages) while preserving nothing
+    // join_all does not: results arrive in the ids' order either way.
+    let msgs: Vec<Value> = {
+        let futs = ids.iter().map(|id| {
+            let auth_header = &auth_header;
+            // metadataHeaders appended in the TS's ['From','Subject','Date'] order.
+            // The serializer is finished INSIDE this scope — `Serializer` is not
+            // Send, and a bare one held across the await below would make every
+            // route awaiting this listing non-Send (Handler requires Send).
+            let meta_params = {
+                let mut p = url::form_urlencoded::Serializer::new(String::new());
+                p.append_pair("format", "metadata");
+                for h in ["From", "Subject", "Date"] {
+                    p.append_pair("metadataHeaders", h);
+                }
+                p.finish()
+            };
+            async move {
+                let r = http()
+                    .get(format!("{GMAIL_BASE}/messages/{id}?{meta_params}"))
+                    .header("authorization", auth_header)
+                    .send()
+                    .await;
+                let Ok(r) = r else { return None };
+                if !r.status().is_success() {
+                    return None; // TS's per-message null, filtered out below
+                }
+                r.json::<Value>().await.ok()
             }
-            p.finish()
-        };
-        let r = http()
-            .get(format!("{GMAIL_BASE}/messages/{id}?{meta_params}"))
-            .header("authorization", &auth_header)
-            .send()
-            .await;
-        let Ok(r) = r else { continue };
-        if !r.status().is_success() {
-            continue; // TS's per-message null, filtered out below
-        }
-        if let Ok(m) = r.json::<Value>().await {
-            msgs.push(m);
-        }
-    }
+        });
+        futures_util::future::join_all(futs)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
+    };
 
     // One labels read for the whole listing, shared across messages — the
     // label map cannot change between two messages of the same fetch, so

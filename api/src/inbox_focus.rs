@@ -520,10 +520,14 @@ async fn raw_focus_items(
     pg: &PgPool,
     user: &SessionUser,
 ) -> Result<Vec<RawFocusItem>, sqlx::Error> {
-    let approvals = approval_items(pg, user, None).await?;
-    let tasks = task_items(pg, &user.id, None).await?;
-    let channels = channel_items(pg, &user.id, None).await?;
-    let notifications = notification_items(pg, &user.id, None).await?;
+    // TS's Promise.all over the four sources — sequential here stacks four
+    // query round-trips the queue did not need to wait for in series.
+    let (approvals, tasks, channels, notifications) = tokio::try_join!(
+        approval_items(pg, user, None),
+        task_items(pg, &user.id, None),
+        channel_items(pg, &user.id, None),
+        notification_items(pg, &user.id, None)
+    )?;
     let mut all = approvals;
     all.extend(tasks);
     all.extend(channels);

@@ -414,25 +414,31 @@ pub async fn list_fleet_crons(pg: &PgPool) -> Result<Vec<FleetCronAgent>, sqlx::
     )
     .fetch_all(pg)
     .await?;
-    let mut out = Vec::new();
-    for (id, slug, display_name) in defs {
-        match list_cron_jobs(pg, &id).await {
-            Ok(jobs) => out.push(FleetCronAgent {
-                id,
-                slug,
-                display_name,
-                jobs,
-                error: None,
-            }),
-            Err(e) => out.push(FleetCronAgent {
-                id,
-                slug,
-                display_name,
-                jobs: Vec::new(),
-                error: Some(e),
-            }),
-        }
-    }
+    // TS's Promise.all across agents — each list_cron_jobs is a round-trip to
+    // that agent's container, and sequential turns N containers' answers into
+    // a+b+… instead of max(a,b). join_all keeps the defs' slug order; a failed
+    // agent still reports per-agent, never fatal.
+    let out: Vec<FleetCronAgent> = futures_util::future::join_all(defs.into_iter().map(
+        |(id, slug, display_name)| async move {
+            match list_cron_jobs(pg, &id).await {
+                Ok(jobs) => FleetCronAgent {
+                    id,
+                    slug,
+                    display_name,
+                    jobs,
+                    error: None,
+                },
+                Err(e) => FleetCronAgent {
+                    id,
+                    slug,
+                    display_name,
+                    jobs: Vec::new(),
+                    error: Some(e),
+                },
+            }
+        },
+    ))
+    .await;
     Ok(out)
 }
 
