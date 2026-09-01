@@ -3,12 +3,12 @@
 // .env, so per-agent keys/secrets stay in one Talaria-owned, gitignored
 // place). Port of the LIFECYCLE half of ui/src/server/fleet-docker.ts.
 //
-// SCOPE, deliberately: only what the agent-hire run's boot stage reaches —
-// slot naming, active-slot resolution, the external network guarantee, `up`,
-// the post-up reachability kick, and the healthcheck wait. The rest of the TS
-// module (stop/restart/remove, the 5s-cached `docker ps` status the roster
-// and Home poll, bundled-skill pruning) is read-plane surface for routes that
-// still serve from TS; each crosses with its caller.
+// The whole TS module crossed with the fleet tail: slot naming, active-slot
+// resolution, the external network guarantee, the lifecycle verbs (up, stop,
+// restart, remove), the healthcheck wait, bundled-skill pruning, the 5s-cached
+// `docker ps` status the roster and Home poll, and the shared `docker exec`
+// wrapper the cron and memory surfaces reach an agent's own filesystem
+// through.
 //
 // Rolling slots: each agent runs as `agent-<dept>` (slot a) or
 // `agent-<dept>-b` (slot b). Callers pass a department as always — the
@@ -235,6 +235,211 @@ pub async fn remove_container_by_name(name: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// `docker exec` into a container — port of docker-exec.ts dockerExec (no
+/// stdin leg yet; the memory write that uses it crosses with its route).
+/// Args never touch a shell (argv only — cron prompts are data, not command
+/// lines). On failure stderr is the half a caller wants: it is what
+/// `docker exec` itself reported, and it beats the node error text when both
+/// exist (TS: `new Error(String(stderr).trim() || err.message)`).
+pub async fn docker_exec(
+    container: &str,
+    command: &[&str],
+    timeout_ms: u64,
+) -> Result<(String, String), String> {
+    let mut args = vec!["exec", container];
+    args.extend(command.iter().copied());
+    let out = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        tokio::process::Command::new("docker")
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(|e| format!("docker exec {container} …: {e}"))
+    })
+    .await
+    .map_err(|_| format!("docker exec {container} …: timed out"))??;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(stderr);
+    }
+    Ok((
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// The managed container's CURRENT name — anything that docker-execs into an
+/// agent must resolve through this, never hardcode the slot-a name (a rolled
+/// agent lives in "-b-1" until its next roll). Slot-aware per call, never
+/// cached: the roll can happen between any two commands.
+pub async fn managed_container(pg: &PgPool, department: &str) -> String {
+    let slot = active_slot(pg, department).await;
+    slot_container(department, slot)
+}
+
+/// One lifecycle verb against the department's ACTIVE slot's compose service
+/// (fleet-docker.ts fleetStop / fleetRestart / fleetRemove). All three answer
+/// with compose's stderr trimmed — the shape TS handed back.
+async fn compose_verb(
+    pg: &PgPool,
+    department: &str,
+    verb_args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
+    let slot = active_slot(pg, department).await;
+    let svc = slot_service(department, slot);
+    let mut full: Vec<String> = compose_args(verb_args);
+    full.push(svc);
+    let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+    let (_, stderr) = docker(&refs, timeout).await?;
+    Ok(stderr.trim().to_string())
+}
+
+/// `docker volume rm` — plain success/failure, the way deleteAgentForever's
+/// execFile callback reads it (a missing volume fails; that's a "false").
+pub async fn remove_volume(name: &str) -> bool {
+    docker(&["volume", "rm", name], Duration::from_secs(20))
+        .await
+        .is_ok()
+}
+
+pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String> {
+    compose_verb(pg, department, &["stop"], Duration::from_secs(60)).await
+}
+
+/// Restart a managed agent so a re-rendered config.yaml takes effect. Prefer
+/// roll_agent (fleet_reconcile) for user-facing changes — a restart has a
+/// downtime window; a roll doesn't.
+pub async fn fleet_restart(pg: &PgPool, department: &str) -> Result<String, String> {
+    compose_verb(pg, department, &["restart"], Duration::from_secs(120)).await
+}
+
+pub async fn fleet_remove(pg: &PgPool, department: &str) -> Result<String, String> {
+    compose_verb(pg, department, &["rm", "-sf"], Duration::from_secs(60)).await
+}
+
+/// The parsed healthcheck phase — 'starting' is the warm-up window
+/// (start_period 60s on the compose healthcheck). None = no health info.
+/// docker ps folds health into the Status string; the order matters because
+/// "(unhealthy)" contains "healthy": starting, then the PARENTHESIZED
+/// healthy, then unhealthy (parseHealth's regex order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum Health {
+    #[serde(rename = "starting")]
+    Starting,
+    #[serde(rename = "healthy")]
+    Healthy,
+    #[serde(rename = "unhealthy")]
+    Unhealthy,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContainerState {
+    pub name: String,
+    /// running | exited | …
+    pub state: String,
+    /// Human string incl. health, e.g. "Up 2 hours (healthy)".
+    pub status: String,
+    pub health: Option<Health>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentContainers {
+    pub department: String,
+    pub managed: Option<ContainerState>,
+}
+
+fn parse_health(status: &str) -> Option<Health> {
+    let lower = status.to_lowercase();
+    if lower.contains("health: starting") {
+        Some(Health::Starting)
+    } else if lower.contains("(healthy)") {
+        Some(Health::Healthy)
+    } else if lower.contains("unhealthy") {
+        Some(Health::Unhealthy)
+    } else {
+        None
+    }
+}
+
+/// Container reality per department: the talaria-managed service, by name —
+/// either slot counts, preferring the one that's running (mid-roll both
+/// exist). Docker CLI costs ~0.5s per shell-out and Home + alerts + the
+/// roster all ask within the same breath — a 5s cache dedupes them without
+/// going stale for the 10s roster poll (containerStatus).
+pub async fn container_status(
+    departments: &[String],
+) -> Result<Vec<AgentContainers>, String> {
+    let key = {
+        let mut sorted = departments.to_vec();
+        sorted.sort();
+        sorted.join(",")
+    };
+    let cache = STATUS_CACHE.lock().await;
+    if let Some((at, cached_key, value)) = cache.as_ref()
+        && cached_key == &key
+        && at.elapsed() < Duration::from_secs(5)
+    {
+        return Ok(value.clone());
+    }
+    drop(cache);
+
+    let value = container_status_fresh(departments).await?;
+
+    let mut cache = STATUS_CACHE.lock().await;
+    *cache = Some((std::time::Instant::now(), key, value.clone()));
+    Ok(value)
+}
+
+static STATUS_CACHE: std::sync::LazyLock<
+    tokio::sync::Mutex<Option<(std::time::Instant, String, Vec<AgentContainers>)>>,
+> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+async fn container_status_fresh(
+    departments: &[String],
+) -> Result<Vec<AgentContainers>, String> {
+    let (out, _) = docker(&["ps", "-a", "--format", "{{json .}}"], Duration::from_secs(20)).await?;
+    // One JSON object per line; a line that does not parse is skipped the way
+    // TS's JSON.parse throw would abort — but docker never emits one, so the
+    // unwrap mirrors the TS shape rather than a real failure mode.
+    let by_name: HashMap<String, ContainerState> = out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| {
+            let name = v.get("Names")?.as_str()?.to_string();
+            let state = v.get("State")?.as_str()?.to_string();
+            let status = v.get("Status")?.as_str()?.to_string();
+            Some((
+                name.clone(),
+                ContainerState {
+                    name,
+                    state,
+                    health: parse_health(&status),
+                    status,
+                },
+            ))
+        })
+        .collect();
+    Ok(departments
+        .iter()
+        .map(|department| {
+            let a = by_name.get(&slot_container(department, Slot::A));
+            let b = by_name.get(&slot_container(department, Slot::B));
+            // Either slot counts, preferring the one that's running.
+            let managed = match (a, b) {
+                (Some(x), _) if x.state == "running" => Some(x.clone()),
+                (_, Some(y)) if y.state == "running" => Some(y.clone()),
+                (x, y) => x.or(y).cloned(),
+            };
+            AgentContainers {
+                department: department.clone(),
+                managed,
+            }
+        })
+        .collect())
+}
+
 /// Bundled skill packs that CONFLICT with the Talaria toolkit — they pitch a
 /// parallel system of record (external note vaults, ungoverned email) and
 /// send agents flailing. Removed explicitly because the seed marks packs
@@ -296,5 +501,32 @@ mod tests {
         assert!(args[4].ends_with("docker-compose.yml"), "{}", args[4]);
         assert!(args[6].ends_with("/.env"), "{}", args[6]);
         assert_eq!(&args[7..], ["up", "-d", "agent-research"]);
+    }
+
+    // parseHealth's order is the whole test: "(unhealthy)" CONTAINS
+    // "healthy", so the parenthesized healthy pattern must run first.
+    #[test]
+    fn health_parses_the_ps_status_string_in_ts_order() {
+        assert_eq!(parse_health("Up 30 seconds (health: starting)"), Some(Health::Starting));
+        assert_eq!(parse_health("Up 2 hours (healthy)"), Some(Health::Healthy));
+        assert_eq!(parse_health("Up 2 hours (unhealthy)"), Some(Health::Unhealthy));
+        assert_eq!(parse_health("Up 2 hours"), None);
+        assert_eq!(parse_health("Exited (0) 3 minutes ago"), None);
+        // Case-insensitive, as the TS /i flags insist.
+        assert_eq!(parse_health("Up 2 hours (HEALTHY)"), Some(Health::Healthy));
+    }
+
+    #[test]
+    fn container_state_serializes_health_null_when_absent() {
+        let c = ContainerState {
+            name: "n".into(),
+            state: "running".into(),
+            status: "Up 2 hours".into(),
+            health: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            serde_json::json!({"name": "n", "state": "running", "status": "Up 2 hours", "health": null})
+        );
     }
 }

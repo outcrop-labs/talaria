@@ -287,7 +287,7 @@ struct OrgReply {
 /// catch: transport failures read bare "fetch failed" (the cause chain carries
 /// the detail, `(e as Error).message` does not) and an AbortSignal.timeout
 /// expiry reads like every other DOM timeout.
-fn undici_message(e: &reqwest::Error) -> String {
+pub(crate) fn undici_message(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         "The operation was aborted due to timeout".into()
     } else {

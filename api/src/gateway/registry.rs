@@ -116,6 +116,287 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
         .collect())
 }
 
+// ── The registry's own control plane (agent-defs.ts endpoints CRUD) ─────────
+
+/// The wire shape of listEndpoints(): every column in the TS SELECT's order,
+/// jsonb passthroughs riding raw Values (the stored canonical order IS the
+/// wire order), and prices as STRINGS — postgres.js hands numerics through
+/// unparsed (arbitrary precision is the column's promise), so a stored 3
+/// reads "3" on the wire, not 3. ::text prints the stored digits verbatim,
+/// which is exactly that.
+pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        serde_json::Value,
+        serde_json::Value,
+        serde_json::Value,
+        serde_json::Value,
+        serde_json::Value,
+        bool,
+    )> = sqlx::query_as(
+        "select id::text, name, provider, base_url, class, api_key_env, context_length, \
+         price_in_per_mtok::text, price_out_per_mtok::text, models, model_prices, \
+         model_efforts, auto_prices, request_defaults, (api_key_cipher is not null) \
+         from llm_endpoints order by (class = 'local') desc, name asc",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, name, provider, base_url, class, api_key_env, context_length,
+              price_in, price_out, models, model_prices, model_efforts, auto_prices,
+              request_defaults, has_key)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "provider": provider,
+                    "baseUrl": base_url,
+                    "class": class,
+                    "apiKeyEnv": api_key_env,
+                    "contextLength": context_length,
+                    "priceInPerMtok": price_in,
+                    "priceOutPerMtok": price_out,
+                    "models": models,
+                    "modelPrices": model_prices,
+                    "modelEfforts": model_efforts,
+                    "autoPrices": auto_prices,
+                    "requestDefaults": request_defaults,
+                    "hasKey": has_key,
+                })
+            },
+        )
+        .collect())
+}
+
+/// What updateEndpoint accepts — every field Option-al, the parse having
+/// already happened (body.rs tri-state: None = absent from the patch).
+pub struct EndpointPatch {
+    pub class: Option<String>,
+    pub price_in_per_mtok: Option<Option<f64>>,
+    pub price_out_per_mtok: Option<Option<f64>>,
+    pub models: Option<Vec<String>>,
+    pub model_prices: Option<serde_json::Value>,
+    pub model_efforts: Option<serde_json::Value>,
+    pub request_defaults: Option<serde_json::Value>,
+    /// Raw provider API key: a non-empty string seals + stores it; '' or null
+    /// clears it; None (absent) leaves the stored key untouched. Never
+    /// round-tripped to clients.
+    pub api_key: Option<String>,
+}
+
+/// updateEndpoint — one independent UPDATE per PRESENT field, exactly as TS
+/// sequences them. Two JS-truthiness traps are load-bearing: `if
+/// (patch.models)` skips an EMPTY array (clearing the catalog is not
+/// possible through this door), while the jsonb objects update even when
+/// empty ({}) because a JS object is always truthy.
+pub async fn update_endpoint(
+    pg: &PgPool,
+    sb: &crate::secretbox::SecretBox,
+    id: &str,
+    patch: &EndpointPatch,
+) -> Result<(), sqlx::Error> {
+    if let Some(api_key) = &patch.api_key {
+        // patch.apiKey ? seal(trim) : null — '' and null both clear.
+        let cipher = if api_key.trim().is_empty() {
+            None
+        } else {
+            sb.seal(api_key.trim()).ok()
+        };
+        sqlx::query("update llm_endpoints set api_key_cipher = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(cipher)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(class) = &patch.class {
+        sqlx::query("update llm_endpoints set class = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(class)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(request_defaults) = &patch.request_defaults {
+        sqlx::query("update llm_endpoints set request_defaults = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(request_defaults)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(price_in) = &patch.price_in_per_mtok {
+        sqlx::query("update llm_endpoints set price_in_per_mtok = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(price_in)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(price_out) = &patch.price_out_per_mtok {
+        sqlx::query("update llm_endpoints set price_out_per_mtok = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(price_out)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(models) = &patch.models
+        && !models.is_empty()
+    {
+        sqlx::query("update llm_endpoints set models = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(serde_json::json!(models))
+            .execute(pg)
+            .await?;
+    }
+    if let Some(model_prices) = &patch.model_prices {
+        sqlx::query("update llm_endpoints set model_prices = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(model_prices)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(model_efforts) = &patch.model_efforts {
+        sqlx::query("update llm_endpoints set model_efforts = $2, updated_at = now() where id = $1::uuid")
+            .bind(id)
+            .bind(model_efforts)
+            .execute(pg)
+            .await?;
+    }
+    Ok(())
+}
+
+/// createEndpoint — a user-defined endpoint (Models tab). Name must be fresh;
+/// the caller maps a unique-violation to the friendly sentence.
+pub async fn create_endpoint(
+    pg: &PgPool,
+    sb: &crate::secretbox::SecretBox,
+    name: &str,
+    provider: &str,
+    base_url: Option<&str>,
+    class: &str,
+    api_key_env: Option<&str>,
+    api_key: Option<&str>,
+    models: &[String],
+    model_prices: &serde_json::Value,
+) -> Result<String, sqlx::Error> {
+    let cipher = api_key
+        .map(|k| sb.seal(k.trim()).ok())
+        .flatten();
+    let row: (String,) = sqlx::query_as(
+        "insert into llm_endpoints \
+           (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices) \
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb) returning id::text",
+    )
+    .bind(name)
+    .bind(provider)
+    .bind(base_url)
+    .bind(class)
+    .bind(api_key_env)
+    .bind(cipher)
+    .bind(serde_json::json!(models))
+    .bind(model_prices)
+    .fetch_one(pg)
+    .await?;
+    Ok(row.0)
+}
+
+/// ensureEndpoint — insert-if-absent (on conflict only provider/base_url
+/// refresh; class/key-env/context stay as first written). Federation and the
+/// import path use it to map outside model targets into the registry.
+pub async fn ensure_endpoint(
+    pg: &PgPool,
+    name: &str,
+    provider: &str,
+    base_url: Option<&str>,
+    class: &str,
+    api_key_env: Option<&str>,
+    context_length: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into llm_endpoints (name, provider, base_url, class, api_key_env, context_length) \
+         values ($1, $2, $3, $4, $5, $6) \
+         on conflict (name) do update set \
+           provider = excluded.provider, \
+           base_url = excluded.base_url, \
+           updated_at = now()",
+    )
+    .bind(name)
+    .bind(provider)
+    .bind(base_url)
+    .bind(class)
+    .bind(api_key_env)
+    .bind(context_length)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// addEndpointModels — union new ids into the endpoint's model list, first
+/// occurrence order preserved-ish (jsonb_agg(distinct) inside one call).
+pub async fn add_endpoint_models(
+    pg: &PgPool,
+    name: &str,
+    models: &[String],
+) -> Result<(), sqlx::Error> {
+    if models.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "update llm_endpoints \
+         set models = ( \
+           select coalesce(jsonb_agg(distinct m), '[]'::jsonb) \
+           from jsonb_array_elements_text(models || $2::jsonb) as m \
+         ), updated_at = now() \
+         where name = $1",
+    )
+    .bind(name)
+    .bind(serde_json::json!(models))
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// deleteEndpoint — refused while any ENABLED agent's CURRENT version targets
+/// it (retired agents don't run; their history must not block).
+pub async fn delete_endpoint(
+    pg: &PgPool,
+    id: &str,
+) -> Result<(bool, Vec<String>), sqlx::Error> {
+    let name: Option<(String,)> =
+        sqlx::query_as("select name from llm_endpoints where id = $1::uuid")
+            .bind(id)
+            .fetch_optional(pg)
+            .await?;
+    let Some((name,)) = name else {
+        return Ok((true, Vec::new()));
+    };
+    let users: Vec<(String,)> = sqlx::query_as(
+        "select d.slug from agent_defs d \
+         join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
+         where d.enabled \
+           and (v.config->'main'->>'endpoint' = $1 \
+             or exists (select 1 from jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a where a->>'endpoint' = $1) \
+             or exists (select 1 from jsonb_array_elements(coalesce(v.config->'fallbacks','[]'::jsonb)) f where f->>'endpoint' = $1))",
+    )
+    .bind(&name)
+    .fetch_all(pg)
+    .await?;
+    if !users.is_empty() {
+        return Ok((false, users.into_iter().map(|(s,)| s).collect()));
+    }
+    sqlx::query("delete from llm_endpoints where id = $1::uuid")
+        .bind(id)
+        .execute(pg)
+        .await?;
+    Ok((true, Vec::new()))
+}
+
 pub struct ModelRouting {
     /// Every endpoint this model id can land on — one for a pin, the whole
     /// round-robin pool for a bare name, empty when nothing serves it.

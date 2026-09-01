@@ -156,34 +156,46 @@ const PREFIXES = [
   // named `app-{slug}` in the registry, so their gateway URL is
   // /api/mcp/gw/app-… and the path prefix alone would swallow them).
   '/api/mcp',
+  // The fleet family — the whole plane: the overview, containers, the
+  // hire pair (create + hires), render/reconcile/federate, the defs list,
+  // endpoints (list, edit, live catalog), crons (fleet-wide and per-agent),
+  // per-agent control and secrets, and the defs.$id.mcp version hook. The
+  // defs DETAIL trio (defs.$id, defs.$id.edit, defs.$id.versions — the
+  // hire editor's version plane) is still TS; STAY_TS below holds it back.
+  '/api/fleet',
 ] as const
 
 // Holes carved OUT of the prefixes above: paths that match one of these stay
-// on TS even though a PREFIXES entry covers them. The only resident is the
-// port's rule 10 — app modules are app authors' TS/node code, dispatched
-// in-process by the TS gateway; Rust answers a fixed sentence if hit directly
-// (dev setups that point agents straight at :5274), but the proxy never
-// routes an app server's tool traffic anywhere but the runtime that can
-// actually dispatch it. This is permanent, not backlog: the modules are
-// customer code, never port surface.
-const STAY_TS = [/^\/api\/mcp\/gw\/app-/] as const
+// on TS even though a PREFIXES entry covers them. Two residents: the port's
+// rule 10 — app modules are app authors' TS/node code, dispatched in-process
+// by the TS gateway; Rust answers a fixed sentence if hit directly (dev
+// setups that point agents straight at :5274), but the proxy never routes an
+// app server's tool traffic anywhere but the runtime that can actually
+// dispatch it (permanent, not backlog: the modules are customer code, never
+// port surface) — and the fleet defs DETAIL trio, the hire editor's
+// versioned read/edit surface, which crosses with its own batch.
+const STAY_TS = [
+  /^\/api\/mcp\/gw\/app-/,
+  // fleet.defs.$id.ts + fleet.defs.$id.edit.ts + fleet.defs.$id.versions.ts
+  /^\/api\/fleet\/defs\/[^/]+$/,
+  /^\/api\/fleet\/defs\/[^/]+\/edit$/,
+  /^\/api\/fleet\/defs\/[^/]+\/versions$/,
+] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it
-// besides the route itself still belongs to TS. '/api/agents' has register +
-// heartbeat sub-routes (the fleet plane, a later batch), and '/api/apps' is
-// the app-server gateway (apps.$app.$ dispatches into app server modules —
-// the gateway is host plumbing and may cross some day, but the modules it
-// dispatches into are app authors' TS/node code and stay TS by the port's
-// rule 10, not by backlog). '/api/me' is exact for the same reason:
-// me.mcp and me.assistant are their own planes (fleet, agents) that migrate
-// whole with those batches. '/api/me/events' is whole-path too — this
-// person's own SSE firehose, which crossed with the realtime slice while the
-// rest of me stayed. The two fleet routes are exact because the fleet family
-// is 20 TS route files and only the hire's create/list crossed — the other
-// 18 (status, stop/start, logs, env) still serve from TS, and a prefix here
-// would strand every one of them on a Rust 404.
+// besides the route itself still belongs to TS. '/api/agents' is exact (the
+// roster read) while its two fleet-plane sub-routes migrate by shape below —
+// register exactly, heartbeat parameterized. '/api/apps' is the app-server
+// gateway (apps.$app.$ dispatches into app server modules — the gateway is
+// host plumbing and may cross some day, but the modules it dispatches into
+// are app authors' TS/node code and stay TS by the port's rule 10, not by
+// backlog). '/api/me' is exact for the same reason: me.assistant is its own
+// plane (fleet, agents) that migrates whole with that batch.
+// '/api/me/events' is whole-path too — this person's own SSE firehose, which
+// crossed with the realtime slice while the rest of me stayed.
 const EXACT = new Set([
   '/api/agents',
+  '/api/agents/register',
   '/api/apps',
   '/api/me',
   '/api/me/events',
@@ -192,8 +204,6 @@ const EXACT = new Set([
   // route file; the bare /api/rag/* family (collections, search) is a
   // different path that crossed later and lives in PREFIXES.
   '/api/admin/rag',
-  '/api/fleet/create',
-  '/api/fleet/hires',
   // The version-history read plane — one route file over two stores
   // (internal_versions snapshots, agent_versions). No sub-routes hide under
   // this path, and nothing else in the tree starts with "/api/history".
@@ -230,11 +240,10 @@ const SHAPES = [
   /^\/api\/research\/[^/]+\/members$/,
   /^\/api\/research\/[^/]+\/conversation$/,
   /^\/api\/research\/[^/]+\/decide$/,
-  // fleet.defs.$id.mcp.ts — the fleet version-edit hook for an agent's MCP
-  // grants (+add/-remove, versioned). The rest of /api/fleet/defs (list,
-  // detail, versions) is still TS; the two EXACT fleet entries above are the
-  // hire pair only, so this shape is the family's third and lone crossing.
-  /^\/api\/fleet\/defs\/[^/]+\/mcp$/,
+  // agents.$id.heartbeat.ts — the fleet plane's pull channel (agents call it
+  // themselves, MC-compatible). '/api/agents' is EXACT above and register is
+  // EXACT beside it; only the :id shape needs a pattern.
+  /^\/api\/agents\/[^/]+\/heartbeat$/,
 ] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)

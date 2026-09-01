@@ -255,6 +255,123 @@ pub async fn create_or_resume(
     }
 }
 
+// ── The delete half (fleet-create.ts deleteAgentForever) ─────────────────────
+
+/// Remove an agent FOREVER — the row (versions + secrets cascade with it),
+/// every access reference keyed by its model string, leftover containers,
+/// the rendered agent dir, its fleet .env keys, and — for created agents —
+/// the state volume. Imported agents keep their pre-Talaria volume (it
+/// predates us; deleting it isn't ours to do). History that references the
+/// agent by model string (ledger, messages, tickets) is deliberately kept.
+/// Answers whether the state volume went.
+pub async fn delete_agent_forever(
+    pg: &sqlx::PgPool,
+    sb: &crate::secretbox::SecretBox,
+    def_id: &str,
+) -> Result<bool, String> {
+    let def: Option<(String, String, String, bool)> = sqlx::query_as(
+        "select slug, department, source, enabled from agent_defs where id = $1::uuid",
+    )
+    .bind(def_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((slug, department, source, enabled)) = def else {
+        return Err("not found".into());
+    };
+    if enabled {
+        return Err("retire the agent first. Delete is for retired agents only.".into());
+    }
+
+    // Containers first (should already be gone after retire; both slots,
+    // best-effort).
+    for slot in [crate::fleet_docker::Slot::A, crate::fleet_docker::Slot::B] {
+        let _ = crate::fleet_docker::remove_container_by_name(
+            &crate::fleet_docker::slot_container(&department, slot),
+        )
+        .await;
+    }
+
+    // The def row — versions + secrets cascade with it. Access references
+    // keyed by the model string are scrubbed too: per-user agent allow-lists,
+    // board and channel seats, and RAG-collection bindings must not dangle on
+    // a ghost. (Usage/ledger/message HISTORY keeps the model string on purpose.)
+    let model = format!("{slug}-{department}");
+    sqlx::query("delete from agent_defs where id = $1::uuid")
+        .bind(def_id)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+    for stmt in [
+        "delete from user_agent_access where agent_model = $1",
+        "delete from board_agents where agent_model = $1",
+        "delete from channel_agents where agent_model = $1",
+        "delete from rag_collection_access where principal_type = 'agent' and principal_id = $1",
+        "delete from fleet_agents where name = $1",
+    ] {
+        sqlx::query(stmt)
+            .bind(&model)
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Rendered dir (best-effort cleanup).
+    let _ = tokio::fs::remove_dir_all(fleet_layout::fleet_dir().join("agents").join(&slug)).await;
+
+    // Every per-slug secret line: BOTH credentials — the Hermes key AND the
+    // agent's own TALARIA_AGENT_KEY_<SLUG>. Leaving the latter behind would
+    // keep a deleted agent's plaintext credential on disk forever, and —
+    // because the agent_keys row cascaded away with the def — recreating the
+    // slug would inherit a dead secret (the container 401s with no
+    // diagnostic). The renderer now rewrites rather than skips, so this is
+    // belt and braces; the lingering plaintext is the reason it matters.
+    // Best-effort: the DB is authoritative; the next render re-materializes.
+    if let Ok(content) = tokio::fs::read_to_string(fleet_layout::fleet_env()).await {
+        let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
+        let agent_key = format!("{}=", fleet_layout::agent_key_var(&slug));
+        // The seeded comment rides out with the HERMES key line it announced
+        // (TS attaches the optional `(# added by Talaria (agent create)\n)?`
+        // group to the HERMES_KEY pattern only).
+        let comment = "# added by Talaria (agent create)";
+        let comment_line = format!("{comment}\n");
+        let mut next = String::with_capacity(content.len());
+        for line in content.lines() {
+            let is_hermes = line.starts_with(&hermes);
+            let is_agent_key = line.starts_with(&agent_key);
+            if is_hermes && next.ends_with(&comment_line) {
+                next.truncate(next.len() - comment_line.len());
+            }
+            if !is_hermes && !is_agent_key {
+                next.push_str(line);
+                next.push('\n');
+            }
+        }
+        if next != content {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = tokio::fs::write(fleet_layout::fleet_env(), &next).await;
+            if let Ok(meta) = tokio::fs::metadata(fleet_layout::fleet_env()).await {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = tokio::fs::set_permissions(fleet_layout::fleet_env(), perms).await;
+            }
+        }
+    }
+
+    // State volume: only for created agents (imported volumes are external
+    // legacy).
+    let removed_volume = source == "created"
+        && crate::fleet_docker::remove_volume(&format!(
+            "{}_hermes-{department}",
+            fleet_layout::fleet_project()
+        ))
+        .await;
+
+    crate::fleet_render::render_fleet(pg, sb, None)
+        .await?; // compose + manifest drop the agent
+    Ok(removed_volume)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -223,6 +223,151 @@ pub async fn usable_agent_gate(
     })
 }
 
+// ── The ops overview (fleet.ts getFleetOverview) ─────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetAgentStat {
+    pub id: String,
+    pub label: String,
+    pub role: String,
+    pub status: String,
+    pub last_seen: Option<String>,
+    pub last_activity: Option<String>,
+    pub conversations: i64,
+    pub messages: i64,
+    pub last_used: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetTotals {
+    pub agents: usize,
+    pub online: usize,
+    pub conversations: i64,
+    pub messages: i64,
+    pub active_today: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct FleetOverview {
+    pub agents: Vec<FleetAgentStat>,
+    pub totals: FleetTotals,
+}
+
+/// Owned fleet ops data — agents + Talaria-native usage (getFleetOverview).
+/// Heartbeats are the ideal liveness signal, but most agents don't heartbeat
+/// to Talaria yet; container reality (the roster status dots' own source)
+/// fills the gap, so the "online" count can never disagree with the green
+/// dots on the agents page: running container ⇒ online (`idle` when the
+/// registry says offline). `now` is epoch ms (house rule).
+pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, sqlx::Error> {
+    let agents = list_fleet_agents(pg).await?;
+    // Seed the registry from the fleet so every agent shows (offline until it
+    // heartbeats to Talaria), then read owned status.
+    let seed: Vec<String> = agents.iter().map(|a| a.agent.id.clone()).collect();
+    crate::agents_registry::seed_fleet_names(pg, &seed).await?;
+    let registry = crate::agents_registry::registry_by_name(pg, now).await?;
+
+    // defs (enabled only) → container reality, keyed by the def's MODEL (the
+    // agent id). A defs read that fails reads as "no containers" (TS's
+    // `.catch(() => [])`).
+    let defs: Vec<(String, String)> = sqlx::query_as(
+        "select model, department from agent_defs where enabled",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let containers = if defs.is_empty() {
+        Vec::new()
+    } else {
+        crate::fleet_docker::container_status(
+            &defs.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap_or_default()
+    };
+    let by_dept: std::collections::HashMap<&str, &crate::fleet_docker::AgentContainers> =
+        containers.iter().map(|c| (c.department.as_str(), c)).collect();
+    let container_up: std::collections::HashMap<&str, bool> = defs
+        .iter()
+        .map(|(model, dept)| {
+            let running = by_dept
+                .get(dept.as_str())
+                .and_then(|c| c.managed.as_ref())
+                .is_some_and(|m| m.state == "running");
+            (model.as_str(), running)
+        })
+        .collect();
+
+    // Fleet-wide usage (all users) per agent — the ops/maintainer view.
+    let rows: Vec<(String, i32, i32, Option<i64>)> = sqlx::query_as(
+        "select c.agent_model as model, \
+           count(distinct c.id)::int as conversations, \
+           count(m.id)::int as messages, \
+           (trunc(extract(epoch from max(c.updated_at)) * 1000))::bigint as last_used \
+         from conversations c \
+         left join messages m on m.conversation_id = c.id \
+         group by c.agent_model",
+    )
+    .fetch_all(pg)
+    .await?;
+    let by_model: std::collections::HashMap<&str, (i32, i32, Option<i64>)> = rows
+        .iter()
+        .map(|(m, c, msg, u)| (m.as_str(), (*c, *msg, *u)))
+        .collect();
+
+    let iso = crate::agent_auth::epoch_ms_to_iso;
+    let stats: Vec<FleetAgentStat> = agents
+        .iter()
+        .map(|a| {
+            let reg = registry.get(&a.agent.id);
+            // reg?.status ?? 'offline'
+            let reg_status = reg.map(|r| r.status.wire()).unwrap_or("offline");
+            let status = if reg_status == "offline"
+                && container_up.get(a.agent.id.as_str()).copied().unwrap_or(false)
+            {
+                "idle"
+            } else {
+                reg_status
+            };
+            let (conversations, messages, last_used) = by_model
+                .get(a.agent.id.as_str())
+                .cloned()
+                .unwrap_or((0, 0, None));
+            FleetAgentStat {
+                id: a.agent.id.clone(),
+                label: a.agent.label.clone(),
+                role: a.agent.role.clone(),
+                status: status.to_string(),
+                last_seen: reg.and_then(|r| r.last_seen).map(iso),
+                last_activity: reg.and_then(|r| r.last_activity.clone()),
+                conversations: conversations as i64,
+                messages: messages as i64,
+                last_used: last_used.map(iso),
+            }
+        })
+        .collect();
+
+    let day_ago = now - 24 * 60 * 60 * 1000;
+    let totals = FleetTotals {
+        agents: stats.len(),
+        online: stats.iter().filter(|s| s.status != "offline").count(),
+        conversations: stats.iter().map(|s| s.conversations).sum(),
+        messages: stats.iter().map(|s| s.messages).sum(),
+        active_today: stats
+            .iter()
+            .filter(|s| {
+                by_model
+                    .get(s.id.as_str())
+                    .and_then(|(_, _, u)| *u)
+                    .is_some_and(|used| used > day_ago)
+            })
+            .count(),
+    };
+    Ok(FleetOverview { agents: stats, totals })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -163,6 +163,102 @@ pub async fn agent_def_by_id(pg: &PgPool, id: &str) -> Result<Option<AgentDefRow
     Ok(row.map(def_row))
 }
 
+/// listAgentDefs — every def with its LATEST version inline, the harness
+/// registry's read. The def objects ride raw Values keyed in the TS SELECT's
+/// order (jsonb passthroughs keep the stored order; the iso helper prints the
+/// timestamps the way JSON.stringify prints a Date). Twenty columns — past
+/// sqlx's tuple arity, so the row lands in a FromRow struct.
+#[derive(sqlx::FromRow)]
+struct DefListRow {
+    id: String,
+    slug: String,
+    department: String,
+    model: String,
+    display_name: String,
+    role: Option<String>,
+    email_alias: Option<String>,
+    owner_user_id: Option<String>,
+    enabled: bool,
+    managed: bool,
+    source: String,
+    workbench: Option<String>,
+    workbench_profile: Option<String>,
+    workbench_harness: Option<String>,
+    workbench_models: Option<Value>,
+    ticket_template_id: Option<String>,
+    plan_template_id: Option<String>,
+    current_version: i32,
+    created_ms: i64,
+    updated_ms: i64,
+}
+
+pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
+    let defs: Vec<DefListRow> = sqlx::query_as(
+        "select id::text, slug, department, model, display_name, role, email_alias::text, \
+           owner_user_id::text, enabled, managed, source, workbench, workbench_profile, \
+           workbench_harness, workbench_models, ticket_template_id::text, plan_template_id::text, \
+           current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
+           (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
+         from agent_defs order by slug asc",
+    )
+    .fetch_all(pg)
+    .await?;
+    // distinct on (agent_id) … version desc — one row per agent, the newest.
+    let versions: Vec<(String, String, i32, String, Value, Option<String>, Option<String>, i64)> =
+        sqlx::query_as(
+            "select distinct on (agent_id) id::text, agent_id::text, version, soul, config, note, \
+               created_by, (trunc(extract(epoch from created_at) * 1000))::bigint \
+             from agent_versions order by agent_id, version desc",
+        )
+        .fetch_all(pg)
+        .await?;
+    let latest_of: std::collections::HashMap<String, Value> = versions
+        .into_iter()
+        .map(|(id, agent_id, version, soul, config, note, created_by, created_ms)| {
+            let wire = serde_json::json!({
+                "id": id,
+                "agentId": agent_id,
+                "version": version,
+                "soul": soul,
+                "config": config,
+                "note": note,
+                "createdBy": created_by,
+                "createdAt": epoch_ms_to_iso(created_ms),
+            });
+            (agent_id, wire)
+        })
+        .collect();
+    Ok(defs
+        .into_iter()
+        .map(|d| {
+            let latest = latest_of.get(&d.id).cloned().unwrap_or(Value::Null);
+            serde_json::json!({
+                "id": d.id,
+                "slug": d.slug,
+                "department": d.department,
+                "model": d.model,
+                "displayName": d.display_name,
+                "role": d.role,
+                "emailAlias": d.email_alias,
+                "ownerUserId": d.owner_user_id,
+                "enabled": d.enabled,
+                "managed": d.managed,
+                "source": d.source,
+                "workbench": d.workbench,
+                "workbenchProfile": d.workbench_profile,
+                "workbenchHarness": d.workbench_harness,
+                "workbenchModels": d.workbench_models,
+                "ticketTemplateId": d.ticket_template_id,
+                "planTemplateId": d.plan_template_id,
+                "currentVersion": d.current_version,
+                "createdAt": epoch_ms_to_iso(d.created_ms),
+                "updatedAt": epoch_ms_to_iso(d.updated_ms),
+                "latest": latest,
+            })
+        })
+        .collect())
+}
+
 type VersionTuple = (
     String,
     String,

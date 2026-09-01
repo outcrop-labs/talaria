@@ -305,8 +305,6 @@ pub async fn refresh_endpoint_catalog(
     state: &crate::state::AppState,
     ep: &LlmEndpoint,
 ) -> RefreshResult {
-    // `new Date().toISOString()` — millisecond precision, Z.
-    let at = crate::agent_auth::epoch_ms_to_iso(now_ms() as i64);
     let models = match crate::gateway::provider::catalog_models(state, ep).await {
         Ok(m) => m,
         Err(err) => {
@@ -318,6 +316,19 @@ pub async fn refresh_endpoint_catalog(
             };
         }
     };
+    refresh_endpoint_catalog_with(state, ep, models).await
+}
+
+/// The `available` route's shape: the catalog was ALREADY fetched to answer
+/// the request, so the refresh reuses it (TS's `{ fetchCatalog: async () =>
+/// models }` override) — the provider is asked once, never twice.
+pub async fn refresh_endpoint_catalog_with(
+    state: &crate::state::AppState,
+    ep: &LlmEndpoint,
+    models: Vec<crate::gateway::provider::CatalogModel>,
+) -> RefreshResult {
+    // `new Date().toISOString()` — millisecond precision, Z.
+    let at = crate::agent_auth::epoch_ms_to_iso(now_ms() as i64);
 
     let mut store = read_store(&state.pg).await;
     let entry = serde_json::json!({

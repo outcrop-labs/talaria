@@ -108,6 +108,45 @@ pub async fn resolve_endpoint_key(
     resolve_key(env_name).await
 }
 
+/// One-time migration: seal any provider key that still lives only in the env
+/// / fleet .env into the DB, so keys stop depending on config files.
+/// Idempotent — only touches endpoints with no sealed key yet. Safe to call
+/// on every boot (migrateEnvKeysToCipher). Answers how many keys it sealed.
+pub async fn migrate_env_keys_to_cipher(state: &AppState) -> Result<usize, sqlx::Error> {
+    let eps: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "select id::text, provider, api_key_env from llm_endpoints \
+         where api_key_cipher is null",
+    )
+    .fetch_all(&state.pg)
+    .await?;
+    let Ok(sb) = state.secretbox().await else {
+        return Ok(0);
+    };
+    let mut sealed = 0;
+    for (id, provider, api_key_env) in eps {
+        let env_name = api_key_env
+            .as_deref()
+            .or_else(|| default_key_env(&provider));
+        let Some(key) = resolve_key(env_name).await else {
+            continue;
+        };
+        if let Ok(cipher) = sb.seal(&key)
+            && sqlx::query(
+                "update llm_endpoints set api_key_cipher = $2, updated_at = now() \
+                 where id = $1::uuid",
+            )
+            .bind(&id)
+            .bind(cipher)
+            .execute(&state.pg)
+            .await
+                .is_ok()
+        {
+            sealed += 1;
+        }
+    }
+    Ok(sealed)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -547,7 +586,11 @@ async fn fetch_models(
         for (k, v) in headers {
             req = req.header(k, v);
         }
-        req.send().await.map_err(|e| e.to_string())
+        // Transport failures surface as undici's bare rejection — this string
+        // rides the `available` route's note verbatim (byte-diff contract).
+        req.send()
+            .await
+            .map_err(|e| crate::mcp_registry::undici_message(&e))
     };
     let direct = attempt(format!("{base}/models{qs}")).await;
     match direct {

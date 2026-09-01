@@ -26,6 +26,8 @@ pub mod admin_workspace_secrets;
 pub mod admin_rag;
 pub mod agent_role_templates;
 pub mod agents;
+pub mod agents_id_heartbeat;
+pub mod agents_register;
 pub mod apps;
 pub mod artifact_folders;
 pub mod artifact_folders_id;
@@ -74,9 +76,23 @@ pub mod conversations;
 pub mod conversations_id;
 pub mod cost;
 pub mod dms;
+pub mod fleet;
+pub mod fleet_agents_id_control;
+pub mod fleet_agents_id_crons;
+pub mod fleet_agents_id_crons_jobid;
+pub mod fleet_agents_id_secrets;
+pub mod fleet_containers;
 pub mod fleet_create;
+pub mod fleet_crons;
+pub mod fleet_defs;
 pub mod fleet_defs_id_mcp;
+pub mod fleet_endpoints;
+pub mod fleet_endpoints_id;
+pub mod fleet_endpoints_id_available;
+pub mod fleet_federate;
 pub mod fleet_hires;
+pub mod fleet_reconcile;
+pub mod fleet_render;
 pub mod health;
 pub mod history;
 pub mod inbox_focus;
@@ -259,6 +275,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents",
             get(agents::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The fleet-plane pair agents themselves call (MC-compatible):
+        // register with the org key, then heartbeat for assigned work.
+        .route(
+            "/api/agents/register",
+            post(agents_register::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/{id}/heartbeat",
+            get(agents_id_heartbeat::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/apps",
@@ -1070,10 +1096,11 @@ pub fn router(state: AppState) -> Router {
             "/api/rag/search",
             post(rag_search::post).fallback(|| async { method_not_allowed("POST") }),
         )
-        // The two fleet routes that own the hire lifecycle (the other 18
-        // fleet.* files — status, stop/start, logs, env — still serve from TS;
-        // they are read-plane surface on machinery this crate exposes, and
-        // each crosses with its caller).
+        // The fleet family. The hire lifecycle (create + the hire queue),
+        // the read plane (overview, containers, defs, endpoints, crons), the
+        // admin verbs (render, reconcile, federate), the per-agent control
+        // surface (lifecycle, crons, secrets), and the fleet-plane pair
+        // agents call themselves (register + heartbeat, registered above).
         .route(
             "/api/fleet/create",
             post(fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
@@ -1081,6 +1108,77 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fleet/hires",
             get(fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet",
+            get(fleet::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/containers",
+            get(fleet_containers::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/render",
+            post(fleet_render::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/reconcile",
+            post(fleet_reconcile::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/federate",
+            post(fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/defs",
+            get(fleet_defs::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/endpoints",
+            get(fleet_endpoints::get)
+                .post(fleet_endpoints::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/fleet/endpoints/{id}",
+            axum::routing::put(fleet_endpoints_id::put)
+                .delete(fleet_endpoints_id::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
+        .route(
+            "/api/fleet/endpoints/{id}/available",
+            get(fleet_endpoints_id_available::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/crons",
+            get(fleet_crons::get)
+                .post(fleet_crons::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/fleet/agents/{id}/crons",
+            get(fleet_agents_id_crons::get)
+                .post(fleet_agents_id_crons::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/fleet/agents/{id}/crons/{jobId}",
+            axum::routing::delete(fleet_agents_id_crons_jobid::delete)
+                .put(fleet_agents_id_crons_jobid::put)
+                .post(fleet_agents_id_crons_jobid::post)
+                .fallback(|| async { method_not_allowed("POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/fleet/agents/{id}/secrets",
+            get(fleet_agents_id_secrets::get)
+                .put(fleet_agents_id_secrets::put)
+                .delete(fleet_agents_id_secrets::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/fleet/agents/{id}/control",
+            post(fleet_agents_id_control::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The workbench family — the agent sandbox plane: the profile
         // registry (env masked for members, infra fields admin-only), the

@@ -396,6 +396,17 @@ pub fn nudge_auto_prices(pg: &PgPool) {
     });
 }
 
+/// The routes' `void refreshAutoPrices()` — an IMMEDIATE ungated refresh
+/// (TS's refreshAutoPrices has no gate; admin edits to the endpoints table
+/// want fresh auto-prices now, not at the next 6h tick). Fire-and-forget,
+/// errors swallowed like the other kicks.
+pub fn kick_auto_prices(pg: &PgPool) {
+    let pg = pg.clone();
+    tokio::spawn(async move {
+        let _ = refresh_once(&pg, None).await;
+    });
+}
+
 pub struct PriceRefreshDeps {
     pub pg: PgPool,
 }

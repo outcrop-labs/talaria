@@ -1,6 +1,5 @@
 // Fleet reconciliation — port of ui/src/server/fleet-reconcile.ts's rollAgent
-// (the module's other exports are read-plane surface that crosses with the
-// fleet-status routes). A ROLL is the blue/green cutover: render the incoming
+// and reconcileFleet. A ROLL is the blue/green cutover: render the incoming
 // slot alongside the active one, bring it up, wait for real health, flip the
 // manifest, drain, retire the old container. In-flight replies never hit a
 // dead container, and an unhealthy replacement never takes over — the old
@@ -106,6 +105,80 @@ pub async fn roll_agent(
 /// time so nobody's conversation ever hits a dead container. Agents someone
 /// deliberately stopped stay stopped (they read the new render on next
 /// start).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconcileResult {
+    pub rendered: usize,
+    pub started: Vec<String>,
+    pub already_running: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Bring the running fleet to the desired state in one shot: re-render every
+/// managed agent's config, then start any enabled managed agent whose
+/// container isn't running. Reboot survival is already handled by `restart:
+/// unless-stopped` on the generated services; this covers drift (an agent
+/// enabled/created while Talaria was down, a stopped container, a manifest
+/// change) — reconcileFleet.
+pub async fn reconcile_fleet(
+    pg: &PgPool,
+    sb: &SecretBox,
+) -> Result<ReconcileResult, String> {
+    let render = render_fleet(pg, sb, None).await?;
+    let managed: Vec<(String, String)> = sqlx::query_as(
+        "select department, display_name from agent_defs where managed and enabled order by slug",
+    )
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let states = if managed.is_empty() {
+        Vec::new()
+    } else {
+        fleet_docker::container_status(&managed.iter().map(|m| m.0.clone()).collect::<Vec<_>>())
+            .await
+            .unwrap_or_default()
+    };
+    let running = |dept: &str| {
+        states
+            .iter()
+            .find(|s| s.department == dept)
+            .and_then(|s| s.managed.as_ref())
+            .is_some_and(|m| m.state == "running")
+    };
+    let mut started = Vec::new();
+    let mut already_running = Vec::new();
+    let mut warnings = render.warnings.clone();
+    for (department, display_name) in &managed {
+        if running(department) {
+            already_running.push(display_name.clone());
+            continue;
+        }
+        match fleet_docker::fleet_up(pg, department).await {
+            Ok(_) => {
+                started.push(display_name.clone());
+                // New containers get the bundled note-tool skills stripped once
+                // healthy — toolkit-first is the default from first boot.
+                // Detached: reconcile must not block on health.
+                let dept = department.clone();
+                let pg_bg = pg.clone();
+                tokio::spawn(async move {
+                    if fleet_docker::wait_healthy(&pg_bg, &dept, 120_000).await {
+                        let slot = fleet_docker::active_slot(&pg_bg, &dept).await;
+                        let _ = fleet_docker::prune_bundled_skills(&dept, slot).await;
+                    }
+                });
+            }
+            Err(e) => warnings.push(format!("{display_name}: {e}")),
+        }
+    }
+    Ok(ReconcileResult {
+        rendered: render.agents.len(),
+        started,
+        already_running,
+        warnings,
+    })
+}
+
 pub async fn roll_running_agents(
     pg: &PgPool,
     sb: &SecretBox,
