@@ -441,16 +441,34 @@ pub fn gateway_pulse() -> GatewayPulse {
     }
 }
 
+/// `pub(crate)` for one cross-module reason: the fitness probes' latency test
+/// writes this same process-global ring and takes the turnstile below.
 #[cfg(test)]
-mod pulse_tests {
+pub(crate) mod pulse_tests {
     use super::*;
+
+    /// ONE RING AT A TIME. The stat ring is process-global and two test
+    /// modules write it — this one, and the fitness probes' latency test,
+    /// which seeds the ring to read a pulse back. The exact nearest-rank
+    /// assertions below are only stable on a ring nobody else is writing, so
+    /// every test that records stats holds this turnstile for its whole body.
+    pub(crate) static STAT_RING_TURNSTILE: Mutex<()> = Mutex::new(());
+
+    /// The ring is process-global and outlives every test in the binary; the
+    /// absolute percentile assertions below need one nobody has written to, so
+    /// drain whatever earlier tests left before recording ours. The turnstile
+    /// keeps new writes out while this test reads.
+    fn drain_ring() {
+        ring().lock().expect("the stat ring is not contended").clear();
+    }
 
     /// Nearest-rank, not interpolation: the p50 of three calls is the second,
     /// the p95 the third. An untouched ring answers null — "no calls", never
-    /// "instant". Only this test records stats in this binary, so the exact
-    /// counts are stable.
+    /// "instant".
     #[test]
     fn the_pulse_is_nearest_rank_over_the_recent_ring() {
+        let _ring = STAT_RING_TURNSTILE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        drain_ring();
         let before = gateway_pulse();
         record_gateway_stat(100, true, "probe-a");
         record_gateway_stat(300, false, "probe-a");

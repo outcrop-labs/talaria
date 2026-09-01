@@ -5,6 +5,7 @@
 pub mod code_runner;
 pub mod evals;
 pub mod live_feed;
+pub mod probes;
 pub mod surface;
 pub mod toolbox;
 
