@@ -2,10 +2,12 @@
 // corpus, the verdict, and the surface the admin page reads. Port of
 // ui/src/server/fitness/* — the engine half of /api/admin/model-fitness.
 
+pub mod adversarial;
 pub mod code_runner;
 pub mod evals;
 pub mod live_feed;
 pub mod probes;
+pub mod score;
 pub mod surface;
 pub mod toolbox;
 

@@ -1144,6 +1144,7 @@ pub struct ProbeDeps {
 // ── The default `ask`: run_harness with the candidate pinned ──────────────────
 
 fn probe_def(
+    caller: &'static str,
     id: &str,
     messages: Vec<Message>,
     output: Output,
@@ -1154,7 +1155,7 @@ fn probe_def(
     // most ~22 per run — is the price the type asks, and the precedent
     // (transport.rs's tests, harness/defs/workbench.rs) set it first.
     let mut def = HarnessDefinition::new(
-        Box::leak(format!("fitness:probe:{id}").into_boxed_str()),
+        Box::leak(format!("{caller}:{id}").into_boxed_str()),
         Box::leak(format!("capability probe ({id})").into_boxed_str()),
         "measure one model capability against a fixed prompt",
         ModelSpec { pin: None, role: None, chain: Some(&[]), user_id: None },
@@ -1289,6 +1290,20 @@ pub fn runner_image_ask(state: &AppState, model: &str) -> ImageAskFn {
 }
 
 pub fn runner_ask(state: &AppState, model: &str, base: TransportFn) -> AskFn {
+    ask_with_caller(state, model, base, "fitness:probe")
+}
+
+/// The same pinned-candidate ask under the CALLER'S OWN NAME. Tier 3 reuses
+/// this whole channel and renames itself, so its spend reaches `usage_events`
+/// as `fitness:adversarial:<id>` rather than being filed as probe spend an
+/// admin reconciling a bill cannot explain — the caller string is attribution,
+/// and attribution is not decoration.
+pub(crate) fn ask_with_caller(
+    state: &AppState,
+    model: &str,
+    base: TransportFn,
+    caller: &'static str,
+) -> AskFn {
     let state = state.clone();
     let model = model.to_string();
     Arc::new(move |spec: AskSpec| {
@@ -1332,13 +1347,13 @@ pub fn runner_ask(state: &AppState, model: &str, base: TransportFn) -> AskFn {
                 })
             };
             let ctx = RunContext {
-                caller: format!("fitness:probe:{}", spec.id),
+                caller: format!("{caller}:{}", spec.id),
                 model: Some(model),
                 deps: Some(Arc::new(probe_run_deps(transport))),
                 ..RunContext::default()
             };
             let output = spec.output();
-            let def = probe_def(&spec.id, spec.messages, output, Vec::new());
+            let def = probe_def(caller, &spec.id, spec.messages, output, Vec::new());
             // `OnFailure::Null` means every pre-call and transport failure
             // comes back as a result rather than an error; the Err arm is the
             // belt for a failure the runner could not shape, and it reads as a
@@ -1430,7 +1445,13 @@ pub fn runner_tool_ask(state: &AppState, model: &str, base: TransportFn) -> Tool
                 deps: Some(Arc::new(probe_run_deps(transport))),
                 ..RunContext::default()
             };
-            let def = probe_def(&spec.id, spec.messages, Output::Text { clean: None, verify: None }, spec.tools);
+            let def = probe_def(
+                "fitness:probe",
+                &spec.id,
+                spec.messages,
+                Output::Text { clean: None, verify: None },
+                spec.tools,
+            );
             let _ = run_harness(&state, &def, &Value::Null, ctx).await;
             let seen = seen.lock().expect("the tool-ask watcher is not contended").clone();
             ToolAttempt { tool_calls: seen.calls, transport_error: seen.threw }

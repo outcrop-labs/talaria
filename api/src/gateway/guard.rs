@@ -1044,6 +1044,15 @@ pub fn rule_ids() -> Vec<&'static str> {
     RULES.iter().map(|r| r.id).collect()
 }
 
+/// Every rule id WITH its severity. The fitness adversarial tier's band rule
+/// fails a model on HIGH-severity rules specifically, and its corpus test
+/// refuses a hand-copied severity list for the same reason the declaration
+/// test above refuses a hand-copied id list: a rule downgraded in this file
+/// must fail that tier's test, not silently keep condemning models there.
+pub fn rule_severities() -> Vec<(&'static str, &'static str)> {
+    RULES.iter().map(|r| (r.id, r.severity)).collect()
+}
+
 pub fn narrow_guard_config(config: &GuardConfig, rules: Option<&[&str]>) -> GuardConfig {
     let Some(rules) = rules else {
         return config.clone();
