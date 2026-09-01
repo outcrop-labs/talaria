@@ -119,6 +119,131 @@ pub async fn get_template(pg: &PgPool, id: &str) -> Result<Option<Template>, sql
     Ok(row.map(Template::from))
 }
 
+/// listTemplates — the whole library, kind-grouped (the library page's tab
+/// order), or one kind's list.
+pub async fn list_templates(
+    pg: &PgPool,
+    kind: Option<&str>,
+) -> Result<Vec<Template>, sqlx::Error> {
+    let sql = match kind {
+        Some(_) => format!(
+            "select {COLS} from templates where kind = $1 order by name asc"
+        ),
+        None => format!("select {COLS} from templates order by kind asc, name asc"),
+    };
+    let mut q = sqlx::query_as::<_, TemplateRow>(sqlx::AssertSqlSafe(sql.as_str()));
+    if let Some(k) = kind {
+        q = q.bind(k);
+    }
+    let rows = q.fetch_all(pg).await?;
+    Ok(rows.into_iter().map(Template::from).collect())
+}
+
+/// createTemplate — body/guidance default to empty (a skeleton can start as
+/// a name and get its body in the editor).
+pub async fn create_template(
+    pg: &PgPool,
+    t: NewTemplate<'_>,
+) -> Result<Template, sqlx::Error> {
+    let sql = format!(
+        "insert into templates (name, kind, body, guidance, created_by) \
+         values ($1, $2, $3, $4, $5) returning {COLS}"
+    );
+    let row: TemplateRow = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(t.name)
+        .bind(t.kind)
+        .bind(t.body.unwrap_or(""))
+        .bind(t.guidance.unwrap_or(""))
+        .bind(t.created_by)
+        .fetch_one(pg)
+        .await?;
+    Ok(Template::from(row))
+}
+
+pub struct NewTemplate<'a> {
+    pub name: &'a str,
+    pub kind: &'a str,
+    pub body: Option<&'a str>,
+    pub guidance: Option<&'a str>,
+    pub created_by: &'a str,
+}
+
+/// The each-if-defined patch: only the fields the request carried move, each
+/// restamps `updated_at`, and a BODY edit is versioned (the template editor
+/// shows the history). Snapshot failures are swallowed — same as TS's
+/// `.catch(() => {})`, and for the same reason: the edit stands, the history
+/// row is the nice-to-have.
+pub async fn update_template(
+    pg: &PgPool,
+    id: &str,
+    patch: TemplatePatch<'_>,
+) -> Result<Option<Template>, sqlx::Error> {
+    if let Some(name) = patch.name {
+        sqlx::query("update templates set name = $1, updated_at = now() where id = $2::uuid")
+            .bind(name)
+            .bind(id)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(body) = patch.body {
+        sqlx::query("update templates set body = $1, updated_at = now() where id = $2::uuid")
+            .bind(body)
+            .bind(id)
+            .execute(pg)
+            .await?;
+        // Skeleton edits are versioned — the template editor shows the history.
+        let _ = crate::internal_history::snapshot(pg, "template", id, body, patch.author).await;
+    }
+    if let Some(guidance) = patch.guidance {
+        sqlx::query("update templates set guidance = $1, updated_at = now() where id = $2::uuid")
+            .bind(guidance)
+            .bind(id)
+            .execute(pg)
+            .await?;
+    }
+    get_template(pg, id).await
+}
+
+pub struct TemplatePatch<'a> {
+    pub name: Option<&'a str>,
+    pub body: Option<&'a str>,
+    pub guidance: Option<&'a str>,
+    pub author: Option<&'a str>,
+}
+
+pub async fn delete_template(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from templates where id = $1::uuid")
+        .bind(id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Bind/unbind an agent's default templates (null clears; the patch carries
+/// only the fields the request defined).
+pub async fn set_agent_templates(
+    pg: &PgPool,
+    agent_model: &str,
+    ticket_template_id: Option<Option<&str>>,
+    plan_template_id: Option<Option<&str>>,
+) -> Result<(), sqlx::Error> {
+    if let Some(t) = ticket_template_id {
+        sqlx::query("update agent_defs set ticket_template_id = $1::uuid where model = $2")
+            .bind(t)
+            .bind(agent_model)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(t) = plan_template_id {
+        sqlx::query("update agent_defs set plan_template_id = $1::uuid where model = $2")
+            .bind(t)
+            .bind(agent_model)
+            .execute(pg)
+            .await?;
+    }
+    Ok(())
+}
+
 /// An agent's template overrides (agentTemplateBindings) — an engineering
 /// agent always writing eng tickets, regardless of board. No row → no
 /// bindings, never an error.

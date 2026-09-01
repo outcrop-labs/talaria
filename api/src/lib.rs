@@ -3,10 +3,13 @@
 // committed cross-language fixtures without going through a socket.
 
 pub mod activity;
+pub mod alerts;
 pub mod agent_auth;
 pub mod agent_crons;
 pub mod agent_defs;
 pub mod agent_mcp;
+pub mod agent_media;
+pub mod agent_memory;
 pub mod agent_role_templates;
 pub mod agents_registry;
 pub mod agent_secrets;
@@ -48,6 +51,7 @@ pub mod fleet_layout;
 pub mod fleet_preflight;
 pub mod fleet_reconcile;
 pub mod fleet_render;
+pub mod gaps;
 pub mod gateway;
 pub mod github;
 pub mod gmail;
@@ -128,6 +132,7 @@ pub mod secretbox;
 pub mod secret_health;
 pub mod secret_rotation;
 pub mod session;
+pub mod skill_access;
 pub mod source_registry;
 pub mod state;
 pub mod statuses;
@@ -139,6 +144,7 @@ pub mod templates;
 pub mod titler;
 pub mod tz;
 pub mod uploads;
+pub mod vision;
 pub mod apps;
  mod users;
 pub mod web_search;

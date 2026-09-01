@@ -24,6 +24,11 @@ pub mod admin_storage;
 pub mod admin_users;
 pub mod admin_workspace_secrets;
 pub mod admin_rag;
+pub mod agent_gap;
+pub mod agent_media_model;
+pub mod agent_media_model_save;
+pub mod agent_message_user;
+pub mod agent_problem;
 pub mod agent_role_templates;
 pub mod agents;
 pub mod agents_id_heartbeat;
@@ -56,6 +61,22 @@ pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
 pub mod brief;
+pub mod alerts;
+pub mod gaps;
+pub mod gaps_id;
+pub mod home;
+pub mod join;
+pub mod well_known_talaria_instance;
+pub mod memory_id;
+pub mod search;
+pub mod templates;
+pub mod templates_id;
+pub mod inference;
+pub mod me_assistant;
+pub mod muse;
+pub mod skills;
+pub mod skills_owner_name;
+pub mod vision_describe;
 pub mod brief_delegate;
 pub mod brief_item;
 pub mod brief_read;
@@ -85,7 +106,10 @@ pub mod fleet_containers;
 pub mod fleet_create;
 pub mod fleet_crons;
 pub mod fleet_defs;
+pub mod fleet_defs_id;
+pub mod fleet_defs_id_edit;
 pub mod fleet_defs_id_mcp;
+pub mod fleet_defs_id_versions;
 pub mod fleet_endpoints;
 pub mod fleet_endpoints_id;
 pub mod fleet_endpoints_id_available;
@@ -154,7 +178,9 @@ pub mod me_mcp;
 pub mod models;
 pub mod models_efforts;
 pub mod notifications;
+pub mod plans_id_doc;
 pub mod plans_id_draft;
+pub mod plans_id_members;
 pub mod rag_collections;
 pub mod rag_collections_id;
 pub mod rag_search;
@@ -1334,6 +1360,157 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/inbox/focus/command",
             post(inbox_focus_command::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // ── The remaining singles (R23) ────────────────────────────────────
+        // The instance identity beacon, the derived-alerts read, and the
+        // Studio's Suggested queue with its status verb.
+        .route(
+            "/api/well-known/talaria-instance",
+            get(well_known_talaria_instance::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/alerts",
+            get(alerts::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/gaps",
+            get(gaps::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/gaps/{id}",
+            axum::routing::put(gaps_id::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        // Home/Today, and the public /join invite lookup (dual-counter rate
+        // limited, same shape as login).
+        .route(
+            "/api/home",
+            get(home::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/join",
+            get(join::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The agent-memory surface (admin or the assistant's owner), the
+        // live web-search door both agents and sessions reach, and the
+        // org's template library with its one-template verbs.
+        .route(
+            "/api/memory/{id}",
+            get(memory_id::get)
+                .put(memory_id::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/search",
+            post(search::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/templates",
+            get(templates::get)
+                .post(templates::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/templates/{id}",
+            axum::routing::put(templates_id::put)
+                .delete(templates_id::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
+        // The org's skill library: the owner index with edit flags, and the
+        // one-skill verbs (rename/copy/move ride POST).
+        .route(
+            "/api/skills",
+            get(skills::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/skills/{owner}/{name}",
+            get(skills_owner_name::get)
+                .put(skills_owner_name::put)
+                .post(skills_owner_name::post)
+                .delete(skills_owner_name::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
+        )
+        // The agent surface: media reads/writes scoped by model, the two
+        // honesty-loop reports (gap, problem), and the plain-language
+        // message-user door.
+        .route(
+            "/api/agent-media/{model}",
+            get(agent_media_model::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/agent-media/{model}/save",
+            post(agent_media_model_save::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agent/gap",
+            post(agent_gap::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agent/problem",
+            post(agent_problem::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agent/message-user",
+            post(agent_message_user::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The Muse, the image describer, the personal assistant, and the
+        // local-inference observability plane.
+        .route(
+            "/api/muse",
+            post(muse::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/vision/describe",
+            post(vision_describe::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/me/assistant",
+            get(me_assistant::get)
+                .post(me_assistant::post)
+                .patch(me_assistant::patch)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH") }),
+        )
+        .route(
+            "/api/inference",
+            get(inference::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // Multiplayer plans: the living document and the member roster.
+        .route(
+            "/api/plans/{id}/doc",
+            get(plans_id_doc::get)
+                .post(plans_id_doc::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/plans/{id}/members",
+            get(plans_id_members::get)
+                .post(plans_id_members::post)
+                .put(plans_id_members::put)
+                .delete(plans_id_members::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        // The fleet defs detail trio: identity PATCH, the versioned edit,
+        // and the version history.
+        .route(
+            "/api/fleet/defs/{id}",
+            axum::routing::patch(fleet_defs_id::patch)
+                .fallback(|| async { method_not_allowed("PATCH") }),
+        )
+        .route(
+            "/api/fleet/defs/{id}/edit",
+            post(fleet_defs_id_edit::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/defs/{id}/versions",
+            get(fleet_defs_id_versions::get)
+                .post(fleet_defs_id_versions::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())

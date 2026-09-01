@@ -471,6 +471,63 @@ pub async fn list_plan_members(
         .collect())
 }
 
+/// The user's standing on a plan (planRole): owner, collaborator, or nothing.
+/// Nothing is also "not a plan" — the `kind = 'plan'` clause keeps chat
+/// conversations out, and callers treat null as absent.
+pub async fn plan_role(
+    pg: &PgPool,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "select case when c.user_id = $2::uuid then 'owner' \
+                    when cm.user_id is not null then 'collaborator' end as role \
+         from conversations c \
+         left join conversation_members cm on cm.conversation_id = c.id and cm.user_id = $2::uuid \
+         where c.id = $1::uuid and c.kind = 'plan'",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.and_then(|(role,)| role))
+}
+
+/// Add a collaborator (addPlanMember). Idempotent — re-sharing with someone
+/// already on the plan is a no-op, not an error.
+pub async fn add_plan_member(
+    pg: &PgPool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into conversation_members (conversation_id, user_id) \
+         values ($1::uuid, $2::uuid) on conflict do nothing",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Remove a collaborator (removePlanMember). The owner is not a member row, so
+/// this only ever removes collaborators.
+pub async fn remove_plan_member(
+    pg: &PgPool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "delete from conversation_members where conversation_id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// Next sequence number for a conversation (nextSeq).
 pub async fn next_seq(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
     let (next,): (i32,) = sqlx::query_as(

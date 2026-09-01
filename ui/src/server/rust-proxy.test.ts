@@ -57,15 +57,71 @@ describe('maybeProxy', () => {
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
-    // Admin groups still on TS — invites sends email from its handler,
-    // model-fitness is the probe suite's own plane.
-    expect(await maybeProxy(req('/api/admin/invites'), '/api/admin/invites')).toBeNull()
-    expect(await maybeProxy(req('/api/admin/model-fitness'), '/api/admin/model-fitness')).toBeNull()
-    // The plans family is NOT part of the conversations crossing — its
-    // messages/title/doc routes are their own batch, so the bare path stays
-    // TS (only the {id}/draft shape has crossed).
-    expect(await maybeProxy(req('/api/plans'), '/api/plans')).toBeNull()
+    // admin.update is the PERMANENT TS resident: it rebuilds ui/dist and
+    // restarts the bun process it runs in — it deploys the TS half itself.
+    expect(await maybeProxy(req('/api/admin/update'), '/api/admin/update')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('forwards the R23 singles — the gap ledger, the template library, the skill registry, the plans family, and the agent plane under one prefix', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/gaps',
+      '/api/gaps/00000000-0000-4000-8000-000000000000',
+      '/api/templates',
+      '/api/templates/00000000-0000-4000-8000-000000000000',
+      '/api/skills',
+      '/api/skills/talaria/seed-a-skill',
+      // The plans family is whole now: draft crossed with the channels
+      // mount, doc and members crossed with this batch.
+      '/api/plans/00000000-0000-4000-8000-000000000000/draft',
+      '/api/plans/00000000-0000-4000-8000-000000000000/doc',
+      '/api/plans/00000000-0000-4000-8000-000000000000/members',
+      // One prefix carries the whole agent plane: the agent-key verbs…
+      '/api/agent/gap',
+      '/api/agent/problem',
+      '/api/agent/message-user',
+      // …the persona media pair (matched by the same character prefix)…
+      '/api/agent-media/claude-3',
+      '/api/agent-media/claude-3/save',
+      // …and the image describer, its own one-file family.
+      '/api/vision/describe',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(15)
+  })
+
+  it('forwards the R23 one-route families exactly — alerts, home, search, the Muse, inference, join, the instance card, and me/assistant', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const p of [
+      '/api/alerts',
+      '/api/home',
+      '/api/search',
+      '/api/muse',
+      '/api/inference',
+      '/api/join',
+      '/api/well-known/talaria-instance',
+      '/api/me/assistant',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(8)
+  })
+
+  it('forwards the memory write by path SHAPE — the id is in the path, and the bare path has no route', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/memory/00000000-0000-4000-8000-000000000000'), '/api/memory/00000000-0000-4000-8000-000000000000')).not.toBeNull()
+    // Anchored both ends: deeper paths and the bare path do not match.
+    expect(await maybeProxy(req('/api/memory/x/tail'), '/api/memory/x/tail')).toBeNull()
+    expect(await maybeProxy(req('/api/memory'), '/api/memory')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   it('forwards the comms plane whole — every channels.* route under one prefix', async () => {
@@ -299,9 +355,9 @@ describe('maybeProxy', () => {
     expect(await maybeProxy(req('/api/me/events'), '/api/me/events')).not.toBeNull()
     // me/mcp crossed with the mcp family — it's EXACT on its own line now.
     expect(await maybeProxy(req('/api/me/mcp'), '/api/me/mcp')).not.toBeNull()
-    // me.assistant is still its own plane (agent start) and stays TS.
-    expect(await maybeProxy(req('/api/me/assistant'), '/api/me/assistant')).toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(3)
+    // me.assistant crossed with the agent plane — EXACT on its own line too.
+    expect(await maybeProxy(req('/api/me/assistant'), '/api/me/assistant')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(4)
   })
 
   it('forwards the mcp family whole — but the app-server gateway dispatch stays TS (rule 10)', async () => {
@@ -333,19 +389,20 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(11)
   })
 
-  it('forwards the fleet defs MCP hook by path SHAPE — the version edit, not the defs surface', async () => {
+  it('forwards the fleet defs surface whole — the list, the detail trio, and the MCP version hook', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
-    expect(
-      await maybeProxy(req('/api/fleet/defs/00000000-0000-4000-8000-000000000000/mcp'), '/api/fleet/defs/00000000-0000-4000-8000-000000000000/mcp'),
-    ).not.toBeNull()
-    // The rest of the defs surface (list, detail, versions) is still TS, and
-    // the shape is anchored both ends.
-    expect(await maybeProxy(req('/api/fleet/defs'), '/api/fleet/defs')).toBeNull()
-    expect(await maybeProxy(req('/api/fleet/defs/00000000-0000-4000-8000-000000000000'), '/api/fleet/defs/00000000-0000-4000-8000-000000000000')).toBeNull()
-    expect(await maybeProxy(req('/api/fleet/defs/x/mcp/tail'), '/api/fleet/defs/x/mcp/tail')).toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(1)
+    for (const p of [
+      '/api/fleet/defs',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000/edit',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000/versions',
+      '/api/fleet/defs/00000000-0000-4000-8000-000000000000/mcp',
+    ]) {
+      expect(await maybeProxy(req(p), p)).not.toBeNull()
+    }
+    expect(fetch).toHaveBeenCalledTimes(5)
   })
 
   it('forwards the run watch stream by path SHAPE — the id is in the path, and the rest of /api/runs is still TS', async () => {
@@ -366,7 +423,7 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('forwards exact-match routes but not the TS sub-routes under them', async () => {
+  it('forwards exact-match routes — and the agents sub-paths the agent prefix now carries', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
@@ -374,12 +431,15 @@ describe('maybeProxy', () => {
     expect(await maybeProxy(req('/api/agents'), '/api/agents')).not.toBeNull()
     expect(await maybeProxy(req('/api/apps'), '/api/apps')).not.toBeNull()
     expect(await maybeProxy(req('/api/admin/model-roles'), '/api/admin/model-roles')).not.toBeNull()
-    // …but its sub-paths still belong to TS: register/heartbeat (the fleet
-    // plane) and the app-server gateway would land on a Rust 404.
-    expect(await maybeProxy(req('/api/agents/register'), '/api/agents/register')).toBeNull()
-    expect(await maybeProxy(req('/api/agents/x/heartbeat'), '/api/agents/x/heartbeat')).toBeNull()
+    // …and register/heartbeat crossed on the fleet side: EXACT and SHAPES
+    // carry them (the '/api/agent' prefix reaches them too — every arm of
+    // the decision table says the same thing here).
+    expect(await maybeProxy(req('/api/agents/register'), '/api/agents/register')).not.toBeNull()
+    expect(await maybeProxy(req('/api/agents/x/heartbeat'), '/api/agents/x/heartbeat')).not.toBeNull()
+    // The app-server gateway's sub-paths still belong to TS — the modules it
+    // dispatches into are app authors' code (rule 10).
     expect(await maybeProxy(req('/api/apps/contacts/x'), '/api/apps/contacts/x')).toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(fetch).toHaveBeenCalledTimes(5)
   })
 
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {

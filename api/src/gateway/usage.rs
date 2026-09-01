@@ -169,11 +169,11 @@ pub async fn spend_since(
 /// One window's aggregate, in wire order (usage.ts's `t()` shape).
 #[derive(Debug, serde::Serialize)]
 pub struct CostWindow {
-    prompt: i32,
-    completion: i32,
-    cache: i32,
-    generations: i32,
-    cost: serde_json::Number,
+    pub prompt: i32,
+    pub completion: i32,
+    pub cache: i32,
+    pub generations: i32,
+    pub cost: serde_json::Number,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -186,12 +186,12 @@ pub struct CostSplit {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostTotals {
-    today: CostWindow,
-    week: CostWindow,
-    month: CostWindow,
-    estimated_share: serde_json::Number,
-    split: CostSplit,
-    unpriced_cloud_tokens: i64,
+    pub today: CostWindow,
+    pub week: CostWindow,
+    pub month: CostWindow,
+    pub estimated_share: serde_json::Number,
+    pub split: CostSplit,
+    pub unpriced_cloud_tokens: i64,
 }
 
 #[derive(Debug, serde::Serialize)]

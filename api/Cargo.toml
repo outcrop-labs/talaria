@@ -51,6 +51,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 sha2 = "0.11"
+# skill_summaries' content key — node's createHash('sha1'). Same RustCrypto
+# family as sha2; only the digest width differs.
+sha1 = "0.10"
 # SigV4's HMAC-SHA256 (storage.ts's createHmac) — same RustCrypto family as
 # sha2/aes-gcm/scrypt; hand-rolling HMAC buys nothing.
 hmac = "0.13"

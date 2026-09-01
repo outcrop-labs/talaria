@@ -235,9 +235,8 @@ pub async fn remove_container_by_name(name: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
-/// `docker exec` into a container — port of docker-exec.ts dockerExec (no
-/// stdin leg yet; the memory write that uses it crosses with its route).
-/// Args never touch a shell (argv only — cron prompts are data, not command
+/// `docker exec` into a container — port of docker-exec.ts dockerExec. Args
+/// never touch a shell (argv only — cron prompts are data, not command
 /// lines). On failure stderr is the half a caller wants: it is what
 /// `docker exec` itself reported, and it beats the node error text when both
 /// exist (TS: `new Error(String(stderr).trim() || err.message)`).
@@ -246,13 +245,42 @@ pub async fn docker_exec(
     command: &[&str],
     timeout_ms: u64,
 ) -> Result<(String, String), String> {
-    let mut args = vec!["exec", container];
+    docker_exec_opt(container, command, None, timeout_ms).await
+}
+
+/// The full form: `-i` is added exactly when `input` is given (a write pipes
+/// its payload through stdin), which is how the memory write reaches `cat >`.
+pub async fn docker_exec_opt(
+    container: &str,
+    command: &[&str],
+    input: Option<&str>,
+    timeout_ms: u64,
+) -> Result<(String, String), String> {
+    let mut args: Vec<&str> = vec!["exec"];
+    if input.is_some() {
+        args.push("-i");
+    }
+    args.push(container);
     args.extend(command.iter().copied());
     let out = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-        tokio::process::Command::new("docker")
+        let mut child = tokio::process::Command::new("docker")
             .args(&args)
-            .stdin(std::process::Stdio::null())
-            .output()
+            .stdin(if input.is_some() {
+                std::process::Stdio::piped()
+            } else {
+                std::process::Stdio::null()
+            })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("docker exec {container} …: {e}"))?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(input.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+        child
+            .wait_with_output()
             .await
             .map_err(|e| format!("docker exec {container} …: {e}"))
     })

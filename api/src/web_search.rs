@@ -130,6 +130,105 @@ fn is_http_url(s: &str) -> bool {
             .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
 }
 
+// ── The resolver half (searchTheWeb) ─────────────────────────────────────────
+//
+// The five injected edges TS's WebSearchDeps carried all have Rust twins now:
+// DbReach reads servers + providers + platform, `search::search_web` is the
+// SearXNG client, and `call_mcp_tool` speaks to a registered server.
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WebSearch {
+    pub results: Vec<SearchResult>,
+    /// WHO ACTUALLY ANSWERED. Reported rather than hidden because "we
+    /// searched" and "we searched with Exa" are different claims, and an
+    /// admin debugging a thin result set needs to know which engine to go and
+    /// look at. Null means Talaria's own instance.
+    pub via: Option<crate::capability_reach::Supplier>,
+}
+
+/// Search the web with whatever this deployment has, best first.
+///
+/// ERRS RATHER THAN RETURNING EMPTY when nothing can search, because the
+/// caller is a tool handler and its error text lands in an agent's transcript.
+/// A model handed an empty result set answers from memory in a confident
+/// voice; a model handed a sentence saying search is unavailable says so.
+pub async fn search_the_web(
+    state: &crate::state::AppState,
+    query: &str,
+    limit: Option<f64>,
+) -> Result<WebSearch, String> {
+    use crate::capability_platform::is_platform_server;
+    use crate::capability_reach::{
+        platform_supply, supplier_for, DbReach, Providers, ReachDeps, PROVIDERS_KEY,
+    };
+    use crate::gateway::settings::get_setting;
+    use crate::search::{real_deps, search_web, DEFAULT_LIMIT};
+
+    let pg = &state.pg;
+    let reach = DbReach { pg };
+    let (servers, providers, platform) = tokio::join!(
+        reach.servers(),
+        async {
+            let raw = get_setting(pg, PROVIDERS_KEY, serde_json::json!({})).await;
+            serde_json::from_value::<Providers>(raw).unwrap_or_default()
+        },
+        platform_supply(pg)
+    );
+    let supplier = supplier_for("search", &servers, &providers, &platform);
+
+    // Nothing registered and nothing of our own that works — `platform_supply`
+    // withholds SearXNG when its canary query comes back empty, which is what
+    // a CAPTCHA-walled instance looks like. Refusing here is the honest answer.
+    let Some(supplier) = supplier else {
+        return Err(
+            "live web search is not available in this workspace: no search provider is registered and this deployment has no working search engine of its own. Tell whoever asked that you could not search rather than answering from memory."
+                .to_string(),
+        );
+    };
+
+    // OUR OWN ENGINE GOES STRAIGHT TO THE CLIENT, not out through
+    // `call_mcp_tool` — Talaria is in nobody's MCP registry, so routing it
+    // there is the exact bug that made the platform supplier a lie the first
+    // time.
+    if is_platform_server(&supplier.server) {
+        let results = search_web(
+            pg,
+            query,
+            Some(limit.unwrap_or(DEFAULT_LIMIT as f64)),
+            &real_deps(),
+        )
+        .await?;
+        return Ok(WebSearch {
+            results,
+            via: None,
+        });
+    }
+
+    let mut args = serde_json::Map::new();
+    args.insert("query".into(), Value::String(query.to_string()));
+    args.insert(
+        "limit".into(),
+        Value::from(limit.unwrap_or(DEFAULT_LIMIT as f64) as i64),
+    );
+    let sb = state
+        .secretbox()
+        .await
+        .map_err(|e| format!("secretbox unavailable: {e}"))?;
+    let out = crate::mcp_registry::call_mcp_tool(pg, &sb, &supplier.server, &supplier.tool, &args)
+        .await?;
+    let payload = out
+        .structured
+        .clone()
+        .unwrap_or(Value::String(out.text.clone()));
+    let mut results = results_from_payload(&payload, &supplier.server, 25);
+    let cap = limit.unwrap_or(DEFAULT_LIMIT as f64).max(0.0) as usize;
+    results.truncate(cap);
+    Ok(WebSearch {
+        results,
+        via: Some(supplier),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

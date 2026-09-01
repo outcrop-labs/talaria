@@ -133,9 +133,10 @@ pub async fn ensure_agent_api_key(
             .await
             .map_err(|e| format!("agent key read failed: {e}"))?;
     match existing {
-        Some((key_enc,)) => sb
-            .open(&key_enc)
-            .map_err(|e| format!("agent key unseal failed: {e}")),
+        // The BARE secretbox message, like agent-auth.ts's `open(existing.keyEnc)`
+        // — the wrapper sentence here used to reach /api/me/assistant PATCH's
+        // 400 body with a prefix the oracle never says.
+        Some((key_enc,)) => sb.open(&key_enc).map_err(|e| e.to_string()),
         None => rotate_agent_api_key(pg, sb, agent_id).await,
     }
 }

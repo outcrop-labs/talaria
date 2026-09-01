@@ -368,6 +368,88 @@ pub async fn resolve_workbench(
     Ok(best_fit().cloned())
 }
 
+/// Per-agent workbench mount switch (fleet.defs.$id PATCH). `profile` follows
+/// TS's `undefined`-means-leave-it: `None` here skips the second column, so a
+/// caller that only flips the switch keeps the stored profile pick.
+pub async fn set_agent_workbench(
+    pg: &PgPool,
+    id: &str,
+    workbench: &str,
+    profile: Option<Option<&str>>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update agent_defs set workbench = $1, updated_at = now() where id = $2::uuid")
+        .bind(workbench)
+        .bind(id)
+        .execute(pg)
+        .await?;
+    if let Some(profile) = profile {
+        sqlx::query(
+            "update agent_defs set workbench_profile = $1, updated_at = now() where id = $2::uuid",
+        )
+        .bind(profile)
+        .bind(id)
+        .execute(pg)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Per-agent workbench tuning: the harness pick + effort→model overrides —
+/// the knobs the agent-view dropdowns write. `models` is the RAW PATCH OBJECT
+/// (TS's `Partial<Record<'light'|'standard'|'heavy', string|null>>`): an
+/// absent key leaves the stored override, null or '' clears it, a value sets
+/// it. Only the three effort keys are read; anything else a caller smuggles
+/// in is ignored.
+pub async fn set_agent_workbench_tuning(
+    pg: &PgPool,
+    id: &str,
+    harness: Option<Option<&str>>,
+    models: Option<&Map<String, Value>>,
+) -> Result<(), sqlx::Error> {
+    if let Some(harness) = harness {
+        sqlx::query(
+            "update agent_defs set workbench_harness = $1, updated_at = now() where id = $2::uuid",
+        )
+        .bind(harness)
+        .bind(id)
+        .execute(pg)
+        .await?;
+    }
+    if let Some(models) = models {
+        let cur: Option<(Option<Value>,)> = sqlx::query_as(
+            "select workbench_models from agent_defs where id = $1::uuid",
+        )
+        .bind(id)
+        .fetch_optional(pg)
+        .await?;
+        let mut next: Map<String, Value> = cur
+            .and_then(|(m,)| m)
+            .and_then(|m| m.as_object().cloned())
+            .unwrap_or_default();
+        for k in ["light", "standard", "heavy"] {
+            let Some(v) = models.get(k) else {
+                continue;
+            };
+            match v.as_str() {
+                Some("") | None => {
+                    next.remove(k);
+                }
+                Some(v) => {
+                    next.insert(k.to_string(), Value::String(v.to_string()));
+                }
+            }
+        }
+        sqlx::query(
+            "update agent_defs set workbench_models = $1, updated_at = now() where id = $2::uuid",
+        )
+        .bind(Value::Object(next))
+        .bind(id)
+        .execute(pg)
+        .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

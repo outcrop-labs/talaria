@@ -259,6 +259,47 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
         .collect())
 }
 
+/// One agent def by id — the getAgentDef wire shape (the same columns the
+/// list emits, minus `latest`: the versions route pairs this with the
+/// history it is already reading).
+pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, sqlx::Error> {
+    let d: Option<DefListRow> = sqlx::query_as(
+        "select id::text, slug, department, model, display_name, role, email_alias::text, \
+           owner_user_id::text, enabled, managed, source, workbench, workbench_profile, \
+           workbench_harness, workbench_models, ticket_template_id::text, plan_template_id::text, \
+           current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
+           (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
+         from agent_defs where id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(d.map(|d| {
+        serde_json::json!({
+            "id": d.id,
+            "slug": d.slug,
+            "department": d.department,
+            "model": d.model,
+            "displayName": d.display_name,
+            "role": d.role,
+            "emailAlias": d.email_alias,
+            "ownerUserId": d.owner_user_id,
+            "enabled": d.enabled,
+            "managed": d.managed,
+            "source": d.source,
+            "workbench": d.workbench,
+            "workbenchProfile": d.workbench_profile,
+            "workbenchHarness": d.workbench_harness,
+            "workbenchModels": d.workbench_models,
+            "ticketTemplateId": d.ticket_template_id,
+            "planTemplateId": d.plan_template_id,
+            "currentVersion": d.current_version,
+            "createdAt": epoch_ms_to_iso(d.created_ms),
+            "updatedAt": epoch_ms_to_iso(d.updated_ms),
+        })
+    }))
+}
+
 type VersionTuple = (
     String,
     String,
@@ -534,6 +575,58 @@ pub async fn add_version_if_changed(
     .await?;
     tx.commit().await?;
     Ok((next, true))
+}
+
+/// Update editable identity metadata (role, display name, email alias). Not
+/// versioned — this is the agent's identity, not its config payload.
+/// `None` means "leave the column alone"; `Some(None)` clears it.
+pub struct AgentMetaPatch<'a> {
+    pub role: Option<Option<&'a str>>,
+    pub display_name: Option<&'a str>,
+    pub email_alias: Option<Option<&'a str>>,
+}
+
+pub async fn update_agent_meta(
+    pg: &PgPool,
+    id: &str,
+    patch: &AgentMetaPatch<'_>,
+) -> Result<(), sqlx::Error> {
+    if let Some(role) = patch.role {
+        sqlx::query("update agent_defs set role = $1, updated_at = now() where id = $2::uuid")
+            .bind(role)
+            .bind(id)
+            .execute(pg)
+            .await?;
+    }
+    if let Some(display_name) = patch.display_name {
+        sqlx::query(
+            "update agent_defs set display_name = $1, updated_at = now() where id = $2::uuid",
+        )
+        .bind(display_name)
+        .bind(id)
+        .execute(pg)
+        .await?;
+    }
+    if let Some(email_alias) = patch.email_alias {
+        sqlx::query(
+            "update agent_defs set email_alias = $1, updated_at = now() where id = $2::uuid",
+        )
+        .bind(email_alias)
+        .bind(id)
+        .execute(pg)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Re-hire a retired agent: re-enable so it renders + can start again.
+pub async fn set_agent_enabled(pg: &PgPool, id: &str, enabled: bool) -> Result<(), sqlx::Error> {
+    sqlx::query("update agent_defs set enabled = $1, updated_at = now() where id = $2::uuid")
+        .bind(enabled)
+        .bind(id)
+        .execute(pg)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

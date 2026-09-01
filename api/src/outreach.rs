@@ -5,12 +5,11 @@
 // stays attributed, board-policy-gated, and guard-visible; Talaria only
 // delivers the nudge + signals.
 //
-// Port of outreach.ts, REDUCED to the scheduled half. `agentMessageUser` is
-// the workbench MCP tool's write path and `recentOutreachEvents` is the admin
-// view's read; both cross with their callers (the MCP server and the admin
-// console, later batches) — the sweep is the piece the scheduler owns, and
+// Port of outreach.ts. The sweep is the piece the scheduler owns;
+// `agent_message_user` below is the `message_user` tool's write path (/api/
+// agent/message-user and the MCP dispatcher both land here); and
 // `outreach_events` — the memory that powers the caps, the "don't repeat
-// yourself" context, and admin visibility — is written here.
+// yourself" context, and admin visibility — is written by both.
 //
 // Everything is opt-in twice over: a master switch (off by default) AND a
 // per-agent `proactive` flag.
@@ -110,6 +109,242 @@ pub async fn recent_outreach_events(pg: &PgPool, limit: i64) -> Vec<serde_json::
 
 pub async fn get_outreach_config(pg: &PgPool) -> OutreachConfig {
     parse_config(&get_setting(pg, "outreach_config", json!({})).await)
+}
+
+// ── message_user ─────────────────────────────────────────────────────────────
+
+pub struct MessageUserResult {
+    pub ok: bool,
+    pub conversation_id: Option<String>,
+    /// Plain-language line for the agent to act on (limits, bad target, …).
+    pub error: Option<String>,
+}
+
+impl MessageUserResult {
+    fn err(line: &str) -> MessageUserResult {
+        MessageUserResult {
+            ok: false,
+            conversation_id: None,
+            error: Some(line.to_string()),
+        }
+    }
+}
+
+/// An agent starts (or continues) a direct conversation with a human. The
+/// message lands as a normal assistant turn in the pair's most recent live
+/// chat conversation (or a fresh one), plus an inbox notification deep-linked
+/// to it. Personal assistants are owner-only; every pair is day-capped.
+///
+/// THE GUARD ON THE DM ITSELF, and the asymmetry it ends: a check-in turn's
+/// REPORT line goes through `run_harness` and is scanned and redacted, while
+/// the DM the agent actually sent during that same turn — the thing a person
+/// reads — would otherwise be persisted and notified untouched.
+/// `message_user` arrives here as a tool ARGUMENT; nothing else on this path
+/// ever looks at it.
+pub async fn agent_message_user(
+    deps: &crate::notify::NotifyDeps,
+    agent_model: &str,
+    to: &str,
+    message: &str,
+) -> MessageUserResult {
+    let pg = &deps.pg;
+    let cfg = get_outreach_config(pg).await;
+
+    let agent: Option<(String, Option<String>)> = sqlx::query_as(
+        "select display_name, owner_user_id::text from agent_defs \
+         where model = $1 and enabled",
+    )
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten();
+    let Some((display_name, owner_user_id)) = agent else {
+        return MessageUserResult::err("unknown agent");
+    };
+
+    // Resolve the target by email (exact) or name (exact, case-insensitive).
+    let users: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "select id::text, email, name from users \
+         where lower(email) = lower($1) or lower(coalesce(name, '')) = lower($1) limit 2",
+    )
+    .bind(to)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    if users.len() != 1 {
+        let line = if users.is_empty() {
+            format!("no teammate matches \"{to}\" — use their email address")
+        } else {
+            format!("\"{to}\" matches more than one person — use their email")
+        };
+        return MessageUserResult::err(&line);
+    }
+    let (target_id, _, _) = &users[0];
+
+    // A personal assistant belongs to one human; it never contacts anyone
+    // else.
+    if let Some(owner) = owner_user_id.as_deref()
+        && owner != target_id
+    {
+        return MessageUserResult::err("as a personal assistant you can only message your owner");
+    }
+
+    let count: i32 = sqlx::query_scalar(
+        "select count(*)::int from outreach_events \
+         where agent_model = $1 and kind = 'dm' and user_id = $2::uuid \
+           and created_at > now() - interval '1 day'",
+    )
+    .bind(agent_model)
+    .bind(target_id)
+    .fetch_one(pg)
+    .await
+    .unwrap_or(0);
+    if i64::from(count) >= cfg.daily_dm_cap {
+        return MessageUserResult::err(&format!(
+            "daily limit reached for messaging this person ({}/day) — try again tomorrow or use a ticket comment",
+            cfg.daily_dm_cap
+        ));
+    }
+
+    // Most recent live chat between this pair, else a fresh conversation.
+    let existing: Option<(String,)> = sqlx::query_as(
+        "select id::text from conversations \
+         where user_id = $1::uuid and agent_model = $2 and kind = 'chat' and archived = false \
+         order by updated_at desc limit 1",
+    )
+    .bind(target_id)
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten();
+    let label = if display_name.is_empty() {
+        crate::fleet::describe_agent(agent_model).label
+    } else {
+        display_name
+    };
+    let conv_id = match existing {
+        Some((id,)) => id,
+        None => match crate::conversations::create_conversation(
+            pg,
+            target_id,
+            agent_model,
+            &format!("{label} reached out"),
+            "chat",
+            None,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => return MessageUserResult::err(&e.to_string()),
+        },
+    };
+
+    let guarded = crate::agent_writes::guard_agent_write(
+        pg,
+        "direct-message",
+        crate::agent_writes::WriteAuthor::Agent(agent_model),
+        message,
+        None,
+    )
+    .await;
+    let body = guarded.text;
+
+    let seq = match crate::conversations::next_seq(pg, &conv_id).await {
+        Ok(seq) => seq,
+        Err(e) => return MessageUserResult::err(&e.to_string()),
+    };
+    let msg_id = match crate::conversations::insert_streaming_assistant(
+        pg,
+        &conv_id,
+        seq,
+        &json!({}),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => return MessageUserResult::err(&e.to_string()),
+    };
+    if let Err(e) = crate::conversations::update_assistant(
+        pg,
+        &msg_id,
+        &body,
+        "",
+        &[],
+        "complete",
+    )
+    .await
+    {
+        return MessageUserResult::err(&e.to_string());
+    }
+    // annotate/strict pin the findings onto the message as metadata the UI
+    // renders as a caveat — chat-persist's exact precedent, and safe for the
+    // same reason it is there: `set_message_guard` writes a column no
+    // transcript builder reads, so the snippet never travels back into a
+    // model's context.
+    if !guarded.findings.is_empty()
+        && matches!(
+            guarded.mode,
+            crate::gateway::guard::GuardMode::Annotate | crate::gateway::guard::GuardMode::Strict
+        )
+    {
+        let _ = crate::conversations::set_message_guard(pg, &msg_id, &guarded.findings).await;
+    }
+    let _ = crate::conversations::touch_conversation(pg, &conv_id, None).await;
+
+    let title = format!("{label} reached out");
+    let notified_body = if body.chars().count() > 140 {
+        format!("{}…", body.chars().take(140).collect::<String>())
+    } else {
+        body.clone()
+    };
+    let href = format!(
+        "/comms/agent/{}/{}",
+        crate::google_oauth::encode_uri_component(agent_model),
+        conv_id
+    );
+    let _ = crate::notify::add_notification(
+        deps,
+        target_id,
+        &crate::notify::NotificationInput {
+            kind: "agent-outreach",
+            title: &title,
+            body: Some(&notified_body),
+            href: Some(&href),
+        },
+    )
+    .await;
+
+    // THE EVENT NOTE IS NOT JUST AUDIT — the check-in reads recent notes back
+    // into the agent's next prompt ("don't repeat yourself"), so this row is a
+    // path from a flagged DM into a model's context, which the guard forbids
+    // in every mode, not only strict. Hence the second scrub: strict already
+    // redacted `body`, observe/annotate deliberately did not — but what goes
+    // into the note has to be clean either way. `redact_secrets` on
+    // already-redacted text is a no-op.
+    let note = if crate::gateway::guard::needs_redaction(&guarded.findings) {
+        crate::gateway::guard::redact_secrets(&body, None).0
+    } else {
+        body
+    };
+    let note: String = note.chars().take(500).collect();
+    let _ = sqlx::query(
+        "insert into outreach_events (agent_model, kind, user_id, conversation_id, note) \
+         values ($1, 'dm', $2::uuid, $3::uuid, $4)",
+    )
+    .bind(agent_model)
+    .bind(target_id)
+    .bind(&conv_id)
+    .bind(&note)
+    .execute(pg)
+    .await;
+
+    MessageUserResult {
+        ok: true,
+        conversation_id: Some(conv_id),
+        error: None,
+    }
 }
 
 async fn log_sweep_event(pg: &PgPool, agent_model: &str, note: &str) -> Result<(), sqlx::Error> {

@@ -157,29 +157,48 @@ const PREFIXES = [
   // /api/mcp/gw/app-… and the path prefix alone would swallow them).
   '/api/mcp',
   // The fleet family — the whole plane: the overview, containers, the
-  // hire pair (create + hires), render/reconcile/federate, the defs list,
-  // endpoints (list, edit, live catalog), crons (fleet-wide and per-agent),
-  // per-agent control and secrets, and the defs.$id.mcp version hook. The
-  // defs DETAIL trio (defs.$id, defs.$id.edit, defs.$id.versions — the
-  // hire editor's version plane) is still TS; STAY_TS below holds it back.
+  // hire pair (create + hires), render/reconcile/federate, the defs list
+  // AND the detail trio (defs.$id, defs.$id.edit, defs.$id.versions — the
+  // hire editor's version plane), endpoints (list, edit, live catalog),
+  // crons (fleet-wide and per-agent), per-agent control and secrets, and
+  // the defs.$id.mcp version hook. Nothing under /api/fleet serves from
+  // TS anymore.
   '/api/fleet',
+  // The remaining singles, one prefix per whole family: the gap ledger
+  // (list + {id} resolve), the template library (list/create + {id}
+  // patch/delete), the skill registry (list + {owner}/{name} CRUD), and
+  // the plans family — draft crossed with the channels mount, doc and
+  // members crossed now, so the family is whole and the draft-only SHAPE
+  // below is retired.
+  '/api/gaps',
+  '/api/templates',
+  '/api/skills',
+  '/api/plans',
+  // The agent plane under ONE prefix, because a character prefix reaches
+  // everything it starts: agent.gap/problem/message-user (the agent-key
+  // half of the product), agent-media (both files), agent-role-templates,
+  // and the agents roster/register/heartbeat that crossed on the fleet
+  // side. No TS route file left matches '/api/agent…'.
+  '/api/agent',
+  // The image describer behind the agent's describe_image tool.
+  '/api/vision',
 ] as const
 
 // Holes carved OUT of the prefixes above: paths that match one of these stay
-// on TS even though a PREFIXES entry covers them. Two residents: the port's
-// rule 10 — app modules are app authors' TS/node code, dispatched in-process
-// by the TS gateway; Rust answers a fixed sentence if hit directly (dev
-// setups that point agents straight at :5274), but the proxy never routes an
-// app server's tool traffic anywhere but the runtime that can actually
-// dispatch it (permanent, not backlog: the modules are customer code, never
-// port surface) — and the fleet defs DETAIL trio, the hire editor's
-// versioned read/edit surface, which crosses with its own batch.
+// on TS even though a PREFIXES entry covers them. Two residents, both
+// PERMANENT rather than backlog: the port's rule 10 — app modules are app
+// authors' TS/node code, dispatched in-process by the TS gateway; Rust
+// answers a fixed sentence if hit directly (dev setups that point agents
+// straight at :5274), but the proxy never routes an app server's tool
+// traffic anywhere but the runtime that can actually dispatch it (the
+// modules are customer code, never port surface) — and admin.update, which
+// rebuilds ui/dist and restarts the bun process it runs IN: it is the
+// deployer of the TS half itself, so it cannot be served by the other
+// runtime without a redesign at cutover (docs/RUST-MIGRATION.md).
 const STAY_TS = [
   /^\/api\/mcp\/gw\/app-/,
-  // fleet.defs.$id.ts + fleet.defs.$id.edit.ts + fleet.defs.$id.versions.ts
-  /^\/api\/fleet\/defs\/[^/]+$/,
-  /^\/api\/fleet\/defs\/[^/]+\/edit$/,
-  /^\/api\/fleet\/defs\/[^/]+\/versions$/,
+  // ui/src/routes/api/admin.update.ts — permanent resident, see above.
+  /^\/api\/admin\/update$/,
 ] as const
 
 // Whole-path migrations: the ROUTE is the group, because everything under it
@@ -215,6 +234,20 @@ const EXACT = new Set([
   // because /api/me itself is exact (see above): me.mcp is its own plane and
   // crossed with the mcp family, not the me family.
   '/api/me/mcp',
+  // The assistant plane — same pattern one path down: me.assistant (the
+  // agent-start trio) is its own plane, not part of /api/me's profile read.
+  '/api/me/assistant',
+  // The last one-route families, each whole-path because the route IS the
+  // path: the alert feed, the home cards, global search, the Muse, the
+  // inference ledger read, the join-code claim, and the instance card the
+  // CLI and app servers read to find their API.
+  '/api/alerts',
+  '/api/home',
+  '/api/search',
+  '/api/muse',
+  '/api/inference',
+  '/api/join',
+  '/api/well-known/talaria-instance',
 ])
 
 // Parameterized whole-route migrations: the route crossed, but its siblings
@@ -226,11 +259,10 @@ const SHAPES = [
   // ACL. The rest of /api/runs (the list, the detail, cancel, decide) is
   // still TS until the runs surface crosses as a group.
   /^\/api\/runs\/[^/]+\/events$/,
-  // plans.$id.draft.ts — the plan-draft plane's other half. The channels
-  // mount crossed with the channels family (now a PREFIXES entry above); the
-  // plans family (messages, title, doc) stays TS until the chat batch, so a
-  // PREFIXES entry would strand them on a Rust 404.
-  /^\/api\/plans\/[^/]+\/draft$/,
+  // memory.$id.ts — the remembered-facts write plane. Bare /api/memory has
+  // no route at all (the list read lives elsewhere), so the shape, not a
+  // prefix, is the family.
+  /^\/api\/memory\/[^/]+$/,
   // research.ts + research.$id{,.members,.conversation,.decide}.ts — the
   // research plane crossed whole (domain, def and routes together). The
   // bare /api/research is a PREFIXES entry (see above); these shapes are the

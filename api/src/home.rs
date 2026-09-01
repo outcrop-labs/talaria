@@ -23,7 +23,8 @@ use crate::boards::board_visibility_sql;
 /// because the queue's sort is `updated_at desc` — the column arrives here as
 /// the epoch-ms read and is rendered as ISO for shape-parity with the row TS
 /// handed back (a Date there, a string on the wire).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkItem {
     pub id: String,
     pub board_id: String,
@@ -46,14 +47,14 @@ impl WorkItem {
 }
 
 /// The three human queues, each a count of everything in it and a capped list.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct HomeQueues {
     pub triage: QueueBucket,
     pub review: QueueBucket,
     pub blocked: QueueBucket,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct QueueBucket {
     /// Everything in the queue — the number the digest's subject states, and
     /// deliberately NOT `items.len()`, which is the same number only until a
@@ -140,6 +141,109 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
         }
     }
     Ok(queues)
+}
+
+// ── The whole glance (home.ts `homeSummary`) ─────────────────────────────────
+//
+// The org half: name, an activity pulse everyone sees, and (admins) live
+// alerts + today's spend. Failures degrade to quiet, never 500. Fleet health
+// is NOT here — it left Home with the Fleet tab; Agents and Observability own
+// that question.
+
+/// The org rail's live half (home.ts `OrgGlance`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OrgGlance {
+    /// The business name (Admin → Organization), for the rail's title.
+    pub name: String,
+    /// A compact recent-activity pulse across the workspace.
+    pub activity: Vec<crate::activity::ActivityEvent>,
+    /// Admin-only: live alert count (null for members).
+    pub alerts: Option<i32>,
+    /// Admin-only: today's metered spend (null for members).
+    pub cost_today: Option<CostToday>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CostToday {
+    pub tokens: i32,
+    pub usd: serde_json::Number,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HomeSummary {
+    pub org: OrgGlance,
+    pub queues: HomeQueues,
+    pub unread: i32,
+    pub boards: i32,
+}
+
+/// `homeSummary` — the Home/Today landing in one round-shape. `role` is the
+/// caller's (`user.role`), and only admins pay for the alerts count and the
+/// cost overview.
+pub async fn home_summary(
+    state: &crate::state::AppState,
+    user_id: &str,
+    is_admin: bool,
+) -> Result<HomeSummary, sqlx::Error> {
+    let pg = &state.pg;
+    let queues = home_queues(pg, user_id).await?;
+
+    let vis = board_visibility_sql("$1", "$1", false);
+    let boards_sql = format!(
+        "select count(distinct b.id)::int as boards from boards b where {vis}"
+    );
+    let (unread_res, boards_res) = tokio::join!(
+        sqlx::query_as::<_, (i32,)>(
+            "select count(*)::int from notifications where user_id = $1::uuid and read_at is null"
+        )
+        .bind(user_id)
+        .fetch_one(pg),
+        sqlx::query_as::<_, (i32,)>(sqlx::AssertSqlSafe(boards_sql.as_str()))
+            .bind(user_id)
+            .fetch_one(pg)
+    );
+    let ((unread,), (boards,)) = (unread_res?, boards_res?);
+
+    // The glance's four reads all fold their own failures, exactly as TS's
+    // `.catch`es do: orgProfile to quiet strings, the feed to empty, alerts
+    // and cost to null.
+    let profile_fut = crate::org::org_profile(pg);
+    let activity_fut = async {
+        crate::activity::activity_feed(pg, user_id, &[], 8, is_admin)
+            .await
+            .unwrap_or_default()
+    };
+    let alert_count_fut = async {
+        if is_admin {
+            Some(crate::alerts::compute_alerts(state, user_id).await.len() as i32)
+        } else {
+            None
+        }
+    };
+    let cost_fut = async {
+        if is_admin {
+            crate::gateway::usage::cost_overview(pg).await.ok()
+        } else {
+            None
+        }
+    };
+    let (profile, activity, alert_count, cost) =
+        tokio::join!(profile_fut, activity_fut, alert_count_fut, cost_fut);
+
+    Ok(HomeSummary {
+        org: OrgGlance {
+            name: profile.name,
+            activity,
+            alerts: alert_count,
+            cost_today: cost.map(|c| CostToday {
+                tokens: c.totals.today.prompt + c.totals.today.completion,
+                usd: c.totals.today.cost,
+            }),
+        },
+        queues,
+        unread,
+        boards,
+    })
 }
 
 #[cfg(test)]
