@@ -16,6 +16,14 @@ The full per-route reference — path, method, auth class, body fields, statuses
 is generated from the route sources: [`api/`](./api/README.md). Nothing here
 repeats it; this page is the dialect, that one is the dictionary.
 
+The dialect now lives in two runtimes: while the port's coexistence runs, a route
+serves from TS or from the Rust crate (`api/`), never both — and the Rust
+side holds itself to this same dialect byte-for-byte (the 370-pair parity battery
+proved it; the Rust-side authoring rules and the recorded divergences are
+[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A new route lands as a TS route file AND
+its Rust twin in the same change — the proxy has no fallback by design, so a migrated
+prefix must never have routes that exist on only one side.
+
 ## Guards — `server/api-guard.ts`
 
 Every session route opens with exactly one of these; each returns the user or a ready 401/403
