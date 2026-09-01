@@ -1,8 +1,9 @@
 // /api/mcp/library — port of ui/src/routes/api/mcp.library.ts.
 // GET ?q= → the MCP server library (the official registry, live, filtered to
-// remote-capable servers). Backs the Add-server picker. `?featured=1` answers
-// the shelf as a BARE array — the picker's featured tray — while search wraps
-// in `{servers}`.
+// remote-capable servers). Backs the Add-server picker. BOTH arms answer
+// `{servers}` — `featuredMcpLibrary()` returns `{ servers }` just like the
+// search (an earlier spelling of this route served the featured shelf as a
+// bare array, and the picker's `data.servers.length` crashed on it).
 
 use crate::mcp_library::{LibraryServer, library};
 use crate::session::require_perm;
@@ -57,7 +58,8 @@ pub async fn get(
     let lib = library();
     if query.featured.as_deref() == Some("1") {
         let shelf = lib.featured().await;
-        return Json(Value::Array(shelf.iter().map(server_wire).collect::<Vec<_>>())).into_response();
+        return Json(json!({ "servers": shelf.iter().map(server_wire).collect::<Vec<_>>() }))
+            .into_response();
     }
     // `url.searchParams.get('q') ?? ''` — absent and empty are the same query.
     let q = query.q.unwrap_or_default();

@@ -195,14 +195,12 @@ pub struct ResearchRun {
     /// answered.
     pub awaiting: Option<Value>,
     pub artifact_id: Option<String>,
-    /// The conversation this run is discussed in. None until somebody says
-    /// something — see `ensure_research_conversation` for why it is on
-    /// demand.
-    pub conversation_id: Option<String>,
-    /// The run this one extends. A follow-up writes into its PARENT's report
-    /// and source list rather than minting a second document about one
-    /// subject; the child row survives for provenance.
-    pub parent_run_id: Option<String>,
+    /// NOT on this wire shape: the run's conversation_id and parent_run_id
+    /// exist as columns (and on the TS interface, as `string | null`), but no
+    /// TS response carries them — the ROW projection never selects them, so
+    /// JSON.stringify never emits the keys. The conversation id is served by
+    /// its own route (`ensure_research_conversation`); the parent link is
+    /// write-only. Emitting them as nulls here broke the list's byte-parity.
     pub error: Option<String>,
     pub stats: Value,
     pub created_at: String,
@@ -240,8 +238,7 @@ const ROW: &str = "research_runs.id::text, research_runs.owner_user_id::text, \
     case when r.state = 'awaiting' and r.decision->'request' is not null \
               and r.decision->'answer' is null \
          then r.decision->'request' else null end as awaiting, \
-    research_runs.artifact_id::text, research_runs.conversation_id::text, \
-    research_runs.parent_run_id::text, \
+    research_runs.artifact_id::text, \
     coalesce(research_runs.error, r.error) as error, \
     research_runs.stats, \
     (trunc(extract(epoch from research_runs.created_at) * 1000))::bigint, \
@@ -257,7 +254,10 @@ const FROM: &str =
     "from research_runs left join runs r on r.id = research_runs.id and r.kind = 'research'";
 
 fn projection_sql(where_clause: &str) -> String {
-    ROW.replace("{STATUS}", STATUS) + " " + FROM + " " + where_clause
+    // The `select` lives HERE, not in the callers: the query is one spelling,
+    // and a caller-side prefix is how the list route came to ship a statement
+    // starting "research_runs.id::text, …" — a syntax error at the first read.
+    "select ".to_string() + &ROW.replace("{STATUS}", STATUS) + " " + FROM + " " + where_clause
 }
 
 /// Map one row of the projection. Written against column INDEX rather than
@@ -269,9 +269,9 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
     // The epoch-millisecond columns are read into named locals: `get` infers
     // its index generic from the turbofish otherwise, and `get::<_, i64>`
     // binds i64 to the INDEX (usize-only) rather than the value.
-    let created_ms: i64 = row.get(15);
-    let updated_ms: i64 = row.get(16);
-    let completed_ms: Option<i64> = row.get(17);
+    let created_ms: i64 = row.get(13);
+    let updated_ms: i64 = row.get(14);
+    let completed_ms: Option<i64> = row.get(15);
     ResearchRun {
         id: row.get(0),
         owner_user_id: row.get(1),
@@ -284,10 +284,8 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
         phase: row.get(8),
         awaiting: row.get(9),
         artifact_id: row.get(10),
-        conversation_id: row.get(11),
-        parent_run_id: row.get(12),
-        error: row.get(13),
-        stats: row.get(14),
+        error: row.get(11),
+        stats: row.get(12),
         created_at: crate::agent_auth::epoch_ms_to_iso(created_ms),
         updated_at: crate::agent_auth::epoch_ms_to_iso(updated_ms),
         completed_at: completed_ms.map(crate::agent_auth::epoch_ms_to_iso),

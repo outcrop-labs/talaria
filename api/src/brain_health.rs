@@ -72,9 +72,17 @@ pub async fn fleet_brain_health(pg: &PgPool) -> Result<Vec<AgentBrainHealth>, sq
     }
     let (defs, endpoints) = tokio::join!(
         sqlx::query_as::<_, (String, String, bool, Option<serde_json::Value>)>(
+            // The config is the MAX version's, not current_version's — TS's
+            // listAgentDefs resolves `latest` with `distinct on (agent_id)
+            // … order by version desc` and never consults current_version.
+            // The two agree while the pointer is honest; a dangling
+            // current_version (a version row deleted underneath it) is
+            // tolerated by TS and must be here too, or a def like that reads
+            // as "no main model configured".
             "select d.model, d.display_name, d.enabled, v.config \
              from agent_defs d \
-             left join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
+             left join lateral (select config from agent_versions \
+                                where agent_id = d.id order by version desc limit 1) v on true \
              order by d.slug asc"
         )
         .fetch_all(pg),
