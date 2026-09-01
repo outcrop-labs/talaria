@@ -73,8 +73,8 @@ use serde_json::{Value, json};
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    CountLimit, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext,
-    RenderFn, RoleFloor, Widen, count_problem, define_harness,
+    CheckCtx, CheckResult, CountLimit, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RenderFn, RoleFloor, Widen, count_problem, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::schema::{Field, Schema};
@@ -514,6 +514,9 @@ pub fn muse_cron_harness() -> HarnessDefinition {
     };
     d.guard = Some(muse_guard());
     d.temperature = Some(TEMPERATURE);
+    // The fixture table, `cron_fixtures` below: nine fixtures across three
+    // bands, `cron_problem` stating the shape every draft is held to.
+    d.evals = eval_cases(cron_fixtures());
     define_harness(d)
 }
 
@@ -806,6 +809,10 @@ pub fn muse_agent_harness() -> HarnessDefinition {
     });
     d.guard = Some(muse_guard());
     d.temperature = Some(TEMPERATURE);
+    // The fixture table, `agent_fixtures` below: nine fixtures across three
+    // bands, `agent_problem` carrying everything true of every draft and each
+    // fixture adding the one thing its own purpose makes checkable.
+    d.evals = eval_cases(agent_fixtures());
     define_harness(d)
 }
 
@@ -1225,6 +1232,11 @@ pub fn muse_ticket_harness() -> HarnessDefinition {
     };
     d.guard = Some(muse_guard());
     d.temperature = Some(TEMPERATURE);
+    // The fixture table, `ticket_fixtures` below: twelve fixtures across
+    // three bands — the suite the banding exists for, covering both ways this
+    // bar actually fails (editing more than it was asked to, and inventing a
+    // patch where the answer is the refusal).
+    d.evals = eval_cases(ticket_fixtures());
     define_harness(d)
 }
 
@@ -1454,6 +1466,10 @@ pub fn muse_skill_form_harness() -> HarnessDefinition {
     };
     d.guard = Some(muse_guard());
     d.temperature = Some(TEMPERATURE);
+    // The fixture table, `skill_form_fixtures` below: nine fixtures across
+    // three bands, `skill_form_problem` as the shared shape assertion and the
+    // revision fixtures carrying the current record in their input.
+    d.evals = eval_cases(skill_form_fixtures());
     define_harness(d)
 }
 
@@ -1642,6 +1658,10 @@ pub fn muse_template_form_harness() -> HarnessDefinition {
     };
     d.guard = Some(muse_guard());
     d.temperature = Some(TEMPERATURE);
+    // The fixture table, `template_form_fixtures` below: nine fixtures across
+    // three bands, `template_form_problem` as the shared shape assertion and
+    // `BUG_REPORT` the record the revision fixtures start from.
+    d.evals = eval_cases(template_form_fixtures());
     define_harness(d)
 }
 
@@ -1830,6 +1850,10 @@ pub fn muse_draft_harness() -> HarnessDefinition {
     // designer widens, correctly, because what a capable model earns THERE is
     // holding long nested JSON without truncating — a property of the
     // drafting call and nothing else.
+    // The fixture table, `prose_fixtures` below: ten fixtures over the six
+    // prose kinds — the two with hard, checkable rules (soul and template)
+    // and the shared contract, the reply IS the document, for all six.
+    d.evals = eval_cases(prose_fixtures());
     define_harness(d)
 }
 
@@ -2035,6 +2059,31 @@ fn ts_opt(v: &Option<Option<String>>) -> String {
         Some(None) => "null".into(),
         Some(Some(s)) => s.clone(),
     }
+}
+
+/// THE FOLD EVERY DEF IN THIS FILE SHARES: a `MuseFixture` table onto the
+/// fitness plane's `EvalCase`. Nothing is re-typed here — each check already
+/// deserializes its own typed view of the value (see the header above), and
+/// the sweep only calls a check on a value that held the contract, so that
+/// view always deserializes. All the fold adds is the three things the plane
+/// wants and a table does not carry: the `Arc` erasure onto `CheckFn`, the
+/// band each fixture states, and the deliberate nothing that is `_ctx` —
+/// every Muse fixture is single-shot and nothing calls a tool, so a replay
+/// hands them the empty context, TS's `NO_TOOLS`.
+fn eval_cases(fixtures: Vec<MuseFixture>) -> Vec<EvalCase> {
+    fixtures
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let check = f.check;
+            EvalCase::new(
+                f.name,
+                f.input,
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| CheckResult::from(check(v))),
+            )
+            .band(band)
+        })
+        .collect()
 }
 
 // ── cron fixtures ────────────────────────────────────────────────────────────

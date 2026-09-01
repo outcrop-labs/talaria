@@ -52,8 +52,8 @@ use serde_json::Value;
 
 use crate::body::{js_string, truncate_utf16};
 use crate::harness::define::{
-    EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
-    Widen, define_harness,
+    CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness::schema::{Field, Schema};
 use crate::harness_model::{ModelChainStep, ModelSpec};
@@ -660,6 +660,33 @@ pub fn judge_harness() -> HarnessDefinition {
     });
     // A gate that answers differently on a re-read is not a gate.
     d.temperature = Some(0.0);
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — twelve
+    // labeled cases, scored by AGREEMENT with the label (see `fixtures`). The
+    // fold re-types the value exactly the way the TS runner handed its check
+    // the typed verdict: `narrow_verdict` is the transform's home, the clamps
+    // the TS schema ran before `check` ever saw the value, and anything else
+    // (a bare `from_value::<JudgeVerdict>`) would throw on the very lenience
+    // the contract promises — a numeric issue member is a string by the time
+    // either suite scores it. A value that will not narrow is the fixture
+    // check throwing, which the sweep scores as a task failure carrying the
+    // same sentence the TS sweep did.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| match narrow_verdict(v) {
+                    Ok(verdict) => f.check(&verdict).into(),
+                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 

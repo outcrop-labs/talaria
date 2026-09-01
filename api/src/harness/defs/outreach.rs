@@ -37,10 +37,10 @@
 // refuses the call outright rather than running a tool-loop harness as a
 // single completion.
 //
-// THE FITNESS PLANE'S TWO SLOTS STAY DEFERRED with the dry-run executor that
-// reads them (see define.rs's header): `dryRun` and the `ctx.calls` half of
-// the eval checks. The measured numbers are preserved here so the crossing
-// declares rather than re-derives them — a check-in runs EIGHT turns, not the
+// THE FITNESS PLANE'S TWO SLOTS CROSS HERE, with the dry-run executor that
+// replays them still living on the fitness side (see define.rs's header): the
+// fixture table folds onto `evals` and the dry run states its own numbers
+// rather than re-derives them — a check-in runs EIGHT turns, not the
 // default six (the archive shows a tail of 8 tool calls and one turn-budget
 // gap at six, a model still working when the loop stopped, whose silence was
 // then read as the restraint the fixture is about), and not twelve, because a
@@ -49,10 +49,10 @@
 // (`comment`, `post_to_channel`, `message_user`, `get_ticket`, `list_tickets`,
 // `list_teammates`, `report_gap`) — the three the prompt names, the reads a
 // check-in that surfaces something should have used, and the escape hatch
-// whose MISUSE is a thing worth measuring. Meanwhile the calls a check made
-// are modeled by `CheckCall`/`CheckCtx` in define.rs's fixture-floor section,
-// so the fixture table is complete and testable now and maps 1:1 when
-// `EvalContext` crosses.
+// whose MISUSE is a thing worth measuring. The calls a check made are modeled
+// by `CheckCall`/`CheckCtx` in define.rs's fixture-floor section, so the
+// fixture table was complete and testable before the fold and maps 1:1 onto
+// the dry run's log.
 
 use std::sync::{Arc, OnceLock};
 
@@ -62,8 +62,9 @@ use serde_json::Value;
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    AnswerFloor, CheckCall, CheckCtx, EvalBand, Fallback, GuardDecl, HarnessDefinition, Message,
-    OnFailure, Output, RenderContext, RoleFloor, Widen, below_answer_floor, define_harness,
+    AnswerFloor, CheckCall, CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, Fallback,
+    GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor, Widen,
+    below_answer_floor, define_harness,
 };
 use crate::harness::transport::ToolPolicy;
 use crate::harness_model::ModelSpec;
@@ -666,6 +667,82 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
     d.hold_ms = Some(30_000);
     // No temperature: the sweep never sent one, and the persona's own default
     // is what has always answered here.
+
+    // NINE FIXTURES, THREE BANDS, half of them behavioural — the half prose
+    // alone cannot see, since a model can emit the quiet token and still have
+    // posted to a channel on the way there. The fold only re-types the value:
+    // a text harness's reply arrives as a JSON string, and a value that is not
+    // one is the fixture check throwing, which the sweep scores as a task
+    // failure carrying the same sentence TS did.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let OutreachFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| {
+                        match serde_json::from_value::<String>(v.clone()) {
+                            Ok(s) => check(&s, ctx).into(),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
+    // THE TOOLS A CHECK-IN ACTS THROUGH, for the fitness suite's dry run. The
+    // prompt names three of them outright ("comment on a ticket,
+    // post_to_channel, or message_user"); the read tools are here because a
+    // check-in that surfaces something should have LOOKED first, and
+    // `report_gap` is here because reaching for it on a periodic check-in is a
+    // failure worth seeing.
+    d.dry_run = Some(DryRunDecl {
+        // EIGHT, MEASURED. This declared no budget and took the default six,
+        // and a check-in genuinely runs longer than that on the fixtures that
+        // have something to say: list the tickets, read the two that look
+        // stale, check who owns them, then comment or stay quiet. The archive
+        // shows a tail of 8 tool calls and one turn-budget gap at six — a
+        // model still working when the loop stopped, whose silence was then
+        // read as the restraint the fixture is about.
+        //
+        // Not twelve: the failure mode this harness exists to catch is an
+        // agent that MANUFACTURES activity, and a generous budget is an
+        // invitation to do exactly that. Eight covers the observed tail and
+        // no more.
+        max_turns: Some(8),
+        // SEVEN OF FORTY-SIX, and the deviation is deliberate — the same
+        // argument work-session states. Production hands the persona its
+        // whole MCP surface; benching that would measure a model's tolerance
+        // for thirty-nine irrelevant options rather than whether it knows
+        // when to stay quiet. These seven are what the job needs plus the
+        // escape hatch whose MISUSE is a thing worth measuring.
+        //
+        // IT IS STILL A DEVIATION, and it cuts one way: a model that picks
+        // correctly from seven may not from forty-six. This surface is the
+        // floor of the claim, never the ceiling.
+        tools: vec![
+            "comment",
+            "post_to_channel",
+            "message_user",
+            "get_ticket",
+            "list_tickets",
+            "list_teammates",
+            "report_gap",
+        ],
+        world: None,
+        workspace: None,
+        credentials: None,
+    });
     d
 }
 

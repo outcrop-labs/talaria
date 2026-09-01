@@ -39,8 +39,8 @@ use serde_json::{Map, Value};
 
 use crate::body::{js_number, js_string, truncate_utf16};
 use crate::harness::define::{
-    EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
-    Widen, define_harness,
+    CheckCtx, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::schema::Schema;
@@ -838,6 +838,34 @@ pub fn channel_plan_harness() -> HarnessDefinition {
     // No temperature: the hand-written call sent none, so the persona's own
     // default is what has always answered here. Pinning one now would change
     // every existing install's drafts for no stated reason.
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — ten
+    // fixtures, every check a deterministic fact about a draft (see
+    // `fixtures`). The TS check received the TRANSFORMED value, the coerced
+    // proposals rather than the raw rows, so the fold runs `to_proposals` —
+    // this def's own transform — before the check: the same value the TS check
+    // was handed, the same sentences out of it. `to_proposals` is total (a
+    // non-array is no proposals, exactly as the coercion always read it), so
+    // there is no throw branch to fold here.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let ChannelPlanFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| (check)(&to_proposals(v)).into()),
+            )
+            .band(band)
+        })
+        .collect();
+    // The wrap stays LAST so the derived json floor survives the `d.floor`
+    // assignment above — see the tripwire test at the bottom of this file.
     define_harness(d)
 }
 

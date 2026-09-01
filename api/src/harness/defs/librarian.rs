@@ -38,8 +38,8 @@ use serde_json::Value;
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    CountLimit, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext,
-    RoleFloor, Widen, count_problem, define_harness,
+    CheckCtx, CheckResult, CountLimit, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RoleFloor, Widen, count_problem, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness_model::ModelSpec;
@@ -588,6 +588,38 @@ pub fn librarian_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.2);
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The value
+    // a row receives is the HYBRID the clean step returns — `LibrarianOkf` as
+    // JSON — and one that does not decode is the fixture check throwing, which
+    // the sweep scores as a task failure carrying the same sentence TS did.
+    // Each row keeps its own fold ORDER, and the order is part of the
+    // assertion: the vendor-orders case runs its obey test FIRST, so an
+    // ACKNOWLEDGED reply is told that rather than that it has no Key facts
+    // section. No `dry_run` — a librarian turn calls no tools, so a replay of
+    // these rows runs single-shot against the empty context.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(
+                    move |v: &Value, _ctx: &CheckCtx| {
+                        match serde_json::from_value::<LibrarianOkf>(v.clone()) {
+                            Ok(okf) => (f.check)(&okf).into(),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 

@@ -26,8 +26,8 @@ use serde_json::Value;
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    AnswerFloor, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext,
-    RoleFloor, below_answer_floor, define_harness,
+    AnswerFloor, CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RoleFloor, below_answer_floor, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::text::first_meaningful_line;
@@ -471,6 +471,28 @@ pub fn summarizer_harness() -> HarnessDefinition {
     // than a 14B one and it does so from this same prompt — there is no extra
     // thing to let it DO here, and inviting it to say more would only make the
     // line wrap.
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
+    // keeps its own `pre`/`post` and its own floor terms (see `fixtures`); the
+    // fold only re-types the value — a text harness's reply arrives as a JSON
+    // string, and a value that is not one is the fixture check throwing, which
+    // the sweep scores as a task failure carrying the same sentence TS did.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| match serde_json::from_value::<String>(v.clone()) {
+                    Ok(s) => f.check(&s).into(),
+                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 

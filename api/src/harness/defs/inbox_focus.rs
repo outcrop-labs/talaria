@@ -45,8 +45,8 @@ use serde_json::Value;
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    CheckCtx, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext,
-    RoleFloor, Widen, define_harness,
+    CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::schema::{Field, Schema};
@@ -741,6 +741,26 @@ pub fn inbox_brief_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.1);
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The
+    // checks already take the value as it arrives — a brief IS the JSON
+    // object this def outputs — so there is nothing to re-type: the fold only
+    // erases the table's fn pointer into the closure shape the fitness plane
+    // stores, with `None` reading as a pass exactly as the TS suite did.
+    // See `brief_fixtures`.
+    d.evals = brief_fixtures()
+        .into_iter()
+        .map(|f| {
+            let InboxFixture { name, band, input, check } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
     define_harness(d)
 }
 
@@ -899,6 +919,24 @@ pub fn inbox_command_harness() -> HarnessDefinition {
         requires: vec!["tool-select", "instruction-following"],
         note: "Models proven to pick the right action from several are offered every action on the card; every other model may only confirm the one a regex already matched.",
     });
+    // THE FIXTURE TABLE, folded the same way (see `command_fixtures`). The
+    // allowlist relation rides on every row — the census test holds it on the
+    // tables themselves — so what crosses here is the suite's safety
+    // assertion, not just its scoring.
+    d.evals = command_fixtures()
+        .into_iter()
+        .map(|f| {
+            let InboxFixture { name, band, input, check } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
     define_harness(d)
 }
 
@@ -975,6 +1013,24 @@ pub fn inbox_reply_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.2);
+    // THE FIXTURE TABLE, folded the same way (see `reply_fixtures`). The
+    // reply's checks unbox the string themselves — the table keeps one uniform
+    // shape per harness, the value boxed as a JSON string — so the fold hands
+    // the value through untouched rather than re-typing it here.
+    d.evals = reply_fixtures()
+        .into_iter()
+        .map(|f| {
+            let InboxFixture { name, band, input, check } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
     define_harness(d)
 }
 
@@ -2372,6 +2428,29 @@ mod tests {
             }
             let names: std::collections::HashSet<&str> = fx.iter().map(|f| f.name).collect();
             assert_eq!(names.len(), fx.len(), "{id} has duplicate fixture names");
+        }
+    }
+
+    #[test]
+    fn each_def_carries_its_own_fixture_table() {
+        // The tables predate the fold — the sweep read them straight out of
+        // these fns — so a def that lost its `evals` assignment would still
+        // pass the size-and-spread census above. This is the tripwire: name,
+        // band and input all cross the fold unchanged, one row per fixture.
+        for (def, fx) in [
+            (inbox_brief_harness(), brief_fixtures()),
+            (inbox_command_harness(), command_fixtures()),
+            (inbox_reply_harness(), reply_fixtures()),
+        ] {
+            assert_eq!(def.evals.len(), fx.len(), "{}", def.id);
+            for (e, f) in def.evals.iter().zip(fx) {
+                assert_eq!(
+                    (e.name, e.band, &e.input),
+                    (f.name, f.band, &f.input),
+                    "{}",
+                    def.id
+                );
+            }
         }
     }
 

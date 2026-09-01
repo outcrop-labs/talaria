@@ -72,7 +72,7 @@
 
 use std::sync::LazyLock;
 
-use super::define::HarnessDefinition;
+use super::define::{EvalBand, HarnessDefinition};
 use super::defs;
 
 /// Where a registered harness came from. Kept as the TS vocabulary so the
@@ -95,13 +95,33 @@ pub struct RegisteredHarness {
     pub source: HarnessSource,
 }
 
+impl RegisteredHarness {
+    /// Fixture names — the inputs stay on the def, where the sweep reads them.
+    pub fn eval_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.def.evals.iter().map(|e| e.name)
+    }
+
+    /// Each fixture's difficulty band, by name. Read by the fitness sweep when
+    /// it records a fixture it did not run: a skipped case still belongs to a
+    /// band, and the alternative was defaulting every skip to 'standard' and
+    /// quietly mis-reporting which half of a suite went unmeasured.
+    pub fn band_of(&self, name: &str) -> EvalBand {
+        self.def
+            .evals
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.band)
+            .unwrap_or(EvalBand::Standard)
+    }
+}
+
 /// The harnesses Talaria ships, each constructed once. Order is the order the
 /// admin panel shows them in, in two blocks: first the ones an admin ASSIGNS a
 /// model to, then the ones whose model is decided by the subject of the call.
 /// An admin reading the panel top to bottom therefore reads "here is what you
 /// control" before "here is what your agents are doing with the models you
 /// already gave them".
-static DEFS: [LazyLock<HarnessDefinition>; 29] = [
+static DEFS: [LazyLock<HarnessDefinition>; 35] = [
     // ── Assigned in Admin ─────────────────────────────────────────────────────
     LazyLock::new(defs::titler::titler_harness),
     LazyLock::new(defs::summarizer::summarizer_harness),
@@ -133,8 +153,28 @@ static DEFS: [LazyLock<HarnessDefinition>; 29] = [
     LazyLock::new(defs::briefer::assistant_reply_harness),
     // The agent assigned to the ticket.
     LazyLock::new(defs::work_session::work_session_harness),
-    // THE HERMES FAMILY and 'secrets:handles' sit here in the TS list; they
-    // cross with the fitness plane and join this array in the same commit.
+    // THE HERMES FAMILY — "can this model be a workspace agent", as opposed to
+    // "can it run one of Talaria's own features". Every other harness here
+    // measures a platform feature; a fleet persona is handed the toolkit and a
+    // sentence of English, and what it does next is the job. See
+    // `defs/hermes_knowledge.rs` for why that needed its own family.
+    LazyLock::new(defs::hermes_knowledge::hermes_knowledge_harness),
+    // The second of the family — the six document tools, none of which had ever
+    // been asked of a model. See `defs/hermes_documents.rs`.
+    LazyLock::new(defs::hermes_documents::hermes_documents_harness),
+    // The third: who can SEE things. Runs as a personal assistant because five of
+    // its six tools refuse a general org agent outright.
+    LazyLock::new(defs::hermes_governance::hermes_governance_harness),
+    // The fourth: calendar and mail, where a wrong answer reaches somebody
+    // outside the company.
+    LazyLock::new(defs::hermes_google::hermes_google_harness),
+    // The fifth and last: commissioning research. Narrow on purpose — it measures
+    // the DELEGATION, never the report, which the research-* harnesses own.
+    LazyLock::new(defs::hermes_research::hermes_research_harness),
+    // Can it spend a credential it is not allowed to see? The platform half of
+    // that arrangement is enforced in code; this is the MODEL half, which until
+    // now nothing measured. See `defs/secret_handles.rs`.
+    LazyLock::new(defs::secret_handles::secret_handles_harness),
     // The three coding harnesses, one per Workbench effort slot — the columns
     // that used to read "No harness in this install is bound to this".
     LazyLock::new(defs::workbench::workbench_light_harness),
@@ -223,6 +263,12 @@ mod tests {
         "briefer:daily-delta",
         "briefer:reply",
         "work-session",
+        "hermes:knowledge",
+        "hermes:documents",
+        "hermes:governance",
+        "hermes:google",
+        "hermes:research",
+        "secrets:handles",
         "workbench:light",
         "workbench:standard",
         "workbench:heavy",
@@ -241,36 +287,6 @@ mod tests {
         let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
         assert_eq!(unique.len(), ids.len(), "a harness id appears twice");
         assert_eq!(ids, EXPECTED_IDS);
-    }
-
-    #[test]
-    fn a_def_without_a_registry_line_is_invisible() {
-        // THE ASSERTION THAT WOULD HAVE CAUGHT PHASE 3 (TS): nine definitions
-        // landed with 32 eval fixtures between them and none were added to
-        // BUILTINS, so every `check` they wrote was dead code. TS enforces the
-        // coverage half with a glob over defs/; Rust has no glob, so the exact
-        // list above IS the coverage check — the deferred six must be added to
-        // it in the same commit as their defs, and this test naming each one is
-        // what turns "forgot the registry line" from silent into red.
-        for id in [
-            "hermes:knowledge",
-            "hermes:documents",
-            "hermes:governance",
-            "hermes:google",
-            "hermes:research",
-            "secrets:handles",
-        ] {
-            assert!(
-                builtin_by_id(id).is_none(),
-                "{id} has crossed to defs/ but is missing from DEFS — or it crossed without \
-                 updating this list, which is the exact failure this test exists to catch"
-            );
-            assert!(
-                !EXPECTED_IDS.contains(&id),
-                "{id} is listed as shipped but has no def yet — the registry cannot name what \
-                 does not exist"
-            );
-        }
     }
 
     #[test]
@@ -477,9 +493,45 @@ mod tests {
     }
 
     // The TS registry also asserts every harness ships eval fixtures ("an
-    // unscored harness is an invisible one"). `evals` cross with the fitness
-    // plane, which brings the `EvalCase` toolbox — until then there is nothing
-    // here to count, and the six deferred defs arrive together with it.
+    // unscored harness is an invisible one"). That assertion crosses with the
+    // fixture tables themselves — see `ships_eval_fixtures` below.
+
+    #[test]
+    fn ships_eval_fixtures() {
+        // AN UNSCORED HARNESS IS AN INVISIBLE ONE: the fitness suite replays
+        // `evals`, and a def without any is a column the matrix can never fill.
+        // The TS twin of this test is what caught phase 3 — nine defs landed
+        // with 32 fixtures between them and none were registered. Every def in
+        // this array declares at least one fixture, by name, so a fixture with
+        // an empty name cannot smuggle a def past the count either.
+        for h in builtin_activity_harnesses() {
+            assert!(
+                !h.def.evals.is_empty(),
+                "{} ships no eval fixtures — it is invisible to the fitness suite",
+                h.def.id
+            );
+            for e in &h.def.evals {
+                assert!(!e.name.trim().is_empty(), "{} has an unnamed fixture", h.def.id);
+            }
+        }
+    }
+
+    #[test]
+    fn keeps_fixture_names_distinct_within_a_def() {
+        // The sweep records by (harness, fixture name) and resumes by it; a
+        // duplicated name makes the second fixture a silent re-run of the
+        // first's slot and the resume ledger lie about what is left.
+        for h in builtin_activity_harnesses() {
+            let names: Vec<&str> = h.eval_names().collect();
+            let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                names.len(),
+                "{} has two fixtures with the same name",
+                h.def.id
+            );
+        }
+    }
 
     #[test]
     fn asks_for_a_temperature_in_range_or_none_at_all() {
@@ -583,9 +635,15 @@ mod tests {
                 "briefer:daily-delta",
                 "briefer:reply",
                 "work-session",
-                // The Hermes family and 'secrets:handles' join this list when
-                // they cross (their model is the agent in the conversation) —
-                // same third kind as work-session, not a fourth.
+                // The Hermes family and 'secrets:handles': their model is the
+                // agent in the conversation — same third kind as work-session,
+                // not a fourth.
+                "hermes:knowledge",
+                "hermes:documents",
+                "hermes:governance",
+                "hermes:google",
+                "hermes:research",
+                "secrets:handles",
                 "channel-plan",
                 "plan-doc",
                 "outreach:check-in",

@@ -45,8 +45,8 @@ use serde_json::Value;
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
-    Widen, define_harness,
+    CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness_model::ModelSpec;
@@ -740,6 +740,29 @@ pub fn plan_doc_harness() -> HarnessDefinition {
     });
     // No temperature: the hand-written call sent none, so the plan agent's
     // own default is what has always written these documents.
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — ten
+    // fixtures over the one shared document (see `fixtures`). The fold re-types
+    // the value the way every text def's does: the run's value is the CLEANED
+    // document, which is exactly what the TS check received, and a value that
+    // is not a string is the fixture check throwing, which the sweep scores as
+    // a task failure carrying the same sentence the TS sweep did.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| match serde_json::from_value::<String>(v.clone()) {
+                    Ok(doc) => (f.check)(&doc).into(),
+                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 

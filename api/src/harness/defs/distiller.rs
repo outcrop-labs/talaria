@@ -46,8 +46,8 @@ use serde_json::Value;
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    AnswerFloor, CheckCtx, CheckResult, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure,
-    Output, RenderContext, RoleFloor, Widen, below_answer_floor, define_harness,
+    AnswerFloor, CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RoleFloor, Widen, below_answer_floor, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness_model::{MUSE_CHAIN, ModelSpec};
@@ -1079,6 +1079,42 @@ pub fn distiller_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.2);
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. These rows
+    // were typed for the fold when they crossed — `check` already takes the
+    // string AND the ctx, and one of them (`is shorter than the conversation it
+    // distills`) can report a GAP — so all the fold does is re-type the value:
+    // a text harness's reply arrives as a JSON string, and a value that is not
+    // one is the fixture check throwing, which the sweep scores as a task
+    // failure carrying the same sentence TS did. No `dry_run` — a distillation
+    // turn calls no tools, so a replay of these rows runs single-shot against
+    // the empty context.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let DistillFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| {
+                        match serde_json::from_value::<String>(v.clone()) {
+                            Ok(s) => check(&s, ctx),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 

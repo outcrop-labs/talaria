@@ -616,6 +616,14 @@ pub struct HarnessDefinition {
     /// seconds, and a work session must survive a fleet re-render mid-session.
     /// Meaningless on the gateway path.
     pub hold_ms: Option<u64>,
+
+    /// Fixtures the model-fitness suite replays. An unscored harness is an
+    /// invisible one — the registry's test holds every def to at least one.
+    pub evals: Vec<EvalCase>,
+
+    /// What a replay of those fixtures runs against, when the def's feature is
+    /// the tool loop. See `DryRunDecl`.
+    pub dry_run: Option<DryRunDecl>,
 }
 
 impl HarnessDefinition {
@@ -647,6 +655,8 @@ impl HarnessDefinition {
             tools: None,
             tool_defs: Vec::new(),
             hold_ms: None,
+            evals: Vec::new(),
+            dry_run: None,
         }
     }
 }
@@ -892,19 +902,30 @@ pub struct CheckCall {
 ///
 /// The `calls` half crosses complete. The two fields after it are the WORLD
 /// half — what the dry run's sandbox says about the state the model left
-/// behind — modeled here so a fixture table that reads them is complete and
-/// testable now, exactly as the TS's `EvalContext.world`/`.exhausted` were:
-/// `failure` is the workspace oracle's verdict on the files as the model left
-/// them (`ctx.world.failure`; a missing world reads as no failure), and
-/// `exhausted` is the turn-budget flag, false on every run that finished.
+/// behind: `world` is the sandbox's world AFTER the run, exactly TS's
+/// `EvalContext.world` (kept a `Value` because the three surfaces disagree —
+/// the toolkit sandbox's boards and tickets, the coding workspace's
+/// `{ failure }`, the credential sandbox's spend log — and the def's own
+/// fixture helpers are where each gets narrowed), and `exhausted` is the
+/// turn-budget flag, false on every run that finished.
 #[derive(Debug, Clone, Default)]
 pub struct CheckCtx {
     pub calls: Vec<CheckCall>,
-    pub failure: Option<String>,
+    pub world: Option<Value>,
     pub exhausted: bool,
 }
 
 impl CheckCtx {
+    /// The workspace oracle's verdict on the files as the model left them —
+    /// `ctx.world.failure` in the TS tables. A missing world reads as no
+    /// failure, which is what a fixture that was never dry-run wants.
+    pub fn failure(&self) -> Option<&str> {
+        self.world
+            .as_ref()
+            .and_then(|w| w.get("failure"))
+            .and_then(Value::as_str)
+    }
+
     /// `ctx.calls.filter(c => c.tool === t)` — every call to one tool,
     /// failures included.
     pub fn calls_of(&self, tool: &str) -> Vec<&CheckCall> {
@@ -958,6 +979,137 @@ impl From<Option<String>> for CheckResult {
         match problem {
             None => CheckResult::Pass,
             Some(p) => CheckResult::Fail(p),
+        }
+    }
+}
+
+// ── The fitness plane ────────────────────────────────────────────────────────
+//
+// The two slots that were deferred when this module crossed (see the header):
+// the FIXTURES a def ships and the DRY-RUN declaration that says what a replay
+// of them runs against. They live here, after the fixture-floor helpers, so a
+// def file can declare both without importing anything from fitness/.
+
+/// A fixture's check, type-erased the same way `render` is: the value arrives
+/// as the parsed reply (the def's closure deserializes its own output type) and
+/// the context is `CheckCtx` — `EvalContext` crossed as that record, with
+/// `calledBefore` a method rather than a closure field.
+pub type CheckFn = Arc<dyn Fn(&Value, &CheckCtx) -> CheckResult + Send + Sync>;
+
+/// One fixture the model-fitness suite replays through the runner with a
+/// candidate model pinned (audit part 3, tier 2).
+///
+/// `check` is deliberately a plain assertion over the parsed value rather than
+/// an expected output: most harness assertions are string facts ("3-7 words",
+/// "no invented status", "never an actionId outside the allowlist"), and a
+/// deterministic check keeps the suite fast, cheap and free of the
+/// who-judges-the-judge regress.
+///
+/// Built through `EvalCase::new` (band defaults to Standard, exactly as the TS
+/// optional did — a fixture only states a band when it means one) and the
+/// `.band(..)` setter, so a def's table reads in fixture order.
+pub struct EvalCase {
+    pub name: &'static str,
+    /// The def's own typed input, as the `render` closure will receive it.
+    pub input: Value,
+    pub check: CheckFn,
+    pub band: EvalBand,
+}
+
+impl EvalCase {
+    pub fn new(name: &'static str, input: Value, check: CheckFn) -> EvalCase {
+        EvalCase {
+            name,
+            input,
+            check,
+            band: EvalBand::Standard,
+        }
+    }
+
+    /// Which difficulty band this fixture belongs to. Bands are reported
+    /// separately, so "solid on standard, fails the hard band" is sayable
+    /// instead of collapsing into one rate that hides which half a model can
+    /// do.
+    pub fn band(mut self, band: EvalBand) -> EvalCase {
+        self.band = band;
+        self
+    }
+}
+
+/// One file in the coding surface's workspace.
+#[derive(Debug, Clone)]
+pub struct WorkspaceFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// THE OTHER SURFACE: a file workspace with a test runner, for the coding
+/// harnesses. Built per fixture from that fixture's own input, because a
+/// repository and the oracle that decides whether its tests pass are properties
+/// of the case rather than of the def.
+pub struct WorkspaceSpec {
+    pub files: Vec<WorkspaceFile>,
+    /// The oracle: `None` is a suite that passes against the files as the model
+    /// left them. This is `ctx.world.failure` to a fixture.
+    pub passes: Arc<dyn Fn(&[WorkspaceFile]) -> Option<String> + Send + Sync>,
+}
+
+/// One credential the credential surface will let the model spend. The model
+/// never sees `value` — that is the entire premise of the surface (a handle is
+/// spent, not read), and the sandbox enforces it by construction.
+#[derive(Debug, Clone)]
+pub struct GrantedCredential {
+    pub handle: String,
+    pub value: String,
+    /// The host pattern the credential may be spent against, as the operator
+    /// wrote it in the grant.
+    pub accepts: String,
+}
+
+/// THE CREDENTIAL SURFACE — a shell and outbound HTTP, where a granted handle
+/// is actually spent. Declared by a harness whose subject is what the model
+/// does with a credential it cannot read.
+pub type CredentialSpecFn = Arc<dyn Fn(&Value) -> CredentialSpec + Send + Sync>;
+
+#[derive(Debug, Clone, Default)]
+pub struct CredentialSpec {
+    pub granted: Vec<GrantedCredential>,
+}
+
+/// Overrides on the sandbox's standard world — a ticket in a particular state,
+/// a gap already filed, a DM already sent. A FUNCTION OF THE INPUT (a flat
+/// record crosses as a closure returning the constant) because a flat record
+/// read once per DEFINITION can only ever pose questions about one world, and
+/// the most valuable fixture in a group is routinely the one that changes it.
+pub type WorldFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+
+/// What a replay of this def's fixtures runs against. `None` on every def whose
+/// feature is not the tool loop: those fixtures are single-shot and their
+/// `ctx` is the empty one.
+pub struct DryRunDecl {
+    /// Which toolkit tools to offer. Empty when `workspace` or `credentials` is
+    /// set — the three are different surfaces and a def has one.
+    pub tools: Vec<&'static str>,
+    /// MODEL TURNS this def's loop may take, when the default six is not what
+    /// production gives it. Bench a twelve-turn work session at six and the
+    /// sweep measures a shorter job than the harness performs, then judges the
+    /// model on work it was cut off in the middle of. Capped by the sweep's
+    /// `MAX_TURN_CEILING`; also widens the case clock (`turns_per_case` reads
+    /// it), so a longer loop gets proportionally longer to run in.
+    pub max_turns: Option<u32>,
+    pub world: Option<WorldFn>,
+    pub workspace: Option<Arc<dyn Fn(&Value) -> WorkspaceSpec + Send + Sync>>,
+    pub credentials: Option<CredentialSpecFn>,
+}
+
+impl DryRunDecl {
+    pub fn tools(tools: Vec<&'static str>) -> DryRunDecl {
+        DryRunDecl {
+            tools,
+            max_turns: None,
+            world: None,
+            workspace: None,
+            credentials: None,
         }
     }
 }

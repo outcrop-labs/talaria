@@ -38,6 +38,7 @@ pub fn mentions_handle(text: &str) -> bool {
 /// the paste this whole arrangement exists to prevent.
 pub const HANDLE_TURN_NOTE: &str = "A handle written «secret:name» in this conversation is a credential you may USE without ever seeing it. Pass it exactly as written wherever the value would go — in a tool call, a command, a URL — and Talaria substitutes the real value at the boundary that spends it. Never ask anybody to send you the value instead, and do not treat the handle as a placeholder to fill in: it IS the credential as far as you are concerned. A one-shot handle works once, so use it for the errand it was given for and nothing else.";
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HandleRow {
     pub name: String,
     pub key: String,

@@ -32,8 +32,8 @@ use serde_json::{Map, Value};
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
-    define_harness,
+    CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::schema::Schema;
@@ -645,6 +645,39 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
         redact: true,
     });
     d.temperature = Some(0.4);
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The value
+    // a row receives is the reply record itself, re-typed into the flat map
+    // `check_batch` reads; the ids come from the row's own input, so a fixture
+    // cannot grade a different batch than it renders. A value that is not an
+    // object is the fixture check throwing, which the sweep scores as a task
+    // failure carrying the same sentence TS did. No `dry_run` — a catalog pass
+    // calls no tools, so a replay of these rows runs single-shot against the
+    // empty context.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(
+                    move |v: &Value, _ctx: &CheckCtx| {
+                        match serde_json::from_value::<Map<String, Value>>(v.clone()) {
+                            Ok(map) => f.check(&map).into(),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
+    // The wrap comes last, so the derived json floor survives the fold — see
+    // the tripwire test below.
     define_harness(d)
 }
 

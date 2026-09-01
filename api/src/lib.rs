@@ -34,6 +34,7 @@ pub mod digest;
 pub mod effort_prefs;
 pub mod email;
 pub mod error;
+pub mod fitness;
 pub mod fleet;
 pub mod fleet_brain;
 pub mod fleet_create;

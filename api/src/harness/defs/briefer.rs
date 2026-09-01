@@ -45,8 +45,8 @@ use serde_json::Value;
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    AnswerFloor, CheckCtx, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
-    RenderContext, RenderFn, RoleFloor, below_answer_floor, define_harness,
+    AnswerFloor, CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RenderFn, RoleFloor, below_answer_floor, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness_model::ModelSpec;
@@ -1223,6 +1223,45 @@ pub fn reply_fixtures() -> Vec<BrieferFixture> {
     ]
 }
 
+// ── The fold onto the fitness plane ──────────────────────────────────────────
+
+/// THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. One fold for
+/// all three defs, because all three tables share the shape: the fold only
+/// re-types the value — a text harness's reply arrives as a JSON string, and a
+/// value that is not one is the fixture check throwing, which the sweep scores
+/// as a task failure carrying the same sentence TS did. No dry run crosses for
+/// any of the three: the TS declares none, because none of these turns has a
+/// tool loop to replay — the briefer reads what the platform hands it and
+/// writes prose back.
+fn eval_cases(fixtures: Vec<BrieferFixture>) -> Vec<EvalCase> {
+    fixtures
+        .into_iter()
+        .map(|f| {
+            let BrieferFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| {
+                        match serde_json::from_value::<String>(v.clone()) {
+                            Ok(s) => check(&s, ctx).into(),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect()
+}
+
 // ── The three definitions ────────────────────────────────────────────────────
 
 /// One briefer def over the shared shape: fixed model (empty chain — there is
@@ -1292,6 +1331,8 @@ pub fn daily_brief_lede_harness() -> HarnessDefinition {
     d.floor = RoleFloor::runs_anyway(
         "A smaller model writes a flatter opening; every item it summarizes is already listed underneath it on the page.",
     );
+    // The lede's ten, folded onto the fitness plane's `EvalCase`.
+    d.evals = eval_cases(lede_fixtures());
     d
 }
 
@@ -1313,6 +1354,8 @@ pub fn daily_brief_note_harness() -> HarnessDefinition {
     d.floor = RoleFloor::runs_anyway(
         "Without a note the update still appends; the reader sees the changed items with no sentence over them.",
     );
+    // The note's nine.
+    d.evals = eval_cases(note_fixtures());
     d
 }
 
@@ -1336,6 +1379,9 @@ pub fn assistant_reply_harness() -> HarnessDefinition {
     d.floor = RoleFloor::runs_anyway(
         "A smaller model writes a blander reply; without a standing grant the owner still reads it before it is sent.",
     );
+    // The reply's ten — the hard band deliberately the biggest, because this
+    // is the one briefer write that reaches somebody other than the owner.
+    d.evals = eval_cases(reply_fixtures());
     d
 }
 

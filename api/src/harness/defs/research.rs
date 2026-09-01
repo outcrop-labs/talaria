@@ -61,8 +61,8 @@ use serde_json::Value;
 
 use crate::body::{truncate_utf16, utf16_len};
 use crate::harness::define::{
-    CheckCtx, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext,
-    RoleFloor, Widen, define_harness,
+    CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::schema::Schema;
@@ -430,6 +430,30 @@ pub fn queries_harness() -> HarnessDefinition {
         rules: Some(vec!["secret_leak", "pii_leak"]),
         redact: true,
     });
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
+    // keeps its own check (see `query_fixtures`); the fold only re-types the
+    // value - this def's answer arrives as a JSON array of strings, and a
+    // value that is not one is the fixture check throwing, which the sweep
+    // scores as a task failure carrying the same sentence the TS suite did.
+    d.evals = query_fixtures()
+        .into_iter()
+        .map(|f| {
+            let QueryFixture { name, band, input, check } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(move |v: &Value, ctx: &CheckCtx| {
+                    match serde_json::from_value::<Vec<String>>(v.clone()) {
+                        Ok(queries) => check(&queries, ctx).into(),
+                        Err(e) => CheckResult::Fail(format!(
+                            "the fixture check threw on the value: {e}"
+                        )),
+                    }
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     define_harness(d)
 }
 
@@ -619,6 +643,29 @@ pub fn search_harness() -> HarnessDefinition {
         rules: Some(vec!["secret_leak", "pii_leak"]),
         redact: true,
     });
+    // THE FIXTURE TABLE, folded the same way (see `search_fixtures`): a text
+    // harness's reply arrives as a JSON string, and a value that is not one is
+    // the fixture check throwing - scored, exactly as in TS, as a task failure
+    // carrying the same sentence.
+    d.evals = search_fixtures()
+        .into_iter()
+        .map(|f| {
+            let TextFixture { name, band, input, check } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(move |v: &Value, ctx: &CheckCtx| {
+                    match serde_json::from_value::<String>(v.clone()) {
+                        Ok(text) => check(&text, ctx).into(),
+                        Err(e) => CheckResult::Fail(format!(
+                            "the fixture check threw on the value: {e}"
+                        )),
+                    }
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     define_harness(d)
 }
 
@@ -869,6 +916,28 @@ pub fn synthesis_harness() -> HarnessDefinition {
         rules: Some(vec!["ungrounded_ref", "secret_leak", "pii_leak"]),
         redact: true,
     });
+    // THE FIXTURE TABLE, folded the same way (see `synth_fixtures`). The reply
+    // arrives as a JSON string like the search stage's; the fold re-types it,
+    // and a value that is not one is the fixture check throwing.
+    d.evals = synth_fixtures()
+        .into_iter()
+        .map(|f| {
+            let TextFixture { name, band, input, check } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(move |v: &Value, ctx: &CheckCtx| {
+                    match serde_json::from_value::<String>(v.clone()) {
+                        Ok(text) => check(&text, ctx).into(),
+                        Err(e) => CheckResult::Fail(format!(
+                            "the fixture check threw on the value: {e}"
+                        )),
+                    }
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     define_harness(d)
 }
 
@@ -2309,7 +2378,7 @@ mod tests {
     fn ctx() -> CheckCtx {
         CheckCtx {
             calls: Vec::new(),
-            failure: None,
+            world: None,
             exhausted: false,
         }
     }
@@ -2999,6 +3068,30 @@ mod tests {
         assert_eq!(qb.iter().sum::<u32>(), 2 + 5 * 2 + 5 * 3, "planner bands");
         assert_eq!(bands(&search_fixtures()), 2 + 4 * 2 + 3 * 3, "search bands");
         assert_eq!(bands(&synth_fixtures()), 1 + 4 * 2 + 4 * 3, "synth bands");
+    }
+
+    #[test]
+    fn each_def_carries_its_own_fixture_table() {
+        // The tables predate the fold - the sweep read them straight out of
+        // these fns - so a def that lost its `evals` assignment would still
+        // pass the census above and the registry's non-empty check would be
+        // the only thing left holding it. This is the tripwire: name, band
+        // and input all cross the fold unchanged, one row per fixture.
+        let q = queries_harness();
+        assert_eq!(q.evals.len(), query_fixtures().len());
+        for (e, f) in q.evals.iter().zip(query_fixtures()) {
+            assert_eq!((e.name, e.band, &e.input), (f.name, f.band, &f.input));
+        }
+        let s = search_harness();
+        assert_eq!(s.evals.len(), search_fixtures().len());
+        for (e, f) in s.evals.iter().zip(search_fixtures()) {
+            assert_eq!((e.name, e.band, &e.input), (f.name, f.band, &f.input));
+        }
+        let y = synthesis_harness();
+        assert_eq!(y.evals.len(), synth_fixtures().len());
+        for (e, f) in y.evals.iter().zip(synth_fixtures()) {
+            assert_eq!((e.name, e.band, &e.input), (f.name, f.band, &f.input));
+        }
     }
 
     // ── the search transports ────────────────────────────────────────────────

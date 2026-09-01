@@ -49,23 +49,24 @@
 // against the heavy slot would make the three columns incomparable, which is
 // the one thing a matrix must not be.
 //
-// THE FITNESS PLANE'S `dryRun` STAYS DEFERRED with the executor that reads it
-// (see define.rs's header), and this is the one def whose dry run is more
-// than a turn count: the workspace is the TASK — the fixture's own files, and
-// the oracle that decides whether the suite passes against what the model
-// left. The oracles cross NOW (they are pure functions of the files) so the
-// crossing wires rather than re-derives them; the numbers are preserved here:
-// a bench runs TWELVE turns, and twelve has a history worth recording — six
-// filed nine of one model's workbench cases as OUR gap ("the turn budget ran
-// out while the model was still working"), ten still filed three across a
-// twelve-model archive (p50 is 6 tool calls, p90 is 8, the tail reaches 13,
-// and a model at the top of that distribution is still editing when the loop
-// stops), and twelve is the turn ceiling, so the next honest move is a
-// smaller task rather than a bigger budget. A bench benches the FIVE sandbox
-// tools (`list_files`, `read_file`, `search`, `write_file`, `run_tests`) —
-// and declares a WORKSPACE rather than a Talaria world, which is why the
-// sandbox itself (fitness/toolbox/hermes-tools) crosses with the fitness
-// plane and not with this file.
+// THE DRY RUN CROSSED with the fitness plane's `EvalCase`/`DryRunDecl` slots;
+// only the EXECUTOR that replays it stays behind (see define.rs's header), and
+// this is the one def whose dry run is more than a turn count: the workspace
+// is the TASK — the fixture's own files, and the oracle that decides whether
+// the suite passes against what the model left. The oracles are wired into
+// that declaration rather than re-derived (they are pure functions of the
+// files); the numbers are preserved with it: a bench runs TWELVE turns, and
+// twelve has a history worth recording — six filed nine of one model's
+// workbench cases as OUR gap ("the turn budget ran out while the model was
+// still working"), ten still filed three across a twelve-model archive (p50
+// is 6 tool calls, p90 is 8, the tail reaches 13, and a model at the top of
+// that distribution is still editing when the loop stops), and twelve is the
+// turn ceiling, so the next honest move is a smaller task rather than a
+// bigger budget. A bench benches the FIVE sandbox tools (`list_files`,
+// `read_file`, `search`, `write_file`, `run_tests`) — and declares a WORKSPACE
+// rather than a Talaria world, which is why the sandbox itself
+// (fitness/toolbox/hermes-tools) crosses with the fitness plane and not with
+// this file.
 
 use std::sync::{Arc, OnceLock};
 
@@ -75,8 +76,8 @@ use serde_json::Value;
 
 use crate::body::js_string;
 use crate::harness::define::{
-    CheckCtx, CheckResult, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
-    RenderContext, RoleFloor, define_harness,
+    CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RoleFloor, WorkspaceFile, WorkspaceSpec, define_harness,
 };
 use crate::harness::transport::ToolPolicy;
 use crate::harness_model::ModelSpec;
@@ -542,7 +543,7 @@ fn check_suite_green(value: &str, ctx: &CheckCtx) -> CheckResult {
             "read the repository and never wrote a file, so nothing was fixed".into(),
         );
     }
-    match &ctx.failure {
+    match ctx.failure() {
         Some(failure) => CheckResult::Fail(format!("the suite is still red: {failure}")),
         None => CheckResult::Pass,
     }
@@ -785,6 +786,103 @@ fn workbench_harness(
     // file. No hold: there is no sweep budgeting this turn, and no caller
     // waiting on a clock.
     d.tools = Some(ToolPolicy::Own);
+    // THE DRY RUN IS THE WORKSPACE, and the workspace is the TASK: the
+    // fixture's own files and the task's own oracle, which is why it is built
+    // from the INPUT rather than held as a constant — the repository and the
+    // oracle that decides whether its tests pass are properties of the case,
+    // not of the def. TWELVE TURNS, and the number's evidence is recorded in
+    // this file's header: six filed nine of one model's cases as OUR gap, ten
+    // still filed three across a twelve-model archive (p50 is 6 tool calls,
+    // p90 is 8, the tail reaches 13), and twelve is the turn ceiling — the last
+    // raise available without a cost decision, and if twelve still gaps the
+    // honest next move is a smaller task, not a bigger budget. No `tools` list
+    // beside it: a def that declares the workspace has the coding surface, and
+    // the five sandbox tools come with the surface rather than with the
+    // declaration.
+    d.dry_run = Some(DryRunDecl {
+        tools: Vec::new(),
+        max_turns: Some(12),
+        world: None,
+        credentials: None,
+        workspace: Some(Arc::new(|input: &Value| {
+            // `input.files`, and the oracle found by
+            // `TASKS.find(t => t.input.task === input.task)?.oracle` — matched
+            // on the task string because the oracle is the task's own. A find
+            // that misses reads as the TS's `?? null` did: no oracle, so no
+            // failure the world can ever report. A value that is not one of
+            // this table's inputs cannot arrive from the fixture fold (each
+            // case's input IS a task's) and reads the same way here.
+            let task: WorkbenchTaskInput = serde_json::from_value(input.clone()).unwrap_or(
+                WorkbenchTaskInput {
+                    task: String::new(),
+                    files: Vec::new(),
+                    failure: String::new(),
+                },
+            );
+            let oracle = tasks()
+                .into_iter()
+                .find(|t| t.input.task == task.task)
+                .map(|t| t.oracle);
+            WorkspaceSpec {
+                files: task
+                    .files
+                    .into_iter()
+                    .map(|f| WorkspaceFile {
+                        path: f.path,
+                        content: f.content,
+                    })
+                    .collect(),
+                // The oracle is declared over `WorkbenchFile`, this file's own
+                // table type; the fitness surface hands the sandbox
+                // `WorkspaceFile`. The same two fields, converted at the
+                // boundary rather than re-derived.
+                passes: Arc::new(move |files: &[WorkspaceFile]| {
+                    let Some(oracle) = oracle else {
+                        return None;
+                    };
+                    let files: Vec<WorkbenchFile> = files
+                        .iter()
+                        .map(|f| WorkbenchFile {
+                            path: f.path.clone(),
+                            content: f.content.clone(),
+                        })
+                        .collect();
+                    oracle(&files)
+                }),
+            }
+        })),
+    });
+    // THE FIXTURE TABLE — the same nine fixtures on all three defs, exactly as
+    // the TS attached `TASKS.flatMap(fixturesFor)` to each of the three: the
+    // efforts differ in what an admin SPENDS, not in what the job is, and a
+    // suite that drifted between the columns would make them incomparable.
+    // The names are built from the task table's own names, so they are leaked
+    // into 'static — the same leak the job line above takes, for the same
+    // reason: a definition is built once and lives for the process. The fold
+    // re-types the value the way every text def's does (the run's value is the
+    // trimmed reply, what the TS check received), and passes the CONTEXT
+    // through untouched — the calls, the world's failure and the exhausted
+    // flag are the whole assertion here.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let WorkbenchFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
+            EvalCase::new(
+                Box::leak(name.into_boxed_str()),
+                input,
+                Arc::new(move |v: &Value, ctx: &CheckCtx| match serde_json::from_value::<String>(v.clone()) {
+                    Ok(reply) => check(&reply, ctx),
+                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 
@@ -838,7 +936,7 @@ mod tests {
     fn ctx(calls: Vec<CheckCall>, failure: Option<&str>) -> CheckCtx {
         CheckCtx {
             calls,
-            failure: failure.map(|f| f.into()),
+            world: failure.map(|f| serde_json::json!({ "failure": f })),
             exhausted: false,
         }
     }

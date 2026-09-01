@@ -33,8 +33,9 @@ use serde_json::Value;
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    AnswerFloor, CountLimit, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
-    RenderContext, RoleFloor, below_answer_floor, count_problem, define_harness,
+    AnswerFloor, CheckCtx, CheckResult, CountLimit, EvalBand, EvalCase, GuardDecl,
+    HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor, below_answer_floor,
+    count_problem, define_harness,
 };
 use crate::harness::text::first_meaningful_line;
 use crate::harness_model::ModelSpec;
@@ -520,6 +521,36 @@ pub fn titler_harness() -> HarnessDefinition {
     // wider prompt would buy is a longer name — which is the failure mode, not
     // the upgrade. Widening exists for depth and authority, and a title has
     // neither.
+
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
+    // keeps its own floor terms and its own transcript (see `fixtures`); the
+    // fold only re-types the value — a text harness's reply arrives as a JSON
+    // string, and a value that is not one is the fixture check throwing, which
+    // the sweep scores as a task failure carrying the same sentence TS did.
+    // No `dry_run`: a titler turn calls no tools, so a replay of these rows
+    // runs single-shot against the empty context.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(
+                    move |v: &Value, _ctx: &CheckCtx| {
+                        match serde_json::from_value::<String>(v.clone()) {
+                            Ok(s) => f.check(&s).into(),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 

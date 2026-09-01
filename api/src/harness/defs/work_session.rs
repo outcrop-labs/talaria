@@ -26,10 +26,10 @@
 //   the dispatch). Nothing in this file knows what a ticket is, which is why
 //   it can be replayed against a candidate model.
 //
-// THE FITNESS PLANE'S TWO SLOTS STAY DEFERRED with the dry-run executor that
-//   reads them (see define.rs's header): `dryRun` and the `ctx.calls` the
-//   behavioural checks read. The measured numbers are preserved here so the
-//   crossing declares rather than re-derives them — a bench runs TWELVE
+// THE FITNESS PLANE'S TWO SLOTS CROSS HERE, with the dry-run executor that
+//   replays them still living on the fitness side (see define.rs's header):
+//   the fixture table folds onto `evals` and the dry run states its own
+//   numbers rather than re-deriving them — a bench runs TWELVE
 //   turns, which is `MAX_SESSION_TURNS` exactly (six measured a shorter
 //   session than the one an agent actually runs and then asked whether the
 //   ticket had been finished; both models swept failed exactly the two
@@ -60,8 +60,8 @@ use serde_json::Value;
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    CheckCall, CheckCtx, EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
-    RenderContext, RoleFloor, define_harness,
+    CheckCall, CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition,
+    Message, OnFailure, Output, RenderContext, RoleFloor, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::transport::ToolPolicy;
@@ -774,6 +774,91 @@ pub fn work_session_harness() -> HarnessDefinition {
     // says LESS, which is not a superpower. What a stronger model actually
     // buys here is fewer turns, and the twelve-turn cap already expresses
     // that as a budget rather than as a capability gate.
+
+    // THE SUITE IS BANDED AND MOSTLY BEHAVIOURAL: three prose fixtures ask
+    // whether the model SAID the right shape of thing, and every fixture that
+    // grades an action reads `ctx.calls` — the log of what actually happened
+    // against an isolated in-memory Talaria carrying the real toolkit. No
+    // model grades a model anywhere in there. The fold only re-types the
+    // value — a text harness's reply arrives as a JSON string, and a value
+    // that is not one is the fixture check throwing, which the sweep scores
+    // as a task failure carrying the same sentence TS did.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let WorkSessionFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
+            EvalCase::new(
+                name,
+                input,
+                Arc::new(
+                    move |v: &Value, ctx: &CheckCtx| {
+                        match serde_json::from_value::<String>(v.clone()) {
+                            Ok(s) => check(&s, ctx).into(),
+                            Err(e) => CheckResult::Fail(format!(
+                                "the fixture check threw on the value: {e}"
+                            )),
+                        }
+                    },
+                ),
+            )
+            .band(band)
+        })
+        .collect();
+    // THE TOOLS A WORK SESSION ACTUALLY NEEDS, for the fitness suite's dry
+    // run. Production hands the persona its whole MCP surface; a benchmark
+    // that did the same would measure a model's tolerance for forty
+    // irrelevant options rather than whether it works a ticket properly.
+    //
+    // THE LISTING TOOLS COME WITH THE READERS. `list_tickets` needs a boardId
+    // and `post_to_channel` needs a channelId; production takes ids, not
+    // names, and so does the sandbox. A surface with the writer but not the
+    // lister makes a model guess an id and then scores the guess — our gap,
+    // charged to the model.
+    d.dry_run = Some(DryRunDecl {
+        // TWELVE, WHICH IS WHAT PRODUCTION GIVES IT. `MAX_SESSION_TURNS` on
+        // the dispatch side is twelve; benching the same job at six measured a
+        // shorter session than the one an agent actually runs, and then asked
+        // whether the ticket had been finished. Both models swept so far
+        // failed "hands a finished ticket to review" and "ends with the status
+        // line" — exactly the shape of a session cut off mid-work.
+        max_turns: Some(12),
+        // EIGHTEEN, not the "these twelve" the TS's own block comment claims:
+        // the LIST is what a dry run reads, and the list under that comment
+        // has eighteen entries.
+        tools: vec![
+            "list_boards",
+            // THE LAST TOOL IN THE TOOLKIT NEVER PUT IN FRONT OF A MODEL.
+            // Seven of the eight ticket tools are here already;
+            // `create_ticket` was missing because a work session works an
+            // ASSIGNED ticket and never needed to file one. That is exactly
+            // the gap — see the side-finding fixture.
+            "create_ticket",
+            "get_ticket",
+            "list_tickets",
+            "list_channels",
+            "fetch_attachment",
+            "comment",
+            "triage_ticket",
+            "report_outcome",
+            "report_gap",
+            "report_problem",
+            "add_time",
+            "log_usage",
+            "add_dependency",
+            "search_knowledge",
+            "post_to_channel",
+            "message_user",
+            "list_teammates",
+        ],
+        world: None,
+        workspace: None,
+        credentials: None,
+    });
     d
 }
 

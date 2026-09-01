@@ -19,8 +19,8 @@ use serde_json::Value;
 
 use crate::body::utf16_len;
 use crate::harness::define::{
-    EvalBand, GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
-    Widen, define_harness,
+    CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
+    Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness_model::{MUSE_CHAIN, ModelSpec};
 
@@ -97,7 +97,7 @@ const NO_DELIVERABLE: &str = "Ivan: Are we keeping the nightly rebuild?\n\nNomad
 
 /// A relay whose decision is buried mid-thread, under a cost exchange nobody
 /// needs to see again.
-const BURIED: &str = "Sam: the invoice PDF renders wrong on Windows.\n\nNomad: it is the font fallback — the embedded subset is missing on their reader.\n\nSam: how bad?\n\nNomad: cosmetic, but it looks unprofessional on the total line.\n\nSam: fine. Decision: we embed the full font rather than the subset, and eat the extra 400KB per invoice.\n\nNomad: done, pushed the change and regenerated last month's invoices.\n\nSam: anything else outstanding?\n\nNomad: no.\n\nSam: Follow-up - tell Support the old PDFs are being regenerated so they stop getting tickets about it.";
+const BURIED: &str = "Sam: the invoice PDF renders wrong on Windows.\n\nNomad: it is the font fallback — the embedded subset is missing on their reader.\n\nSam: how bad?\n\nNomad: cosmetic, but it looks unprofessional on the total line.\n\nSam: fine. Decision: we embed the full font rather than the subset, and eat the extra 400KB per invoice.\n\nNomad: done, pushed the change and regenerated last month\u{2019}s invoices.\n\nSam: anything else outstanding?\n\nNomad: no.\n\nSam: Follow-up - tell Support the old PDFs are being regenerated so they stop getting tickets about it.";
 
 // ── Eval assertions ──────────────────────────────────────────────────────────
 
@@ -332,7 +332,7 @@ pub fn fixtures() -> Vec<ConcludeFixture> {
             extra: Some(invented_a_deliverable),
         },
         ConcludeFixture {
-            name: "names the channel's subject rather than restating the transcript",
+            name: "names the channel\u{2019}s subject rather than restating the transcript",
             band: EvalBand::Standard,
             input: ConcludeInput {
                 channel_name: "pilot-export".into(),
@@ -471,6 +471,38 @@ pub fn concluder_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.2);
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
+    // composes its own check at fold time — the formatting half, the
+    // load-bearing tokens, and the bespoke tail the fixture exists to make —
+    // so the fold itself only has to re-type the reply (the def's `Output` is
+    // `Text`, and its clean step already trimmed to a bare JSON string) and
+    // hand it to `ConcludeFixture::check`. A value that does not decode is the
+    // sweep's thrown check, written as a FAIL sentence.
+    //
+    // No `dry_run`: a concluder turn calls no tools — the transcript arrives
+    // rendered and clipped by `concludeRelay`, and the reply is a single
+    // string — so a replay of these rows runs single-shot against the empty
+    // context and needs no world.
+    d.evals = fixtures()
+        .into_iter()
+        .map(|f| {
+            let band = f.band;
+            let input = serde_json::to_value(&f.input).expect("a fixture input serializes");
+            EvalCase::new(
+                f.name,
+                input,
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| {
+                    match serde_json::from_value::<String>(v.clone()) {
+                        Ok(s) => f.check(&s).into(),
+                        Err(e) => CheckResult::Fail(format!(
+                            "the fixture check threw on the value: {e}"
+                        )),
+                    }
+                }),
+            )
+            .band(band)
+        })
+        .collect();
     d
 }
 
@@ -625,7 +657,7 @@ mod tests {
         let restates = &fixtures[5];
         assert_eq!(
             restates.name,
-            "names the channel's subject rather than restating the transcript"
+            "names the channel\u{2019}s subject rather than restating the transcript"
         );
         let long = "## What was decided\n- Priya decided that we ship the CSV export only for the pilot, with no XLSX in this iteration, because the endpoint has to land before the pilot accounts are onboarded and a second format would double the surface she has to review\n\n## What was produced\n- Nomad pushed the export endpoint along with its fixture set, and confirmed the writer streams so it holds up on the big accounts rather than buffering the whole file in memory the way the first draft did\n\n## Follow-ups\n- Somebody still has to write the customer-facing note before Thursday, and Nomad offered to draft it once the endpoint review is done";
         assert_eq!(
