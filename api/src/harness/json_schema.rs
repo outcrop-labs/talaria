@@ -364,6 +364,28 @@ pub fn render(schema: &Schema) -> Value {
         Schema::Num => {
             node.insert("type".into(), "number".into());
         }
+        // Probe: zod emits `minimum`/`maximum` with whole numbers plain
+        // (0 and 999, not 0.0). On the wire `for_wire` drops them with every
+        // other validation-only keyword — the def-side validator is the
+        // contract; the wire doc is advisory.
+        Schema::BoundedNum { min, max } => {
+            let as_num = |n: f64| {
+                if n.fract() == 0.0 && n.abs() < 9.2e18 {
+                    Value::from(n as i64)
+                } else {
+                    serde_json::Number::from_f64(n)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                }
+            };
+            node.insert("type".into(), "number".into());
+            node.insert("minimum".into(), as_num(*min));
+            node.insert("maximum".into(), as_num(*max));
+        }
+        Schema::DateTime => {
+            node.insert("type".into(), "string".into());
+            node.insert("format".into(), "date-time".into());
+        }
         Schema::Bool => {
             node.insert("type".into(), "boolean".into());
         }
@@ -377,6 +399,11 @@ pub fn render(schema: &Schema) -> Value {
         Schema::Array(item) => {
             node.insert("type".into(), "array".into());
             node.insert("items".into(), render(item));
+        }
+        Schema::ArrayMax(item, max) => {
+            node.insert("type".into(), "array".into());
+            node.insert("items".into(), render(item));
+            node.insert("maxItems".into(), (*max).into());
         }
         Schema::Object(fields) => {
             node.insert("type".into(), "object".into());
@@ -664,6 +691,74 @@ mod tests {
         assert!(!issues.is_empty());
         let (_, issues) = super::super::schema::validate(&schema, &json!({"q": "xy"}));
         assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn the_muse_variants_render_as_zod_prints_them() {
+        // Probe: minimum/maximum carry whole numbers plain, a capped array
+        // keeps its items, a datetime is format-annotated — and on the wire
+        // the validation-only keywords drop, same as every other bound.
+        let rendered = super::render(&Schema::BoundedNum {
+            min: 0.0,
+            max: 999.0,
+        });
+        assert_eq!(
+            rendered,
+            json!({"type": "number", "minimum": 0, "maximum": 999})
+        );
+        let rendered = super::render(&Schema::ArrayMax(
+            Box::new(Schema::trimmed_string(1, 40)),
+            20,
+        ));
+        assert_eq!(rendered.get("maxItems"), Some(&json!(20)));
+        assert_eq!(
+            rendered.get("items"),
+            Some(&json!({"type": "string", "minLength": 1, "maxLength": 40}))
+        );
+        assert_eq!(
+            super::render(&Schema::DateTime),
+            json!({"type": "string", "format": "date-time"})
+        );
+        let wire = wire_schema_of(
+            "muse:ticket",
+            &Schema::Object(vec![
+                super::super::schema::Field::required(
+                    "estimatedHours",
+                    Schema::optional(Schema::nullable(Schema::BoundedNum {
+                        min: 0.0,
+                        max: 999.0,
+                    })),
+                ),
+                super::super::schema::Field::required(
+                    "dueDate",
+                    Schema::optional(Schema::nullable(Schema::DateTime)),
+                ),
+                super::super::schema::Field::required(
+                    "tags",
+                    Schema::optional(Schema::ArrayMax(
+                        Box::new(Schema::trimmed_string(1, 40)),
+                        20,
+                    )),
+                ),
+            ]),
+        )
+        .unwrap();
+        let props = wire.schema.get("properties").unwrap();
+        for key in ["estimatedHours", "dueDate", "tags"] {
+            let node = props.get(key).unwrap();
+            assert!(
+                node.get("minimum").is_none()
+                    && node.get("maximum").is_none()
+                    && node.get("maxItems").is_none()
+                    && node.get("format").is_none(),
+                "{key} keeps a validation keyword on the wire"
+            );
+            // The nullable wrapper prints anyOf, so the inner node is the
+            // branch the keywords were checked on.
+            if let Some(branch) = node.get("anyOf").and_then(|a| a.get(0)) {
+                assert!(branch.get("minimum").is_none() && branch.get("format").is_none());
+            }
+        }
     }
 
     // ── the shape a small model is told to produce ──────────────────────────

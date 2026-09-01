@@ -75,6 +75,13 @@ pub enum Issue {
     TooSmall(u64),
     /// `too_big` on a string's UTF-16 length.
     TooBig(u64),
+    /// `too_small` on a number's bound — the sentence says "number", not
+    /// "string", so it cannot ride `TooSmall`.
+    NumTooSmall(f64),
+    /// `too_big` on a number's bound.
+    NumTooBig(f64),
+    /// `too_big` on an array's length.
+    ArrayTooBig(u64),
     /// The default branch — zod's own message, passed through verbatim (the
     /// union failure's "Invalid input" arrives here).
     Message(String),
@@ -107,12 +114,24 @@ pub enum Schema {
     },
     /// `z.number()`.
     Num,
+    /// `z.number().min(min).max(max)` — the bounded number, parallel to
+    /// `Num` (a separate variant rather than fields on it: every existing
+    /// `Schema::Num` site is an unbounded number and stays untouched).
+    BoundedNum { min: f64, max: f64 },
     /// `z.boolean()`.
     Bool,
     /// `z.enum([...])`.
     Enum(Vec<String>),
     /// `z.array(...)`.
     Array(Box<Schema>),
+    /// `z.array(...).max(max)` — the length-capped array, parallel to
+    /// `Array` for the same reason `BoundedNum` is parallel to `Num`.
+    ArrayMax(Box<Schema>, u64),
+    /// `z.string().datetime()` — ISO 8601 in zod's exact dialect: `T`
+    /// separator, UTC `Z` suffix only (no offsets), calendar-valid. Every
+    /// other spelling — date-only, a space for the `T`, a `+01:00` offset,
+    /// a missing `Z` — is the same one issue.
+    DateTime,
     /// `z.object({...})` — closed on read (unknown keys strip), like zod's
     /// default object.
     Object(Vec<Field>),
@@ -213,6 +232,23 @@ fn walk(
                 Value::String(s.to_string())
             }
         },
+        Schema::DateTime => match value.as_str() {
+            None => {
+                issues.push((path.clone(), Issue::InvalidType { expected: "string" }));
+                value.clone()
+            }
+            Some(s) => {
+                if is_zod_datetime(s) {
+                    value.clone()
+                } else {
+                    // zod's datetime issue is invalid_format carrying its own
+                    // fixed message, so it renders through the Message arm
+                    // verbatim rather than through a code-specific sentence.
+                    issues.push((path.clone(), Issue::Message("Invalid ISO datetime".into())));
+                    value.clone()
+                }
+            }
+        },
         Schema::Num => {
             if value.is_number() {
                 value.clone()
@@ -221,6 +257,21 @@ fn walk(
                 value.clone()
             }
         }
+        Schema::BoundedNum { min, max } => match value.as_f64() {
+            None => {
+                issues.push((path.clone(), Issue::InvalidType { expected: "number" }));
+                value.clone()
+            }
+            Some(n) => {
+                if n < *min {
+                    issues.push((path.clone(), Issue::NumTooSmall(*min)));
+                }
+                if n > *max {
+                    issues.push((path.clone(), Issue::NumTooBig(*max)));
+                }
+                value.clone()
+            }
+        },
         Schema::Bool => {
             if value.is_boolean() {
                 value.clone()
@@ -270,6 +321,29 @@ fn walk(
                     })
                     .collect(),
             ),
+        },
+        Schema::ArrayMax(item, max) => match value.as_array() {
+            None => {
+                issues.push((path.clone(), Issue::InvalidType { expected: "array" }));
+                value.clone()
+            }
+            Some(items) => {
+                if items.len() as u64 > *max {
+                    issues.push((path.clone(), Issue::ArrayTooBig(*max)));
+                }
+                Value::Array(
+                    items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, item_value)| {
+                            path.push(Seg::Idx(i));
+                            let out = walk(item, item_value, path, issues);
+                            path.pop();
+                            out
+                        })
+                        .collect(),
+                )
+            }
         },
         Schema::Object(fields) => match value.as_object() {
             None => {
@@ -336,6 +410,72 @@ fn walk(
 }
 
 // ── The sentences (json.ts's describeIssue, over this module's issues) ──────
+
+/// zod 4.3.6's datetime grammar, probed rather than read from a spec:
+/// `YYYY-MM-DDTHH:MM:SS[.f+]Z`, separators uppercase, UTC only (a `+01:00`
+/// offset is invalid), the date CALENDAR-valid (Feb 30 and hour 24 fail),
+/// and the fraction, when present, at least one digit with no upper cap.
+/// Years 0000 and 9999 pass. Every deviation is the one `invalid_format`
+/// issue upstream.
+pub fn is_zod_datetime(s: &str) -> bool {
+    let b = s.as_bytes();
+    let dig = |at: usize| b.get(at).is_some_and(|c| c.is_ascii_digit());
+    let run = |from: usize, len: usize| (0..len).all(|k| dig(from + k));
+    let num =
+        |from: usize, len: usize| (0..len).fold(0i64, |a, k| a * 10 + (b[from + k] - b'0') as i64);
+    // Spine: YYYY-MM-DDTHH:MM:SS, then a fraction and/or Z.
+    if b.len() < 20
+        || !run(0, 4)
+        || b.get(4) != Some(&b'-')
+        || !run(5, 2)
+        || b.get(7) != Some(&b'-')
+        || !run(8, 2)
+        || b.get(10) != Some(&b'T')
+        || !run(11, 2)
+        || b.get(13) != Some(&b':')
+        || !run(14, 2)
+        || b.get(16) != Some(&b':')
+        || !run(17, 2)
+    {
+        return false;
+    }
+    let (y, mo, d) = (num(0, 4), num(5, 2), num(8, 2));
+    let (h, mi, se) = (num(11, 2), num(14, 2), num(17, 2));
+    if !(1..=12).contains(&mo) || h > 23 || mi > 59 || se > 59 {
+        return false;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let dim = match mo {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if d < 1 || d > dim {
+        return false;
+    }
+    // The tail: 'Z' alone, or '.' plus one-or-more digits then 'Z'. Byte 19
+    // sits on a char boundary (17..19 are ASCII digits), so the slice is
+    // safe; non-ASCII tails fail the digit/Z tests.
+    let tail = &s[19..];
+    match tail.strip_prefix('.') {
+        Some(frac) => {
+            let digits = frac.strip_suffix('Z').unwrap_or("");
+            !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit())
+        }
+        None => tail == "Z",
+    }
+}
+
+/// A numeric bound rendered the way zod prints it and the wire schema wants
+/// it: whole numbers without the `.0` (`>=0`, not `>=0.0`).
+pub fn num_label(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 9.2e18 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
 
 /// `issues[0]`, `plan.steps[2].title` — the path a human (or a model) can
 /// read back against its own output.
@@ -424,6 +564,30 @@ pub fn describe_issue(issue: &(Vec<Seg>, Issue), root: &Value) -> String {
         }
         Issue::TooBig(n) => {
             let msg = format!("Too big: expected string to have <={n} characters");
+            if label.is_empty() {
+                msg
+            } else {
+                format!("field '{label}': {msg}")
+            }
+        }
+        Issue::NumTooSmall(n) => {
+            let msg = format!("Too small: expected number to be >={}", num_label(*n));
+            if label.is_empty() {
+                msg
+            } else {
+                format!("field '{label}': {msg}")
+            }
+        }
+        Issue::NumTooBig(n) => {
+            let msg = format!("Too big: expected number to be <={}", num_label(*n));
+            if label.is_empty() {
+                msg
+            } else {
+                format!("field '{label}': {msg}")
+            }
+        }
+        Issue::ArrayTooBig(n) => {
+            let msg = format!("Too big: expected array to have <={n} items");
             if label.is_empty() {
                 msg
             } else {
@@ -718,5 +882,122 @@ mod tests {
         let (out, issues) = validate(&schema, &json!({"q": "  padded  "}));
         assert!(issues.is_empty());
         assert_eq!(out, json!({"q": "padded"}));
+    }
+
+    // ── the three variants muse brought, each pinned to a zod 4.3.6 probe ────
+
+    #[test]
+    fn bounded_number_sentences_are_the_probed_ones() {
+        let schema = Schema::Object(vec![Field::required(
+            "estimatedHours",
+            Schema::BoundedNum {
+                min: 0.0,
+                max: 999.0,
+            },
+        )]);
+        let root = json!({"estimatedHours": -1});
+        let (_, issues) = validate(&schema, &root);
+        assert_eq!(
+            describe_issue(&issues[0], &root),
+            "field 'estimatedHours': Too small: expected number to be >=0"
+        );
+        let root = json!({"estimatedHours": 1000});
+        let (_, issues) = validate(&schema, &root);
+        assert_eq!(
+            describe_issue(&issues[0], &root),
+            "field 'estimatedHours': Too big: expected number to be <=999"
+        );
+        // The bounds are inclusive, and a non-number is a type failure with
+        // zod's `expected number` word.
+        for ok in [json!(0), json!(999), json!(8.5)] {
+            let (_, issues) = validate(&schema, &json!({"estimatedHours": ok}));
+            assert!(issues.is_empty(), "{ok}");
+        }
+        let root = json!({"estimatedHours": "5"});
+        let (_, issues) = validate(&schema, &root);
+        assert_eq!(
+            describe_issue(&issues[0], &root),
+            "field 'estimatedHours' should be number, got string"
+        );
+    }
+
+    #[test]
+    fn array_max_counts_items_after_the_probed_sentence() {
+        let schema = Schema::Object(vec![Field::required(
+            "tags",
+            Schema::ArrayMax(Box::new(Schema::trimmed_string(1, 40)), 20),
+        )]);
+        let many: Vec<String> = (0..21).map(|i| format!("t{i}")).collect();
+        let root = json!({ "tags": many });
+        let (_, issues) = validate(&schema, &root);
+        assert_eq!(
+            describe_issue(&issues[0], &root),
+            "field 'tags': Too big: expected array to have <=20 items"
+        );
+        let few: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
+        let (_, issues) = validate(&schema, &json!({ "tags": few }));
+        assert!(issues.is_empty());
+        // Element issues still carry their index alongside the cap.
+        let root = json!({"tags": ["ok", ""]});
+        let (_, issues) = validate(&schema, &root);
+        assert_eq!(
+            describe_issue(&issues[0], &root),
+            "field 'tags[1]': Too small: expected string to have >=1 characters"
+        );
+    }
+
+    #[test]
+    fn datetime_is_zods_dialect_and_every_miss_is_one_sentence() {
+        let schema = Schema::Object(vec![Field::required(
+            "dueDate",
+            Schema::optional(Schema::nullable(Schema::DateTime)),
+        )]);
+        for good in [
+            "2026-03-06T00:00:00Z",
+            "2026-03-06T00:00:00.000Z",
+            "2026-03-06T23:59:59.1Z",
+        ] {
+            let (_, issues) = validate(&schema, &json!({ "dueDate": good }));
+            assert!(issues.is_empty(), "{good}");
+        }
+        // Every one of these answered the SAME probe issue: invalid_format,
+        // message "Invalid ISO datetime" — the shapes a model actually
+        // writes when it guesses at a date field.
+        for bad in [
+            "2026-03-06",                // date only
+            "Friday",                    // prose
+            "next friday",               // prose
+            "03/06/2026",                // slash date
+            "2026-03-06 17:00",          // a space where the T belongs
+            "2026-03-06T09:00",          // no seconds, no Z
+            "2026-03-06T09:00:00+01:00", // an offset, which zod refuses
+            "2026-03-06t09:00:00z",      // lowercase separators
+            "2026-13-06T00:00:00Z",      // month 13
+            "2026-02-30T00:00:00Z",      // Feb 30
+            "2026-03-06T24:00:00Z",      // hour 24
+            "2026-03-06T00:00:60Z",      // second 60
+            "2026-03-06T00:00:00.Z",     // a fraction with no digits
+        ] {
+            let root = json!({ "dueDate": bad });
+            let (_, issues) = validate(&schema, &root);
+            assert_eq!(issues.len(), 1, "{bad}");
+            assert_eq!(
+                describe_issue(&issues[0], &root),
+                "field 'dueDate': Invalid ISO datetime",
+                "{bad}"
+            );
+        }
+        // The wrapper contract: absent passes, null passes (nullable), and a
+        // number is an invalid_type with zod's `expected string` word.
+        let (_, issues) = validate(&schema, &json!({}));
+        assert!(issues.is_empty());
+        let (_, issues) = validate(&schema, &json!({"dueDate": null}));
+        assert!(issues.is_empty());
+        let root = json!({"dueDate": 5});
+        let (_, issues) = validate(&schema, &root);
+        assert_eq!(
+            describe_issue(&issues[0], &root),
+            "field 'dueDate' should be string, got number"
+        );
     }
 }
