@@ -33,6 +33,10 @@ pub struct WorkItem {
     pub title: String,
     pub status: String,
     pub updated_at: String,
+    /// The bucket SQL decided (`blocked`/`review`/`triage`). TS's interface
+    /// doesn't declare it, but its rows go on the wire whole — the field is
+    /// part of the payload even though no reader names it.
+    pub queue: String,
 }
 
 impl WorkItem {
@@ -123,6 +127,7 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
         title: r.title,
         status: r.status,
         updated_at: epoch_ms_to_iso(r.updated_ms),
+        queue: r.queue,
     };
 
     // Three passes over one row set, exactly as TS filters it: the bucket is
@@ -152,6 +157,7 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
 
 /// The org rail's live half (home.ts `OrgGlance`).
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrgGlance {
     /// The business name (Admin → Organization), for the rail's title.
     pub name: String,
@@ -259,6 +265,7 @@ mod tests {
             title: format!("ticket {id}"),
             status: "inbox".into(),
             updated_at: "2026-08-29T00:00:00.000Z".into(),
+            queue: "triage".into(),
         }
     }
 

@@ -19,11 +19,20 @@ use crate::uploads::{FormRead, read_upload_form, save_upload};
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
-    multipart: Multipart,
+    // Result, not Multipart: the bare extractor would reject a body without a
+    // multipart boundary BEFORE this handler runs — answering its own 400 text
+    // ahead of the permission gate. TS parses the form only after gating, and
+    // maps every read failure to `no file`; capturing the rejection here puts
+    // both the order and the body back on the oracle's spelling.
+    multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
 ) -> Response {
     let user = match require_perm(&state, &headers, "files.upload").await {
         Ok(u) => u,
         Err(gate) => return gate,
+    };
+    let multipart = match multipart {
+        Ok(m) => m,
+        Err(_) => return house_error(StatusCode::BAD_REQUEST, "no file"),
     };
     let read = read_upload_form(&headers, multipart).await;
     let (filename, mime, bytes) = match read {

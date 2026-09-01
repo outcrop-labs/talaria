@@ -813,7 +813,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 sqlx::query(
                     "insert into research_runs \
                      (id, owner_user_id, requested_by, agent_model, mode, question, parent_run_id) \
-                     values ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7::uuid) \
+                     values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid) \
                      on conflict (id) do nothing",
                 )
                 .bind(&run_id)

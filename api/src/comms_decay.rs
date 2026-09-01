@@ -316,7 +316,7 @@ pub async fn sweep_idle_chats(deps: &DecayDeps) -> Result<DecaySweepResult, Stri
     let idle: Vec<IdleConv> = sqlx::query_as(
         "select id::text, user_id::text, agent_model, title from conversations \
          where kind = 'chat' and archived = false \
-           and updated_at < now() - make_interval(days => $1) \
+           and updated_at < now() - make_interval(days => $1::int) \
          order by updated_at asc limit $2",
     )
     .bind(ttl_days())
