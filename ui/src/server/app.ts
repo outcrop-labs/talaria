@@ -47,8 +47,9 @@ async function handle(request: Request): Promise<Response> {
   const pathname = decodeURIComponent(url.pathname)
   const method = request.method.toUpperCase() as ApiMethod
 
-  // Migrated prefixes go to the Rust api before the route table is consulted
-  // — the TS route files still loaded below are the fallback we never take.
+  // /api/* is the Rust api's before the route table is consulted; the table
+  // below is the four residents (app dispatch, admin.update, healthz) — the
+  // SPA shell, and nothing else.
   const proxied = await maybeProxy(request, pathname)
   if (proxied) return proxied
 

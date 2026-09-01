@@ -351,14 +351,14 @@ const RULES = [
  *  Counts are exact — a file that GAINS an occurrence fails, and a file that
  *  LOSES its last one fails too, so the table cannot rot into a permanent
  *  amnesty for code that was fixed years ago. */
-/** Census entries on `hand-written-harness` that are NOT debt: a pass-through
- *  proxy and the live persona-conversation paths. They stay on the census
- *  (their counts are still exact, so a new call in one of them fails) but they
- *  are excluded from the "still owed" note, because they are never going to be
- *  ported and a debt figure that never reaches zero is a figure nobody reads. */
+/** Census entries on `hand-written-harness` that are NOT debt: the live
+ *  persona-conversation paths. They stay on the census (their counts are still
+ *  exact, so a new call in one of them fails) but they are excluded from the
+ *  "still owed" note, because they are never going to be ported and a debt
+ *  figure that never reaches zero is a figure nobody reads. The cutover took
+ *  the pass-through gateway proxy and the /api/chat route file with it — their
+ *  entries left the set when the files left the tree. */
 const HARNESS_NOT_A_HARNESS = new Set([
-  'ui/src/routes/api/llm.v1.chat.completions.ts',
-  'ui/src/routes/api/chat.ts',
   'ui/src/server/chat-persist.ts',
   'ui/src/server/channel-replies.ts',
 ])
@@ -405,11 +405,13 @@ const CENSUS = [
       'and three model paths reaching users with no guardrail at all — every one of them a call',
       'site that was written by hand by somebody who had read the code around it.',
       '',
-      'THE PORT IS DONE AND THE CENSUS IS AT ITS FLOOR: the four entries below are a',
-      'pass-through proxy and three live persona conversations, none of which has a prompt, a',
-      'schema or a model policy to declare. There is no debt column any more, so a new match',
-      'here is not "one more to port" — it is a call that went around the runner, and the fix',
-      'is to declare it rather than to add a line to this table.',
+      'THE PORT IS DONE AND THE CENSUS IS AT ITS FLOOR: the two entries below are live',
+      'persona conversations — no prompt, no schema, no model policy to declare. (The',
+      'pass-through gateway proxy and the /api/chat route that also sat here left with the',
+      'cutover: their files are deleted, and /api/llm/v1/* and /api/chat serve from the',
+      'Rust api.) There is no debt column any more, so a new match here is not "one more to',
+      'port" — it is a call that went around the runner, and the fix is to declare it',
+      'rather than to add a line to this table.',
       '',
       'IF WHAT YOU NEED IS A RUNNER CAPABILITY, ASK FOR IT IN run.ts. The five shims this',
       'census used to carry (muse.ts, briefing.ts, outreach.ts, work-dispatch.ts and the whole',
@@ -420,11 +422,6 @@ const CENSUS = [
       '  a persona TIER id       `ctx.tier` — the alias NAME; the runner assembles `<agent>-<alias>`',
     ],
     sites: {
-      // The public gateway route is a PASS-THROUGH proxy: it relays a caller's
-      // own body to their chosen model and streams the answer back. It has no
-      // prompt, no schema and no model policy of its own to declare, and it
-      // already runs `guardCompletion` on all four of its exit paths.
-      'ui/src/routes/api/llm.v1.chat.completions.ts': 2,
       // Live persona conversation. A human is talking to an agent and the reply
       // streams to their screen token by token; there is no structured contract
       // to parse and no repair turn that would make sense mid-stream. These
@@ -436,7 +433,6 @@ const CENSUS = [
       // whose OUTPUT happens to arrive token by token (the Muse's prose kinds,
       // the briefing chat-back), and both moved onto the runner. A chat turn has
       // no prompt of Talaria's to declare: the messages are the human's.
-      'ui/src/routes/api/chat.ts': 1,
       'ui/src/server/chat-persist.ts': 1,
       'ui/src/server/channel-replies.ts': 1,
     },
@@ -530,7 +526,7 @@ const CENSUS = [
       'sender simply never asked. A second `if (emailEnabled)` next to the send would have been the',
       'same bug waiting for a third sender, which is why the answer is one function and this check.',
       '',
-      'The four sites below are the complete list of code allowed to touch the transport:',
+      'The three sites below are the complete list of TS code allowed to touch the transport:',
       '  server/email.ts        the definition',
       '  server/notifications.ts  `sendGatedMail` — the gate itself, and the ONLY gated path',
       '  server/invites.ts      an invitation a human just typed an address into. Not a',
@@ -538,16 +534,15 @@ const CENSUS = [
       '                         direct reply to an admin action, and gating it would silently break',
       '                         invites on every instance that has not turned notification mail on',
       '                         (which is all of them — it defaults to off).',
-      '  routes/api/admin.email.ts  the admin\'s own test send, which is how you verify a provider',
-      '                         BEFORE turning delivery on. Gating it would make the switch',
-      '                         untestable until after it was flipped.',
-      'A fifth is a bypass. If you believe you need one, say so in the PR.',
+      'The admin test-send that used to sit here is the Rust api\'s now: admin_email.rs calls',
+      'send_email directly, the same standing invites.ts has, and the crate carries its own',
+      'gate (`send_gated_mail`, api/src/notify.rs) with the same nothing-else-may-call rule.',
+      'A fourth is a bypass. If you believe you need one, say so in the PR.',
     ],
     sites: {
       'ui/src/server/email.ts': 1,
       'ui/src/server/notifications.ts': 1,
       'ui/src/server/invites.ts': 1,
-      'ui/src/routes/api/admin.email.ts': 1,
     },
   },
   {
@@ -1160,7 +1155,8 @@ for (const rule of CENSUS) {
       // not the same statement and this is the one somebody will want to cite.
       notes.push(
         'THE HARNESS PORT IS COMPLETE AND THIS CENSUS IS AT ITS FLOOR: every entry is a permanent ' +
-          'exception (one pass-through proxy, three live persona conversations) and nothing on it is ' +
+          'exception (two live persona-conversation paths; the pass-through proxy and the /api/chat ' +
+          'route that also sat here left with the cutover) and nothing on it is ' +
           'debt. No file in the tree reaches a model with a hand-written prompt, parser, fallback ' +
           'chain and guard pass, and none supplies its own transport to work around a missing runner ' +
           'capability — run.ts serves tools, streaming, ledger attribution and tier routing itself. ' +
@@ -1496,19 +1492,29 @@ for (const rule of CENSUS) {
 // decision that had already been made correctly in one place. A copy of that
 // decision in a third file is what this block fails on.
 //
-// THE BOUNDARY, because one route legitimately sets a mime-typed content-type:
-// agent-media.$model.ts writes `'content-type': media.mime` — and its mime is
-// NOT uploader input. `readAgentImage` derives it from a fixed extension map
-// (png/jpg/gif/webp — nothing a browser executes), path-guards the read to the
-// agent's own volume, and the response carries nosniff. A server-decided type
-// on guarded bytes is the shape serveUpload itself has; it is excepted below BY
-// NAME, so anything else matching the pattern still fails.
+// THE BOUNDARY, for the day a route legitimately sets a mime-typed content-type
+// again: agent-media.$model.ts used to — `'content-type': media.mime` — and its
+// mime was NOT uploader input. `readAgentImage` derived it from a fixed
+// extension map (png/jpg/gif/webp — nothing a browser executes), path-guarded
+// the read to the agent's own volume, and carried nosniff: a server-decided
+// type on guarded bytes is the shape serveUpload itself has, so it was excepted
+// BY NAME. The route moved to Rust with the cutover and the carve-out left with
+// it — a bytes route that needs the same standing makes its case in the PR, in
+// the fix text below.
 {
-  const BYTES_ROUTES = [
-    'ui/src/routes/api/uploads.$id.ts',
-    'ui/src/routes/api/artifacts.public.$slug.download.ts',
+  // The two bytes routes this block was written after are the Rust api's now
+  // (R10): their TS files are deleted, and the one serving function they must
+  // go through is `serve_upload` in api/src/uploads.rs — the INLINE_MIME
+  // allowlist (raster + PDF inline, everything else attachment + nosniff +
+  // sandbox CSP), unit-tested in that file. The scan below keeps watching the
+  // resident routes that remain under ui/src/routes/api/; the companion follows
+  // the bytes across the language line, because a guard that stops at the edge
+  // of the tree its subject moved out of guards nothing.
+  const RUST_BYTES_ROUTES = [
+    'api/src/routes/uploads_id.rs',
+    'api/src/routes/artifacts_public_slug_download.rs',
   ]
-  const AGENT_MEDIA = 'ui/src/routes/api/agent-media.$model.ts'
+  const RUST_SERVE = 'api/src/uploads.rs'
 
   // (a) The disposition, any spelling that names the header and says inline —
   // including a ternary `` `${x ? 'inline' : 'attachment'}` ``: the DECISION is
@@ -1524,7 +1530,7 @@ for (const rule of CENSUS) {
 
   const found = []
   for (const [path, src] of sources) {
-    if (!path.startsWith('ui/src/routes/api/') || path.endsWith('.test.ts') || path === AGENT_MEDIA) continue
+    if (!path.startsWith('ui/src/routes/api/') || path.endsWith('.test.ts')) continue
     for (const re of [INLINE_DISPOSITION, STORED_MIME_TYPE]) {
       for (const hit of matches(src, re)) found.push({ path, ...hit })
     }
@@ -1556,33 +1562,69 @@ for (const rule of CENSUS) {
   // stops calling serveUpload, the bytes came back inside the route, and the
   // scan above is the only thing left between the response headers and the
   // uploader's declared MIME.
-  for (const path of BYTES_ROUTES) {
-    const src = sources.get(path)
+  const rustSrc = (path) => {
+    try {
+      return readFileSync(join(ROOT, path), 'utf8')
+    } catch {
+      return undefined
+    }
+  }
+  for (const path of RUST_BYTES_ROUTES) {
+    const src = rustSrc(path)
     if (src === undefined) {
       failures.push({
         id: 'bytes-route-missing',
         what: `${path} is one of the two upload-bytes routes and was not found`,
         fix: [
-          'If it moved or was renamed, update BYTES_ROUTES in scripts/check-invariants.mjs — a',
-          'list that points at nothing exempts nothing while reading as coverage. If it was',
-          'deleted, the upload-bytes path changed shape and the scan above needs to meet',
+          'If it moved or was renamed, update RUST_BYTES_ROUTES in scripts/check-invariants.mjs —',
+          'a list that points at nothing guards nothing while reading as coverage. If the route',
+          'was deleted, the upload-bytes path changed shape and this block needs to meet',
           'whatever replaced it.',
         ],
         found: [],
       })
-    } else if (!/\bserveUpload\s*\(/.test(src)) {
+    } else if (!/\bserve_upload\s*\(/.test(src)) {
       failures.push({
         id: 'bytes-route-bypasses-serveupload',
-        what: `${path} serves upload bytes without going through serveUpload()`,
+        what: `${path} serves upload bytes without going through serve_upload()`,
         fix: [
-          'Put the decision back in the one place it lives: `serveUpload(up, { cache: … })` from',
-          'server/uploads.ts. A route that builds its own Response re-opens the P0 — the',
-          'uploader-declared MIME served inline, same-origin, and on the public route without',
-          'even a session to blame.',
+          'Put the decision back in the one place it lives: `serve_upload(bytes, mime, filename,',
+          'cache)` from api/src/uploads.rs. A route that builds its own Response re-opens the P0',
+          '— the uploader-declared MIME served inline, same-origin, and on the public route',
+          'without even a session to blame.',
         ],
         found: [],
       })
     }
+  }
+  // And the decision itself must still be the allowlist in the one function:
+  // INLINE_MIME gates the inline arm, nosniff rides every response. The
+  // patterns are a census-style pointer, exact on purpose — a rename updates
+  // them here; a real regression fails here.
+  const serve = rustSrc(RUST_SERVE)
+  if (serve === undefined) {
+    failures.push({
+      id: 'bytes-route-missing',
+      what: `${RUST_SERVE} (the one serving function for upload bytes) was not found`,
+      fix: [
+        'If the helper moved or was renamed, update RUST_SERVE in scripts/check-invariants.mjs.',
+        'The inline/download decision for upload bytes must stay in exactly one function with',
+        'the INLINE_MIME allowlist and nosniff — that single point is the entire fix the P0 got.',
+      ],
+      found: [],
+    })
+  } else if (!/const INLINE_MIME/.test(serve) || !/nosniff/.test(serve)) {
+    failures.push({
+      id: 'bytes-route-bypasses-serveupload',
+      what: `${RUST_SERVE} no longer visibly gates inline by the INLINE_MIME allowlist with nosniff`,
+      fix: [
+        'The inline/download decision for upload bytes is one allowlist (INLINE_MIME: raster +',
+        'PDF inline, everything else attachment) and nosniff on every response. If a rename or',
+        'refactor changed the spelling, update the two patterns in check-invariants.mjs — do',
+        'not widen them to make a real regression pass.',
+      ],
+      found: [],
+    })
   }
 }
 
