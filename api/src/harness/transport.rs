@@ -1087,6 +1087,9 @@ pub struct PersonaTurn {
     pub text: String,
     pub tool_names: Vec<String>,
     pub usage: Option<TokenPair>,
+    /// The failure frame's reason when the agent gateway reported one mid-
+    /// stream — the turn produced nothing and this says why.
+    pub error: Option<String>,
 }
 
 impl PersonaTurn {
@@ -1109,6 +1112,11 @@ impl PersonaTurn {
                 });
             }
             AgentStreamEvent::Reasoning { .. } => {}
+            AgentStreamEvent::Error { message } => {
+                if self.error.is_none() {
+                    self.error = Some(message);
+                }
+            }
         }
     }
 }
@@ -1125,6 +1133,7 @@ pub async fn pump_persona_stream(
         text: String::new(),
         tool_names: Vec::new(),
         usage: None,
+        error: None,
     };
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|e| format!("persona stream: {e}"))?;
@@ -1208,6 +1217,13 @@ async fn persona_turn(
         });
     }
     let turn = pump_persona_stream(upstream.body, emit).await?;
+    // A failure frame is a failed call, not an empty one — the canned-stream
+    // rule one layer up, for the error that arrives wearing a 200. The harness
+    // gets the reason (the fitness sweep narrows on it; a work session
+    // surfaces it) instead of scoring an empty answer as the model's work.
+    if let Some(message) = &turn.error {
+        return Err(format!("persona \"{}\" errored: {message}", req.model));
+    }
     meter_persona_turn(&state.pg, req, &turn).await;
     Ok(TransportReply {
         kind: TransportKind::Fleet,

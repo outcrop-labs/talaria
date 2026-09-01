@@ -223,6 +223,17 @@ pub enum AgentStreamEvent {
         prompt_tokens: i64,
         completion_tokens: i64,
     },
+    /// The agent gateway's failure contract: a 200-SSE body whose final chunk
+    /// carries `finish_reason: "error"` with a top-level `error: {message}`
+    /// (and a `hermes: {failed: true}` block) — the provider call died inside
+    /// the container and this frame is the only place the reason exists. The
+    /// frame parses to no content, so a parser that ignores it reads a failed
+    /// turn as an EMPTY COMPLETE one, and the chat chain re-fires it forever
+    /// (prior_messages sees through empty rows, so the user's message reads as
+    /// forever-unanswered). Consumers surface the text and stop the turn.
+    Error {
+        message: String,
+    },
 }
 
 /// sse-parse.ts ToolCall — the shape persisted into `messages.tools` and
@@ -310,8 +321,7 @@ impl AgentStreamParser {
     }
 }
 
-fn parse_frame(frame: &str) -> Vec<AgentStreamEvent> {
-    let mut event_name = String::new();
+fn parse_frame(frame: &str) -> Vec<AgentStreamEvent> {    let mut event_name = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
     for line in frame.split('\n') {
         let t = line.trim();
@@ -332,6 +342,12 @@ fn parse_frame(frame: &str) -> Vec<AgentStreamEvent> {
         return Vec::new(); // keep-alive / partial frame
     };
     let mut events = Vec::new();
+    // The failure frame first: it rides a 200 with no content delta, and the
+    // turn is over the moment it lands — later arms may still pull usage, but
+    // nothing downstream should read this frame as a healthy empty one.
+    if let Some(message) = error_message_of(&json) {
+        events.push(AgentStreamEvent::Error { message });
+    }
     let delta = json
         .get("choices")
         .and_then(|c| c.get(0))
@@ -365,6 +381,40 @@ fn parse_frame(frame: &str) -> Vec<AgentStreamEvent> {
         });
     }
     events
+}
+
+/// The reason a failure frame carries, if it is one: `finish_reason: "error"`
+/// on the choice, a top-level `error: {message}` object, or Hermes's own
+/// `hermes: {failed: true, error}` telemetry — any one of them names the
+/// failure, preference order error.message → hermes.error → a plain sentence.
+fn error_message_of(json: &Value) -> Option<String> {
+    let finish = json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str);
+    let failed = finish == Some("error")
+        || json.get("error").is_some()
+        || json
+            .get("hermes")
+            .and_then(|h| h.get("failed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if !failed {
+        return None;
+    }
+    let message = json
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            json.get("hermes")
+                .and_then(|h| h.get("error"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("the agent reported an error")
+        .to_string();
+    Some(message)
 }
 
 /// hermes.tool.progress frames — the agent's own tool telemetry riding the
@@ -455,6 +505,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn failure_frame_is_an_error_event_not_an_empty_complete() {
+        // The exact shape the agent gateway emits when the provider call dies
+        // inside the container (observed live: openrouter 401ing on a stale
+        // container key): a 200-SSE body whose final chunk carries
+        // finish_reason "error", a top-level error object, and the hermes
+        // telemetry block. This frame must surface as an Error event — reading
+        // it as an empty complete turn is what made the chat chain re-fire one
+        // of these every ~550ms for hours.
+        let frame = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}],",
+            "\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0},",
+            "\"error\":{\"message\":\"HTTP 401: invalid API key\",\"type\":\"agent_error\"},",
+            "\"hermes\":{\"completed\":false,\"partial\":false,\"failed\":true,",
+            "\"error\":\"HTTP 401: invalid API key\",\"error_code\":\"agent_error\"}}\n\n"
+        );
+        let mut p = AgentStreamParser::new();
+        let events = p.feed(frame.as_bytes());
+        assert_eq!(
+            events,
+            vec![AgentStreamEvent::Error {
+                message: "HTTP 401: invalid API key".into()
+            }]
+        );
+        // [DONE] after it stays a non-event.
+        assert!(p.feed(b"data: [DONE]\n\n").is_empty());
     }
 
     #[test]

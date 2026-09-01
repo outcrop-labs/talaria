@@ -157,6 +157,17 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         None,
     )
     .await;
+    // TS: `if (!upstream.ok …)` — the row is marked error and the chain STOPS
+    // HERE, before any persist. Persisting the error body instead parses zero
+    // events, flushes an EMPTY 'complete' row, and the tail re-chains — and
+    // prior_messages reads through empty rows, so "the last message is the
+    // user's" stays true forever: a provider answering 429 turned one queued
+    // message into a turn every ~550ms, 2,000 rows in ten minutes. The error
+    // row is the surfacing too — the UI renders it as the turn that failed.
+    if !(200..300).contains(&upstream.status) {
+        let _ = update_assistant(&state.pg, &assistant_id, "", "", &[], "error").await;
+        return;
+    }
     let usage_meta = PersistMeta {
         agent_model: meta.agent_model.clone(),
         prompt_chars,
@@ -225,6 +236,12 @@ pub async fn persist_assistant_stream(
     let mut reasoning = String::new();
     let mut tools: Vec<ToolCall> = Vec::new();
     let mut usage: Option<(i64, i64)> = None;
+    // The agent gateway's failure frame, when one lands — the provider call
+    // died inside the container and the 200-stream carries the reason. Without
+    // this the turn reads as EMPTY COMPLETE, and the chain re-fires it forever
+    // (prior_messages sees through empty rows, so the user's message reads as
+    // forever unanswered).
+    let mut frame_error: Option<String> = None;
     let mut last_flush: Option<Instant> = None;
     let mut parser = AgentStreamParser::new();
     let mut stream = body;
@@ -315,6 +332,9 @@ pub async fn persist_assistant_stream(
                 } => {
                     usage = Some((prompt_tokens, completion_tokens));
                 }
+                AgentStreamEvent::Error { message } => {
+                    frame_error = frame_error.or(Some(message));
+                }
             }
             // TS: `Date.now() - lastFlush > 400` with lastFlush starting at
             // 0 — the first event flushes immediately.
@@ -342,9 +362,22 @@ pub async fn persist_assistant_stream(
             } => {
                 usage = Some((prompt_tokens, completion_tokens));
             }
+            AgentStreamEvent::Error { message } => {
+                frame_error = frame_error.or(Some(message));
+            }
         }
     }
 
+    // A failure frame ends the turn as an ERROR whose content IS the reason —
+    // the surfaced error Jon asked for, visible in the chat instead of an
+    // empty reply nobody can explain — and the tail chain does not fire:
+    // retrying a provider that just refused is the loop this closes.
+    if let Some(message) = frame_error {
+        content = format!("(agent error: {message})");
+        flush!("error");
+        ledger!();
+        return;
+    }
     if errored {
         flush!("error");
         ledger!();

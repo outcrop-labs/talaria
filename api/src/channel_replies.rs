@@ -534,6 +534,9 @@ async fn stream_reply(
 
     let outcome: Result<(), String> = async {
         use futures_util::StreamExt;
+        // The agent gateway's failure frame — same contract as the chat plane:
+        // surface the reason as the reply, never as an empty complete one.
+        let mut frame_error: Option<String> = None;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| e.to_string())?;
             for ev in parser.feed(&chunk) {
@@ -545,6 +548,9 @@ async fn stream_reply(
                     } => usage = Some((prompt_tokens, completion_tokens)),
                     AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                     AgentStreamEvent::Reasoning { .. } => {}
+                    AgentStreamEvent::Error { message } => {
+                        frame_error = frame_error.or(Some(message));
+                    }
                 }
             }
             let now = wall_ms();
@@ -564,7 +570,16 @@ async fn stream_reply(
                 } => usage = Some((prompt_tokens, completion_tokens)),
                 AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                 AgentStreamEvent::Reasoning { .. } => {}
+                AgentStreamEvent::Error { message } => {
+                    frame_error = frame_error.or(Some(message));
+                }
             }
+        }
+        if let Some(message) = frame_error {
+            content = format!("(gateway error: {message})");
+            return update_channel_message(deps, channel_id, message_id, &content, "error")
+                .await
+                .map_err(|e| e.to_string());
         }
         update_channel_message(deps, channel_id, message_id, &content, "complete")
             .await
