@@ -54,7 +54,7 @@
 // carried over verbatim, and `mcp/src/index.ts` names the same file from the
 // repo root as it did from the UI tree.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::LazyLock;
 
 // ── The axes a report reads along ────────────────────────────────────────────
@@ -154,8 +154,8 @@ fn one_of(values: &[&str], description: &str) -> Value {
 const PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
 const EFFORTS: &[&str] = &["xs", "s", "m", "l", "xl"];
 const COLORS: &[&str] = &[
-    "slate", "bronze", "green", "amber", "red", "blue", "purple", "teal", "pink", "orange", "lime", "cyan", "indigo",
-    "magenta", "olive", "brown",
+    "slate", "bronze", "green", "amber", "red", "blue", "purple", "teal", "pink", "orange", "lime",
+    "cyan", "indigo", "magenta", "olive", "brown",
 ];
 
 // ── The catalog ──────────────────────────────────────────────────────────────
@@ -348,7 +348,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
-
         // ── Knowledge ──────────────────────────────────────────────────────────
         SandboxTool {
             name: "web_search",
@@ -453,7 +452,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
-
         // ── Documents (artifacts) ──────────────────────────────────────────────
         SandboxTool {
             name: "create_document",
@@ -530,7 +528,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: true,
         },
-
         // ── Comms ──────────────────────────────────────────────────────────────
         SandboxTool {
             name: "list_channels",
@@ -603,7 +600,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
-
         // ── Google (reads are live; anything outbound is DRAFTED for a human) ──
         SandboxTool {
             name: "read_calendar",
@@ -710,7 +706,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: true,
         },
-
         // ── Research ───────────────────────────────────────────────────────────
         SandboxTool {
             name: "research",
@@ -743,7 +738,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
-
         // ── Board governance (personal assistants only) ────────────────────────
         SandboxTool {
             name: "list_teams",
@@ -836,9 +830,15 @@ pub fn tools_named(names: &[&str]) -> Vec<&'static SandboxTool> {
         .filter(|n| !TALARIA_TOOLS.iter().any(|t| t.name == *n))
         .collect();
     if !unknown.is_empty() {
-        panic!("no such Talaria tool: {} — check dryRun.tools against talaria-tools.ts", unknown.join(", "));
+        panic!(
+            "no such Talaria tool: {} — check dryRun.tools against talaria-tools.ts",
+            unknown.join(", ")
+        );
     }
-    TALARIA_TOOLS.iter().filter(|t| names.contains(&t.name)).collect()
+    TALARIA_TOOLS
+        .iter()
+        .filter(|t| names.contains(&t.name))
+        .collect()
 }
 
 /// Every tool in one group, for a fixture that means "the whole documents
@@ -908,7 +908,8 @@ mod tests {
     /// source, with the description's leading literal segments concatenated and
     /// its first interpolation treated as the end of what a copy can promise.
     fn real_descriptions(source: &str) -> HashMap<String, String> {
-        let re = Regex::new(r#"server\.registerTool\(\s*'([a-z_]+)',\s*\{\s*description:\s*"#).unwrap();
+        let re =
+            Regex::new(r#"server\.registerTool\(\s*'([a-z_]+)',\s*\{\s*description:\s*"#).unwrap();
         let chars: Vec<char> = source.chars().collect();
         let mut out = HashMap::new();
         for caps in re.captures_iter(source) {
@@ -1006,9 +1007,11 @@ mod tests {
             let start = caps.get(0).unwrap().start();
             // `inputSchema` must belong to THIS registration, not the next one's.
             let at = source[start..].find("inputSchema:").map(|p| start + p);
-            let next_reg = source[start + 1..].find("server.registerTool(").map(|p| start + 1 + p);
+            let next_reg = source[start + 1..]
+                .find("server.registerTool(")
+                .map(|p| start + 1 + p);
             let at = match at {
-                Some(at) if next_reg.map_or(true, |n| at < n) => at,
+                Some(at) if next_reg.is_none_or(|n| at < n) => at,
                 _ => continue,
             };
             let open = match source[at..].find('{') {
@@ -1032,36 +1035,40 @@ mod tests {
                     // A key at the top level of the schema object: `name: z.…`
                     let window: String = chars[i..(i + 40).min(chars.len())].iter().collect();
                     let key = key_re.captures(&window);
-                    let prev = chars[..i].iter().rev().find(|c| !c.is_whitespace()).copied();
-                    if let (Some(key), Some(prev)) = (key, prev) {
-                        if prev == '{' || prev == ',' {
-                            let name = key[1].to_string();
-                            let whole: Vec<char> = key.get(0).unwrap().as_str().chars().collect();
-                            keys.push(name.clone());
-                            i += whole.len() - 1;
-                            // Everything up to the next top-level comma is this key's expression.
-                            let mut j = i + 1;
-                            let mut d: i64 = 0;
-                            while j < chars.len() {
-                                let c = chars[j];
-                                if c == '{' || c == '[' || c == '(' {
-                                    d += 1;
-                                } else if c == '}' || c == ']' || c == ')' {
-                                    if d == 0 {
-                                        break;
-                                    }
-                                    d -= 1;
-                                } else if c == ',' && d == 0 {
+                    let prev = chars[..i]
+                        .iter()
+                        .rev()
+                        .find(|c| !c.is_whitespace())
+                        .copied();
+                    if let (Some(key), Some(prev)) = (key, prev)
+                        && (prev == '{' || prev == ',')
+                    {
+                        let name = key[1].to_string();
+                        let whole: Vec<char> = key.get(0).unwrap().as_str().chars().collect();
+                        keys.push(name.clone());
+                        i += whole.len() - 1;
+                        // Everything up to the next top-level comma is this key's expression.
+                        let mut j = i + 1;
+                        let mut d: i64 = 0;
+                        while j < chars.len() {
+                            let c = chars[j];
+                            if c == '{' || c == '[' || c == '(' {
+                                d += 1;
+                            } else if c == '}' || c == ']' || c == ')' {
+                                if d == 0 {
                                     break;
                                 }
-                                j += 1;
+                                d -= 1;
+                            } else if c == ',' && d == 0 {
+                                break;
                             }
-                            let value: String = chars[i..j].iter().collect();
-                            if !value.contains(".optional()") {
-                                required.push(name);
-                            }
-                            i = j - 1;
+                            j += 1;
                         }
+                        let value: String = chars[i..j].iter().collect();
+                        if !value.contains(".optional()") {
+                            required.push(name);
+                        }
+                        i = j - 1;
                     }
                 }
                 i += 1;
@@ -1085,7 +1092,11 @@ mod tests {
         let required = p
             .get("required")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         RealParams { keys, required }
     }
@@ -1096,7 +1107,10 @@ mod tests {
         // this file must fail loudly rather than quietly assert over an empty map.
         let real = real_descriptions(&source());
         assert!(real.len() > 30);
-        assert!(real.get("get_ticket").is_some_and(|d| d.contains("Get a ticket in full")));
+        assert!(
+            real.get("get_ticket")
+                .is_some_and(|d| d.contains("Get a ticket in full"))
+        );
     }
 
     #[test]
@@ -1105,8 +1119,15 @@ mod tests {
         // capable in the benchmark and calls something that does not exist in
         // production.
         let real = real_descriptions(&source());
-        let missing: Vec<&str> = TALARIA_TOOLS.iter().map(|t| t.name).filter(|n| !real.contains_key(*n)).collect();
-        assert!(missing.is_empty(), "catalog carries tools the toolkit does not register: {missing:?}");
+        let missing: Vec<&str> = TALARIA_TOOLS
+            .iter()
+            .map(|t| t.name)
+            .filter(|n| !real.contains_key(*n))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "catalog carries tools the toolkit does not register: {missing:?}"
+        );
     }
 
     #[test]
@@ -1114,10 +1135,16 @@ mod tests {
         let real = real_descriptions(&source());
         let drifted: Vec<&str> = TALARIA_TOOLS
             .iter()
-            .filter(|t| real.get(t.name).is_some_and(|want| !t.description.starts_with(want.as_str())))
+            .filter(|t| {
+                real.get(t.name)
+                    .is_some_and(|want| !t.description.starts_with(want.as_str()))
+            })
             .map(|t| t.name)
             .collect();
-        assert!(drifted.is_empty(), "descriptions drifted from the toolkit: {drifted:?}");
+        assert!(
+            drifted.is_empty(),
+            "descriptions drifted from the toolkit: {drifted:?}"
+        );
     }
 
     #[test]
@@ -1146,11 +1173,20 @@ mod tests {
                 let want = real_args.get(t.name)?;
                 let got = params_of(t);
                 (got.keys != want.keys).then(|| {
-                    format!("{}: sandbox has [{}], toolkit has [{}]", t.name, got.keys.join(", "), want.keys.join(", "))
+                    format!(
+                        "{}: sandbox has [{}], toolkit has [{}]",
+                        t.name,
+                        got.keys.join(", "),
+                        want.keys.join(", ")
+                    )
                 })
             })
             .collect();
-        assert!(drifted.is_empty(), "argument names drifted: {}", drifted.join("; "));
+        assert!(
+            drifted.is_empty(),
+            "argument names drifted: {}",
+            drifted.join("; ")
+        );
     }
 
     #[test]
@@ -1168,11 +1204,20 @@ mod tests {
                 a.sort();
                 b.sort();
                 (a != b).then(|| {
-                    format!("{}: sandbox requires [{}], toolkit requires [{}]", t.name, got.required.join(", "), want.required.join(", "))
+                    format!(
+                        "{}: sandbox requires [{}], toolkit requires [{}]",
+                        t.name,
+                        got.required.join(", "),
+                        want.required.join(", ")
+                    )
                 })
             })
             .collect();
-        assert!(drifted.is_empty(), "required sets drifted: {}", drifted.join("; "));
+        assert!(
+            drifted.is_empty(),
+            "required sets drifted: {}",
+            drifted.join("; ")
+        );
     }
 
     #[test]
@@ -1187,8 +1232,14 @@ mod tests {
         // sandbox's dispatch — lives with the sandbox module's port, because
         // `backedToolNames` is sandbox.ts's export, not this catalog's.)
         let real = real_descriptions(&source());
-        let unmodelled: Vec<&String> = real.keys().filter(|n| !TALARIA_TOOLS.iter().any(|t| t.name == n.as_str())).collect();
-        assert!(unmodelled.is_empty(), "toolkit registrations with no catalogue entry: {unmodelled:?}");
+        let unmodelled: Vec<&String> = real
+            .keys()
+            .filter(|n| !TALARIA_TOOLS.iter().any(|t| t.name == n.as_str()))
+            .collect();
+        assert!(
+            unmodelled.is_empty(),
+            "toolkit registrations with no catalogue entry: {unmodelled:?}"
+        );
     }
 
     #[test]

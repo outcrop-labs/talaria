@@ -5,9 +5,7 @@
 // the replica.
 
 use crate::audit::{AuditEntry, log_audit};
-use crate::body::{
-    as_object, enum_member, object_msg, optional_enum_member, parse, zod_type_name,
-};
+use crate::body::{as_object, enum_member, object_msg, optional_enum_member, parse, zod_type_name};
 use crate::error::{house_error, thrown_internal_error};
 use crate::secretbox::SecretBox;
 use crate::session::{actor_of, require_admin};
@@ -203,11 +201,11 @@ pub async fn post(
     };
     // z.object({ action: z.enum([...]).optional() }) — absent action is the
     // no-op branch, anything else answers the enum's own message.
-    let action = match optional_enum_member(obj, "action", &["test", "test-replica", "migrate", "sync"])
-    {
-        Ok(a) => a,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let action =
+        match optional_enum_member(obj, "action", &["test", "test-replica", "migrate", "sync"]) {
+            Ok(a) => a,
+            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        };
     let cfg = get_storage_config(&state.pg, &sb).await;
     let audit = |action: &str, after: Option<Value>| {
         // fire-and-forget, exactly the TS `void logAudit(...)`
@@ -258,14 +256,24 @@ pub async fn post(
         }
         Some("migrate") => match migrate_uploads_to_s3(&state.pg, &sb).await {
             Ok(status) => {
-                audit("migrate", Some(serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) })));
+                audit(
+                    "migrate",
+                    Some(
+                        serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) }),
+                    ),
+                );
                 Json(serde_json::json!({ "migrate": status })).into_response()
             }
             Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
         },
         Some("sync") => match sync_uploads_to_replica(&state.pg, &sb).await {
             Ok(status) => {
-                audit("sync", Some(serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) })));
+                audit(
+                    "sync",
+                    Some(
+                        serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) }),
+                    ),
+                );
                 Json(serde_json::json!({ "sync": status })).into_response()
             }
             Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),

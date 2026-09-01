@@ -35,12 +35,29 @@ use tokio::sync::OnceCell;
 /// asked for is the answer. Nothing else in this port may restate the step
 /// order; that is finding 1.10's whole point.
 pub trait ResolveEdges: Send + Sync {
-    fn pin_model<'a>(&'a self, pin: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
-    fn role_model<'a>(&'a self, role: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
-    fn routes<'a>(&'a self, model: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>>;
-    fn gateway_models<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>>;
-    fn preferred_model<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
-    fn user_role<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>>;
+    fn pin_model<'a>(
+        &'a self,
+        pin: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    fn role_model<'a>(
+        &'a self,
+        role: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    fn routes<'a>(
+        &'a self,
+        model: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>>;
+    fn gateway_models<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>>;
+    fn preferred_model<'a>(
+        &'a self,
+        user_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    fn user_role<'a>(
+        &'a self,
+        user_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>>;
     fn member_allowlist(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + '_>>;
     fn env_model(&self) -> Option<String>;
 }
@@ -52,24 +69,43 @@ struct PgEdges<'a> {
 }
 
 impl ResolveEdges for PgEdges<'_> {
-    fn pin_model<'a>(&'a self, pin: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+    fn pin_model<'a>(
+        &'a self,
+        pin: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
         Box::pin(platform_agent_model(self.pg, pin))
     }
-    fn role_model<'a>(&'a self, role: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+    fn role_model<'a>(
+        &'a self,
+        role: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
         Box::pin(resolve_role_model(self.pg, role))
     }
-    fn routes<'a>(&'a self, model: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>> {
+    fn routes<'a>(
+        &'a self,
+        model: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>> {
         Box::pin(async move {
-            Ok(crate::gateway::registry::resolve_route(self.pg, model).await?.is_some())
+            Ok(crate::gateway::registry::resolve_route(self.pg, model)
+                .await?
+                .is_some())
         })
     }
-    fn gateway_models<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>> {
+    fn gateway_models<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>> {
         Box::pin(gateway_models(self.pg))
     }
-    fn preferred_model<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+    fn preferred_model<'a>(
+        &'a self,
+        user_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
         Box::pin(get_preferred_model(self.pg, user_id))
     }
-    fn user_role<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>> {
+    fn user_role<'a>(
+        &'a self,
+        user_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>> {
         Box::pin(get_user_role(self.pg, user_id))
     }
     fn member_allowlist(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + '_>> {

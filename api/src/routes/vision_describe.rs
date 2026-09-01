@@ -83,10 +83,9 @@ pub async fn post(
         );
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let file = match get_upload(&state.pg, &sb, &upload_id).await {
-        Ok(f) => f,
-        Err(_) => None,
-    };
+    let file = get_upload(&state.pg, &sb, &upload_id)
+        .await
+        .unwrap_or_default();
     let Some((bytes, mime, _filename)) = file else {
         return house_error(
             StatusCode::NOT_FOUND,
@@ -98,7 +97,9 @@ pub async fn post(
         // for this and the sentence is what tells it to use that instead.
         return house_error(
             StatusCode::BAD_REQUEST,
-            &format!("that attachment is {mime}, not an image — read it with fetch_attachment instead"),
+            &format!(
+                "that attachment is {mime}, not an image — read it with fetch_attachment instead"
+            ),
         );
     }
 

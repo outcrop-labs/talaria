@@ -59,7 +59,12 @@ pub async fn post(
         Some(v) => match v.as_i64() {
             // z.number().int().min(1).max(25)
             Some(n) if (1..=25).contains(&n) => Some(n as f64),
-            _ => return house_error(StatusCode::BAD_REQUEST, "limit must be an integer from 1 to 25"),
+            _ => {
+                return house_error(
+                    StatusCode::BAD_REQUEST,
+                    "limit must be an integer from 1 to 25",
+                );
+            }
         },
     };
 

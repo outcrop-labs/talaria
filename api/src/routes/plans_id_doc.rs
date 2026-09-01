@@ -120,12 +120,9 @@ pub async fn post(
     // `?? conv.agentModel` — an unknown tier falls back to the base agent
     // rather than refusing the sync.
     let routed = match tier.as_deref().filter(|t| !t.is_empty()) {
-        Some(t) => {
-            match routed_model_for(&state.pg, &conv.agent_model, Some(t)).await {
-                Ok(r) => r,
-                Err(_) => None,
-            }
-        }
+        Some(t) => routed_model_for(&state.pg, &conv.agent_model, Some(t))
+            .await
+            .unwrap_or_default(),
         None => None,
     }
     .unwrap_or_else(|| conv.agent_model.clone());

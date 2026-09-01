@@ -74,21 +74,16 @@ fn enqueue(departments: &[String], pg: &PgPool, sb: &SecretBox) {
 }
 
 /// The departments whose managed agents carry this server right now.
-pub async fn carriers_for_server(
-    pg: &PgPool,
-    server_id: &str,
-) -> Result<Vec<String>, sqlx::Error> {
+pub async fn carriers_for_server(pg: &PgPool, server_id: &str) -> Result<Vec<String>, sqlx::Error> {
     let all_agents: Option<(bool,)> =
         sqlx::query_as("select all_agents from mcp_servers where id::text = $1")
             .bind(server_id)
             .fetch_optional(pg)
             .await?;
     let rows: Vec<(String,)> = if all_agents.is_some_and(|(a,)| a) {
-        sqlx::query_as(
-            "select distinct department from agent_defs where managed and enabled",
-        )
-        .fetch_all(pg)
-        .await?
+        sqlx::query_as("select distinct department from agent_defs where managed and enabled")
+            .fetch_all(pg)
+            .await?
     } else {
         sqlx::query_as(
             "select distinct d.department from mcp_server_agents a \

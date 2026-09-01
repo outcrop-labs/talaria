@@ -4,9 +4,11 @@
 // next scheduler tick, ≤60s). PUT { name? schedule? prompt? } → edit in
 // place. Admin or owner.
 
-use crate::agent_crons::{edit_cron_job, pause_cron_job, remove_cron_job, resume_cron_job, run_cron_job};
-use crate::audit::{log_audit, AuditEntry};
-use crate::body::{as_object, optional_max_string_member, parse, enum_member};
+use crate::agent_crons::{
+    edit_cron_job, pause_cron_job, remove_cron_job, resume_cron_job, run_cron_job,
+};
+use crate::audit::{AuditEntry, log_audit};
+use crate::body::{as_object, enum_member, optional_max_string_member, parse};
 use crate::error::house_error;
 use crate::permissions::has_perm;
 use crate::personal_agent::owns_agent;
@@ -16,7 +18,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The family's gate (see fleet_agents_id_crons): admin via agents.manage, or
 /// the owner of a personal assistant.
@@ -42,7 +44,13 @@ pub async fn delete(
     }
     match remove_cron_job(&state.pg, &id, &job_id).await {
         Ok(()) => {
-            audit(&state, &user, "cron.delete", &id, json!({ "jobId": job_id }));
+            audit(
+                &state,
+                &user,
+                "cron.delete",
+                &id,
+                json!({ "jobId": job_id }),
+            );
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
@@ -163,7 +171,13 @@ pub async fn post(
 }
 
 /// The family's audit shape — names only, never values, fire-and-forget.
-fn audit(state: &AppState, user: &crate::session::SessionUser, action: &str, id: &str, after: Value) {
+fn audit(
+    state: &AppState,
+    user: &crate::session::SessionUser,
+    action: &str,
+    id: &str,
+    after: Value,
+) {
     let actor = actor_of(user);
     let action = action.to_string();
     let id = id.to_string();

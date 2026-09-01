@@ -2,7 +2,7 @@
 // Render + start every enabled managed agent that isn't running. One button
 // to bring the fleet to desired state (drift, cold start). Admin.
 
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet_reconcile::reconcile_fleet;
 use crate::session::{actor_of, require_admin};

@@ -171,13 +171,12 @@ pub async fn probe_org_google_apis(
     // TS's Promise.all over the library — three sequential probes cost three
     // Google round-trips (+300ms) for nothing; join_all keeps the library's
     // order and surfaces the first failure, as Promise.all does.
-    let out: Vec<GoogleApiHealth> = futures_util::future::join_all(
-        GOOGLE_API_LIBRARY.iter().map(|entry| probe(entry, &token)),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<Vec<_>, String>>()
-    .map_err(crate::google_errors::GoogleError::Failed)?;
+    let out: Vec<GoogleApiHealth> =
+        futures_util::future::join_all(GOOGLE_API_LIBRARY.iter().map(|entry| probe(entry, &token)))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(crate::google_errors::GoogleError::Failed)?;
     Ok(out)
 }
 

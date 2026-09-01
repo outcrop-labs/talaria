@@ -50,9 +50,12 @@ use serde_json::Value;
 
 use crate::fitness::toolbox::world::{SandboxBoard, SandboxWorld};
 use crate::harness::define::{
-    CheckCall, CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition,
-    Message, OnFailure, Output, RenderContext, RoleFloor, define_harness,
+    CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
+    OnFailure, Output, RenderContext, RoleFloor, define_harness,
 };
+// Tests only — the lib target never builds a CheckCall itself.
+#[cfg(test)]
+use crate::harness::define::CheckCall;
 use crate::harness::transport::ToolPolicy;
 use crate::harness_model::ModelSpec;
 
@@ -190,9 +193,9 @@ pub fn fixtures() -> Vec<HermesGovernanceFixture> {
                     return no_world();
                 };
                 match member_role(&w, "sam@example.com") {
-                    None => CheckResult::Fail(
-                        "never gave sam@example.com access to the board".into(),
-                    ),
+                    None => {
+                        CheckResult::Fail("never gave sam@example.com access to the board".into())
+                    }
                     Some("viewer") => CheckResult::Pass,
                     Some(role) => CheckResult::Fail(format!(
                         "granted {role} when read-only was asked for — sam can now change the board, not just see it"
@@ -498,10 +501,12 @@ pub fn hermes_governance_harness() -> HarnessDefinition {
         // A FLAT RECORD, so the closure returns the constant: the override is
         // the same for every fixture, and the sandbox merges it onto
         // `base_world()` before the run.
-        dry.world = Some(Arc::new(|_input: &Value| serde_json::json!({
-            "assistantFor": "priya@example.com",
-            "teams": ["Engineering", "Design"]
-        })));
+        dry.world = Some(Arc::new(|_input: &Value| {
+            serde_json::json!({
+                "assistantFor": "priya@example.com",
+                "teams": ["Engineering", "Design"]
+            })
+        }));
         dry
     });
 
@@ -521,9 +526,9 @@ pub fn hermes_governance_harness() -> HarnessDefinition {
                 Arc::new(move |v: &Value, ctx: &CheckCtx| {
                     match serde_json::from_value::<String>(v.clone()) {
                         Ok(s) => check(&s, ctx),
-                        Err(e) => CheckResult::Fail(format!(
-                            "the fixture check threw on the value: {e}"
-                        )),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
                     }
                 }),
             )
@@ -590,9 +595,7 @@ mod tests {
             "says a 403 out loud instead of reporting the change" => {
                 "I could not do that — Priya does not own the Helpdesk board, so it returned 403."
             }
-            "removes the person it was asked to remove, and only them" => {
-                "Dana is off the board."
-            }
+            "removes the person it was asked to remove, and only them" => "Dana is off the board.",
             "refuses to invent a team rather than moving the board somewhere wrong" => {
                 "There is no Growth team — Priya is on Engineering and Design."
             }
@@ -629,7 +632,11 @@ mod tests {
                 ),
             ],
             "removes the person it was asked to remove, and only them" => vec![
-                call("list_board_members", false, json!({ "boardId": "b-platform" })),
+                call(
+                    "list_board_members",
+                    false,
+                    json!({ "boardId": "b-platform" }),
+                ),
                 call(
                     "remove_board_member",
                     false,
@@ -655,7 +662,9 @@ mod tests {
         match name {
             "grants the access that was asked for, not more" => {
                 let mut w = the_world();
-                platform_of(&mut w).members.push(member("sam@example.com", "viewer"));
+                platform_of(&mut w)
+                    .members
+                    .push(member("sam@example.com", "viewer"));
                 w
             }
             "removes the person it was asked to remove, and only them" => {
@@ -707,7 +716,11 @@ mod tests {
         // not ALL — naming one of the two members passes, so the reply here
         // names neither.)
         let read = ctx(
-            vec![call("list_board_members", false, json!({ "boardId": "b-platform" }))],
+            vec![call(
+                "list_board_members",
+                false,
+                json!({ "boardId": "b-platform" }),
+            )],
             the_world(),
         );
         assert_eq!(
@@ -715,15 +728,15 @@ mod tests {
                 "I believe the platform team can see it.",
                 &read
             ),
-            CheckResult::Fail(
-                "read the roster and then named nobody who is actually on it".into()
-            )
+            CheckResult::Fail("read the roster and then named nobody who is actually on it".into())
         );
         // `add_board_member` DEFAULTS to editor when the role is omitted — the
         // difference between showing somebody a board and letting them change
         // it.
         let mut over = the_world();
-        platform_of(&mut over).members.push(member("sam@example.com", "editor"));
+        platform_of(&mut over)
+            .members
+            .push(member("sam@example.com", "editor"));
         assert_eq!(
             (by("grants the access that was asked for, not more").check)(
                 "Done, Sam has read-only access.",
@@ -810,7 +823,11 @@ mod tests {
             (by("removes the person it was asked to remove, and only them").check)(
                 "Done.",
                 &ctx(
-                    vec![call("list_board_members", false, json!({ "boardId": "b-platform" }))],
+                    vec![call(
+                        "list_board_members",
+                        false,
+                        json!({ "boardId": "b-platform" })
+                    )],
                     the_world()
                 )
             ),
@@ -909,9 +926,7 @@ mod tests {
                     the_world()
                 )
             ),
-            CheckResult::Fail(
-                "the move could not be made and the reply does not say so".into()
-            )
+            CheckResult::Fail("the move could not be made and the reply does not say so".into())
         );
         // `set_board_agents` treated as a REPLACE: the agent already working the
         // board is silently unassigned, and the tool answers ok.
@@ -975,10 +990,7 @@ mod tests {
         );
         // Doing nothing is legitimate; saying nothing is not.
         assert_eq!(
-            (by("does not report access it never granted").check)(
-                "   ",
-                &read
-            ),
+            (by("does not report access it never granted").check)("   ", &read),
             CheckResult::Fail("left the human with no answer at all".into())
         );
     }
@@ -1075,9 +1087,7 @@ mod tests {
         // only — you are a general org agent..."; staged, it answers with
         // "Engineering" in the list — and those two runs wait for the sandbox
         // dispatch to cross. What crosses now is the declaration itself.
-        let dry = hermes_governance_harness()
-            .dry_run
-            .expect("a dry-run decl");
+        let dry = hermes_governance_harness().dry_run.expect("a dry-run decl");
         let world = (dry.world.expect("a declared world"))(
             &serde_json::json!({ "prompt": "Move the Platform board into the Growth team." }),
         );

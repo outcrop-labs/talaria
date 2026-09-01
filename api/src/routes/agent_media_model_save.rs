@@ -9,12 +9,11 @@
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::agent_media::read_agent_image;
 use crate::artifacts::{
-    agent_category_folder, create_artifact, create_folder, list_folders, save_artifact,
-    SaveArtifactPatch,
+    SaveArtifactPatch, agent_category_folder, create_artifact, create_folder, list_folders,
+    save_artifact,
 };
 use crate::body::{
-    as_object, optional_uuid_member, parse, string_member, string_msg, too_big_msg,
-    zod_type_name,
+    as_object, optional_uuid_member, parse, string_member, string_msg, too_big_msg, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::{describe_agent, usable_agent_gate};
@@ -71,18 +70,16 @@ pub async fn post(
             // A personal assistant saves media FOR ITS OWNER — owned +
             // private. Asked with the CALLER: writing into a human's account
             // needs a proven identity, not an asserted one.
-            owner_user_id = match crate::users::assistant_owner_for(
-                &state.pg,
-                &AgentSubject::Caller(caller),
-            )
-            .await
-            {
-                Ok(o) => o,
-                Err(e) => {
-                    tracing::error!("[agent-media] owner lookup failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+            owner_user_id =
+                match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller))
+                    .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::error!("[agent-media] owner lookup failed: {e}");
+                        return thrown_internal_error();
+                    }
+                };
         }
         Ok(None) => {
             let user = match require_user(&state, &headers).await {
@@ -99,7 +96,11 @@ pub async fn post(
             if !gate(&model) {
                 return house_error(StatusCode::FORBIDDEN, "forbidden");
             }
-            actor = user.email.clone().or(user.name.clone()).unwrap_or("user".into());
+            actor = user
+                .email
+                .clone()
+                .or(user.name.clone())
+                .unwrap_or("user".into());
             owner_user_id = Some(user.id);
         }
     }
@@ -161,13 +162,8 @@ pub async fn post(
         };
     }
     if folder_id.is_none() {
-        folder_id = agent_category_folder(
-            &state.pg,
-            &describe_agent(&model).label,
-            "Media",
-            &actor,
-        )
-        .await;
+        folder_id =
+            agent_category_folder(&state.pg, &describe_agent(&model).label, "Media", &actor).await;
     }
 
     let filename = path.rsplit('/').next().unwrap_or("image");

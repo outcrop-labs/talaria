@@ -7,7 +7,7 @@
 
 use sqlx::PgPool;
 
-use crate::agent_skills::{owner_model, platform_skill_names, SHARED};
+use crate::agent_skills::{SHARED, owner_model, platform_skill_names};
 use crate::fleet::allowed_agents;
 use crate::permissions::has_perm;
 use crate::personal_agent::owns_agent;
@@ -52,8 +52,12 @@ pub async fn can_edit_skill(
     owner: &str,
     name: &str,
 ) -> Result<bool, sqlx::Error> {
-    if owner == SHARED && role != "admin"
-        && platform_skill_names().unwrap_or_default().iter().any(|n| n == name)
+    if owner == SHARED
+        && role != "admin"
+        && platform_skill_names()
+            .unwrap_or_default()
+            .iter()
+            .any(|n| n == name)
     {
         return Ok(false);
     }

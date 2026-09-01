@@ -36,12 +36,12 @@ pub fn js_numberify(v: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(js_numberify),
         Value::Object(map) => map.values_mut().for_each(js_numberify),
         Value::Number(n) => {
-            if n.is_f64() {
-                if let Some(f) = n.as_f64() {
-                    if f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
-                        *n = serde_json::Number::from(f as i64);
-                    }
-                }
+            if n.is_f64()
+                && let Some(f) = n.as_f64()
+                && f.fract() == 0.0
+                && f.abs() < 9_007_199_254_740_992.0
+            {
+                *n = serde_json::Number::from(f as i64);
             }
         }
         _ => {}
@@ -1119,9 +1119,13 @@ mod tests {
     fn js_numberify_prints_whole_floats_as_integers_like_stringify() {
         // The fitness diff's detail case: a score stored as 1.0 must read `1`
         // on the wire, exactly as TS's JSON.stringify prints it.
-        let mut v = json!({ "score": 1.0, "ratio": 0.9090909090909091, "n": 3, "list": [2.0, 0.5] });
+        let mut v =
+            json!({ "score": 1.0, "ratio": 0.9090909090909091, "n": 3, "list": [2.0, 0.5] });
         js_numberify(&mut v);
-        assert_eq!(v.to_string(), r#"{"score":1,"ratio":0.9090909090909091,"n":3,"list":[2,0.5]}"#);
+        assert_eq!(
+            v.to_string(),
+            r#"{"score":1,"ratio":0.9090909090909091,"n":3,"list":[2,0.5]}"#
+        );
         // An integer-typed number and a genuine fraction pass through; so does
         // a whole float beyond the safe range (nothing on this wire carries
         // one, and printing it is a decision, not a default).

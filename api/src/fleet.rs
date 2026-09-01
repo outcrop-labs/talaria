@@ -272,12 +272,11 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
     // defs (enabled only) → container reality, keyed by the def's MODEL (the
     // agent id). A defs read that fails reads as "no containers" (TS's
     // `.catch(() => [])`).
-    let defs: Vec<(String, String)> = sqlx::query_as(
-        "select model, department from agent_defs where enabled",
-    )
-    .fetch_all(pg)
-    .await
-    .unwrap_or_default();
+    let defs: Vec<(String, String)> =
+        sqlx::query_as("select model, department from agent_defs where enabled")
+            .fetch_all(pg)
+            .await
+            .unwrap_or_default();
     let containers = if defs.is_empty() {
         Vec::new()
     } else {
@@ -288,7 +287,10 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
         .unwrap_or_default()
     };
     let by_dept: std::collections::HashMap<&str, &crate::fleet_docker::AgentContainers> =
-        containers.iter().map(|c| (c.department.as_str(), c)).collect();
+        containers
+            .iter()
+            .map(|c| (c.department.as_str(), c))
+            .collect();
     let container_up: std::collections::HashMap<&str, bool> = defs
         .iter()
         .map(|(model, dept)| {
@@ -325,7 +327,10 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
             // reg?.status ?? 'offline'
             let reg_status = reg.map(|r| r.status.wire()).unwrap_or("offline");
             let status = if reg_status == "offline"
-                && container_up.get(a.agent.id.as_str()).copied().unwrap_or(false)
+                && container_up
+                    .get(a.agent.id.as_str())
+                    .copied()
+                    .unwrap_or(false)
             {
                 "idle"
             } else {
@@ -365,7 +370,10 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
             })
             .count(),
     };
-    Ok(FleetOverview { agents: stats, totals })
+    Ok(FleetOverview {
+        agents: stats,
+        totals,
+    })
 }
 
 #[cfg(test)]

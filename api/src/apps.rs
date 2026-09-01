@@ -127,10 +127,8 @@ pub async fn set_app_enabled(
 /// compile; the dev server picks them up on reload, prod needs a rebuild
 /// (pendingApps).
 pub async fn pending_apps() -> Vec<String> {
-    let built: std::collections::HashSet<String> = discovered_apps()
-        .into_iter()
-        .map(|a| a.slug)
-        .collect();
+    let built: std::collections::HashSet<String> =
+        discovered_apps().into_iter().map(|a| a.slug).collect();
     let Ok(mut entries) = tokio::fs::read_dir(apps_dir()).await else {
         return Vec::new();
     };
@@ -210,9 +208,7 @@ pub async fn install_app_from_git(
         .unwrap_or(false);
     if !manifest_ok {
         let _ = tokio::fs::remove_dir_all(&target).await;
-        return Err(
-            "that repository is not a Talaria app (no talaria.json at its root)".into(),
-        );
+        return Err("that repository is not a Talaria app (no talaria.json at its root)".into());
     }
     let mut installed = installed_sources(pg).await;
     let Some(obj) = installed.as_object_mut() else {
@@ -325,13 +321,15 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
         );
     }
     let Ok(j) = serde_json::from_slice::<Value>(&resp.body) else {
-        return (
-            Vec::new(),
-            Some("expected a JSON catalog".to_string()),
-        );
+        return (Vec::new(), Some("expected a JSON catalog".to_string()));
     };
     let mut out = Vec::new();
-    for a in j.get("apps").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+    for a in j
+        .get("apps")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
         let field = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
         // Admission: real slug, a name, an https repo. Everything else
         // coerces to defaults like TS's String(x ?? d).
@@ -351,7 +349,10 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
             "icon".into(),
             field("icon").unwrap_or_else(|| "⬡".into()).into(),
         );
-        obj.insert("description".into(), field("description").unwrap_or_default().into());
+        obj.insert(
+            "description".into(),
+            field("description").unwrap_or_default().into(),
+        );
         obj.insert("repo".into(), repo.into());
         obj.insert(
             "author".into(),

@@ -21,9 +21,7 @@ use serde_json::{Value, json};
 
 /// `Name = z.string().trim().min(1, …).max(60, …)` — trimmed, then the two
 /// named bounds.
-fn parse_name(
-    obj: &serde_json::Map<String, Value>,
-) -> Result<Option<String>, String> {
+fn parse_name(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("name") {
         None => Ok(None),
         Some(v) => {
@@ -42,9 +40,7 @@ fn parse_name(
 
 /// `Handle = z.string().trim().regex(HANDLE_RE, …)` — the note is the whole
 /// message; length and alphabet both live in the regex.
-fn parse_handle(
-    obj: &serde_json::Map<String, Value>,
-) -> Result<Option<String>, String> {
+fn parse_handle(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("handle") {
         None => Ok(None),
         Some(v) => {
@@ -60,9 +56,7 @@ fn parse_handle(
 
 /// `model: z.string().trim().min(1).max(60).optional()` — trimmed, then the
 /// two default bounds.
-fn parse_model(
-    obj: &serde_json::Map<String, Value>,
-) -> Result<Option<String>, String> {
+fn parse_model(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("model") {
         None => Ok(None),
         Some(v) => {

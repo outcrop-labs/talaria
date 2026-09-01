@@ -31,7 +31,10 @@ pub struct AgentMcp {
 fn entry(name: &str, raw: &Map<String, Value>) -> McpServerEntry {
     McpServerEntry {
         name: name.to_string(),
-        url: raw.get("url").map(crate::body::js_string).unwrap_or_default(),
+        url: raw
+            .get("url")
+            .map(crate::body::js_string)
+            .unwrap_or_default(),
         // `typeof entry.timeout === 'number'` — a JSON number, nothing else.
         timeout: raw.get("timeout").and_then(Value::as_i64),
         extras: raw
@@ -98,12 +101,7 @@ pub async fn list_agent_mcp(pg: &PgPool) -> Result<Vec<AgentMcp>, sqlx::Error> {
 /// fleet's convention. The Map is insertion-ordered like a JS object, so the
 /// merged key order (removed keys dropped in place, re-added keys keeping
 /// their original position, new keys appended) matches TS exactly.
-pub fn apply_mcp_edits(
-    prev: &Value,
-    slug: &str,
-    add: &[Value],
-    remove: &[String],
-) -> Value {
+pub fn apply_mcp_edits(prev: &Value, slug: &str, add: &[Value], remove: &[String]) -> Value {
     let mut servers: Map<String, Value> = prev
         .get("raw")
         .and_then(Value::as_object)
@@ -119,7 +117,9 @@ pub fn apply_mcp_edits(
         let mut next = Map::new();
         next.insert(
             "url".into(),
-            s.get("url").cloned().unwrap_or(Value::String(String::new())),
+            s.get("url")
+                .cloned()
+                .unwrap_or(Value::String(String::new())),
         );
         next.insert(
             "headers".into(),
@@ -142,9 +142,10 @@ pub fn apply_mcp_edits(
     raw.insert("mcp_servers".into(), Value::Object(servers.clone()));
     let mut config = prev.as_object().cloned().unwrap_or_default();
     let names = servers.keys().cloned().collect::<Vec<_>>();
-    config.insert("mcpServers".into(), Value::Array(
-        names.into_iter().map(Value::String).collect(),
-    ));
+    config.insert(
+        "mcpServers".into(),
+        Value::Array(names.into_iter().map(Value::String).collect()),
+    );
     config.insert("raw".into(), Value::Object(raw));
     Value::Object(config)
 }
@@ -173,7 +174,10 @@ mod tests {
             &["linear".into()],
         );
         // Untouched entries pass through byte-for-byte.
-        assert_eq!(next["raw"]["mcp_servers"]["exa"], json!({"url": "https://exa", "headers": {"X": "1"}}));
+        assert_eq!(
+            next["raw"]["mcp_servers"]["exa"],
+            json!({"url": "https://exa", "headers": {"X": "1"}})
+        );
         assert!(next["raw"]["mcp_servers"].get("linear").is_none());
         let fresh = next["raw"]["mcp_servers"]["fresh"].as_object().unwrap();
         assert_eq!(fresh["url"], "https://f");

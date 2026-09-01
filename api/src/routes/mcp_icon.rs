@@ -35,7 +35,13 @@ pub async fn get(
     if !shape_ok {
         return crate::error::house_error(StatusCode::BAD_REQUEST, "bad request");
     }
-    let Some(icon) = icons().resolve_icon(&IconKey { src: None, domain: Some(domain) }).await else {
+    let Some(icon) = icons()
+        .resolve_icon(&IconKey {
+            src: None,
+            domain: Some(domain),
+        })
+        .await
+    else {
         // `new Response(null, { status: 404 })` — an empty body and NO
         // content-type; axum's `(status, "")` pair would stamp text/plain on it.
         return Response::builder()

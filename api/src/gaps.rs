@@ -21,9 +21,9 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::agent_auth::epoch_ms_to_iso;
-use crate::agent_writes::{guard_agent_fields, WriteAuthor};
+use crate::agent_writes::{WriteAuthor, guard_agent_fields};
 use crate::approvals::audience_for;
-use crate::notify::{add_notification, NotificationInput, NotifyDeps};
+use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 use crate::runs::define::Authority;
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,7 +168,9 @@ pub async fn agent_text_authority(
         // → null in TS — a normal read, handled below, not an error path.
         Ok(memo) => memo.flatten(),
         Err(e) => {
-            tracing::error!("[gaps] could not read the refusal memo for \"{agent_model}\" — announcing the fact only: {e}");
+            tracing::error!(
+                "[gaps] could not read the refusal memo for \"{agent_model}\" — announcing the fact only: {e}"
+            );
             return Authority::Nobody;
         }
     };
@@ -225,7 +227,9 @@ pub async fn report_gap(
         None,
     )
     .await;
-    let missing = guarded[0].clone().unwrap_or_else(|| input.missing.to_string());
+    let missing = guarded[0]
+        .clone()
+        .unwrap_or_else(|| input.missing.to_string());
     let needs = guarded[1].clone();
 
     let authority = agent_text_authority(&deps.pg, input.agent_model, input.board_id).await;
@@ -330,7 +334,10 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
             user_id,
             &NotificationInput {
                 kind: "gap_reported",
-                title: &format!("{agent_model} hit a capability gap: {}", char_take(missing, 160)),
+                title: &format!(
+                    "{agent_model} hit a capability gap: {}",
+                    char_take(missing, 160)
+                ),
                 body: Some(&body),
                 href: Some("/studio"),
             },

@@ -6,7 +6,7 @@ use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member, uuid_member};
 use crate::error::{house_error, thrown_internal_error};
 use crate::invites::{create_invite, list_invites, revoke_invite};
-use crate::session::{require_admin, SessionUser};
+use crate::session::{SessionUser, require_admin};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -66,7 +66,15 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    match create_invite(&state.pg, &sb, &email, &actor, origin_of(&headers).as_deref()).await {
+    match create_invite(
+        &state.pg,
+        &sb,
+        &email,
+        &actor,
+        origin_of(&headers).as_deref(),
+    )
+    .await
+    {
         Ok((invite, email_sent, email_error)) => {
             log_audit(
                 &state.pg,

@@ -195,9 +195,8 @@ pub async fn home_summary(
     let queues = home_queues(pg, user_id).await?;
 
     let vis = board_visibility_sql("$1", "$1", false);
-    let boards_sql = format!(
-        "select count(distinct b.id)::int as boards from boards b where {vis}"
-    );
+    let boards_sql =
+        format!("select count(distinct b.id)::int as boards from boards b where {vis}");
     let (unread_res, boards_res) = tokio::join!(
         sqlx::query_as::<_, (i32,)>(
             "select count(*)::int from notifications where user_id = $1::uuid and read_at is null"

@@ -62,8 +62,7 @@ pub async fn list_cron_jobs(pg: &PgPool, def_id: &str) -> Result<Vec<CronJob>, S
             }
         }
     };
-    let raw = serde_json::from_str::<serde_json::Value>(&stdout)
-        .map_err(|e| e.to_string())?;
+    let raw = serde_json::from_str::<serde_json::Value>(&stdout).map_err(|e| e.to_string())?;
     let jobs = raw
         .get("jobs")
         .and_then(|j| j.as_array())
@@ -89,8 +88,9 @@ pub async fn list_cron_jobs(pg: &PgPool, def_id: &str) -> Result<Vec<CronJob>, S
                     .and_then(|s| s.as_str())
                     .map(String::from)
                     .or_else(|| {
-                        j.get("schedule")
-                            .and_then(|s| s.get("display").and_then(|d| d.as_str()).map(String::from))
+                        j.get("schedule").and_then(|s| {
+                            s.get("display").and_then(|d| d.as_str()).map(String::from)
+                        })
                     })
                     .or_else(|| {
                         j.get("schedule")
@@ -168,10 +168,7 @@ fn cron_field_values(field: &str, max: i64) -> Vec<f64> {
         let step: f64 = if step_raw.is_empty() {
             1.0
         } else {
-            match step_raw.parse::<f64>() {
-                Ok(v) => v,
-                Err(_) => f64::NAN,
-            }
+            step_raw.parse::<f64>().unwrap_or(f64::NAN)
         };
         if !step.is_finite() || step < 1.0 {
             return Vec::new();
@@ -337,12 +334,7 @@ pub async fn edit_cron_job(
         return Err("bad job id".to_string());
     }
     let (department, _) = agent_for(pg, def_id).await?;
-    let mut args: Vec<String> = vec![
-        "hermes".into(),
-        "cron".into(),
-        "edit".into(),
-        job_id.into(),
-    ];
+    let mut args: Vec<String> = vec!["hermes".into(), "cron".into(), "edit".into(), job_id.into()];
     if let Some(name) = name {
         assert_safe(name, "name")?;
         args.push("--name".into());

@@ -4,7 +4,7 @@
 // create. Admin, or the owner of a personal assistant.
 
 use crate::agent_crons::{create_cron_job, list_cron_jobs};
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, trimmed_string_member};
 use crate::error::house_error;
 use crate::permissions::has_perm;

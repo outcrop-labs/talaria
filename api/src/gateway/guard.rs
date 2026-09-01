@@ -1350,6 +1350,134 @@ pub fn redact_secrets(text: &str, grounding: Option<&Grounding>) -> (String, boo
     (out, redacted)
 }
 
+// ── The admin surface (guardrails.ts guardRuleMeta / listFindings / guardStats)
+
+/// The rules' UI metadata, RULES order — which rules exist, how bad a hit is,
+/// whether they run by default. Labels live here and not on RuleDef because
+/// only this listing ever reads them.
+pub fn guard_rule_meta() -> Vec<serde_json::Value> {
+    // (id, label) — the pairs guardrails.ts carries inline on each rule.
+    const LABELS: &[(&str, &str)] = &[
+        (
+            "zero_tool_claim",
+            "Zero-tool claim (claims done, no tool ran)",
+        ),
+        ("ungrounded_ref", "Ungrounded reference (invented link/id)"),
+        (
+            "fabricated_outage",
+            "Fabricated outage (claims failure, nothing errored)",
+        ),
+        ("secret_leak", "Secret leak (credential in output)"),
+        ("pii_leak", "PII leak (SSN / card number / IBAN in output)"),
+    ];
+    RULES
+        .iter()
+        .map(|r| {
+            let label = LABELS
+                .iter()
+                .find(|(id, _)| *id == r.id)
+                .map(|(_, l)| *l)
+                .unwrap_or("");
+            serde_json::json!({
+                "id": r.id,
+                "label": label,
+                "severity": r.severity,
+                "defaultOn": r.default_on,
+            })
+        })
+        .collect()
+}
+
+/// A `real` column's value as the JSON number TS puts on the wire. Postgres
+/// sends float4 as its shortest round-tripping decimal ("0.8"); postgres.js
+/// parses THAT string into a double, so the wire number is
+/// parse(shortest(f32)) — never `f32 as f64`, which would print
+/// 0.800000011920929 for the 0.8 the admin panel is meant to see.
+fn real_to_json_f64(v: f32) -> f64 {
+    format!("{v}").parse().unwrap_or(v as f64)
+}
+
+/// Recent findings, newest first (listFindings). The limit clamp is the
+/// module's own (min 1, max 500).
+pub async fn list_guard_findings(
+    pg: &PgPool,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    /// One guard_findings row, in select order — the tuple the query_as
+    /// macro needs, named so the signature stays readable.
+    type FindingRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        f32,
+        String,
+        Option<String>,
+        i64,
+    );
+    let rows: Result<Vec<FindingRow>, _> = sqlx::query_as(
+        "select id::text, caller, model, endpoint, mode, check_type, severity, confidence, message, snippet, \
+                (trunc(extract(epoch from created_at) * 1000))::bigint \
+         from guard_findings order by created_at desc limit $1",
+    )
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pg)
+    .await;
+    rows.map(|rows| {
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    caller,
+                    model,
+                    endpoint,
+                    mode,
+                    check,
+                    severity,
+                    confidence,
+                    message,
+                    snippet,
+                    created_ms,
+                )| {
+                    serde_json::json!({
+                        "id": id,
+                        "caller": caller,
+                        "model": model,
+                        "endpoint": endpoint,
+                        "mode": mode,
+                        "check": check,
+                        "severity": severity,
+                        "confidence": real_to_json_f64(confidence),
+                        "message": message,
+                        "snippet": snippet,
+                        "createdAt": crate::agent_auth::epoch_ms_to_iso(created_ms),
+                    })
+                },
+            )
+            .collect()
+    })
+}
+
+/// Total findings plus the count per check (guardStats).
+pub async fn guard_stats(pg: &PgPool) -> serde_json::Value {
+    let rows: Result<Vec<(String, i64)>, _> =
+        sqlx::query_as("select check_type, count(*)::int8 from guard_findings group by check_type")
+            .fetch_all(pg)
+            .await;
+    let mut by_check = serde_json::Map::new();
+    let mut total: i64 = 0;
+    if let Ok(rows) = rows {
+        for (check, n) in rows {
+            total += n;
+            by_check.insert(check, serde_json::Value::from(n));
+        }
+    }
+    serde_json::json!({ "total": total, "byCheck": serde_json::Value::Object(by_check) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1700,127 +1828,4 @@ mod tests {
         assert_eq!(narrowed.mode, config.mode);
         assert_eq!(narrowed.min_confidence, config.min_confidence);
     }
-}
-
-// ── The admin surface (guardrails.ts guardRuleMeta / listFindings / guardStats)
-
-/// The rules' UI metadata, RULES order — which rules exist, how bad a hit is,
-/// whether they run by default. Labels live here and not on RuleDef because
-/// only this listing ever reads them.
-pub fn guard_rule_meta() -> Vec<serde_json::Value> {
-    // (id, label) — the pairs guardrails.ts carries inline on each rule.
-    const LABELS: &[(&str, &str)] = &[
-        (
-            "zero_tool_claim",
-            "Zero-tool claim (claims done, no tool ran)",
-        ),
-        (
-            "ungrounded_ref",
-            "Ungrounded reference (invented link/id)",
-        ),
-        (
-            "fabricated_outage",
-            "Fabricated outage (claims failure, nothing errored)",
-        ),
-        ("secret_leak", "Secret leak (credential in output)"),
-        (
-            "pii_leak",
-            "PII leak (SSN / card number / IBAN in output)",
-        ),
-    ];
-    RULES
-        .iter()
-        .map(|r| {
-            let label = LABELS
-                .iter()
-                .find(|(id, _)| *id == r.id)
-                .map(|(_, l)| *l)
-                .unwrap_or("");
-            serde_json::json!({
-                "id": r.id,
-                "label": label,
-                "severity": r.severity,
-                "defaultOn": r.default_on,
-            })
-        })
-        .collect()
-}
-
-/// A `real` column's value as the JSON number TS puts on the wire. Postgres
-/// sends float4 as its shortest round-tripping decimal ("0.8"); postgres.js
-/// parses THAT string into a double, so the wire number is
-/// parse(shortest(f32)) — never `f32 as f64`, which would print
-/// 0.800000011920929 for the 0.8 the admin panel is meant to see.
-fn real_to_json_f64(v: f32) -> f64 {
-    format!("{v}").parse().unwrap_or(v as f64)
-}
-
-/// Recent findings, newest first (listFindings). The limit clamp is the
-/// module's own (min 1, max 500).
-pub async fn list_guard_findings(
-    pg: &PgPool,
-    limit: i64,
-) -> Result<Vec<serde_json::Value>, sqlx::Error> {
-    /// One guard_findings row, in select order — the tuple the query_as
-    /// macro needs, named so the signature stays readable.
-    type FindingRow = (
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        String,
-        String,
-        f32,
-        String,
-        Option<String>,
-        i64,
-    );
-    let rows: Result<Vec<FindingRow>, _> = sqlx::query_as(
-        "select id::text, caller, model, endpoint, mode, check_type, severity, confidence, message, snippet, \
-                (trunc(extract(epoch from created_at) * 1000))::bigint \
-         from guard_findings order by created_at desc limit $1",
-    )
-    .bind(limit.clamp(1, 500))
-    .fetch_all(pg)
-    .await;
-    rows.map(|rows| {
-        rows.into_iter()
-            .map(
-                |(id, caller, model, endpoint, mode, check, severity, confidence, message, snippet, created_ms)| {
-                    serde_json::json!({
-                        "id": id,
-                        "caller": caller,
-                        "model": model,
-                        "endpoint": endpoint,
-                        "mode": mode,
-                        "check": check,
-                        "severity": severity,
-                        "confidence": real_to_json_f64(confidence),
-                        "message": message,
-                        "snippet": snippet,
-                        "createdAt": crate::agent_auth::epoch_ms_to_iso(created_ms),
-                    })
-                },
-            )
-            .collect()
-    })
-}
-
-/// Total findings plus the count per check (guardStats).
-pub async fn guard_stats(pg: &PgPool) -> serde_json::Value {
-    let rows: Result<Vec<(String, i64)>, _> = sqlx::query_as(
-        "select check_type, count(*)::int8 from guard_findings group by check_type",
-    )
-    .fetch_all(pg)
-    .await;
-    let mut by_check = serde_json::Map::new();
-    let mut total: i64 = 0;
-    if let Ok(rows) = rows {
-        for (check, n) in rows {
-            total += n;
-            by_check.insert(check, serde_json::Value::from(n));
-        }
-    }
-    serde_json::json!({ "total": total, "byCheck": serde_json::Value::Object(by_check) })
 }

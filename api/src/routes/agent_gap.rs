@@ -4,8 +4,10 @@
 // the Studio's Suggested queue; the ticket (if given) gets an audit line.
 
 use crate::agent_auth::{AgentSubject, require_agent};
-use crate::body::{as_object, optional_max_string_member, optional_uuid_member, parse, string_member};
 use crate::boards::board_allows_agent;
+use crate::body::{
+    as_object, optional_max_string_member, optional_uuid_member, parse, string_member,
+};
 use crate::error::{house_error, thrown_internal_error};
 use crate::gaps::{remember_ticket_refusal, report_gap, report_gap::GapInput};
 use crate::notify::NotifyDeps;
@@ -135,8 +137,8 @@ pub async fn post(
             Ok(None) => {}
             Ok(Some(shut)) => {
                 remember_ticket_refusal(&state.pg, &agent, Some(&task.board_id)).await;
-                let mut resp = Json(json!({ "error": "forbidden", "message": shut }))
-                    .into_response();
+                let mut resp =
+                    Json(json!({ "error": "forbidden", "message": shut })).into_response();
                 *resp.status_mut() = StatusCode::FORBIDDEN;
                 return resp;
             }

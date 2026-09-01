@@ -6,7 +6,7 @@
 // write audits — secret NAMES only, never values.
 
 use crate::agent_secrets::{delete_agent_secret, list_agent_secrets, set_agent_secret};
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member, trimmed_string_member};
 use crate::error::{house_error, thrown_internal_error};
 use crate::personal_agent::owns_agent;
@@ -73,13 +73,16 @@ pub async fn put(
         Ok(sb) => sb,
         Err(_) => return thrown_internal_error(),
     };
-    let actor = user
-        .email
-        .clone()
-        .or_else(|| user.name.clone());
+    let actor = user.email.clone().or_else(|| user.name.clone());
     match set_agent_secret(&state.pg, &sb, &id, &name, &value, actor.as_deref()).await {
         Ok(()) => {
-            audit(&state, &user, "agent.secret_set", &id, json!({ "name": name }));
+            audit(
+                &state,
+                &user,
+                "agent.secret_set",
+                &id,
+                json!({ "name": name }),
+            );
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
@@ -114,10 +117,16 @@ pub async fn delete(
             _ => return house_error(StatusCode::BAD_REQUEST, "missing name"),
         },
     };
-    if let Err(_) = delete_agent_secret(&state.pg, &id, &name).await {
+    if delete_agent_secret(&state.pg, &id, &name).await.is_err() {
         return thrown_internal_error();
     }
-    audit(&state, &user, "agent.secret_delete", &id, json!({ "name": name }));
+    audit(
+        &state,
+        &user,
+        "agent.secret_delete",
+        &id,
+        json!({ "name": name }),
+    );
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -127,9 +136,7 @@ fn query_param(uri: &Uri, key: &str) -> Option<String> {
         q.split('&').find_map(|pair| {
             let (k, v) = pair.split_once('=')?;
             if k == key {
-                Some(
-                    percent_decode(v)
-                )
+                Some(percent_decode(v))
             } else {
                 None
             }
@@ -177,7 +184,13 @@ fn percent_decode(v: &str) -> String {
 }
 
 /// The family's audit — names only, never values, fire-and-forget.
-fn audit(state: &AppState, user: &crate::session::SessionUser, action: &str, id: &str, after: serde_json::Value) {
+fn audit(
+    state: &AppState,
+    user: &crate::session::SessionUser,
+    action: &str,
+    id: &str,
+    after: serde_json::Value,
+) {
     let actor = actor_of(user);
     let action = action.to_string();
     let id = id.to_string();

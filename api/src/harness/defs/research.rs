@@ -438,16 +438,21 @@ pub fn queries_harness() -> HarnessDefinition {
     d.evals = query_fixtures()
         .into_iter()
         .map(|f| {
-            let QueryFixture { name, band, input, check } = f;
+            let QueryFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
             EvalCase::new(
                 name,
                 input,
                 Arc::new(move |v: &Value, ctx: &CheckCtx| {
                     match serde_json::from_value::<Vec<String>>(v.clone()) {
                         Ok(queries) => check(&queries, ctx).into(),
-                        Err(e) => CheckResult::Fail(format!(
-                            "the fixture check threw on the value: {e}"
-                        )),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
                     }
                 }),
             )
@@ -650,16 +655,21 @@ pub fn search_harness() -> HarnessDefinition {
     d.evals = search_fixtures()
         .into_iter()
         .map(|f| {
-            let TextFixture { name, band, input, check } = f;
+            let TextFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
             EvalCase::new(
                 name,
                 input,
                 Arc::new(move |v: &Value, ctx: &CheckCtx| {
                     match serde_json::from_value::<String>(v.clone()) {
                         Ok(text) => check(&text, ctx).into(),
-                        Err(e) => CheckResult::Fail(format!(
-                            "the fixture check threw on the value: {e}"
-                        )),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
                     }
                 }),
             )
@@ -922,16 +932,21 @@ pub fn synthesis_harness() -> HarnessDefinition {
     d.evals = synth_fixtures()
         .into_iter()
         .map(|f| {
-            let TextFixture { name, band, input, check } = f;
+            let TextFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
             EvalCase::new(
                 name,
                 input,
                 Arc::new(move |v: &Value, ctx: &CheckCtx| {
                     match serde_json::from_value::<String>(v.clone()) {
                         Ok(text) => check(&text, ctx).into(),
-                        Err(e) => CheckResult::Fail(format!(
-                            "the fixture check threw on the value: {e}"
-                        )),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
                     }
                 }),
             )

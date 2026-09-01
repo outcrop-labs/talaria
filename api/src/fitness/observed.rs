@@ -331,7 +331,11 @@ async fn guard_finding_groups(
         .await?;
     Ok(rows
         .into_iter()
-        .map(|r| GuardFindingGroup { model: r.model, check: r.check, n: r.n })
+        .map(|r| GuardFindingGroup {
+            model: r.model,
+            check: r.check,
+            n: r.n,
+        })
         .collect())
 }
 
@@ -344,11 +348,7 @@ pub struct ObservedOptions {
 }
 
 fn rate(n: f64, of: f64) -> f64 {
-    if of == 0.0 {
-        0.0
-    } else {
-        n / of
-    }
+    if of == 0.0 { 0.0 } else { n / of }
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
@@ -359,7 +359,10 @@ fn rate(n: f64, of: f64) -> f64 {
 /// ADVISORY DATA BEHIND A VERDICT THAT MUST STILL RENDER: a telemetry query
 /// that fails must not take the fitness page with it — the page falls back to
 /// "no production data", which is exactly what an install with no rows shows.
-pub async fn observed_harnesses(deps: &ObservedDeps, opts: &ObservedOptions) -> Vec<ObservedHarness> {
+pub async fn observed_harnesses(
+    deps: &ObservedDeps,
+    opts: &ObservedOptions,
+) -> Vec<ObservedHarness> {
     let days = opts.since_days.unwrap_or(DEFAULT_WINDOW_DAYS);
     let groups = (deps.harness_runs)(days).await.unwrap_or_default();
     let steps = (deps.chain_steps)(days).await.unwrap_or_default();
@@ -388,7 +391,7 @@ pub async fn observed_harnesses(deps: &ObservedDeps, opts: &ObservedOptions) -> 
             // By count, descending — the fallback that actually carries the
             // harness reads first.
             let mut steps = steps;
-            steps.sort_by(|a, b| b.runs.cmp(&a.runs));
+            steps.sort_by_key(|a| std::cmp::Reverse(a.runs));
             let runs = g.runs as f64;
             ObservedHarness {
                 harness: g.harness,
@@ -432,13 +435,15 @@ pub async fn observed_models(deps: &ObservedDeps, opts: &ObservedOptions) -> Vec
 
     let mut out: Vec<ObservedModel> = Vec::new();
     for model in models {
-        if let Some(want) = &opts.model {
-            if &model != want {
-                continue;
-            }
+        if let Some(want) = &opts.model
+            && &model != want
+        {
+            continue;
         }
-        let mine: Vec<&HarnessRunGroup> =
-            groups.iter().filter(|g| g.model.as_deref() == Some(model.as_str())).collect();
+        let mine: Vec<&HarnessRunGroup> = groups
+            .iter()
+            .filter(|g| g.model.as_deref() == Some(model.as_str()))
+            .collect();
         let runs: i64 = mine.iter().map(|g| g.runs).sum();
         let mut guard_by_check: BTreeMap<String, i64> = BTreeMap::new();
         let mut guard_findings = 0i64;
@@ -460,7 +465,11 @@ pub async fn observed_models(deps: &ObservedDeps, opts: &ObservedOptions) -> Vec
             confabulation,
         });
     }
-    out.sort_by(|a, b| b.harness_runs.cmp(&a.harness_runs).then_with(|| a.model.cmp(&b.model)));
+    out.sort_by(|a, b| {
+        b.harness_runs
+            .cmp(&a.harness_runs)
+            .then_with(|| a.model.cmp(&b.model))
+    });
     out
 }
 
@@ -486,7 +495,12 @@ pub fn guard_baseline(rows: &[ObservedHarness]) -> HashMap<String, f64> {
         *findings.entry(r.harness.clone()).or_insert(0.0) += r.findings_per_run * r.runs as f64;
     }
     runs.into_iter()
-        .map(|(harness, n)| (harness.clone(), rate(findings.get(&harness).copied().unwrap_or(0.0), n as f64)))
+        .map(|(harness, n)| {
+            (
+                harness.clone(),
+                rate(findings.get(&harness).copied().unwrap_or(0.0), n as f64),
+            )
+        })
         .collect()
 }
 
@@ -590,7 +604,11 @@ pub fn divergences(
             if delta.abs() < threshold {
                 return;
             }
-            let worse = if worse_when_higher { delta > 0.0 } else { delta < 0.0 };
+            let worse = if worse_when_higher {
+                delta > 0.0
+            } else {
+                delta < 0.0
+            };
             out.push(Divergence {
                 harness: score.meta.id.clone(),
                 model: model.to_string(),
@@ -607,7 +625,11 @@ pub fn divergences(
                     show(tested_value),
                     show(observed_value),
                     live.runs,
-                    if worse { "worse than the bench" } else { "better than the bench" }
+                    if worse {
+                        "worse than the bench"
+                    } else {
+                        "better than the bench"
+                    }
                 ),
             });
         };
@@ -646,9 +668,12 @@ pub fn divergences(
 
     // Worse first, then the bigger gap.
     out.sort_by(|a, b| {
-        b.worse
-            .cmp(&a.worse)
-            .then_with(|| b.delta.abs().partial_cmp(&a.delta.abs()).unwrap_or(std::cmp::Ordering::Equal))
+        b.worse.cmp(&a.worse).then_with(|| {
+            b.delta
+                .abs()
+                .partial_cmp(&a.delta.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     out
 }

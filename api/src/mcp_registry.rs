@@ -300,9 +300,7 @@ pub(crate) fn undici_message(e: &reqwest::Error) -> String {
 /// message that surfaces, so it passes through verbatim.
 fn undici_safe_message(e: crate::safe_fetch::SafeError) -> String {
     match e {
-        crate::safe_fetch::SafeError::Timeout => {
-            "The operation was aborted due to timeout".into()
-        }
+        crate::safe_fetch::SafeError::Timeout => "The operation was aborted due to timeout".into(),
         crate::safe_fetch::SafeError::Blocked(b) => b.to_string(),
         crate::safe_fetch::SafeError::Fetch(_) => "fetch failed".into(),
     }
@@ -358,7 +356,11 @@ async fn org_call(
         for (k, v) in &pairs {
             req = req.header(k, v);
         }
-        let res = req.body(payload).send().await.map_err(|e| undici_message(&e))?;
+        let res = req
+            .body(payload)
+            .send()
+            .await
+            .map_err(|e| undici_message(&e))?;
         let status = res.status().as_u16();
         let headers = res.headers().clone();
         let text = res.text().await.map_err(|e| undici_message(&e))?;
@@ -591,21 +593,22 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning {ROW}"
     );
     let row: Option<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-    .bind(input.name)
-    .bind(input.label.unwrap_or(input.name))
-    .bind(input.description)
-    .bind(input.url)
-    .bind(serde_json::Value::Object(
-        input.headers.cloned().unwrap_or_default(),
-    ))
-    .bind(input.timeout_secs)
-    .bind(input.auth_mode)
-    .bind(Value::Array(declared))
-    .bind(input.created_by)
-    .fetch_optional(pg)
-    .await
-    .map_err(|e| e.to_string())?;
-    row.map(server_of_row).ok_or_else(|| "insert returned no row".to_string())
+        .bind(input.name)
+        .bind(input.label.unwrap_or(input.name))
+        .bind(input.description)
+        .bind(input.url)
+        .bind(serde_json::Value::Object(
+            input.headers.cloned().unwrap_or_default(),
+        ))
+        .bind(input.timeout_secs)
+        .bind(input.auth_mode)
+        .bind(Value::Array(declared))
+        .bind(input.created_by)
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+    row.map(server_of_row)
+        .ok_or_else(|| "insert returned no row".to_string())
 }
 
 /// The updatable config fields — `None` = key absent from the patch. The
@@ -624,18 +627,13 @@ pub struct ServerPatch {
     pub auth_mode: Option<String>,
 }
 
-pub async fn update_mcp_server(
-    pg: &PgPool,
-    id: &str,
-    patch: &ServerPatch,
-) -> Result<(), String> {
-    let row: Option<(bool, Option<String>)> = sqlx::query_as(
-        "select builtin, app_slug::text from mcp_servers where id::text = $1",
-    )
-    .bind(id)
-    .fetch_optional(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Result<(), String> {
+    let row: Option<(bool, Option<String>)> =
+        sqlx::query_as("select builtin, app_slug::text from mcp_servers where id::text = $1")
+            .bind(id)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     let Some((builtin, app_slug)) = row else {
         return Ok(()); // updates below match zero rows, same no-op as TS
     };
@@ -662,15 +660,31 @@ pub async fn update_mcp_server(
     }
     if let Some(label) = &patch.label {
         sqlx::query("update mcp_servers set label = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(label).execute(pg).await.map_err(|e| e.to_string())?;
+            .bind(id)
+            .bind(label)
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     if let Some(description) = &patch.description {
-        sqlx::query("update mcp_servers set description = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(description).execute(pg).await.map_err(|e| e.to_string())?;
+        sqlx::query(
+            "update mcp_servers set description = $2, updated_at = now() where id::text = $1",
+        )
+        .bind(id)
+        .bind(description)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if let Some(timeout_secs) = &patch.timeout_secs {
-        sqlx::query("update mcp_servers set timeout_secs = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(timeout_secs).execute(pg).await.map_err(|e| e.to_string())?;
+        sqlx::query(
+            "update mcp_servers set timeout_secs = $2, updated_at = now() where id::text = $1",
+        )
+        .bind(id)
+        .bind(timeout_secs)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if let Some(url) = &patch.url {
         // A repointed server's cached catalog is stale by definition.
@@ -679,31 +693,50 @@ pub async fn update_mcp_server(
     }
     if let Some(headers) = &patch.headers {
         sqlx::query("update mcp_servers set headers = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(Value::Object(headers.clone())).execute(pg).await.map_err(|e| e.to_string())?;
+            .bind(id)
+            .bind(Value::Object(headers.clone()))
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     if let Some(enabled) = patch.enabled {
         sqlx::query("update mcp_servers set enabled = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(enabled).execute(pg).await.map_err(|e| e.to_string())?;
+            .bind(id)
+            .bind(enabled)
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     if let Some(all_agents) = patch.all_agents {
-        sqlx::query("update mcp_servers set all_agents = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(all_agents).execute(pg).await.map_err(|e| e.to_string())?;
+        sqlx::query(
+            "update mcp_servers set all_agents = $2, updated_at = now() where id::text = $1",
+        )
+        .bind(id)
+        .bind(all_agents)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if let Some(auth_mode) = &patch.auth_mode {
-        sqlx::query("update mcp_servers set auth_mode = $2, updated_at = now() where id::text = $1")
-            .bind(id).bind(auth_mode).execute(pg).await.map_err(|e| e.to_string())?;
+        sqlx::query(
+            "update mcp_servers set auth_mode = $2, updated_at = now() where id::text = $1",
+        )
+        .bind(id)
+        .bind(auth_mode)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
-    let row: Option<(bool, Option<String>)> = sqlx::query_as(
-        "select builtin, app_slug::text from mcp_servers where id::text = $1",
-    )
-    .bind(id)
-    .fetch_optional(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(bool, Option<String>)> =
+        sqlx::query_as("select builtin, app_slug::text from mcp_servers where id::text = $1")
+            .bind(id)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     let Some((builtin, app_slug)) = row else {
         return Ok(()); // delete below matches zero rows, same no-op as TS
     };
@@ -711,7 +744,9 @@ pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
         return Err("the built-in Talaria toolkit cannot be removed".into());
     }
     if app_slug.is_some() {
-        return Err("this server is published by an app; disable or uninstall the app instead".into());
+        return Err(
+            "this server is published by an app; disable or uninstall the app instead".into(),
+        );
     }
     sqlx::query("delete from mcp_servers where id::text = $1") // assignments/access/credentials cascade
         .bind(id)
@@ -788,11 +823,13 @@ pub async fn set_user_access(
     tools: Option<&[String]>,
 ) -> Result<(), sqlx::Error> {
     if allowed.is_none() {
-        sqlx::query("delete from mcp_user_access where server_id::text = $1 and user_id::text = $2")
-            .bind(server_id)
-            .bind(user_id)
-            .execute(pg)
-            .await?;
+        sqlx::query(
+            "delete from mcp_user_access where server_id::text = $1 and user_id::text = $2",
+        )
+        .bind(server_id)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
         return Ok(());
     }
     sqlx::query(
@@ -888,7 +925,10 @@ pub async fn get_user_credentials(
 /// assistant, None otherwise (users.ts assistantOwnerFor). A legacy caller
 /// gets None: identified, but not proven to BE that assistant — and this
 /// resolution hands out that human's connected account.
-async fn assistant_owner_for(pg: &PgPool, subject: &AgentSubject) -> Result<Option<String>, sqlx::Error> {
+async fn assistant_owner_for(
+    pg: &PgPool,
+    subject: &AgentSubject,
+) -> Result<Option<String>, sqlx::Error> {
     if !subject_proven(subject) {
         return Ok(None);
     }
@@ -986,7 +1026,11 @@ pub async fn effective_mcp_for(
                 else {
                     return Ok(None); // not connected — the server doesn't exist for this assistant yet
                 };
-                set_header(&mut upstream_headers, "authorization", &format!("Bearer {bearer}"));
+                set_header(
+                    &mut upstream_headers,
+                    "authorization",
+                    &format!("Bearer {bearer}"),
+                );
             } else {
                 let Some(creds) = get_user_credentials(pg, sb, &server.id, owner).await? else {
                     return Ok(None);
@@ -1009,7 +1053,11 @@ pub async fn effective_mcp_for(
         else {
             return Ok(None); // nobody connected the org account yet
         };
-        set_header(&mut upstream_headers, "authorization", &format!("Bearer {bearer}"));
+        set_header(
+            &mut upstream_headers,
+            "authorization",
+            &format!("Bearer {bearer}"),
+        );
     }
 
     Ok(Some(EffectiveMcp {
@@ -1039,10 +1087,7 @@ pub async fn refresh_mcp_tools(
     sb: &SecretBox,
     id: &str,
 ) -> Result<Vec<Value>, String> {
-    let Some(server) = get_mcp_server(pg, id)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
+    let Some(server) = get_mcp_server(pg, id).await.map_err(|e| e.to_string())? else {
         return Err("not found".into());
     };
     if server.app_slug.is_some() {
@@ -1112,10 +1157,7 @@ pub async fn refresh_mcp_tools(
                 a.iter()
                     .map(|t| {
                         let mut e = Map::new();
-                        e.insert(
-                            "name".into(),
-                            t.get("name").cloned().unwrap_or(Value::Null),
-                        );
+                        e.insert("name".into(), t.get("name").cloned().unwrap_or(Value::Null));
                         if let Some(d) = t.get("description").and_then(Value::as_str) {
                             e.insert("description".into(), Value::String(utf16_slice(d, 300)));
                         }

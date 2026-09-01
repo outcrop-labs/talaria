@@ -812,13 +812,12 @@ fn workbench_harness(
             // failure the world can ever report. A value that is not one of
             // this table's inputs cannot arrive from the fixture fold (each
             // case's input IS a task's) and reads the same way here.
-            let task: WorkbenchTaskInput = serde_json::from_value(input.clone()).unwrap_or(
-                WorkbenchTaskInput {
+            let task: WorkbenchTaskInput =
+                serde_json::from_value(input.clone()).unwrap_or(WorkbenchTaskInput {
                     task: String::new(),
                     files: Vec::new(),
                     failure: String::new(),
-                },
-            );
+                });
             let oracle = tasks()
                 .into_iter()
                 .find(|t| t.input.task == task.task)
@@ -837,9 +836,7 @@ fn workbench_harness(
                 // `WorkspaceFile`. The same two fields, converted at the
                 // boundary rather than re-derived.
                 passes: Arc::new(move |files: &[WorkspaceFile]| {
-                    let Some(oracle) = oracle else {
-                        return None;
-                    };
+                    let oracle = oracle?;
                     let files: Vec<WorkbenchFile> = files
                         .iter()
                         .map(|f| WorkbenchFile {
@@ -875,9 +872,13 @@ fn workbench_harness(
             EvalCase::new(
                 Box::leak(name.into_boxed_str()),
                 input,
-                Arc::new(move |v: &Value, ctx: &CheckCtx| match serde_json::from_value::<String>(v.clone()) {
-                    Ok(reply) => check(&reply, ctx),
-                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                Arc::new(move |v: &Value, ctx: &CheckCtx| {
+                    match serde_json::from_value::<String>(v.clone()) {
+                        Ok(reply) => check(&reply, ctx),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
+                    }
                 }),
             )
             .band(band)

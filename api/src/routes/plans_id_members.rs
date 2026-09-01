@@ -10,7 +10,7 @@ use crate::body::{as_object, email_member, parse, uuid_member};
 use crate::conversations::{add_plan_member, list_plan_members, plan_role, remove_plan_member};
 use crate::error::{house_error, thrown_internal_error};
 use crate::kb_perms::{EditorGrant, list_editors, set_editors};
-use crate::notify::{NotifyDeps, NotificationInput, add_notification};
+use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 use crate::params::uuid_gate;
 use crate::plan_doc::plan_doc_for;
 use crate::session::require_user;
@@ -46,7 +46,12 @@ fn members_json(members: &[crate::conversations::PlanMember]) -> Vec<Value> {
 /// A db failure here is a 500 in the TS (the call is awaited bare), not a
 /// silent skip — a share that granted the row but not the doc leaves the new
 /// collaborator able to see the plan and unable to open its document.
-async fn sync_doc_grant(pg: &sqlx::PgPool, plan_id: &str, user_id: &str, present: bool) -> Result<(), sqlx::Error> {
+async fn sync_doc_grant(
+    pg: &sqlx::PgPool,
+    plan_id: &str,
+    user_id: &str,
+    present: bool,
+) -> Result<(), sqlx::Error> {
     let Some(doc) = plan_doc_for(pg, plan_id).await? else {
         return Ok(());
     };
@@ -131,9 +136,7 @@ pub async fn post(
     }
     match plan_role(&state.pg, &user.id, &id).await {
         Ok(Some(role)) if role == "owner" => {}
-        Ok(_) => {
-            return house_error(StatusCode::FORBIDDEN, "only the plan owner can share it")
-        }
+        Ok(_) => return house_error(StatusCode::FORBIDDEN, "only the plan owner can share it"),
         Err(e) => {
             tracing::error!("[plans] plan role read on POST members failed: {e}");
             return thrown_internal_error();

@@ -28,9 +28,9 @@ fn name_pattern_ok(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty()
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b[1..]
-            .iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
+        && b[1..].iter().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-')
+        })
 }
 
 /// `NAME = z.string().regex(...).max(80)` as an optional member: absent →
@@ -49,7 +49,9 @@ fn check_name(value: Option<&serde_json::Value>) -> Result<Option<String>, Strin
 }
 
 enum Op {
-    Rename { to_name: String },
+    Rename {
+        to_name: String,
+    },
     CopyMove {
         to_owner: String,
         to_name: Option<String>,
@@ -100,7 +102,11 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let author = user.email.as_deref().or(user.name.as_deref()).unwrap_or("admin");
+    let author = user
+        .email
+        .as_deref()
+        .or(user.name.as_deref())
+        .unwrap_or("admin");
     match write_skill(&state.pg, &owner, &name, &content, Some(author)).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
@@ -142,7 +148,7 @@ pub async fn post(
         // copy | move — toOwner is required, 1..80
         let to_owner = match obj.get("toOwner") {
             None | Some(serde_json::Value::Null) => {
-                return house_error(StatusCode::BAD_REQUEST, UNION_MSG)
+                return house_error(StatusCode::BAD_REQUEST, UNION_MSG);
             }
             Some(serde_json::Value::String(s)) => {
                 if s.is_empty() {
@@ -195,8 +201,15 @@ pub async fn post(
             to_name,
             remove_source,
         } => {
-            copy_skill(&state.pg, &owner, &name, &to_owner, to_name.as_deref(), remove_source)
-                .await
+            copy_skill(
+                &state.pg,
+                &owner,
+                &name,
+                &to_owner,
+                to_name.as_deref(),
+                remove_source,
+            )
+            .await
         }
     };
     match outcome {

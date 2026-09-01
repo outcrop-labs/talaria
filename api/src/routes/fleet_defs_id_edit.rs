@@ -36,20 +36,13 @@ fn parse_target(m: &Map<String, Value>) -> Result<ModelTarget, String> {
     let model = string_member(m, "model", 1, 200)?;
     let context_length = match m.get("contextLength") {
         None => None,
-        Some(Value::Null) => {
-            return Err("Invalid input: expected number, received null".into())
-        }
+        Some(Value::Null) => return Err("Invalid input: expected number, received null".into()),
         Some(_) => {
             // `.int().positive()` — the bound is exclusive, which the folded
             // helper's >= min cannot say.
-            let n = nullable_number_member(
-                m,
-                "contextLength",
-                NumKind::Int,
-                f64::MIN,
-                f64::INFINITY,
-            )?
-            .ok_or("unreachable: present non-null read above")?;
+            let n =
+                nullable_number_member(m, "contextLength", NumKind::Int, f64::MIN, f64::INFINITY)?
+                    .ok_or("unreachable: present non-null read above")?;
             if n <= 0.0 {
                 return Err("Too small: expected number to be >0".into());
             }
@@ -80,7 +73,9 @@ fn parse_target(m: &Map<String, Value>) -> Result<ModelTarget, String> {
 
 /// A required Target member (`main: Target`) — an object, not an array.
 fn target_member(obj: &Map<String, Value>, key: &str) -> Result<ModelTarget, String> {
-    let v = obj.get(key).ok_or_else(|| crate::body::object_msg("undefined"))?;
+    let v = obj
+        .get(key)
+        .ok_or_else(|| crate::body::object_msg("undefined"))?;
     let m = v
         .as_object()
         .ok_or_else(|| crate::body::object_msg(zod_type_name(v)))?;
@@ -200,7 +195,11 @@ pub async fn post(
     let mut endpoints: HashMap<String, LlmEndpoint> =
         endpoints.into_iter().map(|e| (e.name.clone(), e)).collect();
     let targets = std::iter::once((&main.endpoint, &main.model))
-        .chain(aliases.iter().map(|a| (&a.target.endpoint, &a.target.model)))
+        .chain(
+            aliases
+                .iter()
+                .map(|a| (&a.target.endpoint, &a.target.model)),
+        )
         .chain(fallbacks.iter().map(|f| (&f.endpoint, &f.model)));
     for (endpoint, model) in targets {
         let Some(ep) = endpoints.get(endpoint) else {
@@ -218,9 +217,14 @@ pub async fn post(
             // not an error.
             Err(_) => None,
         };
-        if live.as_ref().is_some_and(|ids| ids.iter().any(|m| m == model)) {
+        if live
+            .as_ref()
+            .is_some_and(|ids| ids.iter().any(|m| m == model))
+        {
             let ep = endpoints.get_mut(endpoint).expect("present above");
-            if let Err(e) = add_endpoint_models(&state.pg, &ep.name, &[model.to_string()]).await {
+            if let Err(e) =
+                add_endpoint_models(&state.pg, &ep.name, std::slice::from_ref(model)).await
+            {
                 tracing::error!("[fleet/defs/edit] endpoint model register failed: {e}");
                 return thrown_internal_error();
             }
@@ -313,7 +317,7 @@ pub async fn post(
                     "applied": false,
                     "warning": warning,
                 }))
-                .into_response()
+                .into_response();
             }
             Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
         }

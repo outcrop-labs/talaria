@@ -750,13 +750,16 @@ pub fn inbox_brief_harness() -> HarnessDefinition {
     d.evals = brief_fixtures()
         .into_iter()
         .map(|f| {
-            let InboxFixture { name, band, input, check } = f;
+            let InboxFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
             EvalCase::new(
                 name,
                 input,
-                Arc::new(
-                    move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() },
-                ),
+                Arc::new(move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() }),
             )
             .band(band)
         })
@@ -926,13 +929,16 @@ pub fn inbox_command_harness() -> HarnessDefinition {
     d.evals = command_fixtures()
         .into_iter()
         .map(|f| {
-            let InboxFixture { name, band, input, check } = f;
+            let InboxFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
             EvalCase::new(
                 name,
                 input,
-                Arc::new(
-                    move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() },
-                ),
+                Arc::new(move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() }),
             )
             .band(band)
         })
@@ -1020,13 +1026,16 @@ pub fn inbox_reply_harness() -> HarnessDefinition {
     d.evals = reply_fixtures()
         .into_iter()
         .map(|f| {
-            let InboxFixture { name, band, input, check } = f;
+            let InboxFixture {
+                name,
+                band,
+                input,
+                check,
+            } = f;
             EvalCase::new(
                 name,
                 input,
-                Arc::new(
-                    move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() },
-                ),
+                Arc::new(move |v: &Value, ctx: &CheckCtx| -> CheckResult { check(v, ctx).into() }),
             )
             .band(band)
         })

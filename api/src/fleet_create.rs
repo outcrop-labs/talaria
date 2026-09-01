@@ -367,8 +367,7 @@ pub async fn delete_agent_forever(
         ))
         .await;
 
-    crate::fleet_render::render_fleet(pg, sb, None)
-        .await?; // compose + manifest drop the agent
+    crate::fleet_render::render_fleet(pg, sb, None).await?; // compose + manifest drop the agent
     Ok(removed_volume)
 }
 

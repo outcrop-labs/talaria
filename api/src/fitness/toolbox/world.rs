@@ -688,8 +688,12 @@ mod tests {
         assert_eq!(back.tickets.len(), 3);
         assert_eq!(back.tickets[0].id, "PLAT-118");
         assert_eq!(back.tickets[0].comments[0].author, "user:priya");
-        assert!(back.boards.iter().any(|b| b.id == "b-helpdesk" && b.team.is_none()));
-        assert_eq!(back.kb_docs[1].editable, false);
+        assert!(
+            back.boards
+                .iter()
+                .any(|b| b.id == "b-helpdesk" && b.team.is_none())
+        );
+        assert!(!back.kb_docs[1].editable);
         assert_eq!(back.inbox[1].labels, vec!["INBOX"]);
         assert_eq!(base_world().gaps_filed.len(), 0);
 

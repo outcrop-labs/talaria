@@ -321,7 +321,8 @@ impl AgentStreamParser {
     }
 }
 
-fn parse_frame(frame: &str) -> Vec<AgentStreamEvent> {    let mut event_name = String::new();
+fn parse_frame(frame: &str) -> Vec<AgentStreamEvent> {
+    let mut event_name = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
     for line in frame.split('\n') {
         let t = line.trim();

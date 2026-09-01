@@ -795,16 +795,14 @@ pub fn work_session_harness() -> HarnessDefinition {
             EvalCase::new(
                 name,
                 input,
-                Arc::new(
-                    move |v: &Value, ctx: &CheckCtx| {
-                        match serde_json::from_value::<String>(v.clone()) {
-                            Ok(s) => check(&s, ctx).into(),
-                            Err(e) => CheckResult::Fail(format!(
-                                "the fixture check threw on the value: {e}"
-                            )),
+                Arc::new(move |v: &Value, ctx: &CheckCtx| {
+                    match serde_json::from_value::<String>(v.clone()) {
+                        Ok(s) => check(&s, ctx).into(),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
                         }
-                    },
-                ),
+                    }
+                }),
             )
             .band(band)
         })

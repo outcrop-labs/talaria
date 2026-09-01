@@ -511,7 +511,11 @@ mod tests {
                 h.def.id
             );
             for e in &h.def.evals {
-                assert!(!e.name.trim().is_empty(), "{} has an unnamed fixture", h.def.id);
+                assert!(
+                    !e.name.trim().is_empty(),
+                    "{} has an unnamed fixture",
+                    h.def.id
+                );
             }
         }
     }

@@ -180,10 +180,10 @@ fn classify_post(obj: &serde_json::Map<String, Value>) -> Result<PostIntent, Str
             if tiers.is_empty() {
                 return Err("Too small: expected array to have >=1 items".into());
             }
-            if let Some(a) = adversary_model {
-                if utf16(a) > 200 {
-                    return Err("Too big: expected string to have <=200 characters".into());
-                }
+            if let Some(a) = adversary_model
+                && utf16(a) > 200
+            {
+                return Err("Too big: expected string to have <=200 characters".into());
             }
             if let Some(items) = &only {
                 for el in items {
@@ -364,7 +364,11 @@ pub async fn post(
                 // 409 means "a run is already in flight, here it is" — the
                 // second press of Start shows the run rather than buying a
                 // second one. 400 is a request that could never have run.
-                StartOutcome::Busy { refusal, status, runs } => {
+                StartOutcome::Busy {
+                    refusal,
+                    status,
+                    runs,
+                } => {
                     let error = if refusal == RunRefusal::AtCapacity {
                         format!(
                             "already testing {} models — stop one, or wait for it to finish",
@@ -552,11 +556,15 @@ mod tests {
     fn the_start_arm_refuses_what_zod_refuses() {
         // The model bounds — checks, so the arm's own sentences.
         assert_eq!(
-            classify_post(&obj(json!({"action": "start", "model": "", "tiers": ["probes"]}))),
+            classify_post(&obj(
+                json!({"action": "start", "model": "", "tiers": ["probes"]})
+            )),
             Err("Too small: expected string to have >=1 characters".into())
         );
         assert_eq!(
-            classify_post(&obj(json!({"action": "start", "model": "x".repeat(201), "tiers": ["probes"]}))),
+            classify_post(&obj(
+                json!({"action": "start", "model": "x".repeat(201), "tiers": ["probes"]})
+            )),
             Err("Too big: expected string to have <=200 characters".into())
         );
         // The tiers array: min 1 is a check; an unknown tier is an enum
@@ -567,11 +575,15 @@ mod tests {
             Err("Too small: expected array to have >=1 items".into())
         );
         assert_eq!(
-            classify_post(&obj(json!({"action": "start", "model": "m", "tiers": ["nope"]}))),
+            classify_post(&obj(
+                json!({"action": "start", "model": "m", "tiers": ["nope"]})
+            )),
             Err("Invalid input".into())
         );
         assert_eq!(
-            classify_post(&obj(json!({"action": "start", "model": "", "tiers": ["nope"]}))),
+            classify_post(&obj(
+                json!({"action": "start", "model": "", "tiers": ["nope"]})
+            )),
             Err("Invalid input".into())
         );
         // concurrency: int bounds are checks, non-int is a parse failure.
@@ -600,10 +612,12 @@ mod tests {
             Err("Invalid input".into())
         );
         // `only`: max-only elements (the empty string is legal), array cap 64.
-        assert!(classify_post(&obj(json!({
-            "action": "start", "model": "m", "tiers": ["probes"], "only": [""]
-        })))
-        .is_ok());
+        assert!(
+            classify_post(&obj(json!({
+                "action": "start", "model": "m", "tiers": ["probes"], "only": [""]
+            })))
+            .is_ok()
+        );
         assert_eq!(
             classify_post(&obj(json!({
                 "action": "start", "model": "m", "tiers": ["probes"], "only": ["x".repeat(121)]
@@ -619,14 +633,18 @@ mod tests {
         );
         // only is optional, not nullish — a null is a type error, the union's.
         assert_eq!(
-            classify_post(&obj(json!({"action": "start", "model": "m", "tiers": ["probes"], "only": null}))),
+            classify_post(&obj(
+                json!({"action": "start", "model": "m", "tiers": ["probes"], "only": null})
+            )),
             Err("Invalid input".into())
         );
         // adversaryModel is nullish with a max and NO min: empty means "none".
-        assert!(classify_post(&obj(json!({
-            "action": "start", "model": "m", "tiers": ["probes"], "adversaryModel": ""
-        })))
-        .is_ok());
+        assert!(
+            classify_post(&obj(json!({
+                "action": "start", "model": "m", "tiers": ["probes"], "adversaryModel": ""
+            })))
+            .is_ok()
+        );
         assert_eq!(
             classify_post(&obj(json!({
                 "action": "start", "model": "m", "tiers": ["probes"], "adversaryModel": "x".repeat(201)

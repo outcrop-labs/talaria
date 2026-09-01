@@ -48,7 +48,11 @@ pub async fn get_instance_domain(pg: &PgPool) -> serde_json::Value {
 pub async fn instance_base_url(pg: &PgPool) -> Option<String> {
     let cfg = get_instance_domain(pg).await;
     let domain = cfg.get("domain").and_then(|d| d.as_str())?;
-    if !cfg.get("verified").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if !cfg
+        .get("verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
     Some(format!("https://{domain}"))

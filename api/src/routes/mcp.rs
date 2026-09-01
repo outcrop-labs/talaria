@@ -43,20 +43,23 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    let models: Vec<(String, String)> = match sqlx::query_as(
-        "select id::text, model from agent_defs where enabled",
-    )
-    .fetch_all(&state.pg)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("[mcp] roster models failed: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let models: Vec<(String, String)> =
+        match sqlx::query_as("select id::text, model from agent_defs where enabled")
+            .fetch_all(&state.pg)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!("[mcp] roster models failed: {e}");
+                return thrown_internal_error();
+            }
+        };
     for a in &mut agents {
-        let Some(model) = models.iter().find(|(id, _)| id == &a.id).map(|(_, m)| m.clone()) else {
+        let Some(model) = models
+            .iter()
+            .find(|(id, _)| id == &a.id)
+            .map(|(_, m)| m.clone())
+        else {
             continue;
         };
         let registry = match servers_for_agent(&state.pg, &model).await {
@@ -80,7 +83,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
     }
     if user.role == "admin" {
-        return Json(json!({ "agents": agents.iter().map(agent_wire).collect::<Vec<_>>() })).into_response();
+        return Json(json!({ "agents": agents.iter().map(agent_wire).collect::<Vec<_>>() }))
+            .into_response();
     }
     // Names only — and of the extras, just the two the UI renders.
     Json(json!({

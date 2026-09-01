@@ -35,19 +35,18 @@ use crate::body::{
     too_big_msg, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
-use crate::gateway::guard::{GuardMode, guard_config};
 use crate::gateway::guard::redact_secrets;
+use crate::gateway::guard::{GuardMode, guard_config};
+use crate::harness::define::HarnessDefinition;
+use crate::harness::defs::muse::{
+    MuseDraftInput, MuseProseInput, MuseProseKind, MuseTurn, muse_agent_harness, muse_cron_harness,
+    muse_draft_harness, muse_skill_form_harness, muse_template_form_harness, muse_ticket_harness,
+};
 use crate::harness::run::{
     DeltaFn, HarnessError, RunContext, StreamFn, StreamOptions, run_harness, run_harness_streamed,
 };
 use crate::harness::transport::gateway_stream;
 use crate::harness_model::{MUSE_CHAIN, ModelSpec, ResolvedHarnessModel, resolve_harness_model};
-use crate::harness::defs::muse::{
-    MuseDraftInput, MuseProseInput, MuseProseKind, MuseTurn, muse_agent_harness,
-    muse_cron_harness, muse_draft_harness, muse_skill_form_harness, muse_template_form_harness,
-    muse_ticket_harness,
-};
-use crate::harness::define::HarnessDefinition;
 use crate::org::{org_line, org_profile};
 use crate::session::require_user;
 use crate::state::AppState;
@@ -58,8 +57,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Notify, mpsc};
 
 const KINDS: [&str; 11] = [
@@ -75,7 +74,14 @@ const KINDS: [&str; 11] = [
     "skillForm",
     "templateForm",
 ];
-const PROSE_KINDS: [&str; 6] = ["soul", "personality", "skill", "memory", "document", "template"];
+const PROSE_KINDS: [&str; 6] = [
+    "soul",
+    "personality",
+    "skill",
+    "memory",
+    "document",
+    "template",
+];
 
 /// What the USER reads when the model could not hold the contract. Written per
 /// kind and pointed at the next thing to try, because "the JSON could not be
@@ -85,11 +91,21 @@ const PROSE_KINDS: [&str; 6] = ["soul", "personality", "skill", "memory", "docum
 /// row by the time this returns.
 fn unusable(kind: &str) -> &'static str {
     match kind {
-        "cron" => "Muse could not turn that into a scheduled job — try saying when it should run and what it should do each time.",
-        "agent" => "Muse could not design an agent from that — try adding a sentence about what it should do.",
-        "ticket" => "Muse could not turn that into a ticket edit — try naming the fields to change.",
-        "skillForm" => "Muse could not fill out that skill — try saying what the skill does, one skill at a time.",
-        _ => "Muse could not fill out that template — try naming the template and a few sections it should have.",
+        "cron" => {
+            "Muse could not turn that into a scheduled job — try saying when it should run and what it should do each time."
+        }
+        "agent" => {
+            "Muse could not design an agent from that — try adding a sentence about what it should do."
+        }
+        "ticket" => {
+            "Muse could not turn that into a ticket edit — try naming the fields to change."
+        }
+        "skillForm" => {
+            "Muse could not fill out that skill — try saying what the skill does, one skill at a time."
+        }
+        _ => {
+            "Muse could not fill out that template — try naming the template and a few sections it should have."
+        }
     }
 }
 
@@ -129,7 +145,10 @@ fn parse_chat(obj: &serde_json::Map<String, Value>) -> Result<Option<Vec<MuseTur
 }
 
 fn array_msg(v: &Value) -> String {
-    format!("Invalid input: expected array, received {}", zod_type_name(v))
+    format!(
+        "Invalid input: expected array, received {}",
+        zod_type_name(v)
+    )
 }
 
 pub async fn post(
@@ -183,7 +202,10 @@ pub async fn post(
     };
     let caller = format!(
         "platform:muse:{}",
-        user.email.as_deref().or(user.name.as_deref()).unwrap_or(&user.id)
+        user.email
+            .as_deref()
+            .or(user.name.as_deref())
+            .unwrap_or(&user.id)
     );
 
     // The org anchor is DECORATION on the prompt, so a settings read that
@@ -238,8 +260,8 @@ pub async fn post(
             let error = res.error.unwrap_or_else(|| NO_MODEL.to_string());
             return house_error(StatusCode::BAD_REQUEST, &error);
         }
-        let mut resp = Json(json!({ "error": unusable(&kind), "detail": res.error }))
-            .into_response();
+        let mut resp =
+            Json(json!({ "error": unusable(&kind), "detail": res.error })).into_response();
         *resp.status_mut() = StatusCode::BAD_GATEWAY;
         return resp;
     }
@@ -278,13 +300,14 @@ pub async fn post(
         chain: Some(&MUSE_CHAIN),
         user_id: Some(&user.id),
     };
-    let resolved: Option<ResolvedHarnessModel> = match resolve_harness_model(&state.pg, &user_spec).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[muse] model resolution failed: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let resolved: Option<ResolvedHarnessModel> =
+        match resolve_harness_model(&state.pg, &user_spec).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("[muse] model resolution failed: {e}");
+                return thrown_internal_error();
+            }
+        };
     let Some(resolved) = resolved else {
         return house_error(StatusCode::BAD_REQUEST, NO_MODEL);
     };
@@ -296,11 +319,9 @@ pub async fn post(
     // call and the run below is still recorded.
     let strict = matches!(guard_config(&state.pg).await.mode, GuardMode::Strict);
     let redactor = strict.then(|| {
-        Arc::new(Mutex::new(
-            crate::harness::defs::muse::StreamRedactor::new(Arc::new(|text: &str| {
-                redact_secrets(text, None).0
-            })),
-        ))
+        Arc::new(Mutex::new(crate::harness::defs::muse::StreamRedactor::new(
+            Arc::new(|text: &str| redact_secrets(text, None).0),
+        )))
     });
 
     // Deltas out through an UNBOUNDED channel, enqueued without backpressure —
@@ -414,7 +435,10 @@ pub async fn post(
     }
 
     let stream =
-        futures_util::stream::unfold(brx, |mut rx| async move { rx.recv().await.map(|i| (i, rx)) });
+        futures_util::stream::unfold(
+            brx,
+            |mut rx| async move { rx.recv().await.map(|i| (i, rx)) },
+        );
     // Header order matches the oracle's wire, not its source: TS builds the
     // response through a fetch Headers object, which iterates alphabetically.
     Response::builder()

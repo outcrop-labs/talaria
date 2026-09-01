@@ -11,7 +11,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub async fn post(
     State(state): State<AppState>,
@@ -58,15 +58,21 @@ pub async fn post(
             return house_error(
                 StatusCode::BAD_REQUEST,
                 &crate::body::array_msg(crate::body::zod_type_name(v)),
-            )
+            );
         }
     };
     let framework = match optional_max_string_member(obj, "framework", 80) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    match register_agent(&state.pg, &name, role.as_deref(), framework.as_deref(), &capabilities)
-        .await
+    match register_agent(
+        &state.pg,
+        &name,
+        role.as_deref(),
+        framework.as_deref(),
+        &capabilities,
+    )
+    .await
     {
         Ok((id, name)) => Json(json!({
             "agent": { "id": id, "name": name },

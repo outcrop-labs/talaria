@@ -284,7 +284,11 @@ pub async fn clear_transcripts(pg: &PgPool, model: Option<&str>) -> Result<u64, 
                 .execute(pg)
                 .await?
         }
-        None => sqlx::query("delete from fitness_transcripts").execute(pg).await?,
+        None => {
+            sqlx::query("delete from fitness_transcripts")
+                .execute(pg)
+                .await?
+        }
     };
     Ok(n.rows_affected())
 }

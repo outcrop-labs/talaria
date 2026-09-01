@@ -40,11 +40,18 @@ fn gate(rpc: Option<&Value>, tools: Option<&Vec<String>>) -> Option<Response> {
     if tools.contains(&called) {
         return None;
     }
-    let id = rpc.and_then(|r| r.get("id")).cloned().unwrap_or(Value::Null);
+    let id = rpc
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
     Some(
         (
             StatusCode::OK,
-            Json(rpc_error(&id, -32602, &format!("tool \"{called}\" is not available here"))),
+            Json(rpc_error(
+                &id,
+                -32602,
+                &format!("tool \"{called}\" is not available here"),
+            )),
         )
             .into_response(),
     )
@@ -146,9 +153,13 @@ pub async fn post(
             redis: state.redis().await.ok(),
         };
         let rpc_body = rpc.clone().unwrap_or_else(|| json!({}));
-        let (status, out) =
-            crate::workbench_mcp::dispatch_workbench_mcp(&deps, &rpc_body, &subject, eff.tools.as_deref())
-                .await;
+        let (status, out) = crate::workbench_mcp::dispatch_workbench_mcp(
+            &deps,
+            &rpc_body,
+            &subject,
+            eff.tools.as_deref(),
+        )
+        .await;
         return match out {
             None => (status, Body::empty()).into_response(),
             Some(out) => (status, Json(out)).into_response(),
@@ -293,7 +304,10 @@ pub async fn get(
             .map(str::to_string)
     };
     let mut req = crate::gateway::provider::http().get(&eff.server.url);
-    req = req.header("accept", hdr("accept").unwrap_or_else(|| "text/event-stream".into()));
+    req = req.header(
+        "accept",
+        hdr("accept").unwrap_or_else(|| "text/event-stream".into()),
+    );
     if let Some(session) = hdr("mcp-session-id") {
         req = req.header("mcp-session-id", session);
     }
@@ -382,7 +396,10 @@ async fn relay(
 
     // The list filter: rewrite result.tools inside JSON or SSE-framed
     // bodies. Everything else streams back verbatim.
-    if rpc.map(|r| r.get("method")).and_then(|m| m.and_then(Value::as_str)) == Some("tools/list")
+    if rpc
+        .map(|r| r.get("method"))
+        .and_then(|m| m.and_then(Value::as_str))
+        == Some("tools/list")
         && let Some(allowed) = tools
     {
         let text = upstream.text().await.unwrap_or_default();

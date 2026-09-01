@@ -159,10 +159,10 @@ pub async fn search_the_web(
 ) -> Result<WebSearch, String> {
     use crate::capability_platform::is_platform_server;
     use crate::capability_reach::{
-        platform_supply, supplier_for, DbReach, Providers, ReachDeps, PROVIDERS_KEY,
+        DbReach, PROVIDERS_KEY, Providers, ReachDeps, platform_supply, supplier_for,
     };
     use crate::gateway::settings::get_setting;
-    use crate::search::{real_deps, search_web, DEFAULT_LIMIT};
+    use crate::search::{DEFAULT_LIMIT, real_deps, search_web};
 
     let pg = &state.pg;
     let reach = DbReach { pg };
@@ -198,10 +198,7 @@ pub async fn search_the_web(
             &real_deps(),
         )
         .await?;
-        return Ok(WebSearch {
-            results,
-            via: None,
-        });
+        return Ok(WebSearch { results, via: None });
     }
 
     let mut args = serde_json::Map::new();

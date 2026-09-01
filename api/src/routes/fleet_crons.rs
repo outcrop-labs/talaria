@@ -4,7 +4,7 @@
 // per agent when the schedule is a fixed-minute cron expression.
 
 use crate::agent_crons::{create_fleet_crons, list_fleet_crons};
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, trimmed_string_member, uuid_array_member};
 use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_admin};
@@ -13,7 +13,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(gate) = require_admin(&state, &headers).await {
@@ -46,7 +46,10 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if agent_ids.is_empty() {
-        return house_error(StatusCode::BAD_REQUEST, &crate::body::array_too_small_msg(1));
+        return house_error(
+            StatusCode::BAD_REQUEST,
+            &crate::body::array_too_small_msg(1),
+        );
     }
     let name = match trimmed_string_member(obj, "name", 1, 80) {
         Ok(v) => v,
@@ -64,19 +67,11 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let results = match create_fleet_crons(
-        &state.pg,
-        &agent_ids,
-        &name,
-        &schedule,
-        &prompt,
-        stagger,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return thrown_internal_error(),
-    };
+    let results =
+        match create_fleet_crons(&state.pg, &agent_ids, &name, &schedule, &prompt, stagger).await {
+            Ok(r) => r,
+            Err(_) => return thrown_internal_error(),
+        };
     let actor = actor_of(&user);
     let after = json!({
         "agentIds": agent_ids,

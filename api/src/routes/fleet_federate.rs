@@ -3,7 +3,7 @@
 // create each agent natively (Talaria def, fresh key + state volume, our
 // chassis, skills copied in). One-way and re-runnable. Admin.
 
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, trimmed_string_member};
 use crate::error::house_error;
 use crate::fleet_federate::federate_from_dir;

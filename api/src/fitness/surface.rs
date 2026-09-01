@@ -352,7 +352,9 @@ pub struct FitnessRecord {
 /// `low` arrived with the two-way valve. Before it, the valve only ever
 /// closed, so the width a run ENDED at was also the narrowest it ever reached
 /// — which makes `ended` the correct backfill rather than a guess.
-fn upgrade_concurrency(c: Option<crate::fitness::evals::SweepConcurrency>) -> crate::fitness::evals::SweepConcurrency {
+fn upgrade_concurrency(
+    c: Option<crate::fitness::evals::SweepConcurrency>,
+) -> crate::fitness::evals::SweepConcurrency {
     match c {
         None => crate::fitness::evals::SweepConcurrency {
             requested: 1,
@@ -452,7 +454,10 @@ fn upgrade_concurrency_value(c: Option<&Value>) -> Value {
     };
     let mut conc = conc;
     let backfill = conc.get("ended").cloned();
-    match (conc.get("low").map(|l| l.is_null()).unwrap_or(true), backfill) {
+    match (
+        conc.get("low").map(|l| l.is_null()).unwrap_or(true),
+        backfill,
+    ) {
         (true, Some(ended)) => {
             conc.insert("low".into(), ended);
         }
@@ -518,9 +523,9 @@ impl FitnessRunState {
     }
 }
 
-/// One run's status with tier 2's counter folded in is a raw `Value` on this
-/// side of the port — see `fitness_runs` for why (the stored row's key order
-/// is part of the wire contract, and a typed struct cannot promise it).
+// One run's status with tier 2's counter folded in is a raw `Value` on this
+// side of the port — see `fitness_runs` for why (the stored row's key order
+// is part of the wire contract, and a typed struct cannot promise it).
 
 /// Every run the page draws, newest first, plus what the panel needs to know
 /// about whether it may start another.
@@ -632,9 +637,7 @@ pub fn speed_of(
         .collect();
     let ends: Vec<i64> = cases
         .iter()
-        .filter_map(|c| {
-            crate::agent_auth::iso_to_epoch_ms(&c.started_at).map(|n| n + c.wall_ms)
-        })
+        .filter_map(|c| crate::agent_auth::iso_to_epoch_ms(&c.started_at).map(|n| n + c.wall_ms))
         .filter(|n| *n > 0)
         .collect();
     let elapsed_ms = if !starts.is_empty() && !ends.is_empty() {
@@ -716,24 +719,33 @@ pub fn live_log(cases: &[crate::fitness::evals::EvalCaseScore]) -> Vec<EvalLogLi
 /// THE FEED WINS WHILE IT LASTS, because it carries per-unit timings the
 /// archived reports never stored — a probe that took 87 seconds is worth
 /// seeing, and rebuilding it from the record can only report 0ms.
-fn archived_tier_log(
-    record: Option<&FitnessRecord>,
-    feed: &[EvalLogLine],
-) -> Vec<EvalLogLine> {
+fn archived_tier_log(record: Option<&FitnessRecord>, feed: &[EvalLogLine]) -> Vec<EvalLogLine> {
     if !feed.is_empty() {
         return feed.to_vec();
     }
-    let Some(record) = record else { return Vec::new() };
+    let Some(record) = record else {
+        return Vec::new();
+    };
     let mut out: Vec<EvalLogLine> = record
         .probes
         .as_ref()
-        .map(|p| p.results.iter().map(|r| crate::fitness::probes::probe_line(r, 0)).collect())
+        .map(|p| {
+            p.results
+                .iter()
+                .map(|r| crate::fitness::probes::probe_line(r, 0))
+                .collect()
+        })
         .unwrap_or_default();
     out.extend(
         record
             .adversarial
             .as_ref()
-            .map(|a| a.cases.iter().map(|c| crate::fitness::adversarial::provocation_line(c, 0)).collect::<Vec<_>>())
+            .map(|a| {
+                a.cases
+                    .iter()
+                    .map(|c| crate::fitness::adversarial::provocation_line(c, 0))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default(),
     );
     out
@@ -753,9 +765,16 @@ fn archived_tier_log(
 /// provocation scores carry no clock of their own. One ordering rule that
 /// works live and after the fact beats two that disagree the moment a run
 /// finishes.
-pub fn run_log(cases: &[crate::fitness::evals::EvalCaseScore], tiers: &[EvalLogLine]) -> Vec<EvalLogLine> {
+pub fn run_log(
+    cases: &[crate::fitness::evals::EvalCaseScore],
+    tiers: &[EvalLogLine],
+) -> Vec<EvalLogLine> {
     let of = |harness: &str| -> Vec<EvalLogLine> {
-        tiers.iter().filter(|l| l.harness == harness).cloned().collect()
+        tiers
+            .iter()
+            .filter(|l| l.harness == harness)
+            .cloned()
+            .collect()
     };
     let mut out = of("probes");
     out.extend(live_log(cases));
@@ -764,10 +783,14 @@ pub fn run_log(cases: &[crate::fitness::evals::EvalCaseScore], tiers: &[EvalLogL
 }
 
 /// The live modal's bounded case list — see [`LIVE_RECENT`].
-pub fn live_cases(cases: &[crate::fitness::evals::EvalCaseScore]) -> (Vec<crate::fitness::evals::EvalCaseScore>, i64) {
+pub fn live_cases(
+    cases: &[crate::fitness::evals::EvalCaseScore],
+) -> (Vec<crate::fitness::evals::EvalCaseScore>, i64) {
     let bad = |c: &crate::fitness::evals::EvalCaseScore| {
         c.skipped.is_none()
-            && (c.task == crate::fitness::evals::TaskVerdict::Fail || !c.contract_held || c.timed_out)
+            && (c.task == crate::fitness::evals::TaskVerdict::Fail
+                || !c.contract_held
+                || c.timed_out)
     };
     let failed: Vec<_> = cases.iter().filter(|c| bad(c)).cloned().collect();
     let recent: Vec<_> = cases
@@ -814,7 +837,11 @@ pub fn drilldown(
 pub fn evict_archive(index: &FitnessIndex, keep: usize) -> (FitnessIndex, Vec<String>) {
     let mut ordered: Vec<&FitnessIndexEntry> = index.values().collect();
     ordered.sort_by(|a, b| b.at.cmp(&a.at));
-    let evicted: Vec<String> = ordered.into_iter().skip(keep).map(|e| e.model.clone()).collect();
+    let evicted: Vec<String> = ordered
+        .into_iter()
+        .skip(keep)
+        .map(|e| e.model.clone())
+        .collect();
     let mut kept = index.clone();
     for model in &evicted {
         // shift_remove, not the deprecated remove/swap_remove: eviction keeps
@@ -924,16 +951,18 @@ pub struct SweepStart {
 #[derive(Clone)]
 pub struct SurfaceDeps {
     /// The gateway catalog: every callable id, bare and endpoint-qualified.
-    pub models:
-        Arc<dyn Fn() -> BoxFut<Result<Vec<crate::model_access::GatewayModel>, String>> + Send + Sync>,
+    pub models: Arc<
+        dyn Fn() -> BoxFut<Result<Vec<crate::model_access::GatewayModel>, String>> + Send + Sync,
+    >,
     /// Where a model id CAN land, with prices. Used for the estimate only.
     pub routing: Arc<
         dyn Fn(String) -> BoxFut<Result<crate::gateway::registry::ModelRouting, String>>
             + Send
             + Sync,
     >,
-    pub capabilities:
-        Arc<dyn Fn(String) -> BoxFut<HashMap<String, crate::capability::CapabilityFact>> + Send + Sync>,
+    pub capabilities: Arc<
+        dyn Fn(String) -> BoxFut<HashMap<String, crate::capability::CapabilityFact>> + Send + Sync,
+    >,
     pub forget: Arc<dyn Fn(String) -> BoxFut<Result<(), String>> + Send + Sync>,
     pub harnesses: Arc<
         dyn Fn() -> BoxFut<Result<Vec<crate::harness::registry::RegisteredHarness>, String>>
@@ -967,17 +996,22 @@ pub struct SurfaceDeps {
     pub clear_transcripts: Arc<dyn Fn(Option<String>) -> BoxFut<Result<i64, String>> + Send + Sync>,
     /// Registered MCP servers, for "the deployment supplies what the model
     /// cannot" — see `supplied_by`.
-    pub mcp_servers:
-        Arc<dyn Fn() -> BoxFut<Result<Vec<crate::capability_reach::ReachServer>, String>> + Send + Sync>,
+    pub mcp_servers: Arc<
+        dyn Fn() -> BoxFut<Result<Vec<crate::capability_reach::ReachServer>, String>> + Send + Sync,
+    >,
     /// Talaria's OWN checked tools, under the registry. Injected rather than
     /// imported at the call site so a matrix test never has to reach SearXNG.
-    pub platform_supply:
-        Arc<dyn Fn() -> BoxFut<Result<Vec<crate::capability_reach::PlatformSupply>, String>> + Send + Sync>,
+    pub platform_supply: Arc<
+        dyn Fn() -> BoxFut<Result<Vec<crate::capability_reach::PlatformSupply>, String>>
+            + Send
+            + Sync,
+    >,
     pub estimate_adversarial: Arc<
         dyn Fn(
                 Option<String>,
                 Option<crate::fitness::adversarial::PriceFn>,
-            ) -> BoxFut<Result<crate::fitness::adversarial::AdversarialEstimate, String>>
+            )
+                -> BoxFut<Result<crate::fitness::adversarial::AdversarialEstimate, String>>
             + Send
             + Sync,
     >,
@@ -985,22 +1019,21 @@ pub struct SurfaceDeps {
         dyn Fn(
                 String,
                 Option<String>,
-            ) -> BoxFut<Result<crate::fitness::adversarial::AdversarialReport, String>>
+            )
+                -> BoxFut<Result<crate::fitness::adversarial::AdversarialReport, String>>
             + Send
             + Sync,
     >,
     pub run_eval_sweep: Arc<
-        dyn Fn(
-                String,
-                SweepStart,
-            ) -> BoxFut<Result<crate::fitness::evals::EvalSweep, String>>
+        dyn Fn(String, SweepStart) -> BoxFut<Result<crate::fitness::evals::EvalSweep, String>>
             + Send
             + Sync,
     >,
     pub eval_sweep_statuses: Arc<
         dyn Fn(
                 Vec<String>,
-            ) -> BoxFut<Result<HashMap<String, crate::fitness::evals::EvalSweepStatus>, String>>
+            )
+                -> BoxFut<Result<HashMap<String, crate::fitness::evals::EvalSweepStatus>, String>>
             + Send
             + Sync,
     >,
@@ -1018,14 +1051,16 @@ pub struct SurfaceDeps {
         dyn Fn(
                 String,
                 Vec<String>,
-            ) -> BoxFut<Result<HashMap<String, crate::capability_reach::Reach>, String>>
+            )
+                -> BoxFut<Result<HashMap<String, crate::capability_reach::Reach>, String>>
             + Send
             + Sync,
     >,
     pub observed_harnesses: Arc<
         dyn Fn(
                 Option<String>,
-            ) -> BoxFut<Result<Vec<crate::fitness::observed::ObservedHarness>, String>>
+            )
+                -> BoxFut<Result<Vec<crate::fitness::observed::ObservedHarness>, String>>
             + Send
             + Sync,
     >,
@@ -1143,9 +1178,9 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
         // matrix counts and a run's own registry cannot disagree. App- and
         // workbench-authored harnesses cross with their plane, not here.
         harnesses: Arc::new(|| {
-            Box::pin(async move {
-                Ok(crate::harness::registry::builtin_activity_harnesses().to_vec())
-            })
+            Box::pin(
+                async move { Ok(crate::harness::registry::builtin_activity_harnesses().to_vec()) },
+            )
         }),
         bind_slots: Arc::new(|harnesses| {
             Box::pin(async move { Ok(crate::fitness::score::bind_slots(&harnesses).await) })
@@ -1175,7 +1210,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model, reprobe| {
                 let st = st.clone();
                 Box::pin(async move {
-                    Ok(crate::fitness::probes::estimate_probes(&st, &model, None, None, reprobe).await)
+                    Ok(
+                        crate::fitness::probes::estimate_probes(&st, &model, None, None, reprobe)
+                            .await,
+                    )
                 })
             }
         }),
@@ -1187,7 +1225,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
                     crate::fitness::probes::run_probes(
                         &st,
                         &model,
-                        crate::fitness::probes::ProbeOpts { reprobe, ..Default::default() },
+                        crate::fitness::probes::ProbeOpts {
+                            reprobe,
+                            ..Default::default()
+                        },
                     )
                     .await
                 })
@@ -1229,9 +1270,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             let pg = pg.clone();
             move || {
                 let pg = pg.clone();
-                Box::pin(async move {
-                    Ok(crate::capability_reach::platform_supply(&pg).await)
-                })
+                Box::pin(async move { Ok(crate::capability_reach::platform_supply(&pg).await) })
             }
         }),
         estimate_adversarial: Arc::new(|adversary, price| {
@@ -1359,7 +1398,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
                     let deps = crate::fitness::observed::real_deps(pg.clone());
                     Ok(crate::fitness::observed::observed_harnesses(
                         &deps,
-                        &crate::fitness::observed::ObservedOptions { since_days: None, model },
+                        &crate::fitness::observed::ObservedOptions {
+                            since_days: None,
+                            model,
+                        },
                     )
                     .await)
                 })
@@ -1379,7 +1421,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
                 })
             }
         }),
-        now_iso: Arc::new(|| now_iso()),
+        now_iso: Arc::new(now_iso),
     }
 }
 
@@ -1533,14 +1575,20 @@ pub fn merge_fact(facts: &[Option<&crate::capability::CapabilityFact>]) -> FactV
     if facts.iter().any(|f| f.is_none()) || facts.is_empty() {
         return unknown;
     }
-    let known: Vec<&crate::capability::CapabilityFact> =
-        facts.iter().map(|f| f.unwrap()).collect();
+    let known: Vec<&crate::capability::CapabilityFact> = facts.iter().map(|f| f.unwrap()).collect();
     let first = known[0];
     if known.iter().any(|f| f.value != first.value) {
-        return FactView { detail: Some(POOLED_DISAGREEMENT.to_string()), ..unknown };
+        return FactView {
+            detail: Some(POOLED_DISAGREEMENT.to_string()),
+            ..unknown
+        };
     }
     FactView {
-        state: if first.value { CapabilityState::Yes } else { CapabilityState::No },
+        state: if first.value {
+            CapabilityState::Yes
+        } else {
+            CapabilityState::No
+        },
         source: Some(first.source.clone()),
         detail: first.detail.clone(),
         score: first.score,
@@ -1561,7 +1609,10 @@ pub fn merge_fact(facts: &[Option<&crate::capability::CapabilityFact>]) -> FactV
 /// the false-true this whole capability model is built to avoid; calling it a
 /// `No` refuses a deployment that can genuinely do the job. It is a third
 /// fact and it gets a third tag.
-pub fn supplied_by(view: FactView, supplier: Option<crate::capability_reach::Supplier>) -> FactView {
+pub fn supplied_by(
+    view: FactView,
+    supplier: Option<crate::capability_reach::Supplier>,
+) -> FactView {
     match supplier {
         Some(supplier)
             if view.state == CapabilityState::No || view.state == CapabilityState::Unknown =>
@@ -1629,7 +1680,10 @@ pub fn canonical_index(
 /// into a `record_key` has to come through here. New runs archive under the
 /// canonical id already, so this stops mattering as old reports age out.
 pub fn stored_id_for(model: &str, index: &FitnessIndex) -> String {
-    index.get(model).map(|e| e.model.clone()).unwrap_or_else(|| model.to_string())
+    index
+        .get(model)
+        .map(|e| e.model.clone())
+        .unwrap_or_else(|| model.to_string())
 }
 
 /// Every catalog row with its nine capability tags. One `capabilities` read
@@ -1692,7 +1746,10 @@ pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
                         per_key.iter().map(|f| f.get(*cap)).collect();
                     CapabilityView {
                         cap: cap.to_string(),
-                        view: supplied_by(merge_fact(&facts), suppliers.get(cap).cloned().flatten()),
+                        view: supplied_by(
+                            merge_fact(&facts),
+                            suppliers.get(cap).cloned().flatten(),
+                        ),
                     }
                 })
                 .collect(),
@@ -1704,7 +1761,9 @@ pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
 /// Facts merged across every key the probe run wrote under, for scoring. A run
 /// against a pooled id writes nothing (the ambiguity rule in `run_probes`), so
 /// in practice this is one key.
-pub fn capabilities_of(row: Option<&ModelRow>) -> HashMap<String, crate::capability::CapabilityFact> {
+pub fn capabilities_of(
+    row: Option<&ModelRow>,
+) -> HashMap<String, crate::capability::CapabilityFact> {
     let mut out = HashMap::new();
     let Some(row) = row else { return out };
     for view in &row.capabilities {
@@ -1771,20 +1830,27 @@ pub async fn price_of(model: &str, deps: &SurfaceDeps) -> Result<Option<ModelPri
             let out_tok = out(&ep.model_prices, &route.upstream_model)
                 .or_else(|| out(&ep.auto_prices, &route.upstream_model))
                 .or(ep.price_out_per_mtok);
-            Some(ModelPrice { in_per_mtok: in_tok?, out_per_mtok: out_tok? })
+            Some(ModelPrice {
+                in_per_mtok: in_tok?,
+                out_per_mtok: out_tok?,
+            })
         })
         .collect();
-    Ok(priced
-        .into_iter()
-        .max_by(|a, b| {
-            (a.in_per_mtok + a.out_per_mtok)
-                .partial_cmp(&(b.in_per_mtok + b.out_per_mtok))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }))
+    Ok(priced.into_iter().max_by(|a, b| {
+        (a.in_per_mtok + a.out_per_mtok)
+            .partial_cmp(&(b.in_per_mtok + b.out_per_mtok))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }))
 }
 
-pub fn usd_of(price: Option<ModelPrice>, prompt_tokens: i64, completion_tokens: i64) -> Option<f64> {
-    price.map(|p| (prompt_tokens as f64 * p.in_per_mtok + completion_tokens as f64 * p.out_per_mtok) / 1e6)
+pub fn usd_of(
+    price: Option<ModelPrice>,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+) -> Option<f64> {
+    price.map(|p| {
+        (prompt_tokens as f64 * p.in_per_mtok + completion_tokens as f64 * p.out_per_mtok) / 1e6
+    })
 }
 
 // ── The estimate ─────────────────────────────────────────────────────────────
@@ -1847,12 +1913,16 @@ pub struct Tier2Shape {
     pub repair_ceiling: i64,
 }
 
-pub async fn tier2_shape(only: Option<&[String]>, deps: &SurfaceDeps) -> Result<Tier2Shape, String> {
+pub async fn tier2_shape(
+    only: Option<&[String]>,
+    deps: &SurfaceDeps,
+) -> Result<Tier2Shape, String> {
     let all = ((deps.harnesses)()).await?;
     let harnesses: Vec<_> = match only {
-        Some(only) if !only.is_empty() => {
-            all.into_iter().filter(|h| only.contains(&h.def.id.to_string())).collect()
-        }
+        Some(only) if !only.is_empty() => all
+            .into_iter()
+            .filter(|h| only.contains(&h.def.id.to_string()))
+            .collect(),
         _ => all,
     };
     let mut fixtures = 0i64;
@@ -1867,7 +1937,11 @@ pub async fn tier2_shape(only: Option<&[String]>, deps: &SurfaceDeps) -> Result<
             repair_ceiling += h.eval_names().count() as i64;
         }
     }
-    Ok(Tier2Shape { harnesses, fixtures, repair_ceiling })
+    Ok(Tier2Shape {
+        harnesses,
+        fixtures,
+        repair_ceiling,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1881,7 +1955,10 @@ pub struct EstimateRequest {
     pub only: Option<Vec<String>>,
 }
 
-pub async fn estimate_run(req: &EstimateRequest, deps: &SurfaceDeps) -> Result<RunEstimate, String> {
+pub async fn estimate_run(
+    req: &EstimateRequest,
+    deps: &SurfaceDeps,
+) -> Result<RunEstimate, String> {
     let price = price_of(&req.model, deps).await?;
     let mut rows: Vec<TierEstimate> = Vec::new();
     let shape = tier2_shape(req.only.as_deref(), deps).await?;
@@ -1957,15 +2034,18 @@ pub async fn estimate_run(req: &EstimateRequest, deps: &SurfaceDeps) -> Result<R
             None => None,
         };
         let worst = match (price, adversary_price) {
-            (Some(p), Some(a)) => {
-                Some(if p.in_per_mtok + p.out_per_mtok >= a.in_per_mtok + a.out_per_mtok { p } else { a })
-            }
+            (Some(p), Some(a)) => Some(
+                if p.in_per_mtok + p.out_per_mtok >= a.in_per_mtok + a.out_per_mtok {
+                    p
+                } else {
+                    a
+                },
+            ),
             (None, a) => a,
             (p, None) => p,
         };
-        let price_fn: crate::fitness::adversarial::PriceFn = Arc::new(move |p, c| {
-            Box::pin(async move { usd_of(worst, p, c) })
-        });
+        let price_fn: crate::fitness::adversarial::PriceFn =
+            Arc::new(move |p, c| Box::pin(async move { usd_of(worst, p, c) }));
         let est = ((deps.estimate_adversarial)(req.adversary_model.clone(), Some(price_fn)))
             .await
             .ok();
@@ -1990,8 +2070,7 @@ pub async fn estimate_run(req: &EstimateRequest, deps: &SurfaceDeps) -> Result<R
     let calls: i64 = rows.iter().map(|r| r.calls).sum();
     // None unless EVERY requested tier priced. A partial total under a dollar
     // sign is a number nobody can reconcile with the invoice.
-    let usd = (!rows.is_empty() && usd_rows.len() == rows.len())
-        .then(|| usd_rows.iter().sum());
+    let usd = (!rows.is_empty() && usd_rows.len() == rows.len()).then(|| usd_rows.iter().sum());
     Ok(RunEstimate {
         model: req.model.clone(),
         adversary_model: req.adversary_model.clone(),
@@ -2114,10 +2193,10 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
         .filter(|h| spent(h.cost_usd, h.prompt_tokens, h.completion_tokens))
         .map(|h| h.cost_usd)
         .collect();
-    if let Some(a) = parts.adversarial {
-        if spent(a.cost_usd, a.prompt_tokens, a.completion_tokens) {
-            billed.push(a.cost_usd);
-        }
+    if let Some(a) = parts.adversarial
+        && spent(a.cost_usd, a.prompt_tokens, a.completion_tokens)
+    {
+        billed.push(a.cost_usd);
     }
     let cost_usd = if billed.is_empty() || billed.iter().any(|c| c.is_none()) {
         None
@@ -2140,7 +2219,8 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
         // refreshes the reading without re-buying the battery; a pass that ran
         // nothing (probes only) leaves the previous reading alone rather than
         // nulling it.
-        speed: speed_of(&parts.sweep.measured, parts.sweep.concurrency.ended).or(parts.previous_speed),
+        speed: speed_of(&parts.sweep.measured, parts.sweep.concurrency.ended)
+            .or(parts.previous_speed),
         cost_usd,
         calls: parts.sweep.done
             + parts.adversarial.map(|a| a.cases.len() as i64).unwrap_or(0)
@@ -2162,10 +2242,7 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
 /// swallowed exactly as the TS `.catch(() => {})` swallowed it: the next sweep
 /// re-derives the budget from its own run, and a failed archive write must not
 /// void a run the org already paid for.
-async fn record_budget(
-    harnesses: &[crate::fitness::evals::HarnessScore],
-    deps: &SurfaceDeps,
-) {
+async fn record_budget(harnesses: &[crate::fitness::evals::HarnessScore], deps: &SurfaceDeps) {
     if harnesses.is_empty() {
         return;
     }
@@ -2183,7 +2260,8 @@ async fn record_budget(
 /// reaches the sweep, and a run stopped during the probes would otherwise go on
 /// to buy the whole tier-2 sweep the admin just asked it not to.
 fn runs_map() -> &'static Mutex<HashMap<String, bool>> {
-    static RUNS: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    static RUNS: LazyLock<Mutex<HashMap<String, bool>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
     &RUNS
 }
 
@@ -2307,7 +2385,9 @@ async fn write_run_status(status: &FitnessRunStatus, deps: &SurfaceDeps) {
         return;
     };
     let _guard = status_lock().lock().await;
-    let Ok(mut runs) = deps.setting::<HashMap<String, FitnessRunStatus>>(RUNS_KEY, HashMap::new()).await
+    let Ok(mut runs) = deps
+        .setting::<HashMap<String, FitnessRunStatus>>(RUNS_KEY, HashMap::new())
+        .await
     else {
         return;
     };
@@ -2328,7 +2408,13 @@ async fn write_status(status: FitnessRunStatus, deps: &SurfaceDeps) {
     write_run_status(&s, deps).await;
 }
 
-async fn set_phase(model: &str, tiers: &[TierId], phase: Option<&str>, started_at: &str, deps: &SurfaceDeps) {
+async fn set_phase(
+    model: &str,
+    tiers: &[TierId],
+    phase: Option<&str>,
+    started_at: &str,
+    deps: &SurfaceDeps,
+) {
     write_status(
         FitnessRunStatus {
             state: FitnessRunState::Running,
@@ -2349,15 +2435,25 @@ async fn set_phase(model: &str, tiers: &[TierId], phase: Option<&str>, started_a
 /// this instance holds, and the persisted request for everything else.
 /// Checked between tiers, which is where `run_fitness` honors a stop.
 async fn stopped(model: &str, deps: &SurfaceDeps) -> bool {
-    if runs_map().lock().unwrap().get(model).copied().unwrap_or(false) {
+    if runs_map()
+        .lock()
+        .unwrap()
+        .get(model)
+        .copied()
+        .unwrap_or(false)
+    {
         return true;
     }
     stop_requested_for(model, deps).await.unwrap_or(false)
 }
 
 async fn read_runs(deps: &SurfaceDeps) -> Result<HashMap<String, FitnessRunStatus>, String> {
-    let runs = deps.setting::<HashMap<String, FitnessRunStatus>>(RUNS_KEY, HashMap::new()).await?;
-    let legacy = deps.setting::<Option<FitnessRunStatus>>(STATUS_KEY, None).await?;
+    let runs = deps
+        .setting::<HashMap<String, FitnessRunStatus>>(RUNS_KEY, HashMap::new())
+        .await?;
+    let legacy = deps
+        .setting::<Option<FitnessRunStatus>>(STATUS_KEY, None)
+        .await?;
     // THE LEGACY ROW IS FOLDED IN, NOT MIGRATED. It is the status of whatever
     // run was in flight across the change to concurrent runs, and the
     // alternative to reading it is a run the admin can watch start and then
@@ -2600,7 +2696,9 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         );
         wanted.sort();
         wanted.dedup();
-        let reach = ((deps.reach)(model.clone(), wanted)).await.unwrap_or_default();
+        let reach = ((deps.reach)(model.clone(), wanted))
+            .await
+            .unwrap_or_default();
 
         let report = crate::fitness::score::score_fitness(
             &crate::fitness::score::FitnessInput {
@@ -2621,11 +2719,12 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         let carried_tiers: Vec<TierId> = TIER_IDS
             .iter()
             .copied()
-            .filter(|t| {
-                ran.contains(t) || prior.as_ref().is_some_and(|p| p.tiers.contains(t))
-            })
+            .filter(|t| ran.contains(t) || prior.as_ref().is_some_and(|p| p.tiers.contains(t)))
             .collect();
-        let mut tier_at: HashMap<TierId, String> = prior.as_ref().map(|p| p.tier_at.clone()).unwrap_or_default();
+        let mut tier_at: HashMap<TierId, String> = prior
+            .as_ref()
+            .map(|p| p.tier_at.clone())
+            .unwrap_or_default();
         for t in &ran {
             tier_at.insert(*t, at.clone());
         }
@@ -2642,7 +2741,9 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
             // decision.
             cases: kept,
             dropped_cases: dropped,
-            probes: probes.clone().or(prior.as_ref().and_then(|p| p.probes.clone())),
+            probes: probes
+                .clone()
+                .or(prior.as_ref().and_then(|p| p.probes.clone())),
             adversarial: adversarial
                 .clone()
                 .or(prior.as_ref().and_then(|p| p.adversarial.clone())),
@@ -2675,13 +2776,17 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
             requested: &tiers,
             sweep: &effective,
             report: &report,
-            probes: probes.as_ref().or(prior.as_ref().and_then(|p| p.probes.as_ref())),
+            probes: probes
+                .as_ref()
+                .or(prior.as_ref().and_then(|p| p.probes.as_ref())),
             adversarial: adversarial
                 .as_ref()
                 .or(prior.as_ref().and_then(|p| p.adversarial.as_ref())),
             previous_speed: prior_entry.and_then(|e| e.speed),
         });
-        let stored = deps.setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new()).await?;
+        let stored = deps
+            .setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new())
+            .await?;
         let mut next = stored;
         next.insert(model.clone(), entry);
         let (index, evicted) = evict_archive(&next, KEEP_MODELS);
@@ -2755,10 +2860,10 @@ async fn read_runs_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String, Val
     let mut out = raw.as_object().cloned().unwrap_or_default();
     // The legacy single-run row folds in the same way the typed read folds it.
     let legacy = ((deps.read_setting)(STATUS_KEY.to_string(), Value::Null)).await?;
-    if let Some(model) = legacy.get("model").and_then(|m| m.as_str()) {
-        if !out.contains_key(model) {
-            out.insert(model.to_string(), legacy);
-        }
+    if let Some(model) = legacy.get("model").and_then(|m| m.as_str())
+        && !out.contains_key(model)
+    {
+        out.insert(model.to_string(), legacy);
     }
     Ok(out)
 }
@@ -2842,7 +2947,9 @@ pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String>
                 );
             }
             let running = row.get("state").and_then(Value::as_str) == Some("running");
-            let sweep = t.and_then(|s| s.model.as_deref()).and_then(|m| sweeps.get(m));
+            let sweep = t
+                .and_then(|s| s.model.as_deref())
+                .and_then(|m| sweeps.get(m));
             // ONLY WHEN THIS RUN IS ACTUALLY SWEEPING. The checkpoint is per
             // model and outlives the run that wrote it, so a probes-only run
             // on a model swept earlier displayed that older sweep's counter —
@@ -2852,23 +2959,34 @@ pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String>
                 && t.map(|s| s.tiers.contains(&TierId::Evals)).unwrap_or(false);
             row.insert(
                 "done".into(),
-                serde_json::json!(live.then(|| sweep.map(|s| s.done).unwrap_or(0)).unwrap_or(0)),
+                serde_json::json!(if live {
+                    sweep.map(|s| s.done).unwrap_or(0)
+                } else {
+                    0
+                }),
             );
             row.insert(
                 "total".into(),
-                serde_json::json!(live.then(|| sweep.map(|s| s.total).unwrap_or(0)).unwrap_or(0)),
+                serde_json::json!(if live {
+                    sweep.map(|s| s.total).unwrap_or(0)
+                } else {
+                    0
+                }),
             );
             row.insert(
                 "harness".into(),
-                serde_json::json!(live
-                    .then(|| sweep.and_then(|s| s.harness.clone()))
-                    .flatten()),
+                serde_json::json!(
+                    live.then(|| sweep.and_then(|s| s.harness.clone()))
+                        .flatten()
+                ),
             );
             row.insert(
                 "sweepState".into(),
-                serde_json::json!(sweep
-                    .map(|s| sweep_state_str(&s.state))
-                    .unwrap_or_else(|| "idle".to_string())),
+                serde_json::json!(
+                    sweep
+                        .map(|s| sweep_state_str(&s.state))
+                        .unwrap_or_else(|| "idle".to_string())
+                ),
             );
             Value::Object(row)
         })
@@ -2904,9 +3022,15 @@ pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String>
 /// reading it raw: they operate on stored state, and re-keying under them would
 /// archive a run twice or delete the wrong row.
 pub async fn read_index(deps: &SurfaceDeps) -> Result<FitnessIndex, String> {
-    let index = deps.setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new()).await?;
+    let index = deps
+        .setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new())
+        .await?;
     let catalog = ((deps.models)()).await.unwrap_or_default();
-    Ok(if catalog.is_empty() { index } else { canonical_index(&index, &catalog) })
+    Ok(if catalog.is_empty() {
+        index
+    } else {
+        canonical_index(&index, &catalog)
+    })
 }
 
 /// The index AS THE MATRIX SENDS IT — raw values. The matrix view serializes
@@ -2977,13 +3101,15 @@ pub async fn read_value(deps: &SurfaceDeps) -> Result<crate::fitness::value::Val
             move |model| {
                 let deps = d7.clone();
                 Box::pin(async move {
-                let raw = deps
-                    .setting::<Option<FitnessRecord>>(&record_key(&model), None)
-                    .await?;
-                    Ok(upgrade_record(raw).map(|r| crate::fitness::value::ArchivedRecord {
-                        report: r.report,
-                        harnesses: r.harnesses,
-                    }))
+                    let raw = deps
+                        .setting::<Option<FitnessRecord>>(&record_key(&model), None)
+                        .await?;
+                    Ok(
+                        upgrade_record(raw).map(|r| crate::fitness::value::ArchivedRecord {
+                            report: r.report,
+                            harnesses: r.harnesses,
+                        }),
+                    )
                 })
             }
         }),
@@ -3136,7 +3262,7 @@ pub async fn read_fitness(
         // open.
         let (models, index) = tokio::try_join!(model_rows(deps), read_index_raw(deps))?;
         let body = CapabilitiesView { models, index };
-        return Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?);
+        return serde_json::to_value(&body).map_err(|e| e.to_string());
     }
 
     if query.view == "transcripts" {
@@ -3159,7 +3285,7 @@ pub async fn read_fitness(
                 .await
                 .map_err(|e| e.to_string())?,
         };
-        return Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?);
+        return serde_json::to_value(&body).map_err(|e| e.to_string());
     }
 
     if query.view == "health" {
@@ -3186,7 +3312,7 @@ pub async fn read_fitness(
             })
             .collect();
         let body = crate::fitness::health::summarize(&runs);
-        return Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?);
+        return serde_json::to_value(&body).map_err(|e| e.to_string());
     }
 
     if query.view == "value" {
@@ -3194,7 +3320,7 @@ pub async fn read_fitness(
         // and a price lookup per tested model, and the matrix is polled every
         // 3s while a run is in flight. An admin opens this one on purpose.
         let body = read_value(deps).await?;
-        return Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?);
+        return serde_json::to_value(&body).map_err(|e| e.to_string());
     }
 
     if query.view == "estimate" {
@@ -3239,7 +3365,7 @@ pub async fn read_fitness(
                 "note": crate::fitness::adversarial::ADVERSARY_REQUIREMENT.1,
             }),
         };
-        return Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?);
+        return serde_json::to_value(&body).map_err(|e| e.to_string());
     }
 
     if query.view == "detail" {
@@ -3279,7 +3405,7 @@ pub async fn read_fitness(
                 .collect(),
         },
     };
-    Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?)
+    serde_json::to_value(&body).map_err(|e| e.to_string())
 }
 
 /// The detail view, split out of `read_fitness` only because it is the one
@@ -3357,8 +3483,16 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
         live = Some(LiveRun {
             state: running.state.as_str().to_string(),
             phase: running.phase.clone(),
-            done: if sweeping { sweep.map(|s| s.done).unwrap_or(0) } else { 0 },
-            total: if sweeping { sweep.map(|s| s.total).unwrap_or(0) } else { 0 },
+            done: if sweeping {
+                sweep.map(|s| s.done).unwrap_or(0)
+            } else {
+                0
+            },
+            total: if sweeping {
+                sweep.map(|s| s.total).unwrap_or(0)
+            } else {
+                0
+            },
             harness: if sweeping {
                 sweep.and_then(|s| s.harness.clone())
             } else {
@@ -3375,15 +3509,15 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
         });
     }
 
-    let console_log = live
-        .as_ref()
-        .map(|l| l.log.clone())
-        .unwrap_or_else(|| {
-            run_log(
-                record.as_ref().map(|r| r.cases.as_slice()).unwrap_or(&[]),
-                &archived_tier_log(record.as_ref(), &crate::fitness::live_feed::live_feed_for(model)),
-            )
-        });
+    let console_log = live.as_ref().map(|l| l.log.clone()).unwrap_or_else(|| {
+        run_log(
+            record.as_ref().map(|r| r.cases.as_slice()).unwrap_or(&[]),
+            &archived_tier_log(
+                record.as_ref(),
+                &crate::fitness::live_feed::live_feed_for(model),
+            ),
+        )
+    });
     let divergences = match &record {
         Some(record) => crate::fitness::observed::divergences(
             model,
@@ -3407,7 +3541,7 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
         observed,
         thresholds: thresholds(),
     };
-    Ok(serde_json::to_value(&body).map_err(|e| e.to_string())?)
+    serde_json::to_value(&body).map_err(|e| e.to_string())
 }
 
 // ── The write verbs ──────────────────────────────────────────────────────────
@@ -3462,7 +3596,11 @@ pub async fn start_fitness_run(req: StartRequest, deps: Arc<SurfaceDeps>) -> Sta
     };
     if let Some(refusal) = early {
         let (status, runs) = join_status_runs(Some(&req.model), &deps).await;
-        return StartOutcome::Busy { refusal, status, runs };
+        return StartOutcome::Busy {
+            refusal,
+            status,
+            runs,
+        };
     }
 
     let rows = match model_rows(&deps).await {
@@ -3474,7 +3612,9 @@ pub async fn start_fitness_run(req: StartRequest, deps: Arc<SurfaceDeps>) -> Sta
     }
     if let Some(adversary) = &req.adversary_model {
         if !rows.iter().any(|r| &r.id == adversary) {
-            return StartOutcome::Rejected("that adversary model is not on the gateway".to_string());
+            return StartOutcome::Rejected(
+                "that adversary model is not on the gateway".to_string(),
+            );
         }
         if adversary == &req.model {
             // A model grading its own resistance is the who-judges-the-judge
@@ -3500,7 +3640,11 @@ pub async fn start_fitness_run(req: StartRequest, deps: Arc<SurfaceDeps>) -> Sta
     // Claimed here, with no await between the check and the claim.
     if let Some(refusal) = claim_run(&opts.model) {
         let (status, runs) = join_status_runs(Some(&opts.model), &deps).await;
-        return StartOutcome::Busy { refusal, status, runs };
+        return StartOutcome::Busy {
+            refusal,
+            status,
+            runs,
+        };
     }
     // A STOP REQUEST BELONGS TO THE RUN IT STOPPED. Clearing it only when a run
     // ENDS leaves it set for any run that never got to finish — a stopped
@@ -3534,7 +3678,11 @@ async fn join_status_runs(model: Option<&str>, deps: &SurfaceDeps) -> (Value, Fi
     let (status, runs) = tokio::join!(fitness_status(model, deps), fitness_runs(deps));
     (
         status.unwrap_or_else(|_| idle_view()),
-        runs.unwrap_or(FitnessRunsView { runs: Vec::new(), max: MAX_CONCURRENT_RUNS, full: false }),
+        runs.unwrap_or(FitnessRunsView {
+            runs: Vec::new(),
+            max: MAX_CONCURRENT_RUNS,
+            full: false,
+        }),
     )
 }
 
@@ -3635,7 +3783,11 @@ pub async fn stop_fitness_run(model: Option<&str>, deps: &SurfaceDeps) -> StopRe
     }
 
     let (status, runs) = join_status_runs(model, deps).await;
-    StopResult { stopped: !targets.is_empty(), status, runs }
+    StopResult {
+        stopped: !targets.is_empty(),
+        status,
+        runs,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3668,8 +3820,13 @@ pub struct ClearResult {
 /// the detail route cannot serve.
 ///
 /// `model: None` clears every tested candidate.
-pub async fn clear_fitness_results(model: Option<&str>, deps: &SurfaceDeps) -> Result<ClearResult, String> {
-    let index = deps.setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new()).await?;
+pub async fn clear_fitness_results(
+    model: Option<&str>,
+    deps: &SurfaceDeps,
+) -> Result<ClearResult, String> {
+    let index = deps
+        .setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new())
+        .await?;
     let targets: Vec<String> = match model {
         None => index.keys().cloned().collect(),
         Some(model) => {
@@ -3699,9 +3856,15 @@ pub async fn clear_fitness_results(model: Option<&str>, deps: &SurfaceDeps) -> R
     .await?;
     let transcripts = match model {
         None => ((deps.clear_transcripts)(None)).await.unwrap_or(0),
-        Some(_) => ((deps.clear_transcripts)(targets.first().cloned())).await.unwrap_or(0),
+        Some(_) => ((deps.clear_transcripts)(targets.first().cloned()))
+            .await
+            .unwrap_or(0),
     };
-    Ok(ClearResult { models: targets, reports, transcripts })
+    Ok(ClearResult {
+        models: targets,
+        reports,
+        transcripts,
+    })
 }
 
 /// The Forget verb's answer. `Err` is a 400 with the sentence the admin reads;
@@ -3744,23 +3907,26 @@ pub async fn forget_model(model: &str, deps: &SurfaceDeps) -> Result<ForgetOk, S
     // canonical row, so the two can differ — and a Forget that deleted neither
     // while reporting success is exactly the bug this function was written to
     // fix.
-    let index = deps.setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new()).await?;
+    let index = deps
+        .setting::<FitnessIndex>(INDEX_KEY, FitnessIndex::new())
+        .await?;
     let catalog = ((deps.models)()).await.unwrap_or_default();
     let stored = stored_id_for(model, &canonical_index(&index, &catalog));
     let report = index.contains_key(&stored);
     ((deps.write_setting)(record_key(&stored), Value::Null)).await?;
     if report {
-        let rest: FitnessIndex = index
-            .into_iter()
-            .filter(|(id, _)| *id != stored)
-            .collect();
+        let rest: FitnessIndex = index.into_iter().filter(|(id, _)| *id != stored).collect();
         ((deps.write_setting)(
             INDEX_KEY.to_string(),
             serde_json::to_value(&rest).map_err(|e| e.to_string())?,
         ))
         .await?;
     }
-    Ok(ForgetOk { keys, models: model_rows(deps).await?, report })
+    Ok(ForgetOk {
+        keys,
+        models: model_rows(deps).await?,
+        report,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -3800,20 +3966,20 @@ mod tests {
     use crate::fitness::probes::{
         LatencyReading, ProbeEstimate, ProbeEstimateRow, ProbeId, ProbeReport,
     };
-    use crate::harness::run::BoxFut;
-    use serde_json::json;
-    use std::collections::HashMap;
-    use std::sync::{Arc, LazyLock, Mutex};
     use crate::fitness::score::FitnessReport;
     use crate::gateway::registry::{LlmEndpoint, ModelRouting};
     use crate::harness::define::{
-        CheckCtx, CheckResult, EvalCase, EvalBand, HarnessDefinition, OnFailure, Output,
+        CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, OnFailure, Output,
         RenderContext,
     };
     use crate::harness::registry::{HarnessSource, RegisteredHarness};
+    use crate::harness::run::BoxFut;
     use crate::harness::schema::Schema;
     use crate::harness_model::ModelSpec;
     use crate::model_access::GatewayModel;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::{Arc, LazyLock, Mutex};
 
     static RUN_SOLE: LazyLock<tokio::sync::Mutex<()>> =
         LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -3871,15 +4037,28 @@ mod tests {
 
     fn harness_of(id: &'static str, fixtures: usize, json: bool) -> RegisteredHarness {
         let output = if json {
-            Output::Json { schema: Schema::string(), preprocess: None, repair: None, verify: None }
+            Output::Json {
+                schema: Schema::string(),
+                preprocess: None,
+                repair: None,
+                verify: None,
+            }
         } else {
-            Output::Text { clean: None, verify: None }
+            Output::Text {
+                clean: None,
+                verify: None,
+            }
         };
         let mut def = HarnessDefinition::new(
             id,
             id,
             "test",
-            ModelSpec { pin: None, role: None, chain: Some(&[]), user_id: None },
+            ModelSpec {
+                pin: None,
+                role: None,
+                chain: Some(&[]),
+                user_id: None,
+            },
             Arc::new(|_input: &Value, _ctx: &RenderContext| Ok(Vec::new())),
             output,
             OnFailure::Null,
@@ -3893,7 +4072,10 @@ mod tests {
                 )
             })
             .collect();
-        RegisteredHarness { def: Box::leak(Box::new(def)), source: HarnessSource::Builtin }
+        RegisteredHarness {
+            def: Box::leak(Box::new(def)),
+            source: HarnessSource::Builtin,
+        }
     }
 
     fn ep(name: &str) -> LlmEndpoint {
@@ -3962,21 +4144,24 @@ mod tests {
         let mut d = panic_deps();
         d.routing = Arc::new(|model| {
             Box::pin(async move {
-                Ok(ModelRouting { endpoints: Vec::new(), upstream_model: model })
+                Ok(ModelRouting {
+                    endpoints: Vec::new(),
+                    upstream_model: model,
+                })
             })
         });
         d.harnesses = Arc::new(|| Box::pin(async { Ok(Vec::new()) }));
         d.read_setting = Arc::new(|_, fallback| Box::pin(async move { Ok(fallback) }));
-        d.estimate_probes =
-            Arc::new(|_, _| Box::pin(async { Ok(probe_estimate()) }));
-        d.estimate_adversarial =
-            Arc::new(|_, _| Box::pin(async { Ok(adversarial_estimate()) }));
+        d.estimate_probes = Arc::new(|_, _| Box::pin(async { Ok(probe_estimate()) }));
+        d.estimate_adversarial = Arc::new(|_, _| Box::pin(async { Ok(adversarial_estimate()) }));
         d
     }
 
     /// A read edge over a fixed map — the estimate's settings reads are
     /// read-only, so the store needs no write half.
-    fn reading(pairs: Vec<(&str, Value)>) -> Arc<dyn Fn(String, Value) -> BoxFut<Result<Value, String>> + Send + Sync> {
+    fn reading(
+        pairs: Vec<(&str, Value)>,
+    ) -> Arc<dyn Fn(String, Value) -> BoxFut<Result<Value, String>> + Send + Sync> {
         let map: HashMap<String, Value> =
             pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         Arc::new(move |key, fallback| {
@@ -3991,7 +4176,9 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
-    fn store_read(s: Store) -> Arc<dyn Fn(String, Value) -> BoxFut<Result<Value, String>> + Send + Sync> {
+    fn store_read(
+        s: Store,
+    ) -> Arc<dyn Fn(String, Value) -> BoxFut<Result<Value, String>> + Send + Sync> {
         Arc::new(move |key, fallback| {
             let v = s.lock().unwrap().get(&key).cloned().unwrap_or(fallback);
             Box::pin(async move { Ok(v) })
@@ -4131,7 +4318,12 @@ mod tests {
     }
 
     fn report() -> FitnessReport {
-        FitnessReport { model: "m".into(), slots: Vec::new(), unbound: Vec::new(), guarded: true }
+        FitnessReport {
+            model: "m".into(),
+            slots: Vec::new(),
+            unbound: Vec::new(),
+            guarded: true,
+        }
     }
 
     fn gm(id: &str, endpoints: &[&str], qualified: bool) -> GatewayModel {
@@ -4152,7 +4344,10 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-        assert!(running_models().is_empty(), "run slots leaked by a previous test");
+        assert!(
+            running_models().is_empty(),
+            "run slots leaked by a previous test"
+        );
     }
 
     // ── mergeFact ────────────────────────────────────────────────────────────
@@ -4186,7 +4381,13 @@ mod tests {
     #[test]
     fn merge_fact_reports_a_measured_false_as_no() {
         // A recorded failure is a fact, not a gap.
-        let f = fact_over(false, "learned", Some("returned prose"), None, "2026-08-01T00:00:00.000Z");
+        let f = fact_over(
+            false,
+            "learned",
+            Some("returned prose"),
+            None,
+            "2026-08-01T00:00:00.000Z",
+        );
         let v = merge_fact(&[Some(&f)]);
         assert_eq!(v.state, CapabilityState::No);
         assert_eq!(v.source.as_deref(), Some("learned"));
@@ -4229,8 +4430,20 @@ mod tests {
 
     #[test]
     fn merge_fact_carries_an_agreeing_yes_pool_through() {
-        let a = fact_over(true, "probe", Some("first"), None, "2026-08-01T00:00:00.000Z");
-        let b = fact_over(true, "probe", Some("second"), None, "2026-08-01T00:00:00.000Z");
+        let a = fact_over(
+            true,
+            "probe",
+            Some("first"),
+            None,
+            "2026-08-01T00:00:00.000Z",
+        );
+        let b = fact_over(
+            true,
+            "probe",
+            Some("second"),
+            None,
+            "2026-08-01T00:00:00.000Z",
+        );
         let v = merge_fact(&[Some(&a), Some(&b)]);
         assert_eq!(v.state, CapabilityState::Yes);
         // The first member's metadata, deliberately: the alternative is
@@ -4243,7 +4456,10 @@ mod tests {
         let a = fact(false);
         let b = fact(false);
         let c = fact(false);
-        assert_eq!(merge_fact(&[Some(&a), Some(&b), Some(&c)]).state, CapabilityState::No);
+        assert_eq!(
+            merge_fact(&[Some(&a), Some(&b), Some(&c)]).state,
+            CapabilityState::No
+        );
     }
 
     #[test]
@@ -4286,14 +4502,23 @@ mod tests {
         // every unprobed model on a fresh install turns red, and score.rs reads
         // a recorded `false` as UNFIT while an absent fact is merely untested.
         let f = fact(false);
-        assert_eq!(merge_fact(&[Some(&f), None]).state, CapabilityState::Unknown);
-        assert_eq!(merge_fact(&[None, Some(&f)]).state, CapabilityState::Unknown);
+        assert_eq!(
+            merge_fact(&[Some(&f), None]).state,
+            CapabilityState::Unknown
+        );
+        assert_eq!(
+            merge_fact(&[None, Some(&f)]).state,
+            CapabilityState::Unknown
+        );
     }
 
     #[test]
     fn merge_fact_is_unknown_for_three_members_with_one_gap() {
         let t = fact(true);
-        assert_eq!(merge_fact(&[Some(&t), Some(&t), None]).state, CapabilityState::Unknown);
+        assert_eq!(
+            merge_fact(&[Some(&t), Some(&t), None]).state,
+            CapabilityState::Unknown
+        );
     }
 
     // ── modelRows ────────────────────────────────────────────────────────────
@@ -4305,7 +4530,10 @@ mod tests {
         let mut facts: HashMap<String, HashMap<String, CapabilityFact>> = HashMap::new();
         facts.insert(
             "spark:qwen3-14b".into(),
-            HashMap::from([("json".to_string(), fact(true)), ("tools".to_string(), fact(true))]),
+            HashMap::from([
+                ("json".to_string(), fact(true)),
+                ("tools".to_string(), fact(true)),
+            ]),
         );
         facts.insert(
             "local:qwen3-14b".into(),
@@ -4364,7 +4592,13 @@ mod tests {
         };
         assert_eq!(state_of("spark/qwen3-14b", "json"), CapabilityState::Yes);
         assert_eq!(state_of("local/qwen3-14b", "json"), CapabilityState::No);
-        assert!(!rows.iter().find(|r| r.id == "spark/qwen3-14b").unwrap().pooled);
+        assert!(
+            !rows
+                .iter()
+                .find(|r| r.id == "spark/qwen3-14b")
+                .unwrap()
+                .pooled
+        );
     }
 
     #[test]
@@ -4377,8 +4611,15 @@ mod tests {
         // `qualified` flag is the only thing that tells the two apart, so the
         // prefix must not be stripped here.
         assert_eq!(
-            keys_for("meta/llama-3.1-8b", false, &["spark".to_string(), "local".to_string()]),
-            vec!["spark:meta/llama-3.1-8b".to_string(), "local:meta/llama-3.1-8b".to_string()]
+            keys_for(
+                "meta/llama-3.1-8b",
+                false,
+                &["spark".to_string(), "local".to_string()]
+            ),
+            vec![
+                "spark:meta/llama-3.1-8b".to_string(),
+                "local:meta/llama-3.1-8b".to_string()
+            ]
         );
     }
 
@@ -4452,9 +4693,7 @@ mod tests {
     #[tokio::test]
     async fn estimate_reports_an_unsizeable_probe_suite_as_zero_and_voids_the_total() {
         let mut d = estimate_deps();
-        d.estimate_probes = Arc::new(|_, _| {
-            Box::pin(async { Err("gateway down".to_string()) })
-        });
+        d.estimate_probes = Arc::new(|_, _| Box::pin(async { Err("gateway down".to_string()) }));
         let est = estimate_run(
             &EstimateRequest {
                 reprobe: false,
@@ -4468,7 +4707,10 @@ mod tests {
         .await
         .unwrap();
         let t = &est.tiers[0];
-        assert_eq!((t.calls, t.prompt_tokens, t.completion_tokens, t.usd), (0, 0, 0, None));
+        assert_eq!(
+            (t.calls, t.prompt_tokens, t.completion_tokens, t.usd),
+            (0, 0, 0, None)
+        );
         // A dollar figure missing a component is a number nobody can reconcile
         // with the invoice, so there is no dollar figure.
         assert_eq!(est.usd, None);
@@ -4526,7 +4768,10 @@ mod tests {
                 let mut e = ep("spark");
                 e.price_in_per_mtok = Some(1.0);
                 e.price_out_per_mtok = Some(4.0);
-                Ok(ModelRouting { endpoints: vec![e], upstream_model: model })
+                Ok(ModelRouting {
+                    endpoints: vec![e],
+                    upstream_model: model,
+                })
             })
         });
         let est = estimate_run(
@@ -4625,7 +4870,10 @@ mod tests {
                     e
                 };
                 e.models = vec![];
-                Ok(ModelRouting { endpoints: vec![e], upstream_model: model })
+                Ok(ModelRouting {
+                    endpoints: vec![e],
+                    upstream_model: model,
+                })
             })
         });
         let q = quoted.clone();
@@ -4710,7 +4958,10 @@ mod tests {
                 let mut e = ep("spark");
                 e.price_in_per_mtok = Some(2.0);
                 e.price_out_per_mtok = Some(2.0);
-                Ok(ModelRouting { endpoints: vec![e], upstream_model: model })
+                Ok(ModelRouting {
+                    endpoints: vec![e],
+                    upstream_model: model,
+                })
             })
         });
         d.estimate_probes = Arc::new(|_, _| {
@@ -4775,8 +5026,7 @@ mod tests {
     async fn estimate_emits_no_row_for_a_tier_that_was_not_asked_for() {
         let mut d = estimate_deps();
         d.harnesses = Arc::new(move || Box::pin(async move { Ok(vec![json_harness("j", 1)]) }));
-        d.estimate_probes =
-            Arc::new(|_, _| Box::pin(async { Err("never called".to_string()) }));
+        d.estimate_probes = Arc::new(|_, _| Box::pin(async { Err("never called".to_string()) }));
         d.estimate_adversarial =
             Arc::new(|_, _| Box::pin(async { Err("never called".to_string()) }));
         let est = estimate_run(
@@ -4791,7 +5041,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(est.tiers.iter().map(|t| t.tier).collect::<Vec<_>>(), vec![TierId::Evals]);
+        assert_eq!(
+            est.tiers.iter().map(|t| t.tier).collect::<Vec<_>>(),
+            vec![TierId::Evals]
+        );
     }
 
     // ── Pricing ──────────────────────────────────────────────────────────────
@@ -4807,14 +5060,20 @@ mod tests {
                 let mut b = ep("b");
                 b.price_in_per_mtok = Some(5.0);
                 b.price_out_per_mtok = Some(9.0);
-                Ok(ModelRouting { endpoints: vec![a, b], upstream_model: model })
+                Ok(ModelRouting {
+                    endpoints: vec![a, b],
+                    upstream_model: model,
+                })
             })
         });
         // An estimate the round-robin can exceed is not an estimate an admin
         // can act on.
         assert_eq!(
             price_of("m", &d).await.unwrap(),
-            Some(ModelPrice { in_per_mtok: 5.0, out_per_mtok: 9.0 })
+            Some(ModelPrice {
+                in_per_mtok: 5.0,
+                out_per_mtok: 9.0
+            })
         );
     }
 
@@ -4828,12 +5087,18 @@ mod tests {
                 e.auto_prices = json!({ "up": { "in": 1, "out": 1 } });
                 e.price_in_per_mtok = Some(99.0);
                 e.price_out_per_mtok = Some(99.0);
-                Ok(ModelRouting { endpoints: vec![e], upstream_model: "up".into() })
+                Ok(ModelRouting {
+                    endpoints: vec![e],
+                    upstream_model: "up".into(),
+                })
             })
         });
         assert_eq!(
             price_of("m", &d).await.unwrap(),
-            Some(ModelPrice { in_per_mtok: 3.0, out_per_mtok: 7.0 })
+            Some(ModelPrice {
+                in_per_mtok: 3.0,
+                out_per_mtok: 7.0
+            })
         );
     }
 
@@ -4841,28 +5106,38 @@ mod tests {
     async fn price_of_is_none_when_nothing_serves_or_prices_the_model() {
         let mut none_serving = panic_deps();
         none_serving.routing = Arc::new(|model| {
-            Box::pin(async move { Ok(ModelRouting { endpoints: Vec::new(), upstream_model: model }) })
+            Box::pin(async move {
+                Ok(ModelRouting {
+                    endpoints: Vec::new(),
+                    upstream_model: model,
+                })
+            })
         });
         assert_eq!(price_of("m", &none_serving).await.unwrap(), None);
 
         let mut unpriced = panic_deps();
         unpriced.routing = Arc::new(|model| {
             Box::pin(async move {
-                Ok(ModelRouting { endpoints: vec![ep("a")], upstream_model: model })
+                Ok(ModelRouting {
+                    endpoints: vec![ep("a")],
+                    upstream_model: model,
+                })
             })
         });
         assert_eq!(price_of("m", &unpriced).await.unwrap(), None);
 
         let mut no_catalog = panic_deps();
-        no_catalog.routing =
-            Arc::new(|_| Box::pin(async { Err("no catalog".to_string()) }));
+        no_catalog.routing = Arc::new(|_| Box::pin(async { Err("no catalog".to_string()) }));
         assert_eq!(price_of("m", &no_catalog).await.unwrap(), None);
     }
 
     #[test]
     fn usd_of_gives_no_dollars_without_a_price_rather_than_quoting_zero() {
         assert_eq!(usd_of(None, 1_000_000, 1_000_000), None);
-        let p = Some(ModelPrice { in_per_mtok: 2.0, out_per_mtok: 6.0 });
+        let p = Some(ModelPrice {
+            in_per_mtok: 2.0,
+            out_per_mtok: 6.0,
+        });
         let usd = usd_of(p, 1_000_000, 500_000).unwrap();
         assert!((usd - 5.0).abs() < 1e-12);
     }
@@ -4919,7 +5194,12 @@ mod tests {
         // 3 transcripts + all 40 clean rows: dropping the cheap ones would
         // leave the panel unable to say how many fixtures actually passed.
         assert_eq!(kept.len(), 43);
-        assert_eq!(kept.iter().filter(|c| c.prompt.is_some() || c.raw.is_some()).count(), 3);
+        assert_eq!(
+            kept.iter()
+                .filter(|c| c.prompt.is_some() || c.raw.is_some())
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -5083,7 +5363,10 @@ mod tests {
         .await;
         match out {
             StartOutcome::Rejected(e) => {
-                assert_eq!(e, "the adversary must be a different model than the candidate")
+                assert_eq!(
+                    e,
+                    "the adversary must be a different model than the candidate"
+                )
             }
             other => panic!("expected a rejection, got {other:?}"),
         }
@@ -5091,10 +5374,7 @@ mod tests {
 
     // ── forgetModel ──────────────────────────────────────────────────────────
 
-    fn forget_deps(
-        forgotten: Arc<Mutex<Vec<String>>>,
-        s: Store,
-    ) -> SurfaceDeps {
+    fn forget_deps(forgotten: Arc<Mutex<Vec<String>>>, s: Store) -> SurfaceDeps {
         let mut d = panic_deps();
         let catalog = vec![gm("qwen3-14b", &["spark", "local"], false)];
         d.models = Arc::new(move || {
@@ -5128,7 +5408,10 @@ mod tests {
             *forgotten.lock().unwrap(),
             vec!["spark:qwen3-14b".to_string(), "local:qwen3-14b".to_string()]
         );
-        assert_eq!(out.keys, vec!["spark:qwen3-14b".to_string(), "local:qwen3-14b".to_string()]);
+        assert_eq!(
+            out.keys,
+            vec!["spark:qwen3-14b".to_string(), "local:qwen3-14b".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -5141,18 +5424,30 @@ mod tests {
         let mut index = FitnessIndex::new();
         index.insert("qwen3-14b".into(), entry("qwen3-14b", "x"));
         index.insert("other-model".into(), entry("other-model", "y"));
-        put(&s, &record_key("qwen3-14b"), json!({ "model": "qwen3-14b" }));
+        put(
+            &s,
+            &record_key("qwen3-14b"),
+            json!({ "model": "qwen3-14b" }),
+        );
         put(&s, INDEX_KEY, serde_json::to_value(&index).unwrap());
 
-        let out = forget_model("qwen3-14b", &forget_deps(Arc::new(Mutex::new(Vec::new())), s.clone()))
-            .await
-            .unwrap();
+        let out = forget_model(
+            "qwen3-14b",
+            &forget_deps(Arc::new(Mutex::new(Vec::new())), s.clone()),
+        )
+        .await
+        .unwrap();
         assert!(out.report);
         assert_eq!(get(&s, &record_key("qwen3-14b")), Some(Value::Null));
         // Only this model leaves the index; every other verdict on the page
         // stays.
         let rest = get(&s, INDEX_KEY).unwrap();
-        let keys: Vec<&str> = rest.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        let keys: Vec<&str> = rest
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
         assert_eq!(keys, vec!["other-model"]);
     }
 
@@ -5327,7 +5622,11 @@ mod tests {
     fn good_budget() -> TokenBudget {
         vec![(
             "titler".to_string(),
-            TokenBudgetEntry { prompt: 103, completion: 11, at: "yesterday".into() },
+            TokenBudgetEntry {
+                prompt: 103,
+                completion: 11,
+                at: "yesterday".into(),
+            },
         )]
         .into_iter()
         .collect()
@@ -5337,11 +5636,18 @@ mod tests {
     fn next_budget_records_per_case_tokens_for_what_a_run_actually_measured() {
         let want: TokenBudget = vec![(
             "titler".to_string(),
-            TokenBudgetEntry { prompt: 1000, completion: 200, at: "now".into() },
+            TokenBudgetEntry {
+                prompt: 1000,
+                completion: 200,
+                at: "now".into(),
+            },
         )]
         .into_iter()
         .collect();
-        assert_eq!(next_budget(&TokenBudget::new(), &[budget_score("titler")], "now"), want);
+        assert_eq!(
+            next_budget(&TokenBudget::new(), &[budget_score("titler")], "now"),
+            want
+        );
     }
 
     #[test]
@@ -5384,7 +5690,11 @@ mod tests {
         assert_eq!(after.get("titler"), good_budget().get("titler"));
         assert_eq!(
             after.get("summarizer"),
-            Some(&TokenBudgetEntry { prompt: 1000, completion: 200, at: "now".into() })
+            Some(&TokenBudgetEntry {
+                prompt: 1000,
+                completion: 200,
+                at: "now".into()
+            })
         );
     }
 
@@ -5392,7 +5702,11 @@ mod tests {
 
     fn rekey_catalog() -> Vec<GatewayModel> {
         vec![
-            gm("openrouter/deepseek/deepseek-v4-flash", &["openrouter"], true),
+            gm(
+                "openrouter/deepseek/deepseek-v4-flash",
+                &["openrouter"],
+                true,
+            ),
             gm("spark-a/qwen3-14b", &["spark-a"], true),
             gm("spark-b/qwen3-14b", &["spark-b"], true),
             gm("qwen3-14b", &["spark-a", "spark-b"], false),
@@ -5415,7 +5729,10 @@ mod tests {
             &rekey_catalog(),
         );
         let keys: Vec<&String> = out.keys().collect();
-        assert_eq!(keys, vec![&"openrouter/deepseek/deepseek-v4-flash".to_string()]);
+        assert_eq!(
+            keys,
+            vec![&"openrouter/deepseek/deepseek-v4-flash".to_string()]
+        );
         // THE KEY MOVES, THE STORED SPELLING DOES NOT. `model` is what
         // `record_key` needs, and overwriting it with the canonical id is what
         // broke the drill-down and the value view's backfill: both went
@@ -5433,8 +5750,14 @@ mod tests {
 
     #[test]
     fn the_archive_leaves_an_id_that_never_moved_alone() {
-        let out = canonical_index(&index_from(vec![("spark-a/qwen3-14b", "monday")]), &rekey_catalog());
-        assert_eq!(stored_id_for("spark-a/qwen3-14b", &out), "spark-a/qwen3-14b");
+        let out = canonical_index(
+            &index_from(vec![("spark-a/qwen3-14b", "monday")]),
+            &rekey_catalog(),
+        );
+        assert_eq!(
+            stored_id_for("spark-a/qwen3-14b", &out),
+            "spark-a/qwen3-14b"
+        );
         // And a model with no entry at all is its own stored id.
         assert_eq!(stored_id_for("never-tested", &out), "never-tested");
     }
@@ -5470,7 +5793,11 @@ mod tests {
     /// Every edge a detached probes-only run touches on its way to Done. The
     /// TS merged a `Partial` over the real deps; here the empty answers the TS
     /// got from the real (test-empty) registry are said out loud.
-    fn run_deps(s: &Store, gate: &tokio::sync::watch::Receiver<bool>, now: &'static str) -> SurfaceDeps {
+    fn run_deps(
+        s: &Store,
+        gate: &tokio::sync::watch::Receiver<bool>,
+        now: &'static str,
+    ) -> SurfaceDeps {
         let mut catalog = Vec::new();
         for i in 0..MAX_CONCURRENT_RUNS {
             catalog.push(gm(&format!("spark/m{i}"), &["spark"], true));
@@ -5513,7 +5840,11 @@ mod tests {
     }
 
     async fn start(model: &str, d: &SurfaceDeps) -> StartOutcome {
-        start_fitness_run(start_req(model, &[TierId::Probes], None), Arc::new(d.clone())).await
+        start_fitness_run(
+            start_req(model, &[TierId::Probes], None),
+            Arc::new(d.clone()),
+        )
+        .await
     }
 
     #[tokio::test]
@@ -5524,13 +5855,19 @@ mod tests {
         let d = run_deps(&s, &gate, NOW);
         for i in 0..MAX_CONCURRENT_RUNS {
             let out = start(&format!("spark/m{i}"), &d).await;
-            assert!(matches!(out, StartOutcome::Started { .. }), "start {i} was refused");
+            assert!(
+                matches!(out, StartOutcome::Started { .. }),
+                "start {i} was refused"
+            );
         }
 
         let overflow = start("spark/over", &d).await;
         assert!(matches!(
             overflow,
-            StartOutcome::Busy { refusal: RunRefusal::AtCapacity, .. }
+            StartOutcome::Busy {
+                refusal: RunRefusal::AtCapacity,
+                ..
+            }
         ));
         assert!(fitness_runs(&d).await.unwrap().full);
 
@@ -5548,11 +5885,17 @@ mod tests {
         let (open_tx, gate) = tokio::sync::watch::channel(false);
         let s = store();
         let d = run_deps(&s, &gate, NOW);
-        assert!(matches!(start("spark/a", &d).await, StartOutcome::Started { .. }));
+        assert!(matches!(
+            start("spark/a", &d).await,
+            StartOutcome::Started { .. }
+        ));
         let again = start("spark/a", &d).await;
         assert!(matches!(
             again,
-            StartOutcome::Busy { refusal: RunRefusal::AlreadyRunning, .. }
+            StartOutcome::Busy {
+                refusal: RunRefusal::AlreadyRunning,
+                ..
+            }
         ));
 
         let _ = open_tx.send(true);
@@ -5605,7 +5948,12 @@ mod tests {
     fn view_models(view: &FitnessRunsView) -> Vec<String> {
         view.runs
             .iter()
-            .map(|r| r.get("model").and_then(Value::as_str).unwrap_or_default().to_string())
+            .map(|r| {
+                r.get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
             .collect()
     }
 
@@ -5615,7 +5963,11 @@ mod tests {
         // Not reading it means an admin watches a run start and never sees it
         // finish.
         let s = store();
-        put(&s, STATUS_KEY, row("running", "spark/legacy", "monday", None));
+        put(
+            &s,
+            STATUS_KEY,
+            row("running", "spark/legacy", "monday", None),
+        );
         let view = fitness_runs(&view_deps(&s)).await.unwrap();
         assert_eq!(view_models(&view), vec!["spark/legacy"]);
     }
@@ -5624,10 +5976,17 @@ mod tests {
     async fn lets_a_real_entry_win_over_the_legacy_row_for_the_same_model() {
         let s = store();
         put(&s, STATUS_KEY, row("running", "spark/a", "monday", None));
-        put(&s, RUNS_KEY, json!({ "spark/a": row("done", "spark/a", "friday", None) }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/a": row("done", "spark/a", "friday", None) }),
+        );
         let view = fitness_runs(&view_deps(&s)).await.unwrap();
         assert_eq!(view.runs.len(), 1);
-        assert_eq!(view.runs[0].get("state").and_then(Value::as_str), Some("done"));
+        assert_eq!(
+            view.runs[0].get("state").and_then(Value::as_str),
+            Some("done")
+        );
     }
 
     #[tokio::test]
@@ -5666,9 +6025,8 @@ mod tests {
         slow.timed_out = true;
         cases.extend([failed, no_contract, slow]);
         let (kept, dropped) = live_cases(&cases);
-        let bad = |c: &EvalCaseScore| {
-            c.task == TaskVerdict::Fail || !c.contract_held || c.timed_out
-        };
+        let bad =
+            |c: &EvalCaseScore| c.task == TaskVerdict::Fail || !c.contract_held || c.timed_out;
         assert_eq!(kept.iter().filter(|c| bad(c)).count(), 3);
         assert!(kept.len() < 12);
         assert!(dropped > 90);
@@ -5685,8 +6043,9 @@ mod tests {
         skip.skipped = Some("this candidate runs no tool loop".into());
         skip.contract_held = false;
         skip.task = TaskVerdict::Unscored;
-        let cases: Vec<EvalCaseScore> =
-            std::iter::once(skip).chain((0..20).map(|i| case(&format!("clean-{i}")))).collect();
+        let cases: Vec<EvalCaseScore> = std::iter::once(skip)
+            .chain((0..20).map(|i| case(&format!("clean-{i}"))))
+            .collect();
         let (kept, _) = live_cases(&cases);
         assert_eq!(kept.iter().filter(|c| c.skipped.is_some()).count(), 0);
     }
@@ -5788,7 +6147,11 @@ mod tests {
     async fn reports_a_run_that_stopped_breathing_as_failed_not_as_running() {
         let _sole = sole_runs().await;
         let s = store();
-        put(&s, RUNS_KEY, json!({ "spark/dead": stale_row("spark/dead") }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/dead": stale_row("spark/dead") }),
+        );
         let out = fitness_runs(&stop_deps(&s)).await.unwrap();
         let dead = out
             .runs
@@ -5796,11 +6159,12 @@ mod tests {
             .find(|r| r.get("model").and_then(Value::as_str) == Some("spark/dead"))
             .unwrap();
         assert_eq!(dead.get("state").and_then(Value::as_str), Some("error"));
-        assert!(dead
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .contains("interrupted"));
+        assert!(
+            dead.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .contains("interrupted")
+        );
         // And it stops holding a concurrency slot, which is what made the
         // panel refuse to start anything after two restarts.
         assert!(!out.full);
@@ -5809,7 +6173,11 @@ mod tests {
     #[tokio::test]
     async fn leaves_a_run_that_is_still_breathing_alone() {
         let s = store();
-        put(&s, RUNS_KEY, json!({ "spark/live": fresh_row("spark/live") }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/live": fresh_row("spark/live") }),
+        );
         let out = fitness_runs(&stop_deps(&s)).await.unwrap();
         let live = out
             .runs
@@ -5825,7 +6193,11 @@ mod tests {
         // reading at once would both write, and a merely slow run would have
         // its row destroyed by whoever looked first. Reporting is enough.
         let s = store();
-        put(&s, RUNS_KEY, json!({ "spark/dead": stale_row("spark/dead") }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/dead": stale_row("spark/dead") }),
+        );
         let _ = fitness_runs(&stop_deps(&s)).await;
         let stored = get(&s, RUNS_KEY).unwrap();
         assert_eq!(stored["spark/dead"]["state"], json!("running"));
@@ -5835,7 +6207,11 @@ mod tests {
     async fn stop_clears_an_orphan_rather_than_leaving_a_note_nobody_reads() {
         let _sole = sole_runs().await;
         let s = store();
-        put(&s, RUNS_KEY, json!({ "spark/dead": stale_row("spark/dead") }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/dead": stale_row("spark/dead") }),
+        );
         let out = stop_fitness_run(Some("spark/dead"), &stop_deps(&s)).await;
         assert!(out.stopped);
         let stored = get(&s, RUNS_KEY).unwrap();
@@ -5857,7 +6233,11 @@ mod tests {
         // saying `running` for ever, which is the original bug wearing the
         // fix's clothes.
         let s = store();
-        put(&s, RUNS_KEY, json!({ "spark/dead": stale_row("spark/dead") }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/dead": stale_row("spark/dead") }),
+        );
         let out = stop_fitness_run(None, &stop_deps(&s)).await;
         assert!(out.stopped);
         let stored = get(&s, RUNS_KEY).unwrap();
@@ -5871,7 +6251,11 @@ mod tests {
         // Killing that row from here would report a sweep as failed while it
         // was still spending money. The heartbeat is what tells the two apart.
         let s = store();
-        put(&s, RUNS_KEY, json!({ "spark/live": fresh_row("spark/live") }));
+        put(
+            &s,
+            RUNS_KEY,
+            json!({ "spark/live": fresh_row("spark/live") }),
+        );
         let d = stop_deps(&s);
         stop_fitness_run(Some("spark/live"), &d).await;
         let stored = get(&s, RUNS_KEY).unwrap();
@@ -5899,7 +6283,10 @@ mod tests {
         broke.error = Some("gateway completion 429".into());
         let out = live_log(&[case("ok"), checked, ours, never, slow, broke]);
         let verdicts: Vec<&str> = out.iter().map(|l| l.verdict.as_str()).collect();
-        assert_eq!(verdicts, vec!["pass", "fail", "gap", "skip", "timeout", "error"]);
+        assert_eq!(
+            verdicts,
+            vec!["pass", "fail", "gap", "skip", "timeout", "error"]
+        );
     }
 
     #[test]
@@ -5933,7 +6320,9 @@ mod tests {
     #[test]
     fn the_live_log_is_bounded_and_keeps_the_newest_lines() {
         // A log reads downward.
-        let many: Vec<EvalCaseScore> = (0..LIVE_LOG_CAP + 25).map(|i| case(&format!("c{i}"))).collect();
+        let many: Vec<EvalCaseScore> = (0..LIVE_LOG_CAP + 25)
+            .map(|i| case(&format!("c{i}")))
+            .collect();
         let out = live_log(&many);
         assert_eq!(out.len(), LIVE_LOG_CAP);
         assert_eq!(out[out.len() - 1].case, format!("c{}", LIVE_LOG_CAP + 24));
@@ -5953,7 +6342,12 @@ mod tests {
                 c
             })
             .collect();
-        assert!(serde_json::to_string(&live_log(&sweep_cases)).unwrap().len() < 60_000);
+        assert!(
+            serde_json::to_string(&live_log(&sweep_cases))
+                .unwrap()
+                .len()
+                < 60_000
+        );
     }
 
     // ── Clearing results ─────────────────────────────────────────────────────
@@ -6006,21 +6400,37 @@ mod tests {
     #[tokio::test]
     async fn clear_drops_the_report_the_matrix_entry_the_resume_ledger_and_the_transcripts() {
         let w = clear_world(&["a/model", "b/model"]);
-        let out = clear_fitness_results(Some("a/model"), &clear_deps(&w)).await.unwrap();
+        let out = clear_fitness_results(Some("a/model"), &clear_deps(&w))
+            .await
+            .unwrap();
         assert_eq!(out.models, vec!["a/model"]);
         assert_eq!(out.reports, 1);
         assert_eq!(out.transcripts, 7);
-        assert!(matches!(get(&w.s, &record_key("a/model")), Some(Value::Null)));
+        assert!(matches!(
+            get(&w.s, &record_key("a/model")),
+            Some(Value::Null)
+        ));
         // THE HALF EVERYONE FORGETS. Leaving the resume ledger behind makes the
         // model read as untested and then resume into a run that is already
         // finished — a Start that returns instantly having bought nothing.
         assert_eq!(*w.status_cleared.lock().unwrap(), vec!["a/model"]);
-        assert_eq!(*w.transcripts_cleared.lock().unwrap(), vec![Some("a/model".to_string())]);
+        assert_eq!(
+            *w.transcripts_cleared.lock().unwrap(),
+            vec![Some("a/model".to_string())]
+        );
         // The other model is untouched.
         let index = get(&w.s, INDEX_KEY).unwrap();
-        let keys: Vec<&str> = index.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        let keys: Vec<&str> = index
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
         assert_eq!(keys, vec!["b/model"]);
-        assert_eq!(get(&w.s, &record_key("b/model")), Some(json!({ "model": "b/model" })));
+        assert_eq!(
+            get(&w.s, &record_key("b/model")),
+            Some(json!({ "model": "b/model" }))
+        );
     }
 
     #[tokio::test]

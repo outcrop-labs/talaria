@@ -34,7 +34,7 @@ use crate::retrieval::backfill::rag_health;
 use crate::retrieval::embed;
 use crate::retrieval::migrate::retrieval_upgrade_status;
 use crate::retrieval::qdrant;
-use crate::scheduler::{scheduler_status, unhealthy_jobs, HealthSeverity};
+use crate::scheduler::{HealthSeverity, scheduler_status, unhealthy_jobs};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -69,9 +69,8 @@ fn now_ms() -> i64 {
 // Polled by /alerts (60s) and Home (30s): a short cache keeps repeat loads
 // instant, and the probes below run in PARALLEL — serially they added up to
 // seconds (docker exec + four network probes).
-static ALERTS_CACHE: std::sync::LazyLock<
-    tokio::sync::Mutex<HashMap<String, (i64, Vec<Alert>)>>,
-> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+static ALERTS_CACHE: std::sync::LazyLock<tokio::sync::Mutex<HashMap<String, (i64, Vec<Alert>)>>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 const ALERTS_TTL_MS: i64 = 15_000;
 
 pub async fn compute_alerts(state: &AppState, user_id: &str) -> Vec<Alert> {
@@ -190,14 +189,12 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                     detail: format!("container {} is {} ({})", st.name, st.state, st.status),
                     href: "/agents",
                 }),
-                Some(st) if st.status.to_lowercase().contains("unhealthy") => alerts.push(
-                    Alert {
-                        severity: AlertSeverity::Warning,
-                        title: format!("{display_name} is unhealthy"),
-                        detail: st.status.clone(),
-                        href: "/agents",
-                    },
-                ),
+                Some(st) if st.status.to_lowercase().contains("unhealthy") => alerts.push(Alert {
+                    severity: AlertSeverity::Warning,
+                    title: format!("{display_name} is unhealthy"),
+                    detail: st.status.clone(),
+                    href: "/agents",
+                }),
                 _ => {}
             }
         }
@@ -270,8 +267,16 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
             .map(|c| c.name.as_str())
             .collect();
         let is_one = bad.len() == 1;
-        let (was, it) = if is_one { ("is", "it") } else { ("are", "them") };
-        let model = u.embed.as_ref().map(|e| e.model_id.clone()).unwrap_or_default();
+        let (was, it) = if is_one {
+            ("is", "it")
+        } else {
+            ("are", "them")
+        };
+        let model = u
+            .embed
+            .as_ref()
+            .map(|e| e.model_id.clone())
+            .unwrap_or_default();
         let dim = u.embed.as_ref().map(|e| e.dim).unwrap_or(0);
         alerts.push(Alert {
             severity: AlertSeverity::Critical,
@@ -311,7 +316,11 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                         "{}: {} {} unroutable",
                         b.display_name,
                         degraded.len(),
-                        if one { "tier/fallback is" } else { "tiers/fallbacks are" }
+                        if one {
+                            "tier/fallback is"
+                        } else {
+                            "tiers/fallbacks are"
+                        }
                     ),
                     detail: degraded
                         .iter()
@@ -319,7 +328,10 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                             format!(
                                 "{}{} → {}/{} ({})",
                                 t.kind,
-                                t.name.as_deref().map(|n| format!(" \"{n}\"")).unwrap_or_default(),
+                                t.name
+                                    .as_deref()
+                                    .map(|n| format!(" \"{n}\""))
+                                    .unwrap_or_default(),
                                 t.endpoint,
                                 t.model,
                                 t.reason.unwrap_or("")
@@ -340,8 +352,14 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                 HealthSeverity::Critical => AlertSeverity::Critical,
                 HealthSeverity::Warning => AlertSeverity::Warning,
             },
-            title: format!("Background job \"{}\" is not running cleanly", job.name.as_str()),
-            detail: format!("{} Reported by the instance that served this request.", job.detail),
+            title: format!(
+                "Background job \"{}\" is not running cleanly",
+                job.name.as_str()
+            ),
+            detail: format!(
+                "{} Reported by the instance that served this request.",
+                job.detail
+            ),
             href: "/observability",
         });
     }
@@ -378,9 +396,7 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
             ),
             href: "/observability",
         });
-    } else if unarmed == jobs.len()
-        && std::env::var("TALARIA_SCHEDULER").as_deref() == Ok("rust")
-    {
+    } else if unarmed == jobs.len() && std::env::var("TALARIA_SCHEDULER").as_deref() == Ok("rust") {
         // Not an emergency and not a bug: the schedule was handed to the Rust
         // api (TALARIA_SCHEDULER=rust), which registers and arms its own
         // table. This process arming too would double-fire per-instance jobs,
@@ -466,8 +482,18 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         // Since boot, and cumulative on purpose: "it recovered" does not
         // un-lose them.
         let lost = [
-            (mail.dropped > 0).then(|| format!("{} refused at the door because the queue was full", fmt(mail.dropped as i64))),
-            (mail.abandoned > 0).then(|| format!("{} given up on after repeated send failures", fmt(mail.abandoned as i64))),
+            (mail.dropped > 0).then(|| {
+                format!(
+                    "{} refused at the door because the queue was full",
+                    fmt(mail.dropped as i64)
+                )
+            }),
+            (mail.abandoned > 0).then(|| {
+                format!(
+                    "{} given up on after repeated send failures",
+                    fmt(mail.abandoned as i64)
+                )
+            }),
         ]
         .into_iter()
         .flatten()
@@ -515,14 +541,14 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                 severity: AlertSeverity::Warning,
                 title: format!("Failed: {title}"),
                 detail: format!("on {board}: needs a human decision"),
-                href: &leak(format!("/boards/{board_id}/{id}")),
+                href: leak(format!("/boards/{board_id}/{id}")),
             });
         } else {
             alerts.push(Alert {
                 severity: AlertSeverity::Info,
                 title: format!("Blocked {days}d: {title}"),
                 detail: format!("on {board}: blocked for {days} days"),
-                href: &leak(format!("/boards/{board_id}/{id}")),
+                href: leak(format!("/boards/{board_id}/{id}")),
             });
         }
     }

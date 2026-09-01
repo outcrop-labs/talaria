@@ -169,9 +169,7 @@ pub async fn ensure_plan_doc(
     };
     // Filed under the plan agent's cabinet, not dumped at the root.
     let folder_id = match agent_model {
-        Some(m) => {
-            agent_category_folder(pg, &describe_agent(m).label, "Plans", owner.label).await
-        }
+        Some(m) => agent_category_folder(pg, &describe_agent(m).label, "Plans", owner.label).await,
         None => None,
     };
     let artifact = create_artifact(
@@ -200,10 +198,7 @@ pub async fn ensure_plan_doc(
             .collect::<Vec<_>>();
         set_editors(pg, "artifact", &artifact.id, &grants).await?;
     }
-    if template
-        .as_ref()
-        .is_some_and(|t| !t.body.trim().is_empty())
-    {
+    if template.as_ref().is_some_and(|t| !t.body.trim().is_empty()) {
         let saved = save_artifact(
             pg,
             &artifact.id,
@@ -268,7 +263,10 @@ pub async fn sync_plan_doc(
     let doc = ensure_plan_doc(
         &pg,
         conversation_id,
-        PlanOwner { id: owner.id, label: owner.label },
+        PlanOwner {
+            id: owner.id,
+            label: owner.label,
+        },
         plan_title,
         Some(agent_model),
         template_id,
@@ -286,7 +284,11 @@ pub async fn sync_plan_doc(
         .map(|m| {
             format!(
                 "{}: {}",
-                if m.role == "assistant" { label.as_str() } else { "User" },
+                if m.role == "assistant" {
+                    label.as_str()
+                } else {
+                    "User"
+                },
                 m.content
             )
         })

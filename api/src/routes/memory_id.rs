@@ -33,8 +33,9 @@ pub async fn get(
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     match read_memory(&state.pg, &id).await {
-        Ok((content, container)) => Json(json!({ "content": content, "container": container }))
-            .into_response(),
+        Ok((content, container)) => {
+            Json(json!({ "content": content, "container": container })).into_response()
+        }
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
     }
 }
@@ -63,7 +64,11 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let author = user.email.as_deref().or(user.name.as_deref()).unwrap_or("admin");
+    let author = user
+        .email
+        .as_deref()
+        .or(user.name.as_deref())
+        .unwrap_or("admin");
     match write_memory(&state.pg, &id, &content, Some(author)).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),

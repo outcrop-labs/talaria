@@ -58,11 +58,26 @@ pub static CODE_TASKS: LazyLock<Vec<CodeTask>> = LazyLock::new(|| {
                     characters that are not a-z or 0-9 with a single \"-\", and removes any leading or trailing \"-\". \
                     Reply with the function source only.",
             cases: vec![
-                CodeCase { args: vec![Value::from("Hello, World!")], expect: Value::from("hello-world") },
-                CodeCase { args: vec![Value::from("  A  B  ")], expect: Value::from("a-b") },
-                CodeCase { args: vec![Value::from("Talaria Harness 2.0")], expect: Value::from("talaria-harness-2-0") },
-                CodeCase { args: vec![Value::from("")], expect: Value::from("") },
-                CodeCase { args: vec![Value::from("---already---slugged---")], expect: Value::from("already-slugged") },
+                CodeCase {
+                    args: vec![Value::from("Hello, World!")],
+                    expect: Value::from("hello-world"),
+                },
+                CodeCase {
+                    args: vec![Value::from("  A  B  ")],
+                    expect: Value::from("a-b"),
+                },
+                CodeCase {
+                    args: vec![Value::from("Talaria Harness 2.0")],
+                    expect: Value::from("talaria-harness-2-0"),
+                },
+                CodeCase {
+                    args: vec![Value::from("")],
+                    expect: Value::from(""),
+                },
+                CodeCase {
+                    args: vec![Value::from("---already---slugged---")],
+                    expect: Value::from("already-slugged"),
+                },
             ],
         },
         CodeTask {
@@ -72,10 +87,22 @@ pub static CODE_TASKS: LazyLock<Vec<CodeTask>> = LazyLock::new(|| {
                     pairs. It returns a new array of merged, non-overlapping pairs sorted by start; ranges that touch at an endpoint \
                     (for example [1,2] and [2,3]) merge into one. It must not modify the input. Reply with the function source only.",
             cases: vec![
-                CodeCase { args: vec![serde_json::json!([[1, 3], [2, 6], [8, 10]])], expect: serde_json::json!([[1, 6], [8, 10]]) },
-                CodeCase { args: vec![serde_json::json!([[8, 10], [1, 3]])], expect: serde_json::json!([[1, 3], [8, 10]]) },
-                CodeCase { args: vec![serde_json::json!([[1, 2], [2, 3]])], expect: serde_json::json!([[1, 3]]) },
-                CodeCase { args: vec![serde_json::json!([])], expect: serde_json::json!([]) },
+                CodeCase {
+                    args: vec![serde_json::json!([[1, 3], [2, 6], [8, 10]])],
+                    expect: serde_json::json!([[1, 6], [8, 10]]),
+                },
+                CodeCase {
+                    args: vec![serde_json::json!([[8, 10], [1, 3]])],
+                    expect: serde_json::json!([[1, 3], [8, 10]]),
+                },
+                CodeCase {
+                    args: vec![serde_json::json!([[1, 2], [2, 3]])],
+                    expect: serde_json::json!([[1, 3]]),
+                },
+                CodeCase {
+                    args: vec![serde_json::json!([])],
+                    expect: serde_json::json!([]),
+                },
             ],
         },
     ]
@@ -89,15 +116,21 @@ pub static CODE_TASKS: LazyLock<Vec<CodeTask>> = LazyLock::new(|| {
 /// else — a class, a default export, an async function — is left alone and
 /// fails honestly in the evaluator below.
 pub fn extract_code(raw: &str) -> String {
-    static FENCED: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?s)```(?:[a-zA-Z]*)\n(.*?)```").expect("a static regex compiles"));
+    static FENCED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?s)```(?:[a-zA-Z]*)\n(.*?)```").expect("a static regex compiles")
+    });
     // TS writes the keyword check as a look-ahead and deletes only the `export`
     // prefix; the regex crate has no look-ahead, so the same match keeps its
     // keyword tail as a capture instead — byte-identical output, no new engine.
     static EXPORT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^[ \t]*export\s+((?:async\s+)?function\b|const\b|let\b|var\b)").expect("a static regex compiles")
+        Regex::new(r"(?m)^[ \t]*export\s+((?:async\s+)?function\b|const\b|let\b|var\b)")
+            .expect("a static regex compiles")
     });
-    let body = FENCED.captures(raw).and_then(|c| c.get(1)).map(|m| m.as_str()).unwrap_or(raw);
+    let body = FENCED
+        .captures(raw)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .unwrap_or(raw);
     EXPORT.replace_all(body, "$1").into_owned()
 }
 
@@ -118,7 +151,9 @@ fn same_value(a: &Value, b: &Value) -> bool {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_value(p, q))
         }
         (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_value(v, w)))
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_value(v, w)))
         }
         _ => a == b,
     }
@@ -191,7 +226,9 @@ fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
         Err(mpsc::RecvTimeoutError::Timeout) => {
             // node's sentence, so a timed-out candidate reads identically in
             // either language.
-            Err(format!("Script execution timed out after {CODE_TIMEOUT_MS}ms"))
+            Err(format!(
+                "Script execution timed out after {CODE_TIMEOUT_MS}ms"
+            ))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             // The evaluator itself died — a boa panic we did not foresee. The
@@ -212,7 +249,8 @@ fn run_in_boa(script: &str) -> EvalOutcome {
     // in an otherwise correct function solved the problem, and a ReferenceError
     // for it would score our context instead of the model. Everything else the
     // fresh context has is the ECMAScript standard library and nothing more.
-    let prelude = "var console = { log: function () {}, warn: function () {}, error: function () {} };";
+    let prelude =
+        "var console = { log: function () {}, warn: function () {}, error: function () {} };";
     let evaluated = context
         .eval(Source::from_bytes(prelude))
         .and_then(|_| context.eval(Source::from_bytes(script.as_bytes())));
@@ -257,8 +295,12 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
         // error; every engine words its parse errors differently, so the shape
         // is the contract, not the message text.
         Ok(EvalOutcome::Reply(text)) => text,
-        Ok(EvalOutcome::NotAString) => return Some(format!("{}: the code did not produce a result", task.name)),
-        Ok(EvalOutcome::Failed(msg)) => return Some(format!("{}: the code did not run ({msg})", task.name)),
+        Ok(EvalOutcome::NotAString) => {
+            return Some(format!("{}: the code did not produce a result", task.name));
+        }
+        Ok(EvalOutcome::Failed(msg)) => {
+            return Some(format!("{}: the code did not run ({msg})", task.name));
+        }
         Err(msg) => return Some(format!("{}: the code did not run ({msg})", task.name)),
     };
     let parsed = match read_code_result(&reply) {
@@ -266,23 +308,36 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
         None => return Some(format!("{}: the code did not produce a result", task.name)),
     };
     if parsed.nofn == Some(true) {
-        return Some(format!("{}: no function named {} was defined", task.name, task.fn_));
+        return Some(format!(
+            "{}: no function named {} was defined",
+            task.name, task.fn_
+        ));
     }
     let out = parsed.out.unwrap_or_default();
     for (i, c) in task.cases.iter().enumerate() {
         let args_json = serde_json::to_string(&c.args).expect("static fixtures serialize");
-        let inner = args_json.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(&args_json);
+        let inner = args_json
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(&args_json);
         let call = format!("{}({})", task.name, inner);
         let Some(got) = out.get(i) else {
             return Some(format!("{call} was never reached"));
         };
         if !got.ok {
-            return Some(format!("{} threw: {}", call, got.error.as_deref().unwrap_or("unknown error")));
+            return Some(format!(
+                "{} threw: {}",
+                call,
+                got.error.as_deref().unwrap_or("unknown error")
+            ));
         }
         // An absent `value` means the function returned undefined (or something
         // JSON cannot carry), which is a real answer and almost never the right
         // one. JS prints that as the bare word `undefined`.
-        let value: Option<Value> = got.value.as_deref().and_then(|text| serde_json::from_str(text).ok());
+        let value: Option<Value> = got
+            .value
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok());
         let printed = match &value {
             Some(v) => serde_json::to_string(v).expect("a parsed value serializes"),
             None => "undefined".to_string(),
@@ -345,29 +400,44 @@ mod tests {
         // The classic small-model version: no trimming of the leading/trailing dash.
         let nearly = "function slugify(input) { return String(input).toLowerCase().replace(/[^a-z0-9]+/g, '-') }";
         let problem = run_code_task(slugify(), nearly).expect("the near-miss fails");
-        assert!(problem.contains("expected \"hello-world\""), "got: {problem}");
+        assert!(
+            problem.contains("expected \"hello-world\""),
+            "got: {problem}"
+        );
     }
 
     #[test]
     fn fails_a_function_that_was_never_defined_and_prose_with_no_code() {
-        let missing = run_code_task(slugify(), "function slug(x) { return x }").expect("the wrong name fails");
-        assert!(missing.contains("no function named slugify"), "got: {missing}");
+        let missing = run_code_task(slugify(), "function slug(x) { return x }")
+            .expect("the wrong name fails");
+        assert!(
+            missing.contains("no function named slugify"),
+            "got: {missing}"
+        );
         let empty = run_code_task(slugify(), "   ").expect("empty fails");
         assert!(empty.contains("returned no code"), "got: {empty}");
     }
 
     #[test]
     fn fails_code_that_does_not_parse_rather_than_throwing_out_of_the_probe() {
-        let broken = run_code_task(slugify(), "function slugify(input) { return input.toLowerCase(").expect("a parse error fails");
+        let broken = run_code_task(
+            slugify(),
+            "function slugify(input) { return input.toLowerCase(",
+        )
+        .expect("a parse error fails");
         assert!(broken.contains("did not run"), "got: {broken}");
     }
 
     #[test]
     fn survives_an_infinite_loop_at_the_cost_of_a_timeout_not_a_wedged_request() {
         let started = std::time::Instant::now();
-        let spin = run_code_task(slugify(), "function slugify(input) { while (true) {} }").expect("the spin fails");
+        let spin = run_code_task(slugify(), "function slugify(input) { while (true) {} }")
+            .expect("the spin fails");
         assert!(spin.contains("did not run"), "got: {spin}");
-        assert!(started.elapsed() < Duration::from_millis(2_000), "a timeout costs its 250ms, not a hang");
+        assert!(
+            started.elapsed() < Duration::from_millis(2_000),
+            "a timeout costs its 250ms, not a hang"
+        );
     }
 
     #[test]
@@ -387,7 +457,10 @@ mod tests {
 
     #[test]
     fn takes_the_fenced_block_when_there_is_one_and_leaves_bare_source_alone() {
-        assert_eq!(extract_code("Here you go:\n```javascript\nconst a = 1\n```\nDone."), "const a = 1\n");
+        assert_eq!(
+            extract_code("Here you go:\n```javascript\nconst a = 1\n```\nDone."),
+            "const a = 1\n"
+        );
         assert_eq!(extract_code("const a = 1"), "const a = 1");
     }
 

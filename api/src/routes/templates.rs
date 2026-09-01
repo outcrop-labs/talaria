@@ -58,7 +58,11 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let created_by = user.email.as_deref().or(user.name.as_deref()).unwrap_or("user");
+    let created_by = user
+        .email
+        .as_deref()
+        .or(user.name.as_deref())
+        .unwrap_or("user");
     match create_template(
         &state.pg,
         NewTemplate {

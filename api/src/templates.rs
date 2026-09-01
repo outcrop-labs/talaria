@@ -121,14 +121,9 @@ pub async fn get_template(pg: &PgPool, id: &str) -> Result<Option<Template>, sql
 
 /// listTemplates — the whole library, kind-grouped (the library page's tab
 /// order), or one kind's list.
-pub async fn list_templates(
-    pg: &PgPool,
-    kind: Option<&str>,
-) -> Result<Vec<Template>, sqlx::Error> {
+pub async fn list_templates(pg: &PgPool, kind: Option<&str>) -> Result<Vec<Template>, sqlx::Error> {
     let sql = match kind {
-        Some(_) => format!(
-            "select {COLS} from templates where kind = $1 order by name asc"
-        ),
+        Some(_) => format!("select {COLS} from templates where kind = $1 order by name asc"),
         None => format!("select {COLS} from templates order by kind asc, name asc"),
     };
     let mut q = sqlx::query_as::<_, TemplateRow>(sqlx::AssertSqlSafe(sql.as_str()));
@@ -141,10 +136,7 @@ pub async fn list_templates(
 
 /// createTemplate — body/guidance default to empty (a skeleton can start as
 /// a name and get its body in the editor).
-pub async fn create_template(
-    pg: &PgPool,
-    t: NewTemplate<'_>,
-) -> Result<Template, sqlx::Error> {
+pub async fn create_template(pg: &PgPool, t: NewTemplate<'_>) -> Result<Template, sqlx::Error> {
     let sql = format!(
         "insert into templates (name, kind, body, guidance, created_by) \
          values ($1, $2, $3, $4, $5) returning {COLS}"

@@ -39,8 +39,8 @@ use std::sync::{Arc, Mutex};
 use crate::harness::define::Message;
 use crate::harness::run::TransportFn;
 use crate::harness::transport::{
-    tool_call_id_of, ToolDefinition, TokenPair, TransportKind, TransportReply, TransportRequest,
-    ToolPolicy,
+    TokenPair, ToolDefinition, ToolPolicy, TransportKind, TransportReply, TransportRequest,
+    tool_call_id_of,
 };
 
 use super::credential_tools::CredentialSandbox;
@@ -115,7 +115,9 @@ pub const MAX_TURNS: usize = 6;
 pub const MAX_TURN_CEILING: usize = 12;
 
 pub fn turn_budget(asked: Option<u32>) -> usize {
-    asked.unwrap_or(MAX_TURNS as u32).clamp(1, MAX_TURN_CEILING as u32) as usize
+    asked
+        .unwrap_or(MAX_TURNS as u32)
+        .clamp(1, MAX_TURN_CEILING as u32) as usize
 }
 
 /// Tool calls honored per turn. A model that asks for nine things at once gets
@@ -303,8 +305,12 @@ pub fn sandbox_transport<S: DispatchSandbox + 'static>(
             }
 
             if let Some(out) = out {
-                *out.lock().expect("the out slot is not contended") =
-                    Some(DryRunResult { text: text.clone(), turns, exhausted, messages: convo.clone() });
+                *out.lock().expect("the out slot is not contended") = Some(DryRunResult {
+                    text: text.clone(),
+                    turns,
+                    exhausted,
+                    messages: convo.clone(),
+                });
             }
             Ok(TransportReply {
                 kind: TransportKind::Gateway,
@@ -327,20 +333,33 @@ mod tests {
     /// A base transport scripted per turn: each entry is (text, tool calls).
     /// Everything the loop does is observable through what it sends DOWN and
     /// what it hands back UP, so a script of replies is a complete test.
-    fn scripted(script: Vec<(String, Vec<ToolCall>)>) -> (TransportFn, Arc<Mutex<Vec<TransportRequest>>>) {
+    fn scripted(
+        script: Vec<(String, Vec<ToolCall>)>,
+    ) -> (TransportFn, Arc<Mutex<Vec<TransportRequest>>>) {
         let seen: Arc<Mutex<Vec<TransportRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let step = Arc::new(Mutex::new(0usize));
         let seen_clone = seen.clone();
         let tf: TransportFn = Arc::new(move |req: TransportRequest| {
             seen_clone.lock().unwrap().push(req.clone());
-            let i = { let mut s = step.lock().unwrap(); let i = *s; *s += 1; i };
-            let (text, calls) = script.get(i).cloned().unwrap_or_else(|| (String::new(), vec![]));
+            let i = {
+                let mut s = step.lock().unwrap();
+                let i = *s;
+                *s += 1;
+                i
+            };
+            let (text, calls) = script
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| (String::new(), vec![]));
             let reply = TransportReply {
                 kind: TransportKind::Gateway,
                 text,
                 tool_names: calls.iter().map(|c| c.name.clone()).collect(),
                 tool_calls: if script.len() > i { Some(calls) } else { None },
-                usage: Some(TokenPair { prompt_tokens: 10, completion_tokens: 2 }),
+                usage: Some(TokenPair {
+                    prompt_tokens: 10,
+                    completion_tokens: 2,
+                }),
                 contract_dropped: false,
             };
             Box::pin(async move { Ok(reply) })
@@ -349,19 +368,32 @@ mod tests {
     }
 
     fn call(name: &str, args: &str) -> ToolCall {
-        ToolCall { name: name.into(), id: None, args: args.into() }
+        ToolCall {
+            name: name.into(),
+            id: None,
+            args: args.into(),
+        }
     }
 
     fn workbench() -> std::sync::Arc<std::sync::Mutex<WorkbenchSandbox>> {
         use crate::harness::define::{WorkspaceFile, WorkspaceSpec};
-        std::sync::Arc::new(std::sync::Mutex::new(WorkbenchSandbox::new(WorkspaceSpec {
-            files: vec![WorkspaceFile { path: "a.ts".into(), content: "broken".into() }],
-            passes: Arc::new(|files: &[WorkspaceFile]| {
-                files.iter().find(|f| f.path == "a.ts").and_then(|f| {
-                    (f.content == "fixed").then_some(None).unwrap_or_else(|| Some("still broken".into()))
-                })
-            }),
-        })))
+        std::sync::Arc::new(std::sync::Mutex::new(WorkbenchSandbox::new(
+            WorkspaceSpec {
+                files: vec![WorkspaceFile {
+                    path: "a.ts".into(),
+                    content: "broken".into(),
+                }],
+                passes: Arc::new(|files: &[WorkspaceFile]| {
+                    files.iter().find(|f| f.path == "a.ts").and_then(|f| {
+                        if f.content == "fixed" {
+                            None
+                        } else {
+                            Some("still broken".into())
+                        }
+                    })
+                }),
+            },
+        )))
     }
 
     fn req() -> TransportRequest {
@@ -409,15 +441,27 @@ mod tests {
     #[tokio::test]
     async fn tool_calls_are_dispatched_and_their_results_returned_in_the_tool_channel() {
         let (base, seen) = scripted(vec![
-            ("reading first".into(), vec![call("read_file", r#"{"path":"a.ts"}"#), call("write_file", r#"{"path":"a.ts","content":"fixed"}"#)]),
+            (
+                "reading first".into(),
+                vec![
+                    call("read_file", r#"{"path":"a.ts"}"#),
+                    call("write_file", r#"{"path":"a.ts","content":"fixed"}"#),
+                ],
+            ),
             ("fixed it".into(), vec![]),
         ]);
         let out = Arc::new(Mutex::new(None));
         let transport = sandbox_transport(workbench(), base, Some(out.clone()), MAX_TURNS);
         let reply = transport(req()).await.expect("the scripted base answers");
         assert_eq!(reply.text, "fixed it");
-        assert_eq!(reply.tool_names, vec!["read_file".to_string(), "write_file".to_string()]);
-        assert!(reply.usage.unwrap().prompt_tokens >= 20, "usage accumulates across turns");
+        assert_eq!(
+            reply.tool_names,
+            vec!["read_file".to_string(), "write_file".to_string()]
+        );
+        assert!(
+            reply.usage.unwrap().prompt_tokens >= 20,
+            "usage accumulates across turns"
+        );
         let result = out.lock().unwrap().take().unwrap();
         assert_eq!(result.turns, 2);
         assert!(!result.exhausted);
@@ -428,28 +472,45 @@ mod tests {
         assert_eq!(down.messages[1].tool_calls.len(), 2);
         assert_eq!(down.messages[2].tool_call_id.as_deref(), Some("call_0"));
         assert_eq!(down.messages[3].tool_call_id.as_deref(), Some("call_1"));
-        assert!(down.messages[3].content.contains("still broken") || down.messages[2].content.contains("broken"));
+        assert!(
+            down.messages[3].content.contains("still broken")
+                || down.messages[2].content.contains("broken")
+        );
     }
 
     #[tokio::test]
     async fn a_budget_exhausted_with_the_model_still_calling_gets_the_what_did_you_do_turn() {
         // Every scripted turn calls a tool, so the loop exhausts; every turn's
         // text is empty, so the closing ask fires.
-        let (base, seen) = scripted(vec![
-            (String::new(), vec![call("run_tests", "{}")]);
-            8
-        ]);
+        let (base, seen) = scripted(vec![(String::new(), vec![call("run_tests", "{}")]); 8]);
         let out = Arc::new(Mutex::new(None));
         let transport = sandbox_transport(workbench(), base, Some(out.clone()), 3);
         let reply = transport(req()).await.expect("the scripted base answers");
-        assert!(reply.text.is_empty(), "the scripted closing reply is empty text");
-        assert_eq!(reply.tool_names.len(), 3, "one call per turn, dispatched even on the last");
+        assert!(
+            reply.text.is_empty(),
+            "the scripted closing reply is empty text"
+        );
+        assert_eq!(
+            reply.tool_names.len(),
+            3,
+            "one call per turn, dispatched even on the last"
+        );
         let result = out.lock().unwrap().take().unwrap();
         assert!(result.exhausted);
         assert_eq!(result.turns, 4, "three loop turns plus the closing ask");
         let last = seen.lock().unwrap().last().unwrap().clone();
-        assert!(last.messages.last().unwrap().content.contains("run out of turns"));
-        assert!(last.messages.iter().any(|m| m.role == crate::harness::define::Role::Tool));
+        assert!(
+            last.messages
+                .last()
+                .unwrap()
+                .content
+                .contains("run out of turns")
+        );
+        assert!(
+            last.messages
+                .iter()
+                .any(|m| m.role == crate::harness::define::Role::Tool)
+        );
     }
 
     #[tokio::test]
@@ -468,7 +529,10 @@ mod tests {
         // The trait makes the loop surface-agnostic; one scripted round trip
         // against the Talaria sandbox proves the impl wires.
         let (base, _seen) = scripted(vec![
-            (String::new(), vec![call("get_ticket", r#"{"taskId":"PLAT-118"}"#)]),
+            (
+                String::new(),
+                vec![call("get_ticket", r#"{"taskId":"PLAT-118"}"#)],
+            ),
             ("triaged".into(), vec![]),
         ]);
         let out = Arc::new(Mutex::new(None));
@@ -492,14 +556,15 @@ mod tests {
             .take(5)
             .collect();
         assert_eq!(five.len(), 5);
-        let (base, _seen) = scripted(vec![
-            (String::new(), five),
-            ("done".into(), vec![]),
-        ]);
+        let (base, _seen) = scripted(vec![(String::new(), five), ("done".into(), vec![])]);
         let out = Arc::new(Mutex::new(None));
         let transport = sandbox_transport(workbench(), base, Some(out.clone()), MAX_TURNS);
         let reply = transport(req()).await.expect("the scripted base answers");
-        assert_eq!(reply.tool_names.len(), 3, "the same back-pressure a gateway applies");
+        assert_eq!(
+            reply.tool_names.len(),
+            3,
+            "the same back-pressure a gateway applies"
+        );
         let _ = json!({});
     }
 }

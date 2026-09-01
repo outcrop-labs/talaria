@@ -51,10 +51,7 @@ pub async fn get(
             [
                 (header::CONTENT_TYPE, media.mime.to_string()),
                 (header::CACHE_CONTROL, "private, max-age=300".to_string()),
-                (
-                    header::X_CONTENT_TYPE_OPTIONS,
-                    "nosniff".to_string(),
-                ),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
             ],
             media.bytes,
         )

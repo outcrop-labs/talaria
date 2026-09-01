@@ -28,12 +28,16 @@
 
 use crate::agent_auth::{AgentSubject, require_agent};
 use crate::approvals::audience_for;
-use crate::boards::{create_board, join_everyone_to_board, list_all_boards, set_board_agent_config};
-use crate::body::{as_object, optional_max_string_member, optional_uuid_member, parse, string_member};
+use crate::boards::{
+    create_board, join_everyone_to_board, list_all_boards, set_board_agent_config,
+};
+use crate::body::{
+    as_object, optional_max_string_member, optional_uuid_member, parse, string_member,
+};
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::describe_agent;
 use crate::gaps::{agent_text_authority, remember_ticket_refusal};
-use crate::notify::{NotifyDeps, NotificationInput, add_notification};
+use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 use crate::runs::define::Authority;
 use crate::state::AppState;
 use crate::tasks::{
@@ -89,10 +93,12 @@ async fn helpdesk_board(pg: &sqlx::PgPool) -> Option<String> {
         .find(|b| b.name.to_lowercase() == HELPDESK.to_lowercase());
     let board_id = match existing {
         Some(b) => b.id,
-        None => create_board(pg, &admin_id, HELPDESK, Some(&team_id))
-            .await
-            .ok()?
-            .id,
+        None => {
+            create_board(pg, &admin_id, HELPDESK, Some(&team_id))
+                .await
+                .ok()?
+                .id
+        }
     };
     sqlx::query("update boards set org_wide = true, team_id = $2::uuid where id = $1::uuid")
         .bind(&board_id)
@@ -101,7 +107,9 @@ async fn helpdesk_board(pg: &sqlx::PgPool) -> Option<String> {
         .await
         .ok()?;
     join_everyone_to_board(pg, &board_id).await.ok()?;
-    set_board_agent_config(pg, &board_id, true, &[]).await.ok()?;
+    set_board_agent_config(pg, &board_id, true, &[])
+        .await
+        .ok()?;
     Some(board_id)
 }
 
@@ -202,8 +210,8 @@ pub async fn post(
             Ok(None) => {}
             Ok(Some(shut)) => {
                 remember_ticket_refusal(&state.pg, &agent, Some(&task.board_id)).await;
-                let mut resp = Json(json!({ "error": "forbidden", "message": shut }))
-                    .into_response();
+                let mut resp =
+                    Json(json!({ "error": "forbidden", "message": shut })).into_response();
                 *resp.status_mut() = StatusCode::FORBIDDEN;
                 return resp;
             }
@@ -267,7 +275,12 @@ pub async fn post(
     }
 
     // ONE announcement path, and it asks the resolver.
-    let authority = agent_text_authority(&state.pg, &agent, task.as_ref().map(|t| t.board_id.as_str())).await;
+    let authority = agent_text_authority(
+        &state.pg,
+        &agent,
+        task.as_ref().map(|t| t.board_id.as_str()),
+    )
+    .await;
     let who = audience_for(&state.pg, &authority).await;
     // WHY the fact recipient is not being told, and it is two different
     // reasons. `{ by: 'admin', onBoard }` withheld the words because the
@@ -319,7 +332,9 @@ pub async fn post(
         )
         .await
         {
-            tracing::error!("[agent-problem] could not notify {user_id} that a problem exists: {e}");
+            tracing::error!(
+                "[agent-problem] could not notify {user_id} that a problem exists: {e}"
+            );
         }
     }
 
@@ -340,4 +355,3 @@ pub async fn post(
     }))
     .into_response()
 }
-

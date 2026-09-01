@@ -1387,12 +1387,24 @@ pub async fn gateway_image_turn(
     let target = wire
         .iter()
         .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-        .or(if wire.is_empty() { None } else { Some(wire.len() - 1) });
+        .or(if wire.is_empty() {
+            None
+        } else {
+            Some(wire.len() - 1)
+        });
     if let Some(target) = target {
         let role = wire[target].get("role").cloned().unwrap_or(Value::Null);
-        let text = wire[target].get("content").and_then(Value::as_str).unwrap_or("").to_string();
+        let text = wire[target]
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let mut parts = vec![serde_json::json!({ "type": "text", "text": text })];
-        parts.extend(images.iter().map(|url| serde_json::json!({ "type": "image_url", "image_url": { "url": url } })));
+        parts.extend(
+            images
+                .iter()
+                .map(|url| serde_json::json!({ "type": "image_url", "image_url": { "url": url } })),
+        );
         wire[target] = serde_json::json!({ "role": role, "content": parts });
     }
     let body = serde_json::json!({ "model": model, "messages": wire, "stream": false });
@@ -1402,26 +1414,45 @@ pub async fn gateway_image_turn(
         // TS threads the timeout into the upstream call itself; the Rust
         // fetch has no such field, so the clock is wrapped around it here —
         // observably the same bound on the whole turn.
-        Some(ms) => tokio::time::timeout(
-            std::time::Duration::from_millis(ms),
-            fetched,
-        )
-        .await
-        .map_err(|_| format!("gateway completion timed out after {ms}ms"))?,
+        Some(ms) => tokio::time::timeout(std::time::Duration::from_millis(ms), fetched)
+            .await
+            .map_err(|_| format!("gateway completion timed out after {ms}ms"))?,
         None => fetched.await,
     };
     let reply = reply?;
     if !reply.is_ok() {
-        return Err(format!("gateway completion {}: {}", reply.status(), reply.text().await.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "gateway completion {}: {}",
+            reply.status(),
+            reply.text().await.chars().take(300).collect::<String>()
+        ));
     }
-    let j: Value = serde_json::from_str(&reply.text().await).map_err(|e| format!("gateway completion parse: {e}"))?;
-    let text = j.pointer("/choices/0/message/content").and_then(Value::as_str).unwrap_or("").to_string();
+    let j: Value = serde_json::from_str(&reply.text().await)
+        .map_err(|e| format!("gateway completion parse: {e}"))?;
+    let text = j
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let usage = j.get("usage").filter(|u| !u.is_null()).map(|u| TokenPair {
         prompt_tokens: u.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(0),
-        completion_tokens: u.get("completion_tokens").and_then(Value::as_i64).unwrap_or(0),
+        completion_tokens: u
+            .get("completion_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
     });
-    let prompt_chars: usize = messages.iter().map(|m| crate::body::utf16_len(&m.content)).sum();
-    meter(state, &route, caller, usage, prompt_chars, crate::body::utf16_len(&text));
+    let prompt_chars: usize = messages
+        .iter()
+        .map(|m| crate::body::utf16_len(&m.content))
+        .sum();
+    meter(
+        state,
+        &route,
+        caller,
+        usage,
+        prompt_chars,
+        crate::body::utf16_len(&text),
+    );
     Ok(text)
 }
 
@@ -1454,12 +1485,22 @@ pub async fn persona_probe_turn(
         let target = wire
             .iter()
             .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-            .or(if wire.is_empty() { None } else { Some(wire.len() - 1) });
+            .or(if wire.is_empty() {
+                None
+            } else {
+                Some(wire.len() - 1)
+            });
         if let Some(target) = target {
             let role = wire[target].get("role").cloned().unwrap_or(Value::Null);
-            let text = wire[target].get("content").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = wire[target]
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let mut parts = vec![serde_json::json!({ "type": "text", "text": text })];
-            parts.extend(images.iter().map(|url| serde_json::json!({ "type": "image_url", "image_url": { "url": url } })));
+            parts.extend(images.iter().map(
+                |url| serde_json::json!({ "type": "image_url", "image_url": { "url": url } }),
+            ));
             wire[target] = serde_json::json!({ "role": role, "content": parts });
         }
     }
@@ -1470,7 +1511,9 @@ pub async fn persona_probe_turn(
     }
     if let Some(canned) = upstream.canned {
         return Err(match canned {
-            "mock" => format!("\"{model}\" is not a rendered agent (the agents service answered in mock mode)"),
+            "mock" => format!(
+                "\"{model}\" is not a rendered agent (the agents service answered in mock mode)"
+            ),
             _ => format!("persona \"{model}\" did not come back within the hold window"),
         });
     }

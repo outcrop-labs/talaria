@@ -32,7 +32,9 @@ async fn config_for_wire(pg: &sqlx::PgPool) -> Value {
     let s = stored.as_object().unwrap_or(&empty);
     out.insert(
         "mode".into(),
-        s.get("mode").cloned().unwrap_or(serde_json::json!("observe")),
+        s.get("mode")
+            .cloned()
+            .unwrap_or(serde_json::json!("observe")),
     );
     out.insert(
         "checks".into(),
@@ -132,10 +134,7 @@ pub async fn put(
                 }
                 for h in a {
                     let Some(s) = h.as_str() else {
-                        return house_error(
-                            StatusCode::BAD_REQUEST,
-                            &string_msg(zod_type_name(h)),
-                        );
+                        return house_error(StatusCode::BAD_REQUEST, &string_msg(zod_type_name(h)));
                     };
                     if utf16_len(s) > 200 {
                         return house_error(StatusCode::BAD_REQUEST, &too_big_msg(200));
@@ -159,7 +158,10 @@ pub async fn put(
     let mut stored = serde_json::Map::new();
     stored.insert("mode".into(), serde_json::json!(mode));
     stored.insert("checks".into(), Value::Object(checks.clone()));
-    stored.insert("minConfidence".into(), obj.get("minConfidence").cloned().unwrap());
+    stored.insert(
+        "minConfidence".into(),
+        obj.get("minConfidence").cloned().unwrap(),
+    );
     stored.insert("policedHosts".into(), Value::Array(hosts.clone()));
     stored.insert("coach".into(), serde_json::json!(coach));
     let stored = Value::Object(stored);

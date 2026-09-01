@@ -30,37 +30,34 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
     };
     // Each probe runs concurrently, as the TS Promise.all did.
-    let probes = endpoints
-        .iter()
-        .filter(|ep| ep.class == "local")
-        .map(|ep| {
-            let state = state.clone();
-            let ep = ep.clone();
-            async move {
-                let started = Instant::now();
-                let health = match catalog_models(&state, &ep).await {
-                    Ok(serving) => json!({
-                        "ok": true,
-                        "latencyMs": started.elapsed().as_millis() as i64,
-                        "servingNow": serving.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
-                        "note": Value::Null,
-                    }),
-                    Err(note) => json!({
-                        "ok": false,
-                        "latencyMs": Value::Null,
-                        "servingNow": [],
-                        "note": note,
-                    }),
-                };
-                json!({
-                    "id": ep.id,
-                    "name": ep.name,
-                    "baseUrl": ep.base_url,
-                    "models": ep.models,
-                    "health": health,
-                })
-            }
-        });
+    let probes = endpoints.iter().filter(|ep| ep.class == "local").map(|ep| {
+        let state = state.clone();
+        let ep = ep.clone();
+        async move {
+            let started = Instant::now();
+            let health = match catalog_models(&state, &ep).await {
+                Ok(serving) => json!({
+                    "ok": true,
+                    "latencyMs": started.elapsed().as_millis() as i64,
+                    "servingNow": serving.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+                    "note": Value::Null,
+                }),
+                Err(note) => json!({
+                    "ok": false,
+                    "latencyMs": Value::Null,
+                    "servingNow": [],
+                    "note": note,
+                }),
+            };
+            json!({
+                "id": ep.id,
+                "name": ep.name,
+                "baseUrl": ep.base_url,
+                "models": ep.models,
+                "health": health,
+            })
+        }
+    });
     let backends: Vec<Value> = futures_util::future::join_all(probes).await;
 
     let pg = &state.pg;
@@ -142,18 +139,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
 
     // Fleet container temperature: running / warming / unhealthy / down.
-    let managed: Vec<(String,)> = match sqlx::query_as(
-        "select department from agent_defs where enabled and managed",
-    )
-    .fetch_all(pg)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[inference] managed-agent read failed: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let managed: Vec<(String,)> =
+        match sqlx::query_as("select department from agent_defs where enabled and managed")
+            .fetch_all(pg)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("[inference] managed-agent read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
     let departments: Vec<String> = managed.into_iter().map(|(d,)| d).collect();
     let states = if departments.is_empty() {
         Vec::new()

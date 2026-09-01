@@ -7,11 +7,11 @@
 // door, re-runnable (existing slugs are reported and skipped). Port of
 // ui/src/server/fleet-federate.ts.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use crate::agent_defs::{
-    add_version_if_changed, dept_ok, slug_ok, upsert_agent_def, NewVersion, UpsertDef,
+    NewVersion, UpsertDef, add_version_if_changed, dept_ok, slug_ok, upsert_agent_def,
 };
 use crate::fleet_create::ensure_agent_key;
 use crate::fleet_layout;
@@ -34,11 +34,12 @@ pub struct FederateResult {
 /// (keyEnvOf).
 fn key_env_of(api_key: Option<&str>) -> Option<String> {
     let raw = api_key?.trim();
-    let inner = raw
-        .strip_prefix("${")
-        .and_then(|s| s.strip_suffix('}'))?;
-    (!inner.is_empty() && inner.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
-        .then(|| inner.to_string())
+    let inner = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
+    (!inner.is_empty()
+        && inner
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+    .then(|| inner.to_string())
 }
 
 /// Endpoint identity + class for a model target. Local = the LAN inference
@@ -139,8 +140,14 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
         errors: Vec::new(),
     };
     let root = std::path::Path::new(dir);
-    if !tokio::fs::metadata(root).await.map(|m| m.is_dir()).unwrap_or(false) {
-        result.errors.push(format!("{dir}: not a directory on the server"));
+    if !tokio::fs::metadata(root)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        result
+            .errors
+            .push(format!("{dir}: not a directory on the server"));
         return result;
     }
 
@@ -248,12 +255,9 @@ async fn federate_one(
             let t = match v {
                 Value::String(s) => {
                     let (provider, rest) = s.split_once('/').unwrap_or((s, ""));
-                    target_of(
-                        pg,
-                        &json!({ "provider": provider, "model": rest }),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?
+                    target_of(pg, &json!({ "provider": provider, "model": rest }))
+                        .await
+                        .map_err(|e| e.to_string())?
                 }
                 other => target_of(pg, other).await.map_err(|e| e.to_string())?,
             };
@@ -346,7 +350,10 @@ async fn federate_one(
     // Skills come WITH the agent, into Talaria's own roots — best-effort,
     // never overwriting (cp force:false).
     let src = agent_dir.join("skills");
-    let dst = fleet_layout::fleet_dir().join("agents").join(slug).join("skills");
+    let dst = fleet_layout::fleet_dir()
+        .join("agents")
+        .join(slug)
+        .join("skills");
     let _ = copy_dir_new(&src, &dst).await;
 
     Ok(Some(FederatedAgent {
@@ -388,15 +395,24 @@ mod tests {
 
     #[test]
     fn key_env_extracts_only_env_refs() {
-        assert_eq!(key_env_of(Some("${LLM_API_KEY}")), Some("LLM_API_KEY".into()));
-        assert_eq!(key_env_of(Some("sk-live-key")), None, "literal keys never stored");
+        assert_eq!(
+            key_env_of(Some("${LLM_API_KEY}")),
+            Some("LLM_API_KEY".into())
+        );
+        assert_eq!(
+            key_env_of(Some("sk-live-key")),
+            None,
+            "literal keys never stored"
+        );
         assert_eq!(key_env_of(Some("${lower_case}")), None);
         assert_eq!(key_env_of(None), None);
     }
 
     #[test]
     fn endpoint_for_names_the_host_and_classes_it() {
-        let local = endpoint_for(&serde_yaml_ng::from_str::<Value>("base_url: http://vllm.lan:8000/v1").unwrap());
+        let local = endpoint_for(
+            &serde_yaml_ng::from_str::<Value>("base_url: http://vllm.lan:8000/v1").unwrap(),
+        );
         assert_eq!(local.name, "vllm.lan");
         assert_eq!(local.class, "local");
         let cloud = endpoint_for(&serde_yaml_ng::from_str::<Value>("provider: OpenAI").unwrap());
@@ -409,7 +425,10 @@ mod tests {
         assert_eq!(proxy.class, "cloud");
         // exactly one trailing slash stripped
         assert_eq!(
-            endpoint_for(&serde_yaml_ng::from_str::<Value>("base_url: https://api.x.ai/v1/").unwrap()).base_url,
+            endpoint_for(
+                &serde_yaml_ng::from_str::<Value>("base_url: https://api.x.ai/v1/").unwrap()
+            )
+            .base_url,
             Some("https://api.x.ai/v1".into())
         );
     }

@@ -485,9 +485,13 @@ pub fn summarizer_harness() -> HarnessDefinition {
             EvalCase::new(
                 f.name,
                 input,
-                Arc::new(move |v: &Value, _ctx: &CheckCtx| match serde_json::from_value::<String>(v.clone()) {
-                    Ok(s) => f.check(&s).into(),
-                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| {
+                    match serde_json::from_value::<String>(v.clone()) {
+                        Ok(s) => f.check(&s).into(),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
+                    }
                 }),
             )
             .band(band)

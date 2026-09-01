@@ -13,10 +13,7 @@ use crate::internal_history::snapshot;
 
 const MEMORY_PATH: &str = "/opt/data/memories/MEMORY.md";
 
-async fn department_for(
-    pg: &PgPool,
-    def_id: &str,
-) -> Result<(String, String), String> {
+async fn department_for(pg: &PgPool, def_id: &str) -> Result<(String, String), String> {
     let row: Option<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where id = $1::uuid and managed",
     )
@@ -27,10 +24,7 @@ async fn department_for(
     row.ok_or_else(|| "not a managed agent".to_string())
 }
 
-pub async fn read_memory(
-    pg: &PgPool,
-    def_id: &str,
-) -> Result<(String, String), String> {
+pub async fn read_memory(pg: &PgPool, def_id: &str) -> Result<(String, String), String> {
     let (department, _) = department_for(pg, def_id).await?;
     let name = managed_container(pg, &department).await;
     let content = match docker_exec_opt(&name, &["cat", MEMORY_PATH], None, 20_000).await {

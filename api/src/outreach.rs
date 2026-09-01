@@ -255,26 +255,14 @@ pub async fn agent_message_user(
         Ok(seq) => seq,
         Err(e) => return MessageUserResult::err(&e.to_string()),
     };
-    let msg_id = match crate::conversations::insert_streaming_assistant(
-        pg,
-        &conv_id,
-        seq,
-        &json!({}),
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(e) => return MessageUserResult::err(&e.to_string()),
-    };
-    if let Err(e) = crate::conversations::update_assistant(
-        pg,
-        &msg_id,
-        &body,
-        "",
-        &[],
-        "complete",
-    )
-    .await
+    let msg_id =
+        match crate::conversations::insert_streaming_assistant(pg, &conv_id, seq, &json!({})).await
+        {
+            Ok(id) => id,
+            Err(e) => return MessageUserResult::err(&e.to_string()),
+        };
+    if let Err(e) =
+        crate::conversations::update_assistant(pg, &msg_id, &body, "", &[], "complete").await
     {
         return MessageUserResult::err(&e.to_string());
     }

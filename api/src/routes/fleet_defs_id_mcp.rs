@@ -6,8 +6,8 @@ use crate::agent_defs::{add_version_if_changed, list_versions};
 use crate::agent_mcp::apply_mcp_edits;
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
-    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member, optional_boolean_member,
-    parse, string_msg, too_big_msg, url_member, zod_type_name,
+    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
+    optional_boolean_member, parse, string_msg, too_big_msg, url_member, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet_reconcile::roll_agent;
@@ -26,9 +26,9 @@ fn slug_ok(s: &str) -> bool {
     chars
         .next()
         .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && s.chars().skip(1).all(|c| {
-            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
-        })
+        && s.chars()
+            .skip(1)
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// One `add` entry: {name, url, timeout?} — timeout is a positive int, and
@@ -55,7 +55,9 @@ fn parse_add(obj: &Map<String, Value>) -> Result<Vec<AddServer>, String> {
             None => return Err(string_msg("undefined")),
         };
         if !slug_ok(&name) {
-            return Err(format!("Invalid string: must match pattern /{NAME_PATTERN}/"));
+            return Err(format!(
+                "Invalid string: must match pattern /{NAME_PATTERN}/"
+            ));
         }
         if crate::body::utf16_len(&name) > 60 {
             return Err(too_big_msg(60));
@@ -64,8 +66,9 @@ fn parse_add(obj: &Map<String, Value>) -> Result<Vec<AddServer>, String> {
         let timeout = match m.get("timeout") {
             None => None,
             Some(_) => {
-                let n = nullable_number_member(m, "timeout", NumKind::Int, f64::MIN, f64::INFINITY)?
-                    .ok_or("unreachable: present non-null read above")?;
+                let n =
+                    nullable_number_member(m, "timeout", NumKind::Int, f64::MIN, f64::INFINITY)?
+                        .ok_or("unreachable: present non-null read above")?;
                 if n <= 0.0 {
                     return Err("Too small: expected number to be >0".into());
                 }
@@ -173,7 +176,11 @@ pub async fn post(
         })
         .collect();
     let config = apply_mcp_edits(&latest.config, &slug, &add_values, &remove);
-    let added = add.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+    let added = add
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     let removed = remove.join(", ");
     let parts: Vec<String> = [
         (!added.is_empty()).then(|| format!("+{added}")),
@@ -248,7 +255,7 @@ pub async fn post(
                     "applied": false,
                     "warning": warning,
                 }))
-                .into_response()
+                .into_response();
             }
             Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
         }

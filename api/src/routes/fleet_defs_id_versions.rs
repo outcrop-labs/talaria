@@ -87,20 +87,24 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if revert_to <= 0.0 {
-        return house_error(StatusCode::BAD_REQUEST, "Too small: expected number to be >0");
+        return house_error(
+            StatusCode::BAD_REQUEST,
+            "Too small: expected number to be >0",
+        );
     }
     let revert_to = revert_to as i64;
-    let def: Option<(String,)> = match sqlx::query_as("select id::text from agent_defs where id = $1::uuid")
-        .bind(&id)
-        .fetch_optional(&state.pg)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::error!("[fleet/defs/versions] def read failed: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let def: Option<(String,)> =
+        match sqlx::query_as("select id::text from agent_defs where id = $1::uuid")
+            .bind(&id)
+            .fetch_optional(&state.pg)
+            .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::error!("[fleet/defs/versions] def read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
     let Some((def_id,)) = def else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };

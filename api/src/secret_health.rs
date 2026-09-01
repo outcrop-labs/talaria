@@ -78,22 +78,32 @@ fn state_of_entry(sb: &SecretBox, cipher: &str) -> &'static str {
     }
 }
 
-pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::SecretRoot) -> serde_json::Value {
+pub async fn secret_health(
+    pg: &PgPool,
+    sb: &SecretBox,
+    root: &crate::config::SecretRoot,
+) -> serde_json::Value {
     let mut rows: Vec<serde_json::Value> = Vec::new();
 
     // ── Models ──────────────────────────────────────────────────────────────
     // Every endpoint, not only the sealed ones: an endpoint with no key at all
     // is a real gap ("why won't this model answer?") and belongs in the list.
-    type EndpointRow = (String, String, Option<String>, Option<String>, Option<i64>, Option<i64>);
-    let endpoints: Result<Vec<EndpointRow>, _> =
-        sqlx::query_as(
-            "select id::text, name, api_key_cipher, api_key_env, \
+    type EndpointRow = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let endpoints: Result<Vec<EndpointRow>, _> = sqlx::query_as(
+        "select id::text, name, api_key_cipher, api_key_env, \
              (trunc(extract(epoch from created_at) * 1000))::bigint, \
              (trunc(extract(epoch from updated_at) * 1000))::bigint \
              from llm_endpoints order by name asc",
-        )
-        .fetch_all(pg)
-        .await;
+    )
+    .fetch_all(pg)
+    .await;
     if let Ok(eps) = endpoints {
         for (id, name, cipher, env_name, created, updated) in eps {
             let mut f = serde_json::Map::new();
@@ -106,11 +116,17 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
             );
             f.insert("surface".into(), "Models".into());
             f.insert("href".into(), "/models".into());
-            f.insert("state".into(), state_of(sb, cipher.as_deref(), env_name.as_deref()).into());
+            f.insert(
+                "state".into(),
+                state_of(sb, cipher.as_deref(), env_name.as_deref()).into(),
+            );
             f.insert("scope".into(), "instance".into());
             // setAt: iso(updatedAt) ?? iso(createdAt) — both null when both are.
             f.insert("setAt".into(), opt_iso(updated.or(created)));
-            f.insert("clearable".into(), cipher.as_deref().is_some_and(|c| !c.is_empty()).into());
+            f.insert(
+                "clearable".into(),
+                cipher.as_deref().is_some_and(|c| !c.is_empty()).into(),
+            );
             rows.push(row(f));
         }
     }
@@ -119,18 +135,27 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
     // ONE ROW PER ENTRY, not per doc: a bundle can be half-readable if it was
     // written across a rotation, and a doc-level row would report the whole
     // thing on the state of whichever entry happened to sort first.
-    type WorkspaceRow = (String, String, bool, Option<String>, Option<i64>, String, String, String, i32);
-    let workspace: Result<Vec<WorkspaceRow>, _> =
-        sqlx::query_as(
-            "select s.name, s.title, s.revealable, s.owner_user_id::text, \
+    type WorkspaceRow = (
+        String,
+        String,
+        bool,
+        Option<String>,
+        Option<i64>,
+        String,
+        String,
+        String,
+        i32,
+    );
+    let workspace: Result<Vec<WorkspaceRow>, _> = sqlx::query_as(
+        "select s.name, s.title, s.revealable, s.owner_user_id::text, \
              (trunc(extract(epoch from s.updated_at) * 1000))::bigint, \
              e.key, e.label, e.value_cipher, \
              (select count(*)::int from workspace_secret_grants g where g.secret_id = s.id) \
              from workspace_secrets s join workspace_secret_entries e on e.secret_id = s.id \
              order by s.title asc, e.key asc",
-        )
-        .fetch_all(pg)
-        .await;
+    )
+    .fetch_all(pg)
+    .await;
     if let Ok(ws) = workspace {
         for (name, title, revealable, owner, updated, key, label, cipher, grants) in ws {
             let mut f = serde_json::Map::new();
@@ -143,7 +168,10 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
                     format!(
                         "A working secret. {}the people it is shared with can read it",
                         if grants > 0 {
-                            format!("{grants} agent{} can spend it; ", if grants == 1 { "" } else { "s" })
+                            format!(
+                                "{grants} agent{} can spend it; ",
+                                if grants == 1 { "" } else { "s" }
+                            )
                         } else {
                             String::new()
                         }
@@ -152,7 +180,10 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
                     format!(
                         "{} — and nobody can read it",
                         if grants > 0 {
-                            format!("{grants} agent{} can SPEND it", if grants == 1 { "" } else { "s" })
+                            format!(
+                                "{grants} agent{} can SPEND it",
+                                if grants == 1 { "" } else { "s" }
+                            )
                         } else {
                             "Granted to no agent, so nobody can spend it".to_string()
                         }
@@ -160,13 +191,30 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
                 }
                 .into(),
             );
-            f.insert("surface".into(), if revealable { "Files → Secrets" } else { "Admin → Secrets" }.into());
-            f.insert("href".into(), if revealable { "/artifacts/secrets" } else { "/admin/secrets" }.into());
+            f.insert(
+                "surface".into(),
+                if revealable {
+                    "Files → Secrets"
+                } else {
+                    "Admin → Secrets"
+                }
+                .into(),
+            );
+            f.insert(
+                "href".into(),
+                if revealable {
+                    "/artifacts/secrets"
+                } else {
+                    "/admin/secrets"
+                }
+                .into(),
+            );
             f.insert("state".into(), state_of_entry(sb, &cipher).into());
-            f.insert("scope".into(), if revealable { "user" } else { "instance" }.into());
-            if revealable
-                && let Some(o) = owner.as_deref()
-            {
+            f.insert(
+                "scope".into(),
+                if revealable { "user" } else { "instance" }.into(),
+            );
+            if revealable && let Some(o) = owner.as_deref() {
                 f.insert("owner".into(), o.into());
             }
             f.insert("setAt".into(), opt_iso(updated));
@@ -190,7 +238,10 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
     if let Ok(ss) = agent_secrets {
         for (agent_id, name, cipher, updated, agent_name) in ss {
             let mut f = serde_json::Map::new();
-            f.insert("id".into(), format!("agent-secret:{agent_id}:{name}").into());
+            f.insert(
+                "id".into(),
+                format!("agent-secret:{agent_id}:{name}").into(),
+            );
             f.insert("group".into(), "agents".into());
             f.insert("label".into(), name.clone().into());
             f.insert(
@@ -277,21 +328,17 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
     }
 
     type GoogleOrgRow = (Option<String>, Option<String>, Option<i64>, Option<i64>);
-    let google_org: Result<Vec<GoogleOrgRow>, _> =
-        sqlx::query_as(
-            "select refresh_token_enc, email, \
+    let google_org: Result<Vec<GoogleOrgRow>, _> = sqlx::query_as(
+        "select refresh_token_enc, email, \
              (trunc(extract(epoch from updated_at) * 1000))::bigint, \
              (trunc(extract(epoch from access_expires_at) * 1000))::bigint \
              from google_org_connection where id = 1",
-        )
-        .fetch_all(pg)
-        .await;
+    )
+    .fetch_all(pg)
+    .await;
     let org_row = google_org.unwrap_or_default().first().cloned();
     {
-        let (cipher, email, updated, expires) = match org_row {
-            Some(t) => t,
-            None => (None, None, None, None),
-        };
+        let (cipher, email, updated, expires) = org_row.unwrap_or_default();
         let mut f = serde_json::Map::new();
         f.insert("id".into(), "google-org".into());
         f.insert("group".into(), "integrations".into());
@@ -317,25 +364,30 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
     }
 
     type McpTokenRow = (String, String, String, Option<i64>, String, Option<String>);
-    let mcp_tokens: Result<Vec<McpTokenRow>, _> =
-        sqlx::query_as(
-            "select t.server_id::text, t.subject, t.tokens_enc, \
+    let mcp_tokens: Result<Vec<McpTokenRow>, _> = sqlx::query_as(
+        "select t.server_id::text, t.subject, t.tokens_enc, \
              (trunc(extract(epoch from t.updated_at) * 1000))::bigint, \
              s.label, u.email \
              from mcp_oauth_tokens t \
              join mcp_servers s on s.id = t.server_id \
              left join users u on u.id::text = t.subject \
              order by s.label asc, t.subject asc",
-        )
-        .fetch_all(pg)
-        .await;
+    )
+    .fetch_all(pg)
+    .await;
     if let Ok(ts) = mcp_tokens {
         for (server_id, subject, cipher, updated, label, email) in ts {
             let org = subject == "org";
             let mut f = serde_json::Map::new();
-            f.insert("id".into(), format!("mcp-oauth:{server_id}:{subject}").into());
+            f.insert(
+                "id".into(),
+                format!("mcp-oauth:{server_id}:{subject}").into(),
+            );
             f.insert("group".into(), "integrations".into());
-            f.insert("label".into(), format!("{label} — connected account").into());
+            f.insert(
+                "label".into(),
+                format!("{label} — connected account").into(),
+            );
             f.insert(
                 "unlocks".into(),
                 if org {
@@ -359,22 +411,24 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
     }
 
     type McpHeaderRow = (String, String, String, Option<i64>, String, String);
-    let mcp_headers: Result<Vec<McpHeaderRow>, _> =
-        sqlx::query_as(
-            "select c.server_id::text, c.user_id::text, c.headers_enc, \
+    let mcp_headers: Result<Vec<McpHeaderRow>, _> = sqlx::query_as(
+        "select c.server_id::text, c.user_id::text, c.headers_enc, \
              (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
              s.label, u.email \
              from mcp_user_credentials c \
              join mcp_servers s on s.id = c.server_id \
              join users u on u.id = c.user_id \
              order by s.label asc, u.email asc",
-        )
-        .fetch_all(pg)
-        .await;
+    )
+    .fetch_all(pg)
+    .await;
     if let Ok(hs) = mcp_headers {
         for (server_id, user_id, cipher, updated, label, email) in hs {
             let mut f = serde_json::Map::new();
-            f.insert("id".into(), format!("mcp-headers:{server_id}:{user_id}").into());
+            f.insert(
+                "id".into(),
+                format!("mcp-headers:{server_id}:{user_id}").into(),
+            );
             f.insert("group".into(), "integrations".into());
             f.insert("label".into(), format!("{label} — credentials").into());
             f.insert("unlocks".into(), format!("{label} for this person").into());
@@ -455,7 +509,10 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
         );
         f.insert("surface".into(), "Admin → Organization".into());
         f.insert("href".into(), "/admin".into());
-        f.insert("state".into(), state_of(sb, email_cipher.as_deref(), None).into());
+        f.insert(
+            "state".into(),
+            state_of(sb, email_cipher.as_deref(), None).into(),
+        );
         f.insert("scope".into(), "instance".into());
         f.insert("setAt".into(), opt_iso(email.and_then(|(_, at)| *at)));
         f.insert("clearable".into(), email.is_some().into());
@@ -472,7 +529,10 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
     {
         for (path, label) in [
             ("secretAccessKey", "Object storage secret key"),
-            ("replica.secretAccessKey", "Object storage replica secret key"),
+            (
+                "replica.secretAccessKey",
+                "Object storage replica secret key",
+            ),
         ] {
             let cipher = match path {
                 "secretAccessKey" => dig(storage, &["secretAccessKey"]),
@@ -516,12 +576,25 @@ pub async fn secret_health(pg: &PgPool, sb: &SecretBox, root: &crate::config::Se
         let mut f = serde_json::Map::new();
         f.insert(
             "id".into(),
-            format!("setting:github_config:{}", if is_app { "app.privateKeyEnc" } else { "pat.tokenEnc" }).into(),
+            format!(
+                "setting:github_config:{}",
+                if is_app {
+                    "app.privateKeyEnc"
+                } else {
+                    "pat.tokenEnc"
+                }
+            )
+            .into(),
         );
         f.insert("group".into(), "platform".into());
         f.insert(
             "label".into(),
-            if is_app { "GitHub App private key" } else { "GitHub access token" }.into(),
+            if is_app {
+                "GitHub App private key"
+            } else {
+                "GitHub access token"
+            }
+            .into(),
         );
         f.insert(
             "unlocks".into(),
@@ -643,7 +716,9 @@ async fn run_clear(pg: &PgPool, sql: &'static str, binds: &[&str]) -> Result<boo
 /// state has been reached either way.
 pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearError> {
     let mut parts = secret_id.split(':');
-    let Some(store) = parts.next() else { return Err(ClearError::Unknown) };
+    let Some(store) = parts.next() else {
+        return Err(ClearError::Unknown);
+    };
     let rest: Vec<&str> = parts.collect();
     if rest.is_empty() {
         return Err(ClearError::Unknown);
@@ -681,16 +756,16 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
             pg,
             "delete from agent_keys where agent_id = $1::uuid",
             &[n(0)],
-            )
-            .await
-            .map_err(ClearError::from),
+        )
+        .await
+        .map_err(ClearError::from),
         "google-user" => run_clear(
             pg,
             "delete from google_connections where user_id = $1::uuid",
             &[n(0)],
-            )
-            .await
-            .map_err(ClearError::from),
+        )
+        .await
+        .map_err(ClearError::from),
         "google-org" => run_clear(pg, "delete from google_org_connection where id = 1", &[])
             .await
             .map_err(ClearError::from),
@@ -698,16 +773,16 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
             pg,
             "delete from mcp_oauth_tokens where server_id = $1::uuid and subject = $2",
             &[n(0), n(1)],
-            )
-            .await
-            .map_err(ClearError::from),
+        )
+        .await
+        .map_err(ClearError::from),
         "mcp-headers" => run_clear(
             pg,
             "delete from mcp_user_credentials where server_id = $1::uuid and user_id = $2::uuid",
             &[n(0), n(1)],
-            )
-            .await
-            .map_err(ClearError::from),
+        )
+        .await
+        .map_err(ClearError::from),
         "setting" => clear_setting_leaf(pg, n(0), &rest[1..].join(":")).await,
         _ => Err(ClearError::Unknown),
     }
@@ -726,14 +801,15 @@ async fn clear_setting_leaf(pg: &PgPool, key: &str, dotted: &str) -> Result<bool
         return Err(ClearError::Unknown);
     }
     let mut tx = pg.begin().await.map_err(ClearError::from)?;
-    let current: Option<(serde_json::Value,)> = sqlx::query_as(
-        "select value from app_settings where key = $1 for update",
-    )
-    .bind(key)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(ClearError::from)?;
-    let Some((mut value,)) = current else { return Ok(false) };
+    let current: Option<(serde_json::Value,)> =
+        sqlx::query_as("select value from app_settings where key = $1 for update")
+            .bind(key)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(ClearError::from)?;
+    let Some((mut value,)) = current else {
+        return Ok(false);
+    };
     // Walk to the parent, then null the leaf — '' for strings (several of
     // these configs read presence), null for everything else.
     let mut node: &mut serde_json::Value = &mut value;
@@ -749,7 +825,9 @@ async fn clear_setting_leaf(pg: &PgPool, key: &str, dotted: &str) -> Result<bool
         Some(serde_json::Value::String(s)) if s.is_empty() => return Ok(false),
         _ => {}
     }
-    let Some(obj) = node.as_object_mut() else { return Ok(false) };
+    let Some(obj) = node.as_object_mut() else {
+        return Ok(false);
+    };
     let replacement = match obj.get(leaf) {
         Some(serde_json::Value::String(_)) => serde_json::Value::String(String::new()),
         _ => serde_json::Value::Null,

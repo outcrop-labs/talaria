@@ -8,7 +8,10 @@ use crate::body::{
     NumKind, as_object, nullish_member, optional_boolean_member, optional_enum_member,
     optional_max_string_member, optional_number_member, parse,
 };
-use crate::email::{EmailConfigPatch, Provider, email_shell, get_email_config, send_email, EmailInput, SendOutcome, set_email_config};
+use crate::email::{
+    EmailConfigPatch, EmailInput, Provider, SendOutcome, email_shell, get_email_config, send_email,
+    set_email_config,
+};
 use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_admin};
 use crate::state::AppState;
@@ -71,7 +74,13 @@ pub async fn put(
     // tri-state: undefined keeps, null clears, a string replaces.
     let provider = match nullish_member(obj, "provider", |o, k| {
         optional_enum_member(o, k, &["smtp", "resend"]).map(|p| {
-            p.map(|p| if p == "smtp" { Provider::Smtp } else { Provider::Resend })
+            p.map(|p| {
+                if p == "smtp" {
+                    Provider::Smtp
+                } else {
+                    Provider::Resend
+                }
+            })
         })
     }) {
         Ok(p) => p,
@@ -81,44 +90,42 @@ pub async fn put(
         Ok(f) => f,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let (smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass) =
-        match obj.get("smtp") {
-            None => (None, None, None, None, None),
-            Some(v) => {
-                let s = match v.as_object() {
-                    Some(s) => s,
-                    None => {
-                        return house_error(
-                            StatusCode::BAD_REQUEST,
-                            &crate::body::object_msg(crate::body::zod_type_name(v)),
-                        )
-                    }
-                };
-                let host = match optional_max_string_member(s, "host", 200) {
-                    Ok(h) => h,
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-                };
-                let port = match optional_number_member(s, "port", NumKind::Int, 1.0, 65535.0) {
-                    Ok(p) => p.map(|f| f as u16),
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-                };
-                let secure = match optional_boolean_member(s, "secure") {
-                    Ok(b) => b,
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-                };
-                let user = match optional_max_string_member(s, "user", 200) {
-                    Ok(u) => u,
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-                };
-                let pass = match nullish_member(s, "pass", |o, k| {
-                    optional_max_string_member(o, k, 500)
-                }) {
-                    Ok(p) => p,
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-                };
-                (host, port, secure, user, pass)
-            }
-        };
+    let (smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass) = match obj.get("smtp") {
+        None => (None, None, None, None, None),
+        Some(v) => {
+            let s = match v.as_object() {
+                Some(s) => s,
+                None => {
+                    return house_error(
+                        StatusCode::BAD_REQUEST,
+                        &crate::body::object_msg(crate::body::zod_type_name(v)),
+                    );
+                }
+            };
+            let host = match optional_max_string_member(s, "host", 200) {
+                Ok(h) => h,
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
+            let port = match optional_number_member(s, "port", NumKind::Int, 1.0, 65535.0) {
+                Ok(p) => p.map(|f| f as u16),
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
+            let secure = match optional_boolean_member(s, "secure") {
+                Ok(b) => b,
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
+            let user = match optional_max_string_member(s, "user", 200) {
+                Ok(u) => u,
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
+            let pass = match nullish_member(s, "pass", |o, k| optional_max_string_member(o, k, 500))
+            {
+                Ok(p) => p,
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
+            (host, port, secure, user, pass)
+        }
+    };
     let resend_api_key = match obj.get("resend") {
         None => None,
         Some(v) => {
@@ -128,7 +135,7 @@ pub async fn put(
                     return house_error(
                         StatusCode::BAD_REQUEST,
                         &crate::body::object_msg(crate::body::zod_type_name(v)),
-                    )
+                    );
                 }
             };
             match nullish_member(r, "apiKey", |o, k| optional_max_string_member(o, k, 200)) {

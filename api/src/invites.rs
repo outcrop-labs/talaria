@@ -4,11 +4,11 @@
 // Google on that address. Invites expire, revoke instantly, and re-send with
 // a fresh token.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sqlx::PgPool;
 
-use crate::email::{email_escape, email_shell, send_email, EmailInput, SendOutcome};
+use crate::email::{EmailInput, SendOutcome, email_escape, email_shell, send_email};
 use crate::instance::instance_base_url;
 use crate::org::org_profile;
 use crate::secretbox::SecretBox;
@@ -118,10 +118,16 @@ async fn send_invite_email(
     origin: Option<&str>,
 ) -> Result<(), String> {
     let org = org_profile(pg).await;
-    let base = instance_base_url(pg).await.or_else(|| origin.map(String::from));
+    let base = instance_base_url(pg)
+        .await
+        .or_else(|| origin.map(String::from));
     let org_name = {
         let n = org.name.trim();
-        if n.is_empty() { "the team".to_string() } else { n.to_string() }
+        if n.is_empty() {
+            "the team".to_string()
+        } else {
+            n.to_string()
+        }
     };
     let link = base.as_ref().map(|b| format!("{b}/join?token={token}"));
     // Every interpolation is operator- or user-sourced and the invite email
@@ -236,7 +242,9 @@ pub async fn create_invite(
     .execute(pg)
     .await;
     let invite = invite_json(id, email_out, invited_by_out, c, x, a, r);
-    let email_error = send_invite_email(pg, sb, &e, &token, invited_by, origin).await.err();
+    let email_error = send_invite_email(pg, sb, &e, &token, invited_by, origin)
+        .await
+        .err();
     let email_sent = email_error.is_none();
     Ok((invite, email_sent, email_error))
 }
@@ -244,10 +252,12 @@ pub async fn create_invite(
 /// Revoke (revokeInvite): a no-op on an already-accepted invite — acceptance
 /// is history, not a lever.
 pub async fn revoke_invite(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("update invites set revoked_at = now() where id = $1::uuid and accepted_at is null")
-        .bind(id)
-        .execute(pg)
-        .await?;
+    sqlx::query(
+        "update invites set revoked_at = now() where id = $1::uuid and accepted_at is null",
+    )
+    .bind(id)
+    .execute(pg)
+    .await?;
     Ok(())
 }
 
@@ -263,11 +273,17 @@ pub async fn invite_by_token(
     .bind(token)
     .fetch_optional(pg)
     .await?;
-    let Some((email, invited_by)) = row else { return Ok(None) };
+    let Some((email, invited_by)) = row else {
+        return Ok(None);
+    };
     let org = org_profile(pg).await;
     let org_name = {
         let n = org.name.trim();
-        if n.is_empty() { "the team".to_string() } else { n.to_string() }
+        if n.is_empty() {
+            "the team".to_string()
+        } else {
+            n.to_string()
+        }
     };
     Ok(Some(serde_json::json!({
         "email": email,

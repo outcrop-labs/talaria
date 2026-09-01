@@ -156,7 +156,12 @@ async fn owner_info(pg: &PgPool, owner: &str) -> Result<OwnerInfo, String> {
 
 /// The agent model behind an owner slug (None for 'shared'/unknown).
 pub async fn owner_model(pg: &PgPool, owner: &str) -> Option<String> {
-    owners(pg).await.ok()?.into_iter().find(|o| o.owner == owner)?.model
+    owners(pg)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|o| o.owner == owner)?
+        .model
 }
 
 /// PLATFORM skills — the canonical set Talaria seeds into the shared root
@@ -169,10 +174,10 @@ pub fn platform_skill_names() -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
     for e in std::fs::read_dir(&dir)? {
         let e = e?;
-        if e.file_type()?.is_dir() {
-            if let Some(n) = e.file_name().to_str() {
-                names.push(n.to_string());
-            }
+        if e.file_type()?.is_dir()
+            && let Some(n) = e.file_name().to_str()
+        {
+            names.push(n.to_string());
         }
     }
     Ok(names)
@@ -208,9 +213,7 @@ pub fn summarize_fallback(md: &str) -> String {
             continue;
         }
         // `^description:\s*(.+)$`
-        let stripped = t
-            .strip_prefix("description:")
-            .map(|rest| rest.trim_start());
+        let stripped = t.strip_prefix("description:").map(|rest| rest.trim_start());
         let picked = match stripped {
             // strip_prefix already guarantees the ':' — an EMPTY remainder is
             // `description:` with nothing after, which TS's `(.+)` does not
@@ -360,7 +363,9 @@ pub async fn read_skill(
 pub async fn delete_skill(pg: &PgPool, owner: &str, name: &str) -> Result<(), String> {
     let o = owner_info(pg, owner).await?;
     let dir = safe_join(&o.root, name)?;
-    let st = tokio::fs::metadata(&dir).await.map_err(|e| format!("{e}"))?;
+    let st = tokio::fs::metadata(&dir)
+        .await
+        .map_err(|e| format!("{e}"))?;
     if !st.is_dir() {
         return Err("not a skill".into());
     }
@@ -384,7 +389,9 @@ pub async fn rename_skill(
     if tokio::fs::metadata(&to).await.is_ok() {
         return Err(format!("\"{to_name}\" already exists"));
     }
-    tokio::fs::rename(&from, &to).await.map_err(|e| format!("{e}"))?;
+    tokio::fs::rename(&from, &to)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let _ = move_summary(pg, owner, name, owner, to_name).await;
     Ok(())
 }
@@ -425,20 +432,16 @@ async fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     tokio::fs::create_dir_all(dst)
         .await
         .map_err(|e| format!("{e}"))?;
-    let mut rd = tokio::fs::read_dir(src)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    while let Some(e) = rd
-        .next_entry()
-        .await
-        .map_err(|e| format!("{e}"))?
-    {
+    let mut rd = tokio::fs::read_dir(src).await.map_err(|e| format!("{e}"))?;
+    while let Some(e) = rd.next_entry().await.map_err(|e| format!("{e}"))? {
         let from = e.path();
         let to = dst.join(e.file_name());
         if e.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
             Box::pin(copy_dir_all(&from, &to)).await?;
         } else {
-            tokio::fs::copy(&from, &to).await.map_err(|e| format!("{e}"))?;
+            tokio::fs::copy(&from, &to)
+                .await
+                .map_err(|e| format!("{e}"))?;
         }
     }
     Ok(())
@@ -536,7 +539,10 @@ pub fn queue_summary(state: AppState, owner: String, name: String, md: String) {
             .execute(&state.pg)
             .await;
         }
-        IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key);
     });
 }
 

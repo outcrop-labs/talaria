@@ -8,7 +8,7 @@
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::agent_defs::{add_version_if_changed, list_versions, NewVersion};
+use crate::agent_defs::{NewVersion, add_version_if_changed, list_versions};
 use crate::fleet_docker::fleet_restart;
 use crate::fleet_render::render_fleet;
 use crate::secretbox::SecretBox;
@@ -34,8 +34,10 @@ fn hits(t: Option<&Value>, endpoint: &str, models: Option<&[String]>) -> bool {
     let Some(t) = t else {
         return false;
     };
-    let (Some(ep), Some(model)) = (t.get("endpoint").and_then(Value::as_str), t.get("model").and_then(Value::as_str))
-    else {
+    let (Some(ep), Some(model)) = (
+        t.get("endpoint").and_then(Value::as_str),
+        t.get("model").and_then(Value::as_str),
+    ) else {
         return false;
     };
     ep == endpoint && models.is_none_or(|ms| ms.iter().any(|m| m == model))
@@ -146,7 +148,12 @@ pub async fn cascade_removal(
             Some(Value::Object(m)) => m.clone(),
             _ => Map::new(),
         };
-        for a in cfg.get("aliases").and_then(Value::as_array).into_iter().flatten() {
+        for a in cfg
+            .get("aliases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if hits(Some(a), endpoint, models)
                 && let Some(name) = a.get("name").and_then(Value::as_str)
             {

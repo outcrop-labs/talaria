@@ -72,7 +72,7 @@ pub async fn delete(
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &crate::body::string_msg(crate::body::zod_type_name(v)),
-                )
+                );
             }
         },
     };
@@ -97,9 +97,7 @@ pub async fn delete(
                 .await;
                 Json(serde_json::json!({ "ok": true, "changed": changed })).into_response()
             }
-            Err(ClearError::Unknown) => {
-                house_error(StatusCode::NOT_FOUND, "unknown secret")
-            }
+            Err(ClearError::Unknown) => house_error(StatusCode::NOT_FOUND, "unknown secret"),
             Err(_) => {
                 // Never echo the raw error: these paths sit next to key
                 // material.
@@ -120,8 +118,7 @@ pub async fn delete(
                 return thrown_internal_error();
             }
         };
-        let (cleared, failed) =
-            clear_unreadable(&state.pg, &sb, &state.cfg.secret_root).await;
+        let (cleared, failed) = clear_unreadable(&state.pg, &sb, &state.cfg.secret_root).await;
         let after = serde_json::json!({ "cleared": cleared, "failed": failed });
         log_audit(
             &state.pg,

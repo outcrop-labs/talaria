@@ -3,7 +3,9 @@
 // PUT → enable/disable + pick the judge model.
 
 use crate::audit::{AuditEntry, log_audit};
-use crate::body::{as_object, boolean_member, nullish_max_string_member, optional_enum_member, parse};
+use crate::body::{
+    as_object, boolean_member, nullish_max_string_member, optional_enum_member, parse,
+};
 use crate::error::house_error;
 use crate::judge::{get_judge_config, set_judge_config};
 use crate::model_access::gateway_models;

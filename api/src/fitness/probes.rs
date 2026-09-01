@@ -92,9 +92,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use url::Url;
 
-use crate::capability::{
-    CapabilityFact, capability_key, get_capabilities, merge_capabilities,
-};
+use crate::capability::{CapabilityFact, capability_key, get_capabilities, merge_capabilities};
 use crate::fitness::code_runner::{CODE_TASKS, run_code_task};
 use crate::fitness::live_feed::note_live;
 use crate::fitness::surface::{EvalLogLine, LogVerdict};
@@ -106,15 +104,13 @@ use crate::gateway::usage::estimate_tokens;
 use crate::harness::define::{
     GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor, VerifyFn,
 };
-use crate::harness_model::ModelSpec;
-use crate::harness::run::{
-    BoxFut, HarnessDeps, RunContext, TransportFn, run_harness,
-};
+use crate::harness::run::{BoxFut, HarnessDeps, RunContext, TransportFn, run_harness};
 use crate::harness::schema::{Field, Schema};
 use crate::harness::transport::{
-    ToolCall, ToolDefinition, TransportRequest, dispatch_transport,
-    gateway_image_turn, offers_tool_definitions, persona_probe_turn,
+    ToolCall, ToolDefinition, TransportRequest, dispatch_transport, gateway_image_turn,
+    offers_tool_definitions, persona_probe_turn,
 };
+use crate::harness_model::ModelSpec;
 use crate::model_catalog::advertised_window;
 use crate::persona::persona_capability_keys;
 use crate::price_oracle::TokPrice;
@@ -198,10 +194,7 @@ pub enum ProbeOutcome {
     /// Nothing to measure here (no vision advertised, no context window known, a
     /// fleet candidate whose tool loop is not ours to drive). Not a failure and
     /// not a fact — `reason` is the sentence the admin reads instead of a cell.
-    Skipped {
-        reason: String,
-        trials: Vec<Trial>,
-    },
+    Skipped { reason: String, trials: Vec<Trial> },
     /// WE ALREADY MEASURED THIS, so no call was made and the standing fact is
     /// reported instead.
     ///
@@ -223,10 +216,7 @@ pub enum ProbeOutcome {
         trials: Vec<Trial>,
     },
     /// The deployment failed, not the model. Writes nothing, by rule 2.
-    Errored {
-        reason: String,
-        trials: Vec<Trial>,
-    },
+    Errored { reason: String, trials: Vec<Trial> },
 }
 
 /// One model call, normalized — the unit every scorer in this file takes, which
@@ -295,7 +285,9 @@ fn usr(content: &str) -> Message {
 /// than a chatty one, and a probe that lost a trial to a preamble would be
 /// measuring our prompt rather than the model.
 fn terse() -> Message {
-    sys("You answer exactly what is asked, with nothing else. No preamble, no explanation, no markdown fence.")
+    sys(
+        "You answer exactly what is asked, with nothing else. No preamble, no explanation, no markdown fence.",
+    )
 }
 
 /// A named prompt plus its messages — the element type of every trial fixture.
@@ -325,7 +317,10 @@ pub struct JsonContract {
 
 impl JsonContract {
     fn bare(schema: Schema) -> JsonContract {
-        JsonContract { schema, verify: None }
+        JsonContract {
+            schema,
+            verify: None,
+        }
     }
 }
 
@@ -347,21 +342,27 @@ static JSON_TRIALS: LazyLock<Vec<PromptFixture>> = LazyLock::new(|| {
             name: "trivial object",
             messages: vec![
                 terse(),
-                usr("Return a JSON object with the keys name (the string \"talaria\"), count (the number 3) and ok (the boolean true)."),
+                usr(
+                    "Return a JSON object with the keys name (the string \"talaria\"), count (the number 3) and ok (the boolean true).",
+                ),
             ],
         },
         PromptFixture {
             name: "trivial object, reordered",
             messages: vec![
                 terse(),
-                usr("Return JSON. It must have ok set to true, count set to 3, and name set to \"talaria\"."),
+                usr(
+                    "Return JSON. It must have ok set to true, count set to 3, and name set to \"talaria\".",
+                ),
             ],
         },
         PromptFixture {
             name: "trivial object, restated",
             messages: vec![
                 terse(),
-                usr("Give me one JSON object describing a record whose name is \"talaria\", whose count is 3, and which is ok."),
+                usr(
+                    "Give me one JSON object describing a record whose name is \"talaria\", whose count is 3, and which is ok.",
+                ),
             ],
         },
     ]
@@ -370,15 +371,33 @@ static JSON_TRIALS: LazyLock<Vec<PromptFixture>> = LazyLock::new(|| {
 static JSON_STRICT: LazyLock<JsonContract> = LazyLock::new(|| {
     JsonContract {
         schema: Schema::Object(vec![
-            Field::required("id", Schema::Str { trim: false, min: Some(1), max: None }),
+            Field::required(
+                "id",
+                Schema::Str {
+                    trim: false,
+                    min: Some(1),
+                    max: None,
+                },
+            ),
             Field::required(
                 "tags",
-                Schema::Array(Box::new(Schema::Str { trim: false, min: Some(1), max: None })),
+                Schema::Array(Box::new(Schema::Str {
+                    trim: false,
+                    min: Some(1),
+                    max: None,
+                })),
             ),
             Field::required(
                 "items",
                 Schema::Array(Box::new(Schema::Object(vec![
-                    Field::required("label", Schema::Str { trim: false, min: Some(1), max: None }),
+                    Field::required(
+                        "label",
+                        Schema::Str {
+                            trim: false,
+                            min: Some(1),
+                            max: None,
+                        },
+                    ),
                     Field::required("weight", Schema::Num),
                 ]))),
             ),
@@ -386,7 +405,14 @@ static JSON_STRICT: LazyLock<JsonContract> = LazyLock::new(|| {
             // output: they start the prose, forget they are inside JSON, and
             // close the object early or emit an unescaped newline. `min(200)` is
             // the point of the field.
-            Field::required("summary", Schema::Str { trim: false, min: Some(200), max: None }),
+            Field::required(
+                "summary",
+                Schema::Str {
+                    trim: false,
+                    min: Some(200),
+                    max: None,
+                },
+            ),
         ]),
         // zod's `.min(2)` on the two arrays has no spelling in the schema
         // algebra (there is an `ArrayMax`, no `ArrayMin`), so the same check
@@ -401,7 +427,9 @@ static JSON_STRICT: LazyLock<JsonContract> = LazyLock::new(|| {
                     .map(|a| a.len())
                     .unwrap_or(0);
                 if tags < 2 {
-                    return Ok(Some("tags must contain at least 2 short lowercase strings".into()));
+                    return Ok(Some(
+                        "tags must contain at least 2 short lowercase strings".into(),
+                    ));
                 }
                 let items = reply
                     .get("items")
@@ -432,7 +460,9 @@ static JSON_STRICT_TRIALS: LazyLock<Vec<PromptFixture>> = LazyLock::new(|| {
         name: Box::leak(format!("nested object: {subject}").into_boxed_str()),
         messages: vec![
             terse(),
-            usr(&format!("{JSON_STRICT_INSTRUCTION}\n\nThe object describes: {subject}.")),
+            usr(&format!(
+                "{JSON_STRICT_INSTRUCTION}\n\nThe object describes: {subject}."
+            )),
         ],
     })
     .collect()
@@ -446,17 +476,28 @@ static INSTRUCTION_TRIALS: LazyLock<Vec<ExpectedFixture>> = LazyLock::new(|| {
     vec![
         ExpectedFixture {
             name: "exactly OK",
-            messages: vec![terse(), usr("Reply with exactly the word OK. No punctuation, no explanation.")],
+            messages: vec![
+                terse(),
+                usr("Reply with exactly the word OK. No punctuation, no explanation."),
+            ],
             expect: "OK",
         },
         ExpectedFixture {
             name: "exactly three words",
-            messages: vec![terse(), usr("Reply with exactly these three words in this order and nothing else: red green blue")],
+            messages: vec![
+                terse(),
+                usr(
+                    "Reply with exactly these three words in this order and nothing else: red green blue",
+                ),
+            ],
             expect: "red green blue",
         },
         ExpectedFixture {
             name: "exactly one digit",
-            messages: vec![terse(), usr("Reply with the single digit 7 and nothing else.")],
+            messages: vec![
+                terse(),
+                usr("Reply with the single digit 7 and nothing else."),
+            ],
             expect: "7",
         },
     ]
@@ -478,14 +519,18 @@ static SEARCH_TRIALS: LazyLock<Vec<PromptFixture>> = LazyLock::new(|| {
             name: "fresh page, verbatim quote",
             messages: vec![
                 terse(),
-                usr(&format!("{SEARCH_INSTRUCTION}\n\nThe page must be a news story published in the last two days.")),
+                usr(&format!(
+                    "{SEARCH_INSTRUCTION}\n\nThe page must be a news story published in the last two days."
+                )),
             ],
         },
         PromptFixture {
             name: "fresh page, verbatim quote (second topic)",
             messages: vec![
                 terse(),
-                usr(&format!("{SEARCH_INSTRUCTION}\n\nThe page must be documentation for a software project, opened today.")),
+                usr(&format!(
+                    "{SEARCH_INSTRUCTION}\n\nThe page must be documentation for a software project, opened today."
+                )),
             ],
         },
     ]
@@ -528,10 +573,7 @@ fn first_failure(trials: &[Trial]) -> String {
 /// this capability: the next caller with a harder schema gets prose, and the
 /// runner's `json_mode` will keep asking for something the endpoint throws away.
 /// So a reported drop changes the sentence, never the verdict.
-pub fn score_json(
-    trials: &[Trial],
-    protocol: JsonProtocol,
-) -> Option<ProbeVerdict> {
+pub fn score_json(trials: &[Trial], protocol: JsonProtocol) -> Option<ProbeVerdict> {
     let rate = rate_of(trials)?;
     if !protocol.requested {
         // Cannot happen through `run_probes` — it injects an empty capability
@@ -636,7 +678,11 @@ pub fn score_json_strict(trials: &[Trial]) -> Option<ProbeVerdict> {
 pub fn score_tools(trials: &[Trial]) -> Option<ProbeVerdict> {
     let rate = rate_of(trials)?;
     Some(if rate == 1.0 {
-        ProbeVerdict { value: true, score: 1.0, detail: "called the offered tool with well-formed arguments".into() }
+        ProbeVerdict {
+            value: true,
+            score: 1.0,
+            detail: "called the offered tool with well-formed arguments".into(),
+        }
     } else {
         ProbeVerdict {
             value: false,
@@ -687,7 +733,10 @@ pub fn score_instruction(trials: &[Trial]) -> Option<ProbeVerdict> {
         ProbeVerdict {
             value: true,
             score: 1.0,
-            detail: format!("reproduced all {} exact-output instructions verbatim", trials.len()),
+            detail: format!(
+                "reproduced all {} exact-output instructions verbatim",
+                trials.len()
+            ),
         }
     } else {
         ProbeVerdict {
@@ -755,7 +804,9 @@ pub fn score_search(trials: &[Trial]) -> Option<ProbeVerdict> {
         return Some(ProbeVerdict {
             value: true,
             score: rate,
-            detail: "named today’s date and quoted a sentence that is actually on the page it cited".into(),
+            detail:
+                "named today’s date and quoted a sentence that is actually on the page it cited"
+                    .into(),
         });
     }
     let stale_date: Vec<&Trial> = trials
@@ -794,7 +845,9 @@ pub fn score_long_context(trials: &[Trial], tested: i64, assumed: bool) -> Optio
     // that is what this model advertises" support different conclusions, and an
     // admin reading a green tag deserves to know which they have.
     let how = if assumed {
-        format!("{window}-token prompt (this model advertises no window, so the probe used its own ceiling)")
+        format!(
+            "{window}-token prompt (this model advertises no window, so the probe used its own ceiling)"
+        )
     } else {
         format!("{window}-token prompt")
     };
@@ -808,7 +861,11 @@ pub fn score_long_context(trials: &[Trial], tested: i64, assumed: bool) -> Optio
         ProbeVerdict {
             value: false,
             score: rate,
-            detail: format!("found the needle in {} of a {how} - {}", pct(rate), first_failure(trials)),
+            detail: format!(
+                "found the needle in {} of a {how} - {}",
+                pct(rate),
+                first_failure(trials)
+            ),
         }
     })
 }
@@ -817,7 +874,11 @@ pub fn score_long_context(trials: &[Trial], tested: i64, assumed: bool) -> Optio
 pub fn score_code(trials: &[Trial]) -> Option<ProbeVerdict> {
     let rate = rate_of(trials)?;
     Some(if rate == 1.0 {
-        ProbeVerdict { value: true, score: 1.0, detail: "every code task passed every assertion when run".into() }
+        ProbeVerdict {
+            value: true,
+            score: 1.0,
+            detail: "every code task passed every assertion when run".into(),
+        }
     } else {
         ProbeVerdict {
             value: false,
@@ -835,7 +896,11 @@ pub fn score_code(trials: &[Trial]) -> Option<ProbeVerdict> {
 pub fn score_vision(trials: &[Trial]) -> Option<ProbeVerdict> {
     let rate = rate_of(trials)?;
     Some(if rate == 1.0 {
-        ProbeVerdict { value: true, score: 1.0, detail: "read every probe image correctly".into() }
+        ProbeVerdict {
+            value: true,
+            score: 1.0,
+            detail: "read every probe image correctly".into(),
+        }
     } else {
         ProbeVerdict {
             value: false,
@@ -853,8 +918,14 @@ pub fn score_vision(trials: &[Trial]) -> Option<ProbeVerdict> {
 
 /// Hosts a model reaches for when it is inventing a citation. A URL here is a
 /// fabricated source however well-formed it looks.
-const PLACEHOLDER_HOSTS: [&str; 6] =
-    ["example.com", "www.example.com", "example.org", "example.net", "localhost", "test.com"];
+const PLACEHOLDER_HOSTS: [&str; 6] = [
+    "example.com",
+    "www.example.com",
+    "example.org",
+    "example.net",
+    "localhost",
+    "test.com",
+];
 
 pub fn citation_problem(url: &str) -> Option<String> {
     // WHATWG `new URL` becomes the `url` crate; the same relative-URL throw
@@ -941,9 +1012,15 @@ pub fn haystack(tokens: i64, needle: &str, depth: f64) -> String {
     // ~11 tokens a line at the 4-chars-per-token estimate the ledger uses.
     let target = std::cmp::max(2, tokens / 11);
     for i in 0..target {
-        lines.push(format!("Line {}: routine maintenance log entry, nothing of note recorded today.", i + 1));
+        lines.push(format!(
+            "Line {}: routine maintenance log entry, nothing of note recorded today.",
+            i + 1
+        ));
     }
-    let at = std::cmp::min(lines.len(), std::cmp::max(1, (lines.len() as f64 * depth).round() as usize));
+    let at = std::cmp::min(
+        lines.len(),
+        std::cmp::max(1, (lines.len() as f64 * depth).round() as usize),
+    );
     lines.insert(at, needle.to_string());
     lines.join("\n")
 }
@@ -967,6 +1044,10 @@ pub const MIN_LONG_CONTEXT_TOKENS: i64 = 8_000;
 /// advertised window. Raise it per run when the answer matters more than the
 /// bill.
 pub const DEFAULT_MAX_CONTEXT_TOKENS: i64 = 32_000;
+
+// Checked at compile time: a floor the ceiling cannot fit under is a config
+// error, not a runtime finding.
+const _: () = assert!(MIN_LONG_CONTEXT_TOKENS < DEFAULT_MAX_CONTEXT_TOKENS);
 
 /// THE CLOCK ONE PROBE RACES. Generous, because `long-context` legitimately
 /// sends two ~25k-token prompts and a reasoning model is slow per call — this is
@@ -1017,7 +1098,10 @@ impl AskSpec {
                 repair: Some(0),
                 verify: contract.verify.clone(),
             },
-            None => Output::Text { clean: None, verify: None },
+            None => Output::Text {
+                clean: None,
+                verify: None,
+            },
         }
     }
 }
@@ -1160,7 +1244,12 @@ fn probe_def(
         Box::leak(format!("{caller}:{id}").into_boxed_str()),
         Box::leak(format!("capability probe ({id})").into_boxed_str()),
         "measure one model capability against a fixed prompt",
-        ModelSpec { pin: None, role: None, chain: Some(&[]), user_id: None },
+        ModelSpec {
+            pin: None,
+            role: None,
+            chain: Some(&[]),
+            user_id: None,
+        },
         {
             let messages = messages.clone();
             Arc::new(move |_input: &Value, _ctx: &RenderContext| Ok(messages.clone()))
@@ -1186,7 +1275,10 @@ fn probe_def(
     // No rule in the registry is meaningful about a probe reply, and a probe
     // must not add rows to the guard statistics the fitness page reads as a
     // per-model confabulation rate.
-    def.guard = Some(GuardDecl { rules: Some(Vec::new()), redact: false });
+    def.guard = Some(GuardDecl {
+        rules: Some(Vec::new()),
+        redact: false,
+    });
     def.temperature = Some(0.0);
     def.tool_defs = tools;
     def
@@ -1205,9 +1297,7 @@ fn probe_run_deps(transport: TransportFn) -> HarnessDeps {
             Box::pin(async move { Option::<(String, crate::harness_model::ModelChainStep)>::None })
         }),
         slot_effort: Arc::new(|_slot, _model| Box::pin(async move { Option::<String>::None })),
-        routing: Arc::new(|m: String| {
-            Box::pin(async move { (Vec::<String>::new(), m) })
-        }),
+        routing: Arc::new(|m: String| Box::pin(async move { (Vec::<String>::new(), m) })),
         persona_keys: Arc::new(|_m: String| Box::pin(async move { Vec::<String>::new() })),
         // See the header: a probe measures the model, not the record.
         missing_capabilities: Arc::new(|_key: String, _asked: Vec<String>| {
@@ -1277,13 +1367,26 @@ pub fn runner_image_ask(state: &AppState, model: &str) -> ImageAskFn {
             let blank = Attempt::blank();
             let caller = format!("fitness:probe:{}", spec.id);
             let text = match if offers_tool_definitions(&state, &model).await {
-                gateway_image_turn(&state, &model, &spec.messages, &spec.images, &caller, Some(PROBE_TIMEOUT_MS)).await
+                gateway_image_turn(
+                    &state,
+                    &model,
+                    &spec.messages,
+                    &spec.images,
+                    &caller,
+                    Some(PROBE_TIMEOUT_MS),
+                )
+                .await
             } else {
-                persona_probe_turn(&model, &spec.messages, &spec.images, None).await.map(|turn| turn.text)
+                persona_probe_turn(&model, &spec.messages, &spec.images, None)
+                    .await
+                    .map(|turn| turn.text)
             } {
                 Ok(text) => text,
                 Err(err) => {
-                    return Attempt { transport_error: Some(err), ..blank };
+                    return Attempt {
+                        transport_error: Some(err),
+                        ..blank
+                    };
                 }
             };
             Attempt { raw: text, ..blank }
@@ -1326,12 +1429,16 @@ pub(crate) fn ask_with_caller(
                     let base = base.clone();
                     Box::pin(async move {
                         if req.json_mode {
-                            seen.lock().expect("the ask watcher is not contended").json_requested = true;
+                            seen.lock()
+                                .expect("the ask watcher is not contended")
+                                .json_requested = true;
                         }
                         match base(req).await {
                             Ok(reply) => {
                                 if reply.contract_dropped {
-                                    seen.lock().expect("the ask watcher is not contended").contract_dropped = true;
+                                    seen.lock()
+                                        .expect("the ask watcher is not contended")
+                                        .contract_dropped = true;
                                 }
                                 Ok(reply)
                             }
@@ -1341,7 +1448,8 @@ pub(crate) fn ask_with_caller(
                             // and only the first of those must void the probe
                             // (rule 2).
                             Err(err) => {
-                                seen.lock().expect("the ask watcher is not contended").threw = Some(err.clone());
+                                seen.lock().expect("the ask watcher is not contended").threw =
+                                    Some(err.clone());
                                 Err(err)
                             }
                         }
@@ -1363,10 +1471,16 @@ pub(crate) fn ask_with_caller(
             let result = match run_harness(&state, &def, &Value::Null, ctx).await {
                 Ok(result) => result,
                 Err(err) => {
-                    return Attempt { transport_error: Some(err.0), ..Attempt::blank() };
+                    return Attempt {
+                        transport_error: Some(err.0),
+                        ..Attempt::blank()
+                    };
                 }
             };
-            let seen = seen.lock().expect("the ask watcher is not contended").clone();
+            let seen = seen
+                .lock()
+                .expect("the ask watcher is not contended")
+                .clone();
             Attempt {
                 raw: result.raw.unwrap_or_default(),
                 transport_error: seen.threw,
@@ -1427,14 +1541,20 @@ pub fn runner_tool_ask(state: &AppState, model: &str, base: TransportFn) -> Tool
                                     let msg = format!(
                                         "the transport for \"{model}\" answered a tool-definition request without reporting any tool calls"
                                     );
-                                    seen.lock().expect("the tool-ask watcher is not contended").threw = Some(msg.clone());
+                                    seen.lock()
+                                        .expect("the tool-ask watcher is not contended")
+                                        .threw = Some(msg.clone());
                                     return Err(msg);
                                 };
-                                seen.lock().expect("the tool-ask watcher is not contended").calls = calls.clone();
+                                seen.lock()
+                                    .expect("the tool-ask watcher is not contended")
+                                    .calls = calls.clone();
                                 Ok(reply)
                             }
                             Err(err) => {
-                                seen.lock().expect("the tool-ask watcher is not contended").threw = Some(err.clone());
+                                seen.lock()
+                                    .expect("the tool-ask watcher is not contended")
+                                    .threw = Some(err.clone());
                                 Err(err)
                             }
                         }
@@ -1451,12 +1571,21 @@ pub fn runner_tool_ask(state: &AppState, model: &str, base: TransportFn) -> Tool
                 "fitness:probe",
                 &spec.id,
                 spec.messages,
-                Output::Text { clean: None, verify: None },
+                Output::Text {
+                    clean: None,
+                    verify: None,
+                },
                 spec.tools,
             );
             let _ = run_harness(&state, &def, &Value::Null, ctx).await;
-            let seen = seen.lock().expect("the tool-ask watcher is not contended").clone();
-            ToolAttempt { tool_calls: seen.calls, transport_error: seen.threw }
+            let seen = seen
+                .lock()
+                .expect("the tool-ask watcher is not contended")
+                .clone();
+            ToolAttempt {
+                tool_calls: seen.calls,
+                transport_error: seen.threw,
+            }
         })
     })
 }
@@ -1472,7 +1601,6 @@ struct SeenToolAsk {
 /// One member of the pool this model can land on, carrying the two numbers the
 /// window and the price are derived from.
 struct PoolEndpoint {
-    name: String,
     context_length: Option<f64>,
     price: Option<TokPrice>,
 }
@@ -1487,7 +1615,11 @@ struct PoolEndpoint {
 async fn endpoints_for(pg: &PgPool, model: &str) -> Vec<PoolEndpoint> {
     // `.catch(() => null)` then "no route, no endpoints" — a routing read that
     // fails is a deployment fact, not a probe failure, and it prices nothing.
-    let Some(route) = routing_for(pg, model).await.ok().filter(|r| !r.endpoints.is_empty()) else {
+    let Some(route) = routing_for(pg, model)
+        .await
+        .ok()
+        .filter(|r| !r.endpoints.is_empty())
+    else {
         return Vec::new();
     };
     let names: Vec<String> = route.endpoints.iter().map(|ep| ep.name.clone()).collect();
@@ -1510,7 +1642,6 @@ async fn endpoints_for(pg: &PgPool, model: &str) -> Vec<PoolEndpoint> {
         .endpoints
         .iter()
         .map(|ep| PoolEndpoint {
-            name: ep.name.clone(),
             context_length: ep.context_length.map(|n| n as f64),
             price: match prices.get(&ep.name) {
                 Some((Some(in_tok), Some(out_tok))) => Some(TokPrice {
@@ -1550,10 +1681,12 @@ async fn smallest_window(pg: &PgPool, model: &str) -> Option<f64> {
     // Not a gateway model, and no catalog entry: a fleet persona records its
     // window on the agent's config, not on an endpoint row, and nothing here
     // can read it honestly.
-    windows.iter().cloned().fold(None::<f64>, |acc, n| Some(match acc {
-        Some(best) if best <= n => best,
-        _ => n,
-    }))
+    windows.iter().cloned().fold(None::<f64>, |acc, n| {
+        Some(match acc {
+            Some(best) if best <= n => best,
+            _ => n,
+        })
+    })
 }
 
 async fn price_for(pg: &PgPool, model: &str) -> Option<TokPrice> {
@@ -1568,7 +1701,13 @@ async fn price_for(pg: &PgPool, model: &str) -> Option<TokPrice> {
     Some(
         priced
             .into_iter()
-            .reduce(|a, b| if a.in_per_mtok + a.out_per_mtok >= b.in_per_mtok + b.out_per_mtok { a } else { b })
+            .reduce(|a, b| {
+                if a.in_per_mtok + a.out_per_mtok >= b.in_per_mtok + b.out_per_mtok {
+                    a
+                } else {
+                    b
+                }
+            })
             .expect("a non-empty list reduces"),
     )
 }
@@ -1668,10 +1807,11 @@ pub fn default_deps(state: &AppState, model: &str) -> ProbeDeps {
                     // the probe skips.
                     for key in keys().await {
                         let facts = get_capabilities(&pg, &key).await;
-                        if let Some(fact) = facts.get(cap.as_str()) {
-                            if fact.value && fact.source == "declared" {
-                                return true;
-                            }
+                        if let Some(fact) = facts.get(cap.as_str())
+                            && fact.value
+                            && fact.source == "declared"
+                        {
+                            return true;
                         }
                     }
                     false
@@ -1744,7 +1884,8 @@ pub fn default_deps(state: &AppState, model: &str) -> ProbeDeps {
 fn weather_tool() -> ToolSpec {
     ToolSpec {
         name: "get_weather".into(),
-        description: "Look up the current weather for a city. The only way to know current weather.".into(),
+        description:
+            "Look up the current weather for a city. The only way to know current weather.".into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": { "city": { "type": "string", "description": "City name" } },
@@ -1754,10 +1895,7 @@ fn weather_tool() -> ToolSpec {
 }
 
 fn tool_trial() -> Vec<Message> {
-    vec![
-        terse(),
-        usr("What is the weather in Lisbon right now?"),
-    ]
+    vec![terse(), usr("What is the weather in Lisbon right now?")]
 }
 
 /// Four tools with four clearly disjoint jobs. Disjoint on purpose: a
@@ -1818,7 +1956,10 @@ fn tool_select_trials() -> Vec<ExpectedFixture> {
         },
         ExpectedFixture {
             name: "email",
-            messages: vec![terse(), usr("Let ana@example.org know the deploy is finished.")],
+            messages: vec![
+                terse(),
+                usr("Let ana@example.org know the deploy is finished."),
+            ],
             expect: "send_email",
         },
         ExpectedFixture {
@@ -1828,7 +1969,10 @@ fn tool_select_trials() -> Vec<ExpectedFixture> {
         },
         ExpectedFixture {
             name: "ticket",
-            messages: vec![terse(), usr("Open a task called \"rotate the staging certificate\".")],
+            messages: vec![
+                terse(),
+                usr("Open a task called \"rotate the staging certificate\"."),
+            ],
             expect: "create_ticket",
         },
     ]
@@ -1922,7 +2066,12 @@ pub struct ProbeDefinition {
 fn prompt_tokens_of(messages: &[Message]) -> i64 {
     // TS sums `.content.length` — UTF-16 units — before the chars-per-token
     // estimate, because the estimate is calibrated on what the ledger meters.
-    estimate_tokens(messages.iter().map(|m| crate::body::utf16_len(&m.content)).sum())
+    estimate_tokens(
+        messages
+            .iter()
+            .map(|m| crate::body::utf16_len(&m.content))
+            .sum(),
+    )
 }
 
 /// JS `JSON.stringify` on a string, for the two trial notes that quote what the
@@ -1933,7 +2082,10 @@ fn js_quoted(s: &str) -> String {
 
 /// A transport failure anywhere in a probe voids the whole probe (rule 2).
 fn transport_failure(attempts: &[Attempt]) -> Option<String> {
-    attempts.iter().find(|a| a.transport_error.is_some()).and_then(|a| a.transport_error.clone())
+    attempts
+        .iter()
+        .find(|a| a.transport_error.is_some())
+        .and_then(|a| a.transport_error.clone())
 }
 
 /// The one reason a tool probe still skips, in one place because both probes
@@ -1946,7 +2098,10 @@ fn errored(reason: String, trials: Vec<Trial>) -> ProbeOutcome {
     ProbeOutcome::Errored { reason, trials }
 }
 fn skipped(reason: impl Into<String>, trials: Vec<Trial>) -> ProbeOutcome {
-    ProbeOutcome::Skipped { reason: reason.into(), trials }
+    ProbeOutcome::Skipped {
+        reason: reason.into(),
+        trials,
+    }
 }
 fn settle(verdict: Option<ProbeVerdict>, trials: Vec<Trial>, why: &str) -> ProbeOutcome {
     match verdict {
@@ -1962,7 +2117,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
             label: "JSON mode",
             claim: "The endpoint honors response_format and the model returns a parseable object.",
             calls: JSON_TRIALS.len() as i64,
-            prompt_tokens: JSON_TRIALS.iter().map(|t| prompt_tokens_of(&t.messages)).max().unwrap_or(0),
+            prompt_tokens: JSON_TRIALS
+                .iter()
+                .map(|t| prompt_tokens_of(&t.messages))
+                .max()
+                .unwrap_or(0),
             completion_tokens: 120,
             run: Arc::new(|deps: &ProbeDeps| {
                 let deps = deps.clone();
@@ -1983,7 +2142,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                         trials.push(Trial {
                             name: t.name.into(),
                             ok: Some(a.contract_held),
-                            note: if a.contract_held { "returned a valid object".into() } else { "the reply was not a valid object".into() },
+                            note: if a.contract_held {
+                                "returned a valid object".into()
+                            } else {
+                                "the reply was not a valid object".into()
+                            },
                             raw: bounded(&a.raw),
                         });
                     }
@@ -1994,7 +2157,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                         requested: attempts.iter().all(|a| a.json_requested),
                         dropped: attempts.iter().any(|a| a.contract_dropped),
                     };
-                    settle(score_json(&trials, protocol), trials, "no JSON-mode call completed")
+                    settle(
+                        score_json(&trials, protocol),
+                        trials,
+                        "no JSON-mode call completed",
+                    )
                 })
             }),
         },
@@ -2003,7 +2170,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
             label: "Schema conformance",
             claim: "Nested arrays and a long string field survive the model intact, first attempt.",
             calls: JSON_STRICT_TRIALS.len() as i64,
-            prompt_tokens: JSON_STRICT_TRIALS.iter().map(|t| prompt_tokens_of(&t.messages)).max().unwrap_or(0),
+            prompt_tokens: JSON_STRICT_TRIALS
+                .iter()
+                .map(|t| prompt_tokens_of(&t.messages))
+                .max()
+                .unwrap_or(0),
             completion_tokens: 400,
             run: Arc::new(|deps: &ProbeDeps| {
                 let deps = deps.clone();
@@ -2024,14 +2195,22 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                         trials.push(Trial {
                             name: t.name.into(),
                             ok: Some(a.contract_held),
-                            note: if a.contract_held { "conformed".into() } else { "the object did not match the schema".into() },
+                            note: if a.contract_held {
+                                "conformed".into()
+                            } else {
+                                "the object did not match the schema".into()
+                            },
                             raw: bounded(&a.raw),
                         });
                     }
                     if let Some(down) = transport_failure(&attempts) {
                         return errored(down, trials);
                     }
-                    settle(score_json_strict(&trials), trials, "no schema call completed")
+                    settle(
+                        score_json_strict(&trials),
+                        trials,
+                        "no schema call completed",
+                    )
                 })
             }),
         },
@@ -2064,11 +2243,18 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                         name: "calls the offered tool".into(),
                         ok: Some(problem.is_none()),
                         note: problem.unwrap_or_else(|| {
-                            format!("called {}", call.map(|c| c.name.as_str()).unwrap_or("undefined"))
+                            format!(
+                                "called {}",
+                                call.map(|c| c.name.as_str()).unwrap_or("undefined")
+                            )
                         }),
                         raw: call.and_then(|c| bounded(&format!("{}({})", c.name, c.args))),
                     }];
-                    settle(score_tools(&trials), trials, "the tool call never completed")
+                    settle(
+                        score_tools(&trials),
+                        trials,
+                        "the tool call never completed",
+                    )
                 })
             }),
         },
@@ -2077,7 +2263,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
             label: "Tool selection",
             claim: "Given four tools, the model picks the right one every time. This is what widens the Inbox.",
             calls: 4,
-            prompt_tokens: tool_select_trials().iter().map(|t| prompt_tokens_of(&t.messages)).max().unwrap_or(0),
+            prompt_tokens: tool_select_trials()
+                .iter()
+                .map(|t| prompt_tokens_of(&t.messages))
+                .max()
+                .unwrap_or(0),
             completion_tokens: 120,
             run: Arc::new(|deps: &ProbeDeps| {
                 let deps = deps.clone();
@@ -2106,7 +2296,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                             raw: call.and_then(|c| bounded(&format!("{}({})", c.name, c.args))),
                         });
                     }
-                    settle(score_tool_select(&trials), trials, "no tool-selection call completed")
+                    settle(
+                        score_tool_select(&trials),
+                        trials,
+                        "no tool-selection call completed",
+                    )
                 })
             }),
         },
@@ -2115,7 +2309,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
             label: "Exact instructions",
             claim: "\"Reply with exactly the word OK\" produces exactly OK. Every text harness depends on this.",
             calls: INSTRUCTION_TRIALS.len() as i64,
-            prompt_tokens: INSTRUCTION_TRIALS.iter().map(|t| prompt_tokens_of(&t.messages)).max().unwrap_or(0),
+            prompt_tokens: INSTRUCTION_TRIALS
+                .iter()
+                .map(|t| prompt_tokens_of(&t.messages))
+                .max()
+                .unwrap_or(0),
             completion_tokens: 40,
             run: Arc::new(|deps: &ProbeDeps| {
                 let deps = deps.clone();
@@ -2123,7 +2321,12 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                     let mut attempts: Vec<Attempt> = Vec::new();
                     let mut trials: Vec<Trial> = Vec::new();
                     for t in INSTRUCTION_TRIALS.iter() {
-                        let a = (deps.ask)(AskSpec { id: format!("instruction:{}", t.name), messages: t.messages.clone(), schema: None }).await;
+                        let a = (deps.ask)(AskSpec {
+                            id: format!("instruction:{}", t.name),
+                            messages: t.messages.clone(),
+                            schema: None,
+                        })
+                        .await;
                         attempts.push(a.clone());
                         if a.transport_error.is_some() {
                             break;
@@ -2138,7 +2341,7 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                             } else {
                                 format!(
                                     "answered {} instead of {}",
-                                    js_quoted(&crate::body::truncate_utf16(trimmed, 60)),
+                                    js_quoted(crate::body::truncate_utf16(trimmed, 60)),
                                     js_quoted(t.expect)
                                 )
                             },
@@ -2148,7 +2351,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                     if let Some(down) = transport_failure(&attempts) {
                         return errored(down, trials);
                     }
-                    settle(score_instruction(&trials), trials, "no instruction call completed")
+                    settle(
+                        score_instruction(&trials),
+                        trials,
+                        "no instruction call completed",
+                    )
                 })
             }),
         },
@@ -2157,7 +2364,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
             label: "Live web search",
             claim: "The model can open a page today and quote it verbatim. Without this, research invents citations.",
             calls: SEARCH_TRIALS.len() as i64,
-            prompt_tokens: SEARCH_TRIALS.iter().map(|t| prompt_tokens_of(&t.messages)).max().unwrap_or(0),
+            prompt_tokens: SEARCH_TRIALS
+                .iter()
+                .map(|t| prompt_tokens_of(&t.messages))
+                .max()
+                .unwrap_or(0),
             completion_tokens: 250,
             run: Arc::new(|deps: &ProbeDeps| {
                 let deps = deps.clone();
@@ -2218,8 +2429,9 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                     // recorded as an error — both are findings. Skipping
                     // produced neither.
                     let advertised = (deps.context_window)().await;
-                    let tested = advertised
-                        .map_or(deps.max_context_tokens as f64, |w| w.min(deps.max_context_tokens as f64));
+                    let tested = advertised.map_or(deps.max_context_tokens as f64, |w| {
+                        w.min(deps.max_context_tokens as f64)
+                    });
                     if tested < MIN_LONG_CONTEXT_TOKENS as f64 {
                         return skipped(
                             format!(
@@ -2249,11 +2461,18 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                         if a.transport_error.is_some() {
                             break;
                         }
-                        let ok = a.raw.to_lowercase().contains(&deps.needle_token.to_lowercase());
+                        let ok = a
+                            .raw
+                            .to_lowercase()
+                            .contains(&deps.needle_token.to_lowercase());
                         trials.push(Trial {
                             name: format!("needle at {}%", (depth * 100.0).round() as i64),
                             ok: Some(ok),
-                            note: if ok { "found".into() } else { "the passphrase was not in the reply".into() },
+                            note: if ok {
+                                "found".into()
+                            } else {
+                                "the passphrase was not in the reply".into()
+                            },
                             raw: bounded(&a.raw),
                         });
                     }
@@ -2372,7 +2591,14 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                         trials.push(Trial {
                             name: t.name.into(),
                             ok: Some(ok),
-                            note: if ok { "read correctly".into() } else { format!("answered {}", js_quoted(&crate::body::truncate_utf16(a.raw.trim(), 60))) },
+                            note: if ok {
+                                "read correctly".into()
+                            } else {
+                                format!(
+                                    "answered {}",
+                                    js_quoted(crate::body::truncate_utf16(a.raw.trim(), 60))
+                                )
+                            },
                             raw: bounded(&a.raw),
                         });
                     }
@@ -2385,7 +2611,11 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
 
 /// What is wrong with the model's tool calls, or None. Public for the scorer
 /// tests, which drive it with replies recorded from real providers.
-pub fn tool_call_problem(calls: &[ProbeToolCall], expected: &str, required_args: &[&str]) -> Option<String> {
+pub fn tool_call_problem(
+    calls: &[ProbeToolCall],
+    expected: &str,
+    required_args: &[&str],
+) -> Option<String> {
     let Some(call) = calls.first() else {
         return Some("the model answered in prose instead of calling a tool".into());
     };
@@ -2393,7 +2623,11 @@ pub fn tool_call_problem(calls: &[ProbeToolCall], expected: &str, required_args:
         return Some(format!(
             "called {} tools when one was needed ({})",
             calls.len(),
-            calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+            calls
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if call.name != expected {
@@ -2402,14 +2636,26 @@ pub fn tool_call_problem(calls: &[ProbeToolCall], expected: &str, required_args:
     if required_args.is_empty() {
         return None;
     }
-    let args: Value = match serde_json::from_str(if call.args.is_empty() { "{}" } else { &call.args }) {
+    let args: Value = match serde_json::from_str(if call.args.is_empty() {
+        "{}"
+    } else {
+        &call.args
+    }) {
         Ok(args) => args,
-        Err(_) => return Some(format!("called {} with arguments that are not JSON", call.name)),
+        Err(_) => {
+            return Some(format!(
+                "called {} with arguments that are not JSON",
+                call.name
+            ));
+        }
     };
     // An object, not merely JSON: `Array.isArray` and a null both fail the TS
     // check, and both are "not an object" here.
     let Some(obj) = args.as_object() else {
-        return Some(format!("called {} with arguments that are not an object", call.name));
+        return Some(format!(
+            "called {} with arguments that are not an object",
+            call.name
+        ));
     };
     let missing: Vec<&str> = required_args
         .iter()
@@ -2419,7 +2665,11 @@ pub fn tool_call_problem(calls: &[ProbeToolCall], expected: &str, required_args:
     if missing.is_empty() {
         None
     } else {
-        Some(format!("called {} without {}", call.name, missing.join(", ")))
+        Some(format!(
+            "called {} without {}",
+            call.name,
+            missing.join(", ")
+        ))
     }
 }
 
@@ -2445,11 +2695,20 @@ async fn search_trials(name: &str, a: &Attempt, deps: &ProbeDeps) -> Vec<Trial> 
     let mut trials = vec![Trial {
         name: format!("{name} / {SEARCH_DATE_TRIAL}"),
         ok: Some(date_ok),
-        note: if date_ok { "named today's date".into() } else { format!("said today is {}", parsed.date) },
+        note: if date_ok {
+            "named today's date".into()
+        } else {
+            format!("said today is {}", parsed.date)
+        },
         raw: raw.clone(),
     }];
     if let Some(citation) = citation_problem(&parsed.url) {
-        trials.push(Trial { name: format!("{name} / citation"), ok: Some(false), note: citation, raw });
+        trials.push(Trial {
+            name: format!("{name} / citation"),
+            ok: Some(false),
+            note: citation,
+            raw,
+        });
         return trials;
     }
     // The TS wraps this call in `.catch(() => null)`; the edge here is
@@ -2510,7 +2769,11 @@ pub fn read_search_reply(text: &str) -> Option<SearchReply> {
 pub async fn probe_keys(pg: &PgPool, model: &str) -> Vec<String> {
     // The TS `.catch(() => null)` on the routing read: a routing failure is a
     // deployment fact and prices no keys.
-    if let Some(route) = routing_for(pg, model).await.ok().filter(|r| !r.endpoints.is_empty()) {
+    if let Some(route) = routing_for(pg, model)
+        .await
+        .ok()
+        .filter(|r| !r.endpoints.is_empty())
+    {
         return route
             .endpoints
             .iter()
@@ -2573,7 +2836,9 @@ pub async fn estimate_probes(
             &owned
         }
     };
-    let chosen = PROBES.iter().filter(|p| ids.is_none_or(|ids| ids.contains(&p.id)));
+    let chosen = PROBES
+        .iter()
+        .filter(|p| ids.is_none_or(|ids| ids.contains(&p.id)));
     let window = (deps.context_window)().await;
     // A PROBE THAT WILL SKIP COSTS NOTHING, and the estimate has to say so.
     // Charging for the six calls of three probes that cannot run made the one
@@ -2594,7 +2859,9 @@ pub async fn estimate_probes(
             // probe's own ceiling when none is — it runs either way now, so the only
             // skip left is a window too small to call long.
             ProbeId::LongContext => {
-                window.unwrap_or(deps.max_context_tokens as f64).min(deps.max_context_tokens as f64)
+                window
+                    .unwrap_or(deps.max_context_tokens as f64)
+                    .min(deps.max_context_tokens as f64)
                     < MIN_LONG_CONTEXT_TOKENS as f64
             }
             _ => false,
@@ -2636,7 +2903,9 @@ pub async fn estimate_probes(
         prompt_tokens,
         completion_tokens,
         usd: price.map(|price| {
-            (prompt_tokens as f64 * price.in_per_mtok + completion_tokens as f64 * price.out_per_mtok) / 1e6
+            (prompt_tokens as f64 * price.in_per_mtok
+                + completion_tokens as f64 * price.out_per_mtok)
+                / 1e6
         }),
         known: rows.iter().filter(|r| r.known).count() as i64,
         rows,
@@ -2694,12 +2963,20 @@ pub fn probe_line(r: &ProbeResult, ms: i64) -> EvalLogLine {
         ProbeOutcome::Skipped { reason, .. } => (LogVerdict::Skip, Some(reason.clone())),
         ProbeOutcome::Known { verdict, .. } => (
             LogVerdict::Skip,
-            Some(format!("already measured ({}); no call made", if verdict.value { "yes" } else { "no" })),
+            Some(format!(
+                "already measured ({}); no call made",
+                if verdict.value { "yes" } else { "no" }
+            )),
         ),
         ProbeOutcome::Errored { reason, .. } => (LogVerdict::Error, Some(reason.clone())),
-        ProbeOutcome::Scored { verdict, .. } => {
-            (if verdict.value { LogVerdict::Pass } else { LogVerdict::Fail }, Some(verdict.detail.clone()))
-        }
+        ProbeOutcome::Scored { verdict, .. } => (
+            if verdict.value {
+                LogVerdict::Pass
+            } else {
+                LogVerdict::Fail
+            },
+            Some(verdict.detail.clone()),
+        ),
     };
     EvalLogLine {
         harness: "probes".into(),
@@ -2764,7 +3041,11 @@ pub struct ProbeOpts {
 /// are still returned for a human to read — but nothing is recorded, and the
 /// report names the keys so the admin can re-run against the endpoint-qualified
 /// ids ("<endpoint>/<model>"), each of which resolves to exactly one.
-pub async fn run_probes(state: &AppState, model: &str, opts: ProbeOpts) -> Result<ProbeReport, String> {
+pub async fn run_probes(
+    state: &AppState,
+    model: &str,
+    opts: ProbeOpts,
+) -> Result<ProbeReport, String> {
     let owned;
     let deps = Arc::new(match opts.deps {
         Some(deps) => deps,
@@ -2789,7 +3070,11 @@ pub async fn run_probes(state: &AppState, model: &str, opts: ProbeOpts) -> Resul
         // It is reported as `known` rather than omitted, because a capability
         // missing from the report reads as unmeasured, and the whole point is that
         // it is not.
-        let had = if opts.reprobe { None } else { (deps.measured)(probe.id).await };
+        let had = if opts.reprobe {
+            None
+        } else {
+            (deps.measured)(probe.id).await
+        };
         if let Some(had) = had {
             let known = ProbeResult {
                 id: probe.id,
@@ -2800,7 +3085,9 @@ pub async fn run_probes(state: &AppState, model: &str, opts: ProbeOpts) -> Resul
                     verdict: ProbeVerdict {
                         value: had.value,
                         score: had.score.unwrap_or(if had.value { 1.0 } else { 0.0 }),
-                        detail: had.detail.unwrap_or_else(|| "measured by an earlier run".into()),
+                        detail: had
+                            .detail
+                            .unwrap_or_else(|| "measured by an earlier run".into()),
                     },
                 },
             };
@@ -2833,15 +3120,29 @@ pub async fn run_probes(state: &AppState, model: &str, opts: ProbeOpts) -> Resul
         let budget = Duration::from_millis(opts.timeout_ms.unwrap_or(PROBE_TIMEOUT_MS));
         let outcome = match tokio::time::timeout(budget, (probe.run)(&deps)).await {
             Ok(outcome) => outcome,
-            Err(_elapsed) => errored(format!("the probe did not finish inside {}ms", budget.as_millis()), Vec::new()),
+            Err(_elapsed) => errored(
+                format!("the probe did not finish inside {}ms", budget.as_millis()),
+                Vec::new(),
+            ),
         };
-        let one = ProbeResult { id: probe.id, label: probe.label.to_string(), outcome };
+        let one = ProbeResult {
+            id: probe.id,
+            label: probe.label.to_string(),
+            outcome,
+        };
         note_live(model, probe_line(&one, mark.elapsed().as_millis() as i64));
         mark = std::time::Instant::now();
         results.push(one);
     }
 
-    let estimate = estimate_probes(state, model, opts.ids.as_deref(), Some(deps.as_ref()), opts.reprobe).await;
+    let estimate = estimate_probes(
+        state,
+        model,
+        opts.ids.as_deref(),
+        Some(deps.as_ref()),
+        opts.reprobe,
+    )
+    .await;
     let latency = latency_reading(estimate.usd);
 
     // Nothing routes and nothing backs it: the results are still worth reading,
@@ -2921,7 +3222,12 @@ mod tests {
     // ── Helpers ──────────────────────────────────────────────────────────────────
 
     fn trial(name: &str, ok: Option<bool>, note: &str) -> Trial {
-        Trial { name: name.into(), ok, note: note.into(), raw: None }
+        Trial {
+            name: name.into(),
+            ok,
+            note: note.into(),
+            raw: None,
+        }
     }
     fn pass(name: &str) -> Trial {
         trial(name, Some(true), "")
@@ -3035,7 +3341,9 @@ mod tests {
         Arc<Mutex<Vec<String>>>,
         std::sync::MutexGuard<'static, ()>,
     ) {
-        let route = ROUTE_TURNSTILE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let route = ROUTE_TURNSTILE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The TS `beforeEach` default routing; a test needing another shape sets it
         // after this returns, exactly where the TS test sets `state.endpoints`.
         set_routing(&["pl-main"], "qwen3-14b", &[]);
@@ -3046,22 +3354,38 @@ mod tests {
             let asked = asked.clone();
             let reply = reply.clone();
             Arc::new(move |spec: AskSpec| {
-                asked.lock().expect("the ask recorder is not contended").push(spec.id.clone());
+                asked
+                    .lock()
+                    .expect("the ask recorder is not contended")
+                    .push(spec.id.clone());
                 let reply = reply.clone();
-                Box::pin(async move { match &reply { Some(f) => f(&spec), None => attempt() } })
+                Box::pin(async move {
+                    match &reply {
+                        Some(f) => f(&spec),
+                        None => attempt(),
+                    }
+                })
             })
         };
         let ask_with_tools: ToolAskFn = {
             let asked = asked.clone();
             let tools = tools.clone();
             Arc::new(move |spec: ToolAskSpec| {
-                asked.lock().expect("the ask recorder is not contended").push(spec.id.clone());
+                asked
+                    .lock()
+                    .expect("the ask recorder is not contended")
+                    .push(spec.id.clone());
                 let tools = tools.clone();
-                Box::pin(async move { match &tools {
-                    Some(f) => f(&spec),
-                    // Default: nothing, which is a failed trial rather than a missing one.
-                    None => ToolAttempt { tool_calls: Vec::new(), transport_error: None },
-                } })
+                Box::pin(async move {
+                    match &tools {
+                        Some(f) => f(&spec),
+                        // Default: nothing, which is a failed trial rather than a missing one.
+                        None => ToolAttempt {
+                            tool_calls: Vec::new(),
+                            transport_error: None,
+                        },
+                    }
+                })
             })
         };
         let record: RecordFn = {
@@ -3069,7 +3393,10 @@ mod tests {
             Arc::new(move |key: String, cap: String, fact: CapabilityFact| {
                 let written = written.clone();
                 Box::pin(async move {
-                    written.lock().expect("the write recorder is not contended").push(Written { key, cap, fact });
+                    written
+                        .lock()
+                        .expect("the write recorder is not contended")
+                        .push(Written { key, cap, fact });
                     Ok(())
                 })
             })
@@ -3109,7 +3436,11 @@ mod tests {
 
     /// A run over the given ids with the given scripted deps.
     fn opts(ids: &[ProbeId], deps: ProbeDeps) -> ProbeOpts {
-        ProbeOpts { ids: (!ids.is_empty()).then(|| ids.to_vec()), deps: Some(deps), ..ProbeOpts::default() }
+        ProbeOpts {
+            ids: (!ids.is_empty()).then(|| ids.to_vec()),
+            deps: Some(deps),
+            ..ProbeOpts::default()
+        }
     }
 
     /// The right answer for each of the four `tool-select` prompts, keyed on the
@@ -3145,7 +3476,8 @@ mod tests {
     }
 
     #[test]
-    fn declares_a_call_count_and_a_token_size_for_every_probe_because_the_estimate_is_shown_before_spending() {
+    fn declares_a_call_count_and_a_token_size_for_every_probe_because_the_estimate_is_shown_before_spending()
+     {
         for p in PROBES.iter() {
             assert!(p.calls > 0, "{}", p.id.as_str());
             assert!(p.prompt_tokens > 0, "{}", p.id.as_str());
@@ -3158,7 +3490,10 @@ mod tests {
 
     #[test]
     fn rateof_ignores_inconclusive_trials_rather_than_counting_them_as_failures() {
-        close(rate_of(&[pass("trial"), fail("trial", "failed"), unknown("trial")]).expect("scored"), 0.5);
+        close(
+            rate_of(&[pass("trial"), fail("trial", "failed"), unknown("trial")]).expect("scored"),
+            0.5,
+        );
     }
 
     #[test]
@@ -3173,7 +3508,10 @@ mod tests {
     fn score_json_records_true_when_every_json_mode_call_returned_a_usable_object() {
         let v = score_json(
             &[pass("a"), pass("b"), pass("c")],
-            JsonProtocol { requested: true, dropped: false },
+            JsonProtocol {
+                requested: true,
+                dropped: false,
+            },
         )
         .expect("scored");
         assert!(v.value);
@@ -3200,36 +3538,74 @@ mod tests {
         // "this endpoint constrains decoding".
         let v = score_json(
             &[pass("a"), pass("b"), pass("c")],
-            JsonProtocol { requested: true, dropped: true },
+            JsonProtocol {
+                requested: true,
+                dropped: true,
+            },
         )
         .expect("scored");
         assert!(v.value);
         close(v.score, 1.0);
-        assert!(v.detail.contains("dropped response_format"), "got: {}", v.detail);
-        assert!(v.detail.contains("from the prompt alone"), "got: {}", v.detail);
+        assert!(
+            v.detail.contains("dropped response_format"),
+            "got: {}",
+            v.detail
+        );
+        assert!(
+            v.detail.contains("from the prompt alone"),
+            "got: {}",
+            v.detail
+        );
     }
 
     #[test]
     fn score_json_records_false_with_the_observed_rate_when_replies_did_not_parse() {
         let v = score_json(
-            &[pass("a"), fail("b", "trailing prose after the object"), fail("c", "two objects")],
-            JsonProtocol { requested: true, dropped: false },
+            &[
+                pass("a"),
+                fail("b", "trailing prose after the object"),
+                fail("c", "two objects"),
+            ],
+            JsonProtocol {
+                requested: true,
+                dropped: false,
+            },
         )
         .expect("scored");
         assert!(!v.value);
         close(v.score, 1.0 / 3.0);
-        assert!(v.detail.contains("trailing prose after the object"), "got: {}", v.detail);
+        assert!(
+            v.detail.contains("trailing prose after the object"),
+            "got: {}",
+            v.detail
+        );
     }
 
     #[test]
-    fn score_json_writes_nothing_when_json_mode_was_never_requested_we_cannot_record_what_we_did_not_test() {
-        assert_eq!(score_json(&[pass("trial"), pass("trial"), pass("trial")], JsonProtocol { requested: false, dropped: false }), None);
+    fn score_json_writes_nothing_when_json_mode_was_never_requested_we_cannot_record_what_we_did_not_test()
+     {
+        assert_eq!(
+            score_json(
+                &[pass("trial"), pass("trial"), pass("trial")],
+                JsonProtocol {
+                    requested: false,
+                    dropped: false
+                }
+            ),
+            None
+        );
     }
 
     #[test]
     fn score_json_strict_accepts_4_of_5_because_the_runner_has_a_repair_turn_behind_it() {
-        let v = score_json_strict(&[pass("1"), pass("2"), pass("3"), pass("4"), fail("5", "summary was 90 characters")])
-            .expect("scored");
+        let v = score_json_strict(&[
+            pass("1"),
+            pass("2"),
+            pass("3"),
+            pass("4"),
+            fail("5", "summary was 90 characters"),
+        ])
+        .expect("scored");
         assert!(v.value);
         close(v.score, 0.8);
     }
@@ -3245,18 +3621,33 @@ mod tests {
         ])
         .expect("scored");
         assert!(!v.value);
-        assert!(v.detail.contains("unescaped newline in summary"), "got: {}", v.detail);
+        assert!(
+            v.detail.contains("unescaped newline in summary"),
+            "got: {}",
+            v.detail
+        );
     }
 
     // ── tools / tool-select ──────────────────────────────────────────────────────
 
     fn call(name: &str, args: &str) -> ProbeToolCall {
-        ProbeToolCall { name: name.into(), id: None, args: args.into() }
+        ProbeToolCall {
+            name: name.into(),
+            id: None,
+            args: args.into(),
+        }
     }
 
     #[test]
     fn tool_call_problem_accepts_a_single_correct_call_with_the_required_argument() {
-        assert_eq!(tool_call_problem(&[call("get_weather", "{\"city\":\"Lisbon\"}")], "get_weather", &["city"]), None);
+        assert_eq!(
+            tool_call_problem(
+                &[call("get_weather", "{\"city\":\"Lisbon\"}")],
+                "get_weather",
+                &["city"]
+            ),
+            None
+        );
     }
 
     #[test]
@@ -3275,22 +3666,36 @@ mod tests {
 
     #[test]
     fn tool_call_problem_rejects_a_shotgun_that_calls_everything() {
-        let problem =
-            tool_call_problem(&[call("get_weather", "{}"), call("send_email", "{}")], "get_weather", &[])
-                .expect("rejected");
+        let problem = tool_call_problem(
+            &[call("get_weather", "{}"), call("send_email", "{}")],
+            "get_weather",
+            &[],
+        )
+        .expect("rejected");
         assert!(problem.contains("called 2 tools"), "got: {problem}");
     }
 
     #[test]
     fn tool_call_problem_rejects_arguments_that_are_not_json_and_arguments_that_are_missing() {
-        let not_json = tool_call_problem(&[call("get_weather", "city=Lisbon")], "get_weather", &["city"]).expect("rejected");
+        let not_json = tool_call_problem(
+            &[call("get_weather", "city=Lisbon")],
+            "get_weather",
+            &["city"],
+        )
+        .expect("rejected");
         assert!(not_json.contains("not JSON"), "got: {not_json}");
-        let missing = tool_call_problem(&[call("get_weather", "{\"town\":\"Lisbon\"}")], "get_weather", &["city"]).expect("rejected");
+        let missing = tool_call_problem(
+            &[call("get_weather", "{\"town\":\"Lisbon\"}")],
+            "get_weather",
+            &["city"],
+        )
+        .expect("rejected");
         assert!(missing.contains("without city"), "got: {missing}");
     }
 
     #[test]
-    fn score_tool_select_needs_all_four_a_model_that_picks_right_3_of_4_has_not_earned_the_inbox_widening() {
+    fn score_tool_select_needs_all_four_a_model_that_picks_right_3_of_4_has_not_earned_the_inbox_widening()
+     {
         let v = score_tool_select(&[
             pass("weather"),
             pass("email"),
@@ -3300,7 +3705,11 @@ mod tests {
         .expect("scored");
         assert!(!v.value);
         close(v.score, 0.75);
-        assert!(v.detail.contains("widening needs all of them"), "got: {}", v.detail);
+        assert!(
+            v.detail.contains("widening needs all of them"),
+            "got: {}",
+            v.detail
+        );
     }
 
     #[test]
@@ -3313,13 +3722,18 @@ mod tests {
     #[test]
     fn score_tools_is_pass_fail_on_the_single_offered_tool() {
         assert!(score_tools(&[pass("trial")]).expect("scored").value);
-        assert!(!score_tools(&[fail("t", "answered in prose")]).expect("scored").value);
+        assert!(
+            !score_tools(&[fail("t", "answered in prose")])
+                .expect("scored")
+                .value
+        );
     }
 
     // ── instruction-following ────────────────────────────────────────────────────
 
     #[test]
-    fn score_instruction_records_true_only_when_every_exact_output_instruction_came_back_verbatim() {
+    fn score_instruction_records_true_only_when_every_exact_output_instruction_came_back_verbatim()
+    {
         let v = score_instruction(&[pass("trial"), pass("trial"), pass("trial")]).expect("scored");
         assert!(v.value);
         close(v.score, 1.0);
@@ -3334,21 +3748,44 @@ mod tests {
         ])
         .expect("scored");
         assert!(!v.value);
-        assert!(v.detail.contains("Sure! red green blue"), "got: {}", v.detail);
+        assert!(
+            v.detail.contains("Sure! red green blue"),
+            "got: {}",
+            v.detail
+        );
     }
 
     // ── search ───────────────────────────────────────────────────────────────────
 
     #[test]
     fn citation_problem_accepts_a_real_absolute_url() {
-        assert_eq!(citation_problem("https://news.ycombinator.com/item?id=1"), None);
+        assert_eq!(
+            citation_problem("https://news.ycombinator.com/item?id=1"),
+            None
+        );
     }
 
     #[test]
-    fn citation_problem_rejects_a_relative_link_a_bare_host_and_the_placeholder_hosts_a_model_reaches_for() {
-        assert!(citation_problem("/docs/index.html").as_deref().unwrap_or("").contains("not an absolute URL"));
-        assert!(citation_problem("https://intranet/page").as_deref().unwrap_or("").contains("no real host"));
-        assert!(citation_problem("https://example.com/story").as_deref().unwrap_or("").contains("placeholder host"));
+    fn citation_problem_rejects_a_relative_link_a_bare_host_and_the_placeholder_hosts_a_model_reaches_for()
+     {
+        assert!(
+            citation_problem("/docs/index.html")
+                .as_deref()
+                .unwrap_or("")
+                .contains("not an absolute URL")
+        );
+        assert!(
+            citation_problem("https://intranet/page")
+                .as_deref()
+                .unwrap_or("")
+                .contains("no real host")
+        );
+        assert!(
+            citation_problem("https://example.com/story")
+                .as_deref()
+                .unwrap_or("")
+                .contains("placeholder host")
+        );
     }
 
     #[test]
@@ -3365,15 +3802,22 @@ mod tests {
     }
 
     #[test]
-    fn quote_appears_matches_through_tags_and_line_wrapping_which_is_the_only_difference_between_markup_and_rendered_text() {
+    fn quote_appears_matches_through_tags_and_line_wrapping_which_is_the_only_difference_between_markup_and_rendered_text()
+     {
         let page = "<article>\n  <p>The council <b>approved</b> the new ferry timetable on Tuesday evening.</p>\n</article>";
-        assert!(quote_appears("The council approved the new ferry timetable on Tuesday evening.", page));
+        assert!(quote_appears(
+            "The council approved the new ferry timetable on Tuesday evening.",
+            page
+        ));
     }
 
     #[test]
     fn quote_appears_rejects_a_sentence_that_is_not_on_the_page() {
         let page = "<article>\n  <p>The council <b>approved</b> the new ferry timetable on Tuesday evening.</p>\n</article>";
-        assert!(!quote_appears("The council rejected the new ferry timetable on Tuesday evening.", page));
+        assert!(!quote_appears(
+            "The council rejected the new ferry timetable on Tuesday evening.",
+            page
+        ));
     }
 
     #[test]
@@ -3383,7 +3827,8 @@ mod tests {
     }
 
     #[test]
-    fn score_search_records_true_off_one_attempt_that_both_named_today_and_quoted_a_page_we_fetched() {
+    fn score_search_records_true_off_one_attempt_that_both_named_today_and_quoted_a_page_we_fetched()
+     {
         let trials = [
             pass("a / date"),
             pass("a / citation"),
@@ -3394,11 +3839,18 @@ mod tests {
     }
 
     #[test]
-    fn score_search_writes_nothing_for_a_verified_quote_the_model_could_not_date_that_is_a_good_memory_not_a_search() {
+    fn score_search_writes_nothing_for_a_verified_quote_the_model_could_not_date_that_is_a_good_memory_not_a_search()
+     {
         // deepseek-v4-pro's real shape, and it used to earn a permanent `search:
         // true` on an endpoint that returns no citations at all. Research then ran
         // its search stages natively on a model that never searched.
-        assert_eq!(score_search(&[fail("a / date", "said today is 2024-06-01"), pass("a / citation")]), None);
+        assert_eq!(
+            score_search(&[
+                fail("a / date", "said today is 2024-06-01"),
+                pass("a / citation")
+            ]),
+            None
+        );
     }
 
     #[test]
@@ -3416,12 +3868,19 @@ mod tests {
     }
 
     #[test]
-    fn score_search_records_false_only_when_the_model_could_not_name_today_which_needs_no_network_of_ours() {
+    fn score_search_records_false_only_when_the_model_could_not_name_today_which_needs_no_network_of_ours()
+     {
         let v = score_search(&[
             fail("a / date", "said today is 2024-06-01"),
-            fail("a / citation", "the citation is a placeholder host: example.com"),
+            fail(
+                "a / citation",
+                "the citation is a placeholder host: example.com",
+            ),
             fail("b / date", "said today is 2024-06-01"),
-            fail("b / citation", "the citation is a placeholder host: example.com"),
+            fail(
+                "b / citation",
+                "the citation is a placeholder host: example.com",
+            ),
         ])
         .expect("scored");
         assert!(!v.value);
@@ -3429,11 +3888,15 @@ mod tests {
     }
 
     #[test]
-    fn score_search_writes_nothing_when_only_the_quote_check_failed_a_403_on_a_cited_page_must_never_refuse_a_working_search_model_forever() {
+    fn score_search_writes_nothing_when_only_the_quote_check_failed_a_403_on_a_cited_page_must_never_refuse_a_working_search_model_forever()
+     {
         assert_eq!(
             score_search(&[
                 pass("a / date"),
-                fail("a / citation", "the quoted sentence is not on https://news.example.org/x"),
+                fail(
+                    "a / citation",
+                    "the quoted sentence is not on https://news.example.org/x"
+                ),
                 pass("b / date"),
                 unknown("b / citation"),
             ]),
@@ -3467,7 +3930,10 @@ mod tests {
         let needle = needle_line("GRANITE-FOX-7731");
         let text = haystack(1_100, &needle, 0.9);
         let lines: Vec<&str> = text.split('\n').collect();
-        let at = lines.iter().position(|l| *l == needle).expect("the needle is planted");
+        let at = lines
+            .iter()
+            .position(|l| *l == needle)
+            .expect("the needle is planted");
         assert!(at > 0);
         assert!(at as f64 / lines.len() as f64 > 0.85);
     }
@@ -3483,12 +3949,23 @@ mod tests {
 
     #[test]
     fn score_long_context_needs_both_depths_and_says_which_window_was_actually_tested() {
-        let both = score_long_context(&[pass("needle at 50%"), pass("needle at 90%")], 25_600, false).expect("scored");
+        let both = score_long_context(
+            &[pass("needle at 50%"), pass("needle at 90%")],
+            25_600,
+            false,
+        )
+        .expect("scored");
         assert!(both.value);
         assert!(both.detail.contains("25,600"), "got: {}", both.detail);
-        let half =
-            score_long_context(&[pass("needle at 50%"), fail("needle at 90%", "the passphrase was not in the reply")], 25_600, false)
-                .expect("scored");
+        let half = score_long_context(
+            &[
+                pass("needle at 50%"),
+                fail("needle at 90%", "the passphrase was not in the reply"),
+            ],
+            25_600,
+            false,
+        )
+        .expect("scored");
         assert!(!half.value);
         close(half.score, 0.5);
     }
@@ -3504,8 +3981,14 @@ mod tests {
         let v = score_code(&[pass("slugify"), pass("mergeRanges")]).expect("scored");
         assert!(v.value);
         close(v.score, 1.0);
-        let half = score_code(&[pass("slugify"), fail("mergeRanges", "mergeRanges([[1,2],[2,3]]) returned [[1,2],[2,3]]")])
-            .expect("scored");
+        let half = score_code(&[
+            pass("slugify"),
+            fail(
+                "mergeRanges",
+                "mergeRanges([[1,2],[2,3]]) returned [[1,2],[2,3]]",
+            ),
+        ])
+        .expect("scored");
         assert!(!half.value);
         assert!(half.detail.contains("mergeRanges"), "got: {}", half.detail);
     }
@@ -3546,7 +4029,13 @@ mod tests {
         assert_eq!(w[0].fact.source, "probe");
         assert_eq!(w[0].fact.score, Some(1.0));
         assert_eq!(w[0].fact.at, "2026-08-06T09:00:00.000Z");
-        assert!(w[0].fact.detail.as_deref().map(|d| crate::body::utf16_len(d) > 10).unwrap_or(false));
+        assert!(
+            w[0].fact
+                .detail
+                .as_deref()
+                .map(|d| crate::body::utf16_len(d) > 10)
+                .unwrap_or(false)
+        );
     }
 
     #[tokio::test]
@@ -3570,10 +4059,20 @@ mod tests {
             .await
             .expect("the run completes");
 
-        assert!(asked.lock().expect("the ask recorder is not contended").is_empty());
+        assert!(
+            asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .is_empty()
+        );
         // Nothing is rewritten: the fact already stands, and restamping `at` would
         // make it look freshly measured on every sweep.
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
         assert_eq!(report.wrote, 0);
         // NOT `skipped`. A skip means no fact exists and an admin should conclude
         // nothing; this means the fact exists and still stands.
@@ -3602,9 +4101,16 @@ mod tests {
         });
         let mut run = opts(&[ProbeId::Json], deps);
         run.reprobe = true;
-        let report = run_probes(&test_state(), "qwen3-14b", run).await.expect("the run completes");
+        let report = run_probes(&test_state(), "qwen3-14b", run)
+            .await
+            .expect("the run completes");
 
-        assert!(!asked.lock().expect("the ask recorder is not contended").is_empty());
+        assert!(
+            !asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .is_empty()
+        );
         assert_eq!(report.wrote, 1);
         let w = written.lock().expect("the write recorder is not contended");
         assert!(w[0].fact.value);
@@ -3612,7 +4118,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn never_reuses_a_declared_or_learned_fact_those_are_the_claims_tier_1_exists_to_verify() {
+    async fn never_reuses_a_declared_or_learned_fact_those_are_the_claims_tier_1_exists_to_verify()
+    {
         // `measured` is documented to return only a `probe` fact, and the default
         // implementation enforces it. This is the assertion that a catalog's
         // marketing copy can never stop us checking the model.
@@ -3624,7 +4131,12 @@ mod tests {
         run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Json], deps))
             .await
             .expect("the run completes");
-        assert!(!asked.lock().expect("the ask recorder is not contended").is_empty());
+        assert!(
+            !asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3640,13 +4152,24 @@ mod tests {
             })),
             None,
         );
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Json, ProbeId::InstructionFollowing], deps))
-            .await
-            .expect("the run completes");
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::Json, ProbeId::InstructionFollowing], deps),
+        )
+        .await
+        .expect("the run completes");
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
         assert_eq!(report.wrote, 0);
         match outcome_of(&report, ProbeId::Json) {
-            ProbeOutcome::Errored { reason, .. } => assert_eq!(reason, "gateway completion 401: bad key"),
+            ProbeOutcome::Errored { reason, .. } => {
+                assert_eq!(reason, "gateway completion 401: bad key")
+            }
             other => panic!("expected errored, got {other:?}"),
         }
     }
@@ -3661,10 +4184,20 @@ mod tests {
             })),
             None,
         );
-        run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::InstructionFollowing], deps))
-            .await
-            .expect("the run completes");
-        assert_eq!(asked.lock().expect("the ask recorder is not contended").len(), 1);
+        run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::InstructionFollowing], deps),
+        )
+        .await
+        .expect("the run completes");
+        assert_eq!(
+            asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .len(),
+            1
+        );
     }
 
     // not ported: `contains a probe that throws, and still scores the ones around
@@ -3687,11 +4220,25 @@ mod tests {
         let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Json], deps))
             .await
             .expect("the run completes");
-        assert_eq!(report.ambiguous, Some(vec!["pl-main:qwen3-14b".to_string(), "openrouter:qwen3-14b".to_string()]));
+        assert_eq!(
+            report.ambiguous,
+            Some(vec![
+                "pl-main:qwen3-14b".to_string(),
+                "openrouter:qwen3-14b".to_string()
+            ])
+        );
         assert_eq!(report.wrote, 0);
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
         // The results are still there for a human to read.
-        assert!(matches!(outcome_of(&report, ProbeId::Json), ProbeOutcome::Scored { .. }));
+        assert!(matches!(
+            outcome_of(&report, ProbeId::Json),
+            ProbeOutcome::Scored { .. }
+        ));
     }
 
     #[tokio::test]
@@ -3703,7 +4250,12 @@ mod tests {
             .await
             .expect("the run completes");
         assert!(report.keys.is_empty());
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3712,9 +4264,13 @@ mod tests {
         // No endpoints, the persona's backing keys instead — which only lands
         // after the harness has installed its default.
         set_routing(&[], "qwen3-14b", &["pl-main:qwen3-14b"]);
-        let report = run_probes(&test_state(), "assistant-operations", opts(&[ProbeId::Json], deps))
-            .await
-            .expect("the run completes");
+        let report = run_probes(
+            &test_state(),
+            "assistant-operations",
+            opts(&[ProbeId::Json], deps),
+        )
+        .await
+        .expect("the run completes");
         assert_eq!(report.keys, vec!["pl-main:qwen3-14b"]);
         let w = written.lock().expect("the write recorder is not contended");
         assert_eq!(w[0].key, "pl-main:qwen3-14b");
@@ -3738,7 +4294,15 @@ mod tests {
         let w = written.lock().expect("the write recorder is not contended");
         assert!(w[0].fact.value);
         assert_eq!(w[0].fact.source, "probe");
-        assert!(w[0].fact.detail.as_deref().unwrap_or("").contains("dropped response_format"), "got: {:?}", w[0].fact.detail);
+        assert!(
+            w[0].fact
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("dropped response_format"),
+            "got: {:?}",
+            w[0].fact.detail
+        );
     }
 
     // ── The armed tool probes ─────────────────────────────────────────────────
@@ -3760,13 +4324,22 @@ mod tests {
                 transport_error: None,
             })),
         );
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::ToolSelect], deps))
-            .await
-            .expect("the run completes");
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::ToolSelect], deps),
+        )
+        .await
+        .expect("the run completes");
 
         assert_eq!(
             *asked.lock().expect("the ask recorder is not contended"),
-            vec!["tool-select:weather", "tool-select:email", "tool-select:currency", "tool-select:ticket"]
+            vec![
+                "tool-select:weather",
+                "tool-select:email",
+                "tool-select:currency",
+                "tool-select:ticket"
+            ]
         );
         match outcome_of(&report, ProbeId::ToolSelect) {
             ProbeOutcome::Scored { verdict, .. } => {
@@ -3784,20 +4357,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_the_fact_on_3_of_4_the_fourth_pick_is_an_action_taken_on_somebody_elses_s_ticket() {
+    async fn refuses_the_fact_on_3_of_4_the_fourth_pick_is_an_action_taken_on_somebody_elses_s_ticket()
+     {
         let (deps, written, _asked, _route) = harness(
             None,
             Some(Arc::new(|spec: &ToolAskSpec| ToolAttempt {
                 tool_calls: vec![call(
-                    if spec.id == "tool-select:currency" { "send_email" } else { correct(&spec.id) },
+                    if spec.id == "tool-select:currency" {
+                        "send_email"
+                    } else {
+                        correct(&spec.id)
+                    },
                     "{}",
                 )],
                 transport_error: None,
             })),
         );
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::ToolSelect], deps))
-            .await
-            .expect("the run completes");
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::ToolSelect], deps),
+        )
+        .await
+        .expect("the run completes");
 
         match outcome_of(&report, ProbeId::ToolSelect) {
             // Recorded as FALSE rather than left unknown: four conclusive trials with a
@@ -3838,18 +4420,32 @@ mod tests {
         drop(route1); // the turnstile is re-taken by the second harness below
         let (prose_deps, prose_written, _asked, _route) = harness(
             None,
-            Some(Arc::new(|_spec: &ToolAskSpec| ToolAttempt { tool_calls: Vec::new(), transport_error: None })),
+            Some(Arc::new(|_spec: &ToolAskSpec| ToolAttempt {
+                tool_calls: Vec::new(),
+                transport_error: None,
+            })),
         );
-        run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Tools], prose_deps))
-            .await
-            .expect("the run completes");
-        let w = prose_written.lock().expect("the write recorder is not contended");
+        run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::Tools], prose_deps),
+        )
+        .await
+        .expect("the run completes");
+        let w = prose_written
+            .lock()
+            .expect("the write recorder is not contended");
         assert!(!w[0].fact.value);
-        assert!(w[0].fact.detail.as_deref().unwrap_or("").contains("prose"), "got: {:?}", w[0].fact.detail);
+        assert!(
+            w[0].fact.detail.as_deref().unwrap_or("").contains("prose"),
+            "got: {:?}",
+            w[0].fact.detail
+        );
     }
 
     #[tokio::test]
-    async fn writes_nothing_when_the_tool_call_never_completed_a_401_is_not_a_model_that_cannot_call_tools() {
+    async fn writes_nothing_when_the_tool_call_never_completed_a_401_is_not_a_model_that_cannot_call_tools()
+     {
         let (deps, written, _asked, _route) = harness(
             None,
             Some(Arc::new(|_spec: &ToolAskSpec| ToolAttempt {
@@ -3857,12 +4453,27 @@ mod tests {
                 transport_error: Some("gateway completion 401: bad key".into()),
             })),
         );
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Tools, ProbeId::ToolSelect], deps))
-            .await
-            .expect("the run completes");
-        assert!(matches!(outcome_of(&report, ProbeId::Tools), ProbeOutcome::Errored { .. }));
-        assert!(matches!(outcome_of(&report, ProbeId::ToolSelect), ProbeOutcome::Errored { .. }));
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::Tools, ProbeId::ToolSelect], deps),
+        )
+        .await
+        .expect("the run completes");
+        assert!(matches!(
+            outcome_of(&report, ProbeId::Tools),
+            ProbeOutcome::Errored { .. }
+        ));
+        assert!(matches!(
+            outcome_of(&report, ProbeId::ToolSelect),
+            ProbeOutcome::Errored { .. }
+        ));
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3873,18 +4484,34 @@ mod tests {
         // write `tools: false` — permanently — about a model nobody asked.
         let (mut deps, written, asked, _route) = harness(None, None);
         deps.offers_tool_definitions = Arc::new(|| Box::pin(async { false }));
-        let report = run_probes(&test_state(), "assistant-operations", opts(&[ProbeId::Tools, ProbeId::ToolSelect], deps))
-            .await
-            .expect("the run completes");
+        let report = run_probes(
+            &test_state(),
+            "assistant-operations",
+            opts(&[ProbeId::Tools, ProbeId::ToolSelect], deps),
+        )
+        .await
+        .expect("the run completes");
 
         for id in [ProbeId::Tools, ProbeId::ToolSelect] {
             match outcome_of(&report, id) {
-                ProbeOutcome::Skipped { reason, .. } => assert!(reason.contains("fleet persona"), "got: {reason}"),
+                ProbeOutcome::Skipped { reason, .. } => {
+                    assert!(reason.contains("fleet persona"), "got: {reason}")
+                }
                 other => panic!("expected skipped, got {other:?}"),
             }
         }
-        assert!(asked.lock().expect("the ask recorder is not contended").is_empty());
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        assert!(
+            asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .is_empty()
+        );
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3902,26 +4529,37 @@ mod tests {
                 .await
                 .expect("the run completes");
             match outcome_of(&out, ProbeId::Vision) {
-                ProbeOutcome::Skipped { reason, .. } => assert!(reason.contains("image parts"), "got: {reason}"),
+                ProbeOutcome::Skipped { reason, .. } => {
+                    assert!(reason.contains("image parts"), "got: {reason}")
+                }
                 other => panic!("advertises={advertises}: expected skipped, got {other:?}"),
             }
         }
     }
 
     #[tokio::test]
-    async fn measures_long_context_when_nothing_advertises_a_window_and_says_the_window_was_assumed() {
+    async fn measures_long_context_when_nothing_advertises_a_window_and_says_the_window_was_assumed()
+     {
         // Anthropic's /v1/models returns an id and a display name and nothing else,
         // so this skipped on every Claude model — a permanent hole in the matrix for
         // models with some of the largest windows there are. Nothing here may
         // hardcode a provider's window, so the answer is to measure at the probe's
         // own ceiling and SAY that is what happened.
         let (deps, _written, _asked, _route) = harness(None, None);
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::LongContext], deps))
-            .await
-            .expect("the run completes");
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::LongContext], deps),
+        )
+        .await
+        .expect("the run completes");
         match outcome_of(&report, ProbeId::LongContext) {
             ProbeOutcome::Scored { verdict, .. } => {
-                assert!(verdict.detail.contains("advertises no window"), "got: {}", verdict.detail);
+                assert!(
+                    verdict.detail.contains("advertises no window"),
+                    "got: {}",
+                    verdict.detail
+                );
             }
             other => panic!("expected scored, got {other:?}"),
         }
@@ -3933,11 +4571,17 @@ mod tests {
         // catalog: testing 4k proves nothing about long context.
         let (mut deps, _written, _asked, _route) = harness(None, None);
         deps.context_window = Arc::new(|| Box::pin(async { Some(4_096.0) }));
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::LongContext], deps))
-            .await
-            .expect("the run completes");
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::LongContext], deps),
+        )
+        .await
+        .expect("the run completes");
         match outcome_of(&report, ProbeId::LongContext) {
-            ProbeOutcome::Skipped { reason, .. } => assert!(reason.contains("below the"), "got: {reason}"),
+            ProbeOutcome::Skipped { reason, .. } => {
+                assert!(reason.contains("below the"), "got: {reason}")
+            }
             other => panic!("expected skipped, got {other:?}"),
         }
     }
@@ -3953,18 +4597,27 @@ mod tests {
             a.raw = "granite-fox-7731".into();
             Box::pin(async move { a })
         });
-        run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::LongContext], deps))
-            .await
-            .expect("the run completes");
+        run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::LongContext], deps),
+        )
+        .await
+        .expect("the run completes");
         let w = written.lock().expect("the write recorder is not contended");
         assert!(w[0].fact.value);
         assert_eq!(w[0].fact.source, "probe");
         // 80% of the 32k cap, not 90% of the million it advertises.
-        assert!(w[0].fact.detail.as_deref().unwrap_or("").contains("25,600"), "got: {:?}", w[0].fact.detail);
+        assert!(
+            w[0].fact.detail.as_deref().unwrap_or("").contains("25,600"),
+            "got: {:?}",
+            w[0].fact.detail
+        );
     }
 
     #[tokio::test]
-    async fn verifies_a_search_citation_by_fetching_the_page_and_calls_an_unreadable_page_inconclusive() {
+    async fn verifies_a_search_citation_by_fetching_the_page_and_calls_an_unreadable_page_inconclusive()
+     {
         let reply = serde_json::json!({
             "date": "2026-08-06",
             "url": "https://news.example-press.org/ferry",
@@ -3992,7 +4645,9 @@ mod tests {
             .await
             .expect("the run completes");
         {
-            let w = good_written.lock().expect("the write recorder is not contended");
+            let w = good_written
+                .lock()
+                .expect("the write recorder is not contended");
             assert_eq!(w[0].cap, "search");
             assert!(w[0].fact.value);
             assert_eq!(w[0].fact.source, "probe");
@@ -4008,11 +4663,23 @@ mod tests {
             None,
         );
         blocked.fetch_text = Arc::new(|_url: String| Box::pin(async { None::<String> }));
-        let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Search], blocked))
-            .await
-            .expect("the run completes");
-        assert!(blocked_written.lock().expect("the write recorder is not contended").is_empty());
-        assert!(matches!(outcome_of(&report, ProbeId::Search), ProbeOutcome::Skipped { .. }));
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::Search], blocked),
+        )
+        .await
+        .expect("the run completes");
+        assert!(
+            blocked_written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
+        assert!(matches!(
+            outcome_of(&report, ProbeId::Search),
+            ProbeOutcome::Skipped { .. }
+        ));
     }
 
     #[tokio::test]
@@ -4062,13 +4729,25 @@ mod tests {
         let (first_deps, first_written, _asked, route1) = harness(Some(Arc::new(replies)), None);
         drop(route1);
         let (second_deps, second_written, _asked, _route) = harness(Some(Arc::new(replies)), None);
-        run_probes(&test_state(), "qwen3-14b", opts(&ids, first_deps)).await.expect("the run completes");
-        run_probes(&test_state(), "qwen3-14b", opts(&ids, second_deps)).await.expect("the run completes");
+        run_probes(&test_state(), "qwen3-14b", opts(&ids, first_deps))
+            .await
+            .expect("the run completes");
+        run_probes(&test_state(), "qwen3-14b", opts(&ids, second_deps))
+            .await
+            .expect("the run completes");
         let triple = |w: &Written| (w.cap.clone(), w.fact.value, w.fact.score);
-        let first: Vec<(String, bool, Option<f64>)> =
-            first_written.lock().expect("the write recorder is not contended").iter().map(triple).collect();
-        let second: Vec<(String, bool, Option<f64>)> =
-            second_written.lock().expect("the write recorder is not contended").iter().map(triple).collect();
+        let first: Vec<(String, bool, Option<f64>)> = first_written
+            .lock()
+            .expect("the write recorder is not contended")
+            .iter()
+            .map(triple)
+            .collect();
+        let second: Vec<(String, bool, Option<f64>)> = second_written
+            .lock()
+            .expect("the write recorder is not contended")
+            .iter()
+            .map(triple)
+            .collect();
         // Identical TWICE, order included — the write order is part of what
         // stability means for a report an admin diffs by eye.
         assert_eq!(second, first);
@@ -4119,10 +4798,20 @@ mod tests {
     #[tokio::test]
     async fn estimate_reports_calls_and_tokens_per_probe_before_anything_is_spent() {
         let (deps, _written, _asked, _route) = harness(None, None);
-        let est = estimate_probes(&test_state(), "qwen3-14b", Some(&[ProbeId::Json, ProbeId::InstructionFollowing]), Some(&deps), false).await;
+        let est = estimate_probes(
+            &test_state(),
+            "qwen3-14b",
+            Some(&[ProbeId::Json, ProbeId::InstructionFollowing]),
+            Some(&deps),
+            false,
+        )
+        .await;
         assert_eq!(est.calls, 6);
         assert!(est.prompt_tokens > 0);
-        assert_eq!(est.rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ProbeId::Json, ProbeId::InstructionFollowing]);
+        assert_eq!(
+            est.rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![ProbeId::Json, ProbeId::InstructionFollowing]
+        );
         assert_eq!(est.usd, None);
     }
 
@@ -4131,65 +4820,126 @@ mod tests {
         let (mut deps, _written, _asked, _route) = harness(None, None);
         deps.price = Arc::new(|| {
             Box::pin(async {
-                Some(TokPrice { in_per_mtok: 1.0, out_per_mtok: 2.0 })
+                Some(TokPrice {
+                    in_per_mtok: 1.0,
+                    out_per_mtok: 2.0,
+                })
             })
         });
-        let est = estimate_probes(&test_state(), "qwen3-14b", Some(&[ProbeId::Json]), Some(&deps), false).await;
+        let est = estimate_probes(
+            &test_state(),
+            "qwen3-14b",
+            Some(&[ProbeId::Json]),
+            Some(&deps),
+            false,
+        )
+        .await;
         let usd = est.usd.expect("priced");
-        close(usd, (est.prompt_tokens as f64 * 1.0 + est.completion_tokens as f64 * 2.0) / 1e6);
+        close(
+            usd,
+            (est.prompt_tokens as f64 * 1.0 + est.completion_tokens as f64 * 2.0) / 1e6,
+        );
     }
 
     #[tokio::test]
     async fn estimate_sizes_long_context_from_the_capped_window_rather_than_from_a_fixture() {
         let (mut deps, _written, _asked, _route) = harness(None, None);
         deps.context_window = Arc::new(|| Box::pin(async { Some(1_000_000.0) }));
-        let est = estimate_probes(&test_state(), "qwen3-14b", Some(&[ProbeId::LongContext]), Some(&deps), false).await;
+        let est = estimate_probes(
+            &test_state(),
+            "qwen3-14b",
+            Some(&[ProbeId::LongContext]),
+            Some(&deps),
+            false,
+        )
+        .await;
         assert_eq!(est.rows[0].prompt_tokens, 25_600);
         assert_eq!(est.calls, 2);
     }
 
     #[tokio::test]
-    async fn estimate_bills_long_context_at_the_probe_ceiling_when_no_window_is_advertised_because_it_now_runs() {
+    async fn estimate_bills_long_context_at_the_probe_ceiling_when_no_window_is_advertised_because_it_now_runs()
+     {
         // The estimate reads the same edges the run reads. It used to bill zero here
         // on the grounds that the probe would skip; the probe no longer skips, and an
         // estimate that still said zero would understate a real 25,600-token pair of
         // calls.
         let (deps, _written, _asked, _route) = harness(None, None);
-        let est = estimate_probes(&test_state(), "qwen3-14b", Some(&[ProbeId::LongContext]), Some(&deps), false).await;
+        let est = estimate_probes(
+            &test_state(),
+            "qwen3-14b",
+            Some(&[ProbeId::LongContext]),
+            Some(&deps),
+            false,
+        )
+        .await;
         assert_eq!(est.calls, 2);
         assert!(est.prompt_tokens > 20_000);
     }
 
     #[tokio::test]
-    async fn estimate_charges_nothing_for_a_probe_that_will_skip_a_fleet_candidate_and_an_endpoint_with_no_vision() {
+    async fn estimate_charges_nothing_for_a_probe_that_will_skip_a_fleet_candidate_and_an_endpoint_with_no_vision()
+     {
         // The estimate is the sentence in front of a button that spends someone
         // else's inference budget, and billing six calls for three probes that
         // cannot run overstates a probes-only run by a fifth — exactly the kind of
         // number that makes an admin stop trusting the rest of the page.
         let (mut deps, _written, _asked, _route) = harness(None, None);
         deps.offers_tool_definitions = Arc::new(|| Box::pin(async { false }));
-        let est =
-            estimate_probes(&test_state(), "assistant-operations", Some(&[ProbeId::Tools, ProbeId::ToolSelect, ProbeId::Vision]), Some(&deps), false).await;
+        let est = estimate_probes(
+            &test_state(),
+            "assistant-operations",
+            Some(&[ProbeId::Tools, ProbeId::ToolSelect, ProbeId::Vision]),
+            Some(&deps),
+            false,
+        )
+        .await;
         assert_eq!(est.calls, 0);
         assert_eq!(est.usd, None);
     }
 
     #[tokio::test]
-    async fn estimate_bills_the_tool_probes_now_they_are_armed_because_that_is_the_number_an_admin_decides_to_spend() {
+    async fn estimate_bills_the_tool_probes_now_they_are_armed_because_that_is_the_number_an_admin_decides_to_spend()
+     {
         // The other half of the same honesty: a run that WILL make five tool calls
         // must say five. `ask_with_images` is still shut, so vision alone stays free.
         let (mut deps, _written, _asked, _route) = harness(None, None);
         deps.advertises = Arc::new(|_id: ProbeId| Box::pin(async { true }));
-        let est =
-            estimate_probes(&test_state(), "qwen3-14b", Some(&[ProbeId::Tools, ProbeId::ToolSelect, ProbeId::Vision]), Some(&deps), false).await;
+        let est = estimate_probes(
+            &test_state(),
+            "qwen3-14b",
+            Some(&[ProbeId::Tools, ProbeId::ToolSelect, ProbeId::Vision]),
+            Some(&deps),
+            false,
+        )
+        .await;
         assert_eq!(est.calls, 5);
-        assert_eq!(est.rows.iter().find(|r| r.id == ProbeId::Tools).map(|r| r.calls), Some(1));
-        assert_eq!(est.rows.iter().find(|r| r.id == ProbeId::ToolSelect).map(|r| r.calls), Some(4));
-        assert_eq!(est.rows.iter().find(|r| r.id == ProbeId::Vision).map(|r| r.calls), Some(0));
+        assert_eq!(
+            est.rows
+                .iter()
+                .find(|r| r.id == ProbeId::Tools)
+                .map(|r| r.calls),
+            Some(1)
+        );
+        assert_eq!(
+            est.rows
+                .iter()
+                .find(|r| r.id == ProbeId::ToolSelect)
+                .map(|r| r.calls),
+            Some(4)
+        );
+        assert_eq!(
+            est.rows
+                .iter()
+                .find(|r| r.id == ProbeId::Vision)
+                .map(|r| r.calls),
+            Some(0)
+        );
     }
 
     #[tokio::test]
-    async fn estimate_matches_the_calls_the_run_actually_makes_over_every_probe_that_can_run_here() {
+    async fn estimate_matches_the_calls_the_run_actually_makes_over_every_probe_that_can_run_here()
+    {
         // The estimate and the run read the SAME edges, so this is a real invariant
         // rather than two constants agreeing. Counted against the asks both the
         // text and the tool channels record.
@@ -4207,13 +4957,25 @@ mod tests {
         deps.context_window = Arc::new(|| Box::pin(async { Some(32_000.0) }));
         deps.advertises = Arc::new(|_id: ProbeId| Box::pin(async { true }));
         let est = estimate_probes(&test_state(), "qwen3-14b", None, Some(&deps), false).await;
-        run_probes(&test_state(), "qwen3-14b", opts(&[], deps)).await.expect("the run completes");
-        assert_eq!(asked.lock().expect("the ask recorder is not contended").len(), est.calls as usize);
+        run_probes(&test_state(), "qwen3-14b", opts(&[], deps))
+            .await
+            .expect("the run completes");
+        assert_eq!(
+            asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .len(),
+            est.calls as usize
+        );
     }
 
     // ── The production `ask`: run_harness with the candidate pinned ───────────────
 
-    fn transport_reply(text: &str, tool_calls: Option<Vec<ToolCall>>, contract_dropped: bool) -> TransportReply {
+    fn transport_reply(
+        text: &str,
+        tool_calls: Option<Vec<ToolCall>>,
+        contract_dropped: bool,
+    ) -> TransportReply {
         TransportReply {
             kind: TransportKind::Gateway,
             text: text.into(),
@@ -4242,11 +5004,16 @@ mod tests {
                 Arc::new(move |req: TransportRequest| {
                     let seen = seen.clone();
                     Box::pin(async move {
-                        seen.lock().expect("the request recorder is not contended").push((
-                            req.model.clone(),
-                            req.json_mode,
-                            req.tool_defs.iter().map(|d| (d.name.clone(), d.parameters.clone())).collect(),
-                        ));
+                        seen.lock()
+                            .expect("the request recorder is not contended")
+                            .push((
+                                req.model.clone(),
+                                req.json_mode,
+                                req.tool_defs
+                                    .iter()
+                                    .map(|d| (d.name.clone(), d.parameters.clone()))
+                                    .collect(),
+                            ));
                         Ok(transport_reply(GOOD, None, false))
                     })
                 })
@@ -4254,7 +5021,12 @@ mod tests {
             (seen, base)
         };
         let ask = runner_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(AskSpec { id: "json:trivial".into(), messages: prompt(), schema: Some(JSON_TRIVIAL.clone()) }).await;
+        let a = ask(AskSpec {
+            id: "json:trivial".into(),
+            messages: prompt(),
+            schema: Some(JSON_TRIVIAL.clone()),
+        })
+        .await;
         let seen = seen.lock().expect("the request recorder is not contended");
         assert_eq!(seen[0].0, "vendor/frontier-1");
         assert!(seen[0].1, "the runner asks for JSON at the protocol level");
@@ -4266,7 +5038,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runner_ask_measures_the_first_attempt_no_repair_turn_so_the_score_is_the_contract_rate() {
+    async fn runner_ask_measures_the_first_attempt_no_repair_turn_so_the_score_is_the_contract_rate()
+     {
         let calls = Arc::new(Mutex::new(0));
         let base: TransportFn = {
             let calls = calls.clone();
@@ -4274,35 +5047,59 @@ mod tests {
                 let calls = calls.clone();
                 Box::pin(async move {
                     *calls.lock().expect("the call counter is not contended") += 1;
-                    Ok(transport_reply("Sure! Here is the object you asked for.", None, false))
+                    Ok(transport_reply(
+                        "Sure! Here is the object you asked for.",
+                        None,
+                        false,
+                    ))
                 })
             })
         };
         let ask = runner_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(AskSpec { id: "json:trivial".into(), messages: prompt(), schema: Some(JSON_TRIVIAL.clone()) }).await;
+        let a = ask(AskSpec {
+            id: "json:trivial".into(),
+            messages: prompt(),
+            schema: Some(JSON_TRIVIAL.clone()),
+        })
+        .await;
         assert_eq!(*calls.lock().expect("the call counter is not contended"), 1);
         assert!(!a.contract_held);
     }
 
     #[tokio::test]
-    async fn runner_ask_carries_the_gateway_contract_drop_through_which_is_the_whole_audit_1_2_signal() {
+    async fn runner_ask_carries_the_gateway_contract_drop_through_which_is_the_whole_audit_1_2_signal()
+     {
         let base: TransportFn = Arc::new(|_req: TransportRequest| {
             Box::pin(async { Ok(transport_reply(GOOD, None, true)) })
         });
         let ask = runner_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(AskSpec { id: "json:trivial".into(), messages: prompt(), schema: Some(JSON_TRIVIAL.clone()) }).await;
+        let a = ask(AskSpec {
+            id: "json:trivial".into(),
+            messages: prompt(),
+            schema: Some(JSON_TRIVIAL.clone()),
+        })
+        .await;
         assert!(a.contract_dropped);
         assert!(a.contract_held);
     }
 
     #[tokio::test]
-    async fn runner_ask_reports_a_transport_throw_as_a_transport_error_not_as_a_model_that_answered_badly() {
+    async fn runner_ask_reports_a_transport_throw_as_a_transport_error_not_as_a_model_that_answered_badly()
+     {
         let base: TransportFn = Arc::new(|_req: TransportRequest| {
             Box::pin(async { Err("gateway completion 401: bad key".to_string()) })
         });
         let ask = runner_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(AskSpec { id: "json:trivial".into(), messages: prompt(), schema: Some(JSON_TRIVIAL.clone()) }).await;
-        assert_eq!(a.transport_error.as_deref(), Some("gateway completion 401: bad key"));
+        let a = ask(AskSpec {
+            id: "json:trivial".into(),
+            messages: prompt(),
+            schema: Some(JSON_TRIVIAL.clone()),
+        })
+        .await;
+        assert_eq!(
+            a.transport_error.as_deref(),
+            Some("gateway completion 401: bad key")
+        );
         assert!(!a.contract_held);
     }
 
@@ -4312,7 +5109,12 @@ mod tests {
             Box::pin(async { Ok(transport_reply("  OK\n", None, false)) })
         });
         let ask = runner_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(AskSpec { id: "instruction:exactly OK".into(), messages: prompt(), schema: None }).await;
+        let a = ask(AskSpec {
+            id: "instruction:exactly OK".into(),
+            messages: prompt(),
+            schema: None,
+        })
+        .await;
         assert_eq!(a.raw, "  OK\n");
         assert!(!a.json_requested);
     }
@@ -4327,11 +5129,16 @@ mod tests {
             Arc::new(move |req: TransportRequest| {
                 let seen = seen.clone();
                 Box::pin(async move {
-                    seen.lock().expect("the request recorder is not contended").push((
-                        req.model.clone(),
-                        req.json_mode,
-                        req.tool_defs.iter().map(|d| (d.name.clone(), d.parameters.clone())).collect(),
-                    ));
+                    seen.lock()
+                        .expect("the request recorder is not contended")
+                        .push((
+                            req.model.clone(),
+                            req.json_mode,
+                            req.tool_defs
+                                .iter()
+                                .map(|d| (d.name.clone(), d.parameters.clone()))
+                                .collect(),
+                        ));
                     Ok(transport_reply(
                         "",
                         Some(vec![ToolCall {
@@ -4345,12 +5152,20 @@ mod tests {
             })
         };
         let ask = runner_tool_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(ToolAskSpec { id: "tools".into(), messages: prompt(), tools: vec![weather_tool()] }).await;
+        let a = ask(ToolAskSpec {
+            id: "tools".into(),
+            messages: prompt(),
+            tools: vec![weather_tool()],
+        })
+        .await;
 
         let seen = seen.lock().expect("the request recorder is not contended");
         assert_eq!(seen[0].0, "vendor/frontier-1");
         let weather = weather_tool();
-        assert_eq!(seen[0].2, vec![("get_weather".to_string(), weather.parameters.clone())]);
+        assert_eq!(
+            seen[0].2,
+            vec![("get_weather".to_string(), weather.parameters.clone())]
+        );
         // A tool-calling turn usually returns EMPTY content, which every text
         // contract in the tree reads as a failure — so the probe grades the calls,
         // not the value, and a failed contract here is not a failed trial.
@@ -4371,19 +5186,42 @@ mod tests {
             Box::pin(async { Ok(transport_reply("sure, it is sunny", None, false)) })
         });
         let ask = runner_tool_ask(&test_state(), "vendor/frontier-1", base);
-        let a = ask(ToolAskSpec { id: "tools".into(), messages: prompt(), tools: vec![weather_tool()] }).await;
+        let a = ask(ToolAskSpec {
+            id: "tools".into(),
+            messages: prompt(),
+            tools: vec![weather_tool()],
+        })
+        .await;
         assert!(a.tool_calls.is_empty());
-        assert!(a.transport_error.as_deref().is_some_and(|e| e.contains("without reporting any tool calls")), "got: {:?}", a.transport_error);
+        assert!(
+            a.transport_error
+                .as_deref()
+                .is_some_and(|e| e.contains("without reporting any tool calls")),
+            "got: {:?}",
+            a.transport_error
+        );
     }
 
     #[tokio::test]
-    async fn runner_tool_ask_reports_a_refusal_from_the_transport_as_a_transport_error_which_voids_the_probe() {
+    async fn runner_tool_ask_reports_a_refusal_from_the_transport_as_a_transport_error_which_voids_the_probe()
+     {
         let base: TransportFn = Arc::new(|_req: TransportRequest| {
             Box::pin(async { Err("its tool loop runs inside the agent container".to_string()) })
         });
         let ask = runner_tool_ask(&test_state(), "assistant-operations", base);
-        let a = ask(ToolAskSpec { id: "tools".into(), messages: prompt(), tools: vec![weather_tool()] }).await;
-        assert!(a.transport_error.as_deref().is_some_and(|e| e.contains("tool loop runs inside the agent")), "got: {:?}", a.transport_error);
+        let a = ask(ToolAskSpec {
+            id: "tools".into(),
+            messages: prompt(),
+            tools: vec![weather_tool()],
+        })
+        .await;
+        assert!(
+            a.transport_error
+                .as_deref()
+                .is_some_and(|e| e.contains("tool loop runs inside the agent")),
+            "got: {:?}",
+            a.transport_error
+        );
     }
 
     // ── The real deps, in the shape the server will build them ───────────────────
@@ -4392,7 +5230,8 @@ mod tests {
     // scorer tests; these are the two that do not.
 
     #[tokio::test]
-    async fn default_deps_opens_every_ask_channel_so_no_capability_goes_unmeasured_for_want_of_a_seam() {
+    async fn default_deps_opens_every_ask_channel_so_no_capability_goes_unmeasured_for_want_of_a_seam()
+     {
         // Both were shut once and each left a permanent hole in the matrix.
         // `ask_with_tools` carries real definitions through the transport request
         // and reads back what was called. `ask_with_images` hands the multimodal
@@ -4402,13 +5241,19 @@ mod tests {
         // two edges are tautologies in Rust — a struct field of function type
         // cannot be absent — so the one that was ever false is the one asserted.
         let deps = default_deps(&test_state(), "qwen3-14b");
-        assert!(deps.ask_with_images.is_some(), "the image channel opens by default");
+        assert!(
+            deps.ask_with_images.is_some(),
+            "the image channel opens by default"
+        );
     }
 
     #[tokio::test]
-    async fn default_deps_caps_context_spend_by_default_a_200k_window_probed_at_90_percent_is_dollars_not_cents() {
-        assert_eq!(default_deps(&test_state(), "qwen3-14b").max_context_tokens, DEFAULT_MAX_CONTEXT_TOKENS);
-        assert!(MIN_LONG_CONTEXT_TOKENS < DEFAULT_MAX_CONTEXT_TOKENS);
+    async fn default_deps_caps_context_spend_by_default_a_200k_window_probed_at_90_percent_is_dollars_not_cents()
+     {
+        assert_eq!(
+            default_deps(&test_state(), "qwen3-14b").max_context_tokens,
+            DEFAULT_MAX_CONTEXT_TOKENS
+        );
     }
 
     // ── The wall clock ───────────────────────────────────────────────────────────
@@ -4424,11 +5269,21 @@ mod tests {
         deps.ask = Arc::new(|_spec: AskSpec| Box::pin(std::future::pending::<Attempt>()));
         let mut run = opts(&[ProbeId::InstructionFollowing], deps);
         run.timeout_ms = Some(30);
-        let report = run_probes(&test_state(), "qwen3-14b", run).await.expect("the run completes");
+        let report = run_probes(&test_state(), "qwen3-14b", run)
+            .await
+            .expect("the run completes");
 
-        assert!(matches!(outcome_of(&report, ProbeId::InstructionFollowing), ProbeOutcome::Errored { .. }));
+        assert!(matches!(
+            outcome_of(&report, ProbeId::InstructionFollowing),
+            ProbeOutcome::Errored { .. }
+        ));
         // A timeout measured NOTHING about the model, so by rule 2 no fact is stored.
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
     }
 
     // ── An endpoint that refuses the image itself ────────────────────────────────
@@ -4451,7 +5306,10 @@ mod tests {
             .await
             .expect("the run completes");
 
-        assert!(matches!(outcome_of(&report, ProbeId::Vision), ProbeOutcome::Scored { .. }));
+        assert!(matches!(
+            outcome_of(&report, ProbeId::Vision),
+            ProbeOutcome::Scored { .. }
+        ));
         let w = written.lock().expect("the write recorder is not contended");
         assert_eq!(w[0].cap, "vision");
         assert!(!w[0].fact.value);
@@ -4469,7 +5327,15 @@ mod tests {
             .await
             .expect("the run completes");
 
-        assert!(matches!(outcome_of(&report, ProbeId::Vision), ProbeOutcome::Errored { .. }));
-        assert!(written.lock().expect("the write recorder is not contended").is_empty());
+        assert!(matches!(
+            outcome_of(&report, ProbeId::Vision),
+            ProbeOutcome::Errored { .. }
+        ));
+        assert!(
+            written
+                .lock()
+                .expect("the write recorder is not contended")
+                .is_empty()
+        );
     }
 }

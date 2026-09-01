@@ -53,7 +53,11 @@ pub async fn roll_agent(
     } else {
         Slot::A
     };
-    let new_slot = if old_slot == Slot::A { Slot::B } else { Slot::A };
+    let new_slot = if old_slot == Slot::A {
+        Slot::B
+    } else {
+        Slot::A
+    };
     let new_port = next_free_port(pg).await.map_err(|e| e.to_string())?;
 
     // 1. Overlay render: both slots in the compose file; manifest still old.
@@ -93,10 +97,9 @@ pub async fn roll_agent(
     render_fleet(pg, sb, None).await?;
     // 4. Drain in-flight replies on the old container, then retire it.
     tokio::time::sleep(std::time::Duration::from_millis(roll_drain_ms())).await;
-    let _ = fleet_docker::remove_container_by_name(&fleet_docker::slot_container(
-        department, old_slot,
-    ))
-    .await;
+    let _ =
+        fleet_docker::remove_container_by_name(&fleet_docker::slot_container(department, old_slot))
+            .await;
     Ok(None)
 }
 
@@ -120,10 +123,7 @@ pub struct ReconcileResult {
 /// unless-stopped` on the generated services; this covers drift (an agent
 /// enabled/created while Talaria was down, a stopped container, a manifest
 /// change) — reconcileFleet.
-pub async fn reconcile_fleet(
-    pg: &PgPool,
-    sb: &SecretBox,
-) -> Result<ReconcileResult, String> {
+pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileResult, String> {
     let render = render_fleet(pg, sb, None).await?;
     let managed: Vec<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where managed and enabled order by slug",

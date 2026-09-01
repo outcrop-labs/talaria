@@ -68,10 +68,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     let mut efforts = serde_json::Map::new();
     for id in assignable_ids() {
         let slot = agent_slot(id);
-        let effort = prefs
-            .get(&slot)
-            .cloned()
-            .unwrap_or(Value::Null); // ?? null
+        let effort = prefs.get(&slot).cloned().unwrap_or(Value::Null); // ?? null
         efforts.insert(id.to_string(), effort);
     }
     Json(serde_json::json!({
@@ -108,9 +105,7 @@ pub async fn put(
     };
     // Tri-state: absent leaves the assignment alone, null clears it, a
     // string sets it — the PATCH distinction nullish_member exists for.
-    let model = match nullish_member(obj, "model", |o, k| {
-        optional_max_string_member(o, k, 200)
-    }) {
+    let model = match nullish_member(obj, "model", |o, k| optional_max_string_member(o, k, 200)) {
         Ok(m) => m,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
@@ -128,12 +123,7 @@ pub async fn put(
             }
             Some(Some(e.clone()))
         }
-        Some(v) => {
-            return house_error(
-                StatusCode::BAD_REQUEST,
-                &string_msg(zod_type_name(v)),
-            )
-        }
+        Some(v) => return house_error(StatusCode::BAD_REQUEST, &string_msg(zod_type_name(v))),
     };
 
     // `if (body.model && ...)` — the truthy spelling: an empty string skips
@@ -183,7 +173,11 @@ pub async fn put(
                     "assign a model before setting its effort",
                 );
             };
-            if !efforts_for_model(&state.pg, &target).await.iter().any(|lvl| lvl == e) {
+            if !efforts_for_model(&state.pg, &target)
+                .await
+                .iter()
+                .any(|lvl| lvl == e)
+            {
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &format!("that model does not publish the \"{e}\" effort level"),
@@ -225,10 +219,7 @@ pub async fn put(
             if let Some(o) = cfg.as_object_mut() {
                 o.insert(
                     "model".into(),
-                    model
-                        .clone()
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
+                    model.clone().map(Value::String).unwrap_or(Value::Null),
                 );
             }
             set_judge_config(&state.pg, &cfg).await;

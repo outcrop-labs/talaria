@@ -93,7 +93,10 @@ async fn record_transcript_files_a_row_the_sweep_can_read_back() {
         .await
         .expect("the insert record_transcript swallows — here is the real error");
     }
-    assert_eq!(rows, 1, "record_transcript filed nothing — the silent failure");
+    assert_eq!(
+        rows, 1,
+        "record_transcript filed nothing — the silent failure"
+    );
 
     sqlx::query("delete from fitness_transcripts where model='live-probe-model'")
         .execute(&pg)

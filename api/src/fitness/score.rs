@@ -73,8 +73,8 @@ use serde::{Deserialize, Serialize};
 use crate::capability::CapabilityFact;
 use crate::capability_reach::{Reach, ReachVia};
 use crate::fitness::evals::{EvalCaseScore, EvalSweep, HarnessScore};
-use crate::harness::registry::{platform_agent_of, RegisteredHarness};
-use crate::harness_model::{resolve_harness_model_with, ModelSpec, ResolveEdges};
+use crate::harness::registry::{RegisteredHarness, platform_agent_of};
+use crate::harness_model::{ModelSpec, ResolveEdges, resolve_harness_model_with};
 use crate::model_roles::MODEL_ROLES;
 use crate::platform_agents::PLATFORM_AGENTS;
 
@@ -375,7 +375,13 @@ impl ResolveEdges for RefusingEdges {
     }
     fn gateway_models<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<crate::model_access::GatewayModel>, sqlx::Error>> + Send + 'a>> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Vec<crate::model_access::GatewayModel>, sqlx::Error>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async { Ok(Vec::new()) })
     }
     fn preferred_model<'a>(
@@ -454,7 +460,11 @@ pub async fn bind_slots(harnesses: &[RegisteredHarness]) -> Vec<SlotBinding> {
             );
         }
         if let Some(agent) = platform_agent_of(harness) {
-            add(slot_key(SlotKind::Agent, agent), harness.def.id, BindingVia::Pin);
+            add(
+                slot_key(SlotKind::Agent, agent),
+                harness.def.id,
+                BindingVia::Pin,
+            );
         }
     }
     // THE FLEET SLOTS ARE BOUND BY NAME, and they have to be: their harnesses
@@ -466,7 +476,11 @@ pub async fn bind_slots(harnesses: &[RegisteredHarness]) -> Vec<SlotBinding> {
     for f in FLEET_SLOTS.iter() {
         for id in f.harnesses {
             if ids.contains(id) {
-                add(slot_key(SlotKind::Fleet, f.id.as_str()), id, BindingVia::Declared);
+                add(
+                    slot_key(SlotKind::Fleet, f.id.as_str()),
+                    id,
+                    BindingVia::Declared,
+                );
             }
         }
     }
@@ -475,7 +489,11 @@ pub async fn bind_slots(harnesses: &[RegisteredHarness]) -> Vec<SlotBinding> {
             continue;
         }
         for role in roles.iter() {
-            add(slot_key(SlotKind::Role, role), harness, BindingVia::Declared);
+            add(
+                slot_key(SlotKind::Role, role),
+                harness,
+                BindingVia::Declared,
+            );
         }
     }
 
@@ -574,15 +592,13 @@ pub fn band_order(band: FitnessBand) -> u8 {
 }
 
 fn worst_band(bands: impl IntoIterator<Item = FitnessBand>, fallback: FitnessBand) -> FitnessBand {
-    bands
-        .into_iter()
-        .fold(fallback, |worst, b| {
-            if band_order(b) < band_order(worst) {
-                b
-            } else {
-                worst
-            }
-        })
+    bands.into_iter().fold(fallback, |worst, b| {
+        if band_order(b) < band_order(worst) {
+            b
+        } else {
+            worst
+        }
+    })
 }
 
 // ── The verdict shapes ───────────────────────────────────────────────────────
@@ -822,6 +838,7 @@ fn per(n: f64) -> String {
 /// Score one harness against one slot's floor. Pure over a `HarnessScore` (the
 /// numbers evals.rs read off the row the runner wrote) plus the cases (for the
 /// verbatim assertion a red cell has to carry).
+#[allow(clippy::too_many_arguments)]
 fn harness_verdict(
     harness: &RegisteredHarness,
     score: Option<&HarnessScore>,
@@ -899,10 +916,13 @@ fn harness_verdict(
     // searching, because if that server is ever removed the cell changes and
     // this is the sentence that explains why.
     for cap in harness.def.requires.iter() {
-        if let Some(r) = reach.get(*cap) {
-            if r.reached && r.via == Some(ReachVia::Tool) && r.supplier.is_some() {
-                let supplier = r.supplier.as_ref().expect("just checked");
-                reasons.push(FitnessReason {
+        if let Some(r) = reach.get(*cap)
+            && r.reached
+            && r.via == Some(ReachVia::Tool)
+            && r.supplier.is_some()
+        {
+            let supplier = r.supplier.as_ref().expect("just checked");
+            reasons.push(FitnessReason {
                     kind: ReasonKind::SuppliedCapability,
                     harness: Some(id.to_string()),
                     capability: Some(cap.to_string()),
@@ -913,7 +933,6 @@ fn harness_verdict(
                         supplier.server, supplier.tool
                     ),
                 });
-            }
         }
     }
 
@@ -1197,7 +1216,10 @@ fn harness_verdict(
 /// The sweep's own skip sentence, when the score object never carried it here:
 /// the reason rides the first skipped case instead — the same sentence, one hop
 /// later.
-fn score_absent_skip<'a>(harness: &RegisteredHarness, cases: &[&'a EvalCaseScore]) -> Option<&'a str> {
+fn score_absent_skip<'a>(
+    harness: &RegisteredHarness,
+    cases: &[&'a EvalCaseScore],
+) -> Option<&'a str> {
     cases
         .iter()
         .find(|c| c.harness == harness.def.id && c.skipped.is_some())
@@ -1246,19 +1268,16 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
     let reach = input.reach.cloned().unwrap_or_default();
     let guarded = sweep.guarded;
     let baselines = input.guard_baseline.cloned().unwrap_or_default();
-    let by_id: HashMap<&str, &RegisteredHarness> = input
+    let by_id: HashMap<&str, &RegisteredHarness> =
+        input.harnesses.iter().map(|h| (h.def.id, h)).collect();
+    let score_by_id: HashMap<&str, &HarnessScore> = sweep
         .harnesses
         .iter()
-        .map(|h| (h.def.id, h))
+        .map(|s| (s.meta.id.as_str(), s))
         .collect();
-    let score_by_id: HashMap<&str, &HarnessScore> =
-        sweep.harnesses.iter().map(|s| (s.meta.id.as_str(), s)).collect();
     let mut cases_by_id: HashMap<&str, Vec<&EvalCaseScore>> = HashMap::new();
     for c in &sweep.cases {
-        cases_by_id
-            .entry(c.harness.as_str())
-            .or_default()
-            .push(c);
+        cases_by_id.entry(c.harness.as_str()).or_default().push(c);
     }
 
     let verdict_for = |id: &str, floor: f64| -> Option<HarnessVerdict> {
@@ -1299,8 +1318,8 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
                 // is about the WORK, and the work can be done by a model that
                 // reaches the capability through a registered tool. A role is
                 // unfit only when nothing reaches it.
-                if let Some(r) = reached {
-                    if r.reached && r.via == Some(ReachVia::Tool) && r.supplier.is_some() {
+                if let Some(r) = reached
+                    && r.reached && r.via == Some(ReachVia::Tool) && r.supplier.is_some() {
                         let supplier = r.supplier.as_ref().expect("just checked");
                         reasons.push(FitnessReason {
                             kind: ReasonKind::SuppliedCapability,
@@ -1315,7 +1334,6 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
                         });
                         continue;
                     }
-                }
                 match fact {
                     Some(f) if !f.value => {
                         slot_covered.insert(cap);
@@ -1344,11 +1362,10 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
                         // to say.
                     }
                     None => {
-                        if let Some(r) = reached {
-                            if r.reached {
+                        if let Some(r) = reached
+                            && r.reached {
                                 continue;
                             }
-                        }
                         reasons.push(FitnessReason {
                             kind: ReasonKind::UnmeasuredCapability,
                             harness: None,
@@ -1515,7 +1532,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::capability_reach::Supplier;
@@ -1527,7 +1544,7 @@ mod tests {
         CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, OnFailure, Output,
         RenderContext,
     };
-    use crate::harness::registry::{builtin_activity_harnesses, HarnessSource};
+    use crate::harness::registry::{HarnessSource, builtin_activity_harnesses};
     use crate::harness::schema::Schema;
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
@@ -1541,14 +1558,28 @@ mod tests {
         harness_over(id, &[], 1)
     }
 
-    fn harness_over(id: &'static str, requires: &[&'static str], evals: usize) -> RegisteredHarness {
+    fn harness_over(
+        id: &'static str,
+        requires: &[&'static str],
+        evals: usize,
+    ) -> RegisteredHarness {
         let mut def = HarnessDefinition::new(
             id,
             id,
             "Answers.",
-            ModelSpec { pin: None, role: None, chain: Some(&[]), user_id: None },
+            ModelSpec {
+                pin: None,
+                role: None,
+                chain: Some(&[]),
+                user_id: None,
+            },
             Arc::new(|_input: &Value, _ctx: &RenderContext| Ok(Vec::new())),
-            Output::Json { schema: Schema::string(), preprocess: None, repair: None, verify: None },
+            Output::Json {
+                schema: Schema::string(),
+                preprocess: None,
+                repair: None,
+                verify: None,
+            },
             OnFailure::Null,
         );
         def.requires = requires.to_vec();
@@ -1561,7 +1592,10 @@ mod tests {
                 )
             })
             .collect();
-        RegisteredHarness { def: Box::leak(Box::new(def)), source: HarnessSource::Builtin }
+        RegisteredHarness {
+            def: Box::leak(Box::new(def)),
+            source: HarnessSource::Builtin,
+        }
     }
 
     fn score_of(id: &str) -> HarnessScore {
@@ -1586,7 +1620,11 @@ mod tests {
             repair_rate: 1.0,
             repair_yield: None,
             task_score: Some(1.0),
-            band_scores: BandScores { easy: None, standard: Some(1.0), hard: None },
+            band_scores: BandScores {
+                easy: None,
+                standard: Some(1.0),
+                hard: None,
+            },
             guard_rate: 0.0,
             answered_rate: 1.0,
             latency_p50: 100,
@@ -1645,7 +1683,12 @@ mod tests {
             cases: Vec::new(),
             unfixtured: Vec::new(),
             guarded: true,
-            concurrency: SweepConcurrency { requested: 1, ended: 1, low: 1, narrowed_because: None },
+            concurrency: SweepConcurrency {
+                requested: 1,
+                ended: 1,
+                low: 1,
+                narrowed_because: None,
+            },
             measured: Vec::new(),
         }
     }
@@ -1665,7 +1708,10 @@ mod tests {
             capability: cap.to_string(),
             reached: true,
             via: Some(ReachVia::Tool),
-            supplier: Some(Supplier { server: server.to_string(), tool: tool.to_string() }),
+            supplier: Some(Supplier {
+                server: server.to_string(),
+                tool: tool.to_string(),
+            }),
             detail: "x".to_string(),
         }
     }
@@ -1698,7 +1744,10 @@ mod tests {
             slot,
             harnesses: ids
                 .iter()
-                .map(|id| BoundHarness { id: id.to_string(), via: BindingVia::Chain })
+                .map(|id| BoundHarness {
+                    id: id.to_string(),
+                    via: BindingVia::Chain,
+                })
                 .collect(),
         }
     }
@@ -1709,9 +1758,19 @@ mod tests {
         vec![binding_of(utility_slot(), &[h.def.id])]
     }
 
-    fn slot_over(h: &RegisteredHarness, id: &'static str, label: &str, requires: &[&'static str]) -> Vec<SlotBinding> {
+    fn slot_over(
+        h: &RegisteredHarness,
+        id: &'static str,
+        label: &str,
+        requires: &[&'static str],
+    ) -> Vec<SlotBinding> {
         vec![binding_of(
-            FitnessSlot { id: id.to_string(), label: label.to_string(), requires: requires.iter().map(|r| r.to_string()).collect::<Vec<_>>(), ..utility_slot() },
+            FitnessSlot {
+                id: id.to_string(),
+                label: label.to_string(),
+                requires: requires.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+                ..utility_slot()
+            },
             &[h.def.id],
         )]
     }
@@ -1766,16 +1825,30 @@ mod tests {
     #[test]
     fn slots_cover_both_assignment_registries_and_nothing_else() {
         let slots = fitness_slots();
-        assert_eq!(slots.iter().filter(|s| s.kind == SlotKind::Role).count(), 11);
-        assert_eq!(slots.iter().filter(|s| s.kind == SlotKind::Agent).count(), 9);
+        assert_eq!(
+            slots.iter().filter(|s| s.kind == SlotKind::Role).count(),
+            11
+        );
+        assert_eq!(
+            slots.iter().filter(|s| s.kind == SlotKind::Agent).count(),
+            9
+        );
         // The reserved roles and the non-assignable briefer are still slots —
         // they just say they are inert.
-        assert!(!slots.iter().find(|s| s.id == "vision").expect("vision role").live);
-        assert!(!slots
-            .iter()
-            .find(|s| s.kind == SlotKind::Agent && s.id == "briefer")
-            .expect("briefer agent")
-            .live);
+        assert!(
+            !slots
+                .iter()
+                .find(|s| s.id == "vision")
+                .expect("vision role")
+                .live
+        );
+        assert!(
+            !slots
+                .iter()
+                .find(|s| s.kind == SlotKind::Agent && s.id == "briefer")
+                .expect("briefer agent")
+                .live
+        );
     }
 
     #[test]
@@ -1790,13 +1863,25 @@ mod tests {
     async fn finds_the_utility_role_through_the_default_chain_which_ten_builtins_use() {
         // The titler declares only a pin. Nothing in this module spells the
         // default chain — the real resolver is asked, which is the point.
-        let roles = roles_reaching(&ModelSpec { pin: Some("titler"), role: None, chain: None, user_id: None }).await;
+        let roles = roles_reaching(&ModelSpec {
+            pin: Some("titler"),
+            role: None,
+            chain: None,
+            user_id: None,
+        })
+        .await;
         assert!(roles.contains(&"utility".to_string()), "roles: {roles:?}");
     }
 
     #[tokio::test]
     async fn finds_a_role_a_spec_names_explicitly() {
-        let roles = roles_reaching(&ModelSpec { pin: None, role: Some("code-heavy"), chain: None, user_id: None }).await;
+        let roles = roles_reaching(&ModelSpec {
+            pin: None,
+            role: Some("code-heavy"),
+            chain: None,
+            user_id: None,
+        })
+        .await;
         assert!(roles.contains(&"code-heavy".to_string()));
         assert!(roles.contains(&"utility".to_string()));
     }
@@ -1809,12 +1894,21 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_invent_a_role_binding_from_a_chain_with_no_role_step() {
-        let roles = roles_reaching(&ModelSpec { chain: Some(&["env", "first-routable"]), ..empty_spec() }).await;
+        let roles = roles_reaching(&ModelSpec {
+            chain: Some(&["env", "first-routable"]),
+            ..empty_spec()
+        })
+        .await;
         assert!(roles.is_empty(), "roles: {roles:?}");
     }
 
     fn empty_spec() -> ModelSpec<'static> {
-        ModelSpec { pin: None, role: None, chain: Some(&[]), user_id: None }
+        ModelSpec {
+            pin: None,
+            role: None,
+            chain: Some(&[]),
+            user_id: None,
+        }
     }
 
     // ── bind_slots ───────────────────────────────────────────────────────────
@@ -1824,7 +1918,10 @@ mod tests {
         let bindings = bind_slots(builtin_activity_harnesses()).await;
         let utility = harness_ids(find(&bindings, "role:utility"));
         for id in ["titler", "summarizer", "librarian", "blurb-writer"] {
-            assert!(utility.contains(&id), "role:utility missing {id}: {utility:?}");
+            assert!(
+                utility.contains(&id),
+                "role:utility missing {id}: {utility:?}"
+            );
         }
         let titler = find(&bindings, "agent:titler");
         assert_eq!(titler.harnesses.len(), 1);
@@ -1841,7 +1938,10 @@ mod tests {
         assert_eq!(judge.harnesses[0].via, BindingVia::Pin);
         // And NOT to role:utility — its chain is ['env', 'first-routable'].
         let utility = harness_ids(find(&bindings, "role:utility"));
-        assert!(!utility.contains(&"judge"), "judge bound to role:utility: {utility:?}");
+        assert!(
+            !utility.contains(&"judge"),
+            "judge bound to role:utility: {utility:?}"
+        );
     }
 
     #[tokio::test]
@@ -1871,8 +1971,16 @@ mod tests {
             .iter()
             .flat_map(|b| b.harnesses.iter().map(|h| h.id.as_str()))
             .collect();
-        let missing: Vec<&str> = hs.iter().map(|h| h.def.id).filter(|id| !bound.contains(id)).collect();
-        assert_eq!(missing, Vec::<&str>::new(), "harnesses with no column: {missing:?}");
+        let missing: Vec<&str> = hs
+            .iter()
+            .map(|h| h.def.id)
+            .filter(|id| !bound.contains(id))
+            .collect();
+        assert_eq!(
+            missing,
+            Vec::<&str>::new(),
+            "harnesses with no column: {missing:?}"
+        );
     }
 
     #[tokio::test]
@@ -1884,15 +1992,28 @@ mod tests {
         let bindings = bind_slots(builtin_activity_harnesses()).await;
         let assistant = harness_ids(find(&bindings, "fleet:assistant"));
         let agent = harness_ids(find(&bindings, "fleet:agent"));
-        for id in ["inbox-brief", "inbox-command", "inbox-reply", "briefer:daily-open", "briefer:daily-delta"] {
-            assert!(assistant.contains(&id), "fleet:assistant missing {id}: {assistant:?}");
+        for id in [
+            "inbox-brief",
+            "inbox-command",
+            "inbox-reply",
+            "briefer:daily-open",
+            "briefer:daily-delta",
+        ] {
+            assert!(
+                assistant.contains(&id),
+                "fleet:assistant missing {id}: {assistant:?}"
+            );
         }
         for id in ["work-session", "hermes:knowledge", "channel-plan"] {
             assert!(agent.contains(&id), "fleet:agent missing {id}: {agent:?}");
         }
         // The two are disjoint — a harness in both would be scored twice against
         // one model and read as corroboration.
-        let in_both: Vec<&str> = assistant.iter().copied().filter(|id| agent.contains(id)).collect();
+        let in_both: Vec<&str> = assistant
+            .iter()
+            .copied()
+            .filter(|id| agent.contains(id))
+            .collect();
         assert_eq!(in_both, Vec::<&str>::new());
     }
 
@@ -1901,22 +2022,36 @@ mod tests {
         // Same guarantee the declared-edge table gets, for the same reason:
         // these bindings are BY NAME, so a renamed harness silently empties a
         // column rather than failing anywhere.
-        let ids: HashSet<&str> = builtin_activity_harnesses().iter().map(|h| h.def.id).collect();
+        let ids: HashSet<&str> = builtin_activity_harnesses()
+            .iter()
+            .map(|h| h.def.id)
+            .collect();
         let bindings = bind_slots(builtin_activity_harnesses()).await;
         for b in bindings.iter().filter(|b| b.slot.kind == SlotKind::Fleet) {
             let key = slot_key(b.slot.kind, &b.slot.id);
             assert!(!b.harnesses.is_empty(), "{key} has no harnesses");
             for h in &b.harnesses {
-                assert!(ids.contains(h.id.as_str()), "{} is not a registered harness", h.id);
+                assert!(
+                    ids.contains(h.id.as_str()),
+                    "{} is not a registered harness",
+                    h.id
+                );
             }
         }
     }
 
     #[tokio::test]
     async fn locks_every_declared_edge_against_the_real_registry() {
-        let ids: HashSet<&str> = builtin_activity_harnesses().iter().map(|h| h.def.id).collect();
+        let ids: HashSet<&str> = builtin_activity_harnesses()
+            .iter()
+            .map(|h| h.def.id)
+            .collect();
         for edge in declared_edges() {
-            assert!(ids.contains(edge.harness), "{} is not a registered harness", edge.harness);
+            assert!(
+                ids.contains(edge.harness),
+                "{} is not a registered harness",
+                edge.harness
+            );
         }
     }
 
@@ -1934,7 +2069,12 @@ mod tests {
         let mut s = sweep();
         s.harnesses = vec![score_of("h")];
         s.cases = vec![kase("h")];
-        let report = run(&s, &[h], HashMap::from([("json".to_string(), fact(true))]), one_slot(&h));
+        let report = run(
+            &s,
+            &[h],
+            HashMap::from([("json".to_string(), fact(true))]),
+            one_slot(&h),
+        );
         assert_eq!(report.slots[0].band, FitnessBand::Ready);
         assert_eq!(report.slots[0].reasons, Vec::new());
     }
@@ -1996,7 +2136,10 @@ mod tests {
         let reason = &report.slots[0].reasons[0];
         assert_eq!(reason.kind, ReasonKind::Contract);
         assert_eq!(reason.harness.as_deref(), Some("h"));
-        assert_eq!(reason.assertion.as_deref(), Some("the reply never closed its JSON value"));
+        assert_eq!(
+            reason.assertion.as_deref(),
+            Some("the reply never closed its JSON value")
+        );
     }
 
     #[test]
@@ -2010,7 +2153,12 @@ mod tests {
         s.cases = vec![kase("h")];
         let carried = run(&s, &[h], no_caps(), one_slot(&h));
         assert_eq!(carried.slots[0].band, FitnessBand::Workable);
-        assert!(carried.slots[0].reasons.iter().any(|r| r.kind == ReasonKind::RepairCarried));
+        assert!(
+            carried.slots[0]
+                .reasons
+                .iter()
+                .any(|r| r.kind == ReasonKind::RepairCarried)
+        );
 
         let mut s2 = sweep();
         let mut sc2 = score_of("h");
@@ -2037,7 +2185,12 @@ mod tests {
         s.cases = vec![kase("h")];
         let report = run(&s, &[h], no_caps(), one_slot(&h));
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
-        assert!(!report.slots[0].reasons.iter().any(|r| r.kind == ReasonKind::RepairCarried));
+        assert!(
+            !report.slots[0]
+                .reasons
+                .iter()
+                .any(|r| r.kind == ReasonKind::RepairCarried)
+        );
     }
 
     #[test]
@@ -2078,9 +2231,17 @@ mod tests {
         let mut s = sweep();
         s.harnesses = vec![score_of("h")];
         s.cases = vec![kase("h")];
-        let report = run(&s, &[h], HashMap::from([("search".to_string(), fact(false))]), one_slot(&h));
+        let report = run(
+            &s,
+            &[h],
+            HashMap::from([("search".to_string(), fact(false))]),
+            one_slot(&h),
+        );
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
-        assert_eq!(report.slots[0].reasons[0].kind, ReasonKind::MissingCapability);
+        assert_eq!(
+            report.slots[0].reasons[0].kind,
+            ReasonKind::MissingCapability
+        );
     }
 
     #[test]
@@ -2107,7 +2268,12 @@ mod tests {
         s.cases = vec![kase("h")];
         let report = run(&s, &[h], no_caps(), one_slot(&h));
         assert_eq!(report.slots[0].band, FitnessBand::Workable);
-        assert!(report.slots[0].reasons.iter().any(|r| r.kind == ReasonKind::UnmeasuredCapability));
+        assert!(
+            report.slots[0]
+                .reasons
+                .iter()
+                .any(|r| r.kind == ReasonKind::UnmeasuredCapability)
+        );
     }
 
     #[test]
@@ -2121,11 +2287,25 @@ mod tests {
         c.findings = 2;
         s.cases = vec![c];
 
-        let regressed = run_with(&s, &[h], no_caps(), None, Some(HashMap::from([("h".to_string(), 0.1)])), one_slot(&h));
+        let regressed = run_with(
+            &s,
+            &[h],
+            no_caps(),
+            None,
+            Some(HashMap::from([("h".to_string(), 0.1)])),
+            one_slot(&h),
+        );
         assert_eq!(regressed.slots[0].band, FitnessBand::Unfit);
         assert_eq!(regressed.slots[0].reasons[0].kind, ReasonKind::Safety);
 
-        let tolerated = run_with(&s, &[h], no_caps(), None, Some(HashMap::from([("h".to_string(), 0.2)])), one_slot(&h));
+        let tolerated = run_with(
+            &s,
+            &[h],
+            no_caps(),
+            None,
+            Some(HashMap::from([("h".to_string(), 0.2)])),
+            one_slot(&h),
+        );
         assert_eq!(tolerated.slots[0].band, FitnessBand::Ready);
     }
 
@@ -2141,7 +2321,11 @@ mod tests {
         s.cases = vec![c];
         let report = run(&s, &[h], no_caps(), one_slot(&h));
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
-        assert!(report.slots[0].reasons[0].detail.contains("nothing filed for this harness yet"));
+        assert!(
+            report.slots[0].reasons[0]
+                .detail
+                .contains("nothing filed for this harness yet")
+        );
     }
 
     #[test]
@@ -2153,12 +2337,18 @@ mod tests {
         s.cases = vec![kase("h")];
         let report = run(&s, &[h], no_caps(), one_slot(&h));
         assert_eq!(report.slots[0].band, FitnessBand::Workable);
-        assert!(report.slots[0].reasons.iter().any(|r| r.kind == ReasonKind::GuardOff));
+        assert!(
+            report.slots[0]
+                .reasons
+                .iter()
+                .any(|r| r.kind == ReasonKind::GuardOff)
+        );
         assert!(!report.guarded);
     }
 
     #[test]
-    fn does_not_blame_the_model_when_nothing_answered_a_refused_floor_or_dead_gateway_is_untested() {
+    fn does_not_blame_the_model_when_nothing_answered_a_refused_floor_or_dead_gateway_is_untested()
+    {
         let h = harness("h");
         let mut s = sweep();
         let mut sc = score_of("h");
@@ -2197,7 +2387,10 @@ mod tests {
             &s,
             &[h],
             HashMap::from([("search".to_string(), fact(false))]),
-            Some(HashMap::from([("search".to_string(), tool_reach("search", "exa", "web_search"))])),
+            Some(HashMap::from([(
+                "search".to_string(),
+                tool_reach("search", "exa", "web_search"),
+            )])),
             None,
             slot_over(&h, "research-recon", "Research · Recon", &["search"]),
         );
@@ -2210,7 +2403,11 @@ mod tests {
             .filter(|r| r.kind == ReasonKind::SuppliedCapability)
             .collect();
         assert!(!supplied.is_empty());
-        assert!(supplied[0].detail.contains("exa.web_search"), "detail: {}", supplied[0].detail);
+        assert!(
+            supplied[0].detail.contains("exa.web_search"),
+            "detail: {}",
+            supplied[0].detail
+        );
     }
 
     #[test]
@@ -2236,7 +2433,11 @@ mod tests {
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
         // And the sentence names the org's next move rather than blaming the
         // model.
-        assert!(report.slots[0].reasons[0].detail.contains("no enabled MCP server"));
+        assert!(
+            report.slots[0].reasons[0]
+                .detail
+                .contains("no enabled MCP server")
+        );
     }
 
     #[test]
@@ -2247,7 +2448,12 @@ mod tests {
         let mut s = sweep();
         s.harnesses = vec![score_of("h")];
         s.cases = vec![kase("h")];
-        let report = run(&s, &[h], HashMap::from([("search".to_string(), fact(false))]), one_slot(&h));
+        let report = run(
+            &s,
+            &[h],
+            HashMap::from([("search".to_string(), fact(false))]),
+            one_slot(&h),
+        );
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
     }
 
@@ -2307,11 +2513,28 @@ mod tests {
         );
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
         // One line, about the slot the admin is choosing for.
-        assert_eq!(report.slots[0].reasons.len(), 1, "reasons: {:?}", report.slots[0].reasons.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>());
+        assert_eq!(
+            report.slots[0].reasons.len(),
+            1,
+            "reasons: {:?}",
+            report.slots[0]
+                .reasons
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(report.slots[0].reasons[0].harness, None);
-        assert_eq!(report.slots[0].reasons[0].capability.as_deref(), Some("search"));
+        assert_eq!(
+            report.slots[0].reasons[0].capability.as_deref(),
+            Some("search")
+        );
         // And no `no-answer` restating the same refusal a third time.
-        assert!(!report.slots[0].reasons.iter().any(|r| r.kind == ReasonKind::NoAnswer));
+        assert!(
+            !report.slots[0]
+                .reasons
+                .iter()
+                .any(|r| r.kind == ReasonKind::NoAnswer)
+        );
     }
 
     #[test]
@@ -2331,7 +2554,11 @@ mod tests {
             ]),
             slot_over(&h, "utility", "Utility", &["search"]),
         );
-        let caps: Vec<Option<&str>> = report.slots[0].reasons.iter().map(|r| r.capability.as_deref()).collect();
+        let caps: Vec<Option<&str>> = report.slots[0]
+            .reasons
+            .iter()
+            .map(|r| r.capability.as_deref())
+            .collect();
         assert_eq!(caps, vec![Some("search"), Some("vision")]);
     }
 
@@ -2358,7 +2585,11 @@ mod tests {
         );
         assert_eq!(report.slots[0].band, FitnessBand::Unbound);
         assert_eq!(report.slots[0].reasons[0].kind, ReasonKind::NoHarness);
-        assert!(report.slots[0].reasons[0].detail.contains("This is not a pass"));
+        assert!(
+            report.slots[0].reasons[0]
+                .detail
+                .contains("This is not a pass")
+        );
         assert!(report.slots[0].contract.is_none());
     }
 
@@ -2399,7 +2630,12 @@ mod tests {
             vec![binding_of(utility_slot(), &["good", "silent"])],
         );
         assert_eq!(report.slots[0].band, FitnessBand::Workable);
-        assert!(report.slots[0].reasons.iter().any(|r| r.kind == ReasonKind::PartialCoverage));
+        assert!(
+            report.slots[0]
+                .reasons
+                .iter()
+                .any(|r| r.kind == ReasonKind::PartialCoverage)
+        );
     }
 
     #[test]
@@ -2439,10 +2675,19 @@ mod tests {
         let mut b3 = kase("b");
         b3.case = "b3".to_string();
         s.cases = vec![c1, b1, b2, b3];
-        let report = run(&s, &[a, b], no_caps(), vec![binding_of(utility_slot(), &["a", "b"])]);
+        let report = run(
+            &s,
+            &[a, b],
+            no_caps(),
+            vec![binding_of(utility_slot(), &["a", "b"])],
+        );
         // 3 of 4 cases, not the mean of 0 and 1.
         let contract = report.slots[0].contract.as_ref().expect("contract rate");
-        assert!((contract.rate - 0.75).abs() < 1e-9, "rate: {}", contract.rate);
+        assert!(
+            (contract.rate - 0.75).abs() < 1e-9,
+            "rate: {}",
+            contract.rate
+        );
         assert!(contract.label.contains("comparable within a harness only"));
         // The band still comes from the WORST harness, not from the aggregate.
         assert_eq!(report.slots[0].band, FitnessBand::Unfit);
@@ -2485,29 +2730,49 @@ mod tests {
             &[h],
             no_caps(),
             vec![binding_of(
-                FitnessSlot { kind: SlotKind::Agent, id: "judge".to_string(), label: "Judge".to_string(), ..utility_slot() },
+                FitnessSlot {
+                    kind: SlotKind::Agent,
+                    id: "judge".to_string(),
+                    label: "Judge".to_string(),
+                    ..utility_slot()
+                },
                 &[h.def.id],
             )],
         );
         assert_eq!(utility.slots[0].band, FitnessBand::Ready);
         assert_eq!(judge.slots[0].band, FitnessBand::Unfit);
-        assert_eq!(utility.slots[0].task_floor, task_floor_of("role:utility").unwrap());
-        assert_eq!(judge.slots[0].task_floor, task_floor_of("agent:judge").unwrap());
+        assert_eq!(
+            utility.slots[0].task_floor,
+            task_floor_of("role:utility").unwrap()
+        );
+        assert_eq!(
+            judge.slots[0].task_floor,
+            task_floor_of("agent:judge").unwrap()
+        );
     }
 
     #[test]
     fn takes_an_install_override_ahead_of_the_shipped_policy() {
         let slot = utility_slot();
-        assert_eq!(task_floor_for(&slot, None), task_floor_of("role:utility").unwrap());
         assert_eq!(
-            task_floor_for(&slot, Some(&HashMap::from([("role:utility".to_string(), 0.99)]))),
+            task_floor_for(&slot, None),
+            task_floor_of("role:utility").unwrap()
+        );
+        assert_eq!(
+            task_floor_for(
+                &slot,
+                Some(&HashMap::from([("role:utility".to_string(), 0.99)]))
+            ),
             0.99
         );
     }
 
     #[test]
     fn falls_back_to_the_default_for_a_slot_with_no_policy() {
-        let slot = FitnessSlot { id: "code-standard".to_string(), ..utility_slot() };
+        let slot = FitnessSlot {
+            id: "code-standard".to_string(),
+            ..utility_slot()
+        };
         assert_eq!(task_floor_for(&slot, None), DEFAULT_TASK_FLOOR);
     }
 

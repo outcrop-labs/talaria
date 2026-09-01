@@ -39,8 +39,8 @@ use serde_json::{Map, Value};
 
 use crate::body::{js_number, js_string, truncate_utf16};
 use crate::harness::define::{
-    CheckCtx, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
-    Output, RenderContext, RoleFloor, Widen, define_harness,
+    CheckCtx, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
+    RenderContext, RoleFloor, Widen, define_harness,
 };
 use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::schema::Schema;

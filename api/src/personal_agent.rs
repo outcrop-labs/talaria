@@ -13,9 +13,10 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use crate::agent_defs::{
-    add_version_if_changed, apply_config_edits, list_versions, AgentDefRow, ConfigEdits, ModelTarget,
+    AgentDefRow, ConfigEdits, ModelTarget, add_version_if_changed, apply_config_edits,
+    list_versions,
 };
-use crate::fleet_create::{create_agent, ensure_agent_key, restamp_slug, CreateAgentInput};
+use crate::fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
 use crate::fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
 use crate::fleet_layout;
 use crate::fleet_render::render_fleet;
@@ -46,10 +47,7 @@ pub fn personality_of(soul: &str) -> Option<String> {
 
 /// Replace (or append) the marked personality section of a soul.
 pub fn with_personality(soul: &str, personality: &str) -> String {
-    let block = format!(
-        "{PERSONA_START}\n{}\n{PERSONA_END}",
-        personality.trim()
-    );
+    let block = format!("{PERSONA_START}\n{}\n{PERSONA_END}", personality.trim());
     if let (Some(m), Some(e)) = (soul.find(PERSONA_START), soul.find(PERSONA_END))
         && e > m
     {
@@ -125,7 +123,10 @@ pub struct PersonalAgent {
 }
 
 /// The user's personal agent, if they have one.
-pub async fn personal_agent_for(pg: &PgPool, user_id: &str) -> Result<Option<PersonalAgent>, sqlx::Error> {
+pub async fn personal_agent_for(
+    pg: &PgPool,
+    user_id: &str,
+) -> Result<Option<PersonalAgent>, sqlx::Error> {
     let def: Option<(String, String, String, String, String, bool)> = sqlx::query_as(
         "select id::text, slug, model, department, display_name, enabled \
          from agent_defs where owner_user_id = $1::uuid limit 1",
@@ -144,8 +145,14 @@ pub async fn personal_agent_for(pg: &PgPool, user_id: &str) -> Result<Option<Per
     let main_target: Option<ModelTarget> = main
         .as_ref()
         .and_then(|m| serde_json::from_value(m.clone()).ok());
-    let main_endpoint = main.as_ref().and_then(|m| m.get("endpoint")).and_then(Value::as_str);
-    let main_model = main.as_ref().and_then(|m| m.get("model")).and_then(Value::as_str);
+    let main_endpoint = main
+        .as_ref()
+        .and_then(|m| m.get("endpoint"))
+        .and_then(Value::as_str);
+    let main_model = main
+        .as_ref()
+        .and_then(|m| m.get("model"))
+        .and_then(Value::as_str);
     let aliases: Vec<Value> = latest
         .as_ref()
         .and_then(|v| v.config.get("aliases"))
@@ -258,11 +265,13 @@ pub async fn create_personal_agent(
         .map_err(|e| e.to_string())?
     {
         if !existing.enabled {
-            sqlx::query("update agent_defs set enabled = true, updated_at = now() where id = $1::uuid")
-                .bind(&existing.id)
-                .execute(pg)
-                .await
-                .map_err(|e| e.to_string())?;
+            sqlx::query(
+                "update agent_defs set enabled = true, updated_at = now() where id = $1::uuid",
+            )
+            .bind(&existing.id)
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?;
         }
         // Make sure their personal RAG exists + their agent is bound to it.
         let qd = qdrant::real_deps();
@@ -331,11 +340,7 @@ pub async fn create_personal_agent(
             display_name: display_name.clone(),
             role: Some("Personal assistant".into()),
             template_id: tmpl.map(|(id,)| id),
-            created_by: user
-                .email
-                .or(user.name)
-                .unwrap_or("user")
-                .to_string(),
+            created_by: user.email.or(user.name).unwrap_or("user").to_string(),
             soul: Some(personal_soul(&display_name, &owner_name, personality)),
         },
     )
@@ -531,9 +536,7 @@ pub async fn update_personal_agent(
 
     let new_name = patch.name.map(str::trim).filter(|n| !n.is_empty());
     let renamed = new_name.is_some_and(|n| n != display_name);
-    if renamed
-        && let Some(new_name) = new_name
-    {
+    if renamed && let Some(new_name) = new_name {
         sqlx::query(
             "update agent_defs set display_name = $1, updated_at = now() where id = $2::uuid",
         )
@@ -564,9 +567,7 @@ pub async fn update_personal_agent(
     if let Some(latest) = latest {
         let mut soul = latest.soul.clone();
         let mut config = latest.config.clone();
-        if rehandled
-            && let Some(new_handle) = new_handle
-        {
+        if rehandled && let Some(new_handle) = new_handle {
             config = restamp_slug(&config, &slug, new_handle);
         }
         if let Some(want) = patch.model.filter(|m| !m.is_empty()) {

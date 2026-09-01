@@ -59,12 +59,12 @@ use std::time::Duration;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::capability_reach::{self, DbReach, ReachDeps, Supplier};
 use crate::fitness::toolbox::credential_tools::CredentialSandbox;
 use crate::fitness::toolbox::dry_run::{
-    sandbox_transport, turn_budget, DispatchSandbox, DryRunResult,
+    DispatchSandbox, DryRunResult, sandbox_transport, turn_budget,
 };
 use crate::fitness::toolbox::hermes_tools::WorkbenchSandbox;
 use crate::fitness::toolbox::sandbox::{DispatchResult, Sandbox, SandboxCall, SandboxOptions};
@@ -72,18 +72,16 @@ use crate::gateway::guard::{self, GuardMode};
 use crate::gateway::settings::{get_setting, set_setting};
 use crate::gateway::usage::estimate_tokens;
 use crate::harness::define::{
-    is_gap, CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, Output,
+    CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, Output, is_gap,
 };
-use crate::harness::defs::research::{
-    tool_search_transport, SearchSink, ToolSearchDeps,
-};
-use crate::harness::registry::{builtin_activity_harnesses, RegisteredHarness};
+use crate::harness::defs::research::{SearchSink, ToolSearchDeps, tool_search_transport};
+use crate::harness::registry::{RegisteredHarness, builtin_activity_harnesses};
 use crate::harness::run::{
-    real_deps as runner_real_deps, run_harness, BoxFut, HarnessDeps, HarnessRunRow,
-    RecordFindingsFn, RecordRunFn, TransportFn,
+    BoxFut, HarnessDeps, HarnessRunRow, RecordFindingsFn, RecordRunFn, TransportFn,
+    real_deps as runner_real_deps, run_harness,
 };
 use crate::harness::transport::{
-    offers_tool_definitions, runs_own_tool_loop, ToolPolicy, TransportRequest,
+    ToolPolicy, TransportRequest, offers_tool_definitions, runs_own_tool_loop,
 };
 use crate::state::AppState;
 
@@ -320,7 +318,7 @@ pub struct HarnessScore {
     pub contract_rate: f64,
     /// THE CONTRACT HELD AT ALL, over all cases — CUMULATIVE, so it is always
     /// >= `contract_rate` and the pair reads the way the audit states it:
-    /// 40/95 is a usable model with a repair path, 40/45 is not.
+    /// > 40/95 is a usable model with a repair path, 40/45 is not.
     pub repair_rate: f64,
     /// Of the cases that failed first, the share the repair turn RECOVERED.
     /// The conditional number, kept because it is the one that says whether
@@ -721,7 +719,8 @@ pub struct EvalOptions {
     /// transcript only for cases that failed something — right for a
     /// drill-down, useless for verification, because "did our fixture accept
     /// something weak" can only be answered from a PASSING transcript.
-    pub archive_case: Option<Arc<dyn Fn(String, String, EvalCaseScore) -> BoxFut<()> + Send + Sync>>,
+    pub archive_case:
+        Option<Arc<dyn Fn(String, String, EvalCaseScore) -> BoxFut<()> + Send + Sync>>,
     /// Called once when a run ends, whatever way it ended.
     pub archive_prune: Option<Arc<dyn Fn(String) -> BoxFut<()> + Send + Sync>>,
     /// Only these harness ids. Empty/omitted means every registered harness.
@@ -856,10 +855,7 @@ fn lost_request(score: &EvalCaseScore) -> bool {
 }
 
 fn rate_limited(score: &EvalCaseScore) -> bool {
-    score
-        .error
-        .as_deref()
-        .is_some_and(|e| PRESSURE.is_match(e))
+    score.error.as_deref().is_some_and(|e| PRESSURE.is_match(e))
 }
 
 fn pressured(score: &EvalCaseScore) -> bool {
@@ -1186,11 +1182,7 @@ fn percentile(sorted: &[i64], q: f64) -> i64 {
 }
 
 fn rate(n: i64, of: i64) -> f64 {
-    if of == 0 {
-        0.0
-    } else {
-        n as f64 / of as f64
-    }
+    if of == 0 { 0.0 } else { n as f64 / of as f64 }
 }
 
 /// A band's pass rate over the cases that were scorable in it, or None when it
@@ -1236,7 +1228,11 @@ pub fn score_harness(meta: HarnessMeta, all: &[EvalCaseScore]) -> HarnessScore {
         .copied()
         .filter(|c| c.task != TaskVerdict::Unscored)
         .collect();
-    let priced: Vec<&EvalCaseScore> = cases.iter().copied().filter(|c| c.cost_usd.is_some()).collect();
+    let priced: Vec<&EvalCaseScore> = cases
+        .iter()
+        .copied()
+        .filter(|c| c.cost_usd.is_some())
+        .collect();
     let mut latencies: Vec<i64> = scored.iter().map(|c| c.latency_ms).collect();
     latencies.sort_unstable();
     // Read before `meta` moves into the score below.
@@ -1282,21 +1278,14 @@ pub fn score_harness(meta: HarnessMeta, all: &[EvalCaseScore]) -> HarnessScore {
         // the guard pass never ran on it and it can contribute no findings.
         // Same for `answered_rate`: "did the model answer" is not a question
         // about a case that never got to.
-        guard_rate: rate(
-            scored.iter().map(|c| c.findings).sum::<i64>(),
-            total,
-        ),
-        answered_rate: rate(
-            scored.iter().filter(|c| c.answered).count() as i64,
-            total,
-        ),
+        guard_rate: rate(scored.iter().map(|c| c.findings).sum::<i64>(), total),
+        answered_rate: rate(scored.iter().filter(|c| c.answered).count() as i64, total),
         latency_p50: percentile(&latencies, 0.5),
         latency_p95: percentile(&latencies, 0.95),
         prompt_tokens: cases.iter().map(|c| c.prompt_tokens).sum(),
         completion_tokens: cases.iter().map(|c| c.completion_tokens).sum(),
-        cost_usd: (!priced.is_empty()).then(|| {
-            priced.iter().filter_map(|c| c.cost_usd).sum::<f64>()
-        }),
+        cost_usd: (!priced.is_empty())
+            .then(|| priced.iter().filter_map(|c| c.cost_usd).sum::<f64>()),
         estimated: cases.iter().any(|c| c.estimated),
         timeouts: cases.iter().filter(|c| c.timed_out).count() as i64,
         optimistic: cases.iter().filter(|c| c.optimistic).count() as i64,
@@ -1331,7 +1320,12 @@ pub fn meta_of(h: &RegisteredHarness) -> HarnessMeta {
             crate::harness::registry::HarnessSource::App(slug) => format!("app:{slug}"),
             crate::harness::registry::HarnessSource::Custom => "custom".to_string(),
         },
-        output_kind: if h.def.output.is_json() { "json" } else { "text" }.to_string(),
+        output_kind: if h.def.output.is_json() {
+            "json"
+        } else {
+            "text"
+        }
+        .to_string(),
         tools: h
             .def
             .tools
@@ -1339,8 +1333,16 @@ pub fn meta_of(h: &RegisteredHarness) -> HarnessMeta {
             .unwrap_or("none")
             .to_string(),
         requires: h.def.requires.iter().map(|r| r.to_string()).collect(),
-        verifies: matches!(&h.def.output,
-            Output::Json { verify: Some(_), .. } | Output::Text { verify: Some(_), .. }),
+        verifies: matches!(
+            &h.def.output,
+            Output::Json {
+                verify: Some(_),
+                ..
+            } | Output::Text {
+                verify: Some(_),
+                ..
+            }
+        ),
         // Mirrors the runner's own repair rule, which is the only thing that
         // decides whether a repair turn happens: JSON output, and a repair
         // count the harness did not zero out.
@@ -1438,7 +1440,9 @@ pub fn stop_eval_sweep(model: Option<&str>) -> bool {
             if sweeping.is_empty() {
                 return false;
             }
-            let mut asked = stop_requested().lock().expect("the stop set is not contended");
+            let mut asked = stop_requested()
+                .lock()
+                .expect("the stop set is not contended");
             for m in sweeping.iter() {
                 asked.insert(m.clone());
             }
@@ -1528,7 +1532,13 @@ fn timeout_detail(case_ms: u64, calls: &[UpstreamAttempt]) -> String {
     if !done.is_empty() {
         let listed = done
             .iter()
-            .map(|c| format!("{}ms{}", c.ms, if c.error.is_some() { " error" } else { "" }))
+            .map(|c| {
+                format!(
+                    "{}ms{}",
+                    c.ms,
+                    if c.error.is_some() { " error" } else { "" }
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         parts.push(format!("{} came back ({listed})", done.len()));
@@ -1540,8 +1550,11 @@ fn timeout_detail(case_ms: u64, calls: &[UpstreamAttempt]) -> String {
             open.len()
         ));
     }
-    if let Some(last) = calls.iter().filter(|c| c.error.is_some()).next_back() {
-        parts.push(format!("last error: {}", last.error.clone().unwrap_or_default()));
+    if let Some(last) = calls.iter().rfind(|c| c.error.is_some()) {
+        parts.push(format!(
+            "last error: {}",
+            last.error.clone().unwrap_or_default()
+        ));
     }
     parts.join("; ")
 }
@@ -1712,7 +1725,10 @@ fn record_turns(messages: &[crate::harness::define::Message]) -> Option<Vec<Eval
                 role: m.role.as_str().to_string(),
                 content: utf16_truncate(&m.content, TOOL_CAP),
                 tool_calls: (!m.tool_calls.is_empty()).then(|| {
-                    m.tool_calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+                    m.tool_calls
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .collect::<Vec<_>>()
                 }),
             })
             .collect(),
@@ -1729,7 +1745,10 @@ fn record_turns(messages: &[crate::harness::define::Message]) -> Option<Vec<Eval
 /// the result is often the explanation (the tool refused, and the model
 /// carried on anyway), so it stays. On a case that passed there is nothing to
 /// explain.
-fn record_calls(surface: Option<&Arc<Mutex<CaseSurface>>>, with_results: bool) -> Option<Vec<EvalToolCall>> {
+fn record_calls(
+    surface: Option<&Arc<Mutex<CaseSurface>>>,
+    with_results: bool,
+) -> Option<Vec<EvalToolCall>> {
     let surface = surface?;
     let calls = surface.lock().expect("one case, one sandbox").recorded();
     Some(
@@ -1739,7 +1758,10 @@ fn record_calls(surface: Option<&Arc<Mutex<CaseSurface>>>, with_results: bool) -
                 tool: c.tool.clone(),
                 args: utf16_truncate(&c.args.to_string(), TOOL_CAP),
                 result: (with_results && c.result.is_some()).then(|| {
-                    utf16_truncate(&c.result.clone().unwrap_or(Value::Null).to_string(), RESULT_CAP)
+                    utf16_truncate(
+                        &c.result.clone().unwrap_or(Value::Null).to_string(),
+                        RESULT_CAP,
+                    )
                 }),
                 error: c.error.clone(),
             })
@@ -1766,6 +1788,9 @@ const STOP_WATCH_MS: u64 = 1_000;
 /// sweep and the loop both need. The loop cares about `tools` and `dispatch`
 /// (the `DispatchSandbox` impl); the sweep's fixtures additionally read the
 /// call log and the world, and the archive reads the same log with results.
+// Boxing the big variant would ripple through every construction site for no
+// behavioral gain; the enum is built once per case.
+#[allow(clippy::large_enum_variant)]
 enum CaseSurface {
     /// Talaria's own toolkit over an in-memory world.
     Toolkit(Sandbox),
@@ -1873,6 +1898,9 @@ fn sweep_harness_deps(
     }
 }
 
+// Same call as CaseSurface: HarnessResult dominates, but boxing it would
+// ripple through every constructor for no behavioral gain.
+#[allow(clippy::large_enum_variant)]
 enum CaseOutcome {
     Done(Result<crate::harness::run::HarnessResult, String>),
     Stopped,
@@ -1903,7 +1931,7 @@ async fn run_one_case(
         harness: def.id.to_string(),
         case: fixture.name.to_string(),
         band: fixture.band,
-        started_at: started_at,
+        started_at,
         turn: 0,
         max_turns: turns_per_case(def, dry_run, false) as i64,
         calls: 0,
@@ -1912,7 +1940,9 @@ async fn run_one_case(
     }));
     let key = case_key(def.id, fixture.name);
     {
-        let mut flights = in_flight().lock().expect("the in-flight map is not contended");
+        let mut flights = in_flight()
+            .lock()
+            .expect("the in-flight map is not contended");
         flights
             .entry(model.to_string())
             .or_default()
@@ -2075,7 +2105,9 @@ async fn run_one_case(
         }
     };
     {
-        let mut flights = in_flight().lock().expect("the in-flight map is not contended");
+        let mut flights = in_flight()
+            .lock()
+            .expect("the in-flight map is not contended");
         if let Some(slots) = flights.get_mut(model) {
             slots.remove(&key);
         }
@@ -2188,10 +2220,7 @@ async fn run_one_case(
         // model that called almost nothing cannot have exhausted a six-turn
         // loop. So the fixtures this would wrongly excuse are the ones it
         // cannot reach, and the failure it does excuse is real every time.
-        if gap.is_none()
-            && task_error.is_some()
-            && eval_context.exhausted
-        {
+        if gap.is_none() && task_error.is_some() && eval_context.exhausted {
             gap = Some(format!(
                 "the model was still working when the loop's {}-turn budget ran out, and the \
                  assertion then judged unfinished work (\"{}\"). Raise this harness's \
@@ -2218,7 +2247,10 @@ async fn run_one_case(
                 "the model called \"{}\" and this deployment's search returned nothing citable, \
                  so the fixture judged an answer written from no sources (\"{}\"). Fix the search \
                  backend or ask this fixture something the installed engines can find.",
-                supplier.as_ref().map(|s| s.tool.clone()).unwrap_or_default(),
+                supplier
+                    .as_ref()
+                    .map(|s| s.tool.clone())
+                    .unwrap_or_default(),
                 task_error.clone().unwrap_or_default()
             ));
             task_error = None;
@@ -2283,9 +2315,13 @@ async fn run_one_case(
         timed_out,
         optimistic: contract_held && task == TaskVerdict::Fail,
         error: if timed_out {
-            Some(timeout_detail(case_ms, &settle_open(&upstream, started_at, now)))
+            Some(timeout_detail(
+                case_ms,
+                &settle_open(&upstream, started_at, now),
+            ))
         } else {
-            threw.or(row.as_ref().and_then(|r| r.error.clone()))
+            threw
+                .or(row.as_ref().and_then(|r| r.error.clone()))
                 .or(result.as_ref().and_then(|r| r.error.clone()))
         },
         prompt: (!clean).then(|| cap(Some(&prompt))).flatten(),
@@ -2297,7 +2333,17 @@ async fn run_one_case(
         // over, and comparing two models on one fixture means comparing the
         // two lists — available only on failure would mean the comparison
         // worth making is the one you cannot see.
-        turns: (!clean).then(|| record_turns(dry.lock().expect("one case, one dry result").as_ref().map(|d| d.messages.as_slice()).unwrap_or(&[]))).flatten(),
+        turns: (!clean)
+            .then(|| {
+                record_turns(
+                    dry.lock()
+                        .expect("one case, one dry result")
+                        .as_ref()
+                        .map(|d| d.messages.as_slice())
+                        .unwrap_or(&[]),
+                )
+            })
+            .flatten(),
         calls: record_calls(surface.as_ref(), !clean),
         upstream: (!clean).then(|| settle_open(&upstream, started_at, now)),
     };
@@ -2457,10 +2503,7 @@ async fn sweep_inner(
                     .contains(&model)
             })
         };
-        Arc::new(move || {
-            local()
-                || externally_stopped.load(std::sync::atomic::Ordering::SeqCst)
-        })
+        Arc::new(move || local() || externally_stopped.load(std::sync::atomic::Ordering::SeqCst))
     };
 
     // ── Unreachable, and when to stop asking ────────────────────────────────
@@ -2485,7 +2528,10 @@ async fn sweep_inner(
         .unwrap_or(DEFAULT_CONCURRENCY)
         .clamp(1, MAX_CONCURRENCY);
     let valve = Arc::new(Valve::new(requested));
-    let backoff_ms: Vec<u64> = opts.pressure_backoff_ms.clone().unwrap_or(PRESSURE_BACKOFF_MS.to_vec());
+    let backoff_ms: Vec<u64> = opts
+        .pressure_backoff_ms
+        .clone()
+        .unwrap_or(PRESSURE_BACKOFF_MS.to_vec());
 
     let all = (deps.harnesses)().await;
     let wanted: Vec<RegisteredHarness> = match &opts.only {
@@ -2698,9 +2744,7 @@ async fn sweep_inner(
                     if let Some(archive) = &archive_case {
                         let _ = archive(
                             model.clone(),
-                            started_at
-                                .clone()
-                                .unwrap_or_else(|| iso((deps.now)())),
+                            started_at.clone().unwrap_or_else(|| iso((deps.now)())),
                             score.clone(),
                         )
                         .await;
@@ -2746,8 +2790,10 @@ async fn sweep_inner(
     // The run's own headline when it gave up: a routing or credential fact,
     // said ONCE — in the status row AND on the returned sweep, because the
     // archive reads one and the caller reads the other.
-    let (unreachable_run, unreachable_why) =
-        unreachable_state.lock().expect("one sweep, one streak").clone();
+    let (unreachable_run, unreachable_why) = unreachable_state
+        .lock()
+        .expect("one sweep, one streak")
+        .clone();
     let gave_up = (unreachable_run >= UNREACHABLE_STREAK).then(|| {
         format!(
             "the deployment could not reach this model: {}",
@@ -2845,15 +2891,7 @@ async fn run_harness_cases(
                 // attempt and the backoff between them.
                 let opened_at = (deps.now)();
                 let mut score = run_one_case(
-                    &state,
-                    def,
-                    fixture,
-                    &model,
-                    &deps,
-                    &base,
-                    timeout_ms,
-                    dry_run,
-                    &stopped,
+                    &state, def, fixture, &model, &deps, &base, timeout_ms, dry_run, &stopped,
                 )
                 .await;
                 for attempt in 0..PRESSURE_RETRIES {
@@ -2873,7 +2911,11 @@ async fn run_harness_cases(
                     // THE PRESSURE VALVE, on the way past: the width comes down
                     // as well as the question being re-asked, so the retry is
                     // issued into a quieter sweep.
-                    valve.narrow(s.error.as_deref().unwrap_or("the request was never answered"));
+                    valve.narrow(
+                        s.error
+                            .as_deref()
+                            .unwrap_or("the request was never answered"),
+                    );
                     let ms = backoff_ms
                         .get(attempt)
                         .copied()
@@ -2884,15 +2926,7 @@ async fn run_harness_cases(
                         return;
                     }
                     score = run_one_case(
-                        &state,
-                        def,
-                        fixture,
-                        &model,
-                        &deps,
-                        &base,
-                        timeout_ms,
-                        dry_run,
-                        &stopped,
+                        &state, def, fixture, &model, &deps, &base, timeout_ms, dry_run, &stopped,
                     )
                     .await;
                 }
@@ -3075,8 +3109,7 @@ mod tests {
     use crate::capability_reach::{Reach, ReachVia};
     use crate::fitness::toolbox::dry_run::MAX_TURNS;
     use crate::harness::define::{
-        define_harness, CheckFn, DryRunDecl, Fallback, Message, OnFailure, RenderContext,
-        RoleFloor,
+        CheckFn, DryRunDecl, Fallback, Message, OnFailure, RenderContext, RoleFloor, define_harness,
     };
     use crate::harness::defs::research::{CallToolFn, ToolOutput};
     use crate::harness::registry::HarnessSource;
@@ -3280,7 +3313,8 @@ mod tests {
         LazyLock::new(|| picker("second", &[("three", "a")]));
     static STUCK: LazyLock<HarnessDefinition> =
         LazyLock::new(|| picker("stuck", &[("never answers", "a")]));
-    static FINE: LazyLock<HarnessDefinition> = LazyLock::new(|| picker("fine", &[("answers", "a")]));
+    static FINE: LazyLock<HarnessDefinition> =
+        LazyLock::new(|| picker("fine", &[("answers", "a")]));
     static LOOPER1: LazyLock<HarnessDefinition> = LazyLock::new(|| {
         let mut d = picker("looper", &[("a", "a")]);
         d.tools = Some(ToolPolicy::Own);
@@ -3627,7 +3661,10 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                 }
                 let reply = replies.get(n - 1).cloned().unwrap_or_else(|| {
-                    replies.last().cloned().unwrap_or(Reply::Text(String::new()))
+                    replies
+                        .last()
+                        .cloned()
+                        .unwrap_or(Reply::Text(String::new()))
                 });
                 match reply {
                     Reply::Hang => {
@@ -3754,7 +3791,11 @@ mod tests {
             read_status: Arc::new(move |model| {
                 let st = read_status.clone();
                 Box::pin(async move {
-                    st.lock().expect("status").get(&model).cloned().unwrap_or_else(idle_status)
+                    st.lock()
+                        .expect("status")
+                        .get(&model)
+                        .cloned()
+                        .unwrap_or_else(idle_status)
                 })
             }),
             // Round-tripped through JSON the way `app_settings` stores it, so
@@ -3851,11 +3892,7 @@ mod tests {
         sweep_with(b, model, |_| {}).await
     }
 
-    async fn sweep_with(
-        b: &Bench,
-        model: &str,
-        tweak: impl FnOnce(&mut EvalOptions),
-    ) -> EvalSweep {
+    async fn sweep_with(b: &Bench, model: &str, tweak: impl FnOnce(&mut EvalOptions)) -> EvalSweep {
         // A HERMETIC START. A predecessor that panicked mid-sweep unwinds past
         // the engine's cleanup and leaves its model in the sweep set, and
         // every later sweep of that model would early-return the stale status
@@ -3938,7 +3975,11 @@ mod tests {
                     c.first_pass = first;
                     c.contract_held = ok;
                     c.repairs = if first { 0 } else { 1 };
-                    c.task = if ok { TaskVerdict::Pass } else { TaskVerdict::Unscored };
+                    c.task = if ok {
+                        TaskVerdict::Pass
+                    } else {
+                        TaskVerdict::Unscored
+                    };
                 })
             })
             .collect()
@@ -3981,7 +4022,10 @@ mod tests {
 
         // Zero on a harness that CAN repair is a real and much worse fact,
         // and the two must not print the same.
-        assert_eq!(score_harness(meta(), &population(8, 8)).repair_yield, Some(0.0));
+        assert_eq!(
+            score_harness(meta(), &population(8, 8)).repair_yield,
+            Some(0.0)
+        );
     }
 
     #[test]
@@ -4059,7 +4103,7 @@ mod tests {
         // for it; so does this suite, because it reads that row rather than
         // re-deciding.
         let b = bench(
-            vec![reg(&*PICK_ID)],
+            vec![reg(&PICK_ID)],
             World::replies(vec![obj("Qwen3 14B"), obj("Qwen3 14B")]),
         );
 
@@ -4081,7 +4125,12 @@ mod tests {
                 .contains("the pick must be 'qwen3-14b'")
         );
         // The drill-down keeps the prompt and the reply for a case that failed.
-        assert!(one.prompt.as_deref().unwrap_or("").contains("pick qwen3-14b"));
+        assert!(
+            one.prompt
+                .as_deref()
+                .unwrap_or("")
+                .contains("pick qwen3-14b")
+        );
         assert!(one.raw.as_deref().unwrap_or("").contains("Qwen3 14B"));
 
         assert_eq!(sweep.harnesses[0].contract_rate, 0.0);
@@ -4092,7 +4141,10 @@ mod tests {
     #[tokio::test]
     async fn counts_a_reply_only_the_repair_turn_fixed_as_repaired() {
         let _sole = sole();
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![obj("A"), obj("a")]));
+        let b = bench(
+            vec![reg(&PICK_A1)],
+            World::replies(vec![obj("A"), obj("a")]),
+        );
 
         let sweep = sweep(&b, "candidate").await;
         let one = &sweep.cases[0];
@@ -4113,7 +4165,7 @@ mod tests {
         // asserts something further — quality the harness deliberately does
         // not police. That is `optimistic`: expected here, a bug where the
         // assertion is one the caller depends on.
-        let b = bench(vec![reg(&*PICK_SHORT)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK_SHORT)], World::replies(vec![obj("a")]));
 
         let sweep = sweep(&b, "candidate").await;
         assert!(sweep.cases[0].contract_held);
@@ -4128,7 +4180,7 @@ mod tests {
     async fn does_not_award_task_points_for_a_declared_fallback() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*FALLBACK_DEF)],
+            vec![reg(&FALLBACK_DEF)],
             World::replies(vec![
                 Reply::Text("not json at all".into()),
                 Reply::Text("still not json".into()),
@@ -4184,7 +4236,7 @@ mod tests {
         // that accepted the connection and went away. The clock is fired at
         // it and this transport, like several real ones, does not honor it.
         let b = bench(
-            vec![reg(&*STUCK), reg(&*FINE)],
+            vec![reg(&STUCK), reg(&FINE)],
             World::replies(vec![Reply::Hang, obj("a")]),
         );
 
@@ -4209,7 +4261,14 @@ mod tests {
         assert!(!stuck_case.timed_out);
         assert!(stuck_case.contract_held);
         // The sweep did not strand: the next harness ran and scored.
-        assert!(sweep.cases.iter().find(|c| c.harness == "fine").unwrap().contract_held);
+        assert!(
+            sweep
+                .cases
+                .iter()
+                .find(|c| c.harness == "fine")
+                .unwrap()
+                .contract_held
+        );
         assert_eq!(sweep.state, EvalSweepState::Done);
         assert_eq!(sweep.done, 2);
     }
@@ -4218,7 +4277,7 @@ mod tests {
     async fn does_not_let_a_throwing_harness_end_the_sweep() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*THROWER), reg(&*FINE)],
+            vec![reg(&THROWER), reg(&FINE)],
             World::replies(vec![
                 Reply::Text("nope".into()),
                 Reply::Text("nope".into()),
@@ -4233,7 +4292,14 @@ mod tests {
         // with its repair count and its sentence intact.
         assert_eq!(failed.repairs, 1);
         assert!(failed.error.as_deref().unwrap_or("").contains("thrower"));
-        assert!(sweep.cases.iter().find(|c| c.harness == "fine").unwrap().contract_held);
+        assert!(
+            sweep
+                .cases
+                .iter()
+                .find(|c| c.harness == "fine")
+                .unwrap()
+                .contract_held
+        );
         assert_eq!(sweep.state, EvalSweepState::Done);
     }
 
@@ -4241,7 +4307,7 @@ mod tests {
     async fn leaves_consistent_resumable_state_when_an_admin_stops_it() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*FIRST2), reg(&*SECOND1)],
+            vec![reg(&FIRST2), reg(&SECOND1)],
             World::replies(vec![obj("a")]).on_call(Arc::new(|call| {
                 // Stop after the first case has been answered, so this
                 // exercises the BOUNDARY path. The mid-case path is the test
@@ -4299,7 +4365,7 @@ mod tests {
     async fn does_not_resume_across_candidates() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*PICK2)],
+            vec![reg(&PICK2)],
             World::replies(vec![obj("a")]).on_call(Arc::new(|call| {
                 if call == 1 {
                     stop_eval_sweep(Some("candidate-a"));
@@ -4334,7 +4400,7 @@ mod tests {
         // this is the remaining case, where neither path exists and a skip is
         // the honest answer.
         let b = bench(
-            vec![reg(&*LOOPER2), reg(&*PICK_A1)],
+            vec![reg(&LOOPER2), reg(&PICK_A1)],
             World {
                 replies: vec![obj("a")],
                 own_tools: false,
@@ -4364,7 +4430,11 @@ mod tests {
         assert!(skipped[0].prompt.is_none());
         assert!(skipped[0].error.is_none());
 
-        let looped = sweep.harnesses.iter().find(|h| h.meta.id == "looper").unwrap();
+        let looped = sweep
+            .harnesses
+            .iter()
+            .find(|h| h.meta.id == "looper")
+            .unwrap();
         // `cases` is the RUN denominator. Zero of them ran, so every rate is
         // the n===0 zero and `skipped` carries the count — a consumer reading
         // `cases` sees "no evidence", which is the truth.
@@ -4379,7 +4449,11 @@ mod tests {
         );
 
         // The harness that CAN run is untouched by any of this.
-        let plain = sweep.harnesses.iter().find(|h| h.meta.id == "picker").unwrap();
+        let plain = sweep
+            .harnesses
+            .iter()
+            .find(|h| h.meta.id == "picker")
+            .unwrap();
         assert_eq!(plain.contract_rate, 1.0);
         // Progress still reaches its total, so the bar completes and a resume
         // does not re-enter the same skip.
@@ -4390,7 +4464,7 @@ mod tests {
     async fn runs_a_tool_loop_harness_normally_for_a_fleet_persona() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*LOOPER1)],
+            vec![reg(&LOOPER1)],
             World {
                 replies: vec![obj("a")],
                 own_tools: true,
@@ -4414,7 +4488,7 @@ mod tests {
         // our harness. Nothing on the page could tell those apart until the
         // turns and the calls were archived beside it.
         let b = bench(
-            vec![reg(&*DRY_PASS)],
+            vec![reg(&DRY_PASS)],
             World {
                 replies: vec![
                     Reply::WithCalls(
@@ -4466,7 +4540,7 @@ mod tests {
     async fn keeps_the_turns_and_tool_results_when_a_dry_run_fails_its_check() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*DRY_FAIL)],
+            vec![reg(&DRY_FAIL)],
             World {
                 replies: vec![
                     Reply::WithCalls(
@@ -4518,7 +4592,7 @@ mod tests {
         // turnsPerCase` — minutes. The request landed immediately and the
         // sweep politely finished a case nobody wanted.
         let b = bench(
-            vec![reg(&*PICK2)],
+            vec![reg(&PICK2)],
             World::replies(vec![Reply::Hang]).on_call(Arc::new(|_call| {
                 stop_eval_sweep(Some("candidate"));
             })),
@@ -4556,7 +4630,7 @@ mod tests {
         // `shouldStop`. That used to be read once per HARNESS — eleven
         // work-session fixtures at up to seven minutes each before it was
         // noticed.
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![Reply::Hang]));
+        let b = bench(vec![reg(&PICK_A1)], World::replies(vec![Reply::Hang]));
 
         // FALSE AT THE FIRST ASK, TRUE AFTER — otherwise the sweep would
         // break before it ever started a case and this test would pass
@@ -4583,7 +4657,10 @@ mod tests {
         assert_eq!(b.n_calls(), 1);
         assert!(*asks.lock().expect("asks") > 1);
         assert_eq!(stopped.state, EvalSweepState::Stopped);
-        assert!(at.elapsed().as_secs() < 5, "stop must outrun the case budget");
+        assert!(
+            at.elapsed().as_secs() < 5,
+            "stop must outrun the case budget"
+        );
         assert!(stopped.cases.is_empty());
     }
 
@@ -4595,7 +4672,7 @@ mod tests {
         // statement available: it cannot tell a slow model from a request
         // that never came back from a case that spent its budget on retries
         // from time that never reached the provider at all.
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![Reply::Hang]));
+        let b = bench(vec![reg(&PICK_A1)], World::replies(vec![Reply::Hang]));
 
         let sweep = sweep_with(&b, "candidate", |o| {
             o.case_timeout_ms = Some(60);
@@ -4612,13 +4689,22 @@ mod tests {
         assert!(!upstream.is_empty());
         assert!(upstream.iter().all(|u| !u.settled));
         let detail = c.error.as_deref().unwrap_or("");
-        assert!(detail.contains("upstream call"), "the detail says what waited: {detail}");
-        assert!(detail.contains("still had no reply"), "the detail says how long: {detail}");
+        assert!(
+            detail.contains("upstream call"),
+            "the detail says what waited: {detail}"
+        );
+        assert!(
+            detail.contains("still had no reply"),
+            "the detail says how long: {detail}"
+        );
         // A request that never came back is UNMEASURED, not a slow model: the
         // skip carries that sentence and `error` keeps the diagnostic, so the
         // cell neither scores the model nor hides what happened.
         assert!(
-            c.skipped.as_deref().unwrap_or("").contains("never answered"),
+            c.skipped
+                .as_deref()
+                .unwrap_or("")
+                .contains("never answered"),
             "a lost request is recorded unmeasured: {:?}",
             c.skipped
         );
@@ -4633,7 +4719,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<(String, String, i64, usize)>>> = Arc::new(Mutex::new(Vec::new()));
         let seen_cb = seen.clone();
         let b = bench(
-            vec![reg(&*PICK_A1)],
+            vec![reg(&PICK_A1)],
             World::replies(vec![obj("a")]).on_call(Arc::new(move |_call| {
                 for f in in_flight_for("candidate") {
                     seen_cb.lock().expect("seen").push((
@@ -4653,7 +4739,10 @@ mod tests {
         assert_eq!(seen[0].0, "picker");
         assert_eq!(seen[0].1, "echoes the id");
         assert!(seen[0].2 >= 1, "the turn counter is live");
-        assert!(seen[0].3 > 0, "the turns are populated before the reply lands");
+        assert!(
+            seen[0].3 > 0,
+            "the turns are populated before the reply lands"
+        );
 
         // CLEARED. A "running now" that outlives its sweep makes a finished
         // run look wedged, which is the confusion this panel exists to
@@ -4666,7 +4755,7 @@ mod tests {
     async fn clears_the_in_flight_case_when_a_run_is_stopped_mid_case() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*PICK_A1)],
+            vec![reg(&PICK_A1)],
             World::replies(vec![Reply::Hang]).on_call(Arc::new(|_call| {
                 stop_eval_sweep(Some("candidate"));
             })),
@@ -4682,7 +4771,7 @@ mod tests {
         // sequential rule was protecting is preserved elsewhere — the width is
         // recorded so latency stays interpretable, and the pressure valve
         // below handles the deployment that cannot take it.
-        let b = bench(vec![reg(&*WIDE8)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&WIDE8)], World::replies(vec![obj("a")]));
         // Count overlap ACROSS the await, not at call arrival: the transport
         // holds each call open a little so concurrent lanes are genuinely
         // observable, and the high-water mark is taken while they are open.
@@ -4725,7 +4814,7 @@ mod tests {
         // resume ledger is a SET of case keys — so the thing to prove is that
         // the ledger and the counter still agree when the order is
         // scrambled.
-        let b = bench(vec![reg(&*WIDE6)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&WIDE6)], World::replies(vec![obj("a")]));
 
         let sweep = sweep_with(&b, "candidate", |o| o.concurrency = Some(4)).await;
 
@@ -4755,7 +4844,7 @@ mod tests {
         // report carries the reason.
         let seq = Arc::new(Mutex::new(0usize));
         let seq_wrap = seq.clone();
-        let b = bench(vec![reg(&*WIDE8)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&WIDE8)], World::replies(vec![obj("a")]));
         let base = b.transport.clone();
         let throttled = b.rebuilt(move |r| {
             r.transport = Arc::new(move |req| {
@@ -4809,7 +4898,7 @@ mod tests {
         let live = Arc::new(std::sync::atomic::AtomicIsize::new(0));
         let seq = Arc::new(Mutex::new(0usize));
         let samples: Arc<Mutex<Vec<(usize, isize)>>> = Arc::new(Mutex::new(Vec::new()));
-        let b = bench(vec![reg(&*WIDE40)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&WIDE40)], World::replies(vec![obj("a")]));
         let base = b.transport.clone();
         let live_wrap = live.clone();
         let seq_wrap = seq.clone();
@@ -4882,7 +4971,7 @@ mod tests {
         // hundred and forty cases strictly sequentially. The archive said so
         // plainly — `requested: 4, ended: 1` — and nobody was told.
         let seq = Arc::new(Mutex::new(0usize));
-        let b = bench(vec![reg(&*WIDE40)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&WIDE40)], World::replies(vec![obj("a")]));
         let base = b.transport.clone();
         let seq_wrap = seq.clone();
         let flaky = b.rebuilt(move |r| {
@@ -4934,7 +5023,7 @@ mod tests {
         // is refused, so the sweep never assembles a clean streak long
         // enough to climb.
         let seq = Arc::new(Mutex::new(0usize));
-        let b = bench(vec![reg(&*WIDE40)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&WIDE40)], World::replies(vec![obj("a")]));
         let base = b.transport.clone();
         let seq_wrap = seq.clone();
         let busy = b.rebuilt(move |r| {
@@ -4979,7 +5068,7 @@ mod tests {
         // badly. Scoring one as a contract failure is the same category error
         // as scoring a 401 as a model that cannot hold JSON.
         let call = Arc::new(Mutex::new(0usize));
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK_A1)], World::replies(vec![obj("a")]));
         let base = b.transport.clone();
         let call_wrap = call.clone();
         let flaky = b.rebuilt(move |r| {
@@ -5021,7 +5110,7 @@ mod tests {
     #[tokio::test]
     async fn records_a_case_the_provider_never_let_us_ask_as_unmeasured() {
         let _sole = sole();
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK_A1)], World::replies(vec![obj("a")]));
         let blocked = b.rebuilt(|r| {
             r.transport = Arc::new(|_req| {
                 Box::pin(async {
@@ -5075,7 +5164,7 @@ mod tests {
         let filed: Arc<Mutex<Vec<(String, String, String, bool)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let pruned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let b = bench(vec![reg(&*PICK2)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK2)], World::replies(vec![obj("a")]));
         let filed_cb = filed.clone();
         let pruned_cb = pruned.clone();
 
@@ -5105,7 +5194,10 @@ mod tests {
         // BOTH of them, and both passed — the case the old rule discarded.
         let filed = filed.lock().expect("filed").clone();
         assert_eq!(
-            filed.iter().map(|(_, _, c, _)| c.as_str()).collect::<Vec<_>>(),
+            filed
+                .iter()
+                .map(|(_, _, c, _)| c.as_str())
+                .collect::<Vec<_>>(),
             vec!["one", "two"]
         );
         assert!(filed.iter().all(|(_, _, _, passed)| *passed));
@@ -5120,7 +5212,7 @@ mod tests {
     async fn files_a_resumed_sweep_under_the_original_run() {
         let _sole = sole();
         let b = bench(
-            vec![reg(&*FIRST2)],
+            vec![reg(&FIRST2)],
             World::replies(vec![obj("a")]).on_call(Arc::new(|call| {
                 if call == 1 {
                     stop_eval_sweep(Some("candidate"));
@@ -5166,7 +5258,7 @@ mod tests {
         // wants after a bad run: resume has nothing pending (every case is
         // recorded) and restart re-buys two hundred and forty-two cases to
         // re-ask five.
-        let b = bench(vec![reg(&*PICK3_MIX)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK3_MIX)], World::replies(vec![obj("a")]));
         let first = sweep_with(&b, "candidate", |o| o.concurrency = Some(1)).await;
         // 'two' wants 'b' and every reply is 'a', so its CONTRACT breaks and
         // the other two pass.
@@ -5207,7 +5299,7 @@ mod tests {
         // throttle below tells them apart: the rendered prompt is `pick
         // <want>`.
         let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let b = bench(vec![reg(&*MIXED2)], World::default());
+        let b = bench(vec![reg(&MIXED2)], World::default());
         let busy_wrap = busy.clone();
         let gated = b.rebuilt(move |r| {
             r.transport = Arc::new(move |req| {
@@ -5268,7 +5360,10 @@ mod tests {
         // observed-vs-tested compares. So it cannot answer either question a
         // speed comparison asks: what did the case cost (retries included),
         // and what was running alongside it.
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![Reply::Hang, obj("a")]));
+        let b = bench(
+            vec![reg(&PICK_A1)],
+            World::replies(vec![Reply::Hang, obj("a")]),
+        );
 
         let before = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5284,7 +5379,11 @@ mod tests {
         // The first request vanished and was re-asked, so the case cost the
         // sweep far more than the surviving attempt's latency says.
         assert_eq!(b.n_calls(), 2);
-        assert!(c.wall_ms >= 40, "wallMs {} must cover the lost request", c.wall_ms);
+        assert!(
+            c.wall_ms >= 40,
+            "wallMs {} must cover the lost request",
+            c.wall_ms
+        );
         assert!(c.wall_ms > c.latency_ms);
         // And it is placeable on a timeline.
         let started = chrono::DateTime::parse_from_rfc3339(&c.started_at)
@@ -5306,13 +5405,13 @@ mod tests {
         // tested before them had no verdict on any. Resume cannot help (the
         // run is done, so nothing is pending) and restart re-buys everything
         // to ask the new ones.
-        let b = bench(vec![reg(&*PICK2)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK2)], World::replies(vec![obj("a")]));
         let first = sweep_with(&b, "candidate", |o| o.concurrency = Some(1)).await;
         assert_eq!(first.done, 2);
         let spent = b.n_calls();
 
         // A third fixture appears in the registry.
-        let grown = b.rebuilt(move |r| r.harnesses = vec![reg(&*PICK3)]);
+        let grown = b.rebuilt(move |r| r.harnesses = vec![reg(&PICK3)]);
 
         let after = sweep_with(&grown, "candidate", |o| {
             o.concurrency = Some(1);
@@ -5335,10 +5434,10 @@ mod tests {
         // matrix, which means the model is being judged on a question the
         // suite stopped asking. A supplemental pass is exactly the pass whose
         // subject is the difference between the ledger and the registry.
-        let b = bench(vec![reg(&*PICK3)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK3)], World::replies(vec![obj("a")]));
         sweep_with(&b, "candidate", |o| o.concurrency = Some(1)).await;
 
-        let shrunk = b.rebuilt(move |r| r.harnesses = vec![reg(&*PICK2)]);
+        let shrunk = b.rebuilt(move |r| r.harnesses = vec![reg(&PICK2)]);
         let after = sweep_with(&shrunk, "candidate", |o| {
             o.concurrency = Some(1);
             o.supplement = true;
@@ -5358,11 +5457,11 @@ mod tests {
         // computed from two hundred and forty inherited cases measured last
         // week at a different width — a number about neither this pass nor
         // this deployment.
-        let b = bench(vec![reg(&*PICK2)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK2)], World::replies(vec![obj("a")]));
         let first = sweep_with(&b, "candidate", |o| o.concurrency = Some(1)).await;
         assert_eq!(first.measured.len(), 2);
 
-        let grown = b.rebuilt(move |r| r.harnesses = vec![reg(&*PICK3)]);
+        let grown = b.rebuilt(move |r| r.harnesses = vec![reg(&PICK3)]);
         let after = sweep_with(&grown, "candidate", |o| {
             o.concurrency = Some(1);
             o.supplement = true;
@@ -5372,7 +5471,11 @@ mod tests {
         // The ledger is whole; the MEASUREMENT is just the new one.
         assert_eq!(after.cases.len(), 3);
         assert_eq!(
-            after.measured.iter().map(|c| c.case.as_str()).collect::<Vec<_>>(),
+            after
+                .measured
+                .iter()
+                .map(|c| c.case.as_str())
+                .collect::<Vec<_>>(),
             vec!["three"]
         );
     }
@@ -5436,7 +5539,7 @@ mod tests {
             tool: "web_search".into(),
         };
         let b = bench_ex(
-            vec![reg(&*SEARCH_TOOL_OK)],
+            vec![reg(&SEARCH_TOOL_OK)],
             World {
                 missing: vec!["search".into()],
                 ..Default::default()
@@ -5534,7 +5637,7 @@ mod tests {
             })
         });
         let b = bench_ex(
-            vec![reg(&*SEARCH_GAP)],
+            vec![reg(&SEARCH_GAP)],
             World {
                 missing: vec!["search".into()],
                 ..Default::default()
@@ -5559,7 +5662,12 @@ mod tests {
         let sweep = sweep_with(&b, "candidate", |o| o.concurrency = Some(1)).await;
 
         let one = &sweep.cases[0];
-        assert!(one.gap.as_deref().unwrap_or("").contains("returned nothing citable"));
+        assert!(
+            one.gap
+                .as_deref()
+                .unwrap_or("")
+                .contains("returned nothing citable")
+        );
         // NOT scored against the model: a gap is unscored, and `taskError`
         // is cleared so nothing downstream reads it as a wrong answer.
         assert_eq!(one.task, TaskVerdict::Unscored);
@@ -5592,7 +5700,7 @@ mod tests {
             })
         });
         let b = bench_ex(
-            vec![reg(&*SEARCH_MEM)],
+            vec![reg(&SEARCH_MEM)],
             World::default(),
             &Extra {
                 transport: Some(transport),
@@ -5623,7 +5731,7 @@ mod tests {
         // And the capability is not suppliable here, so the install cannot
         // stand a tool in for it and the refusal is final.
         let b = bench(
-            vec![reg(&*SEARCH_REFUSE)],
+            vec![reg(&SEARCH_REFUSE)],
             World {
                 missing: vec!["search".into()],
                 capability_false: true,
@@ -5637,7 +5745,12 @@ mod tests {
         // A SKIP carrying the runner's own refusal sentence, which every
         // consumer already reads as "no evidence" — not a contract failure
         // with a sentence about the model attached.
-        assert!(one.skipped.as_deref().unwrap_or("").contains("cannot run harness"));
+        assert!(
+            one.skipped
+                .as_deref()
+                .unwrap_or("")
+                .contains("cannot run harness")
+        );
         assert_eq!(one.task, TaskVerdict::Unscored);
         // And the harness's own column counts it as an absence rather than a
         // case.
@@ -5653,7 +5766,7 @@ mod tests {
         // 58ms each — the org's no-train policy pinned `provider.only` to
         // the US pool and that model is served only by alibaba. A real
         // finding, reported as a model that fails every harness.
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK_A1)], World::replies(vec![obj("a")]));
         let blocked = b.rebuilt(|r| {
             r.transport = Arc::new(|_req| {
                 Box::pin(async {
@@ -5669,7 +5782,12 @@ mod tests {
         let sweep = sweep_with(&blocked, "candidate", |o| o.concurrency = Some(1)).await;
         let c = &sweep.cases[0];
 
-        assert!(c.skipped.as_deref().unwrap_or("").contains("could not reach this model"));
+        assert!(
+            c.skipped
+                .as_deref()
+                .unwrap_or("")
+                .contains("could not reach this model")
+        );
         assert_eq!(c.task, TaskVerdict::Unscored);
         // Excluded from every rate, because nothing about the model was
         // measured.
@@ -5685,14 +5803,14 @@ mod tests {
         let calls = Arc::new(Mutex::new(0usize));
         let b = bench(
             vec![
-                reg(&*H0),
-                reg(&*H1),
-                reg(&*H2),
-                reg(&*H3),
-                reg(&*H4),
-                reg(&*H5),
-                reg(&*H6),
-                reg(&*H7),
+                reg(&H0),
+                reg(&H1),
+                reg(&H2),
+                reg(&H3),
+                reg(&H4),
+                reg(&H5),
+                reg(&H6),
+                reg(&H7),
             ],
             World::replies(vec![obj("a")]),
         );
@@ -5717,7 +5835,13 @@ mod tests {
         assert!(sweep.cases.len() < 8);
         // And it says why ONCE, rather than leaving it to be inferred from a
         // wall of identical case errors.
-        assert!(sweep.error.as_deref().unwrap_or("").contains("could not reach this model"));
+        assert!(
+            sweep
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("could not reach this model")
+        );
     }
 
     #[tokio::test]
@@ -5727,7 +5851,7 @@ mod tests {
         // streak is what makes it a fact about the whole run.
         let n = Arc::new(Mutex::new(0usize));
         let b = bench(
-            vec![reg(&*H0), reg(&*H1), reg(&*H2), reg(&*H3), reg(&*H4), reg(&*H5)],
+            vec![reg(&H0), reg(&H1), reg(&H2), reg(&H3), reg(&H4), reg(&H5)],
             World::replies(vec![obj("a")]),
         );
         let base = b.transport.clone();
@@ -5758,14 +5882,21 @@ mod tests {
     #[tokio::test]
     async fn names_the_harnesses_no_fixture_ever_tests() {
         let _sole = sole();
-        let b = bench(vec![reg(&*BARE), reg(&*PICK_A1)], World::replies(vec![obj("a")]));
+        let b = bench(
+            vec![reg(&BARE), reg(&PICK_A1)],
+            World::replies(vec![obj("a")]),
+        );
 
         let sweep = sweep(&b, "candidate").await;
         // Not passing and not failing — invisible, which an admin reading a
         // green matrix has to be told.
         assert_eq!(sweep.unfixtured, vec!["bare"]);
         assert_eq!(
-            sweep.harnesses.iter().map(|s| s.meta.id.as_str()).collect::<Vec<_>>(),
+            sweep
+                .harnesses
+                .iter()
+                .map(|s| s.meta.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["picker"]
         );
     }
@@ -5773,7 +5904,7 @@ mod tests {
     #[tokio::test]
     async fn prices_what_it_spent_and_carries_the_token_counts_through() {
         let _sole = sole();
-        let b = bench(vec![reg(&*PICK_A1)], World::replies(vec![obj("a")]));
+        let b = bench(vec![reg(&PICK_A1)], World::replies(vec![obj("a")]));
 
         let sweep = sweep_with(&b, "candidate", |o| {
             o.only = Some(vec!["picker".into()]);
@@ -5851,11 +5982,13 @@ mod tests {
         // Every case that FAILED something carries the drill-down an admin
         // needs — the actual prompt and the actual reply, which is what makes
         // a red cell trustworthy instead of merely alarming.
-        assert!(sweep
-            .cases
-            .iter()
-            .filter(|c| c.task != TaskVerdict::Pass && c.skipped.is_none())
-            .all(|c| c.prompt.is_some()));
+        assert!(
+            sweep
+                .cases
+                .iter()
+                .filter(|c| c.task != TaskVerdict::Pass && c.skipped.is_none())
+                .all(|c| c.prompt.is_some())
+        );
     }
 
     #[test]
@@ -5863,14 +5996,14 @@ mod tests {
         // `verifies` is the tell for an `optimistic` count that is a bug
         // rather than a quality score: a harness with no `verify` has no way
         // to state the half of its contract a schema cannot.
-        assert!(!meta_of(&reg(&*NAKED)).verifies);
-        assert!(meta_of(&reg(&*PICK_A1)).verifies);
+        assert!(!meta_of(&reg(&NAKED)).verifies);
+        assert!(meta_of(&reg(&PICK_A1)).verifies);
 
         // And whether a repair turn is even reachable, which follows
         // `maxRepairs` in the runner rather than a second reading of the same
         // rule.
-        assert!(meta_of(&reg(&*NAKED)).repairable);
-        assert!(!meta_of(&reg(&*BARE)).repairable);
+        assert!(meta_of(&reg(&NAKED)).repairable);
+        assert!(!meta_of(&reg(&BARE)).repairable);
     }
 
     // ── The clock a case races ──────────────────────────────────────────────
@@ -5907,9 +6040,8 @@ mod tests {
 
     #[test]
     fn skip_reason_names_what_the_candidate_cannot_do() {
-        let reason =
-            harness_skip_reason("Picker", Some(ToolPolicy::Own), "gw/model", false, false)
-                .expect("nothing can drive the loop");
+        let reason = harness_skip_reason("Picker", Some(ToolPolicy::Own), "gw/model", false, false)
+            .expect("nothing can drive the loop");
         assert!(reason.contains("neither run its own nor be handed tool definitions"));
         assert!(reason.contains("nothing here is a measurement of it"));
         // A model that can be handed definitions is dry-run instead, and one

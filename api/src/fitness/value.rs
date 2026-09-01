@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use crate::fitness::evals::HarnessScore;
 use crate::fitness::observed::ObservedHarness;
 use crate::fitness::score::{
-    band_order, harness_bands, slot_key, FitnessBand, FitnessReport, SlotBinding, SlotKind,
+    FitnessBand, FitnessReport, SlotBinding, SlotKind, band_order, harness_bands, slot_key,
 };
 use crate::fitness::surface::{FitnessIndex, FitnessIndexEntry, ModelPrice, TokenBudget};
 use crate::harness::registry::RegisteredHarness;
@@ -168,8 +168,10 @@ pub fn workload_from(
         // observed basis an unfixtured harness with real traffic is a real hole
         // and is reported as one; inventing traffic for it here would
         // manufacture the hole instead of finding it.
-        let fixtured: Vec<&RegisteredHarness> =
-            registry.iter().filter(|h| !h.def.evals.is_empty()).collect();
+        let fixtured: Vec<&RegisteredHarness> = registry
+            .iter()
+            .filter(|h| !h.def.evals.is_empty())
+            .collect();
         for h in &fixtured {
             runs.insert(h.def.id.to_string(), 1.0);
         }
@@ -243,18 +245,33 @@ pub fn tokens_for(
     // is free" would print a confident $0.00 for a model nobody has priced
     // anything about. The budget writer no longer records such an entry; this
     // also declines to read the ones already on disk.
-    let own = entry.and_then(|e| e.harnesses.as_ref()).and_then(|h| h.get(harness));
-    if let Some(own) = own {
-        if own.cases > 0 && own.prompt + own.completion > 0 {
-            return HarnessTokens { prompt: own.prompt, completion: own.completion, basis: TokenBasis::Model };
-        }
+    let own = entry
+        .and_then(|e| e.harnesses.as_ref())
+        .and_then(|h| h.get(harness));
+    if let Some(own) = own
+        && own.cases > 0
+        && own.prompt + own.completion > 0
+    {
+        return HarnessTokens {
+            prompt: own.prompt,
+            completion: own.completion,
+            basis: TokenBasis::Model,
+        };
     }
-    if let Some(shared) = budget.get(harness) {
-        if shared.prompt + shared.completion > 0 {
-            return HarnessTokens { prompt: shared.prompt, completion: shared.completion, basis: TokenBasis::Shared };
-        }
+    if let Some(shared) = budget.get(harness)
+        && shared.prompt + shared.completion > 0
+    {
+        return HarnessTokens {
+            prompt: shared.prompt,
+            completion: shared.completion,
+            basis: TokenBasis::Shared,
+        };
     }
-    HarnessTokens { prompt: 0, completion: 0, basis: TokenBasis::None }
+    HarnessTokens {
+        prompt: 0,
+        completion: 0,
+        basis: TokenBasis::None,
+    }
 }
 
 /// THE BAND THIS MODEL EARNED ON THIS HARNESS.
@@ -273,13 +290,17 @@ pub fn band_for(
     entry: Option<&FitnessIndexEntry>,
     slots_of: &HashMap<String, Vec<String>>,
 ) -> FitnessBand {
-    let Some(entry) = entry else { return FitnessBand::Untested };
+    let Some(entry) = entry else {
+        return FitnessBand::Untested;
+    };
     if let Some(own) = entry.harnesses.as_ref().and_then(|h| h.get(harness)) {
         return own.band;
     }
     let mut worst: Option<FitnessBand> = None;
     for key in slots_of.get(harness).into_iter().flatten() {
-        let Some(band) = entry.cells.get(key).map(|c| c.band) else { continue };
+        let Some(band) = entry.cells.get(key).map(|c| c.band) else {
+            continue;
+        };
         if worst.is_none_or(|w| band_order(band) < band_order(w)) {
             worst = Some(band);
         }
@@ -410,7 +431,11 @@ pub fn value_of(
     // case has a perfectly good $/MTok and not one measured token, and reporting
     // that as "$0 a day" would put the most expensive-looking model on the page
     // at the cheap end of the chart. No measurement, no figure.
-    let usd_per_day = if price.is_none() || priced_runs == 0.0 { None } else { Some(usd) };
+    let usd_per_day = if price.is_none() || priced_runs == 0.0 {
+        None
+    } else {
+        Some(usd)
+    };
     let ready_runs = shares.ready * total;
     ModelValue {
         model: model.to_string(),
@@ -423,7 +448,11 @@ pub fn value_of(
         },
         ready_share: shares.ready,
         usable_share: shares.ready + shares.workable,
-        cost_coverage: if total > 0.0 { priced_runs / total } else { 0.0 },
+        cost_coverage: if total > 0.0 {
+            priced_runs / total
+        } else {
+            0.0
+        },
         token_basis: if saw_own && !saw_shared {
             TokenBasis::Model
         } else if saw_own || saw_shared {
@@ -478,16 +507,14 @@ pub struct ArchivedRecord {
     pub harnesses: Vec<HarnessScore>,
 }
 
-pub type ObservedFn =
-    Arc<dyn Fn() -> BoxFut<Result<Vec<ObservedHarness>, String>> + Send + Sync>;
+pub type ObservedFn = Arc<dyn Fn() -> BoxFut<Result<Vec<ObservedHarness>, String>> + Send + Sync>;
 pub type HarnessesFn =
     Arc<dyn Fn() -> BoxFut<Result<Vec<RegisteredHarness>, String>> + Send + Sync>;
 pub type BindingsFn =
     Arc<dyn Fn(Vec<RegisteredHarness>) -> BoxFut<Result<Vec<SlotBinding>, String>> + Send + Sync>;
 pub type IndexFn = Arc<dyn Fn() -> BoxFut<Result<FitnessIndex, String>> + Send + Sync>;
 pub type BudgetFn = Arc<dyn Fn() -> BoxFut<Result<TokenBudget, String>> + Send + Sync>;
-pub type PriceFn =
-    Arc<dyn Fn(String) -> BoxFut<Result<Option<ModelPrice>, String>> + Send + Sync>;
+pub type PriceFn = Arc<dyn Fn(String) -> BoxFut<Result<Option<ModelPrice>, String>> + Send + Sync>;
 pub type RecordFn =
     Arc<dyn Fn(String) -> BoxFut<Result<Option<ArchivedRecord>, String>> + Send + Sync>;
 
@@ -529,12 +556,16 @@ async fn backfill(index: FitnessIndex, record: &RecordFn) -> FitnessIndex {
     }
     let mut filled = index;
     for model in stale {
-        let Some(entry) = filled.get(&model) else { continue };
+        let Some(entry) = filled.get(&model) else {
+            continue;
+        };
         // `entry.model`, not the KEY: the index is keyed by the id the catalog
         // offers and the report is filed under the id the run used. See
         // `stored_id_for` in surface.rs.
         let read_model = entry.model.clone();
-        let Some(rec) = (record)(read_model).await.ok().flatten() else { continue };
+        let Some(rec) = (record)(read_model).await.ok().flatten() else {
+            continue;
+        };
         if let Some(e) = filled.get_mut(&model) {
             e.harnesses = Some(harness_summary(&rec.report, &rec.harnesses));
         }
@@ -574,7 +605,14 @@ pub async fn value_view(deps: &ValueDeps) -> Result<ValueView, String> {
     let mut rows = Vec::with_capacity(models.len());
     for model in &models {
         let price = (deps.price)(model.clone()).await.ok().flatten();
-        rows.push(value_of(model, index.get(model), price, &workload, &budget, &slots_of));
+        rows.push(value_of(
+            model,
+            index.get(model),
+            price,
+            &workload,
+            &budget,
+            &slots_of,
+        ));
     }
 
     let mut slots = Vec::with_capacity(bindings.len());
@@ -605,29 +643,33 @@ pub async fn value_view(deps: &ValueDeps) -> Result<ValueView, String> {
                     if t.basis == TokenBasis::None {
                         continue;
                     }
-                    usd = Some(usd.unwrap_or(0.0)
-                        + (workload.runs.get(id).copied().unwrap_or(0.0)
-                            * ((t.prompt as f64) * price.in_per_mtok
-                                + (t.completion as f64) * price.out_per_mtok))
-                            / 1e6);
+                    usd = Some(
+                        usd.unwrap_or(0.0)
+                            + (workload.runs.get(id).copied().unwrap_or(0.0)
+                                * ((t.prompt as f64) * price.in_per_mtok
+                                    + (t.completion as f64) * price.out_per_mtok))
+                                / 1e6,
+                    );
                 }
             }
-            candidates.push(SlotCandidate { model: row.model.clone(), band, usd_per_day: usd });
+            candidates.push(SlotCandidate {
+                model: row.model.clone(),
+                band,
+                usd_per_day: usd,
+            });
         }
         candidates.sort_by(|a, b| {
-            band_order(b.band)
-                .cmp(&band_order(a.band))
-                .then_with(|| match (a.usd_per_day, b.usd_per_day) {
+            band_order(b.band).cmp(&band_order(a.band)).then_with(|| {
+                match (a.usd_per_day, b.usd_per_day) {
                     // An unpriced candidate sorts last within its band: it may
                     // well be the cheapest, and a page that ranked it first
                     // would be guessing.
                     (None, None) => a.model.cmp(&b.model),
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (Some(_), None) => std::cmp::Ordering::Less,
-                    (Some(x), Some(y)) => {
-                        x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                })
+                    (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                }
+            })
         });
         let best = candidates
             .iter()
@@ -675,14 +717,14 @@ mod tests {
     // async; everything else is plain arithmetic.
     use super::*;
     use crate::fitness::evals::{BandScores, HarnessMeta};
-    use crate::fitness::score::{BoundHarness, BindingVia, FitnessSlot};
+    use crate::fitness::score::{BindingVia, BoundHarness, FitnessSlot};
     use crate::fitness::surface::{FitnessCell, TierId};
     use crate::harness::define::{
         CheckCtx, CheckResult, EvalCase, HarnessDefinition, OnFailure, Output, RenderContext,
     };
     use crate::harness::registry::HarnessSource;
     use crate::harness::schema::Schema;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::sync::Mutex;
 
     fn close(a: f64, b: f64) {
@@ -708,7 +750,12 @@ mod tests {
                 user_id: None,
             },
             Arc::new(|_input: &Value, _ctx: &RenderContext| Ok(Vec::new())),
-            Output::Json { schema: Schema::string(), preprocess: None, repair: None, verify: None },
+            Output::Json {
+                schema: Schema::string(),
+                preprocess: None,
+                repair: None,
+                verify: None,
+            },
             OnFailure::Null,
         );
         def.evals = (0..fixtures)
@@ -720,7 +767,10 @@ mod tests {
                 )
             })
             .collect();
-        RegisteredHarness { def: Box::leak(Box::new(def)), source: HarnessSource::Builtin }
+        RegisteredHarness {
+            def: Box::leak(Box::new(def)),
+            source: HarnessSource::Builtin,
+        }
     }
 
     fn observed(id: &str, runs: i64) -> ObservedHarness {
@@ -766,7 +816,12 @@ mod tests {
     }
 
     fn summary(band: FitnessBand, cases: i64, prompt: i64, completion: i64) -> HarnessSummary {
-        HarnessSummary { band, cases, prompt, completion }
+        HarnessSummary {
+            band,
+            cases,
+            prompt,
+            completion,
+        }
     }
 
     fn slot_fixture(kind: SlotKind, id: &str) -> FitnessSlot {
@@ -786,10 +841,16 @@ mod tests {
 
     fn slot_binding_as(kind: SlotKind, id: &str, harnesses: &[&str], label: &str) -> SlotBinding {
         SlotBinding {
-            slot: FitnessSlot { label: label.to_string(), ..slot_fixture(kind, id) },
+            slot: FitnessSlot {
+                label: label.to_string(),
+                ..slot_fixture(kind, id)
+            },
             harnesses: harnesses
                 .iter()
-                .map(|h| BoundHarness { id: h.to_string(), via: BindingVia::Chain })
+                .map(|h| BoundHarness {
+                    id: h.to_string(),
+                    via: BindingVia::Chain,
+                })
                 .collect(),
         }
     }
@@ -865,7 +926,11 @@ mod tests {
     #[test]
     fn workload_divides_observed_runs_by_the_window_summing_across_models() {
         let w = workload_from(
-            &[observed_by("ticket", 300, "a"), observed_by("ticket", 300, "b"), observed("brief", 30)],
+            &[
+                observed_by("ticket", 300, "a"),
+                observed_by("ticket", 300, "b"),
+                observed("brief", 30),
+            ],
             &[harness("ticket", 2), harness("brief", 2)],
             30,
         );
@@ -911,7 +976,11 @@ mod tests {
     fn workload_falls_back_to_one_run_of_every_fixtured_harness_when_production_is_idle() {
         let w = workload_from(
             &[],
-            &[harness("ticket", 2), harness("brief", 2), harness("unscorable", 0)],
+            &[
+                harness("ticket", 2),
+                harness("brief", 2),
+                harness("unscorable", 0),
+            ],
             30,
         );
 
@@ -927,11 +996,14 @@ mod tests {
 
     fn budget() -> TokenBudget {
         let mut b = TokenBudget::new();
-        b.insert("ticket".to_string(), crate::fitness::surface::TokenBudgetEntry {
-            prompt: 1000,
-            completion: 100,
-            at: "x".to_string(),
-        });
+        b.insert(
+            "ticket".to_string(),
+            crate::fitness::surface::TokenBudgetEntry {
+                prompt: 1000,
+                completion: 100,
+                at: "x".to_string(),
+            },
+        );
         b
     }
 
@@ -947,7 +1019,11 @@ mod tests {
 
         assert_eq!(
             tokens_for("ticket", Some(&e), &budget()),
-            HarnessTokens { prompt: 900, completion: 400, basis: TokenBasis::Model }
+            HarnessTokens {
+                prompt: 900,
+                completion: 400,
+                basis: TokenBasis::Model
+            }
         );
     }
 
@@ -966,7 +1042,11 @@ mod tests {
 
         assert_eq!(
             tokens_for("ticket", Some(&e), &budget()),
-            HarnessTokens { prompt: 1000, completion: 100, basis: TokenBasis::Shared }
+            HarnessTokens {
+                prompt: 1000,
+                completion: 100,
+                basis: TokenBasis::Shared
+            }
         );
     }
 
@@ -974,7 +1054,11 @@ mod tests {
     fn tokens_report_nothing_measured_rather_than_zero() {
         assert_eq!(
             tokens_for("brief", Some(&entry()), &budget()),
-            HarnessTokens { prompt: 0, completion: 0, basis: TokenBasis::None }
+            HarnessTokens {
+                prompt: 0,
+                completion: 0,
+                basis: TokenBasis::None
+            }
         );
     }
 
@@ -985,12 +1069,18 @@ mod tests {
         // token moved, and wrote 0/0 for 26 harnesses. Read as real, it prints
         // a confident $0.00 for every model on the page.
         let mut zeroed_budget = TokenBudget::new();
-        zeroed_budget.insert("ticket".to_string(), crate::fitness::surface::TokenBudgetEntry {
-            prompt: 0,
-            completion: 0,
-            at: "x".to_string(),
-        });
-        assert_eq!(tokens_for("ticket", Some(&entry()), &zeroed_budget).basis, TokenBasis::None);
+        zeroed_budget.insert(
+            "ticket".to_string(),
+            crate::fitness::surface::TokenBudgetEntry {
+                prompt: 0,
+                completion: 0,
+                at: "x".to_string(),
+            },
+        );
+        assert_eq!(
+            tokens_for("ticket", Some(&entry()), &zeroed_budget).basis,
+            TokenBasis::None
+        );
 
         let zeroed = FitnessIndexEntry {
             harnesses: Some(HashMap::from([(
@@ -999,11 +1089,18 @@ mod tests {
             )])),
             ..entry()
         };
-        assert_eq!(tokens_for("ticket", Some(&zeroed), &TokenBudget::new()).basis, TokenBasis::None);
+        assert_eq!(
+            tokens_for("ticket", Some(&zeroed), &TokenBudget::new()).basis,
+            TokenBasis::None
+        );
         // …and still falls through to a shared budget that DOES have numbers.
         assert_eq!(
             tokens_for("ticket", Some(&zeroed), &budget()),
-            HarnessTokens { prompt: 1000, completion: 100, basis: TokenBasis::Shared }
+            HarnessTokens {
+                prompt: 1000,
+                completion: 100,
+                basis: TokenBasis::Shared
+            }
         );
     }
 
@@ -1033,7 +1130,10 @@ mod tests {
     fn harness_summary_averages_tokens_per_case_and_keeps_the_worst_band() {
         let out = harness_summary(
             &report(),
-            &[score_like("ticket", 4, 4000, 800), score_like("subject-bound", 2, 1000, 500)],
+            &[
+                score_like("ticket", 4, 4000, 800),
+                score_like("subject-bound", 2, 1000, 500),
+            ],
         );
 
         assert_eq!(
@@ -1052,7 +1152,10 @@ mod tests {
     fn harness_summary_records_a_judged_but_unswept_harness_without_dividing_by_zero() {
         let out = harness_summary(&report(), &[]);
 
-        assert_eq!(out.get("ticket"), Some(&summary(FitnessBand::Workable, 0, 0, 0)));
+        assert_eq!(
+            out.get("ticket"),
+            Some(&summary(FitnessBand::Workable, 0, 0, 0))
+        );
     }
 
     // ── Bands ─────────────────────────────────────────────────────────────────
@@ -1072,7 +1175,10 @@ mod tests {
             ..entry()
         };
 
-        assert_eq!(band_for("ticket", Some(&e), &slots_of), FitnessBand::Workable);
+        assert_eq!(
+            band_for("ticket", Some(&e), &slots_of),
+            FitnessBand::Workable
+        );
     }
 
     #[test]
@@ -1091,7 +1197,10 @@ mod tests {
             ..entry()
         };
 
-        assert_eq!(band_for("ticket", Some(&e), &slots_of), FitnessBand::Workable);
+        assert_eq!(
+            band_for("ticket", Some(&e), &slots_of),
+            FitnessBand::Workable
+        );
     }
 
     #[test]
@@ -1102,7 +1211,10 @@ mod tests {
             cells: HashMap::from([("role:lenient".to_string(), cell(FitnessBand::Ready))]),
             ..entry()
         };
-        assert_eq!(band_for("subject-bound", Some(&e), &slots_of), FitnessBand::Untested);
+        assert_eq!(
+            band_for("subject-bound", Some(&e), &slots_of),
+            FitnessBand::Untested
+        );
     }
 
     // ── One model's row ───────────────────────────────────────────────────────
@@ -1125,21 +1237,37 @@ mod tests {
     fn tested_entry() -> FitnessIndexEntry {
         FitnessIndexEntry {
             harnesses: Some(HashMap::from([
-                ("ticket".to_string(), summary(FitnessBand::Ready, 4, 1000, 200)),
-                ("brief".to_string(), summary(FitnessBand::Unfit, 4, 500, 1000)),
+                (
+                    "ticket".to_string(),
+                    summary(FitnessBand::Ready, 4, 1000, 200),
+                ),
+                (
+                    "brief".to_string(),
+                    summary(FitnessBand::Unfit, 4, 500, 1000),
+                ),
             ])),
             ..entry()
         }
     }
 
     fn price() -> ModelPrice {
-        ModelPrice { in_per_mtok: 1.0, out_per_mtok: 4.0 }
+        ModelPrice {
+            in_per_mtok: 1.0,
+            out_per_mtok: 4.0,
+        }
     }
 
     #[test]
     fn value_prices_the_measured_day_and_reports_the_shares_it_is_priced_over() {
         let (workload, slots_of) = value_fixture();
-        let v = value_of("m", Some(&tested_entry()), Some(price()), &workload, &TokenBudget::new(), &slots_of);
+        let v = value_of(
+            "m",
+            Some(&tested_entry()),
+            Some(price()),
+            &workload,
+            &TokenBudget::new(),
+            &slots_of,
+        );
 
         // ticket: 20 runs × (1000 × $1 + 200 × $4) / 1e6 = $0.036
         // brief:   1 run  × (500  × $1 + 1000 × $4) / 1e6 = $0.0045
@@ -1154,7 +1282,14 @@ mod tests {
     #[test]
     fn value_divides_cost_by_the_runs_it_is_actually_trusted_with() {
         let (workload, slots_of) = value_fixture();
-        let v = value_of("m", Some(&tested_entry()), Some(price()), &workload, &TokenBudget::new(), &slots_of);
+        let v = value_of(
+            "m",
+            Some(&tested_entry()),
+            Some(price()),
+            &workload,
+            &TokenBudget::new(),
+            &slots_of,
+        );
 
         close(v.usd_per_ready_run.unwrap(), 0.0405 / 20.0);
     }
@@ -1171,7 +1306,14 @@ mod tests {
             )])),
             ..entry()
         };
-        let v = value_of("m", Some(&useless), Some(price()), &workload, &TokenBudget::new(), &slots_of);
+        let v = value_of(
+            "m",
+            Some(&useless),
+            Some(price()),
+            &workload,
+            &TokenBudget::new(),
+            &slots_of,
+        );
 
         assert!(v.usd_per_day.unwrap() > 0.0);
         assert_eq!(v.usd_per_ready_run, None);
@@ -1187,7 +1329,14 @@ mod tests {
             )])),
             ..entry()
         };
-        let v = value_of("m", Some(&partial), Some(price()), &workload, &TokenBudget::new(), &slots_of);
+        let v = value_of(
+            "m",
+            Some(&partial),
+            Some(price()),
+            &workload,
+            &TokenBudget::new(),
+            &slots_of,
+        );
 
         close(v.cost_coverage, 20.0 / 21.0);
         close(v.usd_per_day.unwrap(), 0.036);
@@ -1204,12 +1353,22 @@ mod tests {
             ..entry()
         };
         let mut budget = TokenBudget::new();
-        budget.insert("brief".to_string(), crate::fitness::surface::TokenBudgetEntry {
-            prompt: 500,
-            completion: 1000,
-            at: "x".to_string(),
-        });
-        let v = value_of("m", Some(&partial), Some(price()), &workload, &budget, &slots_of);
+        budget.insert(
+            "brief".to_string(),
+            crate::fitness::surface::TokenBudgetEntry {
+                prompt: 500,
+                completion: 1000,
+                at: "x".to_string(),
+            },
+        );
+        let v = value_of(
+            "m",
+            Some(&partial),
+            Some(price()),
+            &workload,
+            &budget,
+            &slots_of,
+        );
 
         close(v.cost_coverage, 1.0);
         assert_eq!(v.token_basis, TokenBasis::Shared);
@@ -1218,7 +1377,14 @@ mod tests {
     #[test]
     fn value_leaves_an_unpriced_model_off_the_cost_axis_rather_than_at_zero() {
         let (workload, slots_of) = value_fixture();
-        let v = value_of("m", Some(&tested_entry()), None, &workload, &TokenBudget::new(), &slots_of);
+        let v = value_of(
+            "m",
+            Some(&tested_entry()),
+            None,
+            &workload,
+            &TokenBudget::new(),
+            &slots_of,
+        );
 
         assert_eq!(v.usd_per_day, None);
         assert_eq!(v.usd_per_ready_run, None);
@@ -1229,7 +1395,14 @@ mod tests {
     #[test]
     fn value_reports_a_never_tested_model_as_untested_across_the_whole_day() {
         let (workload, slots_of) = value_fixture();
-        let v = value_of("m", None, Some(price()), &workload, &TokenBudget::new(), &slots_of);
+        let v = value_of(
+            "m",
+            None,
+            Some(price()),
+            &workload,
+            &TokenBudget::new(),
+            &slots_of,
+        );
 
         close(v.shares.untested, 1.0);
         close(v.ready_share, 0.0);
@@ -1240,30 +1413,48 @@ mod tests {
 
     fn cheap_dear_index() -> FitnessIndex {
         let mut index = FitnessIndex::new();
-        index.insert("cheap".to_string(), FitnessIndexEntry {
-            model: "cheap".to_string(),
-            cells: HashMap::from([
-                ("role:worker".to_string(), cell(FitnessBand::Ready)),
-                ("role:writer".to_string(), cell(FitnessBand::Unfit)),
-            ]),
-            harnesses: Some(HashMap::from([
-                ("ticket".to_string(), summary(FitnessBand::Ready, 4, 1000, 200)),
-                ("brief".to_string(), summary(FitnessBand::Unfit, 4, 500, 1000)),
-            ])),
-            ..entry()
-        });
-        index.insert("dear".to_string(), FitnessIndexEntry {
-            model: "dear".to_string(),
-            cells: HashMap::from([
-                ("role:worker".to_string(), cell(FitnessBand::Ready)),
-                ("role:writer".to_string(), cell(FitnessBand::Ready)),
-            ]),
-            harnesses: Some(HashMap::from([
-                ("ticket".to_string(), summary(FitnessBand::Ready, 4, 1000, 200)),
-                ("brief".to_string(), summary(FitnessBand::Ready, 4, 500, 1000)),
-            ])),
-            ..entry()
-        });
+        index.insert(
+            "cheap".to_string(),
+            FitnessIndexEntry {
+                model: "cheap".to_string(),
+                cells: HashMap::from([
+                    ("role:worker".to_string(), cell(FitnessBand::Ready)),
+                    ("role:writer".to_string(), cell(FitnessBand::Unfit)),
+                ]),
+                harnesses: Some(HashMap::from([
+                    (
+                        "ticket".to_string(),
+                        summary(FitnessBand::Ready, 4, 1000, 200),
+                    ),
+                    (
+                        "brief".to_string(),
+                        summary(FitnessBand::Unfit, 4, 500, 1000),
+                    ),
+                ])),
+                ..entry()
+            },
+        );
+        index.insert(
+            "dear".to_string(),
+            FitnessIndexEntry {
+                model: "dear".to_string(),
+                cells: HashMap::from([
+                    ("role:worker".to_string(), cell(FitnessBand::Ready)),
+                    ("role:writer".to_string(), cell(FitnessBand::Ready)),
+                ]),
+                harnesses: Some(HashMap::from([
+                    (
+                        "ticket".to_string(),
+                        summary(FitnessBand::Ready, 4, 1000, 200),
+                    ),
+                    (
+                        "brief".to_string(),
+                        summary(FitnessBand::Ready, 4, 500, 1000),
+                    ),
+                ])),
+                ..entry()
+            },
+        );
         index
     }
 
@@ -1295,9 +1486,15 @@ mod tests {
             price: Arc::new(|model| {
                 Box::pin(async move {
                     Ok(if model == "cheap" {
-                        Some(ModelPrice { in_per_mtok: 0.1, out_per_mtok: 0.4 })
+                        Some(ModelPrice {
+                            in_per_mtok: 0.1,
+                            out_per_mtok: 0.4,
+                        })
                     } else {
-                        Some(ModelPrice { in_per_mtok: 10.0, out_per_mtok: 40.0 })
+                        Some(ModelPrice {
+                            in_per_mtok: 10.0,
+                            out_per_mtok: 40.0,
+                        })
                     })
                 })
             }),
@@ -1315,7 +1512,10 @@ mod tests {
         assert_eq!(names, ["cheap", "dear"]);
         assert_eq!(worker.best.as_deref(), Some("cheap"));
         // The slot's own bill, not the whole workload's: ticket only.
-        close(worker.candidates[0].usd_per_day.unwrap(), (20.0 * (1000.0 * 0.1 + 200.0 * 0.4)) / 1e6);
+        close(
+            worker.candidates[0].usd_per_day.unwrap(),
+            (20.0 * (1000.0 * 0.1 + 200.0 * 0.4)) / 1e6,
+        );
     }
 
     #[tokio::test]
@@ -1348,7 +1548,11 @@ mod tests {
         let mut deps = deps_default();
         let unswept = harness("unswept", 2);
         deps.observed = Arc::new(move || {
-            let rows = vec![observed("ticket", 30), observed("brief", 30), observed("unswept", 30)];
+            let rows = vec![
+                observed("ticket", 30),
+                observed("brief", 30),
+                observed("unswept", 30),
+            ];
             Box::pin(async move { Ok(rows) })
         });
         deps.harnesses = Arc::new(move || {
@@ -1369,7 +1573,11 @@ mod tests {
 
         assert!(!view.priced);
         assert!(view.models.iter().all(|m| m.usd_per_day.is_none()));
-        assert!(view.slots.iter().all(|s| s.candidates.iter().all(|c| c.usd_per_day.is_none())));
+        assert!(
+            view.slots
+                .iter()
+                .all(|s| s.candidates.iter().all(|c| c.usd_per_day.is_none()))
+        );
     }
 
     #[tokio::test]
@@ -1389,9 +1597,7 @@ mod tests {
         // Advisory data behind a page that must still render — the same
         // posture observed.rs takes for the matrix.
         let mut deps = deps_default();
-        deps.observed = Arc::new(|| {
-            Box::pin(async { Err("telemetry query threw".into()) })
-        });
+        deps.observed = Arc::new(|| Box::pin(async { Err("telemetry query threw".into()) }));
 
         let view = value_view(&deps).await.unwrap();
         assert_eq!(view.workload.basis, WorkloadBasis::Uniform);
@@ -1437,11 +1643,15 @@ mod tests {
         let row = &view.models[0];
         assert_eq!(row.token_basis, TokenBasis::Model);
         // `old` is not `cheap`, so it drew the dear 10/40 price.
-        close(row.usd_per_day.unwrap(), (20.0 * (1000.0 * 10.0 + 200.0 * 40.0)) / 1e6);
+        close(
+            row.usd_per_day.unwrap(),
+            (20.0 * (1000.0 * 10.0 + 200.0 * 40.0)) / 1e6,
+        );
     }
 
     #[tokio::test]
-    async fn the_view_reads_the_archive_once_per_entry_that_needs_it_and_never_for_one_that_does_not() {
+    async fn the_view_reads_the_archive_once_per_entry_that_needs_it_and_never_for_one_that_does_not()
+     {
         let asked = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut deps = deps_default();
         let sink = asked.clone();
@@ -1503,7 +1713,10 @@ mod tests {
         let v = value_of(
             "m",
             Some(&failed),
-            Some(ModelPrice { in_per_mtok: 10.0, out_per_mtok: 40.0 }),
+            Some(ModelPrice {
+                in_per_mtok: 10.0,
+                out_per_mtok: 40.0,
+            }),
             &workload,
             &TokenBudget::new(),
             &slots_of,
@@ -1517,15 +1730,18 @@ mod tests {
     #[tokio::test]
     async fn a_failed_run_says_the_same_thing_per_slot() {
         let mut index = FitnessIndex::new();
-        index.insert("failed".to_string(), FitnessIndexEntry {
-            model: "failed".to_string(),
-            cells: HashMap::from([("role:worker".to_string(), cell(FitnessBand::Ready))]),
-            harnesses: Some(HashMap::from([(
-                "ticket".to_string(),
-                summary(FitnessBand::Ready, 4, 0, 0),
-            )])),
-            ..entry()
-        });
+        index.insert(
+            "failed".to_string(),
+            FitnessIndexEntry {
+                model: "failed".to_string(),
+                cells: HashMap::from([("role:worker".to_string(), cell(FitnessBand::Ready))]),
+                harnesses: Some(HashMap::from([(
+                    "ticket".to_string(),
+                    summary(FitnessBand::Ready, 4, 0, 0),
+                )])),
+                ..entry()
+            },
+        );
         let deps = ValueDeps {
             observed: Arc::new(|| {
                 let rows = vec![observed("ticket", 600)];
@@ -1545,7 +1761,12 @@ mod tests {
             }),
             budget: Arc::new(|| Box::pin(async { Ok(TokenBudget::new()) })),
             price: Arc::new(|_m| {
-                Box::pin(async { Ok(Some(ModelPrice { in_per_mtok: 10.0, out_per_mtok: 40.0 })) })
+                Box::pin(async {
+                    Ok(Some(ModelPrice {
+                        in_per_mtok: 10.0,
+                        out_per_mtok: 40.0,
+                    }))
+                })
             }),
             record: Arc::new(|_m| Box::pin(async { Ok(None) })),
             window_days: 30,

@@ -45,9 +45,9 @@ use crate::secretbox::SecretBox;
 // the cost of the approximation is that an exotic suffix pins one label too
 // loosely.
 const MULTI_LABEL_SUFFIXES: [&str; 20] = [
-    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "com.au", "net.au", "org.au", "co.nz",
-    "co.jp", "co.kr", "co.za", "com.br", "com.mx", "com.sg", "com.hk", "com.tr", "co.in",
-    "com.cn", "com.tw",
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "com.au", "net.au", "org.au", "co.nz", "co.jp",
+    "co.kr", "co.za", "com.br", "com.mx", "com.sg", "com.hk", "com.tr", "co.in", "com.cn",
+    "com.tw",
 ];
 
 fn registrable_domain(host: &str) -> String {
@@ -215,9 +215,15 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
         };
         let meta_url = pin.check(&meta_url, "the resource metadata URL").ok()?;
 
-        let meta_r = safe_fetch(&meta_url, SafeFetch { timeout_ms: Some(8_000), ..Default::default() })
-            .await
-            .ok()?;
+        let meta_r = safe_fetch(
+            &meta_url,
+            SafeFetch {
+                timeout_ms: Some(8_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()?;
         if !(200..300).contains(&meta_r.status) {
             return None;
         }
@@ -228,7 +234,8 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
             .and_then(|a| a.first())
             .and_then(Value::as_str)?
             .to_string();
-        pin.check(&as_url, "the advertised authorization server").ok()?;
+        pin.check(&as_url, "the advertised authorization server")
+            .ok()?;
 
         // RFC 8414: for an issuer WITH a path (github.com/login/oauth), the
         // well-known segment goes BETWEEN host and path.
@@ -236,15 +243,34 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
         let as_path = as_parsed.path().trim_end_matches('/').to_string();
         let bare = format!("{as_url}/.well-known/openid-configuration");
         let mut candidates = vec![
-            format!("{}://{}{as_path}/.well-known/oauth-authorization-server", as_parsed.scheme(), as_parsed.host_str()?),
-            format!("{}://{}/.well-known/oauth-authorization-server", as_parsed.scheme(), as_parsed.host_str()?),
-            format!("{}://{}/.well-known/openid-configuration{as_path}", as_parsed.scheme(), as_parsed.host_str()?),
+            format!(
+                "{}://{}{as_path}/.well-known/oauth-authorization-server",
+                as_parsed.scheme(),
+                as_parsed.host_str()?
+            ),
+            format!(
+                "{}://{}/.well-known/oauth-authorization-server",
+                as_parsed.scheme(),
+                as_parsed.host_str()?
+            ),
+            format!(
+                "{}://{}/.well-known/openid-configuration{as_path}",
+                as_parsed.scheme(),
+                as_parsed.host_str()?
+            ),
             bare,
         ];
         candidates.dedup();
         let mut as_meta: Option<Value> = None;
         for c in &candidates {
-            let Ok(r) = safe_fetch(c, SafeFetch { timeout_ms: Some(8_000), ..Default::default() }).await
+            let Ok(r) = safe_fetch(
+                c,
+                SafeFetch {
+                    timeout_ms: Some(8_000),
+                    ..Default::default()
+                },
+            )
+            .await
             else {
                 continue;
             };
@@ -281,15 +307,29 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
         let mut cfg = Map::new();
         cfg.insert(
             "resource".into(),
-            meta.get("resource").cloned().unwrap_or(Value::String(server_url.into())),
+            meta.get("resource")
+                .cloned()
+                .unwrap_or(Value::String(server_url.into())),
         );
         cfg.insert(
             "authorizationEndpoint".into(),
-            Value::String(pin.check(&str_field(&as_meta, "authorization_endpoint")?, "the authorization endpoint").ok()?),
+            Value::String(
+                pin.check(
+                    &str_field(&as_meta, "authorization_endpoint")?,
+                    "the authorization endpoint",
+                )
+                .ok()?,
+            ),
         );
         cfg.insert(
             "tokenEndpoint".into(),
-            Value::String(pin.check(&str_field(&as_meta, "token_endpoint")?, "the token endpoint").ok()?),
+            Value::String(
+                pin.check(
+                    &str_field(&as_meta, "token_endpoint")?,
+                    "the token endpoint",
+                )
+                .ok()?,
+            ),
         );
         cfg.insert(
             "registrationEndpoint".into(),
@@ -528,9 +568,12 @@ pub async fn start_oauth(
     .await
     .map_err(|e| e.to_string())?;
 
-    let authorize = pin_to(server_url)?
-        .check(&str_field(&config, "authorizationEndpoint").unwrap_or_default(), "the authorization endpoint")?;
-    let mut url = reqwest::Url::parse(&authorize).map_err(|_| "the authorization endpoint is not a valid URL".to_string())?;
+    let authorize = pin_to(server_url)?.check(
+        &str_field(&config, "authorizationEndpoint").unwrap_or_default(),
+        "the authorization endpoint",
+    )?;
+    let mut url = reqwest::Url::parse(&authorize)
+        .map_err(|_| "the authorization endpoint is not a valid URL".to_string())?;
     let mut pairs: Vec<(String, String)> = url
         .query_pairs()
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -545,7 +588,11 @@ pub async fn start_oauth(
     set_param(&mut pairs, "state", &state);
     set_param(&mut pairs, "code_challenge", &challenge);
     set_param(&mut pairs, "code_challenge_method", "S256");
-    set_param(&mut pairs, "resource", &str_field(&config, "resource").unwrap_or_default());
+    set_param(
+        &mut pairs,
+        "resource",
+        &str_field(&config, "resource").unwrap_or_default(),
+    );
     let scopes: Vec<String> = config
         .get("scopes")
         .and_then(Value::as_array)
@@ -619,13 +666,7 @@ fn js_string_lossy(v: Option<&Value>) -> String {
 fn token_body(pairs: Vec<(&str, String)>) -> String {
     pairs
         .iter()
-        .map(|(k, v)| {
-            format!(
-                "{}={}",
-                k,
-                url_enc(v)
-            )
-        })
+        .map(|(k, v)| format!("{}={}", k, url_enc(v)))
         .collect::<Vec<_>>()
         .join("&")
 }
@@ -646,10 +687,7 @@ fn url_enc(s: &str) -> String {
     out
 }
 
-async fn token_post(
-    url: &str,
-    body: String,
-) -> Option<crate::safe_fetch::SafeResponse> {
+async fn token_post(url: &str, body: String) -> Option<crate::safe_fetch::SafeResponse> {
     safe_fetch(
         url,
         SafeFetch {
@@ -858,7 +896,10 @@ pub async fn oauth_token_for(
     }
     store_tokens(pg, sb, server_id, subject, &next).await?;
     Ok(Some(
-        next.get("accessToken").and_then(Value::as_str).unwrap_or_default().to_string(),
+        next.get("accessToken")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     ))
 }
 
@@ -930,8 +971,11 @@ mod tests {
     fn pinning_refuses_off_domain_and_accepts_trusted() {
         let pin = pin_to("https://mcp.linear.app/").unwrap();
         assert_eq!(
-            pin.check("https://linear.app/oauth/authorize", "the authorization endpoint")
-                .unwrap(),
+            pin.check(
+                "https://linear.app/oauth/authorize",
+                "the authorization endpoint"
+            )
+            .unwrap(),
             "https://linear.app/oauth/authorize"
         );
         // A different company on a sibling subdomain: refused, and the
@@ -943,11 +987,16 @@ mod tests {
             err,
             "the token endpoint points at evil.app, which is outside this server's own domain (linear.app), so it is refused"
         );
-        let err = pin.check("not a url", "the resource metadata URL").unwrap_err();
+        let err = pin
+            .check("not a url", "the resource metadata URL")
+            .unwrap_err();
         assert_eq!(err, "the resource metadata URL is not a valid URL");
         // The documented cross-domain issuer: GitHub's MCP server.
         let gh = pin_to("https://api.githubcopilot.com/mcp/").unwrap();
-        assert!(gh.check("https://github.com/login/oauth/authorize", "x").is_ok());
+        assert!(
+            gh.check("https://github.com/login/oauth/authorize", "x")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -958,7 +1007,10 @@ mod tests {
             ("a".into(), "3".into()),
         ];
         set_param(&mut pairs, "a", "9");
-        assert_eq!(pairs, vec![("a".into(), "9".into()), ("b".into(), "2".into())]);
+        assert_eq!(
+            pairs,
+            vec![("a".into(), "9".into()), ("b".into(), "2".into())]
+        );
         set_param(&mut pairs, "c", "4");
         assert_eq!(pairs.len(), 3);
         assert_eq!(pairs[2], ("c".into(), "4".into()));

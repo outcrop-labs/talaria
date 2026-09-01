@@ -5,14 +5,14 @@
 // DELETE → remove the endpoint, same double-opt-in flow (?force=1). An
 // agent's MAIN model is never cascaded — reassign it first.
 
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     as_object, optional_boolean_member, optional_string_array_member, parse,
     present_nullable_max_string_member,
 };
 use crate::error::{house_error, thrown_internal_error};
-use crate::fleet_cascade::{cascade_removal, model_usage, ModelUsage};
-use crate::gateway::registry::{delete_endpoint, list_endpoints, update_endpoint, EndpointPatch};
+use crate::fleet_cascade::{ModelUsage, cascade_removal, model_usage};
+use crate::gateway::registry::{EndpointPatch, delete_endpoint, list_endpoints, update_endpoint};
 use crate::price_oracle::kick_auto_prices;
 use crate::routes::fleet_endpoints::price_record;
 use crate::session::{actor_of, require_admin};
@@ -21,7 +21,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// summarize(usage) — the 409's blast radius, four keys in TS's order.
 fn summarize(usage: &[ModelUsage]) -> Vec<Value> {
@@ -128,7 +128,10 @@ pub async fn put(
         Ok(sb) => sb,
         Err(_) => return thrown_internal_error(),
     };
-    if let Err(_) = update_endpoint(&state.pg, &sb, &id, &patch.endpoint).await {
+    if update_endpoint(&state.pg, &sb, &id, &patch.endpoint)
+        .await
+        .is_err()
+    {
         return thrown_internal_error();
     }
     let actor = actor_of(&user);
@@ -178,9 +181,7 @@ pub async fn delete(
     };
     let force = uri
         .query()
-        .map(|q| {
-            q.split('&').any(|pair| pair == "force=1")
-        })
+        .map(|q| q.split('&').any(|pair| pair == "force=1"))
         .unwrap_or(false);
     let eps = match list_endpoints(&state.pg).await {
         Ok(e) => e,
@@ -200,7 +201,10 @@ pub async fn delete(
         let slugs: Vec<&str> = mains.iter().map(|m| m.slug.as_str()).collect();
         return house_error(
             StatusCode::BAD_REQUEST,
-            &format!("main model for: {} — reassign before deleting", slugs.join(", ")),
+            &format!(
+                "main model for: {} — reassign before deleting",
+                slugs.join(", ")
+            ),
         );
     }
     if !usage.is_empty() && !force {
@@ -365,15 +369,20 @@ fn nullish_nonneg(
 
 /// `z.record(z.string().max(k), z.array(z.string().min(1).max(24)).min(1).max(12))`.
 fn effort_record(v: &Value, key_max: usize) -> Result<Value, String> {
-    let map = v.as_object().ok_or_else(|| crate::body::record_msg("object"))?;
+    let map = v
+        .as_object()
+        .ok_or_else(|| crate::body::record_msg("object"))?;
     let mut out = serde_json::Map::new();
     for (k, val) in map {
         if crate::body::utf16_len(k) > key_max {
             return Err(crate::body::too_big_msg(key_max));
         }
-        let arr = val
-            .as_array()
-            .ok_or_else(|| format!("Invalid input: expected array, received {}", crate::body::zod_type_name(val)))?;
+        let arr = val.as_array().ok_or_else(|| {
+            format!(
+                "Invalid input: expected array, received {}",
+                crate::body::zod_type_name(val)
+            )
+        })?;
         if arr.is_empty() {
             return Err(crate::body::array_too_small_msg(1));
         }

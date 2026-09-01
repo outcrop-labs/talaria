@@ -391,11 +391,15 @@ pub async fn list_users_admin(pg: &PgPool) -> Result<Vec<serde_json::Value>, sql
         f.insert("id".into(), Value::String(r.try_get(0)?));
         f.insert(
             "email".into(),
-            r.try_get::<Option<String>, _>(1)?.map(Value::String).unwrap_or(Value::Null),
+            r.try_get::<Option<String>, _>(1)?
+                .map(Value::String)
+                .unwrap_or(Value::Null),
         );
         f.insert(
             "name".into(),
-            r.try_get::<Option<String>, _>(2)?.map(Value::String).unwrap_or(Value::Null),
+            r.try_get::<Option<String>, _>(2)?
+                .map(Value::String)
+                .unwrap_or(Value::Null),
         );
         f.insert("role".into(), Value::String(r.try_get(3)?));
         f.insert("canMintKeys".into(), Value::Bool(r.try_get(4)?));
@@ -416,7 +420,9 @@ pub async fn list_users_admin(pg: &PgPool) -> Result<Vec<serde_json::Value>, sql
         );
         f.insert(
             "assistantModel".into(),
-            r.try_get::<Option<String>, _>(11)?.map(Value::String).unwrap_or(Value::Null),
+            r.try_get::<Option<String>, _>(11)?
+                .map(Value::String)
+                .unwrap_or(Value::Null),
         );
         f.insert("assistantElevated".into(), Value::Bool(r.try_get(12)?));
         out.push(Value::Object(f));
@@ -435,10 +441,12 @@ pub async fn set_user_role(pg: &PgPool, user_id: &str, role: &str) -> Result<(),
 
 /// Admins currently holding the role — the last-admin guard's input.
 pub async fn admin_count(pg: &PgPool) -> Result<i32, sqlx::Error> {
-    Ok(sqlx::query_scalar::<_, i32>("select count(*)::int from users where role = 'admin'")
-        .fetch_one(pg)
-        .await
-        .unwrap_or(0))
+    Ok(
+        sqlx::query_scalar::<_, i32>("select count(*)::int from users where role = 'admin'")
+            .fetch_one(pg)
+            .await
+            .unwrap_or(0),
+    )
 }
 
 /// Grant/revoke the ability to mint LLM-gateway API keys (admins always may).

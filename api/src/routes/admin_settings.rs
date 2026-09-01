@@ -81,13 +81,15 @@ fn budget_limits(v: Option<&Value>) -> Result<Option<Value>, String> {
     // tokens is z.number().int() — a fraction fails it; 24.0-style floats
     // carry an integer value and PASS.
     let field =
-        |o: &serde_json::Map<String, Value>, key: &str, hi: f64, int: bool| -> Result<(), String>
-        {
+        |o: &serde_json::Map<String, Value>, key: &str, hi: f64, int: bool| -> Result<(), String> {
             match o.get(key) {
                 None | Some(Value::Null) => Ok(()), // nullish — kept verbatim below
                 Some(n) => {
                     let f = n.as_f64().ok_or_else(|| {
-                        format!("Invalid input: expected number, received {}", zod_type_name(n))
+                        format!(
+                            "Invalid input: expected number, received {}",
+                            zod_type_name(n)
+                        )
                     })?;
                     if int && f.fract() != 0.0 {
                         return Err("Invalid input: expected int, received number".into());
@@ -123,20 +125,13 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         string_msg, too_big_msg, too_small_msg, zod_type_name,
     };
     // Keys in the schema's order — zod surfaces the FIRST key's issue.
-    let audit_retention_days = optional_number_member(
-        obj,
-        "auditRetentionDays",
-        NumKind::Int,
-        0.0,
-        3650.0,
-    )?
-    .map(|f| f as i64);
+    let audit_retention_days =
+        optional_number_member(obj, "auditRetentionDays", NumKind::Int, 0.0, 3650.0)?
+            .map(|f| f as i64);
     let (org_present, org_name, org_about) = match obj.get("org") {
         None => (false, None, None),
         Some(v) => {
-            let o = v
-                .as_object()
-                .ok_or_else(|| object_msg(zod_type_name(v)))?;
+            let o = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
             let name = match o.get("name") {
                 None => None,
                 Some(n) => {
@@ -163,9 +158,7 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
     let member_models = match obj.get("memberModels") {
         None => None,
         Some(v) => {
-            let a = v
-                .as_array()
-                .ok_or_else(|| array_msg(zod_type_name(v)))?;
+            let a = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
             if a.len() > 200 {
                 return Err(array_too_big_msg(200));
             }
@@ -189,13 +182,10 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
     let llm_budgets = match obj.get("llmBudgets") {
         None => None,
         Some(b) => {
-            let o = b
-                .as_object()
-                .ok_or_else(|| object_msg(zod_type_name(b)))?;
+            let o = b.as_object().ok_or_else(|| object_msg(zod_type_name(b)))?;
             // z.number().int(): 24 passes, 24.5 fails, 24.0 passes too —
             // and the ORIGINAL number passes through to storage.
-            let window_hours =
-                number_member(o, "windowHours", NumKind::Int, 1.0, 8760.0)?;
+            let window_hours = number_member(o, "windowHours", NumKind::Int, 1.0, 8760.0)?;
             // zod's .default(): absent org/perAgent → null, absent agents → {}.
             let org = budget_limits(o.get("org"))?;
             let per_agent = budget_limits(o.get("perAgent"))?;
@@ -227,7 +217,10 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
             let assembled = |agents: serde_json::Map<String, Value>| {
                 Value::Object({
                     let mut m = serde_json::Map::new();
-                    m.insert("windowHours".into(), crate::body::js_num(window_hours).into());
+                    m.insert(
+                        "windowHours".into(),
+                        crate::body::js_num(window_hours).into(),
+                    );
                     m.insert("org".into(), org.clone().unwrap_or(Value::Null));
                     m.insert("perAgent".into(), per_agent.clone().unwrap_or(Value::Null));
                     m.insert("agents".into(), Value::Object(agents));
@@ -238,14 +231,9 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
             Some(assembled(stored_agents))
         }
     };
-    let cron_min_interval_minutes = optional_number_member(
-        obj,
-        "cronMinIntervalMinutes",
-        NumKind::Int,
-        0.0,
-        1440.0,
-    )?
-    .map(|f| f as i64);
+    let cron_min_interval_minutes =
+        optional_number_member(obj, "cronMinIntervalMinutes", NumKind::Int, 0.0, 1440.0)?
+            .map(|f| f as i64);
     Ok(PutBody {
         audit_retention_days,
         org_present,
@@ -332,7 +320,9 @@ pub async fn put(
     }
 
     if let Some(days) = body.audit_retention_days {
-        if let Err(e) = set_setting(&state.pg, "audit_retention_days", &serde_json::json!(days)).await {
+        if let Err(e) =
+            set_setting(&state.pg, "audit_retention_days", &serde_json::json!(days)).await
+        {
             tracing::error!("[admin/settings] retention write failed: {e}");
             return thrown_internal_error();
         }

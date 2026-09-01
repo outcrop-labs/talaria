@@ -38,7 +38,7 @@ use talaria_api::capability::{
     missing_capabilities,
 };
 use talaria_api::config::Config;
-use talaria_api::fitness::probes::{ProbeId, ProbeOpts, default_deps, runner_tool_ask, run_probes};
+use talaria_api::fitness::probes::{ProbeId, ProbeOpts, default_deps, run_probes, runner_tool_ask};
 use talaria_api::gateway::guard::{GuardConfig, GuardMode};
 use talaria_api::gateway::params::now_ms;
 use talaria_api::harness::defs::inbox_focus::{
@@ -46,9 +46,7 @@ use talaria_api::harness::defs::inbox_focus::{
     allowed_focus_action_ids, inbox_command_harness,
 };
 use talaria_api::harness::run::{HarnessDeps, RunContext, TransportFn, run_harness};
-use talaria_api::harness::transport::{
-    TransportKind, TransportReply, TransportRequest, ToolCall,
-};
+use talaria_api::harness::transport::{ToolCall, TransportKind, TransportReply, TransportRequest};
 use talaria_api::state::AppState;
 
 // ── the scripted transport, and nothing else ─────────────────────────────────
@@ -124,14 +122,14 @@ fn harness_deps(pg: &sqlx::PgPool) -> HarnessDeps {
     HarnessDeps {
         // Never called: the context pins the model.
         resolve_model: Arc::new(|_spec, _user| {
-            Box::pin(async move { Option::<(String, talaria_api::harness_model::ModelChainStep)>::None })
+            Box::pin(
+                async move { Option::<(String, talaria_api::harness_model::ModelChainStep)>::None },
+            )
         }),
         slot_effort: Arc::new(|_slot, _model| Box::pin(async move { Option::<String>::None })),
         // The TS scripts routingFor to `{ endpoints: ['pl-main'], upstreamModel: m }`
         // — the key the widening gate derives is the KEY this file writes.
-        routing: Arc::new(|m: String| {
-            Box::pin(async move { (vec!["pl-main".to_string()], m) })
-        }),
+        routing: Arc::new(|m: String| Box::pin(async move { (vec!["pl-main".to_string()], m) })),
         persona_keys: Arc::new(|_m: String| Box::pin(async move { Vec::<String>::new() })),
         missing_capabilities: {
             let pg = pg.clone();
@@ -221,7 +219,9 @@ fn item() -> FocusHarnessItem {
 // ── the world ────────────────────────────────────────────────────────────────
 
 fn live_config() -> Option<Config> {
-    let url = std::env::var("DATABASE_URL").ok().filter(|s| !s.is_empty())?;
+    let url = std::env::var("DATABASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())?;
     Config::from_parts(
         url,
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6399".into()),
@@ -236,7 +236,9 @@ fn live_config() -> Option<Config> {
 /// The TS's `beforeEach(store.clear())`, scoped to the one fabricated key —
 /// the live row belongs to everyone.
 async fn reset(pg: &sqlx::PgPool, key: &str) {
-    forget_capabilities(pg, key).await.expect("the standing facts clear");
+    forget_capabilities(pg, key)
+        .await
+        .expect("the standing facts clear");
 }
 
 async fn record(pg: &sqlx::PgPool, key: &str, cap: &str, fact: CapabilityFact) {

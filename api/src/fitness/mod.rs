@@ -11,8 +11,8 @@ pub mod observed;
 pub mod probes;
 pub mod score;
 pub mod surface;
-pub mod transcripts;
 pub mod toolbox;
+pub mod transcripts;
 pub mod value;
 
 // The store half of surface.rs (the record, the pricing derivations, the

@@ -95,10 +95,7 @@ pub async fn fleet_brain_health(pg: &PgPool) -> Result<Vec<AgentBrainHealth>, sq
 
     // probe(kind, target, name?) — ok iff the endpoint exists AND lists the
     // model; the reason names which half failed.
-    let probe = |kind: &'static str,
-                 t: &RawTarget<'_>,
-                 name: Option<String>|
-     -> BrainTarget {
+    let probe = |kind: &'static str, t: &RawTarget<'_>, name: Option<String>| -> BrainTarget {
         let ep = by_name.get(t.endpoint);
         let ok = ep.is_some_and(|e| e.models.iter().any(|m| m == t.model));
         BrainTarget {

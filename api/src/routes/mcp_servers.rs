@@ -6,9 +6,10 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
-    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member, nullish_max_string_member,
-    object_msg, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
-    record_msg, string_msg, too_big_msg, url_member, utf16_len, zod_type_name,
+    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
+    nullish_max_string_member, object_msg, optional_boolean_member, optional_enum_member,
+    optional_max_string_member, parse, record_msg, string_msg, too_big_msg, url_member, utf16_len,
+    zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::mcp_oauth::{ensure_oauth_config, has_oauth_tokens, oauth_meta};
@@ -56,7 +57,9 @@ fn slug_member(obj: &Map<String, Value>, key: &str) -> Result<String, String> {
     let v = obj.get(key).ok_or_else(|| string_msg("undefined"))?;
     let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?;
     let mut chars = s.chars();
-    let head_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let head_ok = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
     let rest_ok = s
         .chars()
         .skip(1)
@@ -115,7 +118,9 @@ fn required_headers_member(
     let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
     let mut out = Vec::new();
     for el in arr {
-        let m = el.as_object().ok_or_else(|| object_msg(zod_type_name(el)))?;
+        let m = el
+            .as_object()
+            .ok_or_else(|| object_msg(zod_type_name(el)))?;
         let name = match m.get("name") {
             Some(Value::String(s)) if utf16_len(s) <= 120 => Value::String(s.clone()),
             Some(Value::String(_)) => return Err(too_big_msg(120)),
@@ -163,9 +168,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         let assignments = match list_assignments(&state.pg, &s.id).await {
             Ok(rows) => rows
                 .into_iter()
-                .map(|(agent_model, tools)| {
-                    json!({ "agentModel": agent_model, "tools": tools })
-                })
+                .map(|(agent_model, tools)| json!({ "agentModel": agent_model, "tools": tools }))
                 .collect::<Vec<_>>(),
             Err(e) => {
                 tracing::error!("[mcp] assignments read failed: {e}");
@@ -320,7 +323,9 @@ async fn create_and_sniff(
     if ensure_oauth_config(pg, &server.id, &server.url)
         .await?
         .is_some()
-        && let Some(fresh) = get_mcp_server(pg, &server.id).await.map_err(|e| e.to_string())?
+        && let Some(fresh) = get_mcp_server(pg, &server.id)
+            .await
+            .map_err(|e| e.to_string())?
     {
         server = fresh;
     }

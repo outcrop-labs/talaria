@@ -1,7 +1,7 @@
 // /api/fleet/endpoints — port of ui/src/routes/api/fleet.endpoints.ts. The
 // model-backend registry (Models tab). GET → all endpoints. POST → add one.
 
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     as_object, js_numberify, optional_max_string_member, optional_string_array_member, parse,
     string_member,
@@ -16,7 +16,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(gate) = require_admin(&state, &headers).await {
@@ -143,8 +143,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<Validated, String> {
     // Raw provider API key — sealed (secretbox) server-side, never stored or
     // returned in the clear.
     let api_key = optional_max_string_member(obj, "apiKey", 400)?;
-    let models = optional_string_array_member(obj, "models", 1, 120, 100)?
-        .unwrap_or_default();
+    let models = optional_string_array_member(obj, "models", 1, 120, 100)?.unwrap_or_default();
     let model_prices = match obj.get("modelPrices") {
         None => json!({}),
         Some(v) => price_record(v, 120)?,
@@ -169,13 +168,14 @@ fn nullish_key_env(
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
-            let s = v.as_str().ok_or_else(|| crate::body::string_msg(
-                crate::body::zod_type_name(v),
-            ))?;
+            let s = v
+                .as_str()
+                .ok_or_else(|| crate::body::string_msg(crate::body::zod_type_name(v)))?;
             if !crate::gateway::provider::key_env_allowed(s) {
-                return Err(format!(
+                return Err(
                     "Invalid string: must match pattern /^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/"
-                ));
+                        .to_string(),
+                );
             }
             if crate::body::utf16_len(s) > 80 {
                 return Err(crate::body::too_big_msg(80));
@@ -189,16 +189,18 @@ fn nullish_key_env(
 /// keys bounded, values an object of two optional non-negative numbers.
 /// (shared with the PUT patch in fleet_endpoints_id.rs)
 pub(crate) fn price_record(v: &Value, key_max: usize) -> Result<Value, String> {
-    let map = v.as_object().ok_or_else(|| crate::body::record_msg("object"))?;
+    let map = v
+        .as_object()
+        .ok_or_else(|| crate::body::record_msg("object"))?;
     let mut out = serde_json::Map::new();
     for (k, val) in map {
         if crate::body::utf16_len(k) > key_max {
             return Err(crate::body::too_big_msg(key_max));
         }
-        let entry = val
-            .as_object()
-            .ok_or_else(|| "Invalid input: expected object, received ".to_string()
-                + crate::body::zod_type_name(val))?;
+        let entry = val.as_object().ok_or_else(|| {
+            "Invalid input: expected object, received ".to_string()
+                + crate::body::zod_type_name(val)
+        })?;
         let mut shaped = serde_json::Map::new();
         for field in ["in", "out"] {
             match entry.get(field) {

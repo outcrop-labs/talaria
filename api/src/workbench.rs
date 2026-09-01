@@ -416,12 +416,11 @@ pub async fn set_agent_workbench_tuning(
         .await?;
     }
     if let Some(models) = models {
-        let cur: Option<(Option<Value>,)> = sqlx::query_as(
-            "select workbench_models from agent_defs where id = $1::uuid",
-        )
-        .bind(id)
-        .fetch_optional(pg)
-        .await?;
+        let cur: Option<(Option<Value>,)> =
+            sqlx::query_as("select workbench_models from agent_defs where id = $1::uuid")
+                .bind(id)
+                .fetch_optional(pg)
+                .await?;
         let mut next: Map<String, Value> = cur
             .and_then(|(m,)| m)
             .and_then(|m| m.as_object().cloned())

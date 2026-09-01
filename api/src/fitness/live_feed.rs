@@ -39,7 +39,10 @@ fn feeds() -> &'static Mutex<HashMap<String, Vec<EvalLogLine>>> {
 /// Start a tier's feed over. Called when a tier BEGINS rather than when a run
 /// does, so a resumed run does not replay the previous tier's lines.
 pub fn start_live_feed(model: &str) {
-    feeds().lock().expect("the live feed is not contended").insert(model.to_string(), Vec::new());
+    feeds()
+        .lock()
+        .expect("the live feed is not contended")
+        .insert(model.to_string(), Vec::new());
 }
 
 /// One completed unit of work — a probe, or a provocation. Never panics: this
@@ -120,7 +123,10 @@ mod tests {
         start_live_feed(&m);
         note_live(&m, line("probe:json", "one"));
         start_live_feed(&m);
-        assert!(live_feed_for(&m).is_empty(), "a resumed run does not replay the last tier");
+        assert!(
+            live_feed_for(&m).is_empty(),
+            "a resumed run does not replay the last tier"
+        );
         clear_live_feed(&m);
     }
 
@@ -138,7 +144,11 @@ mod tests {
         }
         let feed = live_feed_for(&m);
         assert_eq!(feed.len(), FEED_CAP);
-        assert_eq!(feed[0].case, format!("case-25"), "the oldest beyond the cap are gone");
+        assert_eq!(
+            feed[0].case,
+            format!("case-25"),
+            "the oldest beyond the cap are gone"
+        );
         assert_eq!(feed.last().unwrap().case, format!("case-{}", FEED_CAP + 24));
         clear_live_feed(&m);
     }

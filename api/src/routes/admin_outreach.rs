@@ -5,7 +5,9 @@
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{NumKind, array_too_big_msg, as_object, boolean_member, number_member, parse};
 use crate::error::{house_error, thrown_internal_error};
-use crate::outreach::{OutreachConfig, get_outreach_config, recent_outreach_events, set_outreach_config};
+use crate::outreach::{
+    OutreachConfig, get_outreach_config, recent_outreach_events, set_outreach_config,
+};
 use crate::session::{actor_of, require_admin};
 use crate::state::AppState;
 use axum::Json;
@@ -85,10 +87,12 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let proactive = match obj.get("proactiveAgents") {
-        None => return house_error(
-            StatusCode::BAD_REQUEST,
-            &crate::body::array_msg("undefined"),
-        ),
+        None => {
+            return house_error(
+                StatusCode::BAD_REQUEST,
+                &crate::body::array_msg("undefined"),
+            );
+        }
         Some(v) => match v.as_array() {
             Some(a) => {
                 if a.len() > 100 {
@@ -96,9 +100,9 @@ pub async fn put(
                 }
                 let mut out = Vec::with_capacity(a.len());
                 for x in a {
-                    let s = x.as_str().ok_or_else(|| {
-                        crate::body::string_msg(crate::body::zod_type_name(x))
-                    });
+                    let s = x
+                        .as_str()
+                        .ok_or_else(|| crate::body::string_msg(crate::body::zod_type_name(x)));
                     match s {
                         Ok(s) => out.push(s.to_string()),
                         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -110,7 +114,7 @@ pub async fn put(
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &crate::body::array_msg(crate::body::zod_type_name(v)),
-                )
+                );
             }
         },
     };

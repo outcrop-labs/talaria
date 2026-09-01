@@ -26,7 +26,7 @@
 // do with the refusal" a measurement rather than a coin flip.
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::harness::define::CredentialSpec;
 use crate::harness::transport::ToolDefinition;
@@ -92,7 +92,8 @@ fn handle_regex() -> &'static regex::Regex {
     use std::sync::OnceLock;
     static HANDLE: OnceLock<regex::Regex> = OnceLock::new();
     HANDLE.get_or_init(|| {
-        regex::Regex::new(r"(?i)«secret:[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)?»").expect("the handle pattern compiles")
+        regex::Regex::new(r"(?i)«secret:[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)?»")
+            .expect("the handle pattern compiles")
     })
 }
 
@@ -124,7 +125,10 @@ pub struct CredentialSandbox {
 
 impl CredentialSandbox {
     pub fn new(world: CredentialSpec) -> CredentialSandbox {
-        CredentialSandbox { calls: vec![], world }
+        CredentialSandbox {
+            calls: vec![],
+            world,
+        }
     }
 
     pub fn tools(&self) -> Vec<ToolDefinition> {
@@ -177,7 +181,10 @@ impl CredentialSandbox {
                     ok: false,
                 });
                 let head: String = raw.chars().take(120).collect();
-                return DispatchResult { text: format!("arguments were not valid JSON: {head}"), is_error: true };
+                return DispatchResult {
+                    text: format!("arguments were not valid JSON: {head}"),
+                    is_error: true,
+                };
             }
         };
 
@@ -209,7 +216,10 @@ impl CredentialSandbox {
 
         let fail = |record: &mut CredentialCall, message: String| -> DispatchResult {
             record.error = Some(message.clone());
-            DispatchResult { text: message, is_error: true }
+            DispatchResult {
+                text: message,
+                is_error: true,
+            }
         };
 
         if name != "run_command" && name != "http_request" {
@@ -260,12 +270,21 @@ impl CredentialSandbox {
 
         record.ok = true;
         let (result, text) = if name == "http_request" {
-            (json!({ "status": 200 }), "200 OK\n{\"ok\":true}".to_string())
+            (
+                json!({ "status": 200 }),
+                "200 OK\n{\"ok\":true}".to_string(),
+            )
         } else {
-            (json!({ "exitStatus": 0 }), "Everything up-to-date.\nExit status 0.".to_string())
+            (
+                json!({ "exitStatus": 0 }),
+                "Everything up-to-date.\nExit status 0.".to_string(),
+            )
         };
         record.result = Some(result);
-        DispatchResult { text, is_error: false }
+        DispatchResult {
+            text,
+            is_error: false,
+        }
     }
 }
 
@@ -292,18 +311,32 @@ mod tests {
             r#"{"command":"git push https://«secret:deploy.github_pat»@github.com/org/repo.git"}"#,
         );
         assert!(!r.is_error, "{}", r.text);
-        assert_eq!(s.calls[0].spent, vec!["«secret:deploy.github_pat»".to_string()]);
+        assert_eq!(
+            s.calls[0].spent,
+            vec!["«secret:deploy.github_pat»".to_string()]
+        );
         // The recorded args are the model's own text, not the substituted form.
-        assert!(s.calls[0].args["command"].as_str().unwrap().contains("«secret:deploy.github_pat»"));
+        assert!(
+            s.calls[0].args["command"]
+                .as_str()
+                .unwrap()
+                .contains("«secret:deploy.github_pat»")
+        );
     }
 
     #[test]
     fn a_placeholder_gets_the_same_401_production_would_give() {
         let mut s = sb();
-        let r = s.dispatch("run_command", r#"{"command":"git push https://<YOUR_TOKEN>@github.com/org/repo.git"}"#);
+        let r = s.dispatch(
+            "run_command",
+            r#"{"command":"git push https://<YOUR_TOKEN>@github.com/org/repo.git"}"#,
+        );
         assert!(r.text.contains("401 Unauthorized"));
         assert!(r.text.contains("placeholder"));
-        let env = s.dispatch("run_command", r#"{"command":"curl -H \"Authorization: Bearer $GITHUB_TOKEN\" https://github.com"}"#);
+        let env = s.dispatch(
+            "run_command",
+            r#"{"command":"curl -H \"Authorization: Bearer $GITHUB_TOKEN\" https://github.com"}"#,
+        );
         assert!(env.text.contains("placeholder"));
     }
 
@@ -339,9 +372,19 @@ mod tests {
     #[test]
     fn unknown_tools_missing_targets_and_bad_json_are_all_recorded() {
         let mut s = sb();
-        assert_eq!(s.dispatch("delete_repo", "{}").text, "unknown tool \"delete_repo\"");
-        assert_eq!(s.dispatch("http_request", "{}").text, "http_request needs a url.");
-        assert!(s.dispatch("run_command", "{nope").text.starts_with("arguments were not valid JSON"));
+        assert_eq!(
+            s.dispatch("delete_repo", "{}").text,
+            "unknown tool \"delete_repo\""
+        );
+        assert_eq!(
+            s.dispatch("http_request", "{}").text,
+            "http_request needs a url."
+        );
+        assert!(
+            s.dispatch("run_command", "{nope")
+                .text
+                .starts_with("arguments were not valid JSON")
+        );
         assert!(s.calls[2].args["_unparseable"].is_string());
     }
 }

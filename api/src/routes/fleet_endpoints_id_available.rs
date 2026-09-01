@@ -7,10 +7,10 @@
 // admin opening the model picker is the moment the provider's own answer is
 // freshest and the moment its descriptive fields are most worth keeping.
 
+use crate::error::house_error;
 use crate::error::thrown_internal_error;
 use crate::gateway::provider::catalog_models;
 use crate::gateway::registry::list_endpoints;
-use crate::error::house_error;
 use crate::model_catalog::refresh_endpoint_catalog_with;
 use crate::session::require_admin;
 use crate::state::AppState;

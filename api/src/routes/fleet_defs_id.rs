@@ -23,9 +23,7 @@ use std::sync::OnceLock;
 
 /// `displayName: z.string().min(1).max(80).optional()` — optional only, so
 /// null is a type error like any other non-string.
-fn parse_display_name(
-    obj: &Map<String, Value>,
-) -> Result<Option<String>, String> {
+fn parse_display_name(obj: &Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("displayName") {
         None => Ok(None),
         Some(v) => {
@@ -70,9 +68,7 @@ fn parse_email_alias(obj: &Map<String, Value>) -> Result<Option<Option<String>>,
 /// `workbenchModels`: three nullable-optional model picks, one per weight
 /// class. zod strips unknown keys, so the stored map carries only these
 /// three, present ones only.
-fn parse_workbench_models(
-    obj: &Map<String, Value>,
-) -> Result<Option<Map<String, Value>>, String> {
+fn parse_workbench_models(obj: &Map<String, Value>) -> Result<Option<Map<String, Value>>, String> {
     match obj.get("workbenchModels") {
         None => Ok(None),
         Some(v) => {
@@ -188,9 +184,7 @@ pub async fn patch(
     if workbench.is_some() || workbench_profile.is_some() {
         // `body.workbench ?? def.workbench ?? 'auto'` — a profile-only patch
         // re-states the stored mode rather than defaulting it.
-        let wb = workbench
-            .or(def_workbench)
-            .unwrap_or_else(|| "auto".into());
+        let wb = workbench.or(def_workbench).unwrap_or_else(|| "auto".into());
         if let Err(e) = set_agent_workbench(
             &state.pg,
             &def_id,
@@ -203,18 +197,17 @@ pub async fn patch(
             return thrown_internal_error();
         }
     }
-    if workbench_harness.is_some() || workbench_models.is_some() {
-        if let Err(e) = set_agent_workbench_tuning(
+    if (workbench_harness.is_some() || workbench_models.is_some())
+        && let Err(e) = set_agent_workbench_tuning(
             &state.pg,
             &def_id,
             workbench_harness.as_ref().map(|o| o.as_deref()),
             workbench_models.as_ref(),
         )
         .await
-        {
-            tracing::error!("[fleet/defs] workbench tuning failed: {e}");
-            return thrown_internal_error();
-        }
+    {
+        tracing::error!("[fleet/defs] workbench tuning failed: {e}");
+        return thrown_internal_error();
     }
     if ticket_template_id.is_some() || plan_template_id.is_some() {
         // Template binds key on the agent's MODEL, not its id — the same

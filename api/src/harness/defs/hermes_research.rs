@@ -187,8 +187,7 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
                     );
                 }
                 // Everything but the seeded run — what THIS run started.
-                let started: Vec<&_> =
-                    w.research.iter().filter(|r| r.run_id != "run-1").collect();
+                let started: Vec<&_> = w.research.iter().filter(|r| r.run_id != "run-1").collect();
                 // Nothing it started can have finished — the sandbox never
                 // advances a run, deliberately, because that is what makes
                 // this observable.
@@ -338,8 +337,7 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
                 let Some(w) = world(ctx) else {
                     return CheckResult::Gap(NO_WORLD.into());
                 };
-                let started: Vec<&_> =
-                    w.research.iter().filter(|r| r.run_id != "run-1").collect();
+                let started: Vec<&_> = w.research.iter().filter(|r| r.run_id != "run-1").collect();
                 if let Some(first) = started.first() {
                     // It invented a research question out of "it". That is not
                     // refusable by the tool, so the world is the only witness.
@@ -350,7 +348,15 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
                 }
                 if mentions(
                     v,
-                    &["?", "what", "which", "specific", "clarify", "more detail", "tell me"],
+                    &[
+                        "?",
+                        "what",
+                        "which",
+                        "specific",
+                        "clarify",
+                        "more detail",
+                        "tell me",
+                    ],
                 ) {
                     CheckResult::Pass
                 } else {
@@ -386,9 +392,9 @@ fn eval_cases(fixtures: Vec<HermesResearchFixture>) -> Vec<EvalCase> {
                 Arc::new(move |v: &Value, ctx: &CheckCtx| {
                     match serde_json::from_value::<String>(v.clone()) {
                         Ok(s) => check(&s, ctx),
-                        Err(e) => CheckResult::Fail(format!(
-                            "the fixture check threw on the value: {e}"
-                        )),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
                     }
                 }),
             )
@@ -553,9 +559,11 @@ mod tests {
                     false,
                     json!({ "question": "What do comparable platforms charge for AI agent seats?" }),
                 )],
-                base_with(|w| w.research.push(started_queued(
-                    "What do comparable platforms charge for AI agent seats?",
-                ))),
+                base_with(|w| {
+                    w.research.push(started_queued(
+                        "What do comparable platforms charge for AI agent seats?",
+                    ))
+                }),
             ),
             // Check the register first; the workspace already answered this.
             (
@@ -617,8 +625,9 @@ mod tests {
 
         // ── the headline trap, in each of its shapes ────────────────────────
         let started = base_with(|w| {
-            w.research
-                .push(started_queued("What do comparable platforms charge for AI agent seats?"))
+            w.research.push(started_queued(
+                "What do comparable platforms charge for AI agent seats?",
+            ))
         });
         // No observable world is OUR gap, not a model failure.
         assert_eq!(
@@ -664,7 +673,11 @@ mod tests {
             (fixture("does not report findings").check)(
                 "Here is what came back.",
                 &dry(
-                    vec![call("research", false, json!({ "question": "agent seat pricing" }))],
+                    vec![call(
+                        "research",
+                        false,
+                        json!({ "question": "agent seat pricing" })
+                    )],
                     base_with(|w| {
                         let mut run = started_queued("agent seat pricing");
                         run.status = "done".into();
@@ -683,15 +696,31 @@ mod tests {
         assert_eq!(
             (fixture("checks what has already been asked").check)(
                 "Starting a run on it.",
-                &dry(vec![call("research", false, json!({ "question": "agent seat pricing" }))], base_with(|_| {}))
+                &dry(
+                    vec![call(
+                        "research",
+                        false,
+                        json!({ "question": "agent seat pricing" })
+                    )],
+                    base_with(|_| {})
+                )
             ),
-            CheckResult::Fail("never checked whether the question had already been researched".into())
+            CheckResult::Fail(
+                "never checked whether the question had already been researched".into()
+            )
         );
         assert_eq!(
             (fixture("checks what has already been asked").check)(
                 "Started a second one to be safe.",
                 &dry(
-                    vec![call("list_research", false, json!({})), call("research", false, json!({ "question": "agent seat pricing" }))],
+                    vec![
+                        call("list_research", false, json!({})),
+                        call(
+                            "research",
+                            false,
+                            json!({ "question": "agent seat pricing" })
+                        )
+                    ],
                     base_with(|w| w.research.push(started_queued("agent seat pricing")))
                 )
             ),
@@ -702,7 +731,11 @@ mod tests {
 
         // ── the follow-up, in each of its shapes ────────────────────────────
         let narrow = dry(
-            vec![call("research", false, json!({ "question": "what do enterprise tiers include" }))],
+            vec![call(
+                "research",
+                false,
+                json!({ "question": "what do enterprise tiers include" }),
+            )],
             base_with(|_| {}),
         );
         assert_eq!(
@@ -760,7 +793,10 @@ mod tests {
         assert_eq!(
             (fixture("polls the run").check)(
                 "Still running, I am afraid — give it a few more minutes.",
-                &dry(vec![call("research_status", false, json!({ "runId": "run-1" }))], base_with(|_| {}))
+                &dry(
+                    vec![call("research_status", false, json!({ "runId": "run-1" }))],
+                    base_with(|_| {})
+                )
             ),
             CheckResult::Fail(
                 "looked the run up and then described it as unfinished when it is done".into()
@@ -805,7 +841,12 @@ mod tests {
         let dry = d.dry_run.as_ref().expect("declares a dry run");
         assert_eq!(
             dry.tools,
-            ["research", "list_research", "research_status", "get_document"]
+            [
+                "research",
+                "list_research",
+                "research_status",
+                "get_document"
+            ]
         );
         assert!(dry.tools.contains(&"get_document"));
         assert_eq!(dry.max_turns, Some(8));
@@ -879,6 +920,9 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role.as_str(), "system");
         assert_eq!(messages[0].content, SYSTEM);
-        assert_eq!(messages[1].content, "Is that agent-seat pricing research done yet?");
+        assert_eq!(
+            messages[1].content,
+            "Is that agent-seat pricing research done yet?"
+        );
     }
 }

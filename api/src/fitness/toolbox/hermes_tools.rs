@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::harness::define::{WorkspaceFile, WorkspaceSpec};
 use crate::harness::transport::ToolDefinition;
@@ -104,7 +104,11 @@ pub struct WorkbenchSandbox {
 
 impl WorkbenchSandbox {
     pub fn new(workspace: WorkspaceSpec) -> WorkbenchSandbox {
-        WorkbenchSandbox { files: workspace.files, calls: vec![], passes: workspace.passes }
+        WorkbenchSandbox {
+            files: workspace.files,
+            calls: vec![],
+            passes: workspace.passes,
+        }
     }
 
     pub fn tools(&self) -> Vec<ToolDefinition> {
@@ -156,7 +160,11 @@ impl WorkbenchSandbox {
                     // guess into one recoverable turn instead of a dead end.
                     ToolRefusal(format!(
                         "no file at \"{path}\". The tree contains: {}",
-                        self.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>().join(", ")
+                        self.files
+                            .iter()
+                            .map(|f| f.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ))
                 })?;
                 Ok(json!({ "path": path, "content": file.content }))
@@ -171,7 +179,9 @@ impl WorkbenchSandbox {
                 for f in &self.files {
                     for (i, text) in f.content.split('\n').enumerate() {
                         if text.contains(query) {
-                            hits.push(json!({ "path": f.path, "line": i + 1, "text": text.trim() }));
+                            hits.push(
+                                json!({ "path": f.path, "line": i + 1, "text": text.trim() }),
+                            );
                         }
                     }
                 }
@@ -187,11 +197,17 @@ impl WorkbenchSandbox {
                 // and silently creating an empty file would destroy the thing
                 // being fixed.
                 let content = a["content"].as_str().ok_or_else(|| {
-                    ToolRefusal("\"content\" must be the complete new contents of the file, as a string".into())
+                    ToolRefusal(
+                        "\"content\" must be the complete new contents of the file, as a string"
+                            .into(),
+                    )
                 })?;
                 match self.files.iter_mut().find(|f| f.path == path) {
                     Some(file) => file.content = content.to_string(),
-                    None => self.files.push(WorkspaceFile { path: path.to_string(), content: content.to_string() }),
+                    None => self.files.push(WorkspaceFile {
+                        path: path.to_string(),
+                        content: content.to_string(),
+                    }),
                 }
                 Ok(json!({ "ok": true, "path": path, "bytes": js_len(content) }))
             }
@@ -222,7 +238,10 @@ impl WorkbenchSandbox {
                     result: None,
                     error: Some(error.clone()),
                 });
-                return DispatchResult { text: format!("Error: {error}"), is_error: true };
+                return DispatchResult {
+                    text: format!("Error: {error}"),
+                    is_error: true,
+                };
             }
         };
 
@@ -243,8 +262,16 @@ impl WorkbenchSandbox {
             // other error kind: `handle` returns only refusals, so nothing here
             // can dress a bug up as the model's fault.
             Err(ToolRefusal(message)) => {
-                self.calls.push(SandboxCall { tool: name.to_string(), args: Value::Object(args), result: None, error: Some(message.clone()) });
-                DispatchResult { text: format!("Error: {message}"), is_error: true }
+                self.calls.push(SandboxCall {
+                    tool: name.to_string(),
+                    args: Value::Object(args),
+                    result: None,
+                    error: Some(message.clone()),
+                });
+                DispatchResult {
+                    text: format!("Error: {message}"),
+                    is_error: true,
+                }
             }
         }
     }
@@ -257,12 +284,22 @@ mod tests {
     fn ws() -> WorkbenchSandbox {
         WorkbenchSandbox::new(WorkspaceSpec {
             files: vec![
-                WorkspaceFile { path: "src/bug.ts".into(), content: "const x = 1;\nconst y = x + one;\n".into() },
-                WorkspaceFile { path: "src/ok.ts".into(), content: "export const one = 1;\n".into() },
+                WorkspaceFile {
+                    path: "src/bug.ts".into(),
+                    content: "const x = 1;\nconst y = x + one;\n".into(),
+                },
+                WorkspaceFile {
+                    path: "src/ok.ts".into(),
+                    content: "export const one = 1;\n".into(),
+                },
             ],
             passes: Arc::new(|files: &[WorkspaceFile]| {
                 let bug = files.iter().find(|f| f.path == "src/bug.ts")?;
-                if bug.content.contains("x + one") { Some("expected 2, got x + one".into()) } else { None }
+                if bug.content.contains("x + one") {
+                    Some("expected 2, got x + one".into())
+                } else {
+                    None
+                }
             }),
         })
     }
@@ -279,7 +316,10 @@ mod tests {
         assert!(found.text.contains("src/ok.ts"));
         // The oracle starts red.
         assert!(!s.green());
-        let wrote = s.dispatch("write_file", r#"{"path":"src/bug.ts","content":"const x = 1;\nconst y = x + 1;\n"}"#);
+        let wrote = s.dispatch(
+            "write_file",
+            r#"{"path":"src/bug.ts","content":"const x = 1;\nconst y = x + 1;\n"}"#,
+        );
         assert!(wrote.text.contains("\"bytes\":30"));
         let ran = s.dispatch("run_tests", "{}");
         assert!(ran.text.contains("\"passed\":true"));
@@ -300,7 +340,10 @@ mod tests {
         let r = s.dispatch("write_file", r#"{"path":"src/bug.ts"}"#);
         assert!(r.is_error);
         assert!(r.text.contains("complete new contents"));
-        assert!(s.files[0].content.contains("x + one"), "the file must survive the malformed write");
+        assert!(
+            s.files[0].content.contains("x + one"),
+            "the file must survive the malformed write"
+        );
     }
 
     #[test]
@@ -311,14 +354,22 @@ mod tests {
         s.dispatch("write_file", r#"{"path":"src/bug.ts","content":"fixed"}"#);
         let after = s.world_as_value();
         assert!(after["failure"].is_null());
-        assert!(after["files"][0]["content"].as_str().unwrap().contains("fixed"));
+        assert!(
+            after["files"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("fixed")
+        );
     }
 
     #[test]
     fn unknown_tools_and_bad_json_are_recorded_observations() {
         let mut s = ws();
         let unknown = s.dispatch("delete_file", r#"{"path":"src/bug.ts"}"#);
-        assert_eq!(unknown.text, "Error: there is no tool called \"delete_file\"");
+        assert_eq!(
+            unknown.text,
+            "Error: there is no tool called \"delete_file\""
+        );
         let bad = s.dispatch("read_file", "{oops");
         assert_eq!(bad.text, "Error: the arguments were not valid JSON");
         assert_eq!(s.calls.len(), 2);

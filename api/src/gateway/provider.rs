@@ -139,7 +139,7 @@ pub async fn migrate_env_keys_to_cipher(state: &AppState) -> Result<usize, sqlx:
             .bind(cipher)
             .execute(&state.pg)
             .await
-                .is_ok()
+            .is_ok()
         {
             sealed += 1;
         }

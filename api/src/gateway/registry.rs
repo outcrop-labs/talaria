@@ -152,9 +152,23 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
     Ok(rows
         .into_iter()
         .map(
-            |(id, name, provider, base_url, class, api_key_env, context_length,
-              price_in, price_out, models, model_prices, model_efforts, auto_prices,
-              request_defaults, has_key)| {
+            |(
+                id,
+                name,
+                provider,
+                base_url,
+                class,
+                api_key_env,
+                context_length,
+                price_in,
+                price_out,
+                models,
+                model_prices,
+                model_efforts,
+                auto_prices,
+                request_defaults,
+                has_key,
+            )| {
                 serde_json::json!({
                     "id": id,
                     "name": name,
@@ -211,11 +225,13 @@ pub async fn update_endpoint(
         } else {
             sb.seal(api_key.trim()).ok()
         };
-        sqlx::query("update llm_endpoints set api_key_cipher = $2, updated_at = now() where id = $1::uuid")
-            .bind(id)
-            .bind(cipher)
-            .execute(pg)
-            .await?;
+        sqlx::query(
+            "update llm_endpoints set api_key_cipher = $2, updated_at = now() where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(cipher)
+        .execute(pg)
+        .await?;
     }
     if let Some(class) = &patch.class {
         sqlx::query("update llm_endpoints set class = $2, updated_at = now() where id = $1::uuid")
@@ -255,24 +271,29 @@ pub async fn update_endpoint(
             .await?;
     }
     if let Some(model_prices) = &patch.model_prices {
-        sqlx::query("update llm_endpoints set model_prices = $2, updated_at = now() where id = $1::uuid")
-            .bind(id)
-            .bind(model_prices)
-            .execute(pg)
-            .await?;
+        sqlx::query(
+            "update llm_endpoints set model_prices = $2, updated_at = now() where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(model_prices)
+        .execute(pg)
+        .await?;
     }
     if let Some(model_efforts) = &patch.model_efforts {
-        sqlx::query("update llm_endpoints set model_efforts = $2, updated_at = now() where id = $1::uuid")
-            .bind(id)
-            .bind(model_efforts)
-            .execute(pg)
-            .await?;
+        sqlx::query(
+            "update llm_endpoints set model_efforts = $2, updated_at = now() where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(model_efforts)
+        .execute(pg)
+        .await?;
     }
     Ok(())
 }
 
 /// createEndpoint — a user-defined endpoint (Models tab). Name must be fresh;
 /// the caller maps a unique-violation to the friendly sentence.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_endpoint(
     pg: &PgPool,
     sb: &crate::secretbox::SecretBox,
@@ -285,9 +306,7 @@ pub async fn create_endpoint(
     models: &[String],
     model_prices: &serde_json::Value,
 ) -> Result<String, sqlx::Error> {
-    let cipher = api_key
-        .map(|k| sb.seal(k.trim()).ok())
-        .flatten();
+    let cipher = api_key.and_then(|k| sb.seal(k.trim()).ok());
     let row: (String,) = sqlx::query_as(
         "insert into llm_endpoints \
            (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices) \
@@ -364,10 +383,7 @@ pub async fn add_endpoint_models(
 
 /// deleteEndpoint — refused while any ENABLED agent's CURRENT version targets
 /// it (retired agents don't run; their history must not block).
-pub async fn delete_endpoint(
-    pg: &PgPool,
-    id: &str,
-) -> Result<(bool, Vec<String>), sqlx::Error> {
+pub async fn delete_endpoint(pg: &PgPool, id: &str) -> Result<(bool, Vec<String>), sqlx::Error> {
     let name: Option<(String,)> =
         sqlx::query_as("select name from llm_endpoints where id = $1::uuid")
             .bind(id)

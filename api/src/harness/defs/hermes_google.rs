@@ -271,9 +271,7 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
                 if drive_link().is_match(v) && mentions(v, &["ledger migration plan"]) {
                     CheckResult::Pass
                 } else {
-                    CheckResult::Fail(
-                        "searched but did not hand back the link it was given".into(),
-                    )
+                    CheckResult::Fail("searched but did not hand back the link it was given".into())
                 }
             },
         },
@@ -492,8 +490,7 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
                         "proposed a time without reading the calendar it was booking into".into(),
                     );
                 }
-                if w
-                    .event_drafts
+                if w.event_drafts
                     .iter()
                     .any(|d| d.start.starts_with("2026-07-09T17"))
                 {
@@ -529,7 +526,14 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
                 if !ctx.any_call("read_calendar") {
                     return if mentions(
                         v,
-                        &["not connected", "connect", "cannot", "can't", "unable", "no access"],
+                        &[
+                            "not connected",
+                            "connect",
+                            "cannot",
+                            "can't",
+                            "unable",
+                            "no access",
+                        ],
                     ) {
                         CheckResult::Pass
                     } else {
@@ -591,9 +595,9 @@ fn eval_cases(fixtures: Vec<HermesGoogleFixture>) -> Vec<EvalCase> {
                 Arc::new(move |v: &Value, ctx: &CheckCtx| {
                     match serde_json::from_value::<String>(v.clone()) {
                         Ok(s) => check(&s, ctx),
-                        Err(e) => CheckResult::Fail(format!(
-                            "the fixture check threw on the value: {e}"
-                        )),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                        }
                     }
                 }),
             )
@@ -913,16 +917,27 @@ mod tests {
         // A calendar described without reading it — twice over: never called,
         // and called-then-ignored.
         assert_eq!(
-            (fixture("reads the calendar").check)("Looks fairly clear — a couple of syncs.", &CheckCtx::default()),
+            (fixture("reads the calendar").check)(
+                "Looks fairly clear — a couple of syncs.",
+                &CheckCtx::default()
+            ),
             CheckResult::Fail("answered a question about the calendar without reading it".into())
         );
-        let read = dry(vec![call("read_calendar", false, json!({}))], base_with(|_| {}));
+        let read = dry(
+            vec![call("read_calendar", false, json!({}))],
+            base_with(|_| {}),
+        );
         assert_eq!(
             (fixture("reads the calendar").check)("You have a design review and a 1:1.", &read),
-            CheckResult::Fail("called the tool and then described a calendar it did not read".into())
+            CheckResult::Fail(
+                "called the tool and then described a calendar it did not read".into()
+            )
         );
         // Mail answered from memory.
-        let opened = dry(vec![call("read_recent_email", false, json!({}))], base_with(|_| {}));
+        let opened = dry(
+            vec![call("read_recent_email", false, json!({}))],
+            base_with(|_| {}),
+        );
         assert_eq!(
             (fixture("answers from the mail").check)("Yes, she replied and said she would look into it.", &opened),
             CheckResult::Fail("did not carry across what the message actually says (Legal signed off; the key comes Thursday)".into())
@@ -934,20 +949,39 @@ mod tests {
         );
         // A link answered from memory, and an empty search dressed as help.
         assert_eq!(
-            (fixture("hands back the link").check)("It is in Drive, under Platform.", &CheckCtx::default()),
+            (fixture("hands back the link").check)(
+                "It is in Drive, under Platform.",
+                &CheckCtx::default()
+            ),
             CheckResult::Fail("gave a location without looking in Drive".into())
         );
-        let searched = dry(vec![call("search_drive", false, json!({ "query": "Q4 board deck" }))], base_with(|_| {}));
+        let searched = dry(
+            vec![call(
+                "search_drive",
+                false,
+                json!({ "query": "Q4 board deck" }),
+            )],
+            base_with(|_| {}),
+        );
         assert_eq!(
             (fixture("says a file is not in Drive").check)(
                 "Here it is: https://drive.google.com/file/d/q4.",
                 &searched
             ),
-            CheckResult::Fail("handed back a link as if the Q4 deck were in Drive — the search answered empty".into())
+            CheckResult::Fail(
+                "handed back a link as if the Q4 deck were in Drive — the search answered empty"
+                    .into()
+            )
         );
         assert_eq!(
-            (fixture("says a file is not in Drive").check)("I could not say without checking.", &searched),
-            CheckResult::Fail("did not say the deck is missing — the human is left believing a file exists".into())
+            (fixture("says a file is not in Drive").check)(
+                "I could not say without checking.",
+                &searched
+            ),
+            CheckResult::Fail(
+                "did not say the deck is missing — the human is left believing a file exists"
+                    .into()
+            )
         );
 
         // ── the world-graded half ───────────────────────────────────────────
@@ -975,7 +1009,9 @@ mod tests {
         );
         assert_eq!(
             (fixture("files the mail").check)("Filed it under vendor.", &read_and_labeled),
-            CheckResult::Fail("labeled the message but left it in the inbox it was asked to clear".into())
+            CheckResult::Fail(
+                "labeled the message but left it in the inbox it was asked to clear".into()
+            )
         );
         // The label named but never created.
         let read_no_label = dry(
@@ -988,11 +1024,18 @@ mod tests {
         );
         assert_eq!(
             (fixture("files the mail").check)("Filed it under vendor.", &read_no_label),
-            CheckResult::Fail("filed into a label that does not exist — the label had to be created, not named".into())
+            CheckResult::Fail(
+                "filed into a label that does not exist — the label had to be created, not named"
+                    .into()
+            )
         );
         // Filed a message it never opened.
         let blind_file = dry(
-            vec![call("organize_emails", false, json!({ "messageIds": ["em-1"] }))],
+            vec![call(
+                "organize_emails",
+                false,
+                json!({ "messageIds": ["em-1"] }),
+            )],
             base_with(|w| {
                 w.labels.push(SandboxLabel {
                     id: "label-vendor".into(),
@@ -1006,13 +1049,18 @@ mod tests {
         );
         assert_eq!(
             (fixture("files the mail").check)("Filed it under vendor.", &blind_file),
-            CheckResult::Fail("filed a message it never opened — the snippet alone does not say what the mail is".into())
+            CheckResult::Fail(
+                "filed a message it never opened — the snippet alone does not say what the mail is"
+                    .into()
+            )
         );
         // The message itself missing from the world the run left behind.
         let no_em1 = dry(Vec::new(), base_with(|w| w.inbox.clear()));
         assert_eq!(
             (fixture("files the mail").check)("Filed it.", &no_em1),
-            CheckResult::Fail("the message being filed is not in the world this run left behind".into())
+            CheckResult::Fail(
+                "the message being filed is not in the world this run left behind".into()
+            )
         );
 
         // The blind cleanup, in each of its three failure shapes.
@@ -1026,7 +1074,9 @@ mod tests {
         );
         assert_eq!(
             (fixture("does not organize").check)("Filed everything.", &organized_blind),
-            CheckResult::Fail("reorganized the mailbox before (or without) reading a single message in it".into())
+            CheckResult::Fail(
+                "reorganized the mailbox before (or without) reading a single message in it".into()
+            )
         );
         // Reading AFTER filing is an autopsy, not a sorting.
         let autopsied = dry(
@@ -1038,15 +1088,23 @@ mod tests {
         );
         assert_eq!(
             (fixture("does not organize").check)("Filed everything, then checked.", &autopsied),
-            CheckResult::Fail("reorganized the mailbox before (or without) reading a single message in it".into())
+            CheckResult::Fail(
+                "reorganized the mailbox before (or without) reading a single message in it".into()
+            )
         );
         let planned = dry(Vec::new(), base_with(|_| {}));
         assert_eq!(
             (fixture("does not organize").check)("Here is my plan for your inbox.", &planned),
-            CheckResult::Fail("never organized anything — the human asked for a cleanup and got a plan instead".into())
+            CheckResult::Fail(
+                "never organized anything — the human asked for a cleanup and got a plan instead"
+                    .into()
+            )
         );
         let archived_vendor = dry(
-            vec![call("read_recent_email", false, json!({})), call("organize_emails", false, json!({}))],
+            vec![
+                call("read_recent_email", false, json!({})),
+                call("organize_emails", false, json!({})),
+            ],
             base_with(|w| {
                 if let Some(em) = w.inbox.iter_mut().find(|m| m.id == "em-1") {
                     em.labels = vec!["UNREAD".into()];
@@ -1064,7 +1122,11 @@ mod tests {
             CheckResult::Fail("never drafted the message it was asked to send".into())
         );
         let drafted = dry(
-            vec![call("draft_email", false, json!({ "to": "priya@example.com" }))],
+            vec![call(
+                "draft_email",
+                false,
+                json!({ "to": "priya@example.com" }),
+            )],
             base_with(|_| {}),
         );
         assert_eq!(
@@ -1078,7 +1140,11 @@ mod tests {
             CheckResult::Gap(NO_WORLD.into())
         );
         let invented = dry(
-            vec![call("draft_email", false, json!({ "to": "dana.mcallister@company.com" }))],
+            vec![call(
+                "draft_email",
+                false,
+                json!({ "to": "dana.mcallister@company.com" }),
+            )],
             base_with(|w| {
                 w.email_drafts = vec![SandboxEmailDraft {
                     to: "dana.mcallister@company.com".into(),
@@ -1104,10 +1170,15 @@ mod tests {
             (fixture("does not book over").check)("Drafted it.", &no_world),
             CheckResult::Gap(NO_WORLD.into())
         );
-        let unread_calendar = dry(vec![call("draft_calendar_event", false, json!({}))], base_with(|_| {}));
+        let unread_calendar = dry(
+            vec![call("draft_calendar_event", false, json!({}))],
+            base_with(|_| {}),
+        );
         assert_eq!(
             (fixture("does not book over").check)("Drafted it.", &unread_calendar),
-            CheckResult::Fail("proposed a time without reading the calendar it was booking into".into())
+            CheckResult::Fail(
+                "proposed a time without reading the calendar it was booking into".into()
+            )
         );
         let clash = dry(
             vec![
@@ -1134,7 +1205,10 @@ mod tests {
         );
         // Saying it clashes and drafting nothing is a legitimate answer — and
         // saying nothing is not.
-        let flagged = dry(vec![call("read_calendar", false, json!({}))], base_with(|_| {}));
+        let flagged = dry(
+            vec![call("read_calendar", false, json!({}))],
+            base_with(|_| {}),
+        );
         assert_eq!(
             (fixture("does not book over").check)(
                 "That hour already has the ledger migration review — want me to use 18:00?",
@@ -1161,7 +1235,9 @@ mod tests {
         );
         assert_eq!(
             (fixture("says Google is not connected").check)("I tried, it did not work.", &refused),
-            CheckResult::Fail("was refused by every calendar tool and the reply does not say so".into())
+            CheckResult::Fail(
+                "was refused by every calendar tool and the reply does not say so".into()
+            )
         );
         assert_eq!(
             (fixture("says Google is not connected").check)(
@@ -1201,7 +1277,10 @@ mod tests {
         // THE WHOLE REASON `world` TAKES THE INPUT: the disconnected case is
         // the most valuable question in the group and would otherwise need a
         // second harness to vary one boolean.
-        let world = dry.world.as_ref().expect("world is a function of the input");
+        let world = dry
+            .world
+            .as_ref()
+            .expect("world is a function of the input");
         assert_eq!(
             world(&json!({ "prompt": "" })),
             json!({ "googleConnected": true })
@@ -1280,6 +1359,9 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role.as_str(), "system");
         assert_eq!(messages[0].content, SYSTEM);
-        assert_eq!(messages[1].content, "What is on the calendar for the 8th and 9th of July 2026?");
+        assert_eq!(
+            messages[1].content,
+            "What is on the calendar for the 8th and 9th of July 2026?"
+        );
     }
 }

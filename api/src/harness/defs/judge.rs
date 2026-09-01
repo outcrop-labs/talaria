@@ -681,7 +681,9 @@ pub fn judge_harness() -> HarnessDefinition {
                 input,
                 Arc::new(move |v: &Value, _ctx: &CheckCtx| match narrow_verdict(v) {
                     Ok(verdict) => f.check(&verdict).into(),
-                    Err(e) => CheckResult::Fail(format!("the fixture check threw on the value: {e}")),
+                    Err(e) => {
+                        CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
+                    }
                 }),
             )
             .band(band)

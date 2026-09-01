@@ -204,29 +204,39 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
     .fetch_all(pg)
     .await?;
     // distinct on (agent_id) … version desc — one row per agent, the newest.
-    let versions: Vec<(String, String, i32, String, Value, Option<String>, Option<String>, i64)> =
-        sqlx::query_as(
-            "select distinct on (agent_id) id::text, agent_id::text, version, soul, config, note, \
+    let versions: Vec<(
+        String,
+        String,
+        i32,
+        String,
+        Value,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = sqlx::query_as(
+        "select distinct on (agent_id) id::text, agent_id::text, version, soul, config, note, \
                created_by, (trunc(extract(epoch from created_at) * 1000))::bigint \
              from agent_versions order by agent_id, version desc",
-        )
-        .fetch_all(pg)
-        .await?;
+    )
+    .fetch_all(pg)
+    .await?;
     let latest_of: std::collections::HashMap<String, Value> = versions
         .into_iter()
-        .map(|(id, agent_id, version, soul, config, note, created_by, created_ms)| {
-            let wire = serde_json::json!({
-                "id": id,
-                "agentId": agent_id,
-                "version": version,
-                "soul": soul,
-                "config": config,
-                "note": note,
-                "createdBy": created_by,
-                "createdAt": epoch_ms_to_iso(created_ms),
-            });
-            (agent_id, wire)
-        })
+        .map(
+            |(id, agent_id, version, soul, config, note, created_by, created_ms)| {
+                let wire = serde_json::json!({
+                    "id": id,
+                    "agentId": agent_id,
+                    "version": version,
+                    "soul": soul,
+                    "config": config,
+                    "note": note,
+                    "createdBy": created_by,
+                    "createdAt": epoch_ms_to_iso(created_ms),
+                });
+                (agent_id, wire)
+            },
+        )
         .collect();
     Ok(defs
         .into_iter()

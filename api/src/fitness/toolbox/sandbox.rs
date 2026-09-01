@@ -48,15 +48,15 @@
 // `dispatch` does not dress one up as the model's fault, it just propagates.
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::harness::transport::ToolDefinition;
 
-use super::talaria_tools::{tools_named, SandboxTool, TALARIA_TOOLS};
+use super::talaria_tools::{SandboxTool, TALARIA_TOOLS, tools_named};
 use super::world::{
-    base_world, SandboxBoard, SandboxComment, SandboxDocument, SandboxDm, SandboxEmailDraft,
-    SandboxEventDraft, SandboxKbDoc, SandboxKbSpace, SandboxLabel, SandboxMember, SandboxOutcome,
-    SandboxTicket, SandboxWorld, AGENT_STATUSES, BLOCKED, INBOX, IN_PROGRESS, QUALITY_REVIEW,
+    AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxBoard, SandboxComment,
+    SandboxDm, SandboxDocument, SandboxEmailDraft, SandboxEventDraft, SandboxKbDoc, SandboxKbSpace,
+    SandboxLabel, SandboxMember, SandboxOutcome, SandboxTicket, SandboxWorld, base_world,
 };
 
 // ── The refusal, and the arg narrowing that produces it ─────────────────────
@@ -75,7 +75,8 @@ fn refuse(message: impl Into<String>) -> ToolRefusal {
 /// returned UNTRIMMED — TS checks `v.trim()` for truthiness but hands back `v`.
 fn req_str<'a>(v: &'a Value, field: &str) -> Result<&'a str, ToolRefusal> {
     let s = v.as_str().filter(|s| !s.trim().is_empty());
-    s.map(|s| Ok(s)).unwrap_or_else(|| Err(refuse(format!("\"{field}\" is required"))))
+    s.map(Ok)
+        .unwrap_or_else(|| Err(refuse(format!("\"{field}\" is required"))))
 }
 
 /// `optStr(v)`: a string that is present and not blank, or nothing.
@@ -86,7 +87,9 @@ fn opt_str(v: &Value) -> Option<&str> {
 fn ticket_of<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxTicket, ToolRefusal> {
     let id = id.as_str().unwrap_or("");
     w.tickets.iter().find(|t| t.id == id).ok_or_else(|| {
-        refuse(format!("no ticket \"{id}\" — check the id with list_tickets"))
+        refuse(format!(
+            "no ticket \"{id}\" — check the id with list_tickets"
+        ))
     })
 }
 
@@ -106,7 +109,9 @@ fn live_ticket<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxTicket,
 fn board_of<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxBoard, ToolRefusal> {
     let id = id.as_str().unwrap_or("");
     w.boards.iter().find(|b| b.id == id).ok_or_else(|| {
-        refuse(format!("no board \"{id}\" — list_boards shows the ones you are allowed on"))
+        refuse(format!(
+            "no board \"{id}\" — list_boards shows the ones you are allowed on"
+        ))
     })
 }
 
@@ -130,7 +135,9 @@ fn channel_idx(w: &SandboxWorld, id: &Value) -> Result<usize, ToolRefusal> {
 fn doc_of<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxDocument, ToolRefusal> {
     let id = id.as_str().unwrap_or("");
     w.documents.iter().find(|d| d.id == id).ok_or_else(|| {
-        refuse(format!("no document \"{id}\" — list_documents shows the ones you can read"))
+        refuse(format!(
+            "no document \"{id}\" — list_documents shows the ones you can read"
+        ))
     })
 }
 
@@ -157,11 +164,16 @@ fn assistant_only<'a>(w: &'a SandboxWorld, tool: &str) -> Result<&'a str, ToolRe
 
 fn owned_by_owner(w: &SandboxWorld, board: &SandboxBoard, tool: &str) -> Result<(), ToolRefusal> {
     let owner = assistant_only(w, tool)?;
-    let role = board.members.iter().find(|m| m.email == owner).map(|m| m.role.as_str());
+    let role = board
+        .members
+        .iter()
+        .find(|m| m.email == owner)
+        .map(|m| m.role.as_str());
     if role != Some("owner") && role != Some("editor") {
         return Err(refuse(format!(
             "your owner is {} on \"{}\", so {} returns 403",
-            role.map(|r| format!("only a {r}")).unwrap_or_else(|| "not a member".into()),
+            role.map(|r| format!("only a {r}"))
+                .unwrap_or_else(|| "not a member".into()),
             board.name,
             tool
         )));
@@ -259,7 +271,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     ))
                 })?;
             if let Some(content) = &file.content {
-                return Ok(json!({ "filename": file.filename, "mime": file.mime, "size": file.bytes, "content": content }));
+                return Ok(
+                    json!({ "filename": file.filename, "mime": file.mime, "size": file.bytes, "content": content }),
+                );
             }
             // The production sentence, verbatim in spirit: a binary format is a
             // REAL limit, and the model's right move is to say so rather than
@@ -273,7 +287,15 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "create_ticket" => {
             let board = board_of(w, &a["boardId"])?;
             let title = req_str(&a["title"], "title")?;
-            let id = format!("{}-{}", if board.id == "b-platform" { "PLAT" } else { "HELP" }, 900 + w.tickets.len());
+            let id = format!(
+                "{}-{}",
+                if board.id == "b-platform" {
+                    "PLAT"
+                } else {
+                    "HELP"
+                },
+                900 + w.tickets.len()
+            );
             w.tickets.push(SandboxTicket {
                 id: id.clone(),
                 board_id: board.id.clone(),
@@ -284,7 +306,15 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 status: INBOX.to_string(),
                 priority: opt_str(&a["priority"]).unwrap_or("medium").to_string(),
                 assignees: vec![],
-                labels: a["tags"].as_array().map(|xs| xs.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+                labels: a["tags"]
+                    .as_array()
+                    .map(|xs| {
+                        xs.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 comments: vec![],
                 outcome: None,
                 depends_on: vec![],
@@ -324,7 +354,11 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 t.priority = p.to_string();
             }
             if let Some(tags) = a["tags"].as_array() {
-                t.labels = tags.iter().filter_map(Value::as_str).map(str::to_string).collect();
+                t.labels = tags
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
             }
             if let Some(title) = opt_str(&a["title"]) {
                 t.title = title.to_string();
@@ -342,14 +376,19 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             // `live_ticket`'s line, so the index it returns is all this needs.
             let idx = live_index(w, &a["taskId"])?;
             let body = req_str(&a["content"], "content")?;
-            w.tickets[idx].comments.push(SandboxComment { author: w.agent.clone(), body: body.to_string() });
+            w.tickets[idx].comments.push(SandboxComment {
+                author: w.agent.clone(),
+                body: body.to_string(),
+            });
             Ok(json!({ "ok": true }))
         }
 
         "report_outcome" => {
             let idx = live_index(w, &a["taskId"])?;
             if w.tickets[idx].outcome.is_some() {
-                return Err(refuse("an outcome has already been reported on this ticket"));
+                return Err(refuse(
+                    "an outcome has already been reported on this ticket",
+                ));
             }
             let outcome = req_str(&a["outcome"], "outcome")?;
             w.tickets[idx].outcome = Some(SandboxOutcome {
@@ -370,8 +409,13 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             // work". The sandbox says so rather than silently accepting, so a
             // fixture can stage a known gap and see whether the model respects
             // the answer.
-            if w.gaps_filed.iter().any(|g| g.to_lowercase() == kind.to_lowercase()) {
-                return Ok(json!({ "ok": true, "deduplicated": true, "note": "the team is already aware of this gap" }));
+            if w.gaps_filed
+                .iter()
+                .any(|g| g.to_lowercase() == kind.to_lowercase())
+            {
+                return Ok(
+                    json!({ "ok": true, "deduplicated": true, "note": "the team is already aware of this gap" }),
+                );
             }
             w.gaps_filed.push(kind.to_string());
             Ok(json!({ "ok": true, "deduplicated": false }))
@@ -383,7 +427,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 refuse("\"seconds\" must be a positive number of seconds of work")
             })?;
             w.tickets[idx].minutes_logged += seconds / 60.0;
-            Ok(json!({ "ok": true, "totalSeconds": (w.tickets[idx].minutes_logged * 60.0).round() as i64 }))
+            Ok(
+                json!({ "ok": true, "totalSeconds": (w.tickets[idx].minutes_logged * 60.0).round() as i64 }),
+            )
         }
 
         "add_dependency" => {
@@ -408,7 +454,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "log_usage" => {
             live_index(w, &a["taskId"])?;
             if a["promptTokens"].as_f64().is_none() || a["completionTokens"].as_f64().is_none() {
-                return Err(refuse("\"promptTokens\" and \"completionTokens\" are required token counts"));
+                return Err(refuse(
+                    "\"promptTokens\" and \"completionTokens\" are required token counts",
+                ));
             }
             Ok(json!({ "ok": true }))
         }
@@ -445,7 +493,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 .iter()
                 .find(|x| x.upload_id == id)
                 .ok_or_else(|| {
-                    refuse(format!("no attachment \"{id}\" — upload ids come from a ticket's attachments array"))
+                    refuse(format!(
+                        "no attachment \"{id}\" — upload ids come from a ticket's attachments array"
+                    ))
                 })?;
             if !file.mime.starts_with("image/") {
                 return Err(refuse(format!(
@@ -476,11 +526,16 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             // rather than inventing something: a model that reports "I searched
             // and found nothing" is behaving correctly, and a fixture that only
             // ever sees hits can never measure that.
-            let limit = a["limit"].as_f64().map(|n| n.max(1.0) as usize).unwrap_or(10);
+            let limit = a["limit"]
+                .as_f64()
+                .map(|n| n.max(1.0) as usize)
+                .unwrap_or(10);
             Ok(json!({ "results": hits.into_iter().take(limit).collect::<Vec<_>>() }))
         }
 
-        "list_kb_spaces" => Ok(json!({ "spaces": serde_json::to_value(&w.kb_spaces).expect("spaces serialize") })),
+        "list_kb_spaces" => {
+            Ok(json!({ "spaces": serde_json::to_value(&w.kb_spaces).expect("spaces serialize") }))
+        }
 
         "list_kb_docs" => {
             let space_id = req_str(&a["spaceId"], "spaceId")?;
@@ -497,7 +552,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 
         "read_kb_doc" => {
             let d = kb_doc_of(w, &a["docId"])?;
-            Ok(json!({ "id": d.id, "title": d.title, "markdown": d.markdown, "official": d.official, "spaceId": d.space_id }))
+            Ok(
+                json!({ "id": d.id, "title": d.title, "markdown": d.markdown, "official": d.official, "spaceId": d.space_id }),
+            )
         }
 
         "create_kb_space" => {
@@ -505,7 +562,11 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             // FIND-OR-CREATE BY NAME, so retries are safe — the description
             // says so, and a model that checks list_kb_spaces first should see
             // the same answer either way rather than being punished for a retry.
-            if let Some(existing) = w.kb_spaces.iter().find(|s| s.name.to_lowercase() == name.to_lowercase()) {
+            if let Some(existing) = w
+                .kb_spaces
+                .iter()
+                .find(|s| s.name.to_lowercase() == name.to_lowercase())
+            {
                 return Ok(json!({ "ok": true, "id": existing.id, "created": false }));
             }
             let id = next_id("kbs", w.kb_spaces.len());
@@ -573,7 +634,12 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 folder: opt_str(&a["folder"]).map(str::to_string),
                 // A personal assistant's docs are always private to its owner;
                 // the field is ignored, exactly as the description says.
-                visibility: if w.assistant_for.is_some() { "private" } else { opt_str(&a["visibility"]).unwrap_or("org") }.to_string(),
+                visibility: if w.assistant_for.is_some() {
+                    "private"
+                } else {
+                    opt_str(&a["visibility"]).unwrap_or("org")
+                }
+                .to_string(),
                 versions: 1,
                 exported_url: None,
                 kind: "doc".to_string(),
@@ -582,10 +648,16 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         }
 
         "update_document" => {
-            let idx = w.documents.iter().position(|d| d.id == a["documentId"].as_str().unwrap_or(""))
-                .ok_or_else(|| refuse(format!(
-                    "no document \"{}\" — list_documents shows the ones you can read",
-                    a["documentId"].as_str().unwrap_or(""))))?;
+            let idx = w
+                .documents
+                .iter()
+                .position(|d| d.id == a["documentId"].as_str().unwrap_or(""))
+                .ok_or_else(|| {
+                    refuse(format!(
+                        "no document \"{}\" — list_documents shows the ones you can read",
+                        a["documentId"].as_str().unwrap_or("")
+                    ))
+                })?;
             if let Some(t) = opt_str(&a["title"]) {
                 w.documents[idx].title = t.to_string();
             }
@@ -602,14 +674,21 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 
         "get_document" => {
             let d = doc_of(w, &a["documentId"])?;
-            Ok(json!({ "id": d.id, "title": d.title, "markdown": d.markdown, "visibility": d.visibility, "version": d.versions }))
+            Ok(
+                json!({ "id": d.id, "title": d.title, "markdown": d.markdown, "visibility": d.visibility, "version": d.versions }),
+            )
         }
 
         "save_image_artifact" => {
             let path = req_str(&a["path"], "path")?;
             let lower = path.to_lowercase();
-            if ![".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|ext| lower.ends_with(ext)) {
-                return Err(refuse("images only (png/jpg/gif/webp) — this tool saves a picture, not a document"));
+            if ![".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|ext| lower.ends_with(ext))
+            {
+                return Err(refuse(
+                    "images only (png/jpg/gif/webp) — this tool saves a picture, not a document",
+                ));
             }
             // A FILE THE AGENT NEVER MADE. Production 404s on it; the sandbox
             // does too, because "save the chart" from a model that rendered no
@@ -622,11 +701,17 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             let id = next_id("doc", w.documents.len());
             w.documents.push(SandboxDocument {
                 id: id.clone(),
-                title: opt_str(&a["title"]).map(str::to_string)
+                title: opt_str(&a["title"])
+                    .map(str::to_string)
                     .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string()),
                 markdown: String::new(),
                 folder: opt_str(&a["folder"]).map(str::to_string),
-                visibility: if w.assistant_for.is_some() { "private" } else { "org" }.to_string(),
+                visibility: if w.assistant_for.is_some() {
+                    "private"
+                } else {
+                    "org"
+                }
+                .to_string(),
                 versions: 1,
                 exported_url: None,
                 kind: "file".to_string(),
@@ -636,10 +721,16 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 
         "export_to_google_doc" => {
             google_only(w, "export_to_google_doc")?;
-            let idx = w.documents.iter().position(|d| d.id == a["documentId"].as_str().unwrap_or(""))
-                .ok_or_else(|| refuse(format!(
-                    "no document \"{}\" — list_documents shows the ones you can read",
-                    a["documentId"].as_str().unwrap_or(""))))?;
+            let idx = w
+                .documents
+                .iter()
+                .position(|d| d.id == a["documentId"].as_str().unwrap_or(""))
+                .ok_or_else(|| {
+                    refuse(format!(
+                        "no document \"{}\" — list_documents shows the ones you can read",
+                        a["documentId"].as_str().unwrap_or("")
+                    ))
+                })?;
             let url = format!("https://docs.google.com/document/d/{}", w.documents[idx].id);
             w.documents[idx].exported_url = Some(url.clone());
             Ok(json!({ "ok": true, "url": url }))
@@ -661,22 +752,36 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "post_to_channel" => {
             let idx = channel_idx(w, &a["channelId"])?;
             let seq = w.channels[idx].messages.len() as i64 + 1;
-            w.channels[idx].messages.push(serde_json::from_value(json!({
-                "seq": seq, "author": w.agent, "body": req_str(&a["content"], "content")?
-            })).expect("a message deserializes"));
+            w.channels[idx].messages.push(
+                serde_json::from_value(json!({
+                    "seq": seq, "author": w.agent, "body": req_str(&a["content"], "content")?
+                }))
+                .expect("a message deserializes"),
+            );
             Ok(json!({ "ok": true }))
         }
 
         "message_user" => {
             let to = req_str(&a["to"], "to")?;
-            if !w.teammates.iter().any(|t| t.email == to || t.name.to_lowercase() == to.to_lowercase()) {
-                return Err(refuse(format!("no teammate \"{to}\" — resolve the name with list_teammates")));
+            if !w
+                .teammates
+                .iter()
+                .any(|t| t.email == to || t.name.to_lowercase() == to.to_lowercase())
+            {
+                return Err(refuse(format!(
+                    "no teammate \"{to}\" — resolve the name with list_teammates"
+                )));
             }
-            w.dms_sent.push(SandboxDm { user: to.to_string(), body: req_str(&a["message"], "message")?.to_string() });
+            w.dms_sent.push(SandboxDm {
+                user: to.to_string(),
+                body: req_str(&a["message"], "message")?.to_string(),
+            });
             Ok(json!({ "ok": true }))
         }
 
-        "list_teammates" => Ok(json!({ "teammates": serde_json::to_value(&w.teammates).expect("teammates serialize") })),
+        "list_teammates" => Ok(
+            json!({ "teammates": serde_json::to_value(&w.teammates).expect("teammates serialize") }),
+        ),
 
         "report_problem" => {
             let summary = req_str(&a["summary"], "summary")?;
@@ -701,7 +806,15 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 summary: req_str(&a["summary"], "summary")?.to_string(),
                 start: req_str(&a["start"], "start")?.to_string(),
                 end: req_str(&a["end"], "end")?.to_string(),
-                attendees: a["attendees"].as_array().map(|xs| xs.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+                attendees: a["attendees"]
+                    .as_array()
+                    .map(|xs| {
+                        xs.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 all_day: a["allDay"] == Value::Bool(true),
             });
             // NOTHING WAS CREATED. Said back in the result, because the failure
@@ -730,10 +843,14 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             // An id the listing never returned is an invented one — the mail
             // analogue of "ids come from listings".
             let m = w.inbox.iter().find(|x| x.id == id).ok_or_else(|| {
-                refuse(format!("no message \"{id}\" — use an id from read_recent_email"))
+                refuse(format!(
+                    "no message \"{id}\" — use an id from read_recent_email"
+                ))
             })?;
-            Ok(json!({ "id": m.id, "from": m.from, "to": "me", "subject": m.subject, "date": null,
-                "unread": m.unread, "labels": m.labels, "body": m.body }))
+            Ok(
+                json!({ "id": m.id, "from": m.from, "to": "me", "subject": m.subject, "date": null,
+                "unread": m.unread, "labels": m.labels, "body": m.body }),
+            )
         }
 
         "list_labels" => {
@@ -768,7 +885,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                         let s = x.as_str().unwrap_or("null").to_string();
                         if !seen.contains(&s) {
                             seen.push(s);
-                            if seen.len() == cap { break; }
+                            if seen.len() == cap {
+                                break;
+                            }
                         }
                     }
                 }
@@ -776,7 +895,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             };
             let ids = uniq(&a["ids"], 100);
             if ids.is_empty() {
-                return Err(refuse("\"ids\" is required — use the ids read_recent_email returns"));
+                return Err(refuse(
+                    "\"ids\" is required — use the ids read_recent_email returns",
+                ));
             }
             let add = uniq(&a["addLabels"], 10);
             let remove = uniq(&a["removeLabels"], 10);
@@ -798,7 +919,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             let mut targets = vec![];
             for id in &ids {
                 let idx = w.inbox.iter().position(|m| &m.id == id).ok_or_else(|| {
-                    refuse(format!("no message \"{id}\" — use an id from read_recent_email"))
+                    refuse(format!(
+                        "no message \"{id}\" — use an id from read_recent_email"
+                    ))
                 })?;
                 targets.push(idx);
             }
@@ -816,7 +939,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             for idx in targets {
                 let mut next = w.inbox[idx].labels.clone();
                 for n in &add {
-                    if !next.contains(n) { next.push(n.clone()); }
+                    if !next.contains(n) {
+                        next.push(n.clone());
+                    }
                 }
                 next.retain(|l| !remove.contains(l));
                 w.inbox[idx].unread = next.iter().any(|l| l == "UNREAD");
@@ -854,7 +979,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "research" => {
             let question = req_str(&a["question"], "question")?;
             if question.chars().count() < 8 {
-                return Err(refuse("\"question\" needs to be a real question — be specific about what to look up"));
+                return Err(refuse(
+                    "\"question\" needs to be a real question — be specific about what to look up",
+                ));
             }
             let run_id = next_id("run", w.research.len());
             let mode = opt_str(&a["mode"]).unwrap_or("brief");
@@ -876,16 +1003,26 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 
         "research_status" => {
             let run_id = req_str(&a["runId"], "runId")?;
-            let run = w.research.iter().find(|r| r.run_id == run_id).ok_or_else(|| {
-                refuse(format!("no research run \"{run_id}\" — list_research shows recent runs"))
-            })?;
-            Ok(json!({ "status": run.status, "phase": run.phase, "documentId": run.document_id, "error": run.error, "sources": run.sources }))
+            let run = w
+                .research
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .ok_or_else(|| {
+                    refuse(format!(
+                        "no research run \"{run_id}\" — list_research shows recent runs"
+                    ))
+                })?;
+            Ok(
+                json!({ "status": run.status, "phase": run.phase, "documentId": run.document_id, "error": run.error, "sources": run.sources }),
+            )
         }
 
         // ── Board governance ─────────────────────────────────────────────────
         "list_teams" => {
             assistant_only(w, "list_teams")?;
-            Ok(json!({ "teams": w.teams.iter().map(|name| json!({ "name": name })).collect::<Vec<_>>() }))
+            Ok(
+                json!({ "teams": w.teams.iter().map(|name| json!({ "name": name })).collect::<Vec<_>>() }),
+            )
         }
 
         "move_board_to_team" => {
@@ -900,7 +1037,10 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                         board.name, board.owner_email
                     )));
                 }
-                w.boards.iter().position(|b| b.id == board.id).expect("board_of found it")
+                w.boards
+                    .iter()
+                    .position(|b| b.id == board.id)
+                    .expect("board_of found it")
             };
             let team_name = req_str(&a["teamName"], "teamName")?;
             if team_name.to_lowercase() == "personal" {
@@ -919,22 +1059,34 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 
         "list_board_members" => {
             let board = board_of(w, &a["boardId"])?;
-            Ok(json!({ "members": serde_json::to_value(&board.members).expect("members serialize") }))
+            Ok(
+                json!({ "members": serde_json::to_value(&board.members).expect("members serialize") }),
+            )
         }
 
         "add_board_member" => {
             let board_idx = {
                 let board = board_of(w, &a["boardId"])?;
                 owned_by_owner(w, board, "add_board_member")?;
-                w.boards.iter().position(|b| b.id == board.id).expect("board_of found it")
+                w.boards
+                    .iter()
+                    .position(|b| b.id == board.id)
+                    .expect("board_of found it")
             };
             let email = req_str(&a["email"], "email")?;
             let role = opt_str(&a["role"]).unwrap_or("editor");
-            if let Some(existing) = w.boards[board_idx].members.iter_mut().find(|m| m.email == email) {
+            if let Some(existing) = w.boards[board_idx]
+                .members
+                .iter_mut()
+                .find(|m| m.email == email)
+            {
                 existing.role = role.to_string();
                 return Ok(json!({ "ok": true, "changed": "role" }));
             }
-            w.boards[board_idx].members.push(SandboxMember { email: email.to_string(), role: role.to_string() });
+            w.boards[board_idx].members.push(SandboxMember {
+                email: email.to_string(),
+                role: role.to_string(),
+            });
             Ok(json!({ "ok": true, "changed": "added" }))
         }
 
@@ -942,7 +1094,10 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             let board_idx = {
                 let board = board_of(w, &a["boardId"])?;
                 owned_by_owner(w, board, "remove_board_member")?;
-                w.boards.iter().position(|b| b.id == board.id).expect("board_of found it")
+                w.boards
+                    .iter()
+                    .position(|b| b.id == board.id)
+                    .expect("board_of found it")
             };
             let email = req_str(&a["email"], "email")?;
             if email == w.boards[board_idx].owner_email {
@@ -951,7 +1106,10 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             let before = w.boards[board_idx].members.len();
             w.boards[board_idx].members.retain(|m| m.email != email);
             if w.boards[board_idx].members.len() == before {
-                return Err(refuse(format!("{} is not on \"{}\"", email, w.boards[board_idx].name)));
+                return Err(refuse(format!(
+                    "{} is not on \"{}\"",
+                    email, w.boards[board_idx].name
+                )));
             }
             Ok(json!({ "ok": true }))
         }
@@ -960,14 +1118,34 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             let board_idx = {
                 let board = board_of(w, &a["boardId"])?;
                 owned_by_owner(w, board, "set_board_agents")?;
-                w.boards.iter().position(|b| b.id == board.id).expect("board_of found it")
+                w.boards
+                    .iter()
+                    .position(|b| b.id == board.id)
+                    .expect("board_of found it")
             };
-            for add in a["add"].as_array().map(|xs| xs.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default() {
+            for add in a["add"]
+                .as_array()
+                .map(|xs| {
+                    xs.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+            {
                 if !w.boards[board_idx].agents.contains(&add) {
                     w.boards[board_idx].agents.push(add);
                 }
             }
-            let remove: Vec<String> = a["remove"].as_array().map(|xs| xs.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+            let remove: Vec<String> = a["remove"]
+                .as_array()
+                .map(|xs| {
+                    xs.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
             w.boards[board_idx].agents.retain(|x| !remove.contains(x));
             Ok(json!({ "ok": true, "agents": w.boards[board_idx].agents }))
         }
@@ -984,7 +1162,10 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 /// they want the position, not the borrow.
 fn live_index(w: &SandboxWorld, id: &Value) -> Result<usize, ToolRefusal> {
     let t = live_ticket(w, id)?;
-    Ok(w.tickets.iter().position(|x| x.id == t.id).expect("live_ticket found it in this world"))
+    Ok(w.tickets
+        .iter()
+        .position(|x| x.id == t.id)
+        .expect("live_ticket found it in this world"))
 }
 
 /// EVERY REGISTERED TOOL HAS A BACKEND. The catalog is locked to
@@ -996,26 +1177,63 @@ fn live_index(w: &SandboxWorld, id: &Value) -> Result<usize, ToolRefusal> {
 /// enumerates the same names arm by arm and the test holds both to it.
 pub const BACKED_TOOLS: &[&str] = &[
     // ── Boards & tickets ─────────────────────────────────────────────────
-    "list_boards", "list_tickets", "get_ticket", "fetch_attachment", "create_ticket",
-    "triage_ticket", "comment", "report_outcome", "report_gap", "add_time", "add_dependency",
+    "list_boards",
+    "list_tickets",
+    "get_ticket",
+    "fetch_attachment",
+    "create_ticket",
+    "triage_ticket",
+    "comment",
+    "report_outcome",
+    "report_gap",
+    "add_time",
+    "add_dependency",
     "log_usage",
     // ── Knowledge ────────────────────────────────────────────────────────
-    "search_knowledge", "describe_image", "web_search", "list_kb_spaces", "list_kb_docs",
-    "read_kb_doc", "create_kb_space", "create_kb_doc", "edit_kb_doc",
+    "search_knowledge",
+    "describe_image",
+    "web_search",
+    "list_kb_spaces",
+    "list_kb_docs",
+    "read_kb_doc",
+    "create_kb_space",
+    "create_kb_doc",
+    "edit_kb_doc",
     // ── Documents ────────────────────────────────────────────────────────
-    "create_document", "update_document", "list_documents", "get_document",
-    "save_image_artifact", "export_to_google_doc",
+    "create_document",
+    "update_document",
+    "list_documents",
+    "get_document",
+    "save_image_artifact",
+    "export_to_google_doc",
     // ── Comms ────────────────────────────────────────────────────────────
-    "list_channels", "read_channel", "post_to_channel", "message_user", "list_teammates",
+    "list_channels",
+    "read_channel",
+    "post_to_channel",
+    "message_user",
+    "list_teammates",
     "report_problem",
     // ── Google ───────────────────────────────────────────────────────────
-    "read_calendar", "draft_calendar_event", "read_recent_email", "read_email", "list_labels",
-    "create_label", "organize_emails", "search_drive", "draft_email",
+    "read_calendar",
+    "draft_calendar_event",
+    "read_recent_email",
+    "read_email",
+    "list_labels",
+    "create_label",
+    "organize_emails",
+    "search_drive",
+    "draft_email",
     // ── Research ─────────────────────────────────────────────────────────
-    "research", "list_research", "research_status",
+    "research",
+    "list_research",
+    "research_status",
     // ── Board governance ─────────────────────────────────────────────────
-    "list_teams", "move_board_to_team", "list_board_members", "add_board_member",
-    "remove_board_member", "set_board_agents",
+    "list_teams",
+    "move_board_to_team",
+    "list_board_members",
+    "add_board_member",
+    "remove_board_member",
+    "set_board_agents",
 ];
 
 pub fn backed_tool_names() -> Vec<&'static str> {
@@ -1061,7 +1279,10 @@ pub struct SandboxOptions {
 
 impl Default for SandboxOptions {
     fn default() -> SandboxOptions {
-        SandboxOptions { tools: None, world: Value::Null }
+        SandboxOptions {
+            tools: None,
+            world: Value::Null,
+        }
     }
 }
 
@@ -1092,7 +1313,11 @@ impl Sandbox {
             }
             None => TALARIA_TOOLS.iter().filter(|t| is_backed(t.name)).collect(),
         };
-        Sandbox { world, calls: vec![], tools }
+        Sandbox {
+            world,
+            calls: vec![],
+            tools,
+        }
     }
 
     /// The offered tools as the transport shapes them — the dry-run loop's
@@ -1131,7 +1356,10 @@ impl Sandbox {
                     result: None,
                     error: Some(error.clone()),
                 });
-                return DispatchResult { text: format!("Error: {error}"), is_error: true };
+                return DispatchResult {
+                    text: format!("Error: {error}"),
+                    is_error: true,
+                };
             }
         };
         let args = Value::Object(args);
@@ -1141,8 +1369,16 @@ impl Sandbox {
         let offered = self.tools.iter().any(|t| t.name == name);
         if !offered {
             let error = format!("there is no tool called \"{name}\"");
-            self.calls.push(SandboxCall { tool: name.to_string(), args, result: None, error: Some(error.clone()) });
-            return DispatchResult { text: format!("Error: {error}"), is_error: true };
+            self.calls.push(SandboxCall {
+                tool: name.to_string(),
+                args,
+                result: None,
+                error: Some(error.clone()),
+            });
+            return DispatchResult {
+                text: format!("Error: {error}"),
+                is_error: true,
+            };
         }
 
         match handle(name, &args, &mut self.world) {
@@ -1153,7 +1389,10 @@ impl Sandbox {
                     result: Some(result.clone()),
                     error: None,
                 });
-                DispatchResult { text: serde_json::to_string(&result).expect("a backend result serializes"), is_error: false }
+                DispatchResult {
+                    text: serde_json::to_string(&result).expect("a backend result serializes"),
+                    is_error: false,
+                }
             }
             // A ToolRefusal is the sandbox refusing exactly as production
             // would. There is no other error kind to dress up as the model's
@@ -1161,8 +1400,16 @@ impl Sandbox {
             // left to unwind, so the sweep records a broken case rather than a
             // failing model.
             Err(ToolRefusal(message)) => {
-                self.calls.push(SandboxCall { tool: name.to_string(), args, result: None, error: Some(message.clone()) });
-                DispatchResult { text: format!("Error: {message}"), is_error: true }
+                self.calls.push(SandboxCall {
+                    tool: name.to_string(),
+                    args,
+                    result: None,
+                    error: Some(message.clone()),
+                });
+                DispatchResult {
+                    text: format!("Error: {message}"),
+                    is_error: true,
+                }
             }
         }
     }
@@ -1209,16 +1456,27 @@ mod tests {
         let mut s = sb();
         let r = s.dispatch("triage_ticket", r#"{"taskId":"PLAT-118","status":"done"}"#);
         assert!(r.is_error);
-        assert_eq!(r.text, "Error: agents cannot set status \"done\" — you may move a ticket to in_progress, blocked or quality_review only");
+        assert_eq!(
+            r.text,
+            "Error: agents cannot set status \"done\" — you may move a ticket to in_progress, blocked or quality_review only"
+        );
         // The refusal is a RECORDED OBSERVATION, not a dropped call — a fixture
         // grading "did it try to set done" reads exactly this row.
-        assert_eq!(s.calls[0].error.as_deref(), Some("agents cannot set status \"done\" — you may move a ticket to in_progress, blocked or quality_review only"));
+        assert_eq!(
+            s.calls[0].error.as_deref(),
+            Some(
+                "agents cannot set status \"done\" — you may move a ticket to in_progress, blocked or quality_review only"
+            )
+        );
     }
 
     #[test]
     fn moves_a_ticket_forward_and_leaves_the_world_changed() {
         let mut s = sb();
-        let r = s.dispatch("triage_ticket", r#"{"taskId":"PLAT-118","status":"in_progress"}"#);
+        let r = s.dispatch(
+            "triage_ticket",
+            r#"{"taskId":"PLAT-118","status":"in_progress"}"#,
+        );
         assert!(!r.is_error, "{}", r.text);
         assert!(r.text.contains(r#""status":"in_progress""#));
         // The world is the point: a later read sees the move.
@@ -1228,13 +1486,19 @@ mod tests {
     #[test]
     fn sends_a_ticket_to_review_on_report_outcome_and_refuses_a_second() {
         let mut s = sb();
-        let r = s.dispatch("report_outcome", r#"{"taskId":"t-77","outcome":"Rotated the key"}"#);
+        let r = s.dispatch(
+            "report_outcome",
+            r#"{"taskId":"t-77","outcome":"Rotated the key"}"#,
+        );
         assert!(!r.is_error);
         assert_eq!(s.world.tickets[2].status, "quality_review");
         assert!(s.world.tickets[2].outcome.is_some());
         let again = s.dispatch("report_outcome", r#"{"taskId":"t-77","outcome":"again"}"#);
         assert!(again.is_error);
-        assert_eq!(again.text, "Error: an outcome has already been reported on this ticket");
+        assert_eq!(
+            again.text,
+            "Error: an outcome has already been reported on this ticket"
+        );
     }
 
     #[test]
@@ -1242,24 +1506,36 @@ mod tests {
         let mut s = sb();
         s.dispatch("report_outcome", r#"{"taskId":"t-77","outcome":"done"}"#);
         let r = s.dispatch("triage_ticket", r#"{"taskId":"t-77","status":"blocked"}"#);
-        assert_eq!(r.text, "Error: this ticket is in review — a human signs off from here; add a comment instead");
+        assert_eq!(
+            r.text,
+            "Error: this ticket is in review — a human signs off from here; add a comment instead"
+        );
     }
 
     #[test]
     fn comments_are_the_one_write_allowed_in_review() {
         let mut s = sb();
         s.dispatch("report_outcome", r#"{"taskId":"t-77","outcome":"done"}"#);
-        let r = s.dispatch("comment", r#"{"taskId":"t-77","content":"Follow-up filed"}"#);
+        let r = s.dispatch(
+            "comment",
+            r#"{"taskId":"t-77","content":"Follow-up filed"}"#,
+        );
         assert!(!r.is_error);
         assert_eq!(s.world.tickets[2].comments.len(), 1);
-        assert_eq!(s.world.tickets[2].comments[0].author, "engineer-engineering");
+        assert_eq!(
+            s.world.tickets[2].comments[0].author,
+            "engineer-engineering"
+        );
     }
 
     #[test]
     fn deduplicates_a_gap_the_team_already_knows_about_and_says_so() {
         let mut s = sb();
         s.world.gaps_filed.push("Invoice reconciliation".into());
-        let r = s.dispatch("report_gap", r#"{"kind":"invoice reconciliation","missing":"cannot read PDFs"}"#);
+        let r = s.dispatch(
+            "report_gap",
+            r#"{"kind":"invoice reconciliation","missing":"cannot read PDFs"}"#,
+        );
         assert!(!r.is_error);
         assert!(r.text.contains("\"deduplicated\":true"));
         assert!(r.text.contains("the team is already aware of this gap"));
@@ -1294,7 +1570,10 @@ mod tests {
         assert_eq!(b.world.tickets.len(), 3);
         // And the merge is a COPY: mutating one world never reaches another
         // sandbox built from the same options.
-        let opts = SandboxOptions { world: serde_json::json!({"googleConnected": false}), ..SandboxOptions::default() };
+        let opts = SandboxOptions {
+            world: serde_json::json!({"googleConnected": false}),
+            ..SandboxOptions::default()
+        };
         let mut c = Sandbox::new(SandboxOptions { ..opts.clone() });
         c.dispatch("read_calendar", "{}");
         let d = Sandbox::new(opts);
@@ -1318,7 +1597,10 @@ mod tests {
     fn creates_a_ticket_into_the_inbox_however_the_model_asked() {
         let mut s = sb();
         // Assignees are not an argument at all; status is forced regardless.
-        let r = s.dispatch("create_ticket", r#"{"boardId":"b-platform","title":"New thing","status":"done"}"#);
+        let r = s.dispatch(
+            "create_ticket",
+            r#"{"boardId":"b-platform","title":"New thing","status":"done"}"#,
+        );
         assert!(!r.is_error);
         assert!(r.text.contains("\"status\":\"inbox\""));
         assert_eq!(s.world.tickets[3].id, "PLAT-903");
@@ -1335,7 +1617,15 @@ mod tests {
             r#"{"taskId":"t-77","outcome":"x"}"#,
             r#"{"taskId":"t-77","seconds":60}"#,
         ] {
-            let tool = if args.contains("content") { "comment" } else if args.contains("outcome") { "report_outcome" } else if args.contains("seconds") { "add_time" } else { "triage_ticket" };
+            let tool = if args.contains("content") {
+                "comment"
+            } else if args.contains("outcome") {
+                "report_outcome"
+            } else if args.contains("seconds") {
+                "add_time"
+            } else {
+                "triage_ticket"
+            };
             let r = s.dispatch(tool, args);
             assert!(r.is_error, "{tool} should refuse on an archived ticket");
             assert!(r.text.contains("taken off the table"), "{tool}: {}", r.text);
@@ -1348,8 +1638,14 @@ mod tests {
     #[test]
     fn will_not_restart_a_blocked_ticket_which_is_a_human_call() {
         let mut s = sb();
-        let r = s.dispatch("triage_ticket", r#"{"taskId":"t-41","status":"in_progress"}"#);
-        assert_eq!(r.text, "Error: restarting your own blocked ticket is a person's call — it stays blocked until a human moves it");
+        let r = s.dispatch(
+            "triage_ticket",
+            r#"{"taskId":"t-41","status":"in_progress"}"#,
+        );
+        assert_eq!(
+            r.text,
+            "Error: restarting your own blocked ticket is a person's call — it stays blocked until a human moves it"
+        );
         assert_eq!(s.world.tickets[1].status, "blocked");
     }
 
@@ -1368,11 +1664,17 @@ mod tests {
     #[test]
     fn links_a_dependency_within_one_board_and_refuses_one_across_boards() {
         let mut s = sb();
-        let r = s.dispatch("add_dependency", r#"{"taskId":"t-77","dependsOnId":"PLAT-118"}"#);
+        let r = s.dispatch(
+            "add_dependency",
+            r#"{"taskId":"t-77","dependsOnId":"PLAT-118"}"#,
+        );
         assert!(!r.is_error);
         assert_eq!(s.world.tickets[2].depends_on, vec!["PLAT-118".to_string()]);
         s.world.tickets[0].board_id = "b-helpdesk".into();
-        let cross = s.dispatch("add_dependency", r#"{"taskId":"t-77","dependsOnId":"PLAT-118"}"#);
+        let cross = s.dispatch(
+            "add_dependency",
+            r#"{"taskId":"t-77","dependsOnId":"PLAT-118"}"#,
+        );
         assert!(cross.text.contains("are on different boards"));
     }
 
@@ -1389,17 +1691,26 @@ mod tests {
     #[test]
     fn reads_an_image_and_attributes_the_reading_to_another_model() {
         let mut s = sb();
-        let r = s.dispatch("describe_image", r#"{"uploadId":"up-failing-tests","question":"what failed?"}"#);
+        let r = s.dispatch(
+            "describe_image",
+            r#"{"uploadId":"up-failing-tests","question":"what failed?"}"#,
+        );
         assert!(r.text.contains("\"model\":\"vision-model\""));
         assert!(r.text.contains("2 failing, 14 passed"));
-        let not_image = s.dispatch("describe_image", r#"{"uploadId":"up-arch-pdf","question":"?"}"#);
+        let not_image = s.dispatch(
+            "describe_image",
+            r#"{"uploadId":"up-arch-pdf","question":"?"}"#,
+        );
         assert!(not_image.text.contains("not an image"));
     }
 
     #[test]
     fn returns_a_fixed_tiny_web_and_nothing_for_a_query_it_has_no_page_for() {
         let mut s = sb();
-        let hit = s.dispatch("web_search", r#"{"query":"postgres logical replication docs"}"#);
+        let hit = s.dispatch(
+            "web_search",
+            r#"{"query":"postgres logical replication docs"}"#,
+        );
         assert!(hit.text.contains("postgresql.org"));
         let miss = s.dispatch("web_search", r#"{"query":"what time is the super bowl"}"#);
         assert_eq!(miss.text, r#"{"results":[]}"#);
@@ -1452,7 +1763,10 @@ mod tests {
         let mut s = sb();
         let created = s.dispatch("create_document", r#"{"title":"Run notes","markdown":"x"}"#);
         assert!(created.text.contains("\"documentId\":\"doc-2\""));
-        s.dispatch("update_document", r#"{"documentId":"doc-2","markdown":"y"}"#);
+        s.dispatch(
+            "update_document",
+            r#"{"documentId":"doc-2","markdown":"y"}"#,
+        );
         assert_eq!(s.world.documents[1].versions, 2);
         let listed = s.dispatch("list_documents", "{}");
         assert!(listed.text.contains("Run notes"));
@@ -1461,9 +1775,15 @@ mod tests {
     #[test]
     fn saves_an_image_only_from_a_file_that_exists_in_the_agent_workspace() {
         let mut s = sb();
-        let missing = s.dispatch("save_image_artifact", r#"{"path":"/opt/data/charts/never-rendered.png"}"#);
+        let missing = s.dispatch(
+            "save_image_artifact",
+            r#"{"path":"/opt/data/charts/never-rendered.png"}"#,
+        );
         assert!(missing.text.contains("no file at"));
-        let saved = s.dispatch("save_image_artifact", r#"{"path":"/opt/data/charts/ledger-retry.png"}"#);
+        let saved = s.dispatch(
+            "save_image_artifact",
+            r#"{"path":"/opt/data/charts/ledger-retry.png"}"#,
+        );
         assert!(saved.text.contains("\"documentId\":\"doc-2\""));
         assert_eq!(s.world.documents[1].kind, "file");
         let not_image = s.dispatch("save_image_artifact", r#"{"path":"/opt/data/notes.txt"}"#);
@@ -1495,8 +1815,14 @@ mod tests {
     #[test]
     fn filters_by_since_seq_so_a_second_read_is_not_the_whole_history_again() {
         let mut s = sb();
-        s.dispatch("post_to_channel", r#"{"channelId":"ch-platform","content":"new message"}"#);
-        let tail = s.dispatch("read_channel", r#"{"channelId":"ch-platform","sinceSeq":1}"#);
+        s.dispatch(
+            "post_to_channel",
+            r#"{"channelId":"ch-platform","content":"new message"}"#,
+        );
+        let tail = s.dispatch(
+            "read_channel",
+            r#"{"channelId":"ch-platform","sinceSeq":1}"#,
+        );
         assert!(tail.text.contains("new message"));
         assert!(!tail.text.contains("blocker for everything"));
     }
@@ -1507,7 +1833,10 @@ mod tests {
         let by_name = s.dispatch("message_user", r#"{"to":"Priya","message":"checking in"}"#);
         assert!(!by_name.is_error);
         assert_eq!(s.world.dms_sent[0].user, "Priya");
-        let unknown = s.dispatch("message_user", r#"{"to":"nobody@example.com","message":"x"}"#);
+        let unknown = s.dispatch(
+            "message_user",
+            r#"{"to":"nobody@example.com","message":"x"}"#,
+        );
         assert!(unknown.text.contains("no teammate"));
     }
 
@@ -1529,7 +1858,10 @@ mod tests {
     fn read_email_returns_the_whole_message_not_the_teaser_and_refuses_invented_ids() {
         let mut s = sb();
         let full = s.dispatch("read_email", r#"{"id":"em-1"}"#);
-        assert!(full.text.contains("the license only covers staging until Monday"));
+        assert!(
+            full.text
+                .contains("the license only covers staging until Monday")
+        );
         let invented = s.dispatch("read_email", r#"{"id":"em-9"}"#);
         assert!(invented.text.contains("use an id from read_recent_email"));
     }
@@ -1538,19 +1870,50 @@ mod tests {
     fn organizes_by_id_and_label_name_and_the_world_shows_the_filing() {
         let mut s = sb();
         s.dispatch("create_label", r#"{"name":"Vendor"}"#);
-        let r = s.dispatch("organize_emails", r#"{"ids":["em-1"],"addLabels":["Vendor"],"removeLabels":["UNREAD"]}"#);
+        let r = s.dispatch(
+            "organize_emails",
+            r#"{"ids":["em-1"],"addLabels":["Vendor"],"removeLabels":["UNREAD"]}"#,
+        );
         assert!(r.text.contains("\"updated\":1"));
-        assert_eq!(s.world.inbox[0].labels, vec!["INBOX".to_string(), "Vendor".to_string()]);
+        assert_eq!(
+            s.world.inbox[0].labels,
+            vec!["INBOX".to_string(), "Vendor".to_string()]
+        );
         assert!(!s.world.inbox[0].unread);
     }
 
     #[test]
     fn organizing_refuses_invented_ids_invented_labels_and_the_destructive_ones() {
         let mut s = sb();
-        assert!(s.dispatch("organize_emails", r#"{"ids":["em-99"],"addLabels":["INBOX"]}"#).text.contains("no message"));
-        assert!(s.dispatch("organize_emails", r#"{"ids":["em-1"],"addLabels":["Imaginary"]}"#).text.contains("no label named"));
-        assert!(s.dispatch("organize_emails", r#"{"ids":["em-1"],"addLabels":["TRASH"]}"#).text.contains("would delete or hide mail"));
-        assert!(s.dispatch("organize_emails", r#"{"ids":["em-1"]}"#).text.contains("nothing to add or remove"));
+        assert!(
+            s.dispatch(
+                "organize_emails",
+                r#"{"ids":["em-99"],"addLabels":["INBOX"]}"#
+            )
+            .text
+            .contains("no message")
+        );
+        assert!(
+            s.dispatch(
+                "organize_emails",
+                r#"{"ids":["em-1"],"addLabels":["Imaginary"]}"#
+            )
+            .text
+            .contains("no label named")
+        );
+        assert!(
+            s.dispatch(
+                "organize_emails",
+                r#"{"ids":["em-1"],"addLabels":["TRASH"]}"#
+            )
+            .text
+            .contains("would delete or hide mail")
+        );
+        assert!(
+            s.dispatch("organize_emails", r#"{"ids":["em-1"]}"#)
+                .text
+                .contains("nothing to add or remove")
+        );
     }
 
     // ── research ─────────────────────────────────────────────────────────────
@@ -1558,7 +1921,10 @@ mod tests {
     #[test]
     fn research_queues_and_never_finishes_instantly() {
         let mut s = sb();
-        let r = s.dispatch("research", r#"{"question":"What do competitors charge for seats?"}"#);
+        let r = s.dispatch(
+            "research",
+            r#"{"question":"What do competitors charge for seats?"}"#,
+        );
         assert!(r.text.contains("\"runId\":\"run-2\""));
         assert!(r.text.contains("\"status\":\"queued\""));
         assert_eq!(s.world.research[1].status, "queued");
@@ -1582,12 +1948,21 @@ mod tests {
             world: serde_json::json!({ "assistantFor": "priya@example.com", "teams": ["Engineering"] }),
             ..SandboxOptions::default()
         });
-        let r = s.dispatch("move_board_to_team", r#"{"boardId":"b-platform","teamName":"engineering"}"#);
+        let r = s.dispatch(
+            "move_board_to_team",
+            r#"{"boardId":"b-platform","teamName":"engineering"}"#,
+        );
         assert!(!r.is_error, "{}", r.text);
         // b-helpdesk is dana's; priya's assistant gets the 403 sentence.
-        let refused = s.dispatch("move_board_to_team", r#"{"boardId":"b-helpdesk","teamName":"engineering"}"#);
+        let refused = s.dispatch(
+            "move_board_to_team",
+            r#"{"boardId":"b-helpdesk","teamName":"engineering"}"#,
+        );
         assert!(refused.text.contains("is owned by dana@example.com"));
-        let personal = s.dispatch("move_board_to_team", r#"{"boardId":"b-platform","teamName":"personal"}"#);
+        let personal = s.dispatch(
+            "move_board_to_team",
+            r#"{"boardId":"b-platform","teamName":"personal"}"#,
+        );
         assert!(personal.text.contains("\"team\":null"));
         assert!(s.world.boards[0].team.is_none());
     }
@@ -1598,11 +1973,20 @@ mod tests {
             world: serde_json::json!({ "assistantFor": "dana@example.com" }),
             ..SandboxOptions::default()
         });
-        let added = s.dispatch("add_board_member", r#"{"boardId":"b-platform","email":"x@example.com"}"#);
+        let added = s.dispatch(
+            "add_board_member",
+            r#"{"boardId":"b-platform","email":"x@example.com"}"#,
+        );
         assert!(added.text.contains("\"changed\":\"added\""));
-        let re_role = s.dispatch("add_board_member", r#"{"boardId":"b-platform","email":"x@example.com","role":"viewer"}"#);
+        let re_role = s.dispatch(
+            "add_board_member",
+            r#"{"boardId":"b-platform","email":"x@example.com","role":"viewer"}"#,
+        );
         assert!(re_role.text.contains("\"changed\":\"role\""));
-        let owner = s.dispatch("remove_board_member", r#"{"boardId":"b-platform","email":"priya@example.com"}"#);
+        let owner = s.dispatch(
+            "remove_board_member",
+            r#"{"boardId":"b-platform","email":"priya@example.com"}"#,
+        );
         assert!(owner.text.contains("owner can't be removed"));
     }
 
@@ -1612,11 +1996,21 @@ mod tests {
     fn every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog() {
         let catalog: Vec<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
         for name in &catalog {
-            assert!(BACKED_TOOLS.contains(name), "\"{name}\" is offered but has no backend");
+            assert!(
+                BACKED_TOOLS.contains(name),
+                "\"{name}\" is offered but has no backend"
+            );
         }
         for name in BACKED_TOOLS {
-            assert!(catalog.contains(name), "\"{name}\" has a backend but is not in the catalog");
+            assert!(
+                catalog.contains(name),
+                "\"{name}\" has a backend but is not in the catalog"
+            );
         }
-        assert_eq!(catalog.len(), 51, "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first");
+        assert_eq!(
+            catalog.len(),
+            51,
+            "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
+        );
     }
 }

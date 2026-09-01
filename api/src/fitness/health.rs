@@ -208,7 +208,7 @@ pub fn harness_health(runs: &[HealthInput<'_>]) -> Vec<FixtureHealth> {
         .map(|(_, mut a)| {
             // Commonest first — the sentence the most models used is the one to
             // read first.
-            a.reason_map.sort_by(|x, y| y.1.len().cmp(&x.1.len()));
+            a.reason_map.sort_by_key(|x| std::cmp::Reverse(x.1.len()));
             a.health.reasons = a
                 .reason_map
                 .into_iter()
@@ -259,8 +259,14 @@ pub fn summarize(runs: &[HealthInput<'_>]) -> HealthSummary {
     let fixtures = harness_health(runs);
     HealthSummary {
         models: runs.iter().map(|r| r.model.to_string()).collect(),
-        ours: fixtures.iter().filter(|f| f.suspicion == Suspicion::Ours).count(),
-        shared: fixtures.iter().filter(|f| f.suspicion == Suspicion::Shared).count(),
+        ours: fixtures
+            .iter()
+            .filter(|f| f.suspicion == Suspicion::Ours)
+            .count(),
+        shared: fixtures
+            .iter()
+            .filter(|f| f.suspicion == Suspicion::Shared)
+            .count(),
         fixtures,
     }
 }
@@ -351,7 +357,11 @@ mod tests {
             x.task_error = Some("lost the decision".into());
         })];
         let clean = vec![c(|_| {})];
-        let out = harness_health(&[run("gemma", &gemma), run("deepseek", &clean), run("claude", &clean)]);
+        let out = harness_health(&[
+            run("gemma", &gemma),
+            run("deepseek", &clean),
+            run("claude", &clean),
+        ]);
         assert_eq!((out[0].tested, out[0].failed), (3, 1));
         assert_eq!(out[0].suspicion, Suspicion::Model);
     }
@@ -421,7 +431,11 @@ mod tests {
         assert_eq!((f.tested, f.gapped, f.failed), (2, 1, 1));
         // And the gap's sentence still reaches the reader — it is the most
         // actionable line in the view, because it is the one we can go and fix.
-        assert!(f.reasons.iter().any(|r| r.reason.contains("nothing citable")));
+        assert!(
+            f.reasons
+                .iter()
+                .any(|r| r.reason.contains("nothing citable"))
+        );
     }
 
     #[test]
@@ -446,9 +460,7 @@ mod tests {
         // A skip is not a verdict. Counting it as a failure would blame a model
         // for a harness its transport cannot drive, or for a provider that was
         // busy.
-        let skipped = |why: &str| {
-            c(|x| x.skipped = Some(why.to_string()))
-        };
+        let skipped = |why: &str| c(|x| x.skipped = Some(why.to_string()));
         let a = vec![skipped("no tool loop on this candidate")];
         let b = vec![skipped("rate limits on every attempt")];
         let out = harness_health(&[run("a", &a), run("b", &b)]);

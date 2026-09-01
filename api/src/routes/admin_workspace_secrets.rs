@@ -36,7 +36,7 @@ use crate::body::{
     NumKind, array_msg, array_too_big_msg, array_too_small_msg, as_object, boolean_member,
     nullable_number_member, nullish_max_string_member, optional_enum_member,
     optional_string_array_member, parse, present_nullable_uuid_member, string_member,
-    string_value_member, too_big_msg, uuid_member, utf16_len, zod_type_name,
+    string_value_member, too_big_msg, utf16_len, uuid_member, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::routes::secrets::{entry_key_ok, parse_entry};
@@ -48,11 +48,7 @@ use crate::workspace_secrets::{
     list_secret_folders, move_secret_to_folder, revoke_secret, share_secret_folder,
 };
 
-pub async fn get(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
-) -> Response {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     let user = match require_admin(&state, &headers).await {
         Ok(u) => u,
         Err(gate) => return gate,
@@ -147,7 +143,10 @@ pub async fn post(
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
             };
             if !entry_key_ok(&name) {
-                return house_error(StatusCode::BAD_REQUEST, "lowercase letters, digits, - and _");
+                return house_error(
+                    StatusCode::BAD_REQUEST,
+                    "lowercase letters, digits, - and _",
+                );
             }
             if utf16_len(&name) > 40 {
                 return house_error(StatusCode::BAD_REQUEST, &too_big_msg(40));
@@ -162,7 +161,7 @@ pub async fn post(
                 Some(v) => match v.as_array() {
                     Some(a) => a,
                     None => {
-                        return house_error(StatusCode::BAD_REQUEST, &array_msg(zod_type_name(v)))
+                        return house_error(StatusCode::BAD_REQUEST, &array_msg(zod_type_name(v)));
                     }
                 },
             };
@@ -205,11 +204,11 @@ pub async fn post(
             };
             // Hosts this credential may be spent against. Empty/absent =
             // unrestricted, which is what every secret predating the check has.
-            let allowed_hosts =
-                match optional_string_array_member(obj, "allowedHosts", 0, 253, 30) {
-                    Ok(h) => h,
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-                };
+            let allowed_hosts = match optional_string_array_member(obj, "allowedHosts", 0, 253, 30)
+            {
+                Ok(h) => h,
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
 
             // A failed secretbox is the create failing: the value cannot be
             // sealed. The ADMIN create surfaces the engine's own message
@@ -302,7 +301,11 @@ pub async fn post(
                 &state.pg,
                 AuditEntry {
                     actor: &actor,
-                    action: if action == Some("grant") { "secrets.grant" } else { "secrets.revoke" },
+                    action: if action == Some("grant") {
+                        "secrets.grant"
+                    } else {
+                        "secrets.revoke"
+                    },
                     target_type: "secret",
                     target_id: Some(&name),
                     target_label: None,
@@ -436,7 +439,11 @@ pub async fn post(
                 &state.pg,
                 AuditEntry {
                     actor: &actor,
-                    action: if on { "secrets.folder.grant" } else { "secrets.folder.revoke" },
+                    action: if on {
+                        "secrets.folder.grant"
+                    } else {
+                        "secrets.folder.revoke"
+                    },
                     target_type: "secret-folder",
                     target_id: Some(&id),
                     target_label: None,
@@ -460,18 +467,13 @@ pub async fn post(
                 Ok(None) => return house_error(StatusCode::BAD_REQUEST, "Invalid input"),
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
             };
-            let moved = match move_secret_to_folder(
-                &state.pg,
-                &name,
-                folder_id.as_deref(),
-                &user.id,
-                true,
-            )
-            .await
-            {
-                Ok(m) => m,
-                Err(e) => return internal(e, "file"),
-            };
+            let moved =
+                match move_secret_to_folder(&state.pg, &name, folder_id.as_deref(), &user.id, true)
+                    .await
+                {
+                    Ok(m) => m,
+                    Err(e) => return internal(e, "file"),
+                };
             if !moved {
                 return house_error(StatusCode::BAD_REQUEST, "could not file that");
             }

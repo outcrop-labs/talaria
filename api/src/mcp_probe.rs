@@ -42,7 +42,10 @@ fn initialize() -> Value {
 }
 
 pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult {
-    let mut send = vec![("content-type", "application/json"), ("accept", "application/json, text/event-stream")];
+    let mut send = vec![
+        ("content-type", "application/json"),
+        ("accept", "application/json, text/event-stream"),
+    ];
     send.extend(headers);
     let payload = initialize().to_string();
     let res = safe_fetch(
@@ -60,7 +63,10 @@ pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult 
         Ok(r) => r,
         // A refused target is an answer, not a failure — say which it was.
         Err(SafeError::Blocked(msg)) => {
-            return McpProbeResult { state: McpProbeState::Error, detail: msg.0 }
+            return McpProbeResult {
+                state: McpProbeState::Error,
+                detail: msg.0,
+            };
         }
         Err(e) => {
             let detail = if e.to_string().contains("timeout") {
@@ -68,7 +74,10 @@ pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult 
             } else {
                 "could not connect".to_string()
             };
-            return McpProbeResult { state: McpProbeState::Unreachable, detail };
+            return McpProbeResult {
+                state: McpProbeState::Unreachable,
+                detail,
+            };
         }
     };
 
@@ -91,7 +100,11 @@ pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult 
     // after the final token) failed to parse and read as merely "reachable".
     let text = String::from_utf8_lossy(&res.body).into_owned();
     let j = parse_mcp_response(&text);
-    if let Some(err) = j.as_ref().and_then(|v| v.get("error")).filter(|e| !e.is_null()) {
+    if let Some(err) = j
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .filter(|e| !e.is_null())
+    {
         return McpProbeResult {
             state: McpProbeState::Error,
             detail: err
@@ -103,11 +116,12 @@ pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult 
         };
     }
     let Some(j) = j else {
-        return McpProbeResult { state: McpProbeState::Ok, detail: "reachable".into() };
+        return McpProbeResult {
+            state: McpProbeState::Ok,
+            detail: "reachable".into(),
+        };
     };
-    let name = j
-        .pointer("/result/serverInfo/name")
-        .and_then(Value::as_str);
+    let name = j.pointer("/result/serverInfo/name").and_then(Value::as_str);
     McpProbeResult {
         state: McpProbeState::Ok,
         detail: match name {
@@ -122,7 +136,10 @@ mod tests {
     #[test]
     fn detail_sentences_match_ts() {
         // The three fixed strings the UI switches on.
-        assert_eq!(format!("server requires authentication ({})", 401), "server requires authentication (401)");
+        assert_eq!(
+            format!("server requires authentication ({})", 401),
+            "server requires authentication (401)"
+        );
         assert_eq!(format!("server answered {}", 503), "server answered 503");
         assert_eq!("connected to Exa MCP", "connected to Exa MCP");
     }

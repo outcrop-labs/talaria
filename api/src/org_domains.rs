@@ -95,7 +95,10 @@ pub async fn list_org_domains(pg: &PgPool) -> Result<Vec<serde_json::Value>, Str
     .fetch_all(pg)
     .await
     .map_err(|e| e.to_string())?;
-    rows.iter().map(domain_json).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.iter()
+        .map(domain_json)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// Add (or re-add) a domain, minting a fresh verification token. Re-adding a
@@ -150,8 +153,9 @@ fn resolver() -> &'static TokioResolver {
         // which fails every lookup: the honest answer for that operator.
         match TokioResolver::builder_tokio() {
             Ok(b) => b.build(),
-            Err(_) => TokioResolver::builder_with_config(Default::default(), Default::default())
-                .build(),
+            Err(_) => {
+                TokioResolver::builder_with_config(Default::default(), Default::default()).build()
+            }
         }
     })
 }
@@ -186,17 +190,14 @@ async fn resolve_txt(host: &str) -> Vec<String> {
 /// `talaria.<domain>`-shaped, since many orgs HOST Talaria on a subdomain
 /// like talaria.example.com and the email domain being verified here is a
 /// separate concern entirely. Legacy/root placements still pass.
-pub async fn verify_org_domain(
-    pg: &PgPool,
-    id: &str,
-) -> Result<serde_json::Value, String> {
+pub async fn verify_org_domain(pg: &PgPool, id: &str) -> Result<serde_json::Value, String> {
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select {DOMAIN_COLS} from org_domains where id = $1::uuid"
     )))
-        .bind(id)
-        .fetch_optional(pg)
-        .await
-        .map_err(|e| e.to_string())?;
+    .bind(id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
     let Some(row) = row else {
         return Ok(serde_json::json!({ "verified": false, "error": "not found" }));
     };
@@ -212,10 +213,12 @@ pub async fn verify_org_domain(
     for host in &hosts {
         let records = resolve_txt(host).await;
         if records.iter().any(|r| r.trim() == token) {
-            let _ = sqlx::query("update org_domains set verified = true, verified_at = now() where id = $1::uuid")
-                .bind(id)
-                .execute(pg)
-                .await;
+            let _ = sqlx::query(
+                "update org_domains set verified = true, verified_at = now() where id = $1::uuid",
+            )
+            .bind(id)
+            .execute(pg)
+            .await;
             return Ok(serde_json::json!({ "verified": true }));
         }
     }

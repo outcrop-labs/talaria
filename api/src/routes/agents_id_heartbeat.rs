@@ -41,16 +41,15 @@ pub async fn get(
     // The cast rides the parameter (`id = $1::uuid`), so a non-uuid :id is
     // a Postgres error here — the same 500 the TS throw produces, not a
     // quiet 404.
-    let name: Option<String> = match sqlx::query_scalar(
-        "select name from fleet_agents where id = $1::uuid",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pg)
-    .await
-    {
-        Ok(name) => name,
-        Err(_) => return thrown_internal_error(),
-    };
+    let name: Option<String> =
+        match sqlx::query_scalar("select name from fleet_agents where id = $1::uuid")
+            .bind(&id)
+            .fetch_optional(&state.pg)
+            .await
+        {
+            Ok(name) => name,
+            Err(_) => return thrown_internal_error(),
+        };
     let Some(name) = name else {
         return house_error(axum::http::StatusCode::NOT_FOUND, "unknown agent");
     };
@@ -64,7 +63,7 @@ pub async fn get(
         );
     }
 
-    if let Err(_) = heartbeat_agent(&state.pg, &id, None).await {
+    if heartbeat_agent(&state.pg, &id, None).await.is_err() {
         return thrown_internal_error();
     }
     match assigned_work(&state.pg, &name).await {

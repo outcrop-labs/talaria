@@ -380,6 +380,9 @@ struct GatewayStat {
     ts: i64,
     ms: i64,
     ok: bool,
+    /// Recorded for parity with TS's diagnostic buffer; no reader on this side
+    /// of the port yet.
+    #[allow(dead_code)]
     model: String,
 }
 
@@ -459,7 +462,10 @@ pub(crate) mod pulse_tests {
     /// drain whatever earlier tests left before recording ours. The turnstile
     /// keeps new writes out while this test reads.
     fn drain_ring() {
-        ring().lock().expect("the stat ring is not contended").clear();
+        ring()
+            .lock()
+            .expect("the stat ring is not contended")
+            .clear();
     }
 
     /// Nearest-rank, not interpolation: the p50 of three calls is the second,
@@ -467,7 +473,9 @@ pub(crate) mod pulse_tests {
     /// "instant".
     #[test]
     fn the_pulse_is_nearest_rank_over_the_recent_ring() {
-        let _ring = STAT_RING_TURNSTILE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ring = STAT_RING_TURNSTILE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         drain_ring();
         let before = gateway_pulse();
         record_gateway_stat(100, true, "probe-a");

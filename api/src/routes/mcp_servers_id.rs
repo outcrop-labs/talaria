@@ -5,9 +5,9 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
-    array_msg, as_object, optional_boolean_member,
-    optional_enum_member, optional_max_string_member, optional_string_array_member,
-    optional_url_member, parse, string_msg, uuid_member, zod_type_name,
+    array_msg, as_object, optional_boolean_member, optional_enum_member,
+    optional_max_string_member, optional_string_array_member, optional_url_member, parse,
+    string_msg, uuid_member, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::mcp_apply::{
@@ -149,7 +149,10 @@ pub async fn put(
         if let Some(description) = &patch.description {
             audit_after.insert(
                 "description".into(),
-                description.clone().map(Value::String).unwrap_or(Value::Null),
+                description
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
             );
         }
         if let Some(url) = &patch.url {
@@ -193,7 +196,14 @@ pub async fn put(
         .await;
     }
     if let Some(assign) = &patch.assign {
-        if let Err(e) = set_assignment(&state.pg, &server.id, &assign.agent_model, assign.tools.as_deref()).await {
+        if let Err(e) = set_assignment(
+            &state.pg,
+            &server.id,
+            &assign.agent_model,
+            assign.tools.as_deref(),
+        )
+        .await
+        {
             tracing::error!("[mcp] assign failed: {e}");
             return thrown_internal_error();
         }
@@ -269,7 +279,7 @@ pub async fn put(
                 return house_error(
                     StatusCode::BAD_GATEWAY,
                     &format!("tool discovery failed: {e}"),
-                )
+                );
             }
         }
     }
@@ -277,9 +287,8 @@ pub async fn put(
     // Live cutover for the agents this change touches: a running Hermes
     // only wires MCP servers at start, so carriers roll blue/green. TS fires
     // each `void …catch()` — never awaited, never the caller's problem.
-    let touched_access = patch.enabled.is_some()
-        || patch.all_agents.is_some()
-        || patch.auth_mode.is_some();
+    let touched_access =
+        patch.enabled.is_some() || patch.all_agents.is_some() || patch.auth_mode.is_some();
     if touched_access {
         let (pg, sb_, id) = (state.pg.clone(), sb.clone(), server.id.clone());
         spawn_roll(async move {

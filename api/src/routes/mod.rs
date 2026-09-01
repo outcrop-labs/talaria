@@ -2,28 +2,28 @@
 // tests drive the exact same stack the process serves.
 
 pub mod activity;
-pub mod admin_google_client;
-pub mod admin_instance;
-pub mod admin_model_fitness;
-pub mod admin_model_roles;
 pub mod admin_apps;
-pub mod admin_password_accounts;
-pub mod admin_platform_agents;
 pub mod admin_domains;
 pub mod admin_email;
 pub mod admin_encryption;
-pub mod admin_invites;
+pub mod admin_google_client;
 pub mod admin_guardrails;
+pub mod admin_instance;
+pub mod admin_invites;
 pub mod admin_judge;
+pub mod admin_model_fitness;
+pub mod admin_model_roles;
 pub mod admin_outreach;
+pub mod admin_password_accounts;
 pub mod admin_permissions;
+pub mod admin_platform_agents;
+pub mod admin_rag;
 pub mod admin_search;
-pub mod admin_settings;
 pub mod admin_secrets;
+pub mod admin_settings;
 pub mod admin_storage;
 pub mod admin_users;
 pub mod admin_workspace_secrets;
-pub mod admin_rag;
 pub mod agent_gap;
 pub mod agent_media_model;
 pub mod agent_media_model_save;
@@ -33,6 +33,7 @@ pub mod agent_role_templates;
 pub mod agents;
 pub mod agents_id_heartbeat;
 pub mod agents_register;
+pub mod alerts;
 pub mod apps;
 pub mod artifact_folders;
 pub mod artifact_folders_id;
@@ -61,22 +62,6 @@ pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
 pub mod brief;
-pub mod alerts;
-pub mod gaps;
-pub mod gaps_id;
-pub mod home;
-pub mod join;
-pub mod well_known_talaria_instance;
-pub mod memory_id;
-pub mod search;
-pub mod templates;
-pub mod templates_id;
-pub mod inference;
-pub mod me_assistant;
-pub mod muse;
-pub mod skills;
-pub mod skills_owner_name;
-pub mod vision_describe;
 pub mod brief_delegate;
 pub mod brief_item;
 pub mod brief_read;
@@ -117,8 +102,11 @@ pub mod fleet_federate;
 pub mod fleet_hires;
 pub mod fleet_reconcile;
 pub mod fleet_render;
+pub mod gaps;
+pub mod gaps_id;
 pub mod health;
 pub mod history;
+pub mod home;
 pub mod inbox_focus;
 pub mod inbox_focus_actions;
 pub mod inbox_focus_command;
@@ -126,6 +114,7 @@ pub mod inbox_focus_conversations;
 pub mod inbox_focus_conversations_id;
 pub mod inbox_focus_state;
 pub mod inbox_focus_summary;
+pub mod inference;
 pub mod integrations_google;
 pub mod integrations_google_agent_calendar;
 pub mod integrations_google_agent_drive;
@@ -147,6 +136,7 @@ pub mod integrations_google_org_health;
 pub mod integrations_google_org_provision;
 pub mod integrations_google_pending;
 pub mod integrations_google_pending_id;
+pub mod join;
 pub mod kb_comments_id;
 pub mod kb_docs_id;
 pub mod kb_docs_id_backlinks;
@@ -173,10 +163,13 @@ pub mod mcp_servers;
 pub mod mcp_servers_id;
 pub mod mcp_test;
 pub mod me;
+pub mod me_assistant;
 pub mod me_events;
 pub mod me_mcp;
+pub mod memory_id;
 pub mod models;
 pub mod models_efforts;
+pub mod muse;
 pub mod notifications;
 pub mod plans_id_doc;
 pub mod plans_id_draft;
@@ -190,12 +183,15 @@ pub mod research_id_conversation;
 pub mod research_id_decide;
 pub mod research_id_members;
 pub mod runs_events;
+pub mod search;
 pub mod secrets;
 pub mod secrets_folders;
 pub mod secrets_git_credential;
 pub mod secrets_relay;
 pub mod secrets_reveal;
 pub mod secrets_share;
+pub mod skills;
+pub mod skills_owner_name;
 pub mod tasks_id;
 pub mod tasks_id_comments;
 pub mod tasks_id_dependencies;
@@ -205,9 +201,13 @@ pub mod tasks_id_watchers;
 pub mod teams;
 pub mod teams_id;
 pub mod teams_id_members;
+pub mod templates;
+pub mod templates_id;
 pub mod uploads;
 pub mod uploads_id;
 pub mod users;
+pub mod vision_describe;
+pub mod well_known_talaria_instance;
 pub mod workbench;
 pub mod workbench_flow;
 pub mod workbench_github;
@@ -1173,8 +1173,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/fleet/endpoints/{id}/available",
-            get(fleet_endpoints_id_available::get)
-                .fallback(|| async { method_not_allowed("GET") }),
+            get(fleet_endpoints_id_available::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet/crons",
@@ -1366,8 +1365,7 @@ pub fn router(state: AppState) -> Router {
         // Studio's Suggested queue with its status verb.
         .route(
             "/api/well-known/talaria-instance",
-            get(well_known_talaria_instance::get)
-                .fallback(|| async { method_not_allowed("GET") }),
+            get(well_known_talaria_instance::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/alerts",
@@ -1379,8 +1377,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/gaps/{id}",
-            axum::routing::put(gaps_id::put)
-                .fallback(|| async { method_not_allowed("PUT") }),
+            axum::routing::put(gaps_id::put).fallback(|| async { method_not_allowed("PUT") }),
         )
         // Home/Today, and the public /join invite lookup (dual-counter rate
         // limited, same shape as login).
@@ -1436,13 +1433,11 @@ pub fn router(state: AppState) -> Router {
         // message-user door.
         .route(
             "/api/agent-media/{model}",
-            get(agent_media_model::get)
-                .fallback(|| async { method_not_allowed("GET") }),
+            get(agent_media_model::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agent-media/{model}/save",
-            post(agent_media_model_save::post)
-                .fallback(|| async { method_not_allowed("POST") }),
+            post(agent_media_model_save::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/gap",
@@ -1454,8 +1449,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/agent/message-user",
-            post(agent_message_user::post)
-                .fallback(|| async { method_not_allowed("POST") }),
+            post(agent_message_user::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The Muse, the image describer, the personal assistant, and the
         // local-inference observability plane.
@@ -1465,8 +1459,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/vision/describe",
-            post(vision_describe::post)
-                .fallback(|| async { method_not_allowed("POST") }),
+            post(vision_describe::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me/assistant",
@@ -1503,8 +1496,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/fleet/defs/{id}/edit",
-            post(fleet_defs_id_edit::post)
-                .fallback(|| async { method_not_allowed("POST") }),
+            post(fleet_defs_id_edit::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/defs/{id}/versions",

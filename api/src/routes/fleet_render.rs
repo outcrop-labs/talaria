@@ -2,7 +2,7 @@
 // every managed agent's config + the fleet compose + the gateway manifest
 // (the bridge hot-reloads the manifest). Admin.
 
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet_render::render_fleet;
 use crate::session::{actor_of, require_admin};

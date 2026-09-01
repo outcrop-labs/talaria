@@ -134,10 +134,7 @@ pub async fn post(
             let mut out = serde_json::Map::new();
             out.insert("ok".into(), Value::Bool(true));
             out.insert("version".into(), serde_json::json!(result.version));
-            out.insert(
-                "reencrypted".into(),
-                serde_json::json!(result.reencrypted),
-            );
+            out.insert("reencrypted".into(), serde_json::json!(result.reencrypted));
             out.insert(
                 "rootRewrapped".into(),
                 serde_json::json!(result.root_rewrapped),

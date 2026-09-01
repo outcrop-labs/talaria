@@ -662,16 +662,14 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
             EvalCase::new(
                 f.name,
                 input,
-                Arc::new(
-                    move |v: &Value, _ctx: &CheckCtx| {
-                        match serde_json::from_value::<Map<String, Value>>(v.clone()) {
-                            Ok(map) => f.check(&map).into(),
-                            Err(e) => CheckResult::Fail(format!(
-                                "the fixture check threw on the value: {e}"
-                            )),
+                Arc::new(move |v: &Value, _ctx: &CheckCtx| {
+                    match serde_json::from_value::<Map<String, Value>>(v.clone()) {
+                        Ok(map) => f.check(&map).into(),
+                        Err(e) => {
+                            CheckResult::Fail(format!("the fixture check threw on the value: {e}"))
                         }
-                    },
-                ),
+                    }
+                }),
             )
             .band(band)
         })

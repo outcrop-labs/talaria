@@ -7,7 +7,7 @@ use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, zod_uuid_ok};
 use crate::error::{house_error, thrown_internal_error};
 use crate::org_domains::{add_org_domain, list_org_domains, remove_org_domain, verify_org_domain};
-use crate::session::{require_admin, SessionUser};
+use crate::session::{SessionUser, require_admin};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -64,7 +64,7 @@ pub async fn post(
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &crate::body::string_msg(crate::body::zod_type_name(v)),
-                )
+                );
             }
         };
         if crate::body::utf16_len(domain) < 3 {
@@ -100,7 +100,7 @@ pub async fn post(
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &crate::body::string_msg(crate::body::zod_type_name(v)),
-                )
+                );
             }
         };
         match verify_org_domain(&state.pg, verify_id).await {

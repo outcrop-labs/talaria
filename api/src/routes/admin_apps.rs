@@ -20,11 +20,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
-pub async fn get(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
-) -> Response {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     // requireView(request, '/apps') — the one admin-family read that Manage
     // holders share with admins.
     if let Err(gate) = require_view(&state, &headers, "/apps").await {
@@ -67,8 +63,10 @@ pub async fn get(
         })
         .collect::<Vec<_>>();
     // ?catalog=1
-    let want_catalog =
-        crate::google_oauth::query_pairs(uri.query()).get("catalog").map(String::as_str) == Some("1");
+    let want_catalog = crate::google_oauth::query_pairs(uri.query())
+        .get("catalog")
+        .map(String::as_str)
+        == Some("1");
     let catalog = if want_catalog {
         let (apps, error) = fetch_catalog(&state.pg).await;
         let mut m = serde_json::Map::new();
@@ -161,7 +159,7 @@ pub async fn put(
             return house_error(
                 StatusCode::BAD_REQUEST,
                 &crate::body::string_msg(crate::body::zod_type_name(v)),
-            )
+            );
         }
     };
     if let Err(msg) = set_catalog_url(&state.pg, next_url.as_deref()).await {
@@ -200,10 +198,12 @@ pub async fn post(
     };
     // z.object({ installUrl: z.string().url(), slug: z.string().min(1).max(64).optional() })
     let install_url = match obj.get("installUrl") {
-        None => return house_error(
-            StatusCode::BAD_REQUEST,
-            &crate::body::string_msg("undefined"),
-        ),
+        None => {
+            return house_error(
+                StatusCode::BAD_REQUEST,
+                &crate::body::string_msg("undefined"),
+            );
+        }
         Some(v) => match v.as_str() {
             Some(u) if url_ok(u) => u.to_string(),
             Some(_) => return house_error(StatusCode::BAD_REQUEST, "Invalid URL"),
@@ -211,7 +211,7 @@ pub async fn post(
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &crate::body::string_msg(crate::body::zod_type_name(v)),
-                )
+                );
             }
         },
     };
@@ -234,8 +234,7 @@ pub async fn post(
                 },
             )
             .await;
-            Json(serde_json::json!({ "slug": slug, "pendingBuild": pending_build }))
-                .into_response()
+            Json(serde_json::json!({ "slug": slug, "pendingBuild": pending_build })).into_response()
         }
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
     }
@@ -267,17 +266,14 @@ pub async fn delete(
         Ok(a) => a,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let wipe_data =
-        match crate::body::optional_boolean_member(obj, "wipeData") {
-            Ok(w) => w.unwrap_or(false),
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-        };
+    let wipe_data = match crate::body::optional_boolean_member(obj, "wipeData") {
+        Ok(w) => w.unwrap_or(false),
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
     if let Err(msg) = uninstall_app(&state.pg, &sb, &app).await {
         return house_error(StatusCode::BAD_REQUEST, &msg);
     }
-    if wipe_data
-        && let Err(e) = wipe_app_data(&state.pg, &app).await
-    {
+    if wipe_data && let Err(e) = wipe_app_data(&state.pg, &app).await {
         tracing::error!("[admin/apps] data wipe failed: {e}");
         return thrown_internal_error();
     }

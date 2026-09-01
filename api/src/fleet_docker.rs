@@ -150,11 +150,7 @@ pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
 
 /// The roll's spelling: address a SPECIFIC slot (the incoming one), not the
 /// active one (fleet-docker.ts fleetUp(department, slot)).
-pub async fn fleet_up_slot(
-    pg: &PgPool,
-    department: &str,
-    slot: Slot,
-) -> Result<String, String> {
+pub async fn fleet_up_slot(pg: &PgPool, department: &str, slot: Slot) -> Result<String, String> {
     ensure_fleet_network().await?;
     let svc = slot_service(department, slot);
     let args: Vec<String> = compose_args(&["up", "-d", &svc]);
@@ -395,9 +391,7 @@ fn parse_health(status: &str) -> Option<Health> {
 /// exist). Docker CLI costs ~0.5s per shell-out and Home + alerts + the
 /// roster all ask within the same breath — a 5s cache dedupes them without
 /// going stale for the 10s roster poll (containerStatus).
-pub async fn container_status(
-    departments: &[String],
-) -> Result<Vec<AgentContainers>, String> {
+pub async fn container_status(departments: &[String]) -> Result<Vec<AgentContainers>, String> {
     let key = {
         let mut sorted = departments.to_vec();
         sorted.sort();
@@ -423,10 +417,12 @@ static STATUS_CACHE: std::sync::LazyLock<
     tokio::sync::Mutex<Option<(std::time::Instant, String, Vec<AgentContainers>)>>,
 > = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
 
-async fn container_status_fresh(
-    departments: &[String],
-) -> Result<Vec<AgentContainers>, String> {
-    let (out, _) = docker(&["ps", "-a", "--format", "{{json .}}"], Duration::from_secs(20)).await?;
+async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentContainers>, String> {
+    let (out, _) = docker(
+        &["ps", "-a", "--format", "{{json .}}"],
+        Duration::from_secs(20),
+    )
+    .await?;
     // One JSON object per line; a line that does not parse is skipped the way
     // TS's JSON.parse throw would abort — but docker never emits one, so the
     // unwrap mirrors the TS shape rather than a real failure mode.
@@ -477,7 +473,7 @@ const CONFLICTING_SKILL_PACKS: [&str; 5] = [
     "productivity/notion",
     "productivity/airtable",
     "productivity/google-workspace", // Talaria's Google integration is confirm-send governed
-    "email", // draft_email/read_recent_email govern mail through Talaria
+    "email",                         // draft_email/read_recent_email govern mail through Talaria
 ];
 
 /// Strip the image's conflicting bundled skills from a slot's container
@@ -535,9 +531,15 @@ mod tests {
     // "healthy", so the parenthesized healthy pattern must run first.
     #[test]
     fn health_parses_the_ps_status_string_in_ts_order() {
-        assert_eq!(parse_health("Up 30 seconds (health: starting)"), Some(Health::Starting));
+        assert_eq!(
+            parse_health("Up 30 seconds (health: starting)"),
+            Some(Health::Starting)
+        );
         assert_eq!(parse_health("Up 2 hours (healthy)"), Some(Health::Healthy));
-        assert_eq!(parse_health("Up 2 hours (unhealthy)"), Some(Health::Unhealthy));
+        assert_eq!(
+            parse_health("Up 2 hours (unhealthy)"),
+            Some(Health::Unhealthy)
+        );
         assert_eq!(parse_health("Up 2 hours"), None);
         assert_eq!(parse_health("Exited (0) 3 minutes ago"), None);
         // Case-insensitive, as the TS /i flags insist.

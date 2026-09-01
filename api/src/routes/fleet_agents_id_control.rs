@@ -8,7 +8,7 @@
 // health shows the warm-up ('starting') phase instead of blocking the call.
 
 use crate::agent_defs::agent_def_by_id;
-use crate::audit::{log_audit, AuditEntry};
+use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, enum_member, parse};
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet_create::delete_agent_forever;
@@ -46,7 +46,9 @@ pub async fn post(
     let action = match enum_member(
         obj,
         "action",
-        &["up", "stop", "restart", "roll", "retire", "unretire", "delete"],
+        &[
+            "up", "stop", "restart", "roll", "retire", "unretire", "delete",
+        ],
     ) {
         Ok(a) => a,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -97,10 +99,7 @@ pub async fn post(
         // Docker and pg failure text is operator context, not a user
         // sentence — the message names the verb, the logs hold the why.
         let _ = e;
-        house_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &could_not(&action),
-        )
+        house_error(StatusCode::INTERNAL_SERVER_ERROR, &could_not(&action))
     };
 
     match action.as_str() {
@@ -159,11 +158,13 @@ pub async fn post(
         "retire" => {
             // Spin down + drop from the fleet. Container removed; the state
             // volume and the version history stay (re-hire with 'unretire').
-            if let Err(_) =
-                sqlx::query("update agent_defs set enabled = false, updated_at = now() where id = $1")
-                    .bind(&def.id)
-                    .execute(&state.pg)
-                    .await
+            if sqlx::query(
+                "update agent_defs set enabled = false, updated_at = now() where id = $1",
+            )
+            .bind(&def.id)
+            .execute(&state.pg)
+            .await
+            .is_err()
             {
                 return catch(String::new());
             }
@@ -202,11 +203,11 @@ pub async fn post(
         "unretire" => {
             // Re-hire: re-enable, re-render (manifest + compose pick it back
             // up), and start the managed container from its preserved volume.
-            if let Err(_) =
-                sqlx::query("update agent_defs set enabled = true, updated_at = now() where id = $1")
-                    .bind(&def.id)
-                    .execute(&state.pg)
-                    .await
+            if sqlx::query("update agent_defs set enabled = true, updated_at = now() where id = $1")
+                .bind(&def.id)
+                .execute(&state.pg)
+                .await
+                .is_err()
             {
                 return catch(String::new());
             }

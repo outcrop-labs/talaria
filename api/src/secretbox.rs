@@ -375,21 +375,34 @@ impl SecretBox {
     /// rewrapVersion — re-wrap an in-memory DEK under a KEK derived from new
     /// root material (the DB row keeps the old wrap; the same transaction
     /// overwrites it with this).
-    pub fn rewrap_version(&self, version: u32, root_material: &str) -> Result<String, SecretboxError> {
+    pub fn rewrap_version(
+        &self,
+        version: u32,
+        root_material: &str,
+    ) -> Result<String, SecretboxError> {
         let dek = self.dek(version)?;
         wrap_dek(&derive_kek(root_material), dek)
     }
 
     /// sealWith — encrypt with an explicit DEK + version (re-encryption under
     /// the new key; the box's own active version is not consulted).
-    pub fn seal_with(&self, dek: &Key, version: u32, plaintext: &str) -> Result<String, SecretboxError> {
+    pub fn seal_with(
+        &self,
+        dek: &Key,
+        version: u32,
+        plaintext: &str,
+    ) -> Result<String, SecretboxError> {
         let (iv, tag, data) = enc_raw(dek, &random_iv()?, plaintext)?;
         Ok(["v2", &version.to_string(), &iv, &tag, &data].join(":"))
     }
 
     /// wrapDekFor — wrap a DEK under the current KEK, or one derived from new
     /// root material when the rotation also moves the root.
-    pub fn wrap_dek_for(&self, dek: &Key, root_material: Option<&str>) -> Result<String, SecretboxError> {
+    pub fn wrap_dek_for(
+        &self,
+        dek: &Key,
+        root_material: Option<&str>,
+    ) -> Result<String, SecretboxError> {
         match root_material {
             Some(m) => Ok(wrap_dek(&derive_kek(m), dek)?),
             None => Ok(wrap_dek(

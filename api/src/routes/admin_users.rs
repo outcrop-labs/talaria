@@ -56,22 +56,23 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
     // than refused — a 200 for a write that never happened.
     let user_id = uuid_member(obj, "userId")?;
     let role = optional_enum_member(obj, "role", &["admin", "member"])?;
-    let string_array = |key: &str, item_max: usize, max_items: usize| -> Result<Option<Vec<String>>, String> {
-        match obj.get(key) {
-            None => Ok(None),
-            Some(v) => {
-                let a = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
-                if a.len() > max_items {
-                    return Err(array_too_big_msg(max_items));
+    let string_array =
+        |key: &str, item_max: usize, max_items: usize| -> Result<Option<Vec<String>>, String> {
+            match obj.get(key) {
+                None => Ok(None),
+                Some(v) => {
+                    let a = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
+                    if a.len() > max_items {
+                        return Err(array_too_big_msg(max_items));
+                    }
+                    let mut out = Vec::with_capacity(a.len());
+                    for x in a {
+                        out.push(optional_max_string_member_value(x, item_max)?);
+                    }
+                    Ok(Some(out))
                 }
-                let mut out = Vec::with_capacity(a.len());
-                for x in a {
-                    out.push(optional_max_string_member_value(x, item_max)?);
-                }
-                Ok(Some(out))
             }
-        }
-    };
+        };
     Ok(PutBody {
         user_id,
         role,
@@ -143,8 +144,12 @@ pub async fn put(
             return thrown_internal_error();
         }
         // Live sessions pick the role up immediately — no re-login dance.
-        if let Err(e) =
-            crate::session::update_sessions_for_user(&state, &body.user_id, &serde_json::json!({ "role": role })).await
+        if let Err(e) = crate::session::update_sessions_for_user(
+            &state,
+            &body.user_id,
+            &serde_json::json!({ "role": role }),
+        )
+        .await
         {
             tracing::error!("[admin/users] session patch failed: {e}");
             return thrown_internal_error();
@@ -177,16 +182,13 @@ pub async fn put(
                 .unwrap_or_default()
                 .into_iter()
                 .find(|u| u.get("id") == Some(&serde_json::json!(body.user_id)));
-            let target_role = body
-                .role
-                .clone()
-                .or_else(|| {
-                    target
-                        .as_ref()
-                        .and_then(|u| u.get("role"))
-                        .and_then(Value::as_str)
-                        .map(String::from)
-                });
+            let target_role = body.role.clone().or_else(|| {
+                target
+                    .as_ref()
+                    .and_then(|u| u.get("role"))
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            });
             if target_role.as_deref() != Some("admin") {
                 return house_error(
                     StatusCode::BAD_REQUEST,
