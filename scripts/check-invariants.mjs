@@ -356,12 +356,9 @@ const RULES = [
  *  exact, so a new call in one of them fails) but they are excluded from the
  *  "still owed" note, because they are never going to be ported and a debt
  *  figure that never reaches zero is a figure nobody reads. The cutover took
- *  the pass-through gateway proxy and the /api/chat route file with it — their
- *  entries left the set when the files left the tree. */
-const HARNESS_NOT_A_HARNESS = new Set([
-  'ui/src/server/chat-persist.ts',
-  'ui/src/server/channel-replies.ts',
-])
+ *  the pass-through gateway proxy, the /api/chat route and chat-persist.ts
+ *  with it — their entries left the set when the files left the tree. */
+const HARNESS_NOT_A_HARNESS = new Set(['ui/src/server/channel-replies.ts'])
 
 /** THE THIRD CATEGORY IS GONE, and the deletion is the finding.
  *
@@ -405,9 +402,9 @@ const CENSUS = [
       'and three model paths reaching users with no guardrail at all — every one of them a call',
       'site that was written by hand by somebody who had read the code around it.',
       '',
-      'THE PORT IS DONE AND THE CENSUS IS AT ITS FLOOR: the two entries below are live',
-      'persona conversations — no prompt, no schema, no model policy to declare. (The',
-      'pass-through gateway proxy and the /api/chat route that also sat here left with the',
+      'THE PORT IS DONE AND THE CENSUS IS AT ITS FLOOR: the one entry below is a live',
+      'persona-conversation path — no prompt, no schema, no model policy to declare. (The',
+      'pass-through gateway proxy, the /api/chat route and chat-persist.ts left with the',
       'cutover: their files are deleted, and /api/llm/v1/* and /api/chat serve from the',
       'Rust api.) There is no debt column any more, so a new match here is not "one more to',
       'port" — it is a call that went around the runner, and the fix is to declare it',
@@ -433,7 +430,6 @@ const CENSUS = [
       // whose OUTPUT happens to arrive token by token (the Muse's prose kinds,
       // the briefing chat-back), and both moved onto the runner. A chat turn has
       // no prompt of Talaria's to declare: the messages are the human's.
-      'ui/src/server/chat-persist.ts': 1,
       'ui/src/server/channel-replies.ts': 1,
     },
   },
@@ -526,23 +522,18 @@ const CENSUS = [
       'sender simply never asked. A second `if (emailEnabled)` next to the send would have been the',
       'same bug waiting for a third sender, which is why the answer is one function and this check.',
       '',
-      'The three sites below are the complete list of TS code allowed to touch the transport:',
+      'The two sites below are the complete list of TS code allowed to touch the transport:',
       '  server/email.ts        the definition',
       '  server/notifications.ts  `sendGatedMail` — the gate itself, and the ONLY gated path',
-      '  server/invites.ts      an invitation a human just typed an address into. Not a',
-      '                         notification and not governed by the notification switch: it is a',
-      '                         direct reply to an admin action, and gating it would silently break',
-      '                         invites on every instance that has not turned notification mail on',
-      '                         (which is all of them — it defaults to off).',
-      'The admin test-send that used to sit here is the Rust api\'s now: admin_email.rs calls',
-      'send_email directly, the same standing invites.ts has, and the crate carries its own',
+      'The invite mail and the admin test-send that also sat here are the Rust api\'s now —',
+      'invites.rs and admin_email.rs call send_email directly, the same standing invites.ts',
+      'had (a reply to a human action, not a notification), and the crate carries its own',
       'gate (`send_gated_mail`, api/src/notify.rs) with the same nothing-else-may-call rule.',
-      'A fourth is a bypass. If you believe you need one, say so in the PR.',
+      'A third is a bypass. If you believe you need one, say so in the PR.',
     ],
     sites: {
       'ui/src/server/email.ts': 1,
       'ui/src/server/notifications.ts': 1,
-      'ui/src/server/invites.ts': 1,
     },
   },
   {
@@ -621,8 +612,9 @@ const CENSUS = [
       'ui/src/server/approvals.ts': 3, // adminUserIds() itself (call + query) and the resolver's use
       'ui/src/server/users.ts': 2, // `and u.role = 'admin'` (delegation) + adminCount() — the
       //   last-admin guard. Both are role-governance questions, not audiences.
-      'ui/src/server/auth/claim.ts': 2, // NOT an audience: "does an admin exist" — claim
-      //   eligibility, checked outside the tx and re-checked inside it. No rows are fetched.
+      // (auth/claim.ts used to sit here — "does an admin exist", claim
+      //   eligibility. The claim flow is the Rust api's now; the entry left
+      //   with the file.)
       // ── Known debt, owned by a later round ──────────────────────────────────
       // EMPTY, and both departures are the same fix rather than two:
       //   agent.problem.ts    takes an authorised `taskId`, asks `agentTextAuthority` for the
@@ -1155,8 +1147,8 @@ for (const rule of CENSUS) {
       // not the same statement and this is the one somebody will want to cite.
       notes.push(
         'THE HARNESS PORT IS COMPLETE AND THIS CENSUS IS AT ITS FLOOR: every entry is a permanent ' +
-          'exception (two live persona-conversation paths; the pass-through proxy and the /api/chat ' +
-          'route that also sat here left with the cutover) and nothing on it is ' +
+          'exception (the persona-conversation path; the pass-through proxy, the /api/chat route ' +
+          'and chat-persist.ts that also sat here left with the cutover) and nothing on it is ' +
           'debt. No file in the tree reaches a model with a hand-written prompt, parser, fallback ' +
           'chain and guard pass, and none supplies its own transport to work around a missing runner ' +
           'capability — run.ts serves tools, streaming, ledger attribution and tier routing itself. ' +
