@@ -5,12 +5,16 @@
 pub mod adversarial;
 pub mod code_runner;
 pub mod evals;
+pub mod health;
 pub mod live_feed;
+pub mod observed;
 pub mod probes;
 pub mod score;
 pub mod surface;
+pub mod transcripts;
 pub mod toolbox;
+pub mod value;
 
-// The sweep (evals), probes, adversarial corpus, score, observed, value,
-// health, live feed, transcripts and surface cross with this slice's later
-// commits, in dependency order underneath this module.
+// The store half of surface.rs (the record, the pricing derivations, the
+// endpoints' assembly) crosses with the routes that serve it, in this module's
+// last commit.

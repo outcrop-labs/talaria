@@ -21,7 +21,64 @@ use crate::model_roles::resolve_role_model;
 use crate::platform_agents::platform_agent_model;
 use crate::users::{get_preferred_model, get_user_role};
 use sqlx::PgPool;
+use std::future::Future;
+use std::pin::Pin;
 use tokio::sync::OnceCell;
+
+/// THE RESOLUTION EDGES, as an argument rather than a global. The TS twin of
+/// this chain takes its whole dependency set that way (`resolveHarnessModelWith`),
+/// and the fitness binding pass is the reason it has to: `bind_slots` needs to
+/// know which ROLES a harness's chain consults, which is a question about the
+/// CHAIN, not about today's assignments — running the real chain against the
+/// database would answer a different question every time an admin moved a pin.
+/// So the chain runs over edges that record and refuse, and the set of roles it
+/// asked for is the answer. Nothing else in this port may restate the step
+/// order; that is finding 1.10's whole point.
+pub trait ResolveEdges: Send + Sync {
+    fn pin_model<'a>(&'a self, pin: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    fn role_model<'a>(&'a self, role: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    fn routes<'a>(&'a self, model: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>>;
+    fn gateway_models<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>>;
+    fn preferred_model<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    fn user_role<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>>;
+    fn member_allowlist(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + '_>>;
+    fn env_model(&self) -> Option<String>;
+}
+
+/// The production edges: every question answered by the database and the
+/// environment, exactly as the pg-bound chain always answered them.
+struct PgEdges<'a> {
+    pg: &'a PgPool,
+}
+
+impl ResolveEdges for PgEdges<'_> {
+    fn pin_model<'a>(&'a self, pin: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+        Box::pin(platform_agent_model(self.pg, pin))
+    }
+    fn role_model<'a>(&'a self, role: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+        Box::pin(resolve_role_model(self.pg, role))
+    }
+    fn routes<'a>(&'a self, model: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(crate::gateway::registry::resolve_route(self.pg, model).await?.is_some())
+        })
+    }
+    fn gateway_models<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>> {
+        Box::pin(gateway_models(self.pg))
+    }
+    fn preferred_model<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+        Box::pin(get_preferred_model(self.pg, user_id))
+    }
+    fn user_role<'a>(&'a self, user_id: &'a str) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>> {
+        Box::pin(get_user_role(self.pg, user_id))
+    }
+    fn member_allowlist(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + '_>> {
+        Box::pin(member_model_allowlist(self.pg))
+    }
+    fn env_model(&self) -> Option<String> {
+        copilot_env_model()
+    }
+}
 
 pub type ModelChainStep = &'static str;
 
@@ -75,8 +132,8 @@ fn copilot_env_model() -> Option<String> {
 /// One resolution's memoization state. A chain that falls through five steps
 /// must not fetch the catalog five times — the TS `once()` closures, spelled
 /// as cells instead of closures.
-struct Chain<'a> {
-    pg: &'a PgPool,
+struct Chain<'a, E: ResolveEdges + ?Sized> {
+    edges: &'a E,
     spec: &'a ModelSpec<'a>,
     catalog: OnceCell<Vec<GatewayModel>>,
     /// None until first needed; computed once, then shared by every gated
@@ -102,12 +159,12 @@ enum Gate {
     },
 }
 
-impl<'a> Chain<'a> {
+impl<'a, E: ResolveEdges + ?Sized> Chain<'a, E> {
     async fn catalog(&self) -> Result<&[GatewayModel], sqlx::Error> {
         if let Some(c) = self.catalog.get() {
             return Ok(c);
         }
-        let loaded = gateway_models(self.pg).await?;
+        let loaded = self.edges.gateway_models().await?;
         // A lost set race (impossible in one sequential resolution) keeps the
         // winner's identical copy — `get` is then always Some.
         let _ = self.catalog.set(loaded);
@@ -123,8 +180,8 @@ impl<'a> Chain<'a> {
             Some(user_id) => {
                 // TS reads role, allowlist and catalog concurrently; the
                 // awaits are sequential here and the cell dedups repeats.
-                let role = get_user_role(self.pg, user_id).await?;
-                let allow = member_model_allowlist(self.pg).await;
+                let role = self.edges.user_role(user_id).await?;
+                let allow = self.edges.member_allowlist().await;
                 let catalog = self.catalog().await?.to_vec();
                 Gate::Gated {
                     role,
@@ -164,32 +221,30 @@ impl<'a> Chain<'a> {
     /// platform_agent_model/resolve_role_model, their documented contract, and
     /// are not re-checked here for the same cursor reason.)
     async fn routes(&self, model: &str) -> Result<bool, sqlx::Error> {
-        Ok(crate::gateway::registry::resolve_route(self.pg, model)
-            .await?
-            .is_some())
+        self.edges.routes(model).await
     }
 
     async fn attempt(&self, step: &str) -> Result<Option<String>, sqlx::Error> {
         match step {
             "pin" => match self.spec.pin {
-                Some(pin) => platform_agent_model(self.pg, pin).await,
+                Some(pin) => self.edges.pin_model(pin).await,
                 None => Ok(None),
             },
             "role" => match self.spec.role {
                 Some(role) => {
-                    let m = resolve_role_model(self.pg, role).await?;
+                    let m = self.edges.role_model(role).await?;
                     self.gated(m).await
                 }
                 None => Ok(None),
             },
             "utility" => {
-                let m = resolve_role_model(self.pg, "utility").await?;
+                let m = self.edges.role_model("utility").await?;
                 self.gated(m).await
             }
             "env" => {
                 // A raw string from config: nothing has vetted it, so it goes
                 // through routes() here.
-                match copilot_env_model() {
+                match self.edges.env_model() {
                     Some(m) if self.routes(&m).await? => Ok(Some(m)),
                     _ => Ok(None),
                 }
@@ -200,7 +255,7 @@ impl<'a> Chain<'a> {
                 match self.spec.user_id {
                     Some(user_id) => {
                         let pref = self
-                            .gated(get_preferred_model(self.pg, user_id).await?)
+                            .gated(self.edges.preferred_model(user_id).await?)
                             .await?;
                         match pref {
                             Some(p) if self.routes(&p).await? => Ok(Some(p)),
@@ -248,8 +303,17 @@ pub async fn resolve_harness_model<'a>(
     pg: &'a PgPool,
     spec: &'a ModelSpec<'a>,
 ) -> Result<Option<ResolvedHarnessModel>, sqlx::Error> {
+    resolve_harness_model_with(spec, &PgEdges { pg }).await
+}
+
+/// The chain over INJECTED edges — the seam the fitness binding pass runs the
+/// real step order through without touching a database.
+pub async fn resolve_harness_model_with<'a>(
+    spec: &'a ModelSpec<'a>,
+    edges: &dyn ResolveEdges,
+) -> Result<Option<ResolvedHarnessModel>, sqlx::Error> {
     let chain = Chain {
-        pg,
+        edges,
         spec,
         catalog: OnceCell::new(),
         gate: OnceCell::new(),
