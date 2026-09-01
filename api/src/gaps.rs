@@ -240,7 +240,6 @@ pub async fn report_gap(
          on conflict (signature) do update set \
            seen_count = capability_gaps.seen_count + 1, \
            last_seen = now(), \
-           -- a dismissed shape that keeps recurring reopens; resolved stays resolved \
            status = case when capability_gaps.status = 'dismissed' then 'open' else capability_gaps.status end, \
            example_task_id = coalesce(capability_gaps.example_task_id, excluded.example_task_id) \
          returning id::text, seen_count, (seen_count = 1) as first",

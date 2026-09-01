@@ -357,7 +357,6 @@ pub async fn upsert_agent_def(
          on conflict (slug) do update set \
            department = excluded.department, model = excluded.model, \
            display_name = excluded.display_name, \
-           -- keep an existing role unless a new one is supplied (imports don't carry it) \
            role = coalesce(excluded.role, agent_defs.role), updated_at = now() \
          returning id::text, slug, department, model, display_name, role, source, managed, current_version",
     )

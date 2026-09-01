@@ -561,7 +561,7 @@ pub async fn get_research_run(
         .await?;
     let Some(row) = row else { return Ok(None) };
     let run = row_of(&row);
-    let sources: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+    let sources: Vec<(i32, String, Option<String>, Option<String>)> = sqlx::query_as(
         "select idx, url, title, snippet from research_sources \
          where run_id = $1::uuid order by idx asc",
     )

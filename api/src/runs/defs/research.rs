@@ -833,7 +833,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
         sources_of: Arc::new(move |run_id: String| {
             let pg = st_sources.pg.clone();
             Box::pin(async move {
-                let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+                let rows: Vec<(i32, String, Option<String>, Option<String>)> = sqlx::query_as(
                     "select idx, url, title, snippet from research_sources \
                      where run_id = $1::uuid order by idx asc",
                 )
