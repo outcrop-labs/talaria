@@ -51,6 +51,7 @@ pub struct Supplier {
 /// How one capability stands for one run. `detail` is always populated — the
 /// negative case is the one that has to say what to do about it, written for
 /// the model picker rather than for a developer.
+#[derive(Clone)]
 pub struct Reach {
     pub capability: String,
     pub reached: bool,

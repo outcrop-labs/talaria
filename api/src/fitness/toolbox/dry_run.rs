@@ -153,13 +153,18 @@ pub struct DryRunResult {
 /// allows a second call, and TS's closure was equally free to keep mutating
 /// its captured sandbox. One dry run = one call in practice; the lock is the
 /// type system's price for that honesty, not a concurrency claim.
-pub fn sandbox_transport(
-    sandbox: Box<dyn DispatchSandbox>,
+///
+/// THE CALLER HANDS THE SAME ARC IN, rather than a boxed sandbox, because the
+/// sweep needs to read the call log and the world AFTER the loop has finished
+/// — `Sandbox.calls` is what a behavioural fixture asserts over, and a value
+/// only the transport could reach would make the fixture's half of the dry run
+/// invisible to the code that scores it.
+pub fn sandbox_transport<S: DispatchSandbox + 'static>(
+    sandbox: Arc<Mutex<S>>,
     base: TransportFn,
     out: Option<Arc<Mutex<Option<DryRunResult>>>>,
     max_turns: usize,
 ) -> TransportFn {
-    let sandbox = Arc::new(Mutex::new(sandbox));
     Arc::new(move |req: TransportRequest| {
         let base = base.clone();
         let out = out.clone();
@@ -347,16 +352,16 @@ mod tests {
         ToolCall { name: name.into(), id: None, args: args.into() }
     }
 
-    fn workbench() -> Box<dyn DispatchSandbox> {
+    fn workbench() -> std::sync::Arc<std::sync::Mutex<WorkbenchSandbox>> {
         use crate::harness::define::{WorkspaceFile, WorkspaceSpec};
-        Box::new(WorkbenchSandbox::new(WorkspaceSpec {
+        std::sync::Arc::new(std::sync::Mutex::new(WorkbenchSandbox::new(WorkspaceSpec {
             files: vec![WorkspaceFile { path: "a.ts".into(), content: "broken".into() }],
             passes: Arc::new(|files: &[WorkspaceFile]| {
                 files.iter().find(|f| f.path == "a.ts").and_then(|f| {
                     (f.content == "fixed").then_some(None).unwrap_or_else(|| Some("still broken".into()))
                 })
             }),
-        }))
+        })))
     }
 
     fn req() -> TransportRequest {
@@ -468,7 +473,7 @@ mod tests {
         ]);
         let out = Arc::new(Mutex::new(None));
         let transport = sandbox_transport(
-            Box::new(Sandbox::new(Default::default())),
+            std::sync::Arc::new(std::sync::Mutex::new(Sandbox::new(Default::default()))),
             base,
             Some(out.clone()),
             MAX_TURNS,

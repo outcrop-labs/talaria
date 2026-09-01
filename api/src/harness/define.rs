@@ -739,7 +739,13 @@ pub fn is_gap(r: &CheckResult) -> Option<&str> {
 /// ahead — ambiguity, a trap, a rule that has to be applied against the grain.
 /// A model failing only the hard band is a real and useful answer, and the old
 /// flat rate could not express it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serializable because a scored case CARRIES its band into the persisted
+/// sweep status — a report read back from the archive has to keep meaning what
+/// it meant when it was written, so the band travels with the case rather than
+/// being looked up from the registry again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EvalBand {
     Easy,
     Standard,

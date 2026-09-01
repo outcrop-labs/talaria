@@ -3,6 +3,7 @@
 // ui/src/server/fitness/* — the engine half of /api/admin/model-fitness.
 
 pub mod code_runner;
+pub mod evals;
 pub mod live_feed;
 pub mod surface;
 pub mod toolbox;
