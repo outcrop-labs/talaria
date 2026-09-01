@@ -946,7 +946,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
             Box::pin(async move {
                 let row: Option<(String,)> = sqlx::query_as(
                     "select artifact_id::text from artifact_links \
-                     where target_type = 'research' and target_id = $1::uuid limit 1",
+                     where target_type = 'research' and target_id = $1 limit 1",
                 )
                 .bind(&run_id)
                 .fetch_optional(&pg)

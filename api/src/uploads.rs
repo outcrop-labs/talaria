@@ -573,7 +573,7 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
     // Artifact whose file IS this upload — visible per the artifact's own ACL.
     let arts: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
         "select id::text, owner_user_id::text, created_by::text, visibility \
-         from artifacts where storage_ref = $1::uuid limit 3",
+         from artifacts where storage_ref = $1 limit 3",
     )
     .bind(upload_id)
     .fetch_all(pg)
@@ -593,7 +593,7 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
         }
         let grant: Option<(i32,)> = sqlx::query_as(
             "select 1 as ok from kb_editors where item_type = 'artifact' and item_id = $1::uuid \
-             and principal_type = 'user' and principal_id = $2::uuid limit 1",
+             and principal_type = 'user' and principal_id = $2 limit 1",
         )
         .bind(&id)
         .bind(user_id)

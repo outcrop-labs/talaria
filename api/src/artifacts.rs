@@ -872,7 +872,7 @@ pub async fn save_artifact(
             .await?;
     }
     if let Some(storage_ref) = patch.storage_ref {
-        sqlx::query("update artifacts set storage_ref = $2::uuid, updated_by = $3::text, updated_at = now() where id = $1::uuid")
+        sqlx::query("update artifacts set storage_ref = $2, updated_by = $3::text, updated_at = now() where id = $1::uuid")
             .bind(id)
             .bind(storage_ref)
             .bind(actor)

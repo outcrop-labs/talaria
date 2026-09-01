@@ -538,7 +538,7 @@ pub async fn research_artifact_for(
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "select artifact_id::text from artifact_links \
-         where target_type = 'research' and target_id = $1::uuid limit 1",
+         where target_type = 'research' and target_id = $1 limit 1",
     )
     .bind(run_id)
     .fetch_optional(pg)
