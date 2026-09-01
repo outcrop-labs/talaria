@@ -7,9 +7,15 @@
 // api/src outside fitness/ may import it, and nothing in it may import a pool,
 // a redis handle or an HTTP client — isolation is total and is the point.
 
+pub mod credential_tools;
+pub mod dry_run;
+pub mod hermes_tools;
+pub mod sandbox;
+pub mod talaria_tools;
 pub mod world;
 
-// The sandbox backends themselves (sandbox.ts's tool dispatch over the world),
-// the coding workspace (hermes-tools.ts), the credential surface
-// (credential-tools.ts) and the dry-run transport (dry-run.ts) cross with the
-// sweep engine that drives them.
+// Order of crossing: `world` (the in-memory Talaria), `talaria_tools` (the
+// catalog, locked to mcp/src/index.ts by a sync test), `sandbox` (the dispatch
+// over both), then the two other surfaces — `hermes_tools` (files and a test
+// runner), `credential_tools` (a credential spent at an external service) —
+// and `dry_run`, the loop that drives any of them through a transport.
