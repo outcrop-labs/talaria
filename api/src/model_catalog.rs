@@ -87,6 +87,20 @@ pub fn entries_in_store(store: &serde_json::Value, model: &str) -> Vec<(String, 
     out
 }
 
+/// THE SMALLEST advertised window across the pool, or None when nothing
+/// advertises one — port of advertisedWindow. Same rule the probe suite
+/// already applied to the endpoint row; the difference is that this reads the
+/// number the provider published ABOUT THIS MODEL rather than one integer
+/// stamped on the endpoint. A claim has to hold for the worst member, so a
+/// bare id that lands anywhere in the pool is answered with the minimum.
+pub async fn advertised_window(pg: &PgPool, model: &str) -> Option<f64> {
+    let windows = catalog_entries_for(pg, model)
+        .await
+        .into_iter()
+        .filter_map(|(_, m)| m.context_length.filter(|n| *n > 0.0));
+    windows.reduce(f64::min)
+}
+
 /// Catalog entries for EXPLICIT endpoint:upstream pairs — the persona path.
 /// A fleet persona id is not a catalog id, so it cannot be looked up the way
 /// `entries_in_store` looks one up; its agent config names the exact targets

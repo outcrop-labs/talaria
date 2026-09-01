@@ -69,3 +69,4 @@ serde_yaml_ng = "0.10.0"
 # profile; a verifier that cannot reach DNS reports unverifiable, which is
 # the honest answer for that operator anyway.
 hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }
+boa_engine = { version = "0.22.0", default-features = false }

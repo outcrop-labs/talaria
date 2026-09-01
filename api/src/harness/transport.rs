@@ -1083,10 +1083,10 @@ use crate::me::gateway_models;
 /// A persona turn's assembled result (`PersonaTurn`). The parser reports
 /// reasoning text too; TS ignores it the same way — only content, tool names
 /// and usage feed the turn.
-struct PersonaTurn {
-    text: String,
-    tool_names: Vec<String>,
-    usage: Option<TokenPair>,
+pub struct PersonaTurn {
+    pub text: String,
+    pub tool_names: Vec<String>,
+    pub usage: Option<TokenPair>,
 }
 
 impl PersonaTurn {
@@ -1116,7 +1116,7 @@ impl PersonaTurn {
 /// Drain a persona stream into text, tool names and usage, emitting each delta
 /// on the way past (`pumpPersonaStream`). `emit` is the ONLY thing the
 /// streaming caller does differently — one loop, not five copies of it.
-async fn pump_persona_stream(
+pub async fn pump_persona_stream(
     mut body: ByteStream,
     mut emit: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Result<PersonaTurn, String> {
@@ -1313,6 +1313,152 @@ pub async fn dispatch_stream(
         TransportKind::Fleet => fleet_stream(state, req, emit).await,
         TransportKind::Gateway => gateway_stream(state, req, emit).await,
     }
+}
+
+// ── The probe-side transport helpers ─────────────────────────────────────────
+// `offersToolDefinitions`, `runsOwnToolLoop`, `gatewayImageTurn` and
+// `personaProbeTurn` — the four doors the fitness suite reaches the model
+// through that are NOT the harness runner. All four derive from
+// `transport_kind` on purpose, so they can never disagree with the transport
+// that would actually take the call.
+
+/// CAN this model be offered tool definitions at all — asked BEFORE a call is
+/// made, and derived from `transport_kind` rather than restated, so it can
+/// never disagree with the transport that would actually refuse.
+pub async fn offers_tool_definitions(state: &AppState, model: &str) -> bool {
+    transport_kind(state, model).await == TransportKind::Gateway
+}
+
+/// CAN this model run a turn with ITS OWN tool loop — the exact complement of
+/// the question above, and the pair is the whole transport rule read from both
+/// ends: a persona has a tool loop and cannot be handed tool definitions; the
+/// gateway can be handed definitions and has no loop. Neither does both.
+///
+/// THE FITNESS SWEEP ASKS THIS, and until it did, harnesses whose whole
+/// feature is the tool loop were replayed against every ORG GATEWAY candidate,
+/// refused before a single token was spent, and recorded as 0% first-pass. A
+/// model that was never called scoring zero is the same class of
+/// confidently-wrong number the probe suite's `skipped` outcome exists to
+/// prevent (see evals' harness_skip_reason).
+pub async fn runs_own_tool_loop(state: &AppState, model: &str) -> bool {
+    transport_kind(state, model).await == TransportKind::Fleet
+}
+
+/// A GATEWAY TURN THAT CARRIES AN IMAGE — port of `gatewayImageTurn`. The
+/// blocking transport cannot serve this: a `TransportRequest` has nowhere to
+/// put an image (`Message.content` is a string by construction; see define.rs),
+/// so the vision probe's ask takes messages and image URLs directly.
+///
+/// The LAST user turn carries the image, because that is the turn the
+/// question is in — a system prompt with pictures attached is a shape
+/// providers accept and models ignore.
+pub async fn gateway_image_turn(
+    state: &AppState,
+    model: &str,
+    messages: &[Message],
+    images: &[String],
+    caller: &str,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    let route = resolve_route(&state.pg, model)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("model \"{model}\" is not on the gateway"))?;
+    let mut wire: Vec<Value> = messages
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
+        .collect();
+    let target = wire
+        .iter()
+        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        .or(if wire.is_empty() { None } else { Some(wire.len() - 1) });
+    if let Some(target) = target {
+        let role = wire[target].get("role").cloned().unwrap_or(Value::Null);
+        let text = wire[target].get("content").and_then(Value::as_str).unwrap_or("").to_string();
+        let mut parts = vec![serde_json::json!({ "type": "text", "text": text })];
+        parts.extend(images.iter().map(|url| serde_json::json!({ "type": "image_url", "image_url": { "url": url } })));
+        wire[target] = serde_json::json!({ "role": role, "content": parts });
+    }
+    let body = serde_json::json!({ "model": model, "messages": wire, "stream": false });
+    let mut call = build_upstream(state, &route, &body).await?;
+    let fetched = fetch_upstream(&state.pg, &mut call, Some(&route));
+    let reply = match timeout_ms {
+        // TS threads the timeout into the upstream call itself; the Rust
+        // fetch has no such field, so the clock is wrapped around it here —
+        // observably the same bound on the whole turn.
+        Some(ms) => tokio::time::timeout(
+            std::time::Duration::from_millis(ms),
+            fetched,
+        )
+        .await
+        .map_err(|_| format!("gateway completion timed out after {ms}ms"))?,
+        None => fetched.await,
+    };
+    let reply = reply?;
+    if !reply.is_ok() {
+        return Err(format!("gateway completion {}: {}", reply.status(), reply.text().await.chars().take(300).collect::<String>()));
+    }
+    let j: Value = serde_json::from_str(&reply.text().await).map_err(|e| format!("gateway completion parse: {e}"))?;
+    let text = j.pointer("/choices/0/message/content").and_then(Value::as_str).unwrap_or("").to_string();
+    let usage = j.get("usage").filter(|u| !u.is_null()).map(|u| TokenPair {
+        prompt_tokens: u.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(0),
+        completion_tokens: u.get("completion_tokens").and_then(Value::as_i64).unwrap_or(0),
+    });
+    let prompt_chars: usize = messages.iter().map(|m| crate::body::utf16_len(&m.content)).sum();
+    meter(state, &route, caller, usage, prompt_chars, crate::body::utf16_len(&text));
+    Ok(text)
+}
+
+/// A PERSONA TURN THE PROBE SUITE CAN DRIVE — port of `personaProbeTurn`: one
+/// blocking round trip against a fleet agent, returning the assembled turn
+/// rather than a stream.
+///
+/// WHY IT IS NOT `fleet_transport`. Two reasons, and the second is the
+/// load-bearing one. A probe wants the raw turn — text AND the tool names the
+/// persona reported — without a harness's contract wrapped around it. And a
+/// probe may carry an IMAGE, which a `TransportRequest` has nowhere to put.
+/// So this takes messages and images directly, exactly as
+/// `gateway_image_turn` does on the other side of the `offers_tool_definitions`
+/// fork, and the vision probe can be asked of a persona and a gateway model
+/// with the same call shape.
+pub async fn persona_probe_turn(
+    model: &str,
+    messages: &[Message],
+    images: &[String],
+    timeout_ms: Option<u64>,
+) -> Result<PersonaTurn, String> {
+    let mut wire: Vec<Value> = messages
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
+        .collect();
+    if !images.is_empty() {
+        // The last user turn carries the image: it is the turn the question is
+        // in, and a system prompt with pictures attached is a shape providers
+        // accept and models ignore.
+        let target = wire
+            .iter()
+            .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+            .or(if wire.is_empty() { None } else { Some(wire.len() - 1) });
+        if let Some(target) = target {
+            let role = wire[target].get("role").cloned().unwrap_or(Value::Null);
+            let text = wire[target].get("content").and_then(Value::as_str).unwrap_or("").to_string();
+            let mut parts = vec![serde_json::json!({ "type": "text", "text": text })];
+            parts.extend(images.iter().map(|url| serde_json::json!({ "type": "image_url", "image_url": { "url": url } })));
+            wire[target] = serde_json::json!({ "role": role, "content": parts });
+        }
+    }
+    let payload = serde_json::json!({ "model": model, "messages": wire });
+    let upstream = proxy_chat(&payload, timeout_ms).await;
+    if !upstream.ok() {
+        return Err(format!("persona gateway {}", upstream.status));
+    }
+    if let Some(canned) = upstream.canned {
+        return Err(match canned {
+            "mock" => format!("\"{model}\" is not a rendered agent (the agents service answered in mock mode)"),
+            _ => format!("persona \"{model}\" did not come back within the hold window"),
+        });
+    }
+    pump_persona_stream(upstream.body, None).await
 }
 
 #[cfg(test)]

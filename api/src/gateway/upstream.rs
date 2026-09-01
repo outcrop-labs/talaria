@@ -372,11 +372,10 @@ async fn fetch_inner(
 // ── Live gateway stats (in-memory, per process) ──────────────────────────────
 // A small ring of recent upstream calls for the live dashboard's pulse —
 // deliberately not a table; usage_events is the durable record. The pulse
-// reader lands with the admin routes batch.
+// reader is `gateway_pulse` just below (model-fitness's `LatencyReading`
+// extends it); the ring IS the data.
 
-/// Fields are written now and read by the pulse reader when the admin routes
-/// batch ports it (gatewayPulse) — the ring IS the data.
-#[allow(dead_code)]
+/// Written by `record_gateway_stat`, read by `gateway_pulse`.
 struct GatewayStat {
     ts: i64,
     ms: i64,
@@ -402,6 +401,65 @@ pub fn record_gateway_stat(ms: i64, ok: bool, model: &str) {
         while r.len() > STATS_MAX {
             r.pop_front();
         }
+    }
+}
+
+/// The pulse's shape — port of llm-gateway.ts `GatewayPulse`.
+pub struct GatewayPulse {
+    /// Upstream calls in the last 15 minutes (this app process).
+    pub requests: i64,
+    pub errors: i64,
+    /// Time-to-first-byte percentiles over those calls, ms.
+    pub p50: Option<i64>,
+    pub p95: Option<i64>,
+}
+
+/// What the ring says about the last fifteen minutes — port of `gatewayPulse`.
+/// The model-fitness page reads this beside a run's price so a bad number has
+/// a context, and the sweep writes it into a `LatencyReading` per model.
+pub fn gateway_pulse() -> GatewayPulse {
+    let cutoff = crate::gateway::params::now_ms() - 15 * 60_000;
+    let ring = ring().lock().expect("the stat ring is not contended");
+    let recent: Vec<&GatewayStat> = ring.iter().filter(|s| s.ts > cutoff).collect();
+    let mut times: Vec<i64> = recent.iter().map(|s| s.ms).collect();
+    times.sort_unstable();
+    // TS's percentile is the nearest-rank index, not an interpolation: the
+    // p95 of eleven calls is the eleventh, not a blend of the tenth and
+    // eleventh. An empty ring answers null, never zero — zero would read as
+    // "instant" rather than "no calls".
+    let pct = |p: i64| -> Option<i64> {
+        (!times.is_empty()).then(|| {
+            let idx = ((p as usize * times.len()) / 100).min(times.len() - 1);
+            times[idx]
+        })
+    };
+    GatewayPulse {
+        requests: recent.len() as i64,
+        errors: recent.iter().filter(|s| !s.ok).count() as i64,
+        p50: pct(50),
+        p95: pct(95),
+    }
+}
+
+#[cfg(test)]
+mod pulse_tests {
+    use super::*;
+
+    /// Nearest-rank, not interpolation: the p50 of three calls is the second,
+    /// the p95 the third. An untouched ring answers null — "no calls", never
+    /// "instant". Only this test records stats in this binary, so the exact
+    /// counts are stable.
+    #[test]
+    fn the_pulse_is_nearest_rank_over_the_recent_ring() {
+        let before = gateway_pulse();
+        record_gateway_stat(100, true, "probe-a");
+        record_gateway_stat(300, false, "probe-a");
+        record_gateway_stat(200, true, "probe-a");
+        let pulse = gateway_pulse();
+        assert_eq!(pulse.requests, before.requests + 3);
+        assert_eq!(pulse.errors, before.errors + 1);
+        assert_eq!(pulse.p50, Some(200));
+        assert_eq!(pulse.p95, Some(300));
     }
 }
 
