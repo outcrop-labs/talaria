@@ -37,6 +37,20 @@
   const rawTab = $derived(searchParams.get('tab'))
   const tab = $derived(rawTab == null ? undefined : String(rawTab))
 
+  // LEGACY `?r=` RESEARCH LINKS STILL WORK, for the same reason as `?tab=`
+  // below: the completion notification's href — and the button in the email
+  // it may have been mailed as — pointed at `/research?r=<runId>` until the
+  // href moved to the path (`/research/<runId>`), and sent emails are not
+  // ours to fix. Without this they resolve to the bare research view with
+  // nothing selected: the quiet wrong answer. Indexed-doc payloads in Qdrant
+  // carry the old shape too, until the next reindex regenerates them.
+  $effect(() => {
+    if (route.pathname !== '/research') return
+    const r = searchParams.get('r')
+    if (r == null || r === true || r === '') return
+    void navigate('/research/:runId', { params: { runId: String(r) }, replace: true })
+  })
+
   // LEGACY `?tab=` LINKS STILL WORK.
   //
   // Tabs became path segments (/admin/security), but URLs with the old shape

@@ -1071,7 +1071,10 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                     title: Some(args.title.clone()),
                     text: format!("{}\n\n{}", args.title, args.body),
                     payload: Some(payload),
-                    href: Some(format!("/research?r={}", args.run_id)),
+                    // The run's own path, never a query param — Research
+                    // selects by path segment, and an href here is what a
+                    // retrieval hit hands the clicker.
+                    href: Some(format!("/research/{}", args.run_id)),
                 };
                 let qd = qdrant::real_deps();
                 let ed = embed::real_deps();
@@ -1108,7 +1111,14 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                             },
                             args.sources
                         )),
-                        href: Some(&format!("/research?r={}", args.run_id)),
+                        // The run's own path: /research/<id>. This href is
+                        // what the inbox card and the notification email link
+                        // at, and Research opens a selection from the path
+                        // only — the `?r=` form landed people on the bare
+                        // view with nothing selected. Rows written before the
+                        // fix are repaired by migration; emails already sent
+                        // are caught by AppLayout's legacy redirect.
+                        href: Some(&format!("/research/{}", args.run_id)),
                     },
                 )
                 .await

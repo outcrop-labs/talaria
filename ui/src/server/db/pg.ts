@@ -2624,6 +2624,20 @@ const MIGRATIONS: string[] = [
      )
    select count(*) as merged_rows from gone`,
 
+  // The research-run permalink became a path (/research/<id>) on 2026-09-02;
+  // notification hrefs written before that day carry /research?r=<id>, which
+  // opens the bare research view with nothing selected. Two one-shot repairs:
+  // the notification rows the inbox timeline and bell link through, and the
+  // persisted daily-brief rows that render the same href. Idempotent — after
+  // the first run no row matches the guard.
+  `update notifications
+     set href = replace(href, '/research?r=', '/research/')
+   where href like '/research?r=%'`,
+
+  `update daily_brief_entries
+     set source_href = replace(source_href, '/research?r=', '/research/')
+   where source_href like '/research?r=%'`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

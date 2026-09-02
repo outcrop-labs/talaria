@@ -301,7 +301,11 @@ pub async fn sync_kb_doc(
         title: Some(doc.title.clone()),
         text: format!("{}\n\n{}", doc.title, doc.body),
         payload: Some(payload),
-        href: Some(format!("/knowledge/{}", doc.id)),
+        // The by-id permalink, not a path: Knowledge paths are
+        // /knowledge/<space>/<doc>, and a doc link does not know its space —
+        // a one-segment /knowledge/<docId> would parse the doc id AS the
+        // space and open the first space's overview instead of the document.
+        href: Some(format!("/knowledge?doc={}", doc.id)),
     };
     if doc.visibility == "private" {
         // Privacy trumps routing: a private doc only ever reaches its owner's
