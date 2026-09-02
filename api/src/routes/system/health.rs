@@ -1,7 +1,7 @@
 // /api/healthz — liveness/readiness. Public by design (a health check that
 // needs auth tells you nothing when auth is what's broken) and SAFE to
-// expose (booleans, latencies and short machine error codes only — never
-// connection strings, hostnames or driver messages).
+// expose (booleans, counts, latencies and short machine error codes only —
+// never connection strings, hostnames or driver messages).
 
 use crate::state::AppState;
 use axum::Json;
@@ -29,12 +29,24 @@ pub struct HealthBody {
     #[serde(rename = "uptimeSeconds")]
     pub uptime_seconds: u64,
     pub checks: HealthChecks,
+    /// The api's own pool — saturation reads as idle 0 under a rising
+    /// postgres latency, which is the "why is everything slow" answer this
+    /// field exists to give.
+    #[serde(rename = "pgPool")]
+    pub pg_pool: PgPoolStats,
 }
 
 #[derive(serde::Serialize)]
 pub struct HealthChecks {
     pub postgres: Check,
     pub redis: Check,
+}
+
+#[derive(serde::Serialize)]
+pub struct PgPoolStats {
+    pub size: u32,
+    pub idle: u32,
+    pub max: u32,
 }
 
 pub async fn get(State(state): State<AppState>) -> Response {
@@ -45,11 +57,29 @@ pub async fn get(State(state): State<AppState>) -> Response {
         timed("redis", redis_ping(&state))
     );
 
+    let pg_pool = PgPoolStats {
+        size: state.pg.size(),
+        idle: state.pg.num_idle() as u32,
+        max: crate::db::configured_pool_max(),
+    };
+    // The one saturation signal worth a log line: a slow-but-succeeding
+    // ping with nothing idle is the pool queueing, not postgres itself.
+    if let Some(ms) = postgres.latency_ms
+        && ms > 1_000
+    {
+        tracing::warn!(
+            "[healthz] postgres ping {ms}ms — pool size {} idle {} (saturation)",
+            pg_pool.size,
+            pg_pool.idle
+        );
+    }
+
     let ok = postgres.ok && redis.ok;
     let body = HealthBody {
         status: if ok { "ok" } else { "degraded" },
         uptime_seconds: state.uptime_seconds(),
         checks: HealthChecks { postgres, redis },
+        pg_pool,
     };
     // 503 so a probe fails on its own, without parsing the body.
     let status = if ok {
@@ -123,4 +153,40 @@ fn safe_code<E: std::error::Error + 'static>(e: &E) -> String {
         return "TIMEOUT".into();
     }
     "unreachable".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_body_serializes_pool_counts_as_bare_ints() {
+        let body = HealthBody {
+            status: "ok",
+            uptime_seconds: 1,
+            checks: HealthChecks {
+                postgres: Check {
+                    ok: true,
+                    latency_ms: Some(3),
+                    error: None,
+                },
+                redis: Check {
+                    ok: false,
+                    latency_ms: None,
+                    error: Some("TIMEOUT".into()),
+                },
+            },
+            pg_pool: PgPoolStats {
+                size: 12,
+                idle: 4,
+                max: 40,
+            },
+        };
+        let v = serde_json::to_value(&body).expect("body serializes");
+        assert_eq!(v["pgPool"]["size"], 12);
+        assert_eq!(v["pgPool"]["idle"], 4);
+        assert_eq!(v["pgPool"]["max"], 40);
+        // Counts are counts, not strings — the public-surface law.
+        assert!(v["pgPool"]["size"].is_u64() && v["pgPool"]["idle"].is_u64());
+    }
 }

@@ -27,7 +27,7 @@
 // exceptions) are hand-checked in code — the regex crate has no lookaround.
 // Sentence splitting (a JS lookbehind) is hand-rolled the same way.
 
-use crate::gateway::settings::get_setting;
+use crate::gateway::settings::get_setting_hot;
 use crate::gateway::vault;
 use regex::Regex;
 use serde_json::Value;
@@ -75,7 +75,7 @@ pub struct GuardConfig {
 /// Stored config over defaults — off modes and
 /// garbage values fall back to the default, field by field.
 pub async fn guard_config(pg: &PgPool) -> GuardConfig {
-    let raw = get_setting(pg, "guardrails_config", serde_json::json!({})).await;
+    let raw = get_setting_hot(pg, "guardrails_config", serde_json::json!({})).await;
     let mut c = GuardConfig {
         mode: GuardMode::Observe,
         checks: serde_json::Map::new(),

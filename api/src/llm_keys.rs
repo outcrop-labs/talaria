@@ -115,6 +115,9 @@ pub async fn revoke_key(pg: &PgPool, user_id: &str, key_id: &str) -> Result<(), 
     .bind(user_id)
     .execute(pg)
     .await?;
+    // A revoked key must stop authenticating on the next call, not the next
+    // TTL expiry.
+    crate::auth::reset_identity_cache();
     Ok(())
 }
 
@@ -157,6 +160,8 @@ pub async fn set_key_policy(
     .bind(or_null(policy.rate_limit_per_minute))
     .fetch_optional(pg)
     .await?;
+    // Caps ride the identity — a policy edit lands now, not at TTL expiry.
+    crate::auth::reset_identity_cache();
     Ok(row.is_some())
 }
 

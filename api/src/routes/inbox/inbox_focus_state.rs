@@ -1,14 +1,15 @@
 // /api/inbox/focus/state. PUT → mark a focus item viewed, or snooze it
-// until a time. The lock is the whole route's: the state write and the
-// snooze's decision row are one Inbox action, and a second one mid-flight
-// is what the 409 refuses.
+// until a time. Unlocked by design: the tables this writes
+// (inbox_focus_state, the snooze's inbox_decisions row) are tables the
+// assistant turn never touches, so a snooze mid-stream is a state change,
+// not a conflict — the user lock belongs to the turn-running routes.
 
 use crate::body::{
     as_object, enum_member, optional_boolean_member, present_nullable_datetime_member,
     string_member,
 };
 use crate::error::{house_error, thrown_internal_error};
-use crate::inbox_focus::conversation::{acquire_inbox_focus_lock, record_inbox_snooze};
+use crate::inbox_focus::conversation::record_inbox_snooze;
 use crate::inbox_focus::types::FOCUS_SOURCE_TYPES;
 use crate::inbox_focus::update_focus_state;
 use crate::session::require_user;
@@ -62,12 +63,6 @@ pub async fn put(
     let body = match validate(obj) {
         Ok(b) => b,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
-    let Some(_guard) = acquire_inbox_focus_lock(&user.id) else {
-        return house_error(
-            StatusCode::CONFLICT,
-            "Your assistant is already handling another Inbox action.",
-        );
     };
     let updated = match update_focus_state(
         &state.pg,

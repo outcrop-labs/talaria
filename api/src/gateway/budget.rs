@@ -2,7 +2,7 @@
 // and caller scope, with the key's own caps min-merged under the admin's
 // ceiling. Off by default; a failed read must not become an outage.
 
-use crate::gateway::settings::get_setting;
+use crate::gateway::settings::get_setting_hot;
 use crate::gateway::usage::{SpendWindow, spend_since};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -232,7 +232,7 @@ pub async fn check_budget(
     key_caps: BudgetLimits,
 ) -> Option<BudgetDenial> {
     let policy = BudgetPolicy::from_json(
-        &get_setting(
+        &get_setting_hot(
             pg,
             "llm_budgets",
             serde_json::json!({"windowHours": 24, "org": null, "perAgent": null, "agents": {}}),

@@ -3,14 +3,16 @@
 // and the SSE command run that threads one instruction through the assistant
 // with events as they happen.
 //
-// THE PROCESS-LOCAL LOCK: one Inbox assistant action per user at a time,
-// process-wide. The queue's decisions are idempotent where they can be, but
-// the command run persists message rows in sequence and streams deltas — a
-// second concurrent run interleaving seqs and events is incoherent, not
-// merely racy. The guard is held across a whole handler (and, for the SSE
-// command, across the stream's lifetime — it MOVES into the stream task, so
-// the lock releases when the stream does). Process-local is the whole
-// guarantee: two API processes each allow one.
+// THE PROCESS-LOCAL LOCK: one Inbox assistant TURN per user at a time,
+// process-wide — and only the turn-running routes take it (command POST +
+// action POST; reads and state writes deliberately don't). Two reasons carry
+// that scoping: the turn allocates `next_seq = max(seq)+1` under
+// unique(conversation_id, seq), so two concurrent turns race seqs and 500;
+// and an action executes decision side effects that a concurrent turn's new
+// proposal could duplicate. The guard is held across a whole handler (and,
+// for the SSE command, across the stream's lifetime — it MOVES into the
+// stream task, so the lock releases when the stream does). Process-local is
+// the whole guarantee: two API processes each allow one.
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};

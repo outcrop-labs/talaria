@@ -113,7 +113,7 @@ Source: [`api/src/routes/inbox/inbox_focus_conversations_id.rs`](../../api/src/r
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200, 409 | — |
+| GET | `session` | — | `…` | 200 | — |
 | DELETE | `session` | — | `{ok}` | 200, 404 | — |
 
 ## `/api/inbox/focus/state`
@@ -121,9 +121,10 @@ Source: [`api/src/routes/inbox/inbox_focus_conversations_id.rs`](../../api/src/r
 Source: [`api/src/routes/inbox/inbox_focus_state.rs`](../../api/src/routes/inbox/inbox_focus_state.rs)
 
 > /api/inbox/focus/state. PUT → mark a focus item viewed, or snooze it
-> until a time. The lock is the whole route's: the state write and the
-> snooze's decision row are one Inbox action, and a second one mid-flight
-> is what the 409 refuses.
+> until a time. Unlocked by design: the tables this writes
+> (inbox_focus_state, the snooze's inbox_decisions row) are tables the
+> assistant turn never touches, so a snooze mid-stream is a state change,
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

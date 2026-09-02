@@ -5,13 +5,13 @@
 // ordinary chats. Archiving, not deleting: the messages and the decision
 // timeline are the owner's record of what their assistant did.
 //
-// GET holds the assistant lock while it reads: the timeline must not be
-// served half-way through the assistant's own write to it.
+// GET is unlocked by design: it serves mid-turn. Every read is an MVCC
+// snapshot, rows land complete or 'streaming', and the page's `working`
+// flag renders the in-flight reply — a 409 here would refuse the panel's
+// own polling for the whole length of an assistant turn.
 
 use crate::error::{house_error, thrown_internal_error};
-use crate::inbox_focus::conversation::{
-    acquire_inbox_focus_lock, archive_inbox_conversation, get_inbox_conversation,
-};
+use crate::inbox_focus::conversation::{archive_inbox_conversation, get_inbox_conversation};
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -34,12 +34,6 @@ pub async fn get(
     let user = match require_user(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return resp,
-    };
-    let Some(_guard) = acquire_inbox_focus_lock(&user.id) else {
-        return house_error(
-            StatusCode::CONFLICT,
-            "Your assistant is updating the Inbox conversation.",
-        );
     };
     // `current` is the panel's first load, which has no id to name — the
     // server resolves the caller's own latest instance. (DELETE never sees

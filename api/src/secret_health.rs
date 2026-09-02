@@ -726,14 +726,20 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
     match store {
         // `is not null` is what makes the return value mean "something
         // changed" — an UPDATE counts rows it matched, not rows it altered.
-        "llm" => run_clear(
-            pg,
-            "update llm_endpoints set api_key_cipher = null, updated_at = now() \
-             where id = $1::uuid and api_key_cipher is not null",
-            &[n(0)],
-        )
-        .await
-        .map_err(ClearError::from),
+        "llm" => {
+            let cleared = run_clear(
+                pg,
+                "update llm_endpoints set api_key_cipher = null, updated_at = now() \
+                 where id = $1::uuid and api_key_cipher is not null",
+                &[n(0)],
+            )
+            .await
+            .map_err(ClearError::from);
+            // The resolved key's 60s serve window must not outlive the
+            // cipher it came from.
+            crate::gateway::provider::invalidate_endpoint_key(Some(n(0)));
+            cleared
+        }
         // The name can itself contain no colon (agent secrets are env-var
         // names), but rejoin anyway so a future looser name cannot truncate.
         "agent-secret" => {

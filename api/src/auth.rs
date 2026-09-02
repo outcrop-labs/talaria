@@ -56,6 +56,40 @@ pub fn bearer_secret(header: Option<&str>) -> Option<&str> {
     (trimmed.len() != rest.len()).then_some(trimmed)
 }
 
+// ── The identity cache ───────────────────────────────────────────────────────
+//
+// Every authenticated relay call — every agent tool turn — resolved its key
+// with a pool checkout. The identity changes only by mint/revoke/caps-edit,
+// all admin-rare, so a 15s serve window keyed by the key hash takes the
+// checkout off the hot path. LAW: every in-process writer of the key rows
+// (revoke, policy, fleet rotation) resets the cache, so those land now; the
+// TTL is the backstop for anything else. Ok(None) is cached too (unknown
+// keys stop costing a lookup); Err NEVER is — a database outage must not be
+// remembered as "unknown key".
+
+const IDENTITY_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+/// Past this many distinct keys in the window, the map clears rather than
+/// grows — random-key hammering must not buy unbounded memory.
+const IDENTITY_CAP: usize = 4096;
+
+fn identity_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, (std::time::Instant, Option<KeyIdentity>)>,
+> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<String, (std::time::Instant, Option<KeyIdentity>)>,
+        >,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Drop every cached identity — revocation and caps edits take effect on the
+/// next call instead of the next TTL expiry. Tests call it to pin the
+/// tradeoff from both sides.
+pub fn reset_identity_cache() {
+    identity_cache().lock().expect("identity cache").clear();
+}
+
 /// Resolve a `tlk_` secret to its owner. Ok(None) = unknown/revoked/malformed.
 /// The caller owns the detached last_used_at update (a fire-and-forget write,
 /// never worth failing a request over).
@@ -65,6 +99,15 @@ pub async fn authenticate_key(
 ) -> Result<Option<KeyIdentity>, sqlx::Error> {
     if !secret.starts_with("tlk_") {
         return Ok(None); // not even a lookup — the prefix gate
+    }
+    let hash = sha256_hex(secret);
+    {
+        let c = identity_cache().lock().expect("identity cache");
+        if let Some((at, hit)) = c.get(&hash)
+            && at.elapsed() < IDENTITY_TTL
+        {
+            return Ok(hit.clone());
+        }
     }
     // ::text for the uuid columns (KeyIdentity speaks String); ::float8 so
     // bigint/numeric caps read as f64 rather than strings.
@@ -83,10 +126,10 @@ pub async fn authenticate_key(
              from llm_api_keys k join users u on u.id = k.user_id \
              where k.key_hash = $1 and k.revoked_at is null",
     )
-    .bind(sha256_hex(secret))
+    .bind(&hash)
     .fetch_optional(pg)
     .await?;
-    Ok(row.map(
+    let identity = row.map(
         |(key_id, key_name, user_id, email, tokens, usd, rpm)| KeyIdentity {
             key_id,
             key_name,
@@ -94,7 +137,13 @@ pub async fn authenticate_key(
             email,
             caps: KeyCaps { tokens, usd, rpm },
         },
-    ))
+    );
+    let mut c = identity_cache().lock().expect("identity cache");
+    if c.len() >= IDENTITY_CAP {
+        c.clear();
+    }
+    c.insert(hash, (std::time::Instant::now(), identity.clone()));
+    Ok(identity)
 }
 
 #[cfg(test)]

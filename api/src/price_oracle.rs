@@ -318,6 +318,9 @@ async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
         .map_err(|e| format!("auto_prices write failed: {e}"))?;
         counts.endpoints += 1;
     }
+    // auto_prices is a cached column of the endpoints serve window — the
+    // next completion must be able to see the fill.
+    crate::gateway::registry::invalidate_endpoints_cache();
     Ok(counts)
 }
 
