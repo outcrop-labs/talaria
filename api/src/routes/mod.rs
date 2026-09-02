@@ -33,10 +33,8 @@ use axum::Router;
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
-use std::time::Duration;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 /// app.ts's 405: the body is fixed, and the allow header is the TS route
@@ -61,13 +59,13 @@ async fn api_not_found(uri: Uri) -> Response {
 }
 
 pub fn router(state: AppState) -> Router {
-    // Two stacks, one reason: some routes STREAM. chat/completions' legitimate
-    // lifetime is bounded by the upstream's own 10-minute budget
-    // (UPSTREAM_TIMEOUT_MS), and the SSE event streams' by the client's
-    // attention — neither by a handler timeout. They must NOT sit under the
-    // 30s TimeoutLayer the request/response routes use — widening that layer
-    // for everyone would be the wrong trade.
-    let timed = Router::new()
+    // One stack, no request timeout. The TS server this replaces never timed
+    // a request out, and neither does this one: agent turns, tool-call
+    // chains, Google syncs and SSE watches have unbounded legitimate
+    // lifetimes, and a blanket timer converts "working slowly" into
+    // "failed". Requests fail on errors — panics, refused guards, upstream
+    // call budgets — never on a clock.
+    Router::new()
         .route(
             "/api/healthz",
             get(system::health::get).fallback(|| async { method_not_allowed("GET") }),
@@ -1132,28 +1130,12 @@ pub fn router(state: AppState) -> Router {
             "/api/mcp/oauth/callback",
             get(mcp::mcp_oauth_callback::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        .fallback(api_not_found)
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(TraceLayer::new_for_http())
-        // 0.7 deprecated the 408-defaulting constructor: name the status we
-        // actually want a timed-out JSON call to return.
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::SERVICE_UNAVAILABLE,
-            Duration::from_secs(30),
-        ))
-        .layer(CatchPanicLayer::new())
-        .with_state(state.clone());
-
-    let streaming = Router::new()
         .route(
             "/api/llm/v1/chat/completions",
             post(llm::llm_chat::post).fallback(|| async { method_not_allowed("POST") }),
         )
-        // The two SSE attach points (realtime.ts's streams). Same stack as
-        // chat: a watch stream's legitimate lifetime is the client's, not a
-        // handler's — the 30s layer would cut every live view off at half a
-        // minute.
+        // The SSE attach points (realtime.ts's streams): a watch stream's
+        // legitimate lifetime is the client's, not a handler's.
         .route(
             "/api/runs/{id}/events",
             get(agents::runs_events::get).fallback(|| async { method_not_allowed("GET") }),
@@ -1169,8 +1151,7 @@ pub fn router(state: AppState) -> Router {
         )
         // The MCP gateway — both verbs. A tools/call may legitimately hold
         // for the upstream's own 120s timeout, and the GET is a streamable-
-        // HTTP notification stream whose lifetime is the client's: neither
-        // belongs under the 30s layer.
+        // HTTP notification stream whose lifetime is the client's.
         .route(
             "/api/mcp/gw/{server}",
             post(mcp::mcp_gw_server::post)
@@ -1178,8 +1159,8 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST, GET") }),
         )
         // The Inbox panel's command run — named SSE events for one assistant
-        // turn. Same stack as the watch streams: the turn's lifetime is the
-        // model's, and the Inbox lock rides inside the stream task.
+        // turn. The turn's lifetime is the model's, and the Inbox lock rides
+        // inside the stream task.
         .route(
             "/api/inbox/focus/command",
             post(inbox::inbox_focus_command::post)
@@ -1333,11 +1314,10 @@ pub fn router(state: AppState) -> Router {
                 .post(fleet::fleet_defs_id_versions::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
+        .fallback(api_not_found)
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new())
-        .with_state(state);
-
-    timed.merge(streaming)
+        .with_state(state)
 }
