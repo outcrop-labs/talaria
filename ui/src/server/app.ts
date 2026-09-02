@@ -80,4 +80,11 @@ async function handle(request: Request): Promise<Response> {
   return new Response('Not Found', { status: 404 })
 }
 
+// The one non-fetch export, and the reason it must live HERE: only this
+// module's exports survive into dist/server/server.js, and server-entry.js
+// runs the migration pass off this export before it spawns the Rust api —
+// post-cutover, boot itself touches no table, so a fresh database never
+// migrated until this hook existed.
+export { migrate } from './db/pg'
+
 export default { fetch: handle }

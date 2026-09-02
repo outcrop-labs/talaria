@@ -1,7 +1,8 @@
 // Postgres — durable state (users, roles, per-agent access, conversations,
-// messages). postgres.js (no native build). Migrations run lazily on the first
-// query, once per statement ever (see schema_migrations below), under an
-// advisory lock. Cached on globalThis so HMR doesn't open a new pool each reload.
+// messages). postgres.js (no native build). Migrations run once per statement
+// ever (see schema_migrations below), under an advisory lock — eagerly at boot
+// (server-entry.js calls migrate()) and lazily on the first query thereafter.
+// Cached on globalThis so HMR doesn't open a new pool each reload.
 
 import { createHash } from 'node:crypto'
 import postgres from 'postgres'
@@ -10,7 +11,7 @@ import { initSecretbox } from '../secretbox'
 type Sql = ReturnType<typeof postgres>
 const g = globalThis as unknown as {
   __talariaSql?: Sql
-  __talariaMigrated?: Promise<void>
+  __talariaMigrated?: Promise<MigrationResult>
   /** MIGRATIONS.length as of the last successful run — see `ensureMigrated`
    *  for why the count rides globalThis beside the promise. */
   __talariaMigrationCount?: number
@@ -2333,13 +2334,14 @@ function migrationSql(): Sql {
   return postgres(databaseUrl(), { max: 1, idle_timeout: 0, max_lifetime: 0, onnotice: () => {} })
 }
 
-async function runMigrations(): Promise<void> {
+async function runMigrations(): Promise<MigrationResult> {
   const sql = migrationSql()
   try {
     await sql`select pg_advisory_lock(${MIGRATION_LOCK})`
     await sql.unsafe(SCHEMA_MIGRATIONS)
     const rows = (await sql`select id, checksum from schema_migrations`) as unknown as Array<{ id: number; checksum: string }>
     const applied = new Map(rows.map((r) => [r.id, r.checksum]))
+    let fresh = 0
     for (const [i, stmt] of MIGRATIONS.entries()) {
       const sum = checksum(stmt)
       const prev = applied.get(i)
@@ -2359,10 +2361,12 @@ async function runMigrations(): Promise<void> {
         await tx.unsafe(stmt)
         await tx`insert into schema_migrations (id, checksum) values (${i}, ${sum})`
       })
+      fresh += 1
     }
     // Load/create the data key so seal()/open() are synchronous thereafter.
     await initSecretbox(sql)
     g.__talariaMigrationCount = MIGRATIONS.length
+    return { applied: fresh, total: MIGRATIONS.length }
   } finally {
     // Ending the pool ends the session, which releases the advisory lock; the
     // explicit unlock is so a slow close does not hold up another instance.
@@ -2371,7 +2375,11 @@ async function runMigrations(): Promise<void> {
   }
 }
 
-function ensureMigrated(): Promise<void> {
+/** What a migration pass did: how many statements it applied fresh, and the
+ *  size of the array it reconciled against. `applied: 0` = already current. */
+export type MigrationResult = { applied: number; total: number }
+
+function ensureMigrated(): Promise<MigrationResult> {
   // THE COUNT IS CACHED WITH THE PROMISE, and both ride globalThis — because a
   // vite dev SSR module reload keeps globalThis while swapping the code. The
   // promise alone would then answer "migrated" for an array that GREW since
@@ -2386,7 +2394,7 @@ function ensureMigrated(): Promise<void> {
     g.__talariaMigrated = undefined
   }
   if (!g.__talariaMigrated) {
-    const run: Promise<void> = runMigrations().catch((e) => {
+    const run: Promise<MigrationResult> = runMigrations().catch((e) => {
       if (g.__talariaMigrated === run) g.__talariaMigrated = undefined
       throw e
     })
@@ -2399,4 +2407,13 @@ function ensureMigrated(): Promise<void> {
 export async function db(): Promise<Sql> {
   await ensureMigrated()
   return getSql()
+}
+
+/** Run (or join) the migration pass and report what it did. The lazy path via
+ *  db() only fires on a table-backed query — and since the api cutover nothing
+ *  in the boot path issues one (healthz is connectivity-only, and the api owns
+ *  the tables but no DDL), so boot calls this explicitly: without it, a fresh
+ *  database never migrates. See server-entry.js's boot step for the story. */
+export function migrate(): Promise<MigrationResult> {
+  return ensureMigrated()
 }

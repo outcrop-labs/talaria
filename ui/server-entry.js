@@ -76,7 +76,7 @@ if (validateEnv) {
 
 // Imported AFTER the env is in place: a static import is hoisted above every
 // statement here, and the server graph reads process.env as it loads.
-const { default: server } = await import('./dist/server/server.js')
+const { default: server, migrate } = await import('./dist/server/server.js')
 
 const CLIENT_DIR = join(__dirname, 'dist', 'client')
 const port = parseInt(process.env.PORT || '3000', 10)
@@ -390,6 +390,61 @@ process.on('unhandledRejection', (reason) => {
   const detail = reason instanceof Error ? reason.stack || reason.message : reason
   console.error('[talaria-ui] UNHANDLED REJECTION (process kept alive, this is a bug):', detail)
 })
+
+// ── Database migrations ───────────────────────────────────────────────────────
+//
+// The pass used to be purely lazy: it fired on the first table-backed db()
+// call, and before the api cutover that was enough — the TS server served the
+// tables, so the first page hit migrated a fresh database. Post-cutover every
+// table query is the Rust api's (which owns no DDL by design), and this
+// process's boot path touches no table at all — healthz is connectivity-only.
+// A fresh database therefore never migrated: the container came up "healthy"
+// with zero tables, /claim 500'd, and every scheduler tick logged
+// `relation "..." does not exist`. Boot runs the pass itself instead, BEFORE
+// the api spawns (its scheduler reads tables from its first tick) and before
+// listen().
+//
+// Bounded and non-fatal, the same rule as the boot probe below: a box whose
+// database is down at boot must still reach listen() and say so through
+// /api/healthz, not hang here. Past the deadline the pass keeps running — db()
+// callers await the same cached promise — and a hard failure logs the reason
+// and lets every table query 500 with the log above saying why.
+const MIGRATION_BOOT_TIMEOUT_MS = 60_000
+
+async function runBootMigrations() {
+  if (typeof migrate !== 'function') {
+    // A bundle built before this export existed: behave like the old world.
+    console.warn('[talaria-ui] server bundle exports no migrate() — schema setup waits for the first table query')
+    return
+  }
+  const started = Date.now()
+  let bell
+  const deadline = new Promise((resolve) => {
+    bell = setTimeout(() => resolve(null), MIGRATION_BOOT_TIMEOUT_MS)
+  })
+  try {
+    const result = await Promise.race([migrate(), deadline])
+    if (result === null) {
+      console.warn(
+        `[talaria-ui] migrations still running after ${MIGRATION_BOOT_TIMEOUT_MS / 1000}s — continuing boot; ` +
+          'table queries wait for the pass to finish',
+      )
+    } else if (result.applied === 0) {
+      console.log(`[talaria-ui] migrations → schema already current (${result.total} statements, ${Date.now() - started}ms)`)
+    } else {
+      console.log(`[talaria-ui] migrations → applied ${result.applied} statement(s) (${result.total} total, ${Date.now() - started}ms)`)
+    }
+  } catch (err) {
+    console.error(
+      '[talaria-ui] migrations FAILED — the schema is not in place and every table query will 500 until this is fixed:',
+      err,
+    )
+  } finally {
+    clearTimeout(bell)
+  }
+}
+
+await runBootMigrations()
 
 // ── The Rust api ─────────────────────────────────────────────────────────────
 //
