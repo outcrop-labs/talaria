@@ -5,6 +5,7 @@
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 /// One `llm_endpoints` row, the columns the relay reads. Pricing is computed
 /// SQL-side in spend_since, so the relay's view omits those columns.
@@ -44,7 +45,44 @@ pub struct LlmEndpoint {
     pub model_efforts: serde_json::Value,
 }
 
+// ── The endpoints cache ──────────────────────────────────────────────────────
+//
+// Every chat completion resolves its route through `list_endpoints`, which
+// loads the whole table — all the jsonb blobs — one checkout per turn. The
+// table changes only by admin action, so a 15s serve window is the entire
+// cost of taking that checkout off the hot path. LAW: every in-process
+// writer of the cached columns invalidates (the CRUD below, the price
+// oracle's fills); anything else rides out the TTL.
+
+struct EndpointsCache {
+    at: std::time::Instant,
+    eps: Vec<LlmEndpoint>,
+}
+
+const ENDPOINTS_TTL: Duration = Duration::from_secs(15);
+
+fn endpoints_cache() -> &'static std::sync::RwLock<Option<EndpointsCache>> {
+    static C: OnceLock<std::sync::RwLock<Option<EndpointsCache>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Drop the serve window — every in-process writer of the cached columns
+/// calls this, so a write is visible to the very next completion.
+pub fn invalidate_endpoints_cache() {
+    *endpoints_cache().write().expect("endpoints cache") = None;
+}
+
 pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error> {
+    // Fresh serve window: clone out under the read guard and drop it before
+    // any await — the guard never spans I/O.
+    {
+        let cache = endpoints_cache().read().expect("endpoints cache");
+        if let Some(hit) = cache.as_ref()
+            && hit.at.elapsed() < ENDPOINTS_TTL
+        {
+            return Ok(hit.eps.clone());
+        }
+    }
     // Local endpoints first, then name asc — round-robin pools and owned_by
     // lists both depend on it.
     let rows = sqlx::query_as::<
@@ -72,7 +110,7 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
     )
     .fetch_all(pg)
     .await?;
-    Ok(rows
+    let eps: Vec<LlmEndpoint> = rows
         .into_iter()
         .map(
             |(
@@ -111,7 +149,14 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                 }
             },
         )
-        .collect())
+        .collect();
+    // Store only a full success — a failed read leaves the window closed
+    // (and the error propagates) rather than caching a lie.
+    *endpoints_cache().write().expect("endpoints cache") = Some(EndpointsCache {
+        at: std::time::Instant::now(),
+        eps: eps.clone(),
+    });
+    Ok(eps)
 }
 
 // ── The registry's own control plane (endpoints CRUD) ───────────────────────
@@ -227,6 +272,7 @@ pub async fn update_endpoint(
         .bind(cipher)
         .execute(pg)
         .await?;
+        crate::gateway::provider::invalidate_endpoint_key(Some(id));
     }
     if let Some(class) = &patch.class {
         sqlx::query("update llm_endpoints set class = $2, updated_at = now() where id = $1::uuid")
@@ -283,6 +329,7 @@ pub async fn update_endpoint(
         .execute(pg)
         .await?;
     }
+    invalidate_endpoints_cache();
     Ok(())
 }
 
@@ -317,6 +364,7 @@ pub async fn create_endpoint(
     .bind(model_prices)
     .fetch_one(pg)
     .await?;
+    invalidate_endpoints_cache();
     Ok(row.0)
 }
 
@@ -348,6 +396,7 @@ pub async fn ensure_endpoint(
     .bind(context_length)
     .execute(pg)
     .await?;
+    invalidate_endpoints_cache();
     Ok(())
 }
 
@@ -373,6 +422,7 @@ pub async fn add_endpoint_models(
     .bind(serde_json::json!(models))
     .execute(pg)
     .await?;
+    invalidate_endpoints_cache();
     Ok(())
 }
 
@@ -405,6 +455,7 @@ pub async fn delete_endpoint(pg: &PgPool, id: &str) -> Result<(bool, Vec<String>
         .bind(id)
         .execute(pg)
         .await?;
+    invalidate_endpoints_cache();
     Ok((true, Vec::new()))
 }
 

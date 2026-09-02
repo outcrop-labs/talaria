@@ -34,7 +34,7 @@ use crate::gateway::guard::{
     needs_redaction, redact_secrets,
 };
 use crate::gateway::registry::resolve_route;
-use crate::gateway::settings::get_setting;
+use crate::gateway::settings::get_setting_hot;
 use crate::gateway::upstream::{Reply, build_upstream, fetch_upstream, js_truthy};
 use crate::gateway::usage::{TokenCounts, estimate_tokens, normalize_usage, record_gateway_usage};
 use crate::ratelimit::rate_limit;
@@ -210,7 +210,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     // for the whole turn, so metering the N inner-loop calls behind it counts
     // that turn twice. Everything else is metered HERE because here is the
     // only place it lands.
-    let unmetered = get_setting(
+    let unmetered = get_setting_hot(
         &state.pg,
         "gateway_unmetered_keys",
         json!(["fleet-gateway"]),
@@ -227,7 +227,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     // responses (findings still record, and the chat/channel layer annotates
     // the human-facing copy). Both the personas' key and the workbench's are
     // loops.
-    let agent_loop_keys = get_setting(
+    let agent_loop_keys = get_setting_hot(
         &state.pg,
         "gateway_agent_loop_keys",
         json!([PERSONA_KEY, WORKBENCH_KEY]),

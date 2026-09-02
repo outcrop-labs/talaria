@@ -78,6 +78,22 @@ pub async fn resolve_key(env_var: Option<&str>) -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
+/// The resolved key — cipher decrypt or env fallback, whichever won — is
+/// served from a 60s window keyed by endpoint id: this used to be a
+/// checkout AND a secretbox open on every completion, for a value that
+/// changes only by admin rotation. The plaintext it guards already lives in
+/// memory for the length of every upstream call and, on the env-fallback
+/// path, in the environment forever — the cache extends its residence, not
+/// its exposure. Key writes invalidate (see `invalidate_endpoint_key`).
+const ENDPOINT_KEY_TTL: Duration = Duration::from_secs(60);
+
+fn endpoint_key_cache(
+) -> &'static Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
 /// The provider's API key: the sealed key stored in the DB is the source of
 /// truth (encrypted at rest, entered via /models — never in a config file).
 /// An env var / fleet .env of the endpoint's api_key_env is a fallback for
@@ -86,6 +102,14 @@ pub async fn resolve_endpoint_key(
     state: &AppState,
     ep: &crate::gateway::registry::LlmEndpoint,
 ) -> Option<String> {
+    {
+        let c = endpoint_key_cache().lock().expect("endpoint key cache");
+        if let Some((at, hit)) = c.get(&ep.id)
+            && at.elapsed() < ENDPOINT_KEY_TTL
+        {
+            return hit.clone();
+        }
+    }
     let cipher: Option<String> =
         sqlx::query_scalar("select api_key_cipher from llm_endpoints where id::text = $1")
             .bind(&ep.id)
@@ -93,18 +117,38 @@ pub async fn resolve_endpoint_key(
             .await
             .ok()
             .flatten();
-    if let Some(token) = cipher
+    let resolved = if let Some(token) = cipher
         && let Ok(sb) = state.secretbox().await
         && let Ok(key) = sb.open(&token)
     {
-        return Some(key);
+        Some(key)
+    } else {
+        // tampered/old key material — fall through to env
+        let env_name = ep
+            .api_key_env
+            .as_deref()
+            .or_else(|| default_key_env(&ep.provider));
+        resolve_key(env_name).await
+    };
+    endpoint_key_cache()
+        .lock()
+        .expect("endpoint key cache")
+        .insert(ep.id.clone(), (std::time::Instant::now(), resolved.clone()));
+    resolved
+}
+
+/// Drop an endpoint's key entry — or, with no id, the whole map (the boot
+/// migration's shape). Every writer of `api_key_cipher` calls this: the
+/// admin key write in registry.rs, `migrate_env_keys_to_cipher` here, and
+/// secret_health's clear.
+pub fn invalidate_endpoint_key(id: Option<&str>) {
+    let mut c = endpoint_key_cache().lock().expect("endpoint key cache");
+    match id {
+        Some(id) => {
+            c.remove(id);
+        }
+        None => c.clear(),
     }
-    // tampered/old key material — fall through to env
-    let env_name = ep
-        .api_key_env
-        .as_deref()
-        .or_else(|| default_key_env(&ep.provider));
-    resolve_key(env_name).await
 }
 
 /// One-time migration: seal any provider key that still lives only in the env
@@ -143,6 +187,7 @@ pub async fn migrate_env_keys_to_cipher(state: &AppState) -> Result<usize, sqlx:
             sealed += 1;
         }
     }
+    invalidate_endpoint_key(None);
     Ok(sealed)
 }
 
@@ -155,21 +200,63 @@ fn now_ms() -> u64 {
 
 struct UsPoolCache {
     at: u64,
+    /// When the last fetch attempt FAILED — while OpenRouter is unreachable
+    /// the retry cadence backs off to one per minute instead of hanging a
+    /// 10s fetch on every completion.
+    failed_at: Option<u64>,
     slugs: Vec<String>,
+}
+
+const US_POOL_TTL_MS: u64 = 15 * 60_000;
+const US_POOL_FAILURE_BACKOFF_MS: u64 = 60_000;
+
+/// Serve the cache as-is, or go fetch. Pure so the window arithmetic is
+/// testable without the network.
+fn us_pool_decision(at: u64, failed_at: Option<u64>, now: u64) -> UsPoolDecision {
+    if now.saturating_sub(at) < US_POOL_TTL_MS {
+        return UsPoolDecision::Serve;
+    }
+    if failed_at.is_some_and(|f| now.saturating_sub(f) < US_POOL_FAILURE_BACKOFF_MS) {
+        return UsPoolDecision::Serve;
+    }
+    UsPoolDecision::Fetch
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UsPoolDecision {
+    Serve,
+    Fetch,
+}
+
+fn us_pool_flight() -> &'static tokio::sync::Mutex<()> {
+    static F: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    F.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// OpenRouter's live US provider pool for no-train routing: every provider
 /// whose datacenters include the US (or, when datacenters are unreported, is
 /// US-headquartered). Fetched fresh — never a maintained list — and cached
-/// briefly; a failed fetch serves the last good pool.
+/// briefly; a failed fetch serves the last good pool. ONE flight: at a TTL
+/// lapse under N concurrent completions, the first fetcher refreshes and the
+/// rest join its result instead of each hanging on its own 10s call.
 pub async fn openrouter_us_pool() -> Option<Vec<String>> {
-    const TTL_MS: u64 = 15 * 60_000;
     {
         let cache = us_pool().lock().ok()?;
         if let Some(c) = cache.as_ref()
-            && now_ms() - c.at < TTL_MS
+            && us_pool_decision(c.at, c.failed_at, now_ms()) == UsPoolDecision::Serve
         {
-            return Some(c.slugs.clone());
+            return (!c.slugs.is_empty()).then(|| c.slugs.clone());
+        }
+    }
+    let _held = us_pool_flight().lock().await;
+    // Re-check inside the gate: whoever finished first refreshed the window
+    // (or stamped a failure), and everyone queued behind them stands down.
+    {
+        let cache = us_pool().lock().ok()?;
+        if let Some(c) = cache.as_ref()
+            && us_pool_decision(c.at, c.failed_at, now_ms()) == UsPoolDecision::Serve
+        {
+            return (!c.slugs.is_empty()).then(|| c.slugs.clone());
         }
     }
     let fetch = async {
@@ -208,15 +295,24 @@ pub async fn openrouter_us_pool() -> Option<Vec<String>> {
             if let Ok(mut cache) = us_pool().lock() {
                 *cache = Some(UsPoolCache {
                     at: now_ms(),
+                    failed_at: None,
                     slugs: slugs.clone(),
                 });
             }
             Some(slugs)
         }
-        None => us_pool()
-            .lock()
-            .ok()
-            .and_then(|c| c.as_ref().map(|c| c.slugs.clone())),
+        None => {
+            // Stamp the failure, keep the last good pool serving.
+            if let Ok(mut cache) = us_pool().lock()
+                && let Some(c) = cache.as_mut()
+            {
+                c.failed_at = Some(now_ms());
+            }
+            us_pool()
+                .lock()
+                .ok()
+                .and_then(|c| c.as_ref().map(|c| c.slugs.clone()))
+        }
     }
 }
 
@@ -732,6 +828,11 @@ pub fn http() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                // Only the CONNECT phase is bounded here: the per-request
+                // timeouts own the rest (600s for a chat turn, 10s for
+                // catalogs), and a provider that accepts TCP then stalls
+                // must not hold an unstarted turn forever.
+                .connect_timeout(Duration::from_secs(10))
                 .build()
                 .expect("reqwest client builds")
         })
@@ -753,5 +854,33 @@ mod tests {
         assert!(!key_env_allowed("LITELLM_MASTER_KEY"));
         assert!(!key_env_allowed("PATH"));
         assert!(!key_env_allowed("API_KEY_LOWERCASE"));
+    }
+
+    #[test]
+    fn the_us_pool_window_serves_fresh_backs_off_failure_refetches_after() {
+        use UsPoolDecision::{Fetch, Serve};
+        let now = 1_000_000_u64;
+        // Fresh: any stamp inside 15 minutes serves.
+        assert_eq!(us_pool_decision(now - 1, None, now), Serve);
+        assert_eq!(us_pool_decision(now - US_POOL_TTL_MS + 1, None, now), Serve);
+        // Stale with no failure on record: fetch.
+        assert_eq!(us_pool_decision(now - US_POOL_TTL_MS, None, now), Fetch);
+        // Stale with a recent failure: serve (stale) — one retry per minute
+        // while OpenRouter is dark, not one per completion.
+        assert_eq!(
+            us_pool_decision(now - US_POOL_TTL_MS, Some(now - 1), now),
+            Serve
+        );
+        assert_eq!(
+            us_pool_decision(now - US_POOL_TTL_MS, Some(now - US_POOL_FAILURE_BACKOFF_MS + 1), now),
+            Serve
+        );
+        // The backoff lapses: fetch again.
+        assert_eq!(
+            us_pool_decision(now - US_POOL_TTL_MS, Some(now - US_POOL_FAILURE_BACKOFF_MS), now),
+            Fetch
+        );
+        // A clock that went backwards saturates rather than panics.
+        assert_eq!(us_pool_decision(now + 1_000, Some(now + 2_000), now), Serve);
     }
 }

@@ -236,6 +236,9 @@ async fn ensure_gateway_key(
     .execute(pg)
     .await
     .map_err(|e| format!("stale gateway key revoke failed: {e}"))?;
+    // Rotation revokes the key the containers hold — it must stop
+    // authenticating before the replacement is even minted.
+    crate::auth::reset_identity_cache();
     let (_, secret) = mint_key(pg, &owner_id, name)
         .await
         .map_err(|e| format!("gateway key mint failed: {e}"))?;
