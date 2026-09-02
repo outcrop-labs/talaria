@@ -1,10 +1,10 @@
 # API reference — tasks
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 8 routes.
@@ -32,13 +32,15 @@
 
 Source: [`api/src/routes/tasks/tasks_id.rs`](../../api/src/routes/tasks/tasks_id.rs)
 
-> One ticket. GET → full detail (task, comments, attachments, refs,
-> workflows). PUT → update; agents may triage but cannot self-assign or
-> move to done (coerced to quality_review). DELETE → owner/editor.
+> /api/tasks/{id}. One ticket.
+> GET → full detail (task, comments, activity, watchers, reviews, judge,
+> links, usage; + workflows for an agent caller). PUT → update; the
+> human-in-the-loop guardrails live in update_task, not here — agents may
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{workflows}` | 200, 403, 404 | — |
+| GET | `dual` | — | `…` | 200, 403, 404 | — |
 | PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 
@@ -46,77 +48,80 @@ Source: [`api/src/routes/tasks/tasks_id.rs`](../../api/src/routes/tasks/tasks_id
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `title` | `z.string().min(1).max(300).optional()` |  |
-| `description` | `z.string().max(20_000).nullish()` |  |
-| `status` | `z.string().min(1).max(40).optional()` |  |
-| `priority` | `z.enum(PRIORITIES).optional()` |  |
-| `effort` | `z.enum(EFFORTS).nullish()` |  |
-| `assignees` | `z.array(z.string().max(200)).max(20).optional()` |  |
-| `dueDate` | `z.string().datetime().nullish()` |  |
-| `startDate` | `z.string().datetime().nullish()` |  |
-| `color` | `z.enum(TICKET_COLORS).nullish()` |  |
-| `tags` | `z.array(z.string().min(1).max(40)).max(20).optional()` |  |
-| `outcome` | `z.string().max(50_000).nullish()` |  |
-| `resolution` | `z.string().max(50_000).nullish()` |  |
-| `errorMessage` | `z.string().max(50_000).nullish()` |  |
-| `archived` | `z.boolean().optional()` |  |
-| `estimatedHours` | `z.number().min(0).max(999).nullish()` |  |
-| `parentId` | `Uuid.nullish()` |  |
-| `addTimeSpentSeconds` | `z.number().min(0).max(86_400 * 30).optional()` |  |
-| `attachmentIds` | `z.array(Uuid).max(20).optional()` |  |
-| `refs` | `z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid })).max(3).optional()` |  |
+| `title` | `string?(300)` |  |
+| `description` | `nullish` |  |
+| `status` | `string?(40)` |  |
+| `priority` | `enum(low|medium|high|urgent)?` |  |
+| `effort` | `nullish` |  |
+| `assignees` | `string[]?(0, 200, 20)` |  |
+| `dueDate` | `nullish` |  |
+| `startDate` | `nullish` |  |
+| `color` | `nullish` |  |
+| `tags` | `string[]?(1, 40, 20)` | tags elements carry min(1) — `[""]` once minted a blank label on the board. `[]` stays legal: it clears the labels. |
+| `outcome` | `nullish` |  |
+| `resolution` | `nullish` |  |
+| `errorMessage` | `nullish` |  |
+| `archived` | `bool?` |  |
+| `estimatedHours` | `nullish` |  |
+| `parentId` | `nullish` |  |
+| `addTimeSpentSeconds` | `number?(0, 86400, 30)` |  |
+| `attachmentIds` | `uuid[]?(20)` | Full replacement list, same contract as chat messages: upload ids + knowledge/artifact refs. Omit both to leave attachments unchanged. |
 
 ## `/api/tasks/{id}/comments`
 
 Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks/tasks_id_comments.rs)
 
-> GET → a task's comments (board member or board-allowed agent).
-> POST → add a comment (member or agent).
+> /api/tasks/{id}/comments. GET → the thread (board member or board-allowed
+> agent). POST → add a comment; an agent goes through the one
+> agent-authority predicate with intent Comment — board policy plus
+> archival, and deliberately NOT the closed-status clause, because
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{comments}` | 200, 404 | — |
-| POST | `dual` | [body](#post-apitasksidcomments-body) | `…` | 200, 404 | — |
+| GET | `dual` | — | `{comments}` | 200, 403, 404 | — |
+| POST | `dual` | [body](#post-apitasksidcomments-body) | `{comment}` | 200, 400, 403, 404 | — |
 
 ### POST `/api/tasks/{id}/comments` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `content` | `z.string().min(1).max(20_000)` |  |
-| `parentId` | `Uuid.optional()` |  |
+| `content` | `string(1, 20000)` |  |
+| `parentId` | `uuid?` |  |
 
 ## `/api/tasks/{id}/dependencies`
 
 Source: [`api/src/routes/tasks/tasks_id_dependencies.rs`](../../api/src/routes/tasks/tasks_id_dependencies.rs)
 
-> POST { dependsOnId } → this ticket is blocked by another. DELETE → remove.
-> Editors or board-allowed agents may add (part of triage); removal is human-only.
-> The dependency target must live on the same board.
+> /api/tasks/{id}/dependencies. POST { dependsOnId } → this ticket is
+> blocked by another. DELETE → remove. Editors or board-allowed agents may
+> add (part of triage); removal is human-only. The dependency target must
+> live on the same board.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `dual` | [body](#post-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 403 | — |
+| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 400, 403 | — |
 
 ### POST `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dependsOnId` | `Uuid` |  |
+| `dependsOnId` | `uuid` |  |
 
 ### DELETE `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dependsOnId` | `Uuid` |  |
+| `dependsOnId` | `uuid` |  |
 
 ## `/api/tasks/{id}/review`
 
 Source: [`api/src/routes/tasks/tasks_id_review.rs`](../../api/src/routes/tasks/tasks_id_review.rs)
 
-> POST /api/tasks/:id/review — the human quality gate. Approve moves the task to
-> the board's done column; reject sends it back to the board's first working
-> column. Board owner/editor only.
+> /api/tasks/{id}/review. The human quality gate. Approve moves the ticket
+> to the board's done column; reject sends it back to the board's first
+> working column. Board owner/editor only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -126,16 +131,17 @@ Source: [`api/src/routes/tasks/tasks_id_review.rs`](../../api/src/routes/tasks/t
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `status` | `z.enum(['approved', 'rejected'])` |  |
-| `notes` | `z.string().max(20_000).optional()` |  |
+| `status` | `enum(approved|rejected)` |  |
+| `notes` | `string?(20000)` |  |
 
 ## `/api/tasks/{id}/usage`
 
 Source: [`api/src/routes/tasks/tasks_id_usage.rs`](../../api/src/routes/tasks/tasks_id_usage.rs)
 
-> Per-ticket token spend. POST (agents, via MCP log_usage): report tokens
-> burned working this ticket — attributed to the agent's serving endpoint and
-> priced like every other ledger row. GET: the rollup shown on the ticket.
+> /api/tasks/{id}/usage. Per-ticket token spend. POST (agents, via MCP
+> log_usage): report tokens burned working this ticket — attributed to the
+> agent's serving endpoint and priced like every other ledger row. GET: the
+> rollup shown on the ticket.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -146,73 +152,80 @@ Source: [`api/src/routes/tasks/tasks_id_usage.rs`](../../api/src/routes/tasks/ta
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `promptTokens` | `z.number().int().min(0).max(100_000_000)` |  |
-| `completionTokens` | `z.number().int().min(0).max(100_000_000)` |  |
-| `tier` | `z.string().max(60).nullish()` |  |
-| `estimated` | `z.boolean().optional()` |  |
+| `promptTokens` | `number(0, 100000)` |  |
+| `completionTokens` | `number(0, 100000)` |  |
+| `tier` | `nullish` | Model tier the work ran on (alias name); defaults to the agent's main. |
+| `estimated` | `bool?` |  |
 
 ## `/api/tasks/{id}/watchers`
 
 Source: [`api/src/routes/tasks/tasks_id_watchers.rs`](../../api/src/routes/tasks/tasks_id_watchers.rs)
 
-> POST { watcher } → follow. DELETE { watcher } → unfollow.
+> /api/tasks/{id}/watchers. POST { watcher } → follow.
+> DELETE { watcher } → unfollow.
 >
 > WHO MAY DO WHAT, and why each is the role it is:
->
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `session` | [body](#post-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | [body](#delete-apitasksidwatchers-body) | `{unwatched}` | 200, 403, 404 | — |
+| DELETE | `session` | [body](#delete-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404 | — |
 
 ### POST `/api/tasks/{id}/watchers` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `watcher` | `z.string().min(1).max(200)` |  |
+| `watcher` | `string(1, 200)` |  |
 
 ### DELETE `/api/tasks/{id}/watchers` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `watcher` | `z.string().min(1).max(200)` |  |
+| `watcher` | `string(1, 200)` |  |
 
 ## `/api/workflows`
 
 Source: [`api/src/routes/tasks/workflows.rs`](../../api/src/routes/tasks/workflows.rs)
 
-> Task workflows — match rules classify tickets; the payload (bound Hermes
-> skills + declared toolkits) rides with dispatched/picked-up work. GET → all (any
-> member; they ground what agents will be told). POST → agents.manage.
+> /api/workflows. GET lists every workflow for any signed-in member (they
+> ground what agents will be told — deliberately unscoped); POST is
+> agents.manage. The body schema is shared with workflows_id:
+> validate_workflow_body with post=false is the PUT patch — everything
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{workflows}` | 200 | — |
-| POST | `session` + `perm:agents.manage` | [body](#post-apiworkflows-body) | `{workflow}` | 200 | — |
+| POST | `session` + `perm:agents.manage` | [body](#post-apiworkflows-body) | `{workflow}` | 200, 400 | — |
 
 ### POST `/api/workflows` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().trim().min(1).max(80)` |  |
-| `description` | `z.string().max(500).optional()` |  |
-| `match` | `Match.optional()` |  |
-| `skills` | `z.array(z.string().min(1).max(80)).max(20).optional()` |  |
-| `toolkits` | `z.array(Toolkit).max(20).optional()` |  |
+| `name` | `string trimmed(1, 80)` |  |
+| `description` | `string?(500)` |  |
+| `skills` | `string[]?(1, 80, 20)` |  |
+| `enabled` | `bool` |  |
 
 ## `/api/workflows/{id}`
 
 Source: [`api/src/routes/tasks/workflows_id.rs`](../../api/src/routes/tasks/workflows_id.rs)
 
-> One task workflow: PUT patch, DELETE remove — both agents.manage.
+> /api/workflows/{id}. PUT patch and DELETE, both agents.manage. Gate
+> order: perm, body, then the SQL bind — so a member with a bad body gets
+> the 403, and a non-uuid id only reaches the bind when a field is PRESENT
+> (an empty patch runs no SQL and answers ok even for a non-uuid id).
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200 | — |
+| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200, 400 | — |
 | DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200 | — |
 
 ### PUT `/api/workflows/{id}` body
 
-Body schema `Body.partial()` is not an object literal in the route file — see the route source.
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 

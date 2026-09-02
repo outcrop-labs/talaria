@@ -1,10 +1,10 @@
 # API reference — teams
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 3 routes.
@@ -23,62 +23,68 @@
 
 Source: [`api/src/routes/teams/teams.rs`](../../api/src/routes/teams/teams.rs)
 
-> GET → the user's teams (humans, or a personal assistant acting as its owner).
-> POST { name } → create a team (user becomes owner; humans only).
+> /api/teams. GET → the caller's teams, resolved through ACTING user (a
+> personal assistant acts as its owner — the identity-proxy model);
+> POST { name } → create (humans only: requireUser).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{teams}` | 200, 401 | — |
-| POST | `session` | [body](#post-apiteams-body) | `{team}` | 200 | — |
+| POST | `session` | [body](#post-apiteams-body) | `{team}` | 200, 400 | — |
 
 ### POST `/api/teams` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().min(1).max(120)` |  |
+| `name` | `string(1, 120)` |  |
 
 ## `/api/teams/{id}`
 
 Source: [`api/src/routes/teams/teams_id.rs`](../../api/src/routes/teams/teams_id.rs)
 
-> PATCH { name } → rename the team (owner). DELETE → delete it (owner); the
-> member rows cascade and its boards survive as personal boards (team_id is
-> set null, not cascaded), which is why this is owner-gated like every team
-> mutation and not merely member-gated like the member read.
+> /api/teams/{id}. PATCH { name } → rename (owner); DELETE → delete (owner)
+> — the member rows cascade and its boards survive as personal boards
+> (team_id set null, not cascaded), which is why both are owner-gated. A
+> non-uuid {id} → the house 500. Gate order: uuid bind, then the owner
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PATCH | `session` | [body](#patch-apiteamsid-body) | `{ok}` | 200, 403 | audit |
+| PATCH | `session` | [body](#patch-apiteamsid-body) | `{ok}` | 200, 400, 403 | audit |
 | DELETE | `session` | — | `{ok}` | 200, 403 | audit |
 
 ### PATCH `/api/teams/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().min(1).max(120)` |  |
+| `name` | `string(1, 120)` |  |
 
 ## `/api/teams/{id}/members`
 
 Source: [`api/src/routes/teams/teams_id_members.rs`](../../api/src/routes/teams/teams_id_members.rs)
 
-> GET → members (any member). POST { email, role } → add (owner). DELETE { userId } → remove (owner).
+> /api/teams/{id}/members. GET → members (any member of the team).
+> POST { email, role? } → add (owner; the role defaults to 'member', and the
+> email rides the audit row exactly as sent). DELETE { userId } → remove
+> (owner; owners are silently kept by the SQL's role guard). Non-uuid {id} →
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{members}` | 200, 403 | — |
 | POST | `session` | [body](#post-apiteamsidmembers-body) | `{ok}` | 200, 400, 403 | audit |
-| DELETE | `session` | [body](#delete-apiteamsidmembers-body) | `{ok}` | 200, 403 | audit |
+| DELETE | `session` | [body](#delete-apiteamsidmembers-body) | `{ok}` | 200, 400, 403 | audit |
 
 ### POST `/api/teams/{id}/members` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `email` | `Email` |  |
-| `role` | `z.enum(['owner', 'member']).default('member')` |  |
+| `email` | `email` |  |
+| `role` | `enum(owner|member)` |  |
 
 ### DELETE `/api/teams/{id}/members` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `userId` | `Uuid` |  |
+| `userId` | `uuid` |  |
 

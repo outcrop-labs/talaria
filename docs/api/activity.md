@@ -1,10 +1,10 @@
 # API reference — activity
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 6 routes.
@@ -24,17 +24,19 @@
 
 Source: [`api/src/routes/activity/activity.rs`](../../api/src/routes/activity/activity.rs)
 
-> The merged workspace activity feed, scoped to the requesting user.
+> GET /api/activity. The merged workspace activity feed, scoped to the
+> requesting user.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{events}` | 200 | — |
+| GET | `session` | — | `…` | 200 | — |
 
 ## `/api/alerts`
 
 Source: [`api/src/routes/activity/alerts.rs`](../../api/src/routes/activity/alerts.rs)
 
-> Derived system alerts (no persistence) for the requesting user.
+> /api/alerts. GET → derived system alerts (no persistence) for the
+> requesting user.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -44,7 +46,7 @@ Source: [`api/src/routes/activity/alerts.rs`](../../api/src/routes/activity/aler
 
 Source: [`api/src/routes/activity/cost.rs`](../../api/src/routes/activity/cost.rs)
 
-> GET /api/cost → the token ledger overview (totals, per-agent, per-day).
+> GET /api/cost. The token ledger overview (totals, per-agent, per-day).
 > Org-wide financials: admins + people granted the Observability view.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -55,18 +57,24 @@ Source: [`api/src/routes/activity/cost.rs`](../../api/src/routes/activity/cost.r
 
 Source: [`api/src/routes/activity/history.rs`](../../api/src/routes/activity/history.rs)
 
-> Version history for agent internals (one API over two stores), KB docs,
-> artifacts, and agent-def versions. GET lists; ?id= returns one revision.
+> /api/history. Version history for agent internals, one API over two
+> stores:
+>   snapshot store (internal_versions): skill, memory, kb-doc, kb-space, artifact
+>   agent versions (agent_versions):    soul, config, personality
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{content}` | 200, 400, 403, 404 | — |
+| GET | `session` | — | `…` | 200, 400, 403, 404 | — |
 
 ## `/api/home`
 
 Source: [`api/src/routes/activity/home.rs`](../../api/src/routes/activity/home.rs)
 
-> The Home/Today summary for the signed-in user.
+> /api/home. GET → the Home/Today summary for the signed-in user.
+>
+> The digest job registers in main.rs's scheduler table, not here — this
+> file is only the read.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -76,22 +84,27 @@ Source: [`api/src/routes/activity/home.rs`](../../api/src/routes/activity/home.r
 
 Source: [`api/src/routes/activity/notifications.rs`](../../api/src/routes/activity/notifications.rs)
 
-> The caller's notifications: list, unread count, mark-read, and their
-> settings. Delivery-channel config is admin-gated.
+> /api/notifications. The caller's inbox: GET is the bell's one read (list,
+> unread, prefs, digest, the instance switch, whether THIS user may flip it),
+> PUT marks read, PATCH changes routing. The mail fan-out behind the prefs
+> (the outbox, the drain) is scheduler plane, so it is not here; this file
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{notifications, unread, delivery, canSetDelivery}` | 200 | — |
-| PUT | `session` | [body](#put-apinotifications-body) | `{ok}` | 200 | — |
-| PATCH | `session` | [body](#patch-apinotifications-body) | `{delivery, canSetDelivery}` | 200, 403 | audit |
+| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery}` | 200 | — |
+| PUT | `session` | [body](#put-apinotifications-body) | `{ok}` | 200, 400 | — |
+| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery}` | 200, 400, 403 | audit |
 
 ### PUT `/api/notifications` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `ids` | `z.array(Uuid).max(200).optional()` |  |
+| `ids` | `uuid[]?(200)` | ids absent OR EMPTY both mean "all of mine" — the data layer folds them together. |
 
 ### PATCH `/api/notifications` body
 
-Body schema `z.object({ prefs: z.record(z.string().max(40), ROUTE).refine((p) => Object.keys(p).length > 0, { message: 'nothing to update' }).refine((p)…` is not an object literal in the route file — see the route source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `digest` | `enum(on|off)` |  |
 

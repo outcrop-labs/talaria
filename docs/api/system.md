@@ -1,10 +1,10 @@
 # API reference — system
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 2 routes.
@@ -30,9 +30,11 @@ Source: [`ui/src/routes/api/healthz.ts`](../../ui/src/routes/api/healthz.ts)
 
 Source: [`api/src/routes/system/well_known_talaria_instance.rs`](../../api/src/routes/system/well_known_talaria_instance.rs)
 
+> /api/well-known/talaria-instance.
+>
 > Instance identity beacon — the target of hosting-domain verification's
-> self-fetch. Public and harmless: a random UUID that proves which
-> deployment answered, nothing more.
+> self-fetch. Public and harmless: a random UUID that proves which deployment
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

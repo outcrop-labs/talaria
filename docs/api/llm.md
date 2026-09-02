@@ -1,10 +1,10 @@
 # API reference — llm
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 > 
 > **This group is the OpenAI-compatible wire** (`llm.v1.*`): external
@@ -22,21 +22,26 @@
 
 Source: [`api/src/routes/llm/llm_chat.rs`](../../api/src/routes/llm/llm_chat.rs)
 
-> OpenAI-compatible chat completions — the wire external tools speak.
-> Auth is a personal gateway API key (Bearer), not a session.
+> POST /api/llm/v1/chat/completions. OpenAI-compatible chat over the org's
+> model stack: streaming and non-streaming both relay, every call metered
+> into the ledger under the calling key's identity, every completion through
+> the confab guard (gateway/guard.rs).
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `bearer-key` | — | `…` | 200, 400, 401, 404, 429, 502 + varies | SSE |
+| POST | `bearer-key` | — | `…` | 200, 400, 401, 404, 429, 502 | SSE |
 
 ## `/api/llm/v1/models`
 
 Source: [`api/src/routes/llm/llm_models.rs`](../../api/src/routes/llm/llm_models.rs)
 
-> OpenAI-compatible model list for the Talaria LLM gateway. External tools
-> point at base_url http://<talaria>/api/llm/v1 with a minted tlk_ key.
+> GET /api/llm/v1/models. OpenAI-compatible model list for external tools
+> pointing a tlk_ key at base_url http://<talaria>/api/llm/v1. Byte-stability
+> matters: clients diff this list, so field order and the 401 envelope are
+> pinned (error.rs tests).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `bearer-key` | — | `{object, data}` | 200, 401 | — |
+| GET | `bearer-key` | — | `…` | 200, 401 | — |
 

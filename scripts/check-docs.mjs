@@ -54,7 +54,11 @@ for (const file of files) {
   const rel = file.slice(ROOT.length + 1)
   const lines = readFileSync(file, 'utf8').split('\n')
   for (let i = 0; i < lines.length; i++) {
-    for (const m of lines[i].matchAll(LINK_RE)) {
+    // Inline code spans are CODE, not links: a generated schema cell like
+    // `uuid[](50)` is markdown's `[text](target)` shape wearing backticks.
+    // Mask the spans (length-preserving) before looking for links.
+    const line = lines[i].replace(/(`+)[^`]*\1(?!`)/g, (mm) => ' '.repeat(mm.length))
+    for (const m of line.matchAll(LINK_RE)) {
       const raw = m[2] ?? m[5]
       const text = m[1] ?? m[4] ?? ''
       if (!raw || /^[a-z][a-z0-9+.-]*:/i.test(raw)) continue // external scheme
