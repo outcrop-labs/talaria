@@ -119,8 +119,10 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // Agents (over MCP) may create spaces too — a space is just a shelf, and
-    // docs stay drafts until a human officializes them. No owner, so
-    // sharing/deletion stay human calls.
+    // docs stay drafts until a human officializes them. The space carries
+    // the agent's responsible user as its owner (a personal assistant's
+    // owner, or the human an org agent is answering) so a person — not the
+    // agent — governs the shelf; sharing and deletion stay human calls.
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -140,6 +142,19 @@ pub async fn post(
             // find-or-create: agents retry; duplicates rot the KB.
             return Json(json!({ "space": dup })).into_response();
         }
+        let responsible = match crate::attribution::responsible_user_for(
+            &state.pg,
+            state.redis().await.ok(),
+            &AgentSubject::Caller(caller),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] responsible-user resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let space = match create_space(
             &state.pg,
             &NewSpace {
@@ -147,7 +162,7 @@ pub async fn post(
                 description,
                 icon,
                 created_by: model,
-                owner_user_id: None,
+                owner_user_id: responsible,
             },
         )
         .await

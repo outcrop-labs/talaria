@@ -2,8 +2,9 @@
 // (agents gate on agent space-access — org/public, a grant, or a personal
 // assistant's owner's own reach — then per-doc audience on the same terms;
 // humans gate on the folder, then inherited docs show and customized ones
-// filter). POST → new doc (agent docs are drafts owned by the assistant's
-// principal; humans create where they can read).
+// filter). POST → new doc (agent docs are drafts owned by the agent's
+// responsible user — a personal assistant's owner, or the human an org agent
+// is answering; humans create where they can read).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -197,14 +198,16 @@ pub async fn post(
                 return thrown_internal_error();
             }
         };
-        // A personal assistant's doc belongs to its owner — otherwise the
-        // human could never re-share what their assistant wrote for them.
-        // Asked with the CALLER — owner-proxying needs proven identity.
-        // Resolved once here because the READ gate below needs it too (the
-        // owner's own reach is read reach, and this POST only writes where
-        // its GET already shows docs).
+        // Two different questions about the same caller, deliberately two
+        // different answers. The READ gate below uses the personal
+        // assistant's owner only — an org agent's read reach is its own, and
+        // feeding it the responsible user here would let it read that
+        // human's private spaces. The STAMP on the new doc uses the
+        // attribution ladder — a personal assistant's owner, or the human an
+        // org agent is answering — because whose row it is and who it may
+        // read for are different facts.
         let owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await
+            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone())).await
             {
                 Ok(v) => v,
                 Err(e) => {
@@ -212,6 +215,19 @@ pub async fn post(
                     return thrown_internal_error();
                 }
             };
+        let responsible = match crate::attribution::responsible_user_for(
+            &state.pg,
+            state.redis().await.ok(),
+            &AgentSubject::Caller(caller),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] responsible-user resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let readable = match (&space, list_editors(&state.pg, ITEM_SPACE, &id).await) {
             (Some(s), Ok(editors)) => {
                 can_read_agent(&guarded_of(s), &model, owner.as_deref(), &editors)
@@ -229,7 +245,7 @@ pub async fn post(
                 title,
                 kind: Some("human".into()),
                 created_by: model.clone(),
-                owner_user_id: owner,
+                owner_user_id: responsible,
             },
         )
         .await
