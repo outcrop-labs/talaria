@@ -218,7 +218,7 @@ pub async fn get_access_token(
         .seal(&access_token)
         .map_err(|e| TokenError::Other(format!("google access token seal: {e}")))?;
     let _ = sqlx::query(
-        "update google_connections set access_token_enc = $2, access_expires_at = $3, updated_at = now() \
+        "update google_connections set access_token_enc = $2, access_expires_at = $3::timestamptz, updated_at = now() \
          where user_id = $1::uuid",
     )
     .bind(user_id)
@@ -272,7 +272,7 @@ pub async fn save_connection(
     sqlx::query(
         "insert into google_connections \
              (user_id, google_sub, email, scope, refresh_token_enc, access_token_enc, access_expires_at, updated_at) \
-         values ($1::uuid, $2, $3, $4, $5, $6, $7, now()) \
+         values ($1::uuid, $2, $3, $4, $5, $6, $7::timestamptz, now()) \
          on conflict (user_id) do update set \
              google_sub = excluded.google_sub, \
              email = excluded.email, \
