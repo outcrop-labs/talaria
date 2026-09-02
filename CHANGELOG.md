@@ -27,6 +27,26 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **`list_boards` no longer 500s for agents — the port's one never-executed
+  query.** The agent listing's `select distinct` sorted on `b.updated_at`,
+  but the boards port had replaced the raw timestamps with epoch-ms
+  expressions in the select list, and Postgres refuses a DISTINCT whose
+  ORDER BY expression isn't selected — so the statement was rejected
+  outright and every agent-authenticated boards call returned 500 from the
+  day the module landed (the fleet's first smoke test found it; the
+  user-session listing has no DISTINCT, which is why the UI never showed
+  it). The epoch columns now leave as named columns and the sort uses the
+  name. A live-DB suite (`api/tests/boards_store.rs`, `#[ignore]`d) now
+  executes the listing against the real table so an illegal shape can never
+  land again.
+- **A personal research run's report is readable by the agent that ran it.**
+  The toolkit's own instructions tell the agent to read the report back with
+  `get_document`, but a personal run saved its report private with
+  owner-only grants — the agent got 403 on the artifact it had just been
+  asked to produce. The run's agent now lands a viewer grant alongside the
+  members shared on the run, matching what the brain's index already assumes
+  ("them + their assistant"). The pre-port TS had the same gap, so nothing
+  changes for anyone else.
 - **The api no longer times requests out.** The Rust router carried a 30s
   `TimeoutLayer` (503 on expiry) that the TS server it replaced never had —
   a port-scaffolding pick that broke every legitimately slow surface it
