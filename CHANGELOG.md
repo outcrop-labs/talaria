@@ -925,6 +925,30 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **Google login no longer dumps back to /login — every `Set-Cookie` survives the
+  HTTP boundary.** The Response → `res.writeHead()` conversion in both wrappers
+  (prod `server-entry.js`, the vite dev middleware) read headers with
+  `Object.fromEntries(response.headers.entries())`, which collapses duplicate
+  keys — and `Set-Cookie` is the one header that legitimately repeats. The
+  OAuth login callback answers with two cookies (session on, one-shot state
+  off), so the object kept only the state clear and the session cookie died at
+  that hop on every deployment since the prod server landed: Google authorized,
+  the SPA booted at `/`, `/api/auth/session` said `{user: null}`, and the
+  cockpit bounced to /login — while password login (one cookie) worked, and
+  dev never caught it because the middleware had the same one-liner. The
+  conversion now lives once as `writeHeadHeaders` in `ui/src/server/http.ts`
+  (re-exported through the server bundle beside `migrate`), both wrappers
+  import it, and a test pins that a two-cookie response stays two cookies.
+  Deployments need a rebuilt image to pick this up — no env or Google-console
+  change is involved.
+- **The auth gate no longer flashes the dashboard before login.** The app shell
+  painted its skeleton (rail, strip, content cards) while the session read was
+  in flight and in the beat before the /login navigation landed — fine for a
+  signed-in reload, the dashboard flashing at every signed-out visitor. The
+  gate now holds on the Mercury ground with the brand mark centered until the
+  session resolves; a failed read keeps the real chrome with its retry, as
+  before.
+
 - **`box start` now converges with `up -d`** (was `compose start`, which merely re-launches the
   existing containers): the documented stop → edit `compose.override.yml` → start flow for
   auth/env changes silently never applied. Regression-tested against the verb.
