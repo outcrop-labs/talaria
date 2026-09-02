@@ -1,8 +1,8 @@
-// /api/channels/{id}/conclude — port of ui/src/routes/api/channels.$id.conclude.ts.
+// /api/channels/{id}/conclude.
 // POST → conclude a Relay: summarize what was decided (posted as the final
 // message + indexed for retrieval), then archive it. Members only; relays
 // only — channels persist. The summarize failures surface as 502 with
-// concludeRelay's user-facing copy as the body.
+// conclude_relay's user-facing copy as the body.
 
 use crate::channels::channel_role;
 use crate::comms_decay::conclude_relay;
@@ -50,7 +50,7 @@ pub async fn post(
         );
     }
     match conclude_relay(&state, &id, &user.id, &name).await {
-        // The catch arm's shape: the message IS the copy, the status is 502.
+        // On Err the message IS the user-facing copy; the status is 502.
         Ok(summary) => Json(json!({ "summary": summary })).into_response(),
         Err(e) => house_error(StatusCode::BAD_GATEWAY, &e),
     }

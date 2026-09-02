@@ -1,7 +1,7 @@
-// /api/research/{id}/decide — port of ui/src/routes/api/research.$id.decide.ts.
+// /api/research/{id}/decide.
 //
 // THE EXIT FROM 'awaiting', on the run's own surface. A parked run is an
-// approval (runs/decide.ts files it with the approvals machinery), and the
+// approval (runs::decide files it with the approvals machinery), and the
 // research view is where the person it asked is already looking — the
 // question renders in place via the projection's `awaiting` field, and this
 // is the button under it. No second inbox; the run's own page IS the approval
@@ -67,8 +67,8 @@ pub async fn post(
         Ok(n) => n,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // TS spreads `note` in only when present AND non-blank — a whitespace
-    // note is an absent note.
+    // `note` rides along only when present AND non-blank — a whitespace note
+    // is an absent note.
     let note = note.filter(|n| !n.trim().is_empty());
 
     let redis = match state.redis().await {
@@ -106,7 +106,7 @@ pub async fn post(
             Json(json!({ "ok": true, "status": run.state, "phase": run.phase })).into_response()
         }
         DecideResult::Refused { reason, .. } => match reason {
-            // No run under this id (or none since before the runs port). Same
+            // No run under this id (or one predating the runs table). Same
             // answer as the visibility gate, for the same reason.
             DecideRefusal::Missing => house_error(StatusCode::NOT_FOUND, "not found"),
             // Answered, cancelled, or never parked. Two people racing one

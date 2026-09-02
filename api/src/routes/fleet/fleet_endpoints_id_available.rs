@@ -1,7 +1,6 @@
-// GET /api/fleet/endpoints/{id}/available — port of
-// ui/src/routes/api/fleet.endpoints.$id.available.ts. What this provider
-// actually offers right now (live /models call, server-side, keys never leave
-// the box). Admin.
+// GET /api/fleet/endpoints/{id}/available. What this provider actually
+// offers right now (live /models call, server-side, keys never leave the
+// box). Admin.
 //
 // THE CALL IS ALREADY BEING MADE, so it also refreshes the stored catalog: an
 // admin opening the model picker is the moment the provider's own answer is
@@ -37,8 +36,7 @@ pub async fn get(
     };
     let models = match catalog_models(&state, &ep).await {
         Ok(m) => m,
-        // The catch arm: models [], note = the thrown message (undici's bare
-        // "fetch failed" for transport failures).
+        // the failure arm: models [], note = the thrown message.
         Err(message) => {
             return Json(json!({ "models": [], "note": message })).into_response();
         }

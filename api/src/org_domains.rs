@@ -1,4 +1,4 @@
-// Org sign-up EMAIL domains — port of ui/src/server/org-domains.ts. An admin
+// Org sign-up EMAIL domains. An admin
 // adds an email domain and proves ownership with a DNS TXT record; from then
 // on anyone who authenticates through a provider that VERIFIES email (Google)
 // with an address on that domain joins automatically as a member.
@@ -15,9 +15,9 @@ use std::sync::OnceLock;
 
 /// Self-join gate: a provider-verified email on a VERIFIED org domain may
 /// create an account. Exact-domain match only — subdomains are added
-/// individually, on purpose. (`email.toLowerCase().split('@')[1]`, the
-/// segment after the first @, untrimmed — the domain column is normalized
-/// at write time.)
+/// individually, on purpose. The domain is the lowercased segment after the
+/// first @, untrimmed — the domain column is normalized
+/// at write time.
 pub async fn self_join_allowed(pg: &PgPool, email: Option<&str>) -> Result<bool, sqlx::Error> {
     let Some(email) = email else { return Ok(false) };
     let lower = email.to_lowercase();
@@ -35,7 +35,7 @@ pub async fn self_join_allowed(pg: &PgPool, email: Option<&str>) -> Result<bool,
     Ok(row.is_some())
 }
 
-// ── The admin console (listOrgDomains / addOrgDomain / removeOrgDomain) ──────
+// ── The admin console ────────────────────────────────────────────────────────
 
 /// normalize(): trim, lowercase, strip a leading scheme, everything after the
 /// first /, and a leading @ — so a pasted `https://mail.example.com/login`
@@ -69,7 +69,8 @@ fn domain_ok(d: &str) -> bool {
         })
 }
 
-/// The domain row in the TS ROW's wire order.
+/// The domain row in wire order (id, domain, verified, verificationToken,
+/// addedBy, createdAt, verifiedAt).
 fn domain_json(r: &sqlx::postgres::PgRow) -> Result<serde_json::Value, sqlx::Error> {
     let iso = crate::agent_auth::epoch_ms_to_iso;
     Ok(serde_json::json!({
@@ -103,7 +104,7 @@ pub async fn list_org_domains(pg: &PgPool) -> Result<Vec<serde_json::Value>, Str
 
 /// Add (or re-add) a domain, minting a fresh verification token. Re-adding a
 /// known domain keeps its verified state — only the added_by attribution
-/// moves (the TS on-conflict updates exactly that one column).
+/// moves; the on-conflict updates exactly that one column.
 pub async fn add_org_domain(
     pg: &PgPool,
     domain: &str,
@@ -113,7 +114,7 @@ pub async fn add_org_domain(
     if !domain_ok(&d) {
         return Err("that does not look like a domain".into());
     }
-    // `talaria-verify=` + 18 random bytes hex — node's randomBytes(18).toString('hex').
+    // `talaria-verify=` + 18 random bytes, hex.
     let mut raw = [0u8; 18];
     getrandom::fill(&mut raw).map_err(|e| e.to_string())?;
     let token = format!(
@@ -148,7 +149,7 @@ pub async fn remove_org_domain(pg: &PgPool, id: &str) -> Result<(), String> {
 fn resolver() -> &'static TokioResolver {
     static R: OnceLock<TokioResolver> = OnceLock::new();
     R.get_or_init(|| {
-        // The system resolver (/etc/resolv.conf), like node:dns — read once
+        // The system resolver (/etc/resolv.conf), read once
         // per process. A host with no resolv.conf falls to the empty config,
         // which fails every lookup: the honest answer for that operator.
         match TokioResolver::builder_tokio() {
@@ -160,10 +161,9 @@ fn resolver() -> &'static TokioResolver {
     })
 }
 
-/// All TXT strings for one host, or an empty vec on any lookup failure —
-/// node's `resolveTxt(host).catch(() => [])`. Each TXT record may hold
-/// several character-strings; node surfaces them as one array of chunks, and
-/// the caller joins before comparing.
+/// All TXT strings for one host, or an empty vec on any lookup failure. Each
+/// TXT record may hold several character-strings; they are joined into one
+/// string per record before comparing.
 async fn resolve_txt(host: &str) -> Vec<String> {
     let name = match host.parse::<hickory_resolver::proto::rr::Name>() {
         Ok(n) => n,
@@ -172,8 +172,7 @@ async fn resolve_txt(host: &str) -> Vec<String> {
     match resolver().txt_lookup(name).await {
         Ok(lookup) => lookup
             .iter()
-            // One record = one array of chunks, joined with '' (node's
-            // `chunks.join('')`).
+            // One record = one array of chunks, joined with ''.
             .map(|txt| {
                 txt.txt_data()
                     .iter()
@@ -185,7 +184,7 @@ async fn resolve_txt(host: &str) -> Vec<String> {
     }
 }
 
-/// Check DNS for the verification TXT record (verifyOrgDomain). Canonical
+/// Check DNS for the verification TXT record. Canonical
 /// placement is `_talaria-verify.<domain>` — deliberately NOT
 /// `talaria.<domain>`-shaped, since many orgs HOST Talaria on a subdomain
 /// like talaria.example.com and the email domain being verified here is a

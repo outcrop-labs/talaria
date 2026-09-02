@@ -1,7 +1,6 @@
 // PAUSE AS APPROVAL, end to end: a run parks on a question, the people its
 // definition names are told, somebody who is not one of them is refused, the
 // person who is answers, and the run goes back to work carrying the answer.
-// The port of ui/src/server/runs/decide.test.ts.
 //
 // The store and the lease are in-memory and REIMPLEMENT the compare-and-set
 // predicates rather than accepting whatever they are told — "a paused run
@@ -11,11 +10,10 @@
 // of the fake. The live suite (runs_store.rs) proves the same predicates
 // against the real table.
 //
-// The two halves of the TS file that are NOT ported here: `sweepUnannounced`
-// and the notification sink (approvals.ts — its module crosses later in this
-// batch, and its tests cross with it). What the sweep would consume is asserted
-// instead: the `PendingApproval` the census builds from the parked row, which
-// is the exact input `sweepUnannounced` takes.
+// The announce-and-notify leg — `sweep_unannounced`, in the approvals module —
+// is tested with that module. What it consumes is asserted here: the
+// `PendingApproval` the census builds from the parked row, which is the exact
+// input the sweep takes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -44,7 +42,7 @@ const NOW: i64 = 1_700_000_000_000;
 
 // ── The fake world ───────────────────────────────────────────────────────────
 
-/// The same compare-and-set predicates store.ts spells in SQL. Narrower than
+/// The same compare-and-set predicates the store spells in SQL. Narrower than
 /// runs_run.rs's copy — only the writes these two halves reach — but not
 /// looser: every write still requires `lease_owner = token and
 /// state = 'running'`, which is the only reason a park cannot be raced and a
@@ -622,10 +620,10 @@ fn world(content: &[&str], reached: usize) -> World {
 
     let mark_brief_stale = Arc::new(|_stale: Vec<String>| async {}.boxed());
 
-    // THE CONSTRUCTION ORDER the Rust port owes the driver: the pause is built
-    // from the edges first, so the `RunDeps` the driver holds carries the real
-    // `pause` and the `DecideDeps` the answer half holds wraps that same bag —
-    // one world, not two dep graphs that happen to share fakes.
+    // THE CONSTRUCTION ORDER: the pause is built from the edges first, so the
+    // `RunDeps` the driver holds carries the real `pause` and the `DecideDeps`
+    // the answer half holds wraps that same bag — one world, not two dep
+    // graphs that happen to share fakes.
     let pause = talaria_api::runs::decide::pause_fn(PauseDeps {
         store: store.clone(),
         publish: publish.clone(),
@@ -992,9 +990,9 @@ async fn refuses_a_second_answer_to_a_question_that_has_already_been_answered() 
 // driver delegates its park to, the real `run_decision_approval` translation,
 // the real `may_decide`. Only the store, the lease and the announcer are fakes,
 // and the store reimplements the compare-and-set predicates rather than
-// accepting what it is told. (The TS arc's sweep leg — `sweepUnannounced`
-// notifying and marking — is approvals.ts and crosses with that module; here
-// the census entry the sweep would take is proven instead.)
+// accepting what it is told. (The sweep leg — `sweep_unannounced` notifying
+// and marking — lives in the approvals module and is tested there; here the
+// census entry the sweep would take is proven instead.)
 
 #[tokio::test]
 async fn pauses_into_an_approval_tells_the_audience_its_definition_declared_refuses_a_stranger_and_resumes_with_the_answer_in_hand()

@@ -152,8 +152,8 @@ pub struct DryRunResult {
 /// transport refusing a call this file is about to run itself.
 ///
 /// THE SANDBOX RIDES BEHIND A MUTEX because a transport is an `Fn`: the type
-/// allows a second call, and TS's closure was equally free to keep mutating
-/// its captured sandbox. One dry run = one call in practice; the lock is the
+/// allows a second call, and the closure is free to keep mutating its
+/// captured sandbox. One dry run = one call in practice; the lock is the
 /// type system's price for that honesty, not a concurrency claim.
 ///
 /// THE CALLER HANDS THE SAME ARC IN, rather than a boxed sandbox, because the
@@ -249,9 +249,9 @@ pub fn sandbox_transport<S: DispatchSandbox + 'static>(
                     };
                     // `i` is the call's index in the assistant message above,
                     // which is what `tool_call_id_of` numbers from. The cap is
-                    // TS's `.slice(0, 8_000)`, cut at a scalar boundary — the
-                    // one place a Rust string can be cut without manufacturing
-                    // a broken code point.
+                    // 8_000 chars, cut at a scalar boundary — the one place a
+                    // Rust string can be cut without manufacturing a broken
+                    // code point.
                     convo.push(Message {
                         role: crate::harness::define::Role::Tool,
                         content: res.text.chars().take(8_000).collect(),

@@ -20,13 +20,12 @@
 //   · the plan COMMENT and the plan artifact chip → `add_comment` / `update_task`
 //     from tasks.rs, as the agent
 // There is no fourth way and no raw `insert into task_…` / `update tasks` here.
-// That is the whole invariant: every count of "how many doors" this file has
-// ever carried was wrong within a round, because the doors were hand-written
-// copies. These are not copies, so there is nothing to count.
+// That is the whole invariant: hand-written door copies drift out of sync,
+// and any count of them drifts too. These are not copies, so there is
+// nothing to count.
 //
-// Port of ui/src/server/workbench-mcp.ts whole. The dispatcher consumes
-// mcp_jsonrpc (the shared envelope); the verbs ride github.rs's REST half and
-// the harness registry's effort chain.
+// The dispatcher consumes mcp_jsonrpc (the shared envelope); the verbs ride
+// github.rs's REST half and the harness registry's effort chain.
 
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
@@ -55,9 +54,9 @@ use crate::workbench::resolve_workbench;
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
 /// (GitHub credentials unseal through it), and the optional Redis the task
-/// notification/dispatch edges degrade without — the same pieces
-/// `TaskDeps::coexistence` assembles, held once so the fire-and-forget legs
-/// can take a copy into their own task.
+/// notification/dispatch edges degrade without — the trio `task_deps()`
+/// packages for tasks.rs callers, held once so the fire-and-forget legs can
+/// take a copy into their own task.
 #[derive(Clone)]
 pub struct WorkbenchDeps {
     pub pg: PgPool,
@@ -94,8 +93,9 @@ pub struct WorkbenchJob {
     pub updated_at: String,
 }
 
-/// workbench-mcp's JOB_ROW (the agent side carries agentId; the ticket strip
-/// answers a different column set and shapes its own row in the route).
+/// The agent-side job column list (the agent side carries agentId; the
+/// ticket strip answers a different column set and shapes its own row in
+/// the route).
 const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, repo, branch, \
                         effort, plan, status, pr_url, summary, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
@@ -136,9 +136,9 @@ impl WorkbenchJob {
         }
     }
 
-    /// The row's wire — JOB_ROW's select order minus `plan` (job_status
-    /// destructures it out; no caller of this wire ships the plan), timestamps
-    /// as ISO instants (postgres.js's Date through JSON.stringify).
+    /// The row's wire — JOB_COLS' select order minus `plan` (no caller of
+    /// this wire ships the plan), timestamps as ISO instants (the
+    /// Date-through-JSON.stringify rendering the wire has always carried).
     fn wire(&self) -> Value {
         let mut out = Map::new();
         out.insert("id".into(), json!(self.id));
@@ -192,8 +192,8 @@ async fn ticket_ref_of(pg: &PgPool, task_id: &str) -> Option<(Option<String>, St
     row
 }
 
-/// The seven tools, as TS spells them — verbatim inputSchemas, their own key
-/// order (name, description, inputSchema; properties in the literal's order).
+/// The seven tools — verbatim inputSchemas, their own key order (name,
+/// description, inputSchema; properties in declaration order).
 pub fn workbench_tools() -> Vec<Value> {
     vec![
         json!({
@@ -261,7 +261,7 @@ pub fn workbench_tools() -> Vec<Value> {
     ]
 }
 
-/// agentByModel's row — the agent columns the verbs read.
+/// The agent columns the verbs read — the row `agent_by_model` fetches.
 #[derive(Debug, Clone)]
 pub struct AgentCtx {
     pub id: String,
@@ -490,7 +490,7 @@ fn announce_raised(deps: &WorkbenchDeps, key: String) {
 }
 
 /// One tool call: `Ok(value)` is the JSON the model reads, `Err(kind)` is
-/// the two TS failure flavors (a tool that ANSWERED with a failure vs a call
+/// the two failure flavors (a tool that ANSWERED with a failure vs a call
 /// that threw).
 pub enum CallOutcome {
     Ok(Value),
@@ -850,8 +850,8 @@ async fn call_tool(
                         "refType": "artifact",
                     });
                     // Through `update_task` as the AGENT, never `update
-                    // tasks set …`: raw SQL here was the one agent-reachable
-                    // write to `tasks` that skipped the human-in-the-loop
+                    // tasks set …`: raw SQL here would be an agent-reachable
+                    // write to `tasks` that skips the human-in-the-loop
                     // invariant entirely. The agent actor also gets the
                     // attachment activity line and the board push for free.
                     if let Ok(Some(cur)) = get_task(&spawn_deps.pg, &spawn_task_id).await {
@@ -1189,9 +1189,9 @@ async fn call_tool(
             // Abandon works from ANY live state — including a still-gated
             // plan. The job row is this agent's own (the select filters on
             // agent_id), so the state change needs no ticket permission; the
-            // AUDIT LINE does, and log_ticket asks for it. Abandoning was the
-            // one branch gated by nothing at all, and it is how an agent used
-            // to write onto a closed ticket.
+            // AUDIT LINE does, and log_ticket asks for it. Abandoning is the
+            // one branch gated by nothing at all — the audit line through
+            // `log_ticket` is the check it cannot skip.
             if args.get("abandon") == Some(&Value::Bool(true))
                 && (job.status == "started" || job.status == "awaiting_approval")
             {
@@ -1383,12 +1383,12 @@ pub struct MergeJob {
     pub task_id: Option<String>,
 }
 
-/// Why a testing merge did not happen. TS's two failure flavors, kept apart
+/// Why a testing merge did not happen. The two failure flavors, kept apart
 /// because the two CALLERS answer them differently: `Fail` is a tool failure —
 /// a sentence for the operator/agent (`{ ok: false, error }` through the
-/// route, `Error: …` through the verb); `Throw` is the infra/REST failure TS
-/// let propagate out of `mergeJobToTesting` as an exception (rpc `error:` for
-/// the verb, a 500 for the route).
+/// route, `Error: …` through the verb); `Throw` is the infra/REST failure,
+/// which propagates rather than answers (rpc `error:` for the verb, a 500
+/// for the route).
 pub enum MergeJobError {
     Fail(String),
     Throw(String),
@@ -1455,7 +1455,7 @@ pub async fn merge_job_to_testing(
 /// The in-process dispatcher the MCP gateway hands `talaria-workbench://`
 /// requests to. `allowed` arrives ALREADY filtered to what the caller may
 /// use (the gateway's resolution, enforced again here); the tools answer
-/// tools/list as-is (`listEntry` is the identity).
+/// tools/list as-is (a tool is its own listed entry).
 pub async fn dispatch_workbench_mcp(
     deps: &WorkbenchDeps,
     rpc: &Value,
@@ -1510,8 +1510,8 @@ mod tests {
 
     #[test]
     fn repo_names_collapse_dots_and_dashes_kept() {
-        // No dash-trim in the TS shape: an edge run of junk leaves an edge
-        // dash ("my repo!" → "my-repo-").
+        // No dash-trim: an edge run of junk leaves an edge dash
+        // ("my repo!" → "my-repo-").
         assert_eq!(sanitize_repo_name("  My Repo! "), "my-repo-");
         // The class keeps dots, underscores, and dashes as-is.
         assert_eq!(sanitize_repo_name("a.b_c-d"), "a.b_c-d");
@@ -1534,7 +1534,7 @@ mod tests {
                 "finish_job"
             ]
         );
-        // start_job's properties ride in the literal's order, required last.
+        // start_job's properties ride in declaration order, required last.
         let props: Vec<&str> = tools[2]["inputSchema"]["properties"]
             .as_object()
             .unwrap()
@@ -1543,7 +1543,7 @@ mod tests {
             .collect();
         assert_eq!(props, vec!["taskId", "repo", "effort", "plan"]);
         assert_eq!(tools[2]["inputSchema"]["required"], json!(["repo"]));
-        // request_repo's required set, in literal order.
+        // request_repo's required set, in declaration order.
         assert_eq!(
             tools[5]["inputSchema"]["required"],
             json!(["org", "name", "why"])
@@ -1574,8 +1574,8 @@ mod tests {
             .keys()
             .map(|s| s.as_str())
             .collect();
-        // JOB_ROW's order with `plan` destructured out — job_status never
-        // ships the plan, on any status.
+        // JOB_COLS' order minus `plan` — job_status never ships the plan,
+        // on any status.
         assert_eq!(
             keys,
             vec![

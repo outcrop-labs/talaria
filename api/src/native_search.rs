@@ -1,5 +1,4 @@
 // ARMING A PROVIDER'S OWN WEB SEARCH, and reading the citations back.
-// Port of ui/src/server/native-search.ts.
 //
 // WHY THIS FILE EXISTS. Talaria's research pipeline can search two ways: through
 // a tool it drives itself (SearXNG or a registered MCP server), or by letting
@@ -87,8 +86,7 @@ pub fn native_search_body(provider: Option<&str>) -> Map<String, Value> {
     // Perplexity searches unconditionally; OpenAI's switch is the MODEL, not a
     // parameter (`web_search_options` 400s on a model without search); Anthropic
     // and everything unrecognised have no OpenAI-shaped activation at all. Every
-    // one of those branches sends nothing, and the TS file spells each no out
-    // loud — here the empty map says them together.
+    // one of those branches sends nothing — the empty map says them all together.
     out
 }
 
@@ -138,8 +136,8 @@ pub fn harvest_sources(body: &Value) -> Vec<HarvestedSource> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     fn non_empty(s: Option<&str>) -> Option<String> {
-        // TS `typeof x === 'string' && x !== ''` — a blank string is absent and
-        // a whitespace string is present; neither is trimmed here.
+        // A blank string is absent and a whitespace string is present; neither
+        // is trimmed here.
         s.filter(|s| !s.is_empty()).map(str::to_string)
     }
 
@@ -195,9 +193,8 @@ pub fn harvest_sources(body: &Value) -> Vec<HarvestedSource> {
             let a = a.as_object();
             // `type` is the discriminator and there are others (`file_citation`),
             // so a reader that took every annotation would file a local file
-            // path as a web source. A FALSY type — absent, null, or '' — is
-            // url_citation by omission, the TS truthiness check rather than a
-            // presence check.
+            // path as a web source. A falsy type — absent, null, or '' — reads
+            // as url_citation by omission: truthiness, not presence.
             let kind = a.and_then(|a| a.get("type")).and_then(Value::as_str);
             if kind.is_some_and(|t| !t.is_empty() && t != "url_citation") {
                 continue;

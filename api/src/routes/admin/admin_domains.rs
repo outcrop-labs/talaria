@@ -1,7 +1,6 @@
-// /api/admin/domains — port of ui/src/routes/api/admin.domains.ts. Sign-up
-// domains. GET → the list. POST { domain } → add (returns the TXT token to
-// publish). POST { verifyId } → run the DNS check. DELETE { id } → remove
-// (self-joins from it stop immediately). Admins only.
+// /api/admin/domains. Sign-up domains. GET → the list. POST { domain } → add
+// (returns the TXT token to publish). POST { verifyId } → run the DNS check.
+// DELETE { id } → remove (self-joins from it stop immediately). Admins only.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, zod_uuid_ok};
@@ -15,7 +14,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
-/// admin.domains.ts's actor: the email, else the name, else 'admin'.
+/// The audit actor: the email, else the name, else 'admin'.
 fn domain_actor(user: &SessionUser) -> String {
     user.email
         .clone()
@@ -53,10 +52,9 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // z.union([{ domain: z.string().min(3).max(253) }, { verifyId: Uuid }]) —
-    // dispatch by key presence; each branch's fields answer zod's own
-    // messages (a short domain is "Too small: ... >=3 characters", a non-uuid
-    // verifyId is "Invalid UUID").
+    // dispatch by key presence; each branch's fields answer their own
+    // messages (a short domain is "Too small: ... >=3 characters", a
+    // non-uuid verifyId is "Invalid UUID").
     if let Some(v) = obj.get("domain") {
         let domain = match v.as_str() {
             Some(d) => d,
@@ -128,7 +126,7 @@ pub async fn post(
             }
         }
     } else {
-        // Neither key: both union branches fail — the union's blanket.
+        // Neither key — the blanket "Invalid input".
         house_error(StatusCode::BAD_REQUEST, "Invalid input")
     }
 }
@@ -147,7 +145,7 @@ pub async fn delete(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // IdBody = z.object({ id: Uuid })
+    // just { id } — a uuid.
     let id = match crate::body::uuid_member(obj, "id") {
         Ok(i) => i,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

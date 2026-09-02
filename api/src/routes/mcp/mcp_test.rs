@@ -1,4 +1,4 @@
-// /api/mcp/test — port of ui/src/routes/api/mcp.test.ts.
+// /api/mcp/test.
 // POST → probe an MCP server's reachability + auth state (admin only; it
 // makes an outbound request to an admin-supplied URL).
 
@@ -56,7 +56,7 @@ pub async fn post(
     // The built-in toolkit endpoint: agents reach it via host.docker.internal
     // (which the host itself can't resolve on Linux) and it requires the
     // fleet key — probe locally, authenticated, without exposing the key.
-    // (TS spreads the header only when the env var is set — an unset key
+    // (the header goes out only when the env var is set — an unset key
     // sends no header at all, not an empty one.)
     let url = if url == mcp_fleet_url() {
         if let Ok(key) = std::env::var("TALARIA_AGENT_KEY")

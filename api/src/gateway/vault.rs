@@ -1,9 +1,9 @@
-// CREDENTIALS DO NOT GO INTO A MODEL'S CONTEXT — port of
-// ui/src/server/secret-vault.ts. A credential in outbound context is replaced
-// by an opaque handle («secret:N») before the request leaves the process; the
-// model reasons about the handle, and only the boundary that USES the value
-// ever sees it. This is an input-side complement to the guard's output check:
-// redaction cleans what we keep, sealing prevents what we send.
+// CREDENTIALS DO NOT GO INTO A MODEL'S CONTEXT. A credential in outbound
+// context is replaced by an opaque handle («secret:N») before the request
+// leaves the process; the model reasons about the handle, and only the
+// boundary that USES the value ever sees it. This is an input-side complement
+// to the guard's output check: redaction cleans what we keep, sealing
+// prevents what we send.
 //
 // One request's vault lives and dies with the call — no store behind it.
 
@@ -13,21 +13,21 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 // JS \b is an ASCII word boundary; the regex crate's is Unicode-aware. A
-// credential jammed against a non-ASCII word char (é) would seal in TS and
-// not here — so the boundary stays ASCII, byte-for-byte with the source.
+// credential jammed against a non-ASCII word char (é) must still seal, so
+// the boundary stays ASCII via (?-u:).
 const B: &str = r"(?-u:\b)";
 
 struct Pattern {
     label: &'static str,
     re: &'static str,
     /// Some patterns redact a WIDER span than they seal (the PEM block). The
-    /// sealer uses this in place of `re` when present, same as TS.
+    /// sealer uses this in place of `re` when present.
     redact: Option<&'static str>,
 }
 
-/// THE CREDENTIAL SHAPES — one list, mirroring SECRET_PATTERNS verbatim
-/// (order included: `sk-ant-…` before the looser `sk-…`, so the label a human
-/// sees is decided by whichever rule fires first).
+/// THE CREDENTIAL SHAPES — one list (order included: `sk-ant-…` before the
+/// looser `sk-…`, so the label a human sees is decided by whichever rule
+/// fires first).
 const PATTERNS: &[Pattern] = &[
     Pattern {
         label: "Anthropic key",
@@ -91,7 +91,7 @@ const PATTERNS: &[Pattern] = &[
     },
     // user:password@host in any URI. Requires BOTH a userinfo colon and an
     // '@', so ordinary links (https://host:8443/path, ssh://user@host) don't
-    // match. The JS /i flag becomes an inline (?i).
+    // match. Case-insensitive via an inline (?i).
     Pattern {
         label: "Credentials in URL",
         re: r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/?#@]*:[^\s/?#@]+@[^\s/?#]+",

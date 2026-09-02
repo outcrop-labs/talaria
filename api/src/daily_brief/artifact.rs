@@ -1,4 +1,4 @@
-// The brief's artifact mirror — port of ui/src/server/daily-brief-artifact.ts.
+// The brief's artifact mirror.
 //
 // DERIVED, AND SAYS SO IN ITS OWN BODY. The log in `daily_brief_entries` is the
 // truth; this is a rendering of it that happens to live somewhere a person can

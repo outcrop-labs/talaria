@@ -1,17 +1,7 @@
-// Users, view denials, and fine-grained permissions — port of the parts of
-// ui/src/server/users.ts + permissions.ts + apps.ts (appViewRoutes) that the
-// session/auth plane needs, plus the batch-3 substrate: actingUser, the
-// assistant owner/elevation grants, hasPerm. The admin console queries port
-// with the route groups that use them.
-//
-// Two recorded divergences, both order-only and both inherited from the
-// gateway precedent (docs/RUST-MIGRATION.md):
-//   • discoveredApps() sorts names with localeCompare; this is byte order —
-//     agrees on ASCII names, which is every app slug's neighborhood.
-//   • TS discovers apps via build-time import.meta.glob; this reads
-//     apps/<slug>/talaria.json from disk. In dev both see the same directory;
-//     the difference is only visible to a build that compiled an app in and
-//     then had its source tree scrubbed — not a state a deployment can reach.
+// Users, view denials, and fine-grained permissions — the session/auth
+// plane's substrate: acting_user, the assistant owner/elevation grants,
+// has_perm. App discovery (the apps/<slug>/talaria.json manifests) sits here
+// beside the admin console queries the route groups use.
 
 use crate::agent_auth::{AgentSubject, subject_model, subject_proven};
 use crate::gateway::settings::get_setting;
@@ -22,7 +12,7 @@ use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-/// The sign-in identity a provider hands us — users.ts's Identity.
+/// The sign-in identity a provider hands us.
 #[derive(Debug, Clone)]
 pub struct Identity {
     pub sub: String,
@@ -31,11 +21,11 @@ pub struct Identity {
     pub picture: Option<String>,
 }
 
-/// Upsert the identity into `users` (users.ts's upsertUser): a sign-in assigns
-/// 'member' to a brand-new sub and never touches an existing role — the first
-/// admin comes from the claim, every later one from Admin → People. Returns
-/// the row in select order (id, sub, email, name, picture, role) — the
-/// SessionUser constructor's input, exactly TS's `upsertUserRow`.
+/// Upsert the identity into `users`: a sign-in assigns 'member' to a
+/// brand-new sub and never touches an existing role — the first admin comes
+/// from the claim, every later one from Admin → People. Returns the row in
+/// select order (id, sub, email, name, picture, role) — the session user's
+/// input.
 pub async fn upsert_user(
     pg: &PgPool,
     identity: &Identity,
@@ -90,7 +80,7 @@ pub async fn join_org_wide_boards(pg: &PgPool, user_id: &str) -> Result<u64, sql
     .map(|r| r.rows_affected())
 }
 
-/// users.ts getUserRole: an unknown row is a member, never an error.
+/// An unknown row is a member, never an error.
 pub async fn get_user_role(pg: &PgPool, user_id: &str) -> Result<String, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as("select role from users where id = $1::uuid")
         .bind(user_id)
@@ -112,8 +102,8 @@ pub async fn get_preferred_model(
     Ok(row.and_then(|(m,)| m))
 }
 
-/// Everyone who has signed in, for people pickers — users.ts's listUsers.
-/// Fields in select order; the order-by is the TS query's own lower(coalesce).
+/// Everyone who has signed in, for people pickers — fields in select order,
+/// ordered by lower(coalesce(email, name, '')).
 pub async fn list_users(
     pg: &PgPool,
 ) -> Result<Vec<(String, Option<String>, Option<String>)>, sqlx::Error> {
@@ -138,8 +128,8 @@ const MANAGE_VIEW_ROUTES: [&str; 6] = [
     "/apps",
 ];
 
-/// Apps' slug rule (apps.ts SLUG_RE): lowercase letters, digits, dashes; a
-/// letter-or-digit head; ≤64 chars total.
+/// Apps' slug rule: lowercase letters, digits, dashes; a letter-or-digit
+/// head; ≤64 chars total.
 pub(crate) fn slug_ok(s: &str) -> bool {
     let b = s.as_bytes();
     if b.is_empty() || b.len() > 64 {
@@ -152,9 +142,8 @@ pub(crate) fn slug_ok(s: &str) -> bool {
     head && rest
 }
 
-/// Where app codebases live (apps.ts appsDir): TALARIA_APPS_DIR, else
-/// <cwd>/../apps — the repo's apps/ dir when the process runs from ui/ (TS)
-/// or api/ (here).
+/// Where app codebases live: TALARIA_APPS_DIR, else <cwd>/../apps — the
+/// repo's apps/ dir when the process runs from api/.
 pub(crate) fn apps_dir() -> PathBuf {
     match std::env::var("TALARIA_APPS_DIR") {
         Ok(d) => PathBuf::from(d),
@@ -179,9 +168,9 @@ pub(crate) struct DiscoveredApp {
     pub(crate) mcp: bool,
 }
 
-/// The manifests on disk, sorted by app name — this port's discoveredApps().
-/// Any unreadable/unparseable directory is skipped, like the glob that sees
-/// nothing there. Defaults follow the TS String(x ?? default) coercion.
+/// The manifests on disk, sorted by app name. Any unreadable/unparseable
+/// directory is skipped. A missing scalar field yields its default; a
+/// non-string value is treated as missing.
 pub(crate) fn discovered_apps() -> Vec<DiscoveredApp> {
     let Ok(entries) = std::fs::read_dir(apps_dir()) else {
         return Vec::new();
@@ -202,8 +191,7 @@ pub(crate) fn discovered_apps() -> Vec<DiscoveredApp> {
             continue;
         };
         // A truthy name is what admits an app at all; surface keys count only
-        // when they hold non-empty strings (JS truthiness in the manifest
-        // spread).
+        // when they hold non-empty strings.
         let Some(name) = j
             .get("name")
             .and_then(|v| v.as_str())
@@ -218,7 +206,7 @@ pub(crate) fn discovered_apps() -> Vec<DiscoveredApp> {
                 .unwrap_or_else(|| default.to_string())
         };
         // Surface keys are OMITTED unless they hold a non-empty string —
-        // TS spreads only the truthy ones, so the key is absent, not null.
+        // the key is absent, not null.
         let surface = |key: &str| {
             j.get("surfaces")
                 .and_then(|s| s.get(key))
@@ -242,8 +230,8 @@ pub(crate) fn discovered_apps() -> Vec<DiscoveredApp> {
     out
 }
 
-/// One enabled app as /api/apps serves it — AppManifest's wire order, absent
-/// surface keys absent (never null).
+/// One enabled app as /api/apps serves it — wire order; absent surface keys
+/// absent (never null).
 #[derive(serde::Serialize)]
 pub struct WireApp {
     pub slug: String,
@@ -265,9 +253,9 @@ pub struct WireSurfaces {
     pub settings: Option<String>,
 }
 
-/// The signed-in view of installed apps (apps.ts enabledApps): ENABLED apps
-/// only, in discovered (name) order — the platform's own menu, not a secret;
-/// per-user view gating happens off deniedViews client-side.
+/// The signed-in view of installed apps: ENABLED apps only, in discovered
+/// (name) order — the platform's own menu, not a secret; per-user view
+/// gating happens off deniedViews client-side.
 pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
     let enabled: HashSet<String> =
         get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
@@ -299,8 +287,8 @@ pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
         .collect()
 }
 
-/// ALL app view routes of ENABLED apps (apps.ts appViewRoutes): every work
-/// surface, then every manage surface — apps are explicit-grant.
+/// ALL app view routes of ENABLED apps: every work surface, then every
+/// manage surface — apps are explicit-grant.
 pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
     let enabled: HashSet<String> =
         get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
@@ -327,9 +315,9 @@ pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
     out
 }
 
-/// Views a member may NOT reach (users.ts deniedViews): their explicit
-/// work-view denials (DB order) PLUS every Manage view they haven't been
-/// granted. Admins are never restricted.
+/// Views a member may NOT reach: their explicit work-view denials (DB order)
+/// PLUS every Manage view they haven't been granted. Admins are never
+/// restricted.
 pub async fn denied_views(
     pg: &PgPool,
     user_id: &str,
@@ -356,12 +344,11 @@ pub async fn denied_views(
     Ok(out)
 }
 
-// ── Admin console writes (users.ts listUsersAdmin and the set* family) ───────
+// ── Admin console writes ────────────────────────────────────────────────────
 
-/// One row of the admin console's user list, in the TS select's wire order.
-/// Hand-built JSON for that order (node-pg's row is a literal of the SELECT);
-/// timestamps take the epoch-ms → ISO route to stay byte-exact with node's
-/// Date serialization.
+/// One row of the admin console's user list, in wire order — the insert order
+/// below. Hand-built JSON so that order holds; timestamps take the epoch-ms →
+/// ISO route.
 pub async fn list_users_admin(pg: &PgPool) -> Result<Vec<serde_json::Value>, sqlx::Error> {
     let rows = sqlx::query(
         "select u.id::text, u.email, u.name, u.role, u.can_mint_keys, u.denied_views, \
@@ -543,16 +530,15 @@ pub async fn set_assistant_elevated(
     Ok(n > 0)
 }
 
-// ── Permissions (permissions.ts) ─────────────────────────────────────────────
-// The catalog and the resolution chain live in permissions.rs since the admin
-// console routes landed — one source for the admin GET's full entries and the
-// session's resolved ids.
+// ── Permissions ─────────────────────────────────────────────────────────────
+// The catalog and the resolution chain live in permissions.rs — one source
+// for the admin GET's full entries and the session's resolved ids.
 
 pub use crate::permissions::{has_perm, user_permissions};
 
-// ── Who a request acts AS (users.ts actingUser and the assistant grants) ─────
+// ── Who a request acts AS ───────────────────────────────────────────────────
 
-#[allow(dead_code)] // crosses with the write-plane batches' act-as routes
+#[allow(dead_code)] // dead: the routes use session::acting_user
 #[derive(Debug, Clone)]
 pub struct ActingUser {
     pub id: String,
@@ -569,9 +555,9 @@ pub struct ActingUser {
 /// calling with its own credential, its owner (the identity-proxy model: your
 /// assistant manages your boards for you). General agents resolve to None;
 /// governance actions stay human(-proxied). An agent-credential REJECTION
-/// also resolves to None (TS: `instanceof Response → null`) — the dual-auth
-/// routes that need the refusal itself read `agent_caller` directly.
-#[allow(dead_code)] // crosses with the write-plane batches' act-as routes
+/// also resolves to None — the dual-auth routes that need the refusal itself
+/// read `agent_caller` directly.
+#[allow(dead_code)] // dead: the routes use session::acting_user
 pub async fn acting_user(
     state: &AppState,
     headers: &HeaderMap,
@@ -711,7 +697,7 @@ mod tests {
         assert!(slug_ok("helpdesk-2"));
         assert!(slug_ok(&"a".repeat(64)));
         assert!(!slug_ok(&"a".repeat(65)));
-        assert!(!slug_ok("")); // regex needs a head char
+        assert!(!slug_ok("")); // a slug needs a head char
         assert!(!slug_ok("-x"));
         assert!(!slug_ok("Upper"));
         assert!(!slug_ok("under_score"));
@@ -742,7 +728,7 @@ mod tests {
                 "models.mint-keys",
             ]
         );
-        // And the member-default map matches permissions.ts exactly.
+        // And the member defaults, in catalog order.
         let defaults: Vec<(&str, bool)> = crate::permissions::PERMISSIONS
             .iter()
             .filter(|p| p.member_default)

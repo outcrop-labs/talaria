@@ -5,7 +5,7 @@
 // stays attributed, board-policy-gated, and guard-visible; Talaria only
 // delivers the nudge + signals.
 //
-// Port of outreach.ts. The sweep is the piece the scheduler owns;
+// The sweep is the piece the scheduler owns;
 // `agent_message_user` below is the `message_user` tool's write path (/api/
 // agent/message-user and the MCP dispatcher both land here); and
 // `outreach_events` — the memory that powers the caps, the "don't repeat
@@ -44,8 +44,8 @@ const DEFAULT_CONFIG: OutreachConfig = OutreachConfig {
     daily_dm_cap: 3,
 };
 
-/// The stored partial over the defaults — TS's `{ ...DEFAULT_CONFIG, ...c }`.
-/// A stored JSON null is falsy in TS and falls to the default field here;
+/// The stored partial over the defaults.
+/// A stored JSON null is falsy and falls to the default field too;
 /// nothing real writes one.
 fn parse_config(stored: &Value) -> OutreachConfig {
     OutreachConfig {
@@ -66,7 +66,7 @@ fn parse_config(stored: &Value) -> OutreachConfig {
     }
 }
 
-/// setOutreachConfig — a full-object write of the three knobs.
+/// A full-object write of the three knobs.
 pub async fn set_outreach_config(pg: &PgPool, c: &OutreachConfig) {
     let _ = crate::gateway::settings::set_setting(
         pg,
@@ -80,7 +80,7 @@ pub async fn set_outreach_config(pg: &PgPool, c: &OutreachConfig) {
     .await;
 }
 
-/// The sweep's recent activity (outreach.ts recentOutreachEvents), newest
+/// The sweep's recent activity, newest
 /// first — what an admin sees when they ask "is this thing doing anything".
 pub async fn recent_outreach_events(pg: &PgPool, limit: i64) -> Vec<serde_json::Value> {
     #[allow(clippy::type_complexity)] // the select's four columns, in order
@@ -379,7 +379,7 @@ pub async fn sweep_outreach(deps: &OutreachDeps) -> Result<SweepResult, String> 
         return Ok(SweepResult::default());
     }
     // The row carries display_name and owner_user_id for the DM path
-    // (`agentMessageUser`, which crosses with its caller); the TURN needs only
+    // (`agent_message_user`); the TURN needs only
     // the model, so only the model is read here.
     let due: Vec<(String,)> = sqlx::query_as(
         "select d.model from agent_defs d \
@@ -576,7 +576,7 @@ pub fn outreach_job_spec(deps: Arc<OutreachDeps>) -> JobSpec {
     }
 }
 
-/// Declare the sweep to the scheduler — the function the flip calls from
+/// Declare the sweep to the scheduler — the function jobs.rs calls from
 /// boot. 'outreach-sweep' is in REQUIRED_JOBS, so an instance that boots
 /// without reaching it prints a MISSING JOBS error instead of quietly never
 /// checking in.
@@ -588,10 +588,9 @@ pub fn register_outreach_job(deps: Arc<OutreachDeps>) {
 mod tests {
     use super::*;
 
-    // The TS module has no test file of its own; these pin the pure halves
-    // the sweep stands on. The queries and the harness turn are exercised by
-    // the flip's wiring, never by CI (no service-dependent tests — house
-    // rule).
+    // These pin the pure halves the sweep stands on. The queries and the
+    // harness turn are exercised by the boot wiring, never by CI (no
+    // service-dependent tests — house rule).
 
     #[test]
     fn an_empty_stored_config_is_all_defaults() {
@@ -622,9 +621,8 @@ mod tests {
     #[test]
     fn non_positive_or_malformed_numbers_fall_back_rather_than_half_fire() {
         // `intervalMinutes: 0` or a string would make every agent "due" on
-        // every tick in TS (the interval math degrades); here it falls to the
-        // default. A quieter failure mode than TS's, and only reachable by a
-        // hand-edited row.
+        // every tick; a non-positive or malformed number falls to the default
+        // instead. Only reachable by a hand-edited row.
         let c = parse_config(&json!({ "intervalMinutes": 0, "dailyDmCap": "three" }));
         assert_eq!(c.interval_minutes, 240);
         assert_eq!(c.daily_dm_cap, 3);

@@ -1,8 +1,8 @@
-// /api/admin/google-client — port of ui/src/routes/api/admin.google-client.ts.
-// The Google OAuth client — the credential the whole Google integration (login
-// + workspace connect) runs on. Admins register it here instead of editing
-// ui/.env; the secret is SEALED and never read back. Deliberately requireAdmin:
-// this is an org credential, not a grantable surface.
+// /api/admin/google-client. The Google OAuth client — the credential the
+// whole Google integration (login + workspace connect) runs on. Admins
+// register it here instead of editing env; the secret is SEALED and never
+// read back. Deliberately requireAdmin: this is an org credential, not a
+// grantable surface.
 //   GET → redacted status + the redirect URIs to register in Google Cloud
 //   Console · PUT → save the client · DELETE → drop the record (env fallback
 //   resumes).
@@ -111,14 +111,12 @@ pub async fn put(
         hd: hd.clone().map(Some),
     };
     if let Err(e) = set_google_client_config(&state.pg, &sb, &patch).await {
-        // The one refusal is a client id that trims to nothing. TS lets the
-        // throw escape the route (no catch, no boundary) and the server
-        // answers an unstructured 500 — same landing, fixed sentence.
+        // The one refusal is a client id that trims to nothing — a 500.
         tracing::error!("[admin/google-client] set failed: {e}");
         return thrown_internal_error();
     }
-    // `after` carries hd only when the body's hd was a string ('' rides,
-    // null/absent are dropped by JSON.stringify).
+    // `after` carries hd only when the body's hd was a string — '' rides,
+    // null/absent are dropped.
     let mut after = serde_json::Map::new();
     after.insert("clientId".into(), json!(client_id));
     after.insert(
@@ -191,11 +189,11 @@ pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMa
     .into_response()
 }
 
-// /api/admin/google-client/login — port of admin.google-client.login.ts. The
-// Google LOGIN switch — the policy half of the client credential (PUT
-// /api/admin/google-client stores the credential; this decides whether the
-// login screen offers it). Flipping it is an admin's deliberate, audit-logged
-// act; AUTH_GOOGLE_ENABLED pinned in env still wins towards on.
+// /api/admin/google-client/login. The Google LOGIN switch — the policy half
+// of the client credential (PUT /api/admin/google-client stores the
+// credential; this decides whether the login screen offers it). Flipping it
+// is an admin's deliberate, audit-logged act; AUTH_GOOGLE_ENABLED pinned in
+// env still wins towards on.
 
 pub async fn put_login(
     State(state): State<AppState>,

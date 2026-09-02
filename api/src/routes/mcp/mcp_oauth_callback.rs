@@ -1,4 +1,4 @@
-// /api/mcp/oauth/callback — port of ui/src/routes/api/mcp.oauth.callback.ts.
+// /api/mcp/oauth/callback.
 // The OAuth redirect target. No session requirement — identity was bound to
 // the state row when the flow started; the state is single-use and expiring.
 

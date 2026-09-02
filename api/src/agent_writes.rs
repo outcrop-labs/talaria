@@ -1,5 +1,4 @@
-// THE ONE DOOR for agent-authored text on its way to a human — port of
-// ui/src/server/agent-writes.ts.
+// THE ONE DOOR for agent-authored text on its way to a human.
 //
 // `guard_completion` guards model OUTPUT that arrived as a completion. An
 // agent also writes to humans through its MCP TOOLS, and a tool ARGUMENT is
@@ -41,14 +40,14 @@ use crate::gateway::guard::{
 };
 use sqlx::PgPool;
 
-/// The write path a finding came from (TS AgentWriteSurface: 'ticket-comment'
-/// | 'channel-post' | 'direct-message' | 'ticket-write' | 'capability-gap').
+/// The write path a finding came from: 'ticket-comment'
+/// | 'channel-post' | 'direct-message' | 'ticket-write' | 'capability-gap'.
 /// It becomes the `caller` on the guard_findings row, so `model` keeps meaning
 /// "this model's confabulation rate" while `caller` says which door the text
 /// came through.
 pub type AgentWriteSurface = &'static str;
 
-/// `WorkbenchActor`'s shape (TS WriteAuthor): the Agent form is a caller that
+/// The author's shape: the Agent form is a caller that
 /// knows it is writing as an agent; Name is an author field that might be
 /// either and is VERIFIED rather than believed.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,7 +72,7 @@ pub struct GuardedAgentWrite {
 
 /// Does this author string name a fleet agent? One indexed lookup on a small
 /// table, no `enabled` filter (see the header). A query error reads as "not
-/// an agent" — TS's `.catch(() => false)` — so a database hiccup fails open
+/// an agent", so a database hiccup fails open
 /// at the human door rather than throwing out of a comment.
 async fn is_agent(pg: &PgPool, name: &str) -> bool {
     sqlx::query_as::<_, (i32,)>("select 1 from agent_defs where model = $1 limit 1")
@@ -83,8 +82,9 @@ async fn is_agent(pg: &PgPool, name: &str) -> bool {
         .is_ok_and(|r| r.is_some())
 }
 
-/// TS's `clean()`: nothing to do, and — quirks and all — the reported mode is
-/// 'off', because a clean result never asked the config anything.
+/// Nothing to do — and the reported mode is
+/// 'off', quirks and all, because a clean result never asked the config
+/// anything.
 fn clean(text: &str, agent: Option<String>) -> GuardedAgentWrite {
     GuardedAgentWrite {
         text: text.to_string(),
@@ -207,7 +207,7 @@ pub async fn guard_agent_fields(
     fields: &mut [Option<String>],
     input: Option<&str>,
 ) {
-    // TS's join: string values with non-whitespace content, "\n\n" between.
+    // The join: string values with non-whitespace content, "\n\n" between.
     let joined = fields
         .iter()
         .filter_map(|f| f.as_ref())
@@ -227,7 +227,7 @@ pub async fn guard_agent_fields(
     // all, and these calls decide what each column ends up holding.
     let grounding = input.map(Grounding::new);
     for f in fields.iter_mut() {
-        // TS's truthiness: any non-empty string gets the redactor (a
+        // truthiness: any non-empty string gets the redactor (a
         // whitespace-only value is a no-op rewrite either way).
         if let Some(v) = f
             && !v.is_empty()

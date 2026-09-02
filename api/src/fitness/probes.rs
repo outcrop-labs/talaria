@@ -26,7 +26,7 @@
 //   available the probe writes NOTHING, and an absent fact means unknown, which
 //   `missing_capabilities` already treats as safe.
 //
-// WHAT RUNS AND WHAT DOES NOT, as of the tool-definition slot landing
+// WHAT RUNS AND WHAT DOES NOT
 //   `tools` and `tool-select` are ARMED: `TransportRequest.tool_defs` carries
 //   real definitions to the model and `TransportReply.tool_calls` reports what
 //   it called, so the fact that widens the Inbox command harness (audit 1.8)
@@ -78,8 +78,8 @@
 //
 // THE CODE PROBE'S EXECUTOR lives one module over (code_runner.rs): `CodeTask`,
 // `CODE_TASKS`, `extract_code`, `same_value`, `CODE_TIMEOUT_MS` and
-// `run_code_task` crossed ahead of this file because they are the one place in
-// the fitness family that executes a program a MODEL wrote. This file imports
+// `run_code_task` live there because they are the one place in the fitness
+// family that executes a program a MODEL wrote. This file imports
 // `CODE_TASKS` and `run_code_task` and adds nothing to them.
 
 use std::collections::HashMap;
@@ -122,7 +122,7 @@ use crate::state::AppState;
 /// Every probe id is also the `Capability` it writes, deliberately: a probe that
 /// scored something no capability names would be a number with nowhere to go.
 ///
-/// Declared in the TS union's order (not capability.rs's), so the registry test
+/// Declared in a different order than capability.rs, so the registry test
 /// comparing this set against `ALL_CAPABILITIES` sorts both — a tenth member of
 /// the capability union with no probe has to fail there, whichever side adds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,8 +260,8 @@ pub type ProbeToolCall = ToolCall;
 
 const RAW_CAP: usize = 1_200;
 fn bounded(s: &str) -> Option<String> {
-    // TS `s ? s.slice(0, 1_200) : null` — an empty reply is "no reply", not a
-    // zero-length one, and the cap is UTF-16 because JS `.slice` is.
+    // An empty reply is "no reply", not a zero-length one, and the cap is
+    // UTF-16, matching JS `.slice`.
     if s.is_empty() {
         None
     } else {
@@ -306,9 +306,10 @@ struct ExpectedFixture {
 // THE OUTPUT CONTRACT a probe asks for: the runner's `Schema` plus, where zod
 // could say something this build's schema algebra cannot (an array-length
 // minimum), a `VerifyFn` running the same check beside it. A verify failure
-// keeps `schema_valid` false in the runner, so `contract_held` stays faithful to
-// the TS zod schema, and the probes always set `repair: Some(0)` so neither the
-// schema's nor the verify's failure sentence is ever shown to the model.
+// keeps `schema_valid` false in the runner, so `contract_held` stays faithful
+// to the original zod contract, and the probes always set `repair: Some(0)` so
+// neither the schema's nor the verify's failure sentence is ever shown to the
+// model.
 #[derive(Clone)]
 pub struct JsonContract {
     pub schema: Schema,
@@ -936,8 +937,8 @@ pub fn citation_problem(url: &str) -> Option<String> {
         Err(_) => return Some("the citation is not an absolute URL".into()),
     };
     // WHATWG's `protocol` carries its own colon ("ftp:"); the url crate's
-    // `scheme()` does not, so the sentence appends one and stays byte-identical
-    // to the TS an admin may have already read.
+    // `scheme()` does not, so the sentence appends one, keeping the byte shape
+    // the sentence has always had in reports an admin may already have read.
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         return Some(format!("the citation is not http(s): {scheme}:"));
@@ -971,7 +972,7 @@ pub fn date_drift_days(date: &str, now: i64) -> Option<f64> {
         .and_hms_opt(0, 0, 0)?
         .and_utc()
         .timestamp_millis();
-    // UTC midnight of `now` — TS's `new Date(now).toISOString().slice(0, 10)`.
+    // UTC midnight of `now` — the date `toISOString().slice(0, 10)` spells.
     let today = now.div_euclid(86_400_000) * 86_400_000;
     Some(((at - today).abs()) as f64 / 86_400_000.0)
 }
@@ -999,8 +1000,8 @@ pub fn quote_appears(quote: &str, page: &str) -> bool {
 }
 
 // `extract_code`, `same_value`, `CODE_TIMEOUT_MS` and `run_code_task` are the
-// code probe's executor and crossed already — see code_runner.rs, whose module
-// header says why they live in a module of their own.
+// code probe's executor and live one module over — see code_runner.rs, whose
+// module header says why they sit in a module of their own.
 
 // ── The needle haystack ──────────────────────────────────────────────────────
 
@@ -1147,11 +1148,11 @@ pub type RunFn = Arc<dyn Fn(&ProbeDeps) -> BoxFut<ProbeOutcome> + Send + Sync>;
 
 /// Every edge a probe reads, injected on every run.
 ///
-/// THE ONE ADDITION THIS PORT MAKES: `keys`. The TS asks `probeKeys(model)`
-/// directly, and its tests script the module seam (`vi.mock` on llm-gateway and
-/// persona); Rust has no module mock, so the key derivation is an edge like the
-/// rest — the default is the real `probe_keys`, and a test scripts it the way it
-/// scripts `ask`. Everything else is field-for-field the TS `ProbeDeps`.
+/// THE ONE INJECTED EDGE A READER MIGHT NOT EXPECT: `keys`. The key derivation
+/// is an edge like the rest — the default is the real `probe_keys`, and a test
+/// scripts it the way it scripts `ask` — because there is no module seam to
+/// mock here, so the seam has to be an argument. Everything else is
+/// field-for-field the runner's dependency set.
 #[derive(Clone)]
 pub struct ProbeDeps {
     /// The pinned-candidate call. Default: `run_harness` with `ctx.model` set.
@@ -1215,9 +1216,9 @@ pub struct ProbeDeps {
     /// under a key for it (`run_probes`'s ambiguity rule), so there is nothing
     /// to reuse and every probe runs.
     pub measured: MeasuredFn,
-    /// The capability keys this candidate's facts belong under. The TS reads
-    /// this through `probeKeys` at two removes (its own `advertises`/`measured`
-    /// defaults and `run_probes`); here it is one edge those three share.
+    /// The capability keys this candidate's facts belong under — one edge
+    /// shared by `advertises`, `measured` and `run_probes`, rather than a
+    /// helper each reads on its own.
     pub keys: KeysFn,
     pub now: NowEdgeFn,
     pub max_context_tokens: i64,
@@ -1316,8 +1317,7 @@ fn probe_run_deps(transport: TransportFn) -> HarnessDeps {
         // not evidence about how the model behaves on real work, and the org's
         // confabulation statistics must not move because an admin benchmarked a
         // model. It also keeps a probe run free of a settings read per call.
-        // (The TS stub adds `coach: false`; the Rust GuardConfig has no coach
-        // half to turn off, so `Off` says it in one word instead.)
+        // (There is no coach half to turn off — `Off` says it in one word.)
         guard_config: Arc::new(|| {
             Box::pin(async move {
                 Some(GuardConfig {
@@ -1343,9 +1343,10 @@ fn probe_run_deps(transport: TransportFn) -> HarnessDeps {
 /// branches below live in transport.rs (`gateway_image_turn`, `persona_probe_turn`)
 /// because both build a raw upstream body, and raw-body construction is the
 /// transport's job — `gateway_tool_turn` is the precedent right beside them.
-/// Doing it here tripped `hand-written-harness` in the TS tree, and the rule was
-/// right: a model call assembled outside the transport layer is exactly the
-/// thing that grew six JSON extractors and three unguarded paths the last time.
+/// Doing it here is exactly what the `hand-written-harness` invariant exists to
+/// catch, and the rule is right: a model call assembled outside the transport
+/// layer is exactly the thing that grew six JSON extractors and three
+/// unguarded paths the last time.
 ///
 /// WHAT THE TAG THEN MEANS, precisely: this model reads images. It does NOT mean
 /// a harness can send one yet — that still needs the widening. A capability is a
@@ -1354,9 +1355,8 @@ fn probe_run_deps(transport: TransportFn) -> HarnessDeps {
 ///
 /// A PERSONA HAS A SEAM AFTER ALL: `proxy_chat` forwards its payload to the
 /// agent's own `/v1/chat/completions`, and that payload has always accepted
-/// OpenAI content parts "passed through untouched". (The Rust
-/// `persona_probe_turn` takes no caller label — attribution is the proxy's own
-/// there — so the TS's `caller` argument has no counterpart to pass.)
+/// OpenAI content parts "passed through untouched". (`persona_probe_turn`
+/// takes no caller label — attribution is the proxy's own there.)
 pub fn runner_image_ask(state: &AppState, model: &str) -> ImageAskFn {
     let state = state.clone();
     let model = model.to_string();
@@ -1608,10 +1608,10 @@ struct PoolEndpoint {
 /// Every endpoint that could serve this model, for the window and the price.
 /// Deliberately the same derivation the runner uses for capability keys.
 ///
-/// The TS reads one shape: `routing_for`'s endpoint rows carry the price
-/// columns. The Rust `LlmEndpoint` deliberately omits them, so the price half is
-/// read here in one query over the routed names, coalescing exactly as the TS
-/// does (`model_prices[upstream] ?? auto_prices[upstream] ?? the column`).
+/// `routing_for`'s endpoint rows do not carry the price columns — `LlmEndpoint`
+/// deliberately omits them — so the price half is read here in one query over
+/// the routed names, coalescing in order (`model_prices[upstream] ??
+/// auto_prices[upstream] ?? the column`).
 async fn endpoints_for(pg: &PgPool, model: &str) -> Vec<PoolEndpoint> {
     // `.catch(() => null)` then "no route, no endpoints" — a routing read that
     // fails is a deployment fact, not a probe failure, and it prices nothing.
@@ -1744,8 +1744,8 @@ async fn fetch_cited_page(url: String) -> Option<String> {
 
 pub fn default_deps(state: &AppState, model: &str) -> ProbeDeps {
     let pg = state.pg.clone();
-    // The one transport every ask shares: what the TS called `defaultTransport`,
-    // the runner's own dispatch rather than a bespoke call.
+    // The one transport every ask shares — the runner's own dispatch rather
+    // than a bespoke call.
     let gateway: TransportFn = {
         let state = state.clone();
         Arc::new(move |req: TransportRequest| {
@@ -1824,10 +1824,9 @@ pub fn default_deps(state: &AppState, model: &str) -> ProbeDeps {
             Arc::new(move |key: String, cap: String, fact: CapabilityFact| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    // The single-fact spelling of the TS's `recordCapability`:
-                    // the ranked merge in capability.rs is the one writer that
-                    // respects source precedence, and a probe fact outranks
-                    // everything.
+                    // One fact per write: the ranked merge in capability.rs is
+                    // the one writer that respects source precedence, and a
+                    // probe fact outranks everything.
                     merge_capabilities(&pg, &[(key, vec![(cap, fact)])])
                         .await
                         .map(|_| ())
@@ -2064,7 +2063,7 @@ pub struct ProbeDefinition {
 }
 
 fn prompt_tokens_of(messages: &[Message]) -> i64 {
-    // TS sums `.content.length` — UTF-16 units — before the chars-per-token
+    // `.content.length` — UTF-16 units — summed before the chars-per-token
     // estimate, because the estimate is calibrated on what the ledger meters.
     estimate_tokens(
         messages
@@ -2649,8 +2648,8 @@ pub fn tool_call_problem(
             ));
         }
     };
-    // An object, not merely JSON: `Array.isArray` and a null both fail the TS
-    // check, and both are "not an object" here.
+    // An object, not merely JSON: an array and a null both fail the check, and
+    // both are "not an object" here.
     let Some(obj) = args.as_object() else {
         return Some(format!(
             "called {} with arguments that are not an object",
@@ -2711,9 +2710,9 @@ async fn search_trials(name: &str, a: &Attempt, deps: &ProbeDeps) -> Vec<Trial> 
         });
         return trials;
     }
-    // The TS wraps this call in `.catch(() => null)`; the edge here is
-    // infallible because the real `fetch_cited_page` degrades to None inside —
-    // every way a fetch can fail is already the inconclusive answer.
+    // The edge is infallible because the real `fetch_cited_page` degrades to
+    // None inside — every way a fetch can fail is already the inconclusive
+    // answer.
     let Some(page) = (deps.fetch_text)(parsed.url.clone()).await else {
         // INCONCLUSIVE, NOT FAILED. A live news site answering our bare GET with
         // a 403 says nothing about the model, and writing `search: false` from
@@ -2767,8 +2766,7 @@ pub fn read_search_reply(text: &str) -> Option<SearchReply> {
 /// The keys this candidate's facts belong under — the same derivation the
 /// runner uses, gateway routing first and a fleet persona's backing model second.
 pub async fn probe_keys(pg: &PgPool, model: &str) -> Vec<String> {
-    // The TS `.catch(() => null)` on the routing read: a routing failure is a
-    // deployment fact and prices no keys.
+    // A routing failure is a deployment fact and prices no keys.
     if let Some(route) = routing_for(pg, model)
         .await
         .ok()
@@ -2816,11 +2814,10 @@ pub struct ProbeEstimate {
 /// What a run will cost BEFORE it starts. Returned as data — nothing here
 /// prints, and the admin UI is what turns it into a sentence.
 ///
-/// The TS takes `deps?: Partial<ProbeDeps>` and merges it over the defaults; the
-/// Rust edge set is wholesale (see `ProbeOpts`), so a caller either supplies a
-/// complete `ProbeDeps` or takes the defaults — `run_probes` passes the very deps
-/// it ran with, which is the same object the TS merge produces when every
-/// override comes from one place.
+/// The edge set is wholesale (see `ProbeOpts`): a caller either supplies a
+/// complete `ProbeDeps` or takes the defaults — `run_probes` passes the very
+/// deps it ran with, so the estimate prices exactly the calls the run will
+/// make.
 pub async fn estimate_probes(
     state: &AppState,
     model: &str,
@@ -3005,11 +3002,10 @@ pub struct ProbeReport {
     pub ambiguous: Option<Vec<String>>,
 }
 
-/// The TS's `opts` bag for both entry points. The deps are WHOLESALE rather than
-/// a `Partial` merged over the defaults: a Rust struct has no spread, a
-/// half-default edge set is the shape the TS tests abuse, and a caller that
-/// wants the defaults with one edge changed says so by taking `default_deps` and
-/// overwriting the field.
+/// The `opts` bag for both entry points. The deps are WHOLESALE rather than
+/// a `Partial` merged over the defaults: a half-default edge set is a
+/// footgun, and a caller that wants the defaults with one edge changed says so
+/// by taking `default_deps` and overwriting the field.
 #[derive(Default)]
 pub struct ProbeOpts {
     pub ids: Option<Vec<ProbeId>>,
@@ -3025,10 +3021,9 @@ pub struct ProbeOpts {
 
 /// Run tier 1 against a pinned candidate and record what it establishes.
 ///
-/// Returns `Err` only when a fact could not be RECORDED — the TS lets that
-/// rejection travel out of `runProbes` too, and the `?` below stops at the fact
-/// that failed instead of leaving the count wrong. Everything else that can go
-/// wrong is already inside an outcome.
+/// Returns `Err` only when a fact could not be RECORDED — the `?` below stops
+/// at the fact that failed instead of leaving the count wrong. Everything else
+/// that can go wrong is already inside an outcome.
 ///
 /// THE AMBIGUITY RULE IS THE MOST IMPORTANT LINE IN THIS FUNCTION. Capability is
 /// a property of the ENDPOINT serving a model, not of the model name — a
@@ -3104,19 +3099,17 @@ pub async fn run_probes(
         // A timeout is an ERROR, never a `false`: nothing about the model was
         // measured, so by rule 2 it writes nothing.
         //
-        // The TS races the probe against a timer and leaves the losing call
-        // running detached; `tokio::time::timeout` DROPS the future, which cancels
-        // the in-flight request instead. For a probe that is the better half of
-        // the race — the abandoned call was never going to be read — and it is the
-        // only shape available without spawning a task per probe that nothing
-        // would join. The one visible difference is that a hung call stops
-        // consuming a connection slot at the moment of the timeout rather than
-        // whenever the transport gives up on its own.
+        // `tokio::time::timeout` DROPS the future, which cancels the in-flight
+        // request. For a probe that is the better half of the trade — the
+        // abandoned call was never going to be read — and it is the only shape
+        // available without spawning a task per probe that nothing would join.
+        // The visible consequence is that a hung call stops consuming a
+        // connection slot at the moment of the timeout rather than whenever the
+        // transport gives up on its own.
         //
-        // (The TS also catches a probe that THROWS here and converts it to
-        // `errored`. In the Rust an ask edge cannot throw — a failed call is an
-        // `Attempt.transport_error` — so the catch has no equivalent to wrap; the
-        // timeout is the one way out other than an honest outcome.)
+        // (An ask edge cannot throw — a failed call is an
+        // `Attempt.transport_error` — so there is no throw to catch and convert;
+        // the timeout is the one way out other than an honest outcome.)
         let budget = Duration::from_millis(opts.timeout_ms.unwrap_or(PROBE_TIMEOUT_MS));
         let outcome = match tokio::time::timeout(budget, (probe.run)(&deps)).await {
             Ok(outcome) => outcome,
@@ -3191,9 +3184,9 @@ pub async fn run_probes(
 }
 
 impl ProbeReport {
-    /// The TS returns `{ ...base, wrote: 0, ambiguous: keys }` when the candidate
-    /// resolved to more than one endpoint:model; `keys.len() != 1` already covers
-    /// both early exits, and this puts the ambiguity back where it belongs.
+    /// `{ ...base, wrote: 0, ambiguous: keys }` when the candidate resolved to
+    /// more than one endpoint:model; `keys.len() != 1` already covers both
+    /// early exits, and this puts the ambiguity back where it belongs.
     fn with_ambiguity(self) -> ProbeReport {
         let ambiguous = (self.keys.len() > 1).then(|| self.keys.clone());
         ProbeReport { ambiguous, ..self }
@@ -3202,9 +3195,8 @@ impl ProbeReport {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 //
-// Port of probes.test.ts. The `runCodeTask` and `extractCode` blocks crossed
-// ahead of this file and live in code_runner.rs's own tests; everything else is
-// here, in the TS file's order.
+// The `runCodeTask` and `extractCode` cases live in code_runner.rs's own
+// tests; everything else is here.
 
 #[cfg(test)]
 mod tests {
@@ -3239,7 +3231,7 @@ mod tests {
         trial(name, None, "inconclusive")
     }
 
-    /// The TS `attempt({...})` spread: the same defaults, mutations after.
+    /// The default attempt, spread-shaped: same defaults, mutations after.
     fn attempt() -> Attempt {
         Attempt {
             raw: String::new(),
@@ -3257,8 +3249,8 @@ mod tests {
         fact: CapabilityFact,
     }
 
-    /// What the TS scripts through `vi.mock` on the routing and persona modules:
-    /// hoisted mutable state every test resets. The Rust `keys` edge reads it.
+    /// Hoisted mutable routing state every test resets — the `keys` edge reads
+    /// it.
     struct TestRouting {
         endpoints: Vec<String>,
         upstream_model: String,
@@ -3323,8 +3315,8 @@ mod tests {
 
     /// A probe run with every edge injected: no gateway, no database, no network,
     /// no clock. `ask` is keyed on the id prefix each probe passes. A test that
-    /// needs a different edge overwrites the field on the returned deps — the
-    /// wholesale equivalent of the TS harness's `over:` partial.
+    /// needs a different edge overwrites the field on the returned deps —
+    /// wholesale, one field at a time.
     /// ONE ROUTING AT A TIME. The routing table is process-global and every
     /// harness() installs the default on the way in; without the turnstile a
     /// neighbouring test's install lands between this test's override and its
@@ -3344,8 +3336,8 @@ mod tests {
         let route = ROUTE_TURNSTILE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // The TS `beforeEach` default routing; a test needing another shape sets it
-        // after this returns, exactly where the TS test sets `state.endpoints`.
+        // The default routing, installed on the way in; a test needing another
+        // shape sets it after this returns.
         set_routing(&["pl-main"], "qwen3-14b", &[]);
         let written = Arc::new(Mutex::new(Vec::new()));
         let asked = Arc::new(Mutex::new(Vec::new()));
@@ -3940,7 +3932,7 @@ mod tests {
 
     #[test]
     fn haystack_sizes_the_filler_from_the_token_budget_it_was_given() {
-        // TS `.length` is UTF-16 units, and the budget the probe passes is tokens —
+        // `.length` is UTF-16 units, and the budget the probe passes is tokens —
         // the comparison is on the same measure the estimate bills.
         let short = crate::body::utf16_len(&haystack(1_100, "needle", 0.5));
         let long = crate::body::utf16_len(&haystack(11_000, "needle", 0.5));
@@ -3993,12 +3985,12 @@ mod tests {
         assert!(half.detail.contains("mergeRanges"), "got: {}", half.detail);
     }
 
-    // not ported: needs a live pool — the three `defaultDeps` tests that read
-    // endpoint rows (`reads the SMALLEST advertised window in the pool`, `reads
-    // the DEAREST price in the pool`, `answers null for both when nothing is
-    // known`) drive `routing_for` against postgres. The edge functions they
-    // exercise (`endpoints_for`, `smallest_window`, `price_for`) read real tables
-    // and have no scripted seam short of a live pool.
+    // not carried over: needs a live pool — the three default-deps tests that
+    // read endpoint rows (`reads the SMALLEST advertised window in the pool`,
+    // `reads the DEAREST price in the pool`, `answers null for both when
+    // nothing is known`) drive `routing_for` against postgres. The edge
+    // functions they exercise (`endpoints_for`, `smallest_window`, `price_for`)
+    // read real tables and have no scripted seam short of a live pool.
 
     // ── The driver ───────────────────────────────────────────────────────────────
 
@@ -4200,13 +4192,12 @@ mod tests {
         );
     }
 
-    // not ported: `contains a probe that throws, and still scores the ones around
-    // it`. The TS ask edge can REJECT, and runProbes converts the rejection into
-    // an `errored` outcome; a Rust ask edge cannot — a failed call is an
+    // no counterpart: `contains a probe that throws, and still scores the ones
+    // around it`. An ask edge cannot reject — a failed call is an
     // `Attempt.transport_error`, which the `writes_nothing_when_a_probe_errors`
     // test above covers — and a panic inside a probe would take the process down
-    // rather than surface as an outcome. There is no throw to contain, so there is
-    // no test for containing one.
+    // rather than surface as an outcome. There is no throw to contain, so there
+    // is no test for containing one.
 
     #[tokio::test]
     async fn refuses_to_write_when_the_model_resolves_to_more_than_one_endpoint() {
@@ -4214,8 +4205,8 @@ mod tests {
         // on one member per call, so crediting the result to all of them would give
         // a llama.cpp build the vendor API's tool calling.
         let (deps, written, _asked, _route) = harness(good_reply(), None);
-        // AFTER the harness: harness installs the default routing the TS
-        // `beforeEach` did, so a test's own shape has to land on top of it.
+        // AFTER the harness: harness installs the default routing on the way
+        // in, so a test's own shape has to land on top of it.
         set_routing(&["pl-main", "openrouter"], "qwen3-14b", &[]);
         let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Json], deps))
             .await
@@ -4769,9 +4760,9 @@ mod tests {
 
     #[tokio::test]
     async fn reads_latency_off_the_existing_gateway_pulse_ring_rather_than_timing_its_own_calls() {
-        // The TS mocks `gatewayPulse` to a fixed {12,1,140,620}. The Rust ring is
-        // the process-global one the real readers share — which is the whole point
-        // of the function — so the assertion weakens to: our own recorded calls
+        // The ring is the process-global one the real readers share — which is
+        // the whole point of the function, and why it cannot be swapped for a
+        // private fixture — so the assertion weakens to: our own recorded calls
         // are in the reading, and an unpriced model carries no cost.
         //
         // The turnstile: gateway::upstream's pulse test asserts EXACT nearest-rank
@@ -4991,8 +4982,8 @@ mod tests {
     }
 
     /// What the scripted transport saw: model, JSON mode, and the tool definitions
-    /// by name and parameters (`ToolDefinition` is not `Serialize`, so the pairs
-    /// stand in for the TS's deep-equal on the definition objects).
+    /// by name and parameters (`ToolDefinition` is not `Serialize`, so the
+    /// pairs stand in for a deep-equal on the definition objects).
     type SeenRequest = (String, bool, Vec<(String, Value)>);
 
     #[tokio::test]
@@ -5237,9 +5228,9 @@ mod tests {
         // and reads back what was called. `ask_with_images` hands the multimodal
         // body to the gateway image seam — which measures the MODEL without
         // widening `Message.content` tree-wide, the change that argument was
-        // really about. The TS's `typeof === 'function'` assertions on the other
-        // two edges are tautologies in Rust — a struct field of function type
-        // cannot be absent — so the one that was ever false is the one asserted.
+        // really about. A `typeof === 'function'` check on the other two edges
+        // would be a tautology here — a struct field of function type cannot be
+        // absent — so the one that can be false is the one asserted.
         let deps = default_deps(&test_state(), "qwen3-14b");
         assert!(
             deps.ask_with_images.is_some(),

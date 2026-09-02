@@ -1,7 +1,7 @@
-// inbox-focus-conversation.ts — the Inbox panel's segmented conversations:
-// the chat picker, the paginated message+decision timeline, the snooze
-// record, the process-local Inbox lock, and the SSE command run that threads
-// one instruction through the assistant with events as they happen.
+// The Inbox panel's segmented conversations: the chat picker, the paginated
+// message+decision timeline, the snooze record, the process-local Inbox lock,
+// and the SSE command run that threads one instruction through the assistant
+// with events as they happen.
 //
 // THE PROCESS-LOCAL LOCK: one Inbox assistant action per user at a time,
 // process-wide. The queue's decisions are idempotent where they can be, but
@@ -9,10 +9,8 @@
 // second concurrent run interleaving seqs and events is incoherent, not
 // merely racy. The guard is held across a whole handler (and, for the SSE
 // command, across the stream's lifetime — it MOVES into the stream task, so
-// the lock releases when the stream does, the TS `finally { release() }`).
-// Process-local is the whole guarantee in TS and stays so here: two API
-// processes each allow one. The proxy coexistence keeps one live runtime per
-// group, so nothing is weakened by the port.
+// the lock releases when the stream does). Process-local is the whole
+// guarantee: two API processes each allow one.
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
@@ -59,7 +57,7 @@ static INBOX_FOCUS_LOCKS: LazyLock<Mutex<HashSet<String>>> =
 
 /// The lock's guard — dropping it is the release, so `let _guard = …` at the
 /// top of a handler (or a move into a stream task) holds it for exactly the
-/// handler's (or stream's) lifetime: the TS `try/finally` without the finally.
+/// handler's (or stream's) lifetime, no finally needed.
 pub struct FocusLockGuard {
     user_id: String,
 }
@@ -84,7 +82,7 @@ pub fn acquire_inbox_focus_lock(user_id: &str) -> Option<FocusLockGuard> {
     })
 }
 
-/// `focusContext` — the five-key anchor every decision and message carries.
+/// The five-key focus anchor every decision and message carries.
 fn focus_context(item: &RawFocusItem) -> Value {
     json!({
         "key": item.key,
@@ -251,8 +249,8 @@ async fn recent_inbox_history(
     sb: &crate::secretbox::SecretBox,
     conversation_id: &str,
 ) -> Result<Vec<OwnedTurn>, sqlx::Error> {
-    // TS fetches with `limit ${INBOX_HISTORY_MAX_TURNS}`; the same cap is
-    // re-applied by `limit_inbox_model_history` below, as in TS.
+    // The fetch itself caps the window; `limit_inbox_model_history` re-applies
+    // the same cap after attachments have expanded the turns.
     let rows: Vec<(String, String, Value)> = sqlx::query_as(
         "select role, content, attachments from messages \
          where conversation_id = $1::uuid and role in ('user', 'assistant') \
@@ -332,8 +330,8 @@ fn public_attachments(value: &Value) -> Value {
             let filename = object.get("filename")?.as_str()?;
             let mime = object.get("mime")?.as_str()?;
             // `typeof size === 'number'` — the number rides VERBATIM: going
-            // through f64 would render integer sizes as `1.0` where TS's
-            // JSON.stringify renders `1`, and this object is wire bytes.
+            // through f64 would render integer sizes as `1.0` where the wire
+            // bytes say `1`, and this object is wire bytes.
             let size = object.get("size")?.as_number()?.clone();
             let mut entry = json!({
                 "id": id,
@@ -392,10 +390,9 @@ async fn default_effort_for(pg: &PgPool, model: Option<&str>) -> Option<String> 
     efforts.contains(&configured).then_some(configured)
 }
 
-/// `messageEntry` — TS funnels one record through `buildInboxTimeline` and
-/// takes the message entry out; constructing the entry directly is the same
-/// bytes (the divider the builder would have prefixed is dropped by the
-/// `find`, and the field extraction below is the builder's own).
+/// The message entry the timeline builder would produce, built directly: the
+/// field extraction below is the builder's own, minus the context divider a
+/// builder consumer drops via its `find` — the same bytes either way.
 fn message_entry(
     id: &str,
     role: &str,
@@ -429,10 +426,10 @@ fn message_entry(
     })
 }
 
-/// `chunkText` — 96-char slices. JS slices at UTF-16 code-unit boundaries and
-/// would cut a surrogate pair in half at a boundary; Rust strings cannot hold
-/// half a pair, so the port closes each chunk at the char boundary at or
-/// before the limit (recorded: astral chars never split mid-pair).
+/// 96-char slices by UTF-16 code units. JS slices at unit boundaries and
+/// would cut a surrogate pair in half; Rust strings cannot hold half a pair,
+/// so each chunk closes at the char boundary at or before the limit — astral
+/// chars never split mid-pair.
 fn chunk_text(value: &str, size: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
@@ -459,9 +456,9 @@ async fn link_decision(
     user_message_id: &str,
     assistant_message_id: &str,
 ) -> Result<(), sqlx::Error> {
-    // `where id = ${decisionId}` with no owner scope — TS's own shape; an
-    // empty id is skipped rather than sent (TS's undefined binds NULL and
-    // matches nothing; `''::uuid` would be a Postgres syntax error).
+    // `where id = ${decisionId}` with no owner scope — deliberate shape. An
+    // empty id is skipped rather than sent: binding NULL matches nothing, and
+    // `''::uuid` would be a Postgres syntax error.
     if decision_id.is_empty() {
         return Ok(());
     }
@@ -492,9 +489,9 @@ async fn set_message_metadata(
     Ok(())
 }
 
-/// The parsed command body — everything `runInboxConversationCommand` takes
-/// except the abort signal (the port's run future is dropped by the stream
-/// task's lifetime instead).
+/// The parsed command body — everything the command run takes except the
+/// abort signal (dropping the run future, at the stream task's end of life,
+/// is the abort).
 pub struct InboxCommandInput {
     pub instruction: String,
     pub focus_key: Option<String>,
@@ -515,19 +512,16 @@ pub struct InboxCommandInput {
     pub conversation_id: Option<String>,
 }
 
-/// `runInboxConversationCommand` — the SSE generator as an event channel. TS
-/// yields; the port sends into `tx` and the route streams frames. Ok(()) is
-/// the generator completing (including its own caught-error tail, which
-/// ARRIVES as an Error event — the run is a success at the transport level);
-/// Err is a prologue failure the route renders as the TS catch's error event
-/// (its message, or 'Your assistant could not start that response.' for a
-/// panicked task).
+/// The SSE command run as an event channel: the run sends into `tx` and the
+/// route streams frames. Ok(()) is the run completing (including its own
+/// caught-error tail, which ARRIVES as an Error event — a success at the
+/// transport level); Err is a prologue failure the route renders as the error
+/// event (its message, or 'Your assistant could not start that response.' for
+/// a panicked task).
 ///
-/// On a client disconnect the TS loop stops consuming and the generator is
-/// returned at its current yield — leaving the assistant row 'streaming'.
-/// The port instead finishes the run and persists the completed reply: the
-/// chat family's tee philosophy (a reply in progress survives its reader),
-/// and the recorded divergence here.
+/// On a client disconnect the run still finishes and persists the completed
+/// reply — the chat family's tee philosophy: a reply in progress survives its
+/// reader, and the assistant row never stays 'streaming'.
 pub async fn run_inbox_conversation_command(
     state: &AppState,
     user: &SessionUser,
@@ -685,7 +679,7 @@ pub async fn run_inbox_conversation_command(
         },
     });
 
-    // The generator's internal try/catch: a failure from here on is an Error
+    // The run's internal try/catch: a failure from here on is an Error
     // EVENT (the stream continues to its close), never a thrown Err.
     let internal = run_inbox_command_tail(
         state,
@@ -715,10 +709,10 @@ pub async fn run_inbox_conversation_command(
     Ok(())
 }
 
-/// Everything inside the generator's try block — the part whose failures are
-/// Error events rather than a thrown Err. Returns Err(message) for the TS
-/// `catch` (the caller updates the row and emits the event); Ok(()) when the
-/// Done event went out.
+/// Everything after the prologue — the part whose failures are Error events
+/// rather than a thrown Err. Returns Err(message) for the catch arm (the
+/// caller updates the row and emits the event); Ok(()) when the Done event
+/// went out.
 #[allow(clippy::too_many_arguments)]
 async fn run_inbox_command_tail(
     state: &AppState,
@@ -930,8 +924,8 @@ async fn run_inbox_command_tail(
 // ── The timeline ─────────────────────────────────────────────────────────────
 
 /// One row of the unioned timeline query — a message or a decision. The
-/// timestamps arrive as epoch ms (TS held `Date`s; every use is an ISO render
-/// or an ms compare, so ms is the honest shape).
+/// timestamps arrive as epoch ms: every use is an ISO render or an ms
+/// compare, so ms is the honest shape.
 struct TimelineRow {
     record_type: String,
     id: String,
@@ -1001,8 +995,8 @@ async fn timeline_rows(
 ) -> Result<(Vec<TimelineRow>, bool), sqlx::Error> {
     let before = cursor.and_then(decode_inbox_timeline_cursor);
     // The union keeps `id` uuid and `created_at` timestamptz so the ORDER BY
-    // compares the same types TS's does; the cursor's tie-break compares
-    // `id::text`, and the outer select renders epoch ms — both exactly as TS.
+    // compares like types; the cursor's tie-break compares `id::text`, and
+    // the outer select renders epoch ms.
     let rows: Vec<TimelineSqlRow> = sqlx::query_as(
         "select record_type, id::text, \
                 (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
@@ -1049,10 +1043,10 @@ async fn timeline_rows(
     Ok((rows, has_more))
 }
 
-/// `timelineRecordForDecision` — a decision row into its timeline record,
-/// reissuing a still-pending confirmation's token so the panel can act on an
-/// old proposal after a reload. `current_result` is the action result the
-/// route just produced (its token/expires win over the row's).
+/// A decision row into its timeline record, reissuing a still-pending
+/// confirmation's token so the panel can act on an old proposal after a
+/// reload. `current_result` is the action result the route just produced
+/// (its token/expires win over the row's).
 async fn timeline_record_for_decision(
     state: &AppState,
     user: &SessionUser,
@@ -1120,8 +1114,8 @@ async fn timeline_record_for_decision(
             .and_then(Value::as_str)
             .map(str::to_string)
     };
-    // The TS literal's `...(x ? {x} : {})` spreads — a falsy value leaves the
-    // key OUT, not present-and-empty.
+    // The conditional spreads — a falsy value leaves the key OUT, not
+    // present-and-empty.
     Ok(Some(TimelineDecisionRecord {
         id: row.id.clone(),
         created_at: epoch_ms_to_iso(row.created_ms),
@@ -1318,8 +1312,8 @@ mod tests {
             chunk_text(&ascii, 96),
             vec!["a".repeat(96), "a".repeat(96), "a".repeat(8)]
         );
-        // A 96-unit window that would split an astral char closes one unit
-        // early instead — the recorded divergence from JS slicing.
+        // A 96-unit window that would split an astral char closes at the
+        // pair boundary instead — never mid-pair.
         let astral = "𝄞".repeat(49); // 49 × 2 units = 98
         let chunks = chunk_text(&astral, 96);
         assert_eq!(chunks.len(), 2);

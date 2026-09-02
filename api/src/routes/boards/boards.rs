@@ -1,5 +1,5 @@
-// /api/boards — port of ui/src/routes/api/boards.ts. GET → the boards the
-// caller owns or that are shared with them; an agent key swaps the question
+// /api/boards. GET → the boards the caller owns or that are shared with them;
+// an agent key swaps the question
 // for the boards whose POLICY allows that agent, plus — for a personal
 // assistant — its owner's boards under the owner's role (the identity-proxy
 // model, so it can govern them on the owner's behalf). POST { name } →
@@ -23,7 +23,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 /// The elevated-assistant listing row: every live board org-wide, answered
-/// AS an editor (never owner-level) — TS's `{ ...b, role: 'editor' }`.
+/// AS an editor (never owner-level) — the board's own fields flattened with
+/// role: 'editor' alongside.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentBoardAsEditor<'a> {
@@ -77,9 +78,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     // The merged listing is heterogeneous BY DESIGN: the owner's boards carry
     // their role, the elevated rest carries 'editor', and a plain agent's
-    // rest carries no role at all — three wire shapes TS emits from three
-    // sources, serialized per-row here rather than flattened into one struct
-    // that would invent a role for the third.
+    // rest carries no role at all — three wire shapes, serialized per-row
+    // rather than flattened into one struct that would invent a role for the
+    // third.
     let seen: std::collections::HashSet<&str> =
         owner_boards.iter().map(|b| b.id.as_str()).collect();
     let mut boards: Vec<Value> = owner_boards
@@ -119,8 +120,8 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Respon
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // searchParams.get('archived') === '1' — the retired boards are asked for
-    // by name; everything else sees the live ones.
+    // ?archived=1 — the exact string '1' — asks for the retired boards;
+    // everything else sees the live ones.
     let archived = uri
         .query()
         .and_then(|q| {

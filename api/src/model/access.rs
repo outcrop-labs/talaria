@@ -1,9 +1,9 @@
-// Member access to gateway models — port of model-access.ts, plus
-// llm-gateway.ts's gatewayModels (the picker catalog this module judges).
-// Admins register models; this decides which of them NON-admins may pick
-// (preferred model, muse drafting). Empty list = all models (open by
-// default, like agent access); non-empty = exactly those. Admins are never
-// restricted — they control when the expensive brains run.
+// Member access to gateway models, plus the picker catalog this module
+// judges (gateway_models below). Admins register models; this decides which
+// of them NON-admins may pick (preferred model, muse drafting). Empty list
+// = all models (open by default, like agent access); non-empty = exactly
+// those. Admins are never restricted — they control when the expensive
+// brains run.
 
 use crate::gateway::registry::list_endpoints;
 use crate::gateway::settings::get_setting;
@@ -12,9 +12,8 @@ use std::collections::HashMap;
 
 const KEY: &str = "member_model_allowlist";
 
-/// setMemberModelAllowlist — trim, drop empties, dedupe (TS's
-/// `[...new Set(...)]`; insertion order preserved, which is the order the
-/// admin UI saved).
+/// Trim, drop empties, dedupe — insertion order preserved, which is the
+/// order the admin UI saved.
 pub async fn set_member_model_allowlist(pg: &PgPool, ids: &[String]) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let cleaned: Vec<String> = ids
@@ -47,7 +46,7 @@ impl GatewayModel {
     }
 }
 
-/// EVERY MODEL, SPELLED ONE WAY: `<endpoint>/<model>` — port of gatewayModels.
+/// EVERY MODEL, SPELLED ONE WAY: `<endpoint>/<model>`.
 ///
 /// THE QUALIFIED FORM IS THE CANONICAL ONE because it is the one that names
 /// where the model runs — which is the thing Talaria actually measures
@@ -91,7 +90,7 @@ pub async fn gateway_models(pg: &PgPool) -> Result<Vec<GatewayModel>, sqlx::Erro
     Ok(out)
 }
 
-/// A STORED SPELLING ONTO THE OFFERED ONE — port of canonicalModelId. The
+/// A STORED SPELLING ONTO THE OFFERED ONE. The
 /// qualified form is the canonical id, but everything older than the catalog
 /// that offered it — role pins, an archived fitness report, a member
 /// allowlist — was written when both spellings existed, so plenty of it is
@@ -150,8 +149,8 @@ pub fn collating_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// Bare model ids members may use. Empty = no restriction. Non-string
-/// entries in a hand-edited row never match anything, same as TS's
-/// `allow.includes(model)` on a mixed array.
+/// entries in a hand-edited row never match anything — only string entries
+/// are read.
 pub async fn member_model_allowlist(pg: &PgPool) -> Vec<String> {
     get_setting(pg, KEY, serde_json::Value::Array(vec![]))
         .await

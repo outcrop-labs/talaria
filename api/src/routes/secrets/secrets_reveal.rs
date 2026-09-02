@@ -1,4 +1,4 @@
-// /api/secrets/reveal — port of ui/src/routes/api/secrets.reveal.ts.
+// /api/secrets/reveal.
 //
 // THE ONE ROUTE IN THIS FEATURE THAT RETURNS A CREDENTIAL. Everything else
 // is built so a value has nowhere to come back through; this deliberate

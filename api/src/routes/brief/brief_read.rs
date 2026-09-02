@@ -1,5 +1,5 @@
-// /api/brief/read — port of ui/src/routes/api/brief.read.ts.
-// POST { briefId, seq } → move the brief reader's cursor. The ONLY mutation
+// /api/brief/read. POST { briefId, seq } → move the brief reader's cursor.
+// The ONLY mutation
 // this surface exposes — there is no edit, no dismiss and no delete, because
 // the document is append-only and every one of those would be a rewrite
 // wearing a different name.
@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// The POST body, TS's `Body` zod shape.
+/// The POST body: briefId (uuid) + seq (integer, ≥0).
 struct ReadBody {
     brief_id: String,
     seq: f64,
@@ -27,9 +27,8 @@ struct ReadBody {
 
 fn validate(obj: &serde_json::Map<String, serde_json::Value>) -> Result<ReadBody, String> {
     let brief_id = uuid_member(obj, "briefId")?;
-    // z.number().int().min(0) — no max; the safe-integer guard is the ceiling
-    // zod itself imposes. read_seq is int8, so the whole safe range is
-    // storable — no int4 clamp to inherit.
+    // seq: integer, min 0, no max below the safe-integer ceiling (2^53-1).
+    // read_seq is int8, so the whole safe range is storable — no int4 clamp.
     let seq = number_member(obj, "seq", NumKind::Int, 0.0, 9_007_199_254_740_991.0)?;
     Ok(ReadBody { brief_id, seq })
 }

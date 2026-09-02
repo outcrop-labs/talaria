@@ -1,7 +1,6 @@
-// The gateway's parameter learner — port of ui/src/server/harness/gateway-params.ts
-// plus the I/O half that lives in llm-gateway.ts (the store under
+// The gateway's parameter learner — the store under
 // `gateway_unsupported_params`, the pre-strip pass, the capability fact a
-// contract drop records).
+// contract drop records.
 //
 // The learner reads an upstream 400 ("`temperature` is deprecated",
 // "Unsupported parameter: 'top_p'"), strips the named parameter, retries, and
@@ -157,8 +156,8 @@ pub fn classify_param(param: &str) -> ParamClass {
 /// phrasings in production (Anthropic's compat layer, OpenAI's own, the loose
 /// middle ground) plus the provider-authoritative `"param": "..."` field —
 /// kept narrow on purpose: a pattern that matched more would strip parameters
-/// merely MENTIONED in an error about something else. Port of rejectedParam,
-/// patterns verbatim and in order.
+/// merely MENTIONED in an error about something else. Patterns run in order;
+/// the first that names a parameter wins.
 pub fn rejected_param(err_text: &str) -> Option<String> {
     static RES: OnceLock<Vec<Regex>> = OnceLock::new();
     let res = RES.get_or_init(|| {
@@ -204,13 +203,10 @@ pub fn rejected_param(err_text: &str) -> Option<String> {
 pub const LEARNED_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const SETTINGS_KEY: &str = "gateway_unsupported_params";
 
-/// endpoint:model -> parameter -> epoch ms learned. (TS calls this
-/// LearnedParamMap; the param maps are HashMaps, so serialization order of the
-/// stored blob differs from TS's insertion order — irrelevant, it is read back
-/// by key.)
+/// endpoint:model -> parameter -> epoch ms learned.
 pub type LearnedMap = HashMap<String, HashMap<String, i64>>;
 
-/// Parse the stored value, tolerating both shapes (the predecessor stored
+/// Parse the stored value, tolerating both shapes (older stores wrote
 /// `Record<string, string[]>`) and any hand-edited garbage — this runs on the
 /// path to every upstream call, and anything unrecognized is dropped rather
 /// than thrown, which costs at most one re-learned 400. Returns the map and
@@ -238,10 +234,9 @@ pub fn read_learned_params(raw: &Value, now: i64) -> (LearnedMap, bool) {
             }
             Value::Object(map) => {
                 for (param, at) in map {
-                    // Only a string parses (TS: typeof at === 'string' ?
-                    // Date.parse : NaN) — a number here is a corrupt entry,
-                    // not the legacy shape, and re-stamping it fresh would
-                    // grant an unknown writer a permanent strip. Drop.
+                    // Only a string parses — a number here is a corrupt
+                    // entry, not the legacy shape, and re-stamping it fresh
+                    // would grant an unknown writer a permanent strip. Drop.
                     let ms = at.as_str().and_then(iso_to_epoch_ms);
                     match ms {
                         None => changed = true,
@@ -308,7 +303,7 @@ pub fn active_learned_params(by_key: &mut LearnedMap, key: &str, now: i64) -> (V
     (params, expired)
 }
 
-// ── The in-process store (I/O half — llm-gateway.ts lines 324-366) ──────────
+// ── The in-process store ─────────────────────────────────────────────────────
 
 struct Store {
     loaded: bool,
@@ -327,7 +322,7 @@ fn store() -> &'static Mutex<Store> {
 
 /// Read the persisted learnings once per process. Concurrent first calls may
 /// both read — the merge is only-if-absent, so the in-memory stamp (by
-/// definition the newer one) always wins, same as the TS lazy-promise merge.
+/// definition the newer one) always wins.
 pub async fn load_learned_params(pg: &PgPool) {
     let needs_load = !store().lock().map(|s| s.loaded).unwrap_or(false);
     if !needs_load {
@@ -364,7 +359,7 @@ fn spawn_persist(pg: PgPool) {
     });
 }
 
-/// The pre-strip pass in buildUpstream: remove parameters this endpoint:model
+/// The pre-strip pass in build_upstream: remove parameters this endpoint:model
 /// has already rejected, and say so for contract-bearing ones — after the
 /// first 400 this is the ONLY path that removes them, so a caller that trusted
 /// the pre-strip would go on handing prose to a JSON parser for thirty days.
@@ -491,10 +486,10 @@ pub fn warn_contract_drop(drop: &ContractDrop) {
 }
 
 // ── The capability fact a rejected contract parameter records ────────────────
-// Port of recordCapability (harness/capability.ts) reduced to the write this
-// path makes — value:false, source:"learned", expiring — preserving every
-// other entry under the key and every capability id this build does not
-// recognize (a rolling deploy's other process may know more than we do).
+// The write this path makes — value:false, source:"learned", expiring —
+// preserving every other entry under the key and every capability id this
+// build does not recognize (a rolling deploy's other process may know more
+// than we do).
 
 const CAPABILITY_KEY: &str = "model_capabilities";
 const KNOWN_CAPABILITIES: &[&str] = &[
@@ -673,7 +668,7 @@ mod tests {
             NOW,
         );
         assert!(changed);
-        // TS (gateway-params.ts:272): an entry whose every param dropped is
+        // An entry whose every param dropped is
         // REMOVED, not left as an empty object.
         assert!(!m.contains_key("ep:m"));
         assert!(!m.contains_key("ep:notobj"));

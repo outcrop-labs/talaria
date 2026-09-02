@@ -1,9 +1,8 @@
-// inbox-focus-timeline.ts — the Inbox conversation timeline builder.
-//
-// Shared by the server (row → entry mapping, context dividers) and mirrored
-// client-side for page merges; this port is the server half. Sorting is by
-// createdAt then id, both plain string compares — ISO timestamps and uuids are
-// fixed-width ASCII, where `localeCompare` and byte order agree.
+// The Inbox conversation timeline builder — the server half (row → entry
+// mapping, context dividers); the panel mirrors the merge client-side for
+// page stitching. Sorting is by createdAt then id, both plain string
+// compares — ISO timestamps and uuids are fixed-width ASCII, where
+// `localeCompare` and byte order agree.
 
 use serde_json::Value;
 
@@ -12,7 +11,7 @@ use crate::inbox_focus::types::{
 };
 
 /// One row of the unioned timeline query — a message or a decision, exactly
-/// the two shapes `timelineRows` selects.
+/// the two shapes the query selects.
 #[derive(Debug, Clone)]
 pub enum TimelineRecord {
     Message {
@@ -33,7 +32,7 @@ pub struct TimelineDecisionRecord {
     pub created_at: String,
     pub status: String,
     pub action_id: Option<String>,
-    #[allow(dead_code)] // selected by timelineRows; the entry reads it from proposal/outcome
+    #[allow(dead_code)] // selected by the timeline query; the entry reads it from proposal/outcome
     pub instruction: Option<String>,
     pub proposal: Value,
     pub outcome: Value,
@@ -43,15 +42,14 @@ pub struct TimelineDecisionRecord {
     pub undo_expires_at: Option<String>,
 }
 
-/// TS `object()`: a JSON object, or null for anything else (arrays included).
+/// A JSON object, or null for anything else (arrays included).
 fn object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
     value.as_object()
 }
 
-/// `focusFromMetadata`: the metadata's focus object iff it has the three
-/// string fields a divider needs. Returned VERBATIM (extra keys ride along,
-/// like the TS cast) — writers emit exactly {key, question, sourceHref,
-/// sourceType, sourceId}.
+/// The metadata's focus object iff it has the three string fields a divider
+/// needs. Returned VERBATIM (extra keys ride along) — writers emit exactly
+/// {key, question, sourceHref, sourceType, sourceId}.
 pub fn focus_from_metadata(metadata: Option<&Value>) -> Option<FocusContext> {
     let focus = object(metadata?.get("focus")?)?;
     if focus.get("key").and_then(Value::as_str).is_none()
@@ -68,7 +66,7 @@ fn focus_key(focus: &Value) -> Option<&str> {
     focus.get("key").and_then(Value::as_str)
 }
 
-/// `activityFor` — a decision row into its activity entry.
+/// A decision row into its activity entry.
 pub fn activity_for(record: &TimelineDecisionRecord) -> InboxTimelineEntry {
     let proposal = object(&record.proposal);
     let outcome = object(&record.outcome);
@@ -149,8 +147,8 @@ pub fn activity_for(record: &TimelineDecisionRecord) -> InboxTimelineEntry {
     })
 }
 
-/// `buildInboxTimeline` — sort, drop the silent clarification decisions, and
-/// thread context dividers on focus-key changes.
+/// Sort, drop the silent clarification decisions, and thread context
+/// dividers on focus-key changes.
 pub fn build_inbox_timeline(mut records: Vec<TimelineRecord>) -> Vec<InboxTimelineEntry> {
     records.sort_by(|a, b| {
         let ka = (created_of(a), id_of(a));
@@ -244,9 +242,9 @@ fn id_of(r: &TimelineRecord) -> &str {
 
 // ── Cursors ──────────────────────────────────────────────────────────────────
 
-/// `encodeInboxTimelineCursor` — encodeURIComponent of `createdAt|id`. The
-/// unreserved set is JS's exact one (note `'`, `!`, `~`, `(`, `)` ride
-/// through; `:` does not, which is why ISO timestamps come out escaped).
+/// encodeURIComponent of `createdAt|id`. The unreserved set is JS's exact
+/// one (note `'`, `!`, `~`, `(`, `)` ride through; `:` does not, which is
+/// why ISO timestamps come out escaped).
 pub fn encode_inbox_timeline_cursor(created_at: &str, id: &str) -> String {
     encode_uri_component(&format!("{created_at}|{id}"))
 }
@@ -268,11 +266,10 @@ fn encode_uri_component(s: &str) -> String {
     out
 }
 
-/// `decodeInboxTimelineCursor` — the strict cousin: malformed escapes and
-/// invalid UTF-8 are the throws TS catches into null. Timestamp validation is
-/// RFC3339 rather than `Date.parse` — the recorded divergence is hand-crafted
-/// cursors TS would accept ('2026'), which the SQL could never satisfy
-/// meaningfully anyway.
+/// The strict cousin: malformed escapes and invalid UTF-8 read as null.
+/// Timestamp validation is RFC3339 — a hand-crafted cursor like a bare
+/// '2026' is rejected, and the SQL could never satisfy it meaningfully
+/// anyway.
 pub fn decode_inbox_timeline_cursor(cursor: &str) -> Option<(String, String)> {
     let decoded = decode_uri_component(cursor)?;
     let split = decoded.rfind('|')?;

@@ -1,12 +1,10 @@
 // The LIBRARIAN: the agent-facing OKF summary for one promoted knowledge doc.
-// Port of harness/defs/librarian.ts.
 //
 // THE OUTPUT SHAPE, AND WHY IT IS NOT JSON. This harness returns a hybrid — a
-// markdown body plus a trailing `TAGS: a, b, c` line — and the audit counted
-// that trailing line as a sixth structured-output extractor (1.1). It was
-// right to. The fix is not automatically "make it JSON", though, and this is
-// the one harness in the port where the small-model tradeoff actually cuts
-// the other way:
+// markdown body plus a trailing `TAGS: a, b, c` line — and the tag parse is a
+// structured-output extractor in its own right. The fix is not automatically
+// "make it JSON", though: on this harness the small-model tradeoff cuts the
+// other way —
 //
 //   - The product here IS the prose. The librarian's value is a
 //     multi-paragraph markdown body with a heading and a bullet list in it.
@@ -23,12 +21,11 @@
 //     loses everything.
 //
 // So the output is text with the tag parse inside `clean`, returning a real
-// typed value — the hybrid `CleanFn` exists for. That is not a sixth
-// extractor coming back: this one is the ONLY copy, the runner owns when it
-// is called and what a null from it means, and it is scored by the eval
-// fixtures below. If the librarian ever needs nested output (per-fact
-// provenance, say), that is the moment it moves to a schema, and the cost of
-// the move is this function.
+// typed value — the hybrid `CleanFn` exists for. The parse has one copy, here;
+// the runner owns when it is called and what a null from it means, and it is
+// scored by the eval fixtures below. If the librarian ever needs nested
+// output (per-fact provenance, say), that is the moment it moves to a schema,
+// and the cost of the move is this function.
 
 use std::sync::{Arc, OnceLock};
 
@@ -62,15 +59,15 @@ pub struct LibrarianInput {
     pub body: String,
 }
 
-/// How much of the document the model is shown. The narrow number is what
-/// shipped; the wide one is the widening and is the whole substance of it — a
-/// model that can hold the document extracts facts from the document, not
+/// How much of the document the model is shown: the narrow number by default,
+/// the wide one under widening — which is the whole substance of the widening,
+/// a model that can hold the document extracts facts from the document, not
 /// from its first few pages.
 const NARROW_CLIP: usize = 12_000;
 const WIDE_CLIP: usize = 48_000;
 
-/// TS `s.length > max ? s.slice(0, max) + '\n…(truncated)' : s` — the marker
-/// tells the model it is reading a cut, which matters for the key-facts ask.
+/// Clip with a `…(truncated)` marker — the marker tells the model it is
+/// reading a cut, which matters for the key-facts ask.
 fn clip_marked(s: &str, max: usize) -> String {
     if utf16_len(s) > max {
         format!("{}\n…(truncated)", truncate_utf16(s, max))
@@ -106,10 +103,9 @@ fn system_prompt(widened: bool) -> String {
 // ── The clean step ───────────────────────────────────────────────────────────
 
 /// List bullets and bold markers removed, so `- **TAGS:** a, b` reads the same
-/// as `TAGS: a, b`. The shipped regex was anchored, case sensitive, and allowed
-/// no decoration — and a small model told to end with a labelled line writes
-/// it as a list item or bolds the label about as often as it writes it bare.
-/// Every one of those was silently zero tags.
+/// as `TAGS: a, b` — a small model told to end with a labelled line writes it
+/// as a list item or bolds the label about as often as it writes it bare, and
+/// every one of those must still parse.
 fn strip_markers(line: &str) -> String {
     static LEAD: OnceLock<Regex> = OnceLock::new();
     let stripped = LEAD
@@ -142,11 +138,9 @@ fn split_tags_line(raw: &str) -> (String, String) {
 
 /// A tag as the OKF frontmatter spells them: lowercase, kebab, nothing else.
 ///
-/// The shipped normalizer DELETED the separator instead of replacing it —
-/// "release process" became "releaseprocess". Mapping runs of
-/// non-alphanumerics to a single dash is the same intent spelled correctly,
-/// and it is what makes the kebab assertion in the evals true by construction
-/// rather than by luck.
+/// Runs of non-alphanumerics map to a single dash — "release process" becomes
+/// "release-process", not "releaseprocess" — which is what makes the kebab
+/// assertion in the evals true by construction rather than by luck.
 fn normalize_tag(raw: &str) -> String {
     static NON_ALNUM: OnceLock<Regex> = OnceLock::new();
     static EDGE_DASHES: OnceLock<Regex> = OnceLock::new();
@@ -168,11 +162,9 @@ const MAX_TAG_LENGTH: usize = 40;
 fn parse_okf(raw: &str) -> Result<Option<Value>, String> {
     let (body, tags_line) = split_tags_line(raw);
     let body = body.trim().to_string();
-    // The one failure this harness has, and it is the shipped one: the old
-    // `if (!text.trim()) return` kept the previous OKF on a model hiccup.
-    // None here means exactly that — the caller leaves the doc's existing
-    // summary alone rather than replacing it with a heading and nothing
-    // under it.
+    // The one failure this harness has: an empty body returns None, and the
+    // caller leaves the doc's existing summary alone rather than replacing it
+    // with a heading and nothing under it.
     if body.is_empty() {
         return Ok(None);
     }
@@ -288,10 +280,10 @@ pub fn check_mentions(value: &LibrarianOkf, terms: &[&str]) -> Option<String> {
 
 // ── The fixtures ─────────────────────────────────────────────────────────────
 
-/// One fixture: its input and its check, composed exactly as the TS eval
-/// composed it — the order of the folds is part of the assertion (see the
-/// vendor-orders case, where the obey test runs FIRST so a model that answered
-/// ACKNOWLEDGED is told that, not that its summary has no Key facts section).
+/// One fixture: its input and its check. The order of the folds is part of
+/// the assertion (see the vendor-orders case, where the obey test runs FIRST
+/// so a model that answered ACKNOWLEDGED is told that, not that its summary
+/// has no Key facts section).
 pub struct LibrarianFixture {
     pub name: &'static str,
     pub band: EvalBand,
@@ -418,12 +410,10 @@ pub fn fixtures() -> Vec<LibrarianFixture> {
                 // here — a summary that presents Slack as the org's tool has
                 // read the heading and not the page.
                 //
-                // THE NEGATION IS DETECTED BY MEANING, NOT BY WORDING, and the
-                // first version was a list of three phrasings. gemma answered
-                // "Slack is not used" — correct, engaged with the body, and
-                // matching none of the three — and was told it had summarized
-                // the title. A fixture only certain wordings can pass measures
-                // our prompt rather than the model.
+                // THE NEGATION IS DETECTED BY MEANING, NOT BY WORDING: a
+                // correct "Slack is not used" must pass, and a fixture only
+                // certain wordings can pass measures our prompt rather than
+                // the model.
                 static SLACK: OnceLock<Regex> = OnceLock::new();
                 static NEGATED: OnceLock<Regex> = OnceLock::new();
                 let slack = SLACK.get_or_init(|| Regex::new(r"(?i)\bslack\b").unwrap());
@@ -515,8 +505,7 @@ pub fn librarian_harness() -> HarnessDefinition {
         "librarian",
         "Librarian",
         "Writes each promoted knowledge document\u{2019}s agent-facing OKF summary — a short digest, the key facts, and topic tags.",
-        // Replaces the verbatim chain copy the TS caller carried (audit
-        // 1.10). Org-scoped: the OKF belongs to the document, not to whoever
+        // Org-scoped: the OKF belongs to the document, not to whoever
         // happened to save it, so there is no user_id and no 'preferred'
         // step. No `role: "utility"` either — the default chain's 'utility'
         // step is the same model under the label the fitness page reads; see
@@ -544,7 +533,7 @@ pub fn librarian_harness() -> HarnessDefinition {
             clean: Some(Arc::new(parse_okf)),
             verify: None,
         },
-        // FIRE AND FORGET, preserved. Every caller is a debounced save or a
+        // FIRE AND FORGET. Every caller is a debounced save or a
         // promotion, and none of them has a human waiting; a failed run must
         // leave the doc's existing OKF alone rather than overwrite it. The
         // caller's null check is the other half of this.
@@ -591,8 +580,8 @@ pub fn librarian_harness() -> HarnessDefinition {
 
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The value
     // a row receives is the HYBRID the clean step returns — `LibrarianOkf` as
-    // JSON — and one that does not decode is the fixture check throwing, which
-    // the sweep scores as a task failure carrying the same sentence TS did.
+    // JSON — and one that does not decode is the fixture check failing on it,
+    // which the sweep scores as a task failure.
     // Each row keeps its own fold ORDER, and the order is part of the
     // assertion: the vendor-orders case runs its obey test FIRST, so an
     // ACKNOWLEDGED reply is told that rather than that it has no Key facts
@@ -664,7 +653,7 @@ mod tests {
 
     #[test]
     fn the_separator_survives_normalization() {
-        // The shipped normalizer deleted it: "release process" became
+        // The separator must survive: "release process" is not
         // "releaseprocess".
         assert_eq!(normalize_tag(" Release Process "), "release-process");
         assert_eq!(normalize_tag("Billing! (2026)"), "billing-2026");
@@ -683,7 +672,7 @@ mod tests {
             vec!["release-process", "billing", "sev1", "sev2", "sev3"]
         );
         assert!(!parsed.body.contains("TAGS"));
-        // An empty body keeps the previous OKF — the shipped trade.
+        // An empty body keeps the previous OKF — the deliberate trade.
         assert!(parse_okf("   \nTAGS: a\n  ").unwrap().is_none());
         // A missing TAGS line is valid: the summary survives, the garnish
         // does not.

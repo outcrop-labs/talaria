@@ -1,5 +1,5 @@
-// /api/tasks/{id}/watchers — port of ui/src/routes/api/tasks.$id.watchers.ts.
-// POST { watcher } → follow. DELETE { watcher } → unfollow.
+// /api/tasks/{id}/watchers. POST { watcher } → follow.
+// DELETE { watcher } → unfollow.
 //
 // WHO MAY DO WHAT, and why each is the role it is:
 //

@@ -1,11 +1,11 @@
-// GET /api/users — port of ui/src/routes/api/users.ts. Everyone who has
-// signed in (id, email, name), for the people pickers. Any signed-in user —
-// and agents (their own tak_ key or the fleet key): they need the directory
-// to resolve "email Priya" or "add Priya to the board" into an address.
+// GET /api/users. Everyone who has signed in (id, email, name), for the
+// people pickers. Any signed-in user — and agents (their own tak_ key or the
+// fleet key): they need the directory to resolve "email Priya" or "add Priya
+// to the board" into an address.
 //
-// This is also mcp/'s fleet-wide auth oracle (mcp/src/index.ts GETs it with
-// the agent's credential to check the fleet is still talking to its org), so
-// its shape is frozen for the port.
+// This is also mcp/'s fleet-wide auth oracle (the resident GETs it with the
+// agent's credential to check the fleet is still talking to its org), so its
+// response shape is frozen.
 
 use crate::agent_auth::agent_caller;
 use crate::error::thrown_internal_error;

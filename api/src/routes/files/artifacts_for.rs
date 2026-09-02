@@ -1,8 +1,7 @@
-// /api/artifacts/for — port of ui/src/routes/api/artifacts.for.ts.
+// /api/artifacts/for.
 // Artifacts attached to a given target (e.g. a KB doc), filtered to the ones
 // the caller can read. GET /api/artifacts/for?targetType=kb-doc&targetId=<id>
-// — a static path that must win over /api/artifacts/{id}, exactly as
-// SvelteKit's file routing makes it.
+// — a static path that must win over /api/artifacts/{id} in the router.
 
 use axum::Json;
 use axum::extract::{Query, State};

@@ -4,8 +4,7 @@
 // gateway key, model targets mapped into the endpoint registry, skills copied
 // into the fleet dir, run on the Talaria chassis with a fresh state volume.
 // Nothing keeps pointing at the source directory afterwards — it's a one-way
-// door, re-runnable (existing slugs are reported and skipped). Port of
-// ui/src/server/fleet-federate.ts.
+// door, re-runnable (existing slugs are reported and skipped).
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -29,8 +28,7 @@ pub struct FederateResult {
     pub errors: Vec<String>,
 }
 
-/// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; literal keys are never stored
-/// (keyEnvOf).
+/// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; literal keys are never stored.
 fn key_env_of(api_key: Option<&str>) -> Option<String> {
     let raw = api_key?.trim();
     let inner = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
@@ -42,8 +40,7 @@ fn key_env_of(api_key: Option<&str>) -> Option<String> {
 }
 
 /// Endpoint identity + class for a model target. Local = the LAN inference
-/// plane; proxies to cloud models and first-party providers = cloud
-/// (endpointFor).
+/// plane; proxies to cloud models and first-party providers = cloud.
 struct EndpointFor {
     name: String,
     class: &'static str,
@@ -57,7 +54,7 @@ fn endpoint_for(block: &Value) -> EndpointFor {
         .and_then(Value::as_str)
         .unwrap_or("custom")
         .to_lowercase();
-    // TS strips exactly ONE trailing slash.
+    // Exactly ONE trailing slash is stripped.
     let base_url = block
         .get("base_url")
         .and_then(Value::as_str)
@@ -91,9 +88,8 @@ fn endpoint_for(block: &Value) -> EndpointFor {
     }
 }
 
-/// One raw model block → a config target, ensuring its endpoint exists and
-/// lists the model (targetOf). Numbers stay raw: yaml hands the same JS
-/// Number() the TS read did.
+/// One scalar → a number: yaml numbers pass through, numeric strings parse.
+/// target_of below uses this for context_length.
 fn num(v: Option<&Value>) -> Option<f64> {
     match v? {
         Value::Number(n) => n.as_f64(),
@@ -102,6 +98,8 @@ fn num(v: Option<&Value>) -> Option<f64> {
     }
 }
 
+/// One raw model block → a config target, ensuring its endpoint exists and
+/// lists the model.
 async fn target_of(pg: &PgPool, block: &Value) -> Result<Value, sqlx::Error> {
     let ep = endpoint_for(block);
     ensure_endpoint(
@@ -131,8 +129,8 @@ async fn target_of(pg: &PgPool, block: &Value) -> Result<Value, sqlx::Error> {
     Ok(t)
 }
 
-/// federateFromDir — the whole one-way door. Never throws: every failure is
-/// collected into `errors` (an unreadable roster aborts with one line).
+/// The whole one-way door. Never returns Err: every failure is collected
+/// into `errors` (an unreadable roster aborts with one line).
 pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateResult {
     let mut result = FederateResult {
         agents: Vec::new(),
@@ -184,8 +182,8 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
         if slug.is_empty() || department.is_empty() {
             continue;
         }
-        // Same alphabet the interactive path (createAgent) enforces, checked
-        // BEFORE these strings reach an .env line (ensureAgentKey), a path
+        // Same alphabet the interactive path (create_agent) enforces, checked
+        // BEFORE these strings reach an .env line (ensure_agent_key), a path
         // join, or a shell — an imported roster is third-party input, not
         // operator typing.
         if !slug_ok(slug) || !dept_ok(department) {
@@ -198,7 +196,7 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
         let r = federate_one(pg, root, dir, slug, department, entry, actor).await;
         match r {
             Ok(Some(a)) => result.agents.push(a),
-            Ok(None) => {} // skipped silently — malformed entry, same as TS's `continue`
+            Ok(None) => {} // skipped silently — malformed entry
             Err(e) => result.errors.push(format!("{slug}: {e}")),
         }
     }
@@ -362,9 +360,8 @@ async fn federate_one(
     }))
 }
 
-/// cp recursive force:false errorOnExist:false — copy what isn't there yet,
-/// ignore everything that goes wrong. Iterative (a worklist), so no async
-/// recursion.
+/// Copy what isn't there yet, never overwriting, ignoring everything that
+/// goes wrong. Iterative (a worklist), so no async recursion.
 async fn copy_dir_new(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     if !src.is_dir() {
         return Ok(());

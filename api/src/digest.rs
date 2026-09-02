@@ -1,6 +1,5 @@
 // The daily digest, and the approval SLA. Two scheduled jobs, one purpose:
-// turn "a human has to look at this" from a hope into a deadline. Port of
-// ui/src/server/digest.ts.
+// turn "a human has to look at this" from a hope into a deadline.
 //
 // WHY THIS FILE EXISTS
 //   Talaria's guardrail model parks work on people constantly — an outbound
@@ -86,8 +85,8 @@ const CONFIG_KEY: &str = "digest_config";
 const DIGEST_STATE_KEY: &str = "digest_state";
 const ESCALATION_STATE_KEY: &str = "approval_escalation_state";
 
-/// `process.env.TZ || 'UTC'` — read per call, not cached, so a config test
-/// is not married to the box the binary booted on.
+/// `TZ` if set and non-empty, else UTC — read per call, not cached, so a
+/// config test is not married to the box the binary booted on.
 fn default_zone() -> String {
     std::env::var("TZ")
         .ok()
@@ -98,7 +97,7 @@ fn default_zone() -> String {
 pub async fn digest_config(pg: &PgPool) -> DigestConfig {
     let stored = get_setting(pg, CONFIG_KEY, json!({})).await;
     // The hour is an integer in range or the default — `Number.isInteger`
-    // there, `as_i64` here: 8.5 and "8" both fall back rather than half-fire.
+    // semantics: 8.5 and "8" both fall back rather than half-fire.
     let hour = stored
         .get("hour")
         .and_then(|v| v.as_i64())
@@ -133,10 +132,10 @@ pub async fn digest_config(pg: &PgPool) -> DigestConfig {
 
 // ── Recipients ───────────────────────────────────────────────────────────────
 
-/// One person the pass considers. The TS row carries `name` and `role` too;
-/// nothing on this plane reads them — `role` was DELIBERATELY dropped from
-/// `build_digest` (the digest is assembled from what the user can reach, and
-/// there is no admin bypass to pass in) — so the query does not fetch them.
+/// One person the pass considers. `name` and `role` are not fetched —
+/// nothing on this plane reads them, and `role` was DELIBERATELY dropped
+/// from `build_digest` (the digest is assembled from what the user can
+/// reach, and there is no admin bypass to pass in).
 #[derive(Debug, Clone)]
 pub struct Recipient {
     pub id: String,
@@ -205,8 +204,7 @@ pub fn headline(approvals: usize, review: usize, blocked: usize, triage: usize) 
     let mut phrases: Vec<String> = Vec::new();
     if approvals > 0 {
         // "1 item needs your approval" / "2 items need your approval" — the
-        // verb agrees with the count, and the TS template spelt the s the same
-        // awkward way this does.
+        // verb agrees with the count, singular 's' and all.
         phrases.push(format!(
             "{} need{} your approval",
             plural(approvals, "item"),
@@ -568,8 +566,8 @@ pub fn real_digest_deps(state: &AppState, realtime: crate::realtime::RealtimeDep
 /// a crash between the provider accepting a message and the ledger write
 /// landing re-mails that ONE person. Closing it entirely needs the mark and
 /// the send in one transaction, which no mail provider offers.
-/// Err is the TS throw: a pass that could not even read its recipient list is
-/// a FAILED run — the scheduler's error path is the only way an operator
+/// Err is a FAILED run — a pass that could not even read its recipient list:
+/// the scheduler's error path is the only way an operator
 /// hears "nobody got their digest and why", and a quiet zero-count pass would
 /// read as "nothing to do".
 pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResult, String> {
@@ -857,9 +855,9 @@ const ESCALATE_MAX_PER_PASS: usize = 8;
 /// enough that an operator who does not like what they are seeing can turn
 /// email off before it becomes the workspace's morning.
 ///
-/// WHAT THIS CAP DOES NOT COVER, said out loud because the comment that used
-/// to sit above it claimed otherwise. It bounds the NAG and ESCALATE stages
-/// only. The ANNOUNCE stage (`sweep_unannounced`) is bounded by AGE and not by
+/// WHAT THIS CAP DOES NOT COVER, said out loud: it bounds the NAG and
+/// ESCALATE stages only. The ANNOUNCE stage (`sweep_unannounced`) is bounded
+/// by AGE and not by
 /// COUNT: everything older than the nag threshold is retired to these two
 /// stages, which are capped — but everything YOUNGER is announced in one pass,
 /// however many there are. A count cap belongs next to that sweep, not here;
@@ -947,8 +945,8 @@ pub struct EscalationRunResult {
 }
 
 /// `ageMinutes`: minutes since `waiting_since`, or None for an unparseable
-/// clock — TS's `new Date(iso).getTime()` giving NaN, whose every comparison
-/// is false. Callers carry that falseness with `is_some_and`.
+/// clock — a NaN age (JS `new Date(iso).getTime()` on garbage), whose every
+/// comparison is false. Callers carry that falseness with `is_some_and`.
 fn age_minutes(iso: &str, now_ms: i64) -> Option<f64> {
     iso_to_epoch_ms(iso).map(|ms| (now_ms - ms) as f64 / 60_000.0)
 }
@@ -1049,8 +1047,8 @@ fn waited_for(minutes: f64) -> String {
     let hours = (minutes / 60.0).floor();
     if hours < 1.0 {
         // Sub-hour waits round UP to their nearest minute, floor 1 — "1
-        // minutes" is the TS quirk (`${Math.max(1, Math.round(minutes))}
-        // minutes`) and it ships rather than being silently grammar-fixed.
+        // minutes" is the shipped quirk (`Math.max(1, Math.round(minutes))`
+        // minutes) and it stays rather than being silently grammar-fixed.
         return format!("{} minutes", minutes.round().max(1.0) as i64);
     }
     if hours < 48.0 {
@@ -1059,7 +1057,7 @@ fn waited_for(minutes: f64) -> String {
     format!("{} days", (hours / 24.0).floor() as i64)
 }
 
-/// One pass of the SLA. Err is the TS throw on the closing state write: the
+/// One pass of the SLA. Err is the closing state write failing: the
 /// notifications already went out, and a pass whose marks did not persist is a
 /// FAILED run — the stages will re-fire on the next tick, and an operator
 /// hearing nothing would read a duplicated nag as the SLA misbehaving.
@@ -1512,7 +1510,7 @@ mod tests {
 
     #[test]
     fn waited_for_rounds_up_under_an_hour_and_goes_days_past_two() {
-        assert_eq!(waited_for(0.4), "1 minutes"); // the TS quirk, shipped
+        assert_eq!(waited_for(0.4), "1 minutes"); // the shipped quirk
         assert_eq!(waited_for(30.0), "30 minutes");
         assert_eq!(waited_for(60.0), "1 hour");
         assert_eq!(waited_for(120.0), "2 hours");
@@ -1595,8 +1593,8 @@ mod tests {
         // instruction instead of a URL that would not resolve.
         let bare = render_digest(&content, &(None, 5));
         assert_eq!(bare.unsubscribe_url, None);
-        // No base means no button in the HTML (TS renders it only on the
-        // `links.base ?` arm) and no URL anywhere in the mail — the exit is
+        // No base means no button in the HTML (rendered only on the Some arm)
+        // and no URL anywhere in the mail — the exit is
         // the spelled instruction, and the text part points at the app itself.
         assert!(!bare.html.contains("https://"));
         assert!(bare.text.contains("Open Talaria to act on these."));
@@ -1658,8 +1656,8 @@ mod tests {
 
     #[test]
     fn the_state_blobs_round_trip_in_the_ts_spelling() {
-        // The TS scheduler still owns this job until the flip; the blob this
-        // pass writes is the one the NEXT pass — either runtime — reads.
+        // The blob's spelling is the stored contract: a pass writes the
+        // shape the next pass reads, key for key.
         let state = DigestState {
             sent_on: [("u1".to_string(), "2026-08-29".to_string())]
                 .into_iter()
@@ -1684,8 +1682,8 @@ mod tests {
             Some("2026-08-29T00:00:00.000Z")
         );
 
-        // A written-back record keeps the TS spellings and drops nothing the
-        // other runtime wrote.
+        // A written-back record keeps the spellings it read and drops
+        // nothing.
         let back = serde_json::to_value(&esc).expect("serializes");
         assert_eq!(
             back,

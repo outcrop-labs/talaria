@@ -1,6 +1,6 @@
-// /api/kb/spaces/{id} — port of ui/src/routes/api/kb.spaces.$id.ts. One KB
-// folder. Same permission model as docs: read gated by visibility, writes by
-// the edit policy + editor grants, sharing owner-only (canGovern).
+// /api/kb/spaces/{id}. One KB folder. Same permission model as docs: read
+// gated by visibility, writes by the edit policy + editor grants, sharing
+// owner-only (can_govern).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -25,8 +25,8 @@ use crate::state::AppState;
 
 use super::kb_spaces::guarded_of;
 
-/// The grant list as TS's listEditors aliases it — principalType, principalId,
-/// role, in that order.
+/// The grant list on the wire — principalType, principalId, role, in that
+/// order.
 pub(crate) fn editors_json(grants: &[EditorGrant]) -> Vec<Value> {
     grants
         .iter()
@@ -40,13 +40,13 @@ pub(crate) fn editors_json(grants: &[EditorGrant]) -> Vec<Value> {
         .collect()
 }
 
-/// z.array(Editor).max(200) — elements validate before the array-length check
-/// (zod 4's issue order, the same probed behavior the rag bindings are pinned
-/// on). The Editor object itself: enum principalType, min-1/max-200
-/// principalId, role enum defaulting 'viewer'.
+/// editors: an array capped at 200 — elements validate BEFORE the array-length
+/// check (the same issue order the rag bindings are pinned on). Each Editor:
+/// enum principalType, min-1/max-200 principalId, role enum defaulting
+/// 'viewer'.
 pub(crate) fn parse_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>>, String> {
     let Some(v) = v else {
-        return Ok(None); // absent — what `.optional()` admits
+        return Ok(None); // absent — no editors change requested
     };
     let arr = v.as_array().ok_or_else(|| {
         format!(
@@ -62,7 +62,7 @@ pub(crate) fn parse_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>
         let principal_type = enum_member(inner, "principalType", &["user", "agent"])?;
         let principal_id = string_member(inner, "principalId", 1, 200)?;
         let role = match inner.get("role") {
-            None | Some(Value::Null) => "viewer".to_string(), // .default('viewer')
+            None | Some(Value::Null) => "viewer".to_string(), // role defaults to 'viewer'
             Some(_) => enum_member(inner, "role", &["viewer", "editor"])?,
         };
         out.push(EditorGrant {
@@ -78,8 +78,8 @@ pub(crate) fn parse_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>
 }
 
 /// The Patch body → the tri-state engine patch. Field-by-field, each with its
-/// own zod shape (name min-1/max-80, description/icon nullish, body max
-/// 500k, visibility/editPolicy enums, editors the shared parser).
+/// own shape (name min-1/max-80, description/icon nullish, body max 500k,
+/// visibility/editPolicy enums, editors the shared parser).
 fn parse_patch(obj: &serde_json::Map<String, Value>) -> Result<SpacePatch, String> {
     Ok(SpacePatch {
         name: match obj.get("name") {

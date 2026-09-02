@@ -1,15 +1,11 @@
-// The Concluder: a relay's last word. Port of harness/defs/concluder.ts.
+// The Concluder: a relay's last word.
 //
 // Unlike the Distiller, this one is USER-INITIATED — somebody clicked "conclude"
 // and is watching a spinner — so its failures are visible and its caller
-// (`concludeRelay`, crossing with the channels plane) throws user-facing copy
-// rather than swallowing a null. That difference is the whole reason the two
-// harnesses in this pair declare different failure handling despite doing
-// nearly the same job.
-//
-// PORTED FROM comms-decay.ts (audit 1.10). Prompt, temperature and user turn
-// are the originals. The hand-copied model chain and the `if (!text.trim())`
-// check are gone; the runner owns both.
+// (`conclude_relay`, comms_decay.rs) returns user-facing copy rather than
+// swallowing a null. That difference is the whole reason the two harnesses in
+// this pair declare different failure handling despite doing nearly the same
+// job.
 
 use std::sync::{Arc, OnceLock};
 
@@ -24,7 +20,7 @@ use crate::harness::define::{
 };
 use crate::harness_model::{MUSE_CHAIN, ModelSpec};
 
-// camelCase on the wire — the TS def's declared JSON contract (`channelName`).
+// camelCase on the wire (`channelName`) — `conclude_relay` sends this shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConcludeInput {
@@ -36,25 +32,23 @@ pub struct ConcludeInput {
 
 // ── The prompts ──────────────────────────────────────────────────────────────
 
-/// THE NARROW PROMPT, AND THE FLOOR IT WAS MISSING.
+/// THE NARROW PROMPT, AND WHY IT IS NOT JUST THE FIRST SENTENCE. Two fixtures
+/// grade behavior the positive ask alone never states, and the sweep runs
+/// NARROW on every model that is not widened — so the negative clauses have to
+/// be in the prompt every candidate actually gets:
 ///
-/// It used to be the first sentence alone. Two fixtures graded rules that only
-/// the WIDENED prompt stated, and the sweep runs NARROW on every model that is
-/// not widened — so most candidates were being graded on instructions they were
-/// never given:
+///   `leaves an unowned follow-up unowned instead of guessing at a name` —
+///   the "leave it unattributed rather than guessing" clause.
+///   `does not turn a config change into an invented deliverable` — the
+///   distiller says "Never invent anything"; this harness, which summarises
+///   a transcript the same way, says it here.
 ///
-///   `leaves an unowned follow-up unowned instead of guessing at a name` — the
-///   "leave it unattributed rather than guessing" clause lives in WIDE.
-///   `does not turn a config change into an invented deliverable` — no prompt
-///   said not to invent one. The distiller has "Never invent anything"; this
-///   harness, which summarises a transcript the same way, had nothing.
-///
-/// WHAT WIDENING STILL BUYS is unchanged, and that matters: the fold below is
-/// NEGATIVE (do not invent, do not guess an owner) while WIDE's ask is POSITIVE
-/// (attribute every decision and every follow-up by name). A model that only
-/// has the narrow half writes a correct unattributed summary; a widened one
-/// writes an attributed one. Moving the negative half down does not make the
-/// positive half redundant.
+/// WHAT WIDENING STILL BUYS: the fold below is NEGATIVE (do not invent, do
+/// not guess an owner) while WIDE's ask is POSITIVE (attribute every decision
+/// and every follow-up by name). A model that only has the narrow half writes
+/// a correct unattributed summary; a widened one writes an attributed one. The
+/// negative half being in both prompts does not make the positive half
+/// redundant.
 const NARROW: &str = "Write the closing summary for a work discussion: what was decided, what was produced, and any follow-ups — crisp markdown, a few bullets per section, no preamble.\nOnly what the transcript actually says: never invent a deliverable, an outcome or a date, and where it does not name who owns a follow-up, leave it unowned rather than guessing.";
 
 /// The widened prompt. The narrow one already asks for sections, so widening
@@ -231,9 +225,9 @@ fn no_shorter_than_the_relay(value: &str) -> Option<String> {
 // ── The fixtures ─────────────────────────────────────────────────────────────
 
 /// One fixture: the section fold, then the load-bearing tokens, then the
-/// bespoke tail the fixture exists to make. `sections: false` spells the TS
-/// fixtures that chained straight to `carries` (or to their own fold) without
-/// the formatting half.
+/// bespoke tail the fixture exists to make. `sections: false` marks the rows
+/// that grade content only — their point is the tokens or the tail, and a
+/// plain-prose answer can carry both.
 pub struct ConcludeFixture {
     pub name: &'static str,
     pub band: EvalBand,
@@ -259,11 +253,11 @@ impl ConcludeFixture {
     }
 }
 
-/// NINE FIXTURES, THREE BANDS. Both originals ran on the same transcript, so a
-/// model that happened to section THAT relay scored a perfect concluder. The
-/// shapes below are the ones that break the job differently: a reversal, a
-/// relay with nobody named, a relay that produced nothing, and one long enough
-/// that keeping every section takes actually reading it.
+/// NINE FIXTURES, THREE BANDS, deliberately different transcripts — a model
+/// that happens to section one relay is not a concluder. The shapes below
+/// break the job differently: a reversal, a relay with nobody named, a relay
+/// that produced nothing, and one long enough that keeping every section
+/// takes actually reading it.
 pub fn fixtures() -> Vec<ConcludeFixture> {
     vec![
         ConcludeFixture {
@@ -396,14 +390,13 @@ pub fn concluder_harness() -> HarnessDefinition {
         "concluder",
         "Concluder",
         "Writes the closing summary when a relay concludes — decisions, deliverables, follow-ups.",
-        // The chain comms-decay hand-wrote: the Concluder's assigned model,
-        // else the concluding user's own muse. That order IS the muse chain,
-        // and this is its second spelt use — one spelling, referenced rather
-        // copied, so an admin who reorders the muse's resolution reorders
-        // every "the user's own assistant" fallback with it. `user_id` comes
-        // from the RUN CONTEXT, not the def: the runner threads ctx's user
-        // into the resolve edge, which turns on the 'preferred' step and the
-        // member model allowlist for whoever clicked conclude.
+        // The Concluder's assigned model, else the concluding user's own muse
+        // — MUSE_CHAIN by reference, not a hand-copied list, so an admin who
+        // reorders the muse's resolution reorders every "the user's own
+        // assistant" fallback with it. `user_id` comes from the RUN CONTEXT,
+        // not the def: the runner threads ctx's user into the resolve edge,
+        // which turns on the 'preferred' step and the member model allowlist
+        // for whoever clicked conclude.
         ModelSpec {
             pin: Some("concluder"),
             role: None,
@@ -413,8 +406,8 @@ pub fn concluder_harness() -> HarnessDefinition {
         Arc::new(|input: &Value, ctx: &RenderContext| {
             let conclude: ConcludeInput =
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
-            // The FIRST render branch on `widened` in the ported defs — the
-            // capability-gated attribution ask (see WIDE above).
+            // The render branches on `widened` — the capability-gated
+            // attribution ask (see WIDE above).
             let system = if ctx.widened { WIDE } else { NARROW };
             Ok(vec![
                 Message::system(system),
@@ -435,9 +428,9 @@ pub fn concluder_harness() -> HarnessDefinition {
             })),
             verify: None,
         },
-        // NOT Throw. `run_harness` returns rather than throws when no model
-        // resolves at all, so Throw would cover one of this caller's two
-        // failure modes and silently skip the other. `concludeRelay`
+        // NOT Throw. `run_harness` returns Ok with no model when nothing in
+        // the chain resolves, so Throw would cover one of this caller's two
+        // failure modes and silently skip the other. `conclude_relay`
         // distinguishes them itself — a null MODEL means "nothing is
         // configured to summarize with", a null VALUE means "it was asked and
         // answered with nothing" — and those are different sentences for the
@@ -452,8 +445,8 @@ pub fn concluder_harness() -> HarnessDefinition {
         // Refusing would be the wrong trade even though this one is
         // user-facing: a loose summary is still a record, and the person is
         // right there to read it and re-run. Failure is already visible here —
-        // `concludeRelay` throws and the UI shows the message — so there is
-        // nothing for a floor to protect.
+        // `conclude_relay` returns Err and the conclude route shows the
+        // message — so there is nothing for a floor to protect.
         "A smaller model writes a looser summary; if it returns nothing at all the relay stays open and you can conclude it again.",
     );
     d.widen = Some(Widen {
@@ -480,7 +473,7 @@ pub fn concluder_harness() -> HarnessDefinition {
     // sweep's thrown check, written as a FAIL sentence.
     //
     // No `dry_run`: a concluder turn calls no tools — the transcript arrives
-    // rendered and clipped by `concludeRelay`, and the reply is a single
+    // rendered and clipped by `conclude_relay`, and the reply is a single
     // string — so a replay of these rows runs single-shot against the empty
     // context and needs no world.
     d.evals = fixtures()
@@ -748,8 +741,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_proven_to_follow_instructions_gets_the_attribution_ask() {
-        // THE FIRST WIDEN BRANCH IN THE PORTED DEFS. Widening demands evidence
-        // — a probe, not a claim — and what it buys here is attribution.
+        // Widening demands evidence — a probe, not a claim — and what it buys
+        // here is attribution.
         let def = concluder_harness();
         let r = recorded_run(World {
             facts: facts(&[("spark", "instruction-following", probe(true))]),

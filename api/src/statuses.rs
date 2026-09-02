@@ -1,10 +1,9 @@
-// Board statuses — the port of ui/src/server/statuses.ts, whole: the read
-// plane (list/meta/diagnostics), the shared invariants (agentStartConflict,
-// the required-category rules), and all four writes. The update/delete halves
-// MOVE TICKETS through update_task (recategorising a populated sign-off column
-// drains it; deleting one reassigns) — never a second writer of tasks.status,
-// which is the exact shape those functions exist to avoid. TS reached
-// tasks.ts by dynamic import to dodge the cycle; Rust has no cycle problem.
+// Board statuses — whole: the read plane (list/meta/diagnostics), the shared
+// invariants (agent_start_conflict, the required-category rules), and all
+// four writes. The update/delete halves MOVE TICKETS through update_task
+// (recategorising a populated sign-off column drains it; deleting one
+// reassigns) — never a second writer of tasks.status, which is the exact
+// shape those functions exist to avoid.
 
 use crate::boards::get_board_agent_config;
 use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
@@ -17,9 +16,8 @@ use std::collections::HashSet;
 /// resolver here has to agree with the engine about what those two words mean.
 pub const OFF_BOARD_STATUSES: &[&str] = &["failed", "cancelled"];
 
-/// The wire row (statuses.ts BoardStatus): id is None for virtual defaults and
-/// the system blocked row; `system` rides only on that row, so it is omitted
-/// rather than null (TS `system?: boolean` under JSON.stringify).
+/// The wire row: id is None for virtual defaults and the system blocked row;
+/// `system` rides only on that row, so it is omitted rather than null.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardStatus {
@@ -48,8 +46,8 @@ pub fn blocked_status() -> BoardStatus {
     }
 }
 
-/// The shipped default set (statuses.ts DEFAULTS) — what a board that never
-/// customized serves, and what materialize() copies into rows on first touch.
+/// The shipped default set — what a board that never customized serves, and
+/// what materialize() copies into rows on first touch.
 /// (key, label, color, category, agentStart.)
 const DEFAULTS: &[(&str, &str, &str, &str, bool)] = &[
     ("inbox", "Inbox", "slate", "open", false),
@@ -113,10 +111,10 @@ pub async fn list_statuses(pg: &PgPool, board_id: &str) -> Result<Vec<BoardStatu
     Ok(inject_blocked(base))
 }
 
-/// BLOCKED's placement, split out of listStatuses so it is testable without a
-/// board: after the last 'active' status, falling back to just-before-review,
-/// then to the end. Positions are renumbered over the finished list, exactly
-/// as TS's `.map((s, i) => …)` does.
+/// BLOCKED's placement, split out of list_statuses so it is testable without
+/// a board: after the last 'active' status, falling back to
+/// just-before-review, then to the end. Positions are renumbered over the
+/// finished list.
 fn inject_blocked(mut base: Vec<BoardStatus>) -> Vec<BoardStatus> {
     let mut at: i64 = -1;
     for (i, s) in base.iter().enumerate() {
@@ -139,8 +137,8 @@ fn inject_blocked(mut base: Vec<BoardStatus>) -> Vec<BoardStatus> {
     base
 }
 
-/// Workflow metadata the task engine needs, resolved per board (statuses.ts
-/// StatusMeta). NO KEY HERE IS A GUESS: every field either names a column this
+/// Workflow metadata the task engine needs, resolved per board. NO KEY HERE
+/// IS A GUESS: every field either names a column this
 /// board really has, or is None — resolvers do not invent destinations. The
 /// one fail-SAFE exception is `done_keys` (see below). Every destination field
 /// is picked from ONE filtered list (`placeable`): never terminal, never the
@@ -190,8 +188,8 @@ impl StatusMeta {
     }
 }
 
-/// The resolution, split out of statusMeta so the rules are testable against a
-/// synthetic list. Field-by-field port of statuses.ts statusMeta.
+/// The resolution, split out of status_meta so the rules are testable against
+/// a synthetic list.
 fn meta_of(list: &[BoardStatus]) -> StatusMeta {
     let agent_start: Vec<String> = list
         .iter()
@@ -264,8 +262,8 @@ pub struct StatusDiagnostic {
     pub text: String,
 }
 
-/// WHAT THE BOARD OWNER CANNOT OTHERWISE SEE (statuses.ts statusDiagnostics).
-/// Derived, not re-derived: every judgment reads statusMeta's resolved fields,
+/// WHAT THE BOARD OWNER CANNOT OTHERWISE SEE. Derived, not re-derived: every
+/// judgment reads status_meta's resolved fields,
 /// so a board is called broken here exactly when the engine will refuse. The
 /// agent-workflow diagnostics are conditional on the board permitting agents;
 /// everything else is wrong for every board and stays unconditional.
@@ -283,9 +281,10 @@ pub async fn status_diagnostics(
     let cols =
         |keys: &[String]| -> String { keys.iter().map(|k| name(k)).collect::<Vec<_>>().join(", ") };
 
-    // Data that predates the cross-validation. agentStartConflict is the same
-    // rule the writes use, so this panel calls a row illegal exactly when a
-    // write of it would be refused; the two categories break DIFFERENT things.
+    // Data that predates the cross-validation. agent_start_conflict is the
+    // same rule the writes use, so this panel calls a row illegal exactly when
+    // a write of it would be refused; the two categories break DIFFERENT
+    // things.
     let legacy: Vec<&BoardStatus> = list
         .iter()
         .filter(|s| {
@@ -398,13 +397,11 @@ pub async fn status_diagnostics(
     Ok(out)
 }
 
-/// SQL fragment: `t.status` is in the given CATEGORY on the ticket's own board,
-/// with the legacy fallback for never-customized boards (statuses.ts
-/// statusCategorySql).
+/// SQL fragment: `t.status` is in the given CATEGORY on the ticket's own
+/// board, with the legacy fallback for never-customized boards.
 ///
-/// Interpolate only with a LITERAL category + fallback list — no user input —
-/// which is the same contract the TS template carries; the callers here are
-/// compile-time strings.
+/// Interpolate only with a LITERAL category + fallback list — no user input;
+/// the callers here are compile-time strings.
 pub fn status_category_sql(category: &str, legacy_keys: &[&str]) -> String {
     let keys = legacy_keys
         .iter()
@@ -446,9 +443,8 @@ async fn materialize(pg: &PgPool, board_id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// The slug of a label (statuses.ts `slug`): lowercase, runs of anything but
-/// [a-z0-9] become one '_', leading/trailing '_' stripped, 40 chars, with
-/// 'status' as the floor.
+/// The slug of a label: lowercase, runs of anything but [a-z0-9] become one
+/// '_', leading/trailing '_' stripped, 40 chars, with 'status' as the floor.
 fn slug(label: &str) -> String {
     let mut out = String::new();
     let mut underscore = false;
@@ -504,9 +500,8 @@ const AGENT_REQUIRED_CATEGORIES: &[&str] = &["review"];
 /// get what the owner asked for.
 pub const REVIEW_REQUIRED_FOR_AGENTS: &str = "this is the board’s last review column, and agents are allowed to work this board. An agent may never sign off its own work, so it hands a finished ticket to a review column for a person — with none, every hand-off is refused and an agent here can start work it can never finish. Keep one review column, or turn agents off for this board (board settings → agents), after which a review column is no longer required.";
 
-/// Does this board admit agents at all — the board's own policy, allow-all or
-/// an explicit allow-list (statuses.ts boardPermitsAgents; TS dynamic-imports
-/// boards.ts to dodge a cycle, which Rust does not have).
+/// Does this board admit agents at all — the board's own policy, allow-all
+/// or an explicit allow-list.
 async fn board_permits_agents(pg: &PgPool, board_id: &str) -> Result<bool, sqlx::Error> {
     let cfg = get_board_agent_config(pg, board_id).await?;
     Ok(cfg.allow_all || !cfg.models.is_empty())
@@ -514,7 +509,7 @@ async fn board_permits_agents(pg: &PgPool, board_id: &str) -> Result<bool, sqlx:
 
 /// Refuse an operation that would leave this board with no column of
 /// `category` (the row being deleted, or recategorised away, is `except_id`).
-/// The inner Err is TS's thrown sentence, answered as a 400 by the route.
+/// The inner Err is the refusal sentence, answered as a 400 by the route.
 pub async fn assert_not_last_of_category(
     pg: &PgPool,
     board_id: &str,
@@ -573,12 +568,11 @@ pub fn agent_start_conflict(category: &str, agent_start: bool) -> Option<&'stati
     None
 }
 
-/// statuses.ts createStatus. The inner Err is TS's thrown conflict sentence.
-/// Key-addressed boards get the defaults materialized first; the key is minted
-/// off the label with the two namespace deflections, and a clash with a live
-/// row gets a four-char suffix (TS: four base-36 chars from Math.random; the
-/// uuid's hex tail is the same shape — four lowercase alphanumerics, a fresh
-/// ~1.6M space per attempt — without pulling an RNG into the crate).
+/// Create a column. The inner Err is the conflict sentence. Key-addressed
+/// boards get the defaults materialized first; the key is minted off the
+/// label with the two namespace deflections, and a clash with a live row gets
+/// a four-char suffix — the uuid's hex tail, four lowercase alphanumerics, a
+/// fresh ~1.6M space per attempt.
 pub async fn create_status(
     pg: &PgPool,
     realtime: &RealtimeDeps,
@@ -640,7 +634,8 @@ pub async fn create_status(
     }))
 }
 
-/// The permutation check under reorderStatuses, split out so it is testable:
+/// The permutation check under reorder_statuses, split out so it is
+/// testable:
 /// an order that names a key the board does not have, or leaves one of its
 /// columns out, was once accepted with a 200 and quietly produced an order
 /// nobody asked for. The refusal names every part of the mismatch at once,
@@ -763,11 +758,11 @@ pub async fn reorder_statuses(
 }
 
 // ── The update/delete writes ─────────────────────────────────────────────────
-// Both MOVE TICKETS, which is why they waited for the tasks slice: the moves
-// go through `update_task` — never a second writer of tasks.status — and the
-// actor who reshaped the column owns them on every ticket's activity log.
+// Both MOVE TICKETS: the moves go through `update_task` — never a second
+// writer of tasks.status — and the actor who reshaped the column owns them on
+// every ticket's activity log.
 
-/// updateStatus's patch — every field present-or-absent (no clears).
+/// The update patch — every field present-or-absent (no clears).
 pub struct StatusPatch {
     pub label: Option<String>,
     pub color: Option<String>,
@@ -776,10 +771,10 @@ pub struct StatusPatch {
     pub position: Option<i32>,
 }
 
-/// statuses.ts updateStatus. Key-addressed: boards that never customized
-/// serve VIRTUAL defaults with no row ids, so the stable handle is the status
-/// KEY — materialize turns the virtual set into rows on first touch, then the
-/// key resolves.
+/// Update a column. Key-addressed: boards that never customized serve
+/// VIRTUAL defaults with no row ids, so the stable handle is the status KEY —
+/// materialize turns the virtual set into rows on first touch, then the key
+/// resolves.
 ///
 /// `actor` is required for the same reason delete_status requires one:
 /// recategorising a populated sign-off column MOVES TICKETS, and a ticket move
@@ -908,8 +903,7 @@ pub async fn update_status(
     Ok(Ok(()))
 }
 
-/// What a sign-off category HOLDS, for the refusal sentences (statuses.ts
-/// SIGNOFF_CATEGORIES).
+/// What a sign-off category HOLDS, for the refusal sentences.
 fn signoff_what(category: &str) -> Option<&'static str> {
     match category {
         "review" => Some("waiting for sign-off"),
@@ -918,8 +912,8 @@ fn signoff_what(category: &str) -> Option<&'static str> {
     }
 }
 
-/// statuses.ts drainSignoffColumn — recategorising a populated sign-off
-/// column must not release its tickets. With exactly ONE sibling of the same
+/// Recategorising a populated sign-off column must not release its tickets.
+/// With exactly ONE sibling of the same
 /// kind the move is made for the owner (each ticket through update_task, so
 /// activity/completed_at/watchers/dispatch all happen); with none or several
 /// it is REFUSED and the sentence makes the owner choose, because which
@@ -1038,7 +1032,7 @@ async fn drain_signoff_column(
     Ok(Ok(()))
 }
 
-/// statuses.ts deleteStatus. The last intake and the last terminal column are
+/// Delete a column. The last intake and the last terminal column are
 /// protected on every board, and the last review catch on every board that
 /// permits agents — status_meta resolves each of those to a real key for
 /// whoever needs it.
@@ -1098,8 +1092,8 @@ pub async fn delete_status(
     .await?;
     // BEFORE the column is dropped: update_task refuses a status the board
     // does not have, and while this move is legal the one being vacated must
-    // still resolve for the ticket it is reading. A refused move (TS lets the
-    // throw carry out of the loop) names the ticket that could not move.
+    // still resolve for the ticket it is reading. A refused move names the
+    // ticket that could not move.
     for (ticket,) in &doomed {
         let patch = crate::tasks::TaskPatch {
             status: Some(reassign_to.to_string()),
@@ -1154,7 +1148,7 @@ mod tests {
              and bs.category = 'review') or ( not exists (select 1 from board_statuses bs where \
              bs.board_id = t.board_id) and t.status in ('quality_review') ) )"
         );
-        // A second legacy key joins with a comma, as the TS `.map().join()` does.
+        // A second legacy key joins with a comma.
         assert!(status_category_sql("done", &["done", "closed"]).contains("'done', 'closed'"));
     }
 
@@ -1165,9 +1159,9 @@ mod tests {
         assert_eq!(slug("Hi!!!  ---  There"), "hi_there"); // runs collapse to one _
         assert_eq!(slug("!?!"), "status"); // stripped to nothing → floor
         assert_eq!(slug("_leading"), "leading"); // leading _ trimmed
-        assert_eq!(slug("Résumé"), "r_sum"); // non-ascii is a separator, as TS's regex is
-        // 40-char cap, applied after the trim — TS slice(0,40) can cut on the
-        // separator and leave a trailing '_', and so does this.
+        assert_eq!(slug("Résumé"), "r_sum"); // non-ascii is a separator
+        // 40-char cap, applied after the trim — the cut can land on a
+        // separator and leave a trailing '_'.
         assert_eq!(slug("a".repeat(50).as_str()), "a".repeat(40));
         assert_eq!(
             slug("a?b?c?d?e?f?g?h?i?j?k?l?m?n?o?p?q?r?s?t?u"),
@@ -1267,7 +1261,7 @@ mod tests {
 
     #[test]
     fn meta_refuses_rather_than_guesses() {
-        // A board with NO done columns: doneKeys falls back to the phantom
+        // A board with NO done columns: done_keys falls back to the phantom
         // 'done' — fail-SAFE, it only widens what agents may not touch.
         let list = vec![status("inbox", "Inbox", "open", false)];
         let meta = meta_of(&list);
@@ -1331,7 +1325,7 @@ mod tests {
         ));
         assert!(msg.ends_with("Nothing was reordered."));
 
-        // Unknown keys dedupe in the display, as TS's [...new Set()] does.
+        // Unknown keys dedupe in the display.
         let msg = order_refusal(&have, &["ghost".into(), "ghost".into()]).unwrap();
         assert_eq!(msg.matches("“ghost”").count(), 1);
 

@@ -1,14 +1,13 @@
 // Docker control for the managed fleet — Talaria drives `docker compose` on
 // the rendered fleet/docker-compose.yml (interpolation env = the fleet's own
 // .env, so per-agent keys/secrets stay in one Talaria-owned, gitignored
-// place). Port of the LIFECYCLE half of ui/src/server/fleet-docker.ts.
+// place).
 //
-// The whole TS module crossed with the fleet tail: slot naming, active-slot
-// resolution, the external network guarantee, the lifecycle verbs (up, stop,
-// restart, remove), the healthcheck wait, bundled-skill pruning, the 5s-cached
-// `docker ps` status the roster and Home poll, and the shared `docker exec`
-// wrapper the cron and memory surfaces reach an agent's own filesystem
-// through.
+// Covers slot naming, active-slot resolution, the external network guarantee,
+// the lifecycle verbs (up, stop, restart, remove), the healthcheck wait,
+// bundled-skill pruning, the 5s-cached `docker ps` status the roster and Home
+// poll, and the shared `docker exec` wrapper the cron and memory surfaces use
+// to reach an agent's own filesystem.
 //
 // Rolling slots: each agent runs as `agent-<dept>` (slot a) or
 // `agent-<dept>-b` (slot b). Callers pass a department as always — the
@@ -46,8 +45,7 @@ pub fn slot_container(department: &str, slot: Slot) -> String {
 }
 
 /// Which slot a department's managed agent currently runs in, from the def
-/// row the roll orchestration updates. Missing row / null reads as 'a' —
-/// TS's `rows[0]?.s === 'b' ? 'b' : 'a'`.
+/// row the roll orchestration updates. Missing row / null reads as 'a'.
 pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
     let row: Option<(Option<String>,)> = sqlx::query_as(
         "select active_slot from agent_defs where department = $1 and managed limit 1",
@@ -63,8 +61,8 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
     }
 }
 
-/// One docker CLI invocation with execFile's contract: non-zero exit is an
-/// error carrying stderr, success returns (stdout, stderr) trimmed as written.
+/// One docker CLI invocation: non-zero exit is an error carrying stderr,
+/// success returns (stdout, stderr) trimmed as written.
 async fn docker(args: &[&str], timeout: Duration) -> Result<(String, String), String> {
     let out = tokio::time::timeout(timeout, async {
         tokio::process::Command::new("docker")
@@ -142,14 +140,14 @@ async fn ensure_fleet_network() -> Result<(), String> {
 
 /// Bring a department's managed agent up. Answers with compose's stderr
 /// (trimmed), which on success carries its progress/warnings — the run logs
-/// nothing of it, but the shape is what TS handed back.
+/// nothing of it.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
     let slot = active_slot(pg, department).await;
     fleet_up_slot(pg, department, slot).await
 }
 
 /// The roll's spelling: address a SPECIFIC slot (the incoming one), not the
-/// active one (fleet-docker.ts fleetUp(department, slot)).
+/// active one.
 pub async fn fleet_up_slot(pg: &PgPool, department: &str, slot: Slot) -> Result<String, String> {
     ensure_fleet_network().await?;
     let svc = slot_service(department, slot);
@@ -176,7 +174,7 @@ pub async fn wait_healthy(pg: &PgPool, department: &str, timeout_ms: u64) -> boo
     wait_healthy_slot(department, slot, timeout_ms).await
 }
 
-/// The roll's spelling: wait on a SPECIFIC slot (waitHealthy(department, slot)).
+/// The roll's spelling: wait on a SPECIFIC slot.
 pub async fn wait_healthy_slot(department: &str, slot: Slot, timeout_ms: u64) -> bool {
     let name = slot_container(department, slot);
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
@@ -199,9 +197,8 @@ pub async fn wait_healthy_slot(department: &str, slot: Slot, timeout_ms: u64) ->
 }
 
 /// Which departments have a RUNNING slot container right now — the
-/// `managed?.state === 'running'` half of containerStatus (the full
-/// projection crosses with the fleet-status routes). One `docker ps` sweep,
-/// never cached: the roll loop wants this fresh.
+/// running-state half of container_status's projection. One `docker ps`
+/// sweep, never cached: the roll loop wants this fresh.
 pub async fn running_departments(departments: &[String]) -> Result<Vec<String>, String> {
     let (out, _) = docker(
         &["ps", "-a", "--format", "{{.Names}}\t{{.State}}"],
@@ -224,18 +221,16 @@ pub async fn running_departments(departments: &[String]) -> Result<Vec<String>, 
 
 /// Remove a container by exact name — used to retire the old slot after a
 /// roll: it's no longer in the compose file by then, so compose can't address
-/// it (fleet-docker.ts removeContainerByName).
+/// it.
 pub async fn remove_container_by_name(name: &str) -> Result<(), String> {
     docker(&["rm", "-f", name], Duration::from_secs(60))
         .await
         .map(|_| ())
 }
 
-/// `docker exec` into a container — port of docker-exec.ts dockerExec. Args
-/// never touch a shell (argv only — cron prompts are data, not command
-/// lines). On failure stderr is the half a caller wants: it is what
-/// `docker exec` itself reported, and it beats the node error text when both
-/// exist (TS: `new Error(String(stderr).trim() || err.message)`).
+/// `docker exec` into a container. Args never touch a shell (argv only —
+/// cron prompts are data, not command lines). On failure stderr is the half a
+/// caller wants: it is what `docker exec` itself reported.
 pub async fn docker_exec(
     container: &str,
     command: &[&str],
@@ -302,8 +297,8 @@ pub async fn managed_container(pg: &PgPool, department: &str) -> String {
 }
 
 /// One lifecycle verb against the department's ACTIVE slot's compose service
-/// (fleet-docker.ts fleetStop / fleetRestart / fleetRemove). All three answer
-/// with compose's stderr trimmed — the shape TS handed back.
+/// (fleet_stop / fleet_restart / fleet_remove). All three answer with
+/// compose's stderr trimmed.
 async fn compose_verb(
     pg: &PgPool,
     department: &str,
@@ -319,8 +314,8 @@ async fn compose_verb(
     Ok(stderr.trim().to_string())
 }
 
-/// `docker volume rm` — plain success/failure, the way deleteAgentForever's
-/// execFile callback reads it (a missing volume fails; that's a "false").
+/// `docker volume rm` — plain success/failure: a missing volume fails, and
+/// delete_agent_forever reads that as a `false`.
 pub async fn remove_volume(name: &str) -> bool {
     docker(&["volume", "rm", name], Duration::from_secs(20))
         .await
@@ -346,7 +341,7 @@ pub async fn fleet_remove(pg: &PgPool, department: &str) -> Result<String, Strin
 /// (start_period 60s on the compose healthcheck). None = no health info.
 /// docker ps folds health into the Status string; the order matters because
 /// "(unhealthy)" contains "healthy": starting, then the PARENTHESIZED
-/// healthy, then unhealthy (parseHealth's regex order).
+/// healthy, then unhealthy (parse_health's order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Health {
     #[serde(rename = "starting")]
@@ -390,7 +385,7 @@ fn parse_health(status: &str) -> Option<Health> {
 /// either slot counts, preferring the one that's running (mid-roll both
 /// exist). Docker CLI costs ~0.5s per shell-out and Home + alerts + the
 /// roster all ask within the same breath — a 5s cache dedupes them without
-/// going stale for the 10s roster poll (containerStatus).
+/// going stale for the 10s roster poll (container_status).
 pub async fn container_status(departments: &[String]) -> Result<Vec<AgentContainers>, String> {
     let key = {
         let mut sorted = departments.to_vec();
@@ -423,9 +418,9 @@ async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentConta
         Duration::from_secs(20),
     )
     .await?;
-    // One JSON object per line; a line that does not parse is skipped the way
-    // TS's JSON.parse throw would abort — but docker never emits one, so the
-    // unwrap mirrors the TS shape rather than a real failure mode.
+    // One JSON object per line; a line that does not parse is skipped —
+    // docker never emits one, so this is shape armor rather than a real
+    // failure mode.
     let by_name: HashMap<String, ContainerState> = out
         .lines()
         .filter(|l| !l.is_empty())
@@ -476,8 +471,8 @@ const CONFLICTING_SKILL_PACKS: [&str; 5] = [
     "email",                         // draft_email/read_recent_email govern mail through Talaria
 ];
 
-/// Strip the image's conflicting bundled skills from a slot's container
-/// (pruneBundledSkills). Surgical — only the conflict list goes; the rest of
+/// Strip the image's conflicting bundled skills from a slot's container.
+/// Surgical — only the conflict list goes; the rest of
 /// the bundled packs are genuinely useful and stay. Best-effort by contract:
 /// the caller treats false as "skip", never as failure.
 pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
@@ -527,7 +522,7 @@ mod tests {
         assert_eq!(&args[7..], ["up", "-d", "agent-research"]);
     }
 
-    // parseHealth's order is the whole test: "(unhealthy)" CONTAINS
+    // parse_health's order is the whole test: "(unhealthy)" CONTAINS
     // "healthy", so the parenthesized healthy pattern must run first.
     #[test]
     fn health_parses_the_ps_status_string_in_ts_order() {
@@ -542,7 +537,7 @@ mod tests {
         );
         assert_eq!(parse_health("Up 2 hours"), None);
         assert_eq!(parse_health("Exited (0) 3 minutes ago"), None);
-        // Case-insensitive, as the TS /i flags insist.
+        // Case-insensitive.
         assert_eq!(parse_health("Up 2 hours (HEALTHY)"), Some(Health::Healthy));
     }
 

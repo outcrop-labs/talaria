@@ -1,11 +1,10 @@
-// The instance's HOSTING domain — port of ui/src/server/instance.ts. Where
-// this Talaria deployment lives (talaria.example.com), as opposed to the
-// email sign-up domains people authenticate with. Verification is a
-// SELF-FETCH: the server requests its own identity beacon through the
+// The instance's HOSTING domain. Where this Talaria deployment lives
+// (talaria.example.com), as opposed to the email sign-up domains people
+// authenticate with. Verification is a SELF-FETCH: the server requests its
+// own identity beacon (/api/well-known/talaria-instance) through the
 // candidate domain and checks the instance id that comes back — proof that
-// DNS, routing, and TLS all actually land on THIS deployment. The beacon
-// route itself (/api/well-known/talaria-instance) still serves from TS until
-// its group flips; the verify hop goes through the domain, not this process.
+// DNS, routing, and TLS all actually land on THIS deployment. The verify hop
+// goes through the domain, never around it via this process.
 
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::gateway::settings::{get_setting, set_setting};
@@ -58,9 +57,9 @@ pub async fn instance_base_url(pg: &PgPool) -> Option<String> {
     Some(format!("https://{domain}"))
 }
 
-/// Hand-rolled `/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+(:\d+)?$/`
-/// — labels of 1–63 [a-z0-9-] with no leading/trailing dash, two or more of
-/// them (a bare host is not a hosting domain), optional numeric port.
+/// The hosting-domain grammar: labels of 1–63 [a-z0-9-] with no
+/// leading/trailing dash, two or more of them (a bare host is not a hosting
+/// domain), optional numeric port.
 fn domain_ok(d: &str) -> bool {
     let host = match d.rsplit_once(':') {
         // Only when what follows the last colon is all digits is it a port —
@@ -101,15 +100,9 @@ fn normalize_domain(raw: &str) -> String {
 
 /// Set (normalize + validate) or clear. `Err` is the route's 400 sentence.
 ///
-/// RECORDED DIVERGENCE — the clear path works here and cannot on TS:
-/// postgres.js turns `sql.json(null)` into SQL NULL, so TS's
-/// setSetting('instance_domain', null) violates app_settings.value's NOT
-/// NULL constraint, the route's validation catch leaks the raw Postgres
-/// sentence as a 400, and the domain can never be cleared at all. sqlx
-/// encodes a real jsonb null, so the upsert lands: 200, `{instance: null}`,
-/// and every reader (both runtimes' getSetting) sees null. The TS try/catch
-/// was built for the validation throw; its DB-failure leak is the bug this
-/// port does not reproduce (RUST-MIGRATION.md, divergences).
+/// A clear binds a REAL jsonb null — json `'null'` is a value, not SQL NULL,
+/// so app_settings.value's NOT NULL constraint passes — and every reader's
+/// get_setting sees null, the GET answering `{instance: null}`.
 pub async fn set_instance_domain(
     pg: &PgPool,
     domain: Option<&str>,
@@ -151,7 +144,7 @@ pub struct VerifyResult {
 /// Round-trip proof: fetch our own well-known through the domain, https
 /// first, http as the fallback. An OK answer naming a DIFFERENT instance is
 /// terminal (wrong box — say so); a failed hop falls through to the next
-/// scheme. The 8s bound is per fetch, like AbortSignal.timeout.
+/// scheme. The 8s bound is per fetch.
 pub async fn verify_instance_domain(pg: &PgPool) -> VerifyResult {
     let cfg = get_instance_domain(pg).await;
     let domain = match serde_json::from_value::<InstanceDomain>(cfg.clone()) {
@@ -173,8 +166,8 @@ pub async fn verify_instance_domain(pg: &PgPool) -> VerifyResult {
             };
         }
     };
-    // redirect: 'follow' with a real cap; a verify hop that bounces forever
-    // is a misconfigured proxy, and 20 is where browsers and undici call it.
+    // redirect follow with a real cap; a verify hop that bounces forever is
+    // a misconfigured proxy, and 20 is where browsers call it.
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_millis(8_000))
         .redirect(reqwest::redirect::Policy::limited(20))
@@ -292,7 +285,7 @@ mod tests {
         for raw in ["HTTPS://Talaria.Example.COM/x/y", "talaria.example.com"] {
             assert_eq!(normalize_domain(raw), "talaria.example.com");
         }
-        // Exactly one scheme strip (the TS regex is anchored, not global).
+        // Exactly one scheme strip, never two.
         assert_eq!(normalize_domain("https://http://x.y"), "http:");
     }
 }

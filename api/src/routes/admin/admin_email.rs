@@ -1,7 +1,6 @@
-// /api/admin/email — port of ui/src/routes/api/admin.email.ts.
-// Transactional email config. GET → config with secrets MASKED (set-flags
-// only). PUT → config patch (the write); POST { test: true } → send a test
-// to the caller.
+// /api/admin/email. Transactional email config. GET → config with secrets
+// MASKED (set-flags only). PUT → config patch (the write); POST { test: true }
+// → send a test to the caller.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -63,15 +62,11 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // z.object({ provider: z.enum(['smtp','resend']).nullable().optional(),
-    //             from: z.string().max(200).optional(),
-    //             smtp: z.object({ host: max(200) opt, port: int(1..65535)
-    //                               opt, secure: bool opt, user: max(200) opt,
-    //                               pass: max(500) nullable opt }).optional(),
-    //             resend: z.object({ apiKey: max(200) nullable opt })
-    //         }) — keys in schema order, rejections in zod's own words.
-    // provider/pass/apiKey are `.nullable().optional()` — setEmailConfig's
-    // tri-state: undefined keeps, null clears, a string replaces.
+    // Keys in schema order, rejections in the schema's own words: provider
+    // (enum smtp|resend), from (max 200), smtp { host max 200, port int
+    // 1..65535, secure bool, user max 200, pass max 500 }, resend { apiKey
+    // max 200 }. provider/pass/apiKey are tri-state: absent keeps, null
+    // clears, a string replaces.
     let provider = match nullish_member(obj, "provider", |o, k| {
         optional_enum_member(o, k, &["smtp", "resend"]).map(|p| {
             p.map(|p| {
@@ -197,7 +192,7 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ test: z.literal(true) })
+    // the body must be exactly { test: true }.
     if obj.get("test") != Some(&Value::Bool(true)) {
         return house_error(StatusCode::BAD_REQUEST, "Invalid input: expected true");
     }

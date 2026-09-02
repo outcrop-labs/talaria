@@ -1,9 +1,8 @@
-// /api/admin/rag — port of ui/src/routes/api/admin.rag.ts. The retrieval
-// console. GET → services health + both repair runs' projections + the
-// upgrade status + reranker providers/config + KB-space brain bindings.
-// PUT → reranker config and/or a space↔brain binding. POST → kick a repair
-// run (detached), or { models, key? } → a provider's live model catalog.
-// Admins only.
+// /api/admin/rag. The retrieval console. GET → services health + both repair
+// runs' projections + the upgrade status + reranker providers/config +
+// KB-space brain bindings. PUT → reranker config and/or a space↔brain
+// binding. POST → kick a repair run (detached), or { models, key? } → a
+// provider's live model catalog. Admins only.
 
 use axum::Json;
 use axum::extract::State;
@@ -31,7 +30,7 @@ use crate::runs::defs::reindex::{start_backfill, start_reindex};
 use crate::session::{actor_of, require_admin};
 use crate::state::AppState;
 
-/// zod's nested-object refusal, for the two PATCH shapes that take one:
+/// The nested-object refusal, for the two nested PUT members:
 /// `Invalid input: expected object, received <type>`.
 fn nested_object(
     v: &serde_json::Value,
@@ -62,8 +61,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let backfill = backfill_status(&state.pg).await;
     // The one soft-failing member of the GET: a dead Qdrant reads as a null
     // upgrade block (the health block above is the alarm for that), not as a
-    // 500 that would take the whole console down with it. TS's `.catch(() =>
-    // null)`.
+    // 500 that would take the whole console down with it.
     let upgrade = retrieval_upgrade_status(&state.pg, &qd, &ed).await.ok();
     let reindex = reindex_status(&state.pg).await;
     let config = rerank::rerank_config_public(&state.pg).await;
@@ -112,17 +110,16 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // parseBody validates the WHOLE body before the handler runs its first
-    // line — a valid reranker beside an invalid spaceBrain must write
-    // NEITHER. Both sections parse into locals here; nothing touches a row
-    // until both hold.
+    // The WHOLE body validates before any write — a valid reranker beside an
+    // invalid spaceBrain must write NEITHER. Both sections parse into locals
+    // here; nothing touches a row until both hold.
     let mut reranker: Option<RerankPatch> = None;
     if let Some(v) = obj.get("reranker") {
         let inner = match nested_object(v) {
             Ok(o) => o,
             Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
         };
-        // zod's enum list is 'off' plus the catalog, in catalog order.
+        // the enum list is 'off' plus the catalog, in catalog order.
         let mut ids: Vec<&str> = vec!["off"];
         ids.extend(RERANK_PROVIDERS.iter().map(|p| p.id));
         let provider = match optional_enum_member(inner, "provider", &ids) {
@@ -177,9 +174,8 @@ pub async fn put(
     if let Some(patch) = reranker {
         match rerank::set_rerank_config(&state, patch).await {
             Ok(next) => {
-                // The audit after is {provider, model} with model dropped
-                // when the row has none — TS's JSON.stringify skips
-                // undefined keys.
+                // The audit after is {provider, model}, with model dropped
+                // when the row has none.
                 let mut after = serde_json::Map::new();
                 if let Some(p) = next.get("provider").and_then(serde_json::Value::as_str) {
                     after.insert("provider".into(), json!(p));
@@ -204,7 +200,7 @@ pub async fn put(
                     .await;
                 });
             }
-            // TS lets setRerankConfig throw to the runtime's generic 500.
+            // a config-write failure is a 500.
             Err(_) => return thrown_internal_error(),
         }
     }
@@ -219,8 +215,8 @@ pub async fn put(
         if updated.is_err() {
             return thrown_internal_error();
         }
-        // Existing docs move to their new home right away — detached, errors
-        // swallowed exactly as TS's `.catch(() => {})`.
+        // Existing docs move to their new home right away — detached, its
+        // errors swallowed.
         {
             let (pg, space_id) = (state.pg.clone(), space_id.clone());
             tokio::spawn(async move {
@@ -257,14 +253,13 @@ pub async fn put(
 
 // ── POST's union, decoded ────────────────────────────────────────────────────
 
-/// z.union([actionObject, modelsObject]) resolved. The dispatch below was
-/// probed against zod 4.3.6 itself, not reasoned about: the ACTION arm wins
-/// whenever it parses (extras strip — a models key beside a valid action is
-/// ignored); the MODELS arm surfaces its string-check sentences ("Too
-/// small"/"Too big") but only once every TYPE check passes — a non-string
-/// models, or a key that is neither string nor null, aborts the branch and
-/// the union answers its own generic sentence instead, even when a check
-/// ALSO failed. Checks run in schema order: models before key.
+/// The POST body's union, resolved. The ACTION arm wins whenever it parses
+/// (extras strip — a models key beside a valid action is ignored); the
+/// MODELS arm surfaces its bound sentences ("Too small"/"Too big") but only
+/// once every TYPE check passes — a non-string models, or a key that is
+/// neither string nor null, aborts the branch and the union answers its own
+/// generic sentence instead, even when a bound ALSO failed. Checks run in
+/// schema order: models before key.
 #[derive(Debug, PartialEq)]
 enum PostIntent {
     Kick(&'static str),
@@ -330,9 +325,9 @@ pub async fn post(
             // 'reindex' rebuilds collections in the current model's shape
             // then refills; 'backfill' refills in place. Both detach — the
             // response is "started", not "done", and the panel polls the
-            // projections above. TS swallows a failed kick silently; a Start
-            // button that quietly did nothing is the failure mode this plane
-            // exists to end, so the one failure gets one warn line.
+            // projections above. A Start button that quietly did nothing is
+            // the failure mode this plane exists to end, so the one failure
+            // gets one warn line.
             let st = state.clone();
             tokio::spawn(async move {
                 let res = if action == "reindex" {
@@ -369,8 +364,7 @@ pub async fn post(
         Ok(PostIntent::Catalog { provider, key }) => {
             let http = crate::retrieval::real_http();
             // Catalog failures fall back to the documented list inside; only
-            // a sealed key that cannot open errors, and TS lets that throw to
-            // the runtime's generic 500.
+            // a sealed key that cannot open errors — a 500.
             match rerank::rerank_models(&state, &http, &provider, key).await {
                 Ok(models) => Json(json!({ "models": models })).into_response(),
                 Err(_) => thrown_internal_error(),
@@ -392,8 +386,7 @@ mod tests {
         }
     }
 
-    /// Every row is a probe ANSWER from zod 4.3.6 itself, captured before
-    /// this table was written — the test pins the table to the oracle.
+    /// Every row is an observed answer — the test pins the dispatch table.
     #[test]
     fn the_post_union_dispatches_the_probed_zod_table() {
         // Arm 1 wins whenever it parses, extras stripped.

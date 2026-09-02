@@ -1,4 +1,4 @@
-// /api/tasks/{id} — port of ui/src/routes/api/tasks.$id.ts. One ticket.
+// /api/tasks/{id}. One ticket.
 // GET → full detail (task, comments, activity, watchers, reviews, judge,
 // links, usage; + workflows for an agent caller). PUT → update; the
 // human-in-the-loop guardrails live in update_task, not here — agents may
@@ -84,8 +84,8 @@ pub async fn get(
                 return thrown_internal_error();
             }
         };
-        // TS spreads `{...full, workflows}` — the detail body plus the
-        // one-off workflow payload an agent caller dispatches against.
+        // The detail body plus a one-off `workflows` payload — the list an
+        // agent caller dispatches against.
         let mut body = match serde_json::to_value(&full) {
             Ok(v) => v,
             Err(e) => {
@@ -115,9 +115,9 @@ pub async fn get(
     }
 }
 
-/// The PUT's `refs` member — `z.array(z.object({type, id: Uuid})).max(3)
-/// .optional()`. Nested, so it reads by hand: the messages are zod's, in
-/// element-then-key order, which is the order parseBody's `issues[0]` sees.
+/// The PUT's `refs` member — an optional array (max 3) of {type, id}
+/// objects. Nested, so it reads by hand: the messages follow element-then-
+/// key order, and the first error is the one answered.
 fn refs_member(obj: &serde_json::Map<String, Value>) -> Result<Option<Vec<MessageRef>>, String> {
     match obj.get("refs") {
         None => Ok(None),
@@ -234,7 +234,8 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Patch, in zod declaration order (parseBody answers the FIRST issue).
+    // Patch, in schema declaration order — the FIRST failing field is the
+    // one answered.
     // `status`'s min(1) is not cosmetic: `""` was once a legal patch value,
     // and it is falsy, so every presence-turned-truthiness guard in
     // update_task skipped on a write that then stored an empty column — the
@@ -426,13 +427,10 @@ pub async fn put(
             return thrown_internal_error();
         }
     };
-    // NOT YET CROSSED: the two detached after-writes.
-    //  - indexTicket when title/description changed — the retrieval plane
-    //    (batch 5); until it lands, a text edit through Rust leaves the
-    //    activity index stale until the next TS-side edit.
-    //  - runJudgeForTask when the ticket ENTERED a review-category column
-    //    (meta.reviewKeys gains it) — the judge/harness plane, later in this
-    //    batch. The human reviewer simply gets no advisory verdict yet.
+    // No inline index or judge trigger on this path: a text edit reaches the
+    // activity brain only through the opportunistic RAG sweep (keyed on
+    // updated_at, at most 15 min behind), and entering a review-category
+    // column fires no judge run — the reviewer gets no advisory verdict.
     if let Some(updated) = updated.as_ref()
         && description_input.is_some()
         && description_input != Some(task.description.clone())
@@ -514,12 +512,9 @@ pub async fn delete(
     if !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    // NOT YET CROSSED: TS first lists the ticket's comments, then drops the
-    // ticket + each comment from the activity brain (unindexActivity,
-    // detached) — the retrieval plane, batch 5. The comment listing exists
-    // only to feed that leg, so it crosses with it; until then a deleted
-    // ticket's text lingers in the activity index (the brain's copy, never
-    // the board's source of truth).
+    // Nothing is unindexed inline: a deleted ticket's text lingers in the
+    // activity index (the brain's copy, never the board's source of truth)
+    // until a full reindex rebuilds the collections.
     let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
     match delete_task(&deps, &id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),

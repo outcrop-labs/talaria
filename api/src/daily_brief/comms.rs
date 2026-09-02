@@ -1,12 +1,10 @@
-// Who is still waiting on an answer from you — port of
-// ui/src/server/daily-brief-comms.ts.
+// Who is still waiting on an answer from you.
 //
-// THE BUG THIS FILE IS. The brief's first version took its conversations from
-// `inbox-focus-sources.channelItems`, which selects DMs with UNREAD messages —
-// the right question for a queue, and the wrong one for a document about who is
-// waiting. Opening a DM drops it out of that query, so the sweep saw the key
-// vanish and appended a resolution: the brief told you Priya's question had
-// been handled because you had glanced at it. Reading is not answering, and the
+// THE BUG THIS FILE IS. Selecting conversations by UNREAD is the right
+// question for a queue, and the wrong one for a document about who is waiting.
+// Opening a DM drops it out of an unread query, so the sweep saw the key vanish
+// and appended a resolution: the brief told you Priya's question had been
+// handled because you had glanced at it. Reading is not answering, and the
 // difference is the entire subject of the "Waiting on you" section.
 //
 // So this asks the log instead of the read cursor: a conversation is open until
@@ -292,8 +290,7 @@ fn label(unread: i32, answered_by: Option<AnsweredBy>, draft: Option<&CommsDraft
             }
         }
         None if unread > 0 => format!("{unread} UNREAD"),
-        // THE STATE THE OLD SOURCE COULD NOT SEE. Everything above it existed
-        // before; this line is the fix.
+        // THE STATE AN UNREAD COUNT CANNOT SEE — the point of this section.
         None => "READ, NOT ANSWERED".into(),
     }
 }
@@ -313,9 +310,9 @@ mod tests {
 
     #[test]
     fn the_pinned_comms_fingerprint_vector() {
-        // Byte-identical to the TS hash of the same object — the cross-runtime
-        // contract pinned in focus.rs. A mismatch here means every comms line
-        // in every existing brief reads as "changed" on the first Rust sweep.
+        // Byte-stable by contract (the vector pinned in focus.rs): a mismatch
+        // here means every comms line in every existing brief reads as
+        // "changed" on the next sweep.
         let v = json!({"u": 3, "a": "you", "s": 41, "l": 42, "d": "d7:null", "g": true});
         assert_eq!(
             fingerprint(&v),
@@ -325,7 +322,7 @@ mod tests {
 
     #[test]
     fn the_fingerprint_object_matches_the_ts_literal_key_for_key() {
-        // The exact object commsLines hashes, spelled in the TS literal's key
+        // The exact object the comms fingerprint hashes, in its fixed key
         // order, for both the null-draft and pending-draft shapes.
         let null_draft = json!({"u": 0, "a": serde_json::Value::Null, "s": 7, "l": 7, "d": serde_json::Value::Null, "g": false});
         assert_eq!(fingerprint(&null_draft).len(), 64);
@@ -363,8 +360,8 @@ mod tests {
 
     #[test]
     fn excerpts_are_capped_like_the_ts_slice() {
-        // chars().take(1000), not bytes — the TS slice is by UTF-16 unit and a
-        // multibyte excerpt must not be cut mid-character here.
+        // chars().take(1000), not bytes — a multibyte excerpt must not be cut
+        // mid-character.
         let long: String = "é".repeat(1_050);
         assert!(long.chars().take(1_000).collect::<String>().chars().count() == 1_000);
     }

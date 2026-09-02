@@ -1,4 +1,4 @@
-// /api/mcp/servers — port of ui/src/routes/api/mcp.servers.ts.
+// /api/mcp/servers.
 // The org MCP registry. GET → servers + their assignments + user access
 // (admin/agents.manage view). POST → register a server. Every mutation
 // re-renders the fleet so configs pick the change up (Hermes re-reads on
@@ -268,9 +268,9 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // Everything from create through the response construction sits in TS's
-    // one try — any failure is the route's 400, with the duplicate-name
-    // special case.
+    // Everything from create through the response construction is one
+    // unbroken stretch — any failure is the route's 400, with the
+    // duplicate-name special case.
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
         Err(e) => return bad_request(&format!("secretbox unavailable: {e}")),
@@ -311,8 +311,7 @@ pub async fn post(
     Json(json!({ "server": wire })).into_response()
 }
 
-/// The try-block's core: create, sniff the auth shape, re-read when the
-/// sniff flipped OAuth on.
+/// Create, sniff the auth shape, re-read when the sniff flipped OAuth on.
 async fn create_and_sniff(
     pg: &PgPool,
     input: &NewServer<'_>,
@@ -354,7 +353,7 @@ fn declared_json(declared: &Option<Vec<DeclaredHeader>>) -> Value {
 
 fn bad_request(message: &str) -> Response {
     // A unique-violation lands in sqlx's message as "duplicate key value
-    // violates unique constraint" — TS matches on 'duplicate'.
+    // violates unique constraint" — the 'duplicate' substring is the detector.
     let error = if message.contains("duplicate") {
         "that name is taken".to_string()
     } else {

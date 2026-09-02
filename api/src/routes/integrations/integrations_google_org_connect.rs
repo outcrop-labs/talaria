@@ -1,6 +1,5 @@
-// GET /api/integrations/google/org/connect — port of
-// ui/src/routes/api/integrations/google.org.connect.ts. An admin begins
-// connecting the shared org Google account (offline access). Wider scopes
+// GET /api/integrations/google/org/connect — an admin begins connecting the
+// shared org Google account (offline access). Wider scopes
 // than the per-user flow: the org account is the one that provisions the
 // shared calendar + Drive.
 

@@ -1,10 +1,10 @@
-// THE SURFACE — port of fitness/surface.ts. WHAT THE ADMIN PAGE READS: the
+// THE SURFACE — WHAT THE ADMIN PAGE READS: the
 // index, the record, the value view, the health summary, the transcripts, the
 // live console's tier-2 half. The engines underneath (probes, the sweep,
 // adversarial, score) produce; this module shapes what a panel consumes.
 //
-// CROSSED IN SLICES, because the file is the widest in the family: the
-// live-log vocabulary first, then the index vocabulary, then this — the store.
+// LAID OUT IN SECTIONS, because the file is the widest in the family: the
+// live-log vocabulary first, then the index vocabulary, then the store.
 // The record, the run, the estimate, the capability rows, the archive's
 // re-keying and eviction, the stop plumbing, and the reads the admin route
 // serializes all live here and nowhere else. THIS FILE ORCHESTRATES; IT
@@ -117,7 +117,7 @@ pub fn is_tier_id(v: &str) -> bool {
 
 /// The speed half of a run, computed once where the sweep is scored. Pure, so
 /// the matrix column and the report card cannot disagree about the same run —
-/// the derivation crosses with the store.
+/// the derivation lives with the store.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeedReading {
@@ -233,16 +233,16 @@ pub struct FitnessIndexEntry {
 ///
 /// ORDERED, not a `HashMap`: the index rides the wire straight out of
 /// `app_settings` (the matrix view sends it whole, the health view lists its
-/// keys), and TS reads the jsonb blob and sends the keys in the order Postgres
-/// kept them. An `IndexMap` keeps insertion order like a JS object — exactly
-/// the TS read. (serde_json's own ordered map cannot carry a typed entry: its
+/// keys), and the read sends the keys in the order Postgres kept them. An
+/// `IndexMap` keeps insertion order like a JS object. (serde_json's own
+/// ordered map cannot carry a typed entry: its
 /// methods exist only on `Map<String, Value>`.)
 pub type FitnessIndex = indexmap::IndexMap<String, FitnessIndexEntry>;
 
 // ── Pricing ──────────────────────────────────────────────────────────────────
 
 /// $/MTok, both directions. The field names are Rust's; the payload keeps the
-/// TS `in`/`out` spellings, which every consumer already reads.
+/// wire's `in`/`out` spellings, which every consumer already reads.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ModelPrice {
     #[serde(rename = "in")]
@@ -269,9 +269,8 @@ pub type TokenBudget = std::collections::BTreeMap<String, TokenBudgetEntry>;
 
 // ── The archive ──────────────────────────────────────────────────────────────
 
-/// The settings row every stored piece of the fitness plane lives in. Same
-/// keys the TS module spells — the Rust store reads rows the TS archive wrote
-/// and vice versa, which is the whole point of one spelling.
+/// The settings row every stored piece of the fitness plane lives in — one
+/// spelling, so rows written by earlier deploys stay legible.
 pub const INDEX_KEY: &str = "model_fitness_index";
 /// THE RUN STATUS STORE, keyed by candidate — a NEW key rather than a reshape
 /// of the old one: the status row of a run already in flight is written by
@@ -394,7 +393,7 @@ pub fn upgrade_record(record: Option<FitnessRecord>) -> Option<FitnessRecord> {
 
 /// `upgrade_record`, but on the WIRE VALUE — the detail view hands the archived
 /// record to the browser, and the archive is jsonb: Postgres stores an object's
-/// keys ordered by (length, then bytes), TS's `JSON.parse` hands that order
+/// keys ordered by (length, then bytes), the jsonb read hands that order
 /// back, and `{ ...record, … }` keeps every stored key where it was. A typed
 /// struct re-serializes in declaration order — same keys, different bytes. So
 /// the drill-down upgrades the raw `Value` instead: `Map::insert` on an
@@ -523,9 +522,9 @@ impl FitnessRunState {
     }
 }
 
-// One run's status with tier 2's counter folded in is a raw `Value` on this
-// side of the port — see `fitness_runs` for why (the stored row's key order
-// is part of the wire contract, and a typed struct cannot promise it).
+// One run's status with tier 2's counter folded in stays a raw `Value` —
+// see `fitness_runs` for why (the stored row's key order is part of the wire
+// contract, and a typed struct cannot promise it).
 
 /// Every run the page draws, newest first, plus what the panel needs to know
 /// about whether it may start another.
@@ -927,9 +926,8 @@ pub fn empty_sweep(
 //
 // Same seam as every engine in the family: the surface is orchestration over
 // edges it does not own, and the edges arrive as a struct of boxed closures so
-// a test drives the store without a database, a gateway, or a clock. The TS
-// took `Partial<SurfaceDeps>` and spread it over the real set; a Rust struct
-// has no spread, so the test builders below start from `panic_deps` and
+// a test drives the store without a database, a gateway, or a clock. A Rust
+// struct has no spread, so the test builders below start from `panic_deps` and
 // overwrite exactly the edges they mean to exercise — an untouched edge
 // panics with its own name rather than quietly hitting production.
 
@@ -976,7 +974,7 @@ pub struct SurfaceDeps {
             + Send
             + Sync,
     >,
-    /// Raw settings read with the TS fallback contract. Typed reads go through
+    /// Raw settings read with the fallback contract. Typed reads go through
     /// [`SurfaceDeps::setting`], because a closure field cannot be generic.
     pub read_setting: Arc<dyn Fn(String, Value) -> BoxFut<Result<Value, String>> + Send + Sync>,
     pub write_setting: Arc<dyn Fn(String, Value) -> BoxFut<Result<(), String>> + Send + Sync>,
@@ -1037,16 +1035,14 @@ pub struct SurfaceDeps {
             + Send
             + Sync,
     >,
-    /// Sync in the TS too: the in-process stop set reads no future.
+    /// Synchronous by design: the in-process stop set reads no future.
     pub stop_eval_sweep: Arc<dyn Fn(Option<String>) -> bool + Send + Sync>,
     pub guard_config:
         Arc<dyn Fn() -> BoxFut<Result<crate::gateway::guard::GuardConfig, String>> + Send + Sync>,
     /// What this deployment can reach for a model — natively or by tool. The
     /// edge takes the MODEL, not its capability keys: key resolution
     /// (`capabilityKeysFor`) is a database read, and keeping it inside the real
-    /// edge is what lets the store run its scoring step without one. The TS
-    /// surface resolved the keys itself because its only reach caller was one
-    /// line away; here that line is the edge's.
+    /// edge is what lets the store run its scoring step without one.
     pub reach: Arc<
         dyn Fn(
                 String,
@@ -1075,7 +1071,7 @@ pub struct SurfaceDeps {
 }
 
 impl SurfaceDeps {
-    /// TS's `readSetting<T>(key, fallback)` — the edge returns raw JSON, and
+    /// `readSetting<T>(key, fallback)` — the edge returns raw JSON, and
     /// every typed reader funnels through here so the fallback and the error
     /// live in one place.
     pub async fn setting<T: serde::Serialize + serde::de::DeserializeOwned>(
@@ -1301,9 +1297,8 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             }
         }),
         // THE STOP READER AND THE TRANSCRIPT ARCHIVER are the surface's own —
-        // the TS injects exactly these three into `runEvalSweep`, and a sweep
-        // started anywhere else would neither stop on request nor file its
-        // evidence.
+        // exactly these three go into `run_eval_sweep`, and a sweep started
+        // anywhere else would neither stop on request nor file its evidence.
         run_eval_sweep: Arc::new({
             let st = state.clone();
             move |model, start| {
@@ -1425,7 +1420,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
     }
 }
 
-/// The wall clock, as the TS `new Date().toISOString()` writes it.
+/// The wall clock, as `new Date().toISOString()` writes it.
 pub fn now_iso() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1514,7 +1509,7 @@ pub struct ModelRow {
 /// `routing_for` does — and doing it here costs one query for the whole page
 /// instead of one per model.
 pub fn keys_for(id: &str, qualified: bool, endpoints: &[String]) -> Vec<String> {
-    // TS `id.slice(id.indexOf('/') + 1)`: no '/' means the whole id, which the
+    // `id.slice(id.indexOf('/') + 1)`: no '/' means the whole id, which the
     // `unwrap_or` reproduces.
     let upstream = if qualified {
         id.split_once('/').map(|(_, rest)| rest).unwrap_or(id)
@@ -1688,7 +1683,7 @@ pub fn stored_id_for(model: &str, index: &FitnessIndex) -> String {
 
 /// Every catalog row with its nine capability tags. One `capabilities` read
 /// per DISTINCT `endpoint:model` key — a bare id and its qualified sibling
-/// share a key, and the TS deduped the reads for exactly that reason.
+/// share a key, so deduping the reads is the point.
 pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
     let models = ((deps.models)()).await?;
     let mut facts_cache: HashMap<String, HashMap<String, crate::capability::CapabilityFact>> =
@@ -2239,9 +2234,8 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
 }
 
 /// The budget a sweep leaves behind, in one place. A failure to write is
-/// swallowed exactly as the TS `.catch(() => {})` swallowed it: the next sweep
-/// re-derives the budget from its own run, and a failed archive write must not
-/// void a run the org already paid for.
+/// swallowed: the next sweep re-derives the budget from its own run, and a
+/// failed archive write must not void a run the org already paid for.
 async fn record_budget(harnesses: &[crate::fitness::evals::HarnessScore], deps: &SurfaceDeps) {
     if harnesses.is_empty() {
         return;
@@ -2359,15 +2353,15 @@ pub fn stale_run(r: &FitnessRunStatus, now: i64) -> bool {
         .and_then(crate::agent_auth::iso_to_epoch_ms);
     match beat {
         Some(beat) => now - beat > RUN_STALE_MS,
-        // An unparseable (or absent) stamp is not stale: the TS `Date.parse`
-        // returns NaN and `now - NaN > ms` is false. A row that cannot say when
+        // An unparseable (or absent) stamp is not stale: the parse yields
+        // nothing, and nothing compares greater. A row that cannot say when
         // it last breathed is suspicious, but "not running" is the one verdict
         // this function must not reach by guessing.
         None => false,
     }
 }
 
-/// Serializes status writes, as the TS `statusQueue` promise chain did: three
+/// Serializes status writes: three
 /// runs write their phase transitions concurrently and `set_setting` upserts
 /// the whole row — the last writer of a tick would otherwise drop its siblings'
 /// progress. Tokio (not std) because the guard is held across awaited settings
@@ -2377,9 +2371,8 @@ fn status_lock() -> &'static tokio::sync::Mutex<()> {
     &LOCK
 }
 
-/// One run's status into the map. Errors are swallowed inside, exactly as the
-/// TS chain's trailing `.catch(() => {})` swallowed them — a status the run
-/// could not persist must not void the run.
+/// One run's status into the map. Errors are swallowed inside — a status the
+/// run could not persist must not void the run.
 async fn write_run_status(status: &FitnessRunStatus, deps: &SurfaceDeps) {
     let Some(model) = status.model.clone() else {
         return;
@@ -2472,9 +2465,9 @@ async fn read_runs(deps: &SurfaceDeps) -> Result<HashMap<String, FitnessRunStatu
 /// Has anyone asked this candidate to stop? Cached briefly because the sweep
 /// asks between every case and the answer changes about once a run.
 ///
-/// THE CLOCK HERE IS REAL epoch ms, not the injected `now_iso` — the TS reads
-/// `Date.now()` for the cache and `d.nowIso()` for everything it stores, and
-/// keeping that split means a test that pins `nowIso` to fake ordering cannot
+/// THE CLOCK HERE IS REAL epoch ms, not the injected `now_iso` — the wall
+/// clock for the cache, `now_iso` for everything stored — and keeping that
+/// split means a test that pins `nowIso` to fake ordering cannot
 /// accidentally pin a live 2-second cache for the whole test.
 fn stop_cache() -> &'static Mutex<(i64, std::collections::HashSet<String>)> {
     static CACHE: LazyLock<Mutex<(i64, std::collections::HashSet<String>)>> =
@@ -2546,8 +2539,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
     // read it back.
     crate::fitness::live_feed::start_live_feed(&model);
 
-    // The inner body takes `?` on every edge the TS did not individually catch,
-    // so a failure lands in the same place the TS `catch` did: the error
+    // The inner body takes `?` on every edge, so a failure lands in the error
     // status, never a panic and never a dropped slot.
     let outcome: Result<(), String> = async {
         set_phase(
@@ -2659,11 +2651,10 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         );
         let carried_sweep = prior.as_ref().filter(|p| !p.harnesses.is_empty()).map(|p| {
             let mut s = empty_sweep(&model, p.sweep.unfixtured.clone(), p.report.guarded, &p.at);
-            // The summary kept the state as a string; the TS blindly cast it
-            // back. Here it round-trips through the serde shape it was written
-            // in, and anything unparseable is `idle` — which for the one
-            // comparison this feeds (`state === 'stopped'`) is the same answer
-            // the cast gave.
+            // The summary kept the state as a string. It round-trips through
+            // the serde shape it was written in, and anything unparseable is
+            // `idle` — which for the one comparison this feeds
+            // (`state === 'stopped'`) is the safe answer.
             s.state = serde_json::from_value(serde_json::Value::String(p.sweep.state.clone()))
                 .unwrap_or(crate::fitness::evals::EvalSweepState::Idle);
             s.done = p.sweep.done;
@@ -2868,7 +2859,7 @@ async fn read_runs_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String, Val
     Ok(out)
 }
 
-/// The idle status row AS THE WIRE WRITES IT — TS's `IDLE` literal order
+/// The idle status row AS THE WIRE WRITES IT — the idle literal's field order
 /// (`state, model, tiers, phase`) with the view fields appended. This row is
 /// never stored, so unlike a stored run row it does NOT ride jsonb key order.
 fn idle_view() -> Value {
@@ -2898,7 +2889,7 @@ pub async fn fitness_status(model: Option<&str>, deps: &SurfaceDeps) -> Result<V
 pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String> {
     // THE WIRE ROWS ARE BUILT FROM THE RAW BLOB, not the typed read. A stored
     // row's keys ride jsonb's canonical order (see `upgrade_record_value`),
-    // and TS's `{ ...status, done, total, harness, sweepState }` keeps every
+    // and `{ ...status, done, total, harness, sweepState }` keeps every
     // stored key where it was and appends the four view fields — so a typed
     // struct, which serializes in declaration order, would reorder the row
     // even with every value correct. The typed parse is still needed for the
@@ -2935,8 +2926,8 @@ pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String>
     let mut runs: Vec<Value> = statuses
         .into_iter()
         .map(|(key, raw)| {
-            // A stored row is an object; anything else spreads to nothing in
-            // TS (`{ ...status }`), so it becomes the four view fields alone.
+            // A stored row is an object; anything else spreads to nothing
+            // (`{ ...status }`), so it becomes the four view fields alone.
             let mut row = raw.as_object().cloned().unwrap_or_default();
             let t = typed.get(&key);
             if t.map(|s| stale_run(s, now)).unwrap_or(false) {
@@ -2994,7 +2985,7 @@ pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String>
     // Running first, then most recently started — an admin watching three
     // sweeps wants the live ones at the top, not whichever id sorts first.
     // ISO strings of one format order identically as bytes and under
-    // `localeCompare`, so the comparison is the TS one.
+    // `localeCompare` — either comparison gives this order.
     runs.sort_by(|a, b| {
         let live = (b.get("state").and_then(Value::as_str) == Some("running")) as i8
             - (a.get("state").and_then(Value::as_str) == Some("running")) as i8;
@@ -3034,9 +3025,9 @@ pub async fn read_index(deps: &SurfaceDeps) -> Result<FitnessIndex, String> {
 }
 
 /// The index AS THE MATRIX SENDS IT — raw values. The matrix view serializes
-/// the stored entries verbatim (TS re-shapes nothing on the way out), so the
-/// entries' own keys must ride in the stored jsonb order; a typed entry would
-/// re-order them for the same reason `upgrade_record_value` exists.
+/// the stored entries verbatim, so the entries' own keys must ride in the
+/// stored jsonb order; a typed entry would re-order them for the same reason
+/// `upgrade_record_value` exists.
 pub async fn read_index_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String, Value>, String> {
     let raw = ((deps.read_setting)(INDEX_KEY.to_string(), serde_json::json!({}))).await?;
     let stored = raw.as_object().cloned().unwrap_or_default();
@@ -3164,7 +3155,7 @@ pub struct CapabilitiesView {
 pub struct EstimateView {
     pub estimate: RunEstimate,
     /// `ADVERSARY_REQUIREMENT` verbatim — the `{capabilities, note}` object
-    /// TS sends next to the adversary picker.
+    /// the estimate sends next to the adversary picker.
     pub adversary_requirement: Value,
 }
 
@@ -3271,8 +3262,7 @@ pub async fn read_fitness(
         // — hundreds of kilobytes — and the fitness page is polled every three
         // seconds while a sweep is in flight. Nothing that renders by default
         // may touch this. The transcripts table is read directly rather than
-        // through an edge, exactly as the TS read it: it is the one store this
-        // module owns outright.
+        // through an edge: it is the one store this module owns outright.
         let Some(model) = model else {
             return Err("model is required".to_string());
         };
@@ -3422,7 +3412,7 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
     // The read is RAW, not typed: this record is the one place the archive
     // itself goes on the wire, and the wire must carry the stored jsonb key
     // order. The typed view consumers (console log, divergences) parse the
-    // upgraded value — the same object TS's consumers read.
+    // upgraded value — the same object the wire carries.
     let record_wire = {
         let raw = ((deps.read_setting)(
             record_key(&stored_id_for(model, &read_index(deps).await?)),
@@ -3931,27 +3921,23 @@ pub async fn forget_model(model: &str, deps: &SurfaceDeps) -> Result<ForgetOk, S
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 //
-// Port of ui/src/server/fitness/surface.test.ts. The TS file had one luxury a
-// Rust module does not: `Partial<SurfaceDeps>` — every unstubbed edge was
-// simply absent and TS's `?? fallback` papered over it. Here the deps are
-// wholesale, so the fixture half of this module is bigger: `panic_deps()` is
-// the base (an unstubbed edge fails AT THE EDGE, naming itself, rather than
-// quietly returning an empty answer), and each family of tests overwrites the
-// edges it means to exercise.
+// The deps are wholesale, so the fixture half of this module is bigger than
+// partial stubbing would make it: `panic_deps()` is the base (an unstubbed
+// edge fails AT THE EDGE, naming itself, rather than quietly returning an
+// empty answer), and each family of tests overwrites the edges it means to
+// exercise.
 //
-// Two mechanical divergences, neither behavioral:
-//   — the TS settings store was a plain object; here it is a shared
-//     `Mutex<HashMap<String, Value>>` behind the read/write edges, which is
-//     what `app_settings` is anyway;
-//   — the cap test's Promise gate is a `tokio::sync::watch`, which has the one
-//     property the test needs and a Promise has by accident: a waiter that
-//     registers late still sees the release.
+// Two fixture facts:
+//   — the settings store is a shared `Mutex<HashMap<String, Value>>` behind
+//     the read/write edges, which is what `app_settings` is anyway;
+//   — the cap test's gate is a `tokio::sync::watch`, which has the one
+//     property the test needs: a waiter that registers late still sees the
+//     release.
 //
 // THE RUN SLOTS ARE PROCESS-WIDE and `cargo test` runs this module on many
-// threads in one process, where the TS file ran alone in a worker. Every test
-// that can claim or clear a slot (Start, Stop, the cap) holds `RUN_SOLE` for
-// its whole body so two tests never share the in-flight map — the pure tests
-// run in parallel untouched.
+// threads in one process. Every test that can claim or clear a slot (Start,
+// Stop, the cap) holds `RUN_SOLE` for its whole body so two tests never share
+// the in-flight map — the pure tests run in parallel untouched.
 #[cfg(test)]
 mod tests {
     // The parent module's own `use` lines are private, so everything its code
@@ -3999,9 +3985,8 @@ mod tests {
         }
     }
 
-    /// The TS `fact(value, over)` spread; spelled out because a Rust struct has
-    /// no spread and the overrides these tests care about are exactly the
-    /// metadata ones.
+    /// Defaults plus metadata overrides, spelled out field by field — the
+    /// overrides these tests care about are exactly the metadata ones.
     fn fact_over(
         value: bool,
         source: &str,
@@ -4205,8 +4190,8 @@ mod tests {
         s.lock().unwrap().get(key).cloned()
     }
 
-    /// The TS `evalCase()` — every field at its default so a test mutates only
-    /// what its assertion is about.
+    /// Every field at its default so a test mutates only what its assertion
+    /// is about.
     fn case(name: &str) -> EvalCaseScore {
         EvalCaseScore {
             harness: "h".into(),
@@ -4256,8 +4241,8 @@ mod tests {
         }
     }
 
-    /// The TS `hs()` — a harness score with nothing asserted about its rates,
-    /// because the consumers under test only read the token and cost columns.
+    /// A harness score with nothing asserted about its rates, because the
+    /// consumers under test only read the token and cost columns.
     fn hs(id: &str) -> HarnessScore {
         HarnessScore {
             meta: HarnessMeta {
@@ -5791,8 +5776,8 @@ mod tests {
     // call is ever bought and no slot is ever released early.
 
     /// Every edge a detached probes-only run touches on its way to Done. The
-    /// TS merged a `Partial` over the real deps; here the empty answers the TS
-    /// got from the real (test-empty) registry are said out loud.
+    /// empty answers the real (test-empty) registry would have given are said
+    /// out loud, edge by edge.
     fn run_deps(
         s: &Store,
         gate: &tokio::sync::watch::Receiver<bool>,
@@ -5943,8 +5928,8 @@ mod tests {
         d
     }
 
-    // The wire rows are raw Values now (key order is the contract — see
-    // `fitness_runs`), so the tests read them the way TS would: by field.
+    // The wire rows are raw Values (key order is the contract — see
+    // `fitness_runs`), so the tests read them by field.
     fn view_models(view: &FitnessRunsView) -> Vec<String> {
         view.runs
             .iter()

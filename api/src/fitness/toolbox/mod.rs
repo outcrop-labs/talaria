@@ -1,5 +1,4 @@
-// THE FITNESS TOOLBOX — the isolated Talaria a dry run happens inside. Port of
-// ui/src/server/fitness/toolbox/*.
+// THE FITNESS TOOLBOX — the isolated Talaria a dry run happens inside.
 //
 // WHY IT IS ITS OWN MODULE TREE. These backends exist ONLY for the fitness
 // suite: production runs the real MCP surface against the real database, and
@@ -14,7 +13,7 @@ pub mod sandbox;
 pub mod talaria_tools;
 pub mod world;
 
-// Order of crossing: `world` (the in-memory Talaria), `talaria_tools` (the
+// Reading order: `world` (the in-memory Talaria), `talaria_tools` (the
 // catalog, locked to mcp/src/index.ts by a sync test), `sandbox` (the dispatch
 // over both), then the two other surfaces — `hermes_tools` (files and a test
 // runner), `credential_tools` (a credential spent at an external service) —

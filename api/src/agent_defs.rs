@@ -1,18 +1,16 @@
 // Agent harness — the agent-definition WRITE core: identity alphabets,
-// versioned configs, and the create path's row plumbing. Port of the
-// definitions+versions half of ui/src/server/agent-defs.ts (the endpoint CRUD
-// half stays TS until the Models admin routes cross; the read half that the
-// relay needed already lives in gateway/registry.rs).
+// versioned configs, and the create path's row plumbing. The endpoint CRUD
+// half lives in gateway/registry.rs, alongside the relay's read of it.
 //
 // A CONFIG IS DATA, NOT A CONTRACT: every signature here moves the version's
 // `config` jsonb as a `serde_json::Value`, the way fleet.rs already reads it.
-// A typed struct would silently DROP unknown keys on round-trip — TS spreads
-// `{...prev}` and keeps whatever a future field adds — and the three things
+// A typed struct would silently DROP unknown keys on round-trip — a merge
+// keeps whatever a future field adds — and the three things
 // the write path does with a config (build it, compare it, store it) all
 // want the tree, not a schema.
 //
-// One accepted divergence, stated once: TS object key order is insertion
-// order, serde_json's is alphabetical. Nothing here can observe it —
+// serde_json's map key order is alphabetical, not insertion. Nothing here
+// can observe it —
 // `canonical` sorts keys before comparing, and the config tree feeds a YAML
 // emitter whose consumers parse mappings order-insensitively.
 
@@ -24,7 +22,7 @@ use std::sync::OnceLock;
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::gateway::registry::{LlmEndpoint, list_endpoints};
 
-/// Agent slug / department alphabets (agent-defs.ts:13-14). `create_agent`
+/// Agent slug / department alphabets. `create_agent`
 /// has always enforced these; they live HERE because every path that accepts
 /// an agent identity needs the same bar — a slug reaches an .env line
 /// (`HERMES_KEY_<SLUG>` — a `\n` injects a line), path joins (a `../`
@@ -41,10 +39,10 @@ pub fn dept_ok(department: &str) -> bool {
         .is_match(department)
 }
 
-/// A model target: which endpoint serves it and the upstream model id there
-/// (agent-defs.ts ModelTarget). `contextLength`/`effort` are ABSENT when
-/// unset — TS's optional keys drop on serialize, and jsonb round-trips what
-/// TS wrote.
+/// A model target: which endpoint serves it and the upstream model id there.
+/// `contextLength`/`effort` are ABSENT when
+/// unset — skip_serializing_if, not null — so the jsonb round-trips only the
+/// keys that were set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTarget {
@@ -65,8 +63,7 @@ pub struct AliasTarget {
     pub target: ModelTarget,
 }
 
-/// The structured edit a caller applies onto a previous config
-/// (applyConfigEdits' second parameter).
+/// The structured edit a caller applies onto a previous config.
 #[derive(Debug, Clone)]
 pub struct ConfigEdits {
     pub main: ModelTarget,
@@ -74,8 +71,8 @@ pub struct ConfigEdits {
     pub fallbacks: Vec<ModelTarget>,
 }
 
-/// A version row, the columns the create path reads (agent-defs.ts
-/// AgentVersion minus the timestamps nothing here touches).
+/// A version row, the columns the create path reads (timestamps nothing
+/// here touches are left out).
 #[derive(Debug, Clone)]
 pub struct AgentVersionRow {
     pub id: String,
@@ -85,7 +82,7 @@ pub struct AgentVersionRow {
     pub config: Value,
     pub note: Option<String>,
     pub created_by: Option<String>,
-    /// ISO via epoch-ms — postgres.js hands TS a Date, json() stringifies it.
+    /// ISO via epoch-ms.
     pub created_at: String,
 }
 
@@ -163,10 +160,10 @@ pub async fn agent_def_by_id(pg: &PgPool, id: &str) -> Result<Option<AgentDefRow
     Ok(row.map(def_row))
 }
 
-/// listAgentDefs — every def with its LATEST version inline, the harness
-/// registry's read. The def objects ride raw Values keyed in the TS SELECT's
-/// order (jsonb passthroughs keep the stored order; the iso helper prints the
-/// timestamps the way JSON.stringify prints a Date). Twenty columns — past
+/// Every def with its LATEST version inline, the harness
+/// registry's read. The def objects ride raw Values keyed in the SELECT's
+/// order (jsonb passthroughs keep the stored order; the iso helper prints
+/// timestamps as ISO strings). Twenty columns — past
 /// sqlx's tuple arity, so the row lands in a FromRow struct.
 #[derive(sqlx::FromRow)]
 struct DefListRow {
@@ -390,8 +387,8 @@ pub struct UpsertDef<'a> {
 }
 
 /// Key-order-insensitive stringify — Postgres jsonb reorders object keys, so
-/// a plain `to_string` comparison would see every round-trip as a change
-/// (agent-defs.ts canonical). ASCII keys sort identically under TS's UTF-16
+/// a plain `to_string` comparison would see every round-trip as a change.
+/// ASCII keys sort identically under a UTF-16
 /// code-unit compare and Rust's byte compare; config keys are ASCII.
 pub fn canonical(v: &Value) -> String {
     match v {
@@ -458,7 +455,7 @@ pub fn apply_config_edits_over(
         };
         out.insert("provider".into(), Value::String(ep.provider.clone()));
         out.insert("model".into(), Value::String(target.model.clone()));
-        // TS truthiness on baseUrl: null and '' both skip the key.
+        // truthiness on baseUrl: null and '' both skip the key.
         if let Some(base) = ep.base_url.as_deref().filter(|b| !b.is_empty()) {
             out.insert("base_url".into(), Value::String(base.into()));
         }
@@ -643,8 +640,8 @@ mod tests {
     use super::*;
 
     // No database in here: the alphabets, the canonical form, and the
-    // block-building rules are pure; the row plumbing is thin sqlx over
-    // queries copied from the TS, exercised later by the run's own tests.
+    // block-building rules are pure; the row plumbing is thin sqlx,
+    // exercised later by the run's own tests.
 
     #[test]
     fn the_alphabets_admit_slugs_and_refuse_everything_else() {

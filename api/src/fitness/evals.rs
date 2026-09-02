@@ -1,12 +1,11 @@
-// TIER 2 OF THE MODEL FITNESS SUITE — harness conformance. Port of
-// ui/src/server/fitness/evals.ts.
+// TIER 2 OF THE MODEL FITNESS SUITE — harness conformance.
 //
 // WHAT IT ANSWERS, and it is not "is this a good model": for each harness in
 // THIS install, can the candidate model hold that harness's contract, and where
 // exactly does it break? A new model release should be a fifteen-minute sweep
 // and a swap, not a week of production surprises.
 //
-// THIS IS A DRIVER, NOT A SUBSYSTEM. Everything it needs already crossed:
+// THIS IS A DRIVER, NOT A SUBSYSTEM. Everything it needs already exists:
 //   registry.rs    enumerates the harnesses, already type-erased
 //   define.rs      `EvalCase` — a fixture input plus a deterministic `check`
 //   run.rs         `run_harness`, which already takes `ctx.model` (the pin) and
@@ -45,13 +44,12 @@
 // real spend and still reaches `usage_events` through the transports, which is
 // why the sweep's caller names itself.
 //
-// THE CLOCK RACES BY DROPPING, not by aborting. The TS forwards an
-// AbortSignal; the Rust runner has no signal slot, so the case's future is
-// raced against the clock with `tokio::select!` and the loser is DROPPED —
-// which releases the socket just as surely, and deterministically: a timed-out
-// case's run row never lands here, where in TS it landed or did not depending
-// on how fast the abort rejection ran. A timed-out case is excluded from every
-// rate anyway, so nothing scored depends on the difference.
+// THE CLOCK RACES BY DROPPING, not by aborting. The runner has no signal
+// slot, so the case's future is raced against the clock with `tokio::select!`
+// and the loser is DROPPED — which releases the socket just as surely, and
+// deterministically: a timed-out case's run row never lands here. A timed-out
+// case is excluded from every rate anyway, so nothing scored depends on the
+// difference.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -270,7 +268,8 @@ pub struct UpstreamAttempt {
 pub struct HarnessMeta {
     pub id: String,
     pub label: String,
-    /// The TS `HarnessSource` vocabulary, as the string the admin panel reads.
+    /// The registry's `HarnessSource` vocabulary, as the string the admin panel
+    /// reads.
     pub source: String,
     pub output_kind: String,
     /// The model's-own-tool-loop policy, spelled "none"/"own". Read by
@@ -489,14 +488,13 @@ pub type OwnToolsFn = Arc<dyn Fn(String) -> BoxFut<bool> + Send + Sync>;
 /// production runs it, is dry-run against the sandbox, or is honestly skipped.
 pub type ToolDefsFn = Arc<dyn Fn(String) -> BoxFut<bool> + Send + Sync>;
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
-/// The sync stop predicate a case polls — `stopRequested.has(model) ||
-/// externallyStopped` in the TS.
+/// The sync stop predicate a case polls: stop requested for this model, or
+/// an external stop.
 pub type StopPred = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type OnCaseFn = Arc<dyn Fn(EvalCaseScore) -> BoxFut<()> + Send + Sync>;
 
 /// The sweep's world. `harness_deps` replaces the runner's dep set WHOLESALE
-/// (the Rust runner's one spelling of the TS `Partial` override — see
-/// `RunContext.deps`), and the sweep layers its own transport, `record_run`
+/// (see `RunContext.deps`), and the sweep layers its own transport, `record_run`
 /// capture and findings suppression on top of whichever set it was handed;
 /// everything else — model resolution, capability facts, the guard config —
 /// stays REAL, because the capability floor refusing a weak model IS a tier-2
@@ -662,8 +660,8 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// `new Date(ms).toISOString()` — UTC, milliseconds, trailing Z, byte-identical
-/// to the TS spelling so a status row written by either side reads the same.
+/// UTC, milliseconds, trailing Z — the wire spelling, so every status row
+/// reads the same.
 fn iso(at: i64) -> String {
     chrono::DateTime::from_timestamp_millis(at)
         .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
@@ -743,8 +741,7 @@ pub struct EvalOptions {
     /// The gaps between retries of a rate-limited case. Injected so a test can
     /// drive the retry path in milliseconds instead of half a minute.
     pub pressure_backoff_ms: Option<Vec<u64>>,
-    /// Replaces the whole dep set, the runner's one spelling of the TS
-    /// `Partial` override.
+    /// Replaces the whole dep set — wholesale, one spelling only.
     pub deps: Option<Arc<EvalDeps>>,
 }
 
@@ -2454,8 +2451,8 @@ fn spawn_stop_watcher(
         loop {
             {
                 let ask = should_stop(model.clone()).await;
-                // LATCHED, exactly as the TS's `externallyStopped ||` latches:
-                // a Stop that landed once stays landed for the rest of the run.
+                // LATCHED: a Stop that landed once stays landed for the rest
+                // of the run — the OR-fold is deliberate.
                 if ask {
                     externally_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
@@ -3088,7 +3085,7 @@ fn sweep_of(
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
-// Port of ui/src/server/fitness/evals.test.ts. The sweep is exercised END TO
+// The sweep is exercised END TO
 // END THROUGH THE REAL `run_harness`, against recorded replies — the number
 // this suite prints has to be the number the `harness_runs` row carries, and a
 // test that stubbed the runner would be asserting about a stub. Only the edges
@@ -3098,10 +3095,10 @@ fn sweep_of(
 // which runs the actual rule registry (`run_guardrails`; this suite fakes the
 // transport and the repair gate, never the rules).
 //
-// NOT PORTED, deliberately: `survives a fixture check that throws`. A Rust
-// `CheckFn` closure cannot throw — the type has no error case — so the hazard
-// that test locked (a badly written assertion taking the sweep down) cannot
-// exist here. See the module header's divergence note.
+// NO COUNTERPART, deliberately: `survives a fixture check that throws`. A
+// Rust `CheckFn` closure cannot throw — the type has no error case — so the
+// hazard that test locked (a badly written assertion taking the sweep down)
+// cannot exist here.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3119,7 +3116,7 @@ mod tests {
 
     /// THE SWEEP'S GLOBALS ARE PROCESS-WIDE — the in-flight map, the stop set,
     /// the per-model lock — and `cargo test` runs these tests on many threads
-    /// in one process, where the TS file ran alone in a worker. Every test
+    /// in one process. Every test
     /// that fires a sweep takes this guard for its WHOLE body (the sweep
     /// helpers below never lock it themselves), so two sweeps never share an
     /// instant and no test's Stop can land on another's run — including the
@@ -3582,7 +3579,7 @@ mod tests {
 
         /// Same bench, rebuilt edges — the grown/shrunk registry, a wrapped
         /// transport, or a supplied tool. The status rows, the call log and
-        /// the clock are SHARED, exactly like a TS `{ ...b.deps, ... }`.
+        /// the clock are SHARED.
         fn rebuilt(&self, tweak: impl FnOnce(&mut Rebuild)) -> Bench {
             let mut r = Rebuild {
                 harnesses: self.harnesses.clone(),
@@ -3740,7 +3737,7 @@ mod tests {
             }),
             // The REPAIR GATE only. The final guard pass runs the real rule
             // registry off the config above, so findings on the row are real
-            // findings; an empty gate here is exactly the TS fake.
+            // findings; the gate is the only faked half.
             guard_text: Arc::new(|_text, _input| Box::pin(async { Vec::new() })),
             record_findings: Arc::new(|_findings, _meta| Box::pin(async {})),
             record_run: Arc::new(|_row| Box::pin(async {})),
@@ -4829,10 +4826,9 @@ mod tests {
         assert_eq!(b.status("candidate").done, 6);
     }
 
-    // The valve. Every throttled transport below wraps the bench's own, the
-    // way the TS tests spread `harnessDeps` over the original — the wrapper
-    // decides which calls the provider refuses and everything else passes
-    // through unchanged.
+    // The valve. Every throttled transport below wraps the bench's own — the
+    // wrapper decides which calls the provider refuses and everything else
+    // passes through unchanged.
 
     #[tokio::test]
     async fn narrows_itself_when_the_provider_answers_with_rate_limits() {

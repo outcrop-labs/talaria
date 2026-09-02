@@ -1,4 +1,4 @@
-// Resolve which Google identity an agent acts as (agent-google.ts).
+// Resolve which Google identity an agent acts as.
 //
 //   personal assistant (agent_defs.owner_user_id set) → acts as its OWNER
 //   general fleet agent (no owner)                     → acts as the shared ORG
@@ -12,7 +12,7 @@ use crate::google::org::get_org_access_token;
 use crate::secretbox::SecretBox;
 use sqlx::PgPool;
 
-/// agent-google.ts AgentGoogle.
+/// A resolved Google identity: token + whose account it is.
 pub struct AgentGoogle {
     pub token: String,
     /// Whose Drive the agent is acting in.
@@ -53,9 +53,8 @@ pub async fn resolve_agent_google(
             .flatten();
 
     if let Some((Some(owner_user_id),)) = def {
-        // Personal assistant: strictly its owner's identity. TS catches the
-        // vending error and nulls — a dead owner connection is "not set up",
-        // not a 500.
+        // Personal assistant: strictly its owner's identity. A vending error
+        // nulls — a dead owner connection is "not set up", not a 500.
         return match get_access_token(pg, sb, &owner_user_id, now_ms).await {
             Ok(Some(token)) => Some(AgentGoogle {
                 token,

@@ -1,10 +1,6 @@
 // Platform sub-agents — Talaria's OWN workers, separate from the Hermes
 // fleet. Which model powers each agent is configured GRANULARLY on
 // Models → Platform; unset = the job's auto chain keeps working untouched.
-// Port of the resolution half of platform-agents.ts. What was deferred with
-// the admin panel's route is the panel's OWN row data; that route (the
-// Models \u{2192} Platform page) has since crossed, and the full rows — job,
-// skills, the "Auto" prose — came with it.
 //
 // Resolution contract mirrors model roles: an assignment only wins while it
 // still ROUTES on the gateway — a deleted model can never silently break a
@@ -17,7 +13,7 @@ use sqlx::PgPool;
 
 const KEY: &str = "platform_agent_models";
 
-// ── The catalog (the join keys; the panel's rows cross with its route) ───────
+// ── The catalog (the join keys; the panel reads these rows) ──────────────────
 
 /// One platform agent as the registry knows it. `assignable: false` means the
 /// model is fixed by design — the briefer is the owner's own personal
@@ -143,7 +139,7 @@ pub async fn get_platform_agent_models(pg: &PgPool) -> serde_json::Value {
     get_setting(pg, KEY, serde_json::json!({})).await
 }
 
-/// Assign or clear one platform agent's model (setPlatformAgentModel).
+/// Assign or clear one platform agent's model.
 pub async fn set_platform_agent_model(
     pg: &PgPool,
     id: &str,
@@ -167,11 +163,10 @@ pub async fn set_platform_agent_model(
 
 /// The admin-assigned model for a platform agent — but only while it still
 /// routes on the gateway. None = unassigned or stale: use the job's auto
-/// chain. A database failure propagates (TS throws to the same 500).
+/// chain. A database failure propagates.
 ///
-/// NOTE: this resolves (and so ADVANCES the round-robin cursor), exactly as
-/// the TS `resolveRoute(assigned)` does — intentional parity with live
-/// traffic's routing behavior.
+/// NOTE: this resolves (and so ADVANCES the round-robin cursor) — the same
+/// routing behavior live traffic sees.
 pub async fn platform_agent_model(pg: &PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
     let Some(assigned) = get_platform_agent_models(pg)
         .await

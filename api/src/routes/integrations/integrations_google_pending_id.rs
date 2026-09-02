@@ -1,6 +1,5 @@
-// POST /api/integrations/google/pending/{id} — port of
-// ui/src/routes/api/integrations/google.pending.$id.ts. Approve (executes as
-// the owner, or the org for org actions) or reject an agent-drafted action.
+// POST /api/integrations/google/pending/{id} — approve (executes as the
+// owner, or the org for org actions) or reject an agent-drafted action.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -48,8 +47,8 @@ pub async fn post(
     .await
     {
         Ok(o) => o,
-        // Every path TS lets THROW (a DB error, a token read that blew up
-        // rather than answered null) — the catch's 500.
+        // a true failure (a DB error, a token read that blew up rather than
+        // answered null) — the 500 rung.
         Err(e) => {
             tracing::error!("[integrations/google/pending] decide failed: {e}");
             return thrown_internal_error();
@@ -74,7 +73,7 @@ pub async fn post(
     }
 }
 
-/// Date.now() — the one clock a decision executes under.
+/// Epoch-ms clock — the one time a decision executes under.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

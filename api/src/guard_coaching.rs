@@ -1,14 +1,14 @@
-// Guard coaching — the render-time half of guardrails (guardrails.ts). The
-// invariant stands: flagged CONTENT never re-enters a model's context (a
-// finding could carry adversarial text, and a mid-turn caveat teaches the
-// model to argue with the guard). Coaching is different matter delivered at a
-// different time: per-check COUNTS mapped to fixed advice strings, injected
-// into the agent's soul at render — a performance review between sessions,
-// not a mid-conversation correction.
+// Guard coaching — the render-time half of guardrails. The invariant stands:
+// flagged CONTENT never re-enters a model's context (a finding could carry
+// adversarial text, and a mid-turn caveat teaches the model to argue with the
+// guard). Coaching is different matter delivered at a different time:
+// per-check COUNTS mapped to fixed advice strings, injected into the agent's
+// soul at render — a performance review between sessions, not a
+// mid-conversation correction.
 //
-// The checking/recording engine crosses with the gateway it guards; this
-// module carries what the fleet render needs: the coach flag and the
-// templated coaching block.
+// The checking/recording engine lives with the gateway it guards; this module
+// carries what the fleet render needs: the coach flag and the templated
+// coaching block.
 
 use sqlx::PgPool;
 
@@ -39,8 +39,8 @@ fn coach_advice(check: &str) -> Option<&'static str> {
 const COACH_WINDOW_DAYS: i32 = 7;
 const COACH_MIN_HITS: i32 = 2;
 
-/// Whether the org turned coaching on (guardrails_config.coach, default off —
-/// the same DEFAULT_CONFIG the TS side merges over).
+/// Whether the org turned coaching on (guardrails_config.coach, default
+/// off).
 pub async fn coach_enabled(pg: &PgPool) -> bool {
     get_setting(pg, "guardrails_config", serde_json::json!({}))
         .await
@@ -51,8 +51,7 @@ pub async fn coach_enabled(pg: &PgPool) -> bool {
 
 /// Templated coaching block for one agent, or "" when it has nothing recent.
 /// Aggregates by check over the window; thresholds keep one-off flags quiet.
-/// A query failure is empty coaching (TS's `.catch(() => [])`), never a
-/// blocked render.
+/// A query failure is empty coaching, never a blocked render.
 pub async fn guard_coaching_for(pg: &PgPool, model: &str) -> String {
     let rows: Vec<(String, i32)> = sqlx::query_as(
         "select check_type, count(*)::int from guard_findings \

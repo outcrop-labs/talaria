@@ -1,4 +1,4 @@
-// /api/plans/{id}/draft — port of ui/src/routes/api/plans.$id.draft.ts.
+// /api/plans/{id}/draft.
 // The plan surface's ticket drafts as a DURABLE JOB: POST enqueues a
 // 'plan-draft' run on the CONVERSATION'S OWN agent (the body names no agent
 // — that is the one difference from the channel twin) and answers with the
@@ -37,8 +37,7 @@ pub async fn get(
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // TS binds the id into the uuid column unguarded — a non-uuid id dies in
-    // postgres as a thrown cast error, which surfaces as this same 500.
+    // a non-uuid id answers the 500 here — it never reaches the uuid bind.
     if let Some(gate) = uuid_gate("plans", "GET draft", &id) {
         return gate;
     }
@@ -97,8 +96,8 @@ pub async fn post(
         );
     }
     // The agent checks precede the body on this route (the channel twin
-    // parses first) — TS's order, kept: a member with a bad body on a plan
-    // they cannot draft gets the 403/404, not the 400.
+    // parses first): a member with a bad body on a plan they cannot draft
+    // gets the 403/404, not the 400.
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
         Ok(o) => o,

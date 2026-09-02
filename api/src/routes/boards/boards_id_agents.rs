@@ -1,5 +1,5 @@
-// /api/boards/{id}/agents — port of ui/src/routes/api/boards.$id.agents.ts.
-// GET → { allowAll, models }. PUT → set the board's agent policy (owner/editor,
+// /api/boards/{id}/agents. GET → { allowAll, models }. PUT → set the board's
+// agent policy (owner/editor,
 // or a personal assistant acting as its owner): either the full { allowAll,
 // models } shape, or incremental { add, remove } merged onto the current list
 // (the assistant-friendly spelling). Boards are restrictive by default.
@@ -75,7 +75,7 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Put's fields in zod order: allowAll, models, add, remove — each an
+    // PUT's fields in schema order: allowAll, models, add, remove — each an
     // array of model ids, each id ≤200 chars, ≤100 of them.
     let allow_all = match optional_boolean_member(obj, "allowAll") {
         Ok(v) => v,
@@ -101,7 +101,7 @@ pub async fn put(
         }
     };
     // Incremental spelling merges onto the current list: survivors first,
-    // additions after, first occurrence wins (TS's Set insertion order).
+    // additions after, first occurrence wins — insertion order.
     let incremental = add.is_some() || remove.is_some();
     let merged: Vec<String> = if incremental {
         let mut seen = std::collections::HashSet::new();
@@ -121,7 +121,7 @@ pub async fn put(
         models.unwrap_or_default()
     };
     // An absent allowAll rides the current flag on the incremental arm and
-    // the restrictive default on the full-shape arm — TS's ?? arithmetic.
+    // the restrictive default on the full-shape arm.
     let allow_all = allow_all.unwrap_or(if incremental {
         current.allow_all
     } else {
@@ -131,8 +131,8 @@ pub async fn put(
         tracing::error!("[boards] agent config write failed: {e}");
         return thrown_internal_error();
     }
-    // The answer is the FRESH config — the write and the read agree because
-    // they are the same two queries the TS handler runs in this order.
+    // The answer is the FRESH config — re-read after the write, not echoed
+    // from it.
     match get_board_agent_config(&state.pg, &id).await {
         Ok(cfg) => Json(json!(cfg)).into_response(),
         Err(e) => {

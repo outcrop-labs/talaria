@@ -1,5 +1,4 @@
-// /api/skills/{owner}/{name} — port of ui/src/routes/api/skills.$owner.$name.ts.
-// One skill's SKILL.md. GET → content + file list (any member — the library
+// /api/skills/{owner}/{name}. One skill's SKILL.md. GET → content + file list (any member — the library
 // is org work material). PUT → save (creates the skill if new). DELETE →
 // remove the whole skill dir. Writes go through canEditSkill(s): admin /
 // agents.manage everywhere; personal-assistant owners and explicit
@@ -18,10 +17,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// The union flattens every structural failure into zod's bare
-/// `Invalid input` — a non-string, a missing key, an op no branch carries.
+/// Every structural failure flattens to the bare sentence `Invalid input` —
+/// a non-string, a missing key, an op no branch carries.
 const UNION_MSG: &str = "Invalid input";
-/// zod's default regex sentence for `NAME` (`/^[a-z0-9][a-z0-9._-]*$/`).
+/// The regex-failure sentence for `NAME` (`/^[a-z0-9][a-z0-9._-]*$/`).
 const NAME_MSG: &str = "Invalid string: must match pattern /^[a-z0-9][a-z0-9._-]*$/";
 
 fn name_pattern_ok(s: &str) -> bool {
@@ -33,9 +32,9 @@ fn name_pattern_ok(s: &str) -> bool {
         })
 }
 
-/// `NAME = z.string().regex(...).max(80)` as an optional member: absent →
-/// None; present → string, then the regex, then the max (regex first — a
-/// long name of bad characters answers the regex sentence).
+/// Optional name member: absent → None; present → string, then the regex,
+/// then the max (regex first — a long name of bad characters answers the
+/// regex sentence).
 fn check_name(value: Option<&serde_json::Value>) -> Result<Option<String>, String> {
     let Some(v) = value else { return Ok(None) };
     let s = v.as_str().ok_or_else(|| UNION_MSG.to_string())?;
@@ -97,7 +96,7 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().max(500_000) — required, and the empty string is legal.
+    // content: required, max 500_000 — the empty string is legal.
     let content = match string_member(obj, "content", 0, 500_000) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

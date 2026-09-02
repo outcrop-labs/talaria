@@ -1,6 +1,6 @@
-// One-shot rotation of the data-encryption key (DEK) — port of
-// ui/src/server/secret-rotation.ts. Generates a fresh 256-bit DEK and
-// re-encrypts EVERY stored secret under it in a single transaction — the
+// One-shot rotation of the data-encryption key (DEK). Generates a fresh
+// 256-bit DEK and re-encrypts EVERY stored secret under it in a single
+// transaction — the
 // operator rotates once and all provider keys, agent secrets, and OAuth
 // tokens move to the new key automatically. Optionally re-derives the KEK
 // from new root material at the same time (the wrapped DEK then moves under
@@ -13,8 +13,8 @@ use crate::secretbox::{SecretBox, new_dek};
 use sqlx::{PgPool, Row};
 
 /// Every table+column holding a secretbox ciphertext, with its primary key.
-/// Identifiers here are all code-defined constants, never user input — the
-/// format! strings below are safe for the same reason TS's ident() is.
+/// Identifiers here are all code-defined constants, never user input — that
+/// is what makes the format! strings below safe.
 const CIPHER_TARGETS: &[(&str, &str, &[&str])] = &[
     ("llm_endpoints", "api_key_cipher", &["id"]),
     ("agent_secrets", "value_enc", &["agent_id", "name"]),
@@ -36,9 +36,9 @@ pub struct RotationResult {
 /// the wrapped DEK under a new operator secret (KEK) in the same pass.
 ///
 /// Returns the NEW key set alongside the counts: the caller installs it into
-/// the process only after this returns Ok — the TS module's own ordering
-/// (DB transaction commits, then installActiveKey), so a failure here leaves
-/// the in-memory keys and the database in their old, consistent state.
+/// the process only after this returns Ok — the DB transaction commits, then
+/// the install — so a failure here leaves the in-memory keys and the database
+/// in their old, consistent state.
 pub async fn rotate_secrets(
     pg: &PgPool,
     sb: &SecretBox,
@@ -58,7 +58,7 @@ pub async fn rotate_secrets(
             .collect::<Vec<_>>()
             .join(", ");
         // AssertSqlSafe: every identifier below is a code-defined constant
-        // from CIPHER_TARGETS (TS's ident() makes the same argument).
+        // from CIPHER_TARGETS.
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {cols} from \"{table}\" where \"{column}\" is not null"
         )))

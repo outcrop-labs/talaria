@@ -1,10 +1,8 @@
-// /api/teams/{id}/members — port of ui/src/routes/api/teams.$id.members.ts.
-// GET → members (any member of the team). POST { email, role? } → add
-// (owner; the role defaults to 'member', and the email rides the audit row
-// exactly as sent). DELETE { userId } → remove (owner; owners are silently
-// kept by the SQL's role guard). Non-uuid {id} → the house 500 (the
-// recorded platform-500 divergence). Gate order is TS's: uuid bind, then
-// the role check, then the body.
+// /api/teams/{id}/members. GET → members (any member of the team).
+// POST { email, role? } → add (owner; the role defaults to 'member', and the
+// email rides the audit row exactly as sent). DELETE { userId } → remove
+// (owner; owners are silently kept by the SQL's role guard). Non-uuid {id} →
+// the house 500. Gate order: uuid bind, then the role check, then the body.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, email_member, enum_member, parse, uuid_member};
@@ -112,8 +110,8 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `.default('member')`: absent means member; present — including null —
-    // must be one of ROLES, with zod's enum message for anything else.
+    // role's `.default('member')`: absent means member; present — including
+    // null — must be one of ROLES, else the enum's message.
     let role = match obj.get("role") {
         None => "member".to_string(),
         Some(_) => match enum_member(obj, "role", ROLES) {

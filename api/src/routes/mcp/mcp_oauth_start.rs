@@ -1,4 +1,4 @@
-// /api/mcp/oauth/start — port of ui/src/routes/api/mcp.oauth.start.ts.
+// /api/mcp/oauth/start.
 // GET ?server=<id>&scope=org|me → 302 into the provider's authorization page.
 // scope=org (one shared connection) needs agents.manage; scope=me connects
 // the signed-in user's own account on a per-user server.

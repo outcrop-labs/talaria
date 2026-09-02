@@ -1,6 +1,5 @@
-// Catalog shaping — a pure port of gatewayModels() in ui/src/server/llm-gateway.ts
-// (lines 83-95). DB-free on purpose: every rule here has a unit test, and the
-// same shaping is what the phase-2 chat relay will resolve model ids against.
+// Catalog shaping. DB-free on purpose: every rule here has a unit test, and
+// the chat relay resolves model ids against this same shaping.
 
 /// One `llm_endpoints` row, exactly the columns the catalog reads.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -16,7 +15,7 @@ pub struct GatewayModel {
     pub endpoints: Vec<String>,
     /// True for `<endpoint>/<model>` pins. Bare model ids may themselves
     /// contain "/" (OpenRouter, HF-style names) — only this flag tells the
-    /// two apart, exactly as in TS.
+    /// two apart.
     pub qualified: bool,
 }
 
@@ -55,12 +54,12 @@ pub fn catalog_of(eps: &[EndpointModels]) -> Vec<GatewayModel> {
     out
 }
 
-// TS sorts the catalog with `localeCompare` (ICU root collation), and it is
+// The catalog sorts with ICU root collation (`localeCompare`), and it is
 // NOT byte order: this dev database catalogs "Z.ai" (uppercase) alongside
-// "openrouter", and ICU puts Z after o while bytes put it before. The catalog
-// must come out in the SAME order from both runtimes, so here is ICU's
-// collation for the grammar model ids actually use, derived from the probes
-// in the tests below (each asserted against real localeCompare output).
+// "openrouter", and ICU puts Z after o while bytes put it before. The sort
+// order is a stable contract, so here is ICU's collation for the grammar
+// model ids actually use, derived from the probes in the tests below (each
+// asserted against real localeCompare output).
 //
 // ICU compares in LEVELS, not per character: every primary weight first, case
 // (tertiary) only afterwards. Primary weights for this grammar:
@@ -190,15 +189,16 @@ mod tests {
 
     #[test]
     fn duplicate_listing_within_one_endpoint_counts_as_pooled() {
-        // The TS Map append does this too — a row listing a model twice makes
-        // endpoints.length > 1 on its own. Faithful, if odd.
+        // A row listing a model twice makes endpoints.len() > 1 on its own —
+        // pooling keys on occurrences, not distinct endpoints. Odd, but that
+        // is the rule.
         let catalog = catalog_of(&[ep("echo", &["m", "m"])]);
         let bare = catalog.iter().find(|m| !m.qualified).unwrap();
         assert_eq!(bare.endpoints, ["echo", "echo"]);
     }
 
-    /// Every expectation below is real `localeCompare` output (ICU root),
-    /// probed in node — the table above was derived from these pairs and this
+    /// Every expectation below is real `localeCompare` output (ICU root) —
+    /// the table above was derived from these pairs and this
     /// test is what keeps it honest.
     #[test]
     fn collation_matches_localecompare_pair_probes() {
@@ -223,7 +223,7 @@ mod tests {
         less("o3", "o3-mini");
     }
 
-    /// The full battery, sorted the way node's localeCompare sorts it —
+    /// The full battery, sorted the way `localeCompare` sorts it —
     /// including the one that bites this dev database: "Z.ai/…" after
     /// "openrouter/…" (case-folded), where byte order would flip them.
     #[test]
@@ -282,8 +282,8 @@ mod tests {
     }
 
     /// A 400-id randomized battery (seeded LCG — regenerable from the
-    /// generator command in git history) in the id grammar, sorted by REAL
-    /// node `localeCompare` and committed as a fixture, the same
+    /// generator command in git history) in the id grammar, sorted by real
+    /// `localeCompare` and committed as a fixture, the same
     /// cross-language proof style as the secretbox vectors: the expectation
     /// was produced by the other implementation, not derived from this one.
     #[test]

@@ -1,8 +1,7 @@
-// /api/integrations/google/agent/gmail/labels — port of
-// ui/src/routes/api/integrations/google.agent.gmail.labels.ts. The label half
-// of inbox organizing. Gmail's folders ARE labels: INBOX and UNREAD are system
-// labels a message carries, and "filing" mail means applying and removing them
-// (see the organize route for the mutations).
+// /api/integrations/google/agent/gmail/labels. The label half of inbox
+// organizing. Gmail's folders ARE labels: INBOX and UNREAD are system labels a
+// message carries, and "filing" mail means applying and removing them (see the
+// organize route for the mutations).
 // GET  → every label (read)
 // POST → find-or-create a label (safe to retry)
 
@@ -81,7 +80,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     }
 }
 
-/// Date.now() — the one clock the agent mailbox reads.
+/// Epoch-ms clock — the one time the agent mailbox reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

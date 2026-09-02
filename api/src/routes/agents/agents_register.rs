@@ -1,6 +1,5 @@
-// POST /api/agents/register — port of ui/src/routes/api/agents.register.ts.
-// An agent registers with Talaria (MC-compatible contract, so the existing
-// plugin works repointed). Agent-key auth.
+// POST /api/agents/register. An agent registers with Talaria (MC-compatible
+// contract, so the existing plugin works repointed). Agent-key auth.
 
 use crate::agent_auth::check_fleet_key;
 use crate::agents_registry::register_agent;
@@ -40,7 +39,7 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.array(z.string()).optional() — elements unconstrained strings.
+    // capabilities: optional array — elements are unconstrained strings.
     let capabilities = match obj.get("capabilities") {
         None => Value::Array(Vec::new()),
         Some(Value::Array(items)) => {

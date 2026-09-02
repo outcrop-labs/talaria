@@ -1,35 +1,23 @@
-// THE TRANSPORTS, and the request that reaches them — the port of
-// harness/transport.ts. The CONTRACT LAYER: the request and reply types, the
-// one mapping onto a persona payload, the `response_format` derivation, the
-// tool-channel wire renderer, and the refusal sentences. Then the GATEWAY
-// half of the async layer — the blocking tool turn, the plain completion,
-// and the streamed pair — over the gateway pieces that crossed with the chat
-// relay (`resolve_route`, `build_upstream`, `fetch_upstream`,
-// `record_gateway_usage`). The FLEET half (the persona turn, the persona
-// stream pump, and the `pickTransport` rule) lives at the bottom of the file,
-// over `proxy_chat` and `list_agents`.
+// THE TRANSPORTS, and the request that reaches them — the CONTRACT LAYER:
+// the request and reply types, the one mapping onto a persona payload, the
+// `response_format` derivation, the tool-channel wire renderer, and the
+// refusal sentences. Then the GATEWAY half of the async layer — the blocking
+// tool turn, the plain completion, and the streamed pair — over the same
+// gateway pieces the chat relay runs on (`resolve_route`, `build_upstream`,
+// `fetch_upstream`, `record_gateway_usage`). The FLEET half (the persona
+// turn, the persona stream pump, and the `transport_kind` rule) lives at the
+// bottom of the file, over `proxy_chat` and `list_agents`.
 //
-// WHY THIS FILE EXISTS — ONE MISSING FEATURE THAT WORE FIVE COATS. Five files
-// USED TO hand-write their own persona transport because `runHarness` could
-// not serve them, and four agents working independently converged on the same
-// four asks:
+// WHY THE REQUEST TYPE HAS EVERY SLOT IT HAS — each one is an ask a call
+// site once had to serve by hand-writing its own copy of the fleet transport,
+// because `TransportRequest` had no slot for it: `tools`, `ledger`,
+// `hold_ms`, the streaming transport type for the streaming pair, and
+// `tool_defs` + `TransportReply.tool_calls` — without which the
+// `tool-select` probe could not run, could not write its fact, and the
+// capability-gated widening it gates could never fire in production.
 //
-//   work-dispatch.ts     `sessionTransport`          tools + taskId + a 10-minute hold
-//   briefing.ts          a tee transport             tools + streaming
-//   outreach.ts          `personaTurnWithOwnTools`   tools
-//   plan-persona-turn.ts `planPersonaTransport`      refId + tier + tier routing
-//   routes/api/muse.ts   a replay transport          streaming
-//
-// Every one of them was the fleet transport differing on an axis
-// `TransportRequest` had no slot for. Those slots are here now: `tools`,
-// `ledger`, `hold_ms`, and (for the streaming pair) the streaming transport
-// type. AND THE SIXTH ASK, which is `tool_defs` + `TransportReply.tool_calls`
-// — without the slot, the `tool-select` probe could not run, could not write
-// its fact, and the capability-gated widening it gates could never fire in
-// production.
-//
-// AND THE REASON THE SHIMS WERE A PROBLEM RATHER THAN A STYLE COMPLAINT:
-// THREE OF THE FIVE SILENTLY DROPPED `req.temperature` AND `req.json_mode`. A
+// AND THE REASON HAND-WRITTEN COPIES WERE A PROBLEM RATHER THAN A STYLE
+// COMPLAINT: THEY QUIETLY DROPPED `req.temperature` AND `req.json_mode`. A
 // harness that declared `temperature: 0` ran at the provider's default and
 // nothing anywhere said so — the exact class of failure the whole harness
 // layer exists to end, reintroduced by the workaround for the harness layer.
@@ -195,8 +183,8 @@ pub struct TokenPair {
 }
 
 /// One turn, as the runner hands it to a transport. Every field is spent by
-/// the mapping below or by the transports — see the module header for the
-/// three shims that dropped fields because there was nowhere to put them.
+/// the mapping below or by the transports — see the module header for why a
+/// field a transport cannot honor fails the call instead.
 #[derive(Clone)]
 pub struct TransportRequest {
     /// The id actually called — a tier id when a tier was routed.
@@ -291,7 +279,7 @@ pub struct TransportReply {
     pub tool_calls: Option<Vec<ToolCall>>,
     pub usage: Option<TokenPair>,
     /// The call asked for JSON at the protocol level and the constraint did
-    /// not survive to the upstream (audit 1.2). Honored, not ignored: the
+    /// not survive to the upstream. Honored, not ignored: the
     /// runner stops trusting json mode for the rest of the run and anchors
     /// the instruction in the prompt instead.
     pub contract_dropped: bool,
@@ -316,9 +304,8 @@ pub fn tool_names_of(calls: &[ToolCall]) -> Vec<String> {
     calls.iter().map(|c| c.name.clone()).collect()
 }
 
-/// The default attribution, which is exactly what the shared fleet transport
-/// metered before this slot existed: a harness turn on a persona IS a chat
-/// turn with that persona, belonging to no conversation.
+/// The default attribution: a harness turn on a persona IS a chat turn with
+/// that persona, belonging to no conversation.
 pub fn ledger_of(req: &TransportRequest) -> LedgerAttribution {
     req.ledger.clone().unwrap_or(LedgerAttribution {
         agent_model: req.model.clone(),
@@ -329,13 +316,12 @@ pub fn ledger_of(req: &TransportRequest) -> LedgerAttribution {
     })
 }
 
-/// `proxyChat`'s payload shape — structural, one flat record the persona
+/// `proxy_chat`'s payload shape — structural, one flat record the persona
 /// gateway reads. THE ONE MAPPING from a `TransportRequest` onto it: every
-/// field of the request is spent here, because three of the five hand-written
-/// persona transports dropped `temperature` and `json_mode` by copying the
-/// fleet transport and editing the one axis their author cared about. A
-/// harness that declares `temperature: 0` and runs at the provider's 0.7 is a
-/// harness whose declaration is decorative.
+/// field of the request is spent here, because a hand-copied mapping drops
+/// exactly the fields its author did not care about. A harness that declares
+/// `temperature: 0` and runs at the provider's 0.7 is a harness whose
+/// declaration is decorative.
 pub fn persona_payload(req: &TransportRequest) -> Value {
     let mut payload = Map::new();
     payload.insert("model".into(), Value::String(req.model.clone()));
@@ -402,10 +388,10 @@ pub fn gateway_tools_refusal(model: &str) -> String {
 /// that no longer mentioned any of the tools we were asking the model to
 /// choose between.
 ///
-/// Answering that quietly is precisely audit 1.2 in the tool-calling clothes:
-/// the probe would read "called no tool" off a turn where no tool was ever
-/// offered and write `tools: false` — permanently, since probe facts do not
-/// expire — about a model that may well call tools perfectly.
+/// Answering that quietly is the silent-strip failure in tool-calling
+/// clothes: the probe would read "called no tool" off a turn where no tool
+/// was ever offered and write `tools: false` — permanently, since probe
+/// facts do not expire — about a model that may well call tools perfectly.
 pub fn tool_defs_dropped_refusal(model: &str, endpoint: &str) -> String {
     format!(
         "harness turn on \"{model}\" offered the model tool definitions, but endpoint \"{endpoint}\" rejects the \"tools\" parameter, \
@@ -442,8 +428,8 @@ pub fn fleet_tool_defs_refusal(model: &str) -> String {
 // ── The response_format this request should carry ────────────────────────────
 
 /// The `response_format` this request should carry, preferring the harness's
-/// schema over the loose object form. One definition, four call sites — the
-/// four used to each hardcode `{type:'json_object'}`, which is how every
+/// schema over the loose object form. One definition for every body this file
+/// builds — call sites each hardcoding `{type:'json_object'}` is how every
 /// structured call to Anthropic came to 400.
 pub fn response_format_of(req: &TransportRequest) -> Option<Value> {
     if !req.json_mode {
@@ -616,7 +602,7 @@ pub fn replays_tools(req: &TransportRequest) -> bool {
         .any(|m| m.role.is_tool() || !m.tool_calls.is_empty())
 }
 
-// ── The gateway transports, async over the pieces that crossed with the relay ─
+// ── The gateway transports, async over the relay's own pieces ────────────────
 //
 // The GATEWAY half of the async layer, on `resolve_route` / `build_upstream` /
 // `fetch_upstream` / `record_gateway_usage`. The FLEET half — the persona
@@ -630,17 +616,15 @@ use crate::state::AppState;
 use futures_util::StreamExt;
 
 /// `gateway completion {status}: {body}` — the failure sentence both blocking
-/// paths throw with, body cut at 300 characters like TS's `.slice(0, 300)`
-/// (on chars, not bytes: a cut mid-codepoint would panic the formatter and
-/// say less).
+/// paths throw with, body cut at 300 characters (on chars, not bytes: a cut
+/// mid-codepoint would panic the formatter and say less).
 fn completion_error(status: u16, body: String) -> String {
     let head: String = body.chars().take(300).collect();
     format!("gateway completion {status}: {head}")
 }
 
 /// The ledger row both paths write. Spawned, never awaited on the turn's
-/// path — TS meters with `.catch(() => {})`, so a ledger hiccup never fails a
-/// turn that already succeeded.
+/// path, so a ledger hiccup never fails a turn that already succeeded.
 fn meter(
     state: &AppState,
     route: &crate::gateway::registry::ResolvedRoute,
@@ -848,8 +832,8 @@ pub async fn gateway_transport(
     // OFFERING TOOLS IS NOT THE ONLY REASON TO RENDER THEM, and this cost
     // every research-search fixture on Anthropic.
     //
-    // `toolSearchTransport` ends with a CLOSING TURN that offers no tools —
-    // the model has searched, now it writes the answer — and that turn
+    // A search loop ends with a CLOSING TURN that offers no tools — the
+    // model has searched, now it writes the answer — and that turn
     // carries the whole tool conversation behind it. With no defs it fell
     // through to the plain completion helper, which flattens every message
     // to `{role, content}` and drops `tool_call_id` on the floor. Anthropic
@@ -927,9 +911,9 @@ pub async fn gateway_transport(
         req.prompt_chars(),
         text_chars,
     );
-    // Faithful to the TS plain path, which meters with the real usage but
-    // surfaces none to the runner (`completeViaGateway` returns a string) —
-    // the runner estimates from chars, exactly as it did before.
+    // The ledger row meters with the real usage; the runner sees none of it —
+    // the plain path has always been chars-estimated, and that is the number
+    // the runner's metering expects.
     Ok(TransportReply {
         kind: TransportKind::Gateway,
         tool_names: Vec::new(),
@@ -940,11 +924,11 @@ pub async fn gateway_transport(
     })
 }
 
-/// The gateway transport, STREAMED — the sibling of the fleet stream that
-/// crosses in batch 5, and the piece that makes "a harness may stream" true
-/// of both transports rather than only of personas. The Muse's six prose
-/// kinds draft against an ORG GATEWAY model, so without this they would keep
-/// a hand-written upstream pair however good the streamed runner gets.
+/// The gateway transport, STREAMED — the piece that makes "a harness may
+/// stream" true of both transports rather than only of personas. The Muse's
+/// six prose kinds draft against an ORG GATEWAY model, so without this they
+/// would keep a hand-written upstream pair however good the streamed runner
+/// gets.
 ///
 /// The blocking helper cannot serve it: it asks for `stream: false` and hands
 /// back a finished string, which is the one thing a streaming surface must
@@ -1080,9 +1064,8 @@ use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, ByteStream
 use crate::gateway::usage::{UsageInput, record_usage};
 use crate::me::gateway_models;
 
-/// A persona turn's assembled result (`PersonaTurn`). The parser reports
-/// reasoning text too; TS ignores it the same way — only content, tool names
-/// and usage feed the turn.
+/// A persona turn's assembled result. The parser reports reasoning text too;
+/// it is dropped — only content, tool names and usage feed the turn.
 pub struct PersonaTurn {
     pub text: String,
     pub tool_names: Vec<String>,
@@ -1121,9 +1104,9 @@ impl PersonaTurn {
     }
 }
 
-/// Drain a persona stream into text, tool names and usage, emitting each delta
-/// on the way past (`pumpPersonaStream`). `emit` is the ONLY thing the
-/// streaming caller does differently — one loop, not five copies of it.
+/// Drain a persona stream into text, tool names and usage, emitting each
+/// delta on the way past. `emit` is the ONLY thing the streaming caller does
+/// differently — one loop, not one copy per surface.
 pub async fn pump_persona_stream(
     mut body: ByteStream,
     mut emit: Option<&mut (dyn FnMut(&str) + Send)>,
@@ -1147,10 +1130,10 @@ pub async fn pump_persona_stream(
     Ok(turn)
 }
 
-/// The ledger row for a persona turn (`meterPersonaTurn`). It meters because
-/// nothing else will: a harness turn on a persona writes no chat, channel or
-/// ticket row, so this is the only place the spend can enter. TS:
-/// `.catch(() => {})` — a ledger hiccup never fails a turn that succeeded.
+/// The ledger row for a persona turn. It meters because nothing else will:
+/// a harness turn on a persona writes no chat, channel or ticket row, so
+/// this is the only place the spend can enter. The result is discarded — a
+/// ledger hiccup never fails a turn that succeeded.
 async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &PersonaTurn) {
     let led = ledger_of(req);
     let counts = match turn.usage {
@@ -1180,7 +1163,7 @@ async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &Pe
     .await;
 }
 
-/// Streaming completion against a FLEET PERSONA's own gateway (`personaTurn`).
+/// Streaming completion against a FLEET PERSONA's own gateway.
 /// The persona runs a tool loop we do not control, so this transport collects
 /// the tool names the stream reports and nothing more — which is precisely
 /// what the guard pass is told about it later.
@@ -1201,7 +1184,8 @@ async fn persona_turn(
     if !upstream.ok() {
         return Err(format!("persona gateway {}", upstream.status));
     }
-    // A CANNED STREAM IS AN OUTAGE WEARING A 200 — see `ChatStream.canned`.
+    // A CANNED STREAM IS AN OUTAGE WEARING A 200 — see the `canned` field on
+    // `proxy_chat`'s reply.
     // It is a failed call, so it fails like one: the harness gets the error,
     // and the sentence can never be persisted as an agent's work.
     if let Some(canned) = upstream.canned {
@@ -1235,7 +1219,7 @@ async fn persona_turn(
     })
 }
 
-/// `fleetTransport` — the blocking fleet side.
+/// The blocking fleet side.
 pub async fn fleet_transport(
     state: &AppState,
     req: &TransportRequest,
@@ -1243,10 +1227,9 @@ pub async fn fleet_transport(
     persona_turn(state, req, None).await
 }
 
-/// `fleetStream` — the same call, with each delta handed on as it lands. This
-/// is what the briefing panel's tee was: one branch to the owner's screen, one
-/// to the guard. Streaming is a property of the TRANSPORT, never of the
-/// harness contract.
+/// The same call, with each delta handed on as it lands — the briefing
+/// panel's tee: one branch to the owner's screen, one to the guard.
+/// Streaming is a property of the TRANSPORT, never of the harness contract.
 pub async fn fleet_stream(
     state: &AppState,
     req: &TransportRequest,
@@ -1256,8 +1239,7 @@ pub async fn fleet_stream(
     persona_turn(state, req, Some(&mut emit)).await
 }
 
-/// Which side of the house a model lives on (`transportKind`). The rule,
-/// stated once:
+/// Which side of the house a model lives on. The rule, stated once:
 ///
 ///    a model the ORG GATEWAY serves goes through `gateway_transport`;
 ///    a model that is a LIVE FLEET PERSONA goes through the proxy;
@@ -1302,8 +1284,8 @@ pub async fn transport_kind(state: &AppState, model: &str) -> TransportKind {
     TransportKind::Gateway
 }
 
-/// `pickTransport` — the blocking picker. THE TRANSPORT RULE in one place so
-/// no harness author ever restates it.
+/// The blocking picker. THE TRANSPORT RULE in one place so no harness author
+/// ever restates it.
 pub async fn dispatch_transport(
     state: &AppState,
     req: &TransportRequest,
@@ -1314,12 +1296,12 @@ pub async fn dispatch_transport(
     }
 }
 
-/// `pickStreamingTransport` — the same choice for the streaming pair. It
-/// resolves the kind through the one function above rather than repeating the
-/// gateway/fleet/tier lookup, because two copies of "which side is this model
-/// on" is how a blocking call and a streaming call of the SAME model end up on
-/// different transports — and that failure looks like the stream being broken
-/// rather than like a routing bug.
+/// The same choice for the streaming pair. It resolves the kind through the
+/// one function above rather than repeating the gateway/fleet/tier lookup,
+/// because two copies of "which side is this model on" is how a blocking call
+/// and a streaming call of the SAME model end up on different transports —
+/// and that failure looks like the stream being broken rather than like a
+/// routing bug.
 pub async fn dispatch_stream(
     state: &AppState,
     req: &TransportRequest,
@@ -1332,8 +1314,8 @@ pub async fn dispatch_stream(
 }
 
 // ── The probe-side transport helpers ─────────────────────────────────────────
-// `offersToolDefinitions`, `runsOwnToolLoop`, `gatewayImageTurn` and
-// `personaProbeTurn` — the four doors the fitness suite reaches the model
+// `offers_tool_definitions`, `runs_own_tool_loop`, `gateway_image_turn` and
+// `persona_probe_turn` — the four doors the fitness suite reaches the model
 // through that are NOT the harness runner. All four derive from
 // `transport_kind` on purpose, so they can never disagree with the transport
 // that would actually take the call.
@@ -1360,10 +1342,10 @@ pub async fn runs_own_tool_loop(state: &AppState, model: &str) -> bool {
     transport_kind(state, model).await == TransportKind::Fleet
 }
 
-/// A GATEWAY TURN THAT CARRIES AN IMAGE — port of `gatewayImageTurn`. The
-/// blocking transport cannot serve this: a `TransportRequest` has nowhere to
-/// put an image (`Message.content` is a string by construction; see define.rs),
-/// so the vision probe's ask takes messages and image URLs directly.
+/// A GATEWAY TURN THAT CARRIES AN IMAGE. The blocking transport cannot serve
+/// this: a `TransportRequest` has nowhere to put an image (`Message.content`
+/// is a string by construction; see define.rs), so the vision probe's ask
+/// takes messages and image URLs directly.
 ///
 /// The LAST user turn carries the image, because that is the turn the
 /// question is in — a system prompt with pictures attached is a shape
@@ -1411,9 +1393,8 @@ pub async fn gateway_image_turn(
     let mut call = build_upstream(state, &route, &body).await?;
     let fetched = fetch_upstream(&state.pg, &mut call, Some(&route));
     let reply = match timeout_ms {
-        // TS threads the timeout into the upstream call itself; the Rust
-        // fetch has no such field, so the clock is wrapped around it here —
-        // observably the same bound on the whole turn.
+        // The clock wraps the fetch rather than threading a timeout field
+        // through the upstream call — one bound on the whole turn.
         Some(ms) => tokio::time::timeout(std::time::Duration::from_millis(ms), fetched)
             .await
             .map_err(|_| format!("gateway completion timed out after {ms}ms"))?,
@@ -1456,9 +1437,8 @@ pub async fn gateway_image_turn(
     Ok(text)
 }
 
-/// A PERSONA TURN THE PROBE SUITE CAN DRIVE — port of `personaProbeTurn`: one
-/// blocking round trip against a fleet agent, returning the assembled turn
-/// rather than a stream.
+/// A PERSONA TURN THE PROBE SUITE CAN DRIVE — one blocking round trip against
+/// a fleet agent, returning the assembled turn rather than a stream.
 ///
 /// WHY IT IS NOT `fleet_transport`. Two reasons, and the second is the
 /// load-bearing one. A probe wants the raw turn — text AND the tool names the
@@ -1544,8 +1524,7 @@ mod tests {
     #[test]
     fn the_default_tool_policy_is_none_and_every_absent_field_has_a_reader() {
         // The readers exist so a transport cannot drop half a request by
-        // reading fields by hand — the exact defect three of the five
-        // hand-written shims shipped.
+        // reading fields by hand.
         assert_eq!(tool_policy_of(&req(false)), ToolPolicy::None);
         assert!(tool_defs_of(&req(false)).is_empty());
         let led = ledger_of(&req(false));

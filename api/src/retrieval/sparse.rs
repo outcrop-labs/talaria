@@ -1,6 +1,5 @@
-// Sparse (keyword) vectors for hybrid retrieval. Port of
-// ui/src/server/retrieval/sparse.ts, line for line — this file is pure, which
-// is the point of it: dense embeddings miss exact identifiers — ticket
+// Sparse (keyword) vectors for hybrid retrieval — a pure module, which is
+// the point of it: dense embeddings miss exact identifiers — ticket
 // numbers, env vars, error strings, model names — so each chunk also gets a
 // bag-of-terms vector: token → 32-bit hash index, value = saturated term
 // frequency. Qdrant's sparse `modifier: idf` supplies the IDF half
@@ -9,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-/// The 86-word stop list, verbatim. Small enough that a hash set built once
+/// The 86-word stop list. Small enough that a hash set built once
 /// beats any fancier structure; the words are English function words, and a
 /// query composed entirely of them produces an empty vector — which matches
 /// nothing, the honest answer for a query with no content words.
@@ -27,12 +26,11 @@ static STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .collect()
 });
 
-/// FNV-1a over the token — a stable u32 index, hash-for-hash identical to the
-/// TS (`h ^= charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0`), which is a
-/// requirement, not a nicety: query-side and point-side vectors are encoded by
-/// whichever runtime served the write, and a hash that drifted would make
-/// every existing sparse point quietly unreachable. Collisions are rare
-/// enough to be noise in a scoring context.
+/// FNV-1a over the token's UTF-16 code units — a stable u32 index whose
+/// exact value is a requirement, not a nicety: every stored sparse point
+/// was encoded with this hash, and a drifted hash would make those points
+/// quietly unreachable. Collisions are rare enough to be noise in a scoring
+/// context.
 fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for unit in s.encode_utf16() {
@@ -61,11 +59,10 @@ fn tokens(text: &str) -> Vec<String> {
     let mut raw = String::new();
 
     fn emit(raw: &str, out: &mut Vec<String>) {
-        // Trim separator runs off both ENDS (never `_`): the class the TS
-        // regex trims is `[.\-@/:]+` — a token that was all separators
-        // disappears here, which is the `filter(Boolean)` arm.
+        // Trim separator runs off both ENDS (never `_`) — a token that was
+        // all separators disappears here.
         let t = raw.trim_matches(|c| matches!(c, '.' | '-' | '/' | ':' | '@'));
-        // ASCII by construction, so byte length is the length the TS sees.
+        // ASCII by construction, so byte length is character length.
         if t.len() < 2 || STOPWORDS.contains(t) {
             return;
         }
@@ -106,11 +103,10 @@ pub struct SparseVector {
 /// a term's tenth repeat shouldn't count like its first). Empty text → empty
 /// vector (Qdrant accepts it; it simply matches nothing).
 ///
-/// INDICES COME OUT IN FIRST-SEEN ORDER, matching the TS Map's insertion
-/// order. Qdrant treats a sparse vector as an unordered multiset of
-/// (index, value), so nothing downstream can observe the choice — but keeping
-/// it identical costs nothing and makes a serialized vector byte-comparable
-/// with the TS side during coexistence.
+/// INDICES COME OUT IN FIRST-SEEN ORDER. Qdrant treats a sparse vector as an
+/// unordered multiset of (index, value), so nothing downstream can observe
+/// the choice — but a deterministic order costs nothing and keeps a
+/// serialized vector byte-stable.
 pub fn sparse_encode(text: &str) -> SparseVector {
     let mut order: Vec<u32> = Vec::new();
     let mut tf: HashMap<u32, u32> = HashMap::new();
@@ -176,7 +172,7 @@ mod tests {
     #[test]
     fn stopwords_and_single_letters_never_index() {
         assert_eq!(tokens("the is a of to"), Vec::<String>::new());
-        // "am" is NOT on the TS stop list (be/being/been are; am isn't) —
+        // "am" is NOT on the stop list (be/being/been are; am isn't) —
         // pin the gap so a well-meaning "fix" can't drift the vocabulary:
         // adding a word here would strand every point indexed before it.
         assert_eq!(tokens("I am at it"), vec!["am"]);

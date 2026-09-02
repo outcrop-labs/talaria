@@ -1,5 +1,4 @@
-// /api/gaps/{id} — port of ui/src/routes/api/gaps.$id.ts.
-// PUT status (open | dismissed | resolved) — agents.manage. Dismissed shapes
+// /api/gaps/{id}. PUT status (open | dismissed | resolved) — agents.manage. Dismissed shapes
 // that keep recurring reopen automatically; resolved sticks.
 
 use crate::body::{as_object, parse, string_member};
@@ -27,8 +26,8 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.enum(['open', 'dismissed', 'resolved']) — the three literals, and
-    // anything else is a 400 before the row is touched.
+    // status: exactly one of the three literals — anything else is a 400
+    // before the row is touched.
     let status = match string_member(obj, "status", 1, 20) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

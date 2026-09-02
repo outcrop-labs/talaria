@@ -1,17 +1,16 @@
-// /api/inbox/focus/command — port of ui/src/routes/api/inbox.focus.command.ts.
-// POST → run one instruction from the focus inbox panel through the assistant
-// (normal / fast / plan mode, optional model overrides), as an SSE stream of
-// named events — conversation, status, content, activity, done, error.
+// /api/inbox/focus/command. POST → run one instruction from the focus inbox
+// panel through the assistant (normal / fast / plan mode, optional model
+// overrides), as an SSE stream of named events — conversation, status,
+// content, activity, done, error.
 //
 // This route lives in the STREAMING router: the stream's legitimate lifetime
 // is the turn itself, not a handler window. The Inbox lock MOVES into the
-// stream task (`let _guard`), so it releases when the stream does — TS's
-// `finally { release() }` expressed as an ownership move.
+// stream task (`let _guard`), so it releases when the stream does —
+// release-on-drop instead of a finally.
 //
-// On a client disconnect TS stops consuming, the generator is returned at its
-// current yield, and the assistant row is left 'streaming'. The port's run
-// keeps going and persists the completed reply (the chat family's tee
-// philosophy) — the recorded divergence, documented at the module.
+// On a client disconnect the relay stops, but the run keeps going and
+// persists the completed reply (the chat family's tee philosophy) — the
+// row never stays 'streaming'.
 
 use crate::body::{
     array_msg, array_too_big_msg, as_object, enum_member, nullable_optional_string_member,
@@ -77,9 +76,9 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<InboxCommandInput, S
     })
 }
 
-/// `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` — the frame
-/// shape the panel's SSE reader parses. The event's own serialization
-/// carries its `type` tag inside the data payload too, as in TS.
+/// `event: <type>` then `data: <json>` then a blank line — the frame shape
+/// the panel's SSE reader parses. The event's own serialization carries
+/// its `type` tag inside the data payload too.
 fn frame(event: &InboxCommandEvent) -> Bytes {
     let json = serde_json::to_string(event).expect("event serializes");
     Bytes::from(format!("event: {}\ndata: {json}\n\n", event_type(event)))
@@ -129,11 +128,11 @@ pub async fn post(
     // The generator as two channels: the run sends typed events into `etx`
     // (unbounded — the run never blocks on a slow reader), and the stream
     // task forwards each as an SSE frame into the body channel. A prologue
-    // failure arrives as an Err from the run and is rendered as the TS
-    // catch's error event; a PANIC in the run task surfaces as a JoinError
-    // after the event channel closes, and gets the TS catch's fallback
-    // sentence. The `etx` clone is the error branch's voice after the
-    // original moved into the call.
+    // failure arrives as an Err from the run and is rendered as the error
+    // event; a PANIC in the run task surfaces as a JoinError after the
+    // event channel closes, and gets the fallback sentence. The `etx`
+    // clone is the error branch's voice after the original moved into the
+    // call.
     let (etx, mut erx) = tokio::sync::mpsc::unbounded_channel::<InboxCommandEvent>();
     let (btx, brx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let err_tx = etx.clone();
@@ -174,10 +173,8 @@ pub async fn post(
             brx,
             |mut rx| async move { rx.recv().await.map(|i| (i, rx)) },
         );
-    // Header ORDER matches the oracle's wire, not its source: TS builds the
-    // response through a fetch Headers object, which iterates alphabetically,
-    // so the bytes on :5273 read cache-control → content-type even though the
-    // route literal spells Content-Type first (chat.rs does the same).
+    // Header ORDER is the wire order — cache-control, connection,
+    // content-type (alphabetical); chat.rs matches.
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CACHE_CONTROL, "no-cache, no-transform")

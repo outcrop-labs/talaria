@@ -1,5 +1,5 @@
-// Per-user API keys for the Talaria LLM gateway — port of
-// ui/src/server/llm-keys.ts. The secret is `tlk_<48 hex>`, shown exactly once
+// Per-user API keys for the Talaria LLM gateway. The secret is `tlk_<48
+// hex>`, shown exactly once
 // at mint time; only its sha256 is stored. Admins may always mint; other
 // users need the models.mint-keys grant (the fine-grained permission the old
 // can_mint_keys column backfilled into).
@@ -9,7 +9,7 @@ use crate::auth::sha256_hex;
 use crate::permissions::has_perm;
 use sqlx::PgPool;
 
-/// One key as /api/keys serves it — LlmApiKey's wire order. The cap columns
+/// One key as /api/keys serves it, in wire order. The cap columns
 /// are ::float8 on every select (bigint/numeric would arrive as strings) and
 /// ride the wire as js_num Numbers so an integral cap prints "1000", not
 /// Rust's "1000.0".
@@ -105,8 +105,7 @@ pub async fn list_keys(pg: &PgPool, user_id: &str) -> Result<Vec<LlmApiKey>, sql
 }
 
 /// Revoke — scoped to the owner, and a no-op that still answers ok when the
-/// id is nobody's (the route audits either way, like TS's fire-and-forget
-/// update returning void).
+/// id is nobody's (the route audits either way).
 pub async fn revoke_key(pg: &PgPool, user_id: &str, key_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update llm_api_keys set revoked_at = now() \
@@ -127,7 +126,7 @@ pub struct KeyPolicy {
     pub rate_limit_per_minute: Option<f64>,
 }
 
-/// orNull: finite and > 0, else null — 0 means the same as unlimited and is
+/// finite and > 0, else None — 0 means the same as unlimited and is
 /// normalized on write so the row never disagrees about which spelling means
 /// "off".
 fn or_null(v: Option<f64>) -> Option<f64> {
@@ -171,7 +170,7 @@ mod tests {
 
     #[test]
     fn secret_shape_matches_the_ts_mint() {
-        // tlk_ + 48 hex chars (randomBytes(24).toString('hex')); the list
+        // tlk_ + 48 hex chars; the list
         // view shows the first 12 — "tlk_" plus 8 hex of secret.
         let secret = format!("tlk_{}", hex(&(0u8..24).collect::<Vec<u8>>()));
         assert_eq!(secret.len(), 52);

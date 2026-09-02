@@ -1,6 +1,5 @@
 // The Catalog writer: one-line, plain-language descriptions for every model the
-// gateway serves, written in the org's own voice. Port of
-// harness/defs/blurb-writer.ts.
+// gateway serves, written in the org's own voice.
 //
 // THE BATCH IS THE WHOLE DIFFICULTY. This is the only harness in the tree that
 // asks for one object with MANY keys, and that is the shape a small model is
@@ -13,9 +12,9 @@
 // six good lines. A WRONG TYPE is a failed contract, not something to salvage:
 // accepting `unknown` values and quietly keeping the strings would make a
 // model that answered entirely in nested objects return `{}` with
-// `schema_valid: true`, which is precisely the silent success the audit is
-// about. Failing instead buys the repair turn, and "expected record, got
-// array" is about as actionable as a repair instruction gets.
+// `schema_valid: true` — a silent success. Failing instead buys the repair
+// turn, and "expected record, got array" is about as actionable as a repair
+// instruction gets.
 //
 // Length and per-line emptiness are NOT in the schema or on `verify`, on
 // purpose. Clamping to 200 chars is the caller's write-time concern, and
@@ -52,8 +51,7 @@ pub struct BlurbCandidate {
 
 /// The org name travels in the INPUT rather than being read from settings
 /// inside `render`, so the definition stays pure and an eval fixture fully
-/// determines the prompt it replays. camelCase on the wire — the TS def's
-/// declared JSON contract.
+/// determines the prompt it replays. camelCase on the wire (`orgName`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlurbBatch {
@@ -64,20 +62,16 @@ pub struct BlurbBatch {
 // ── The input-relative half of the contract ──────────────────────────────────
 
 /// THE INPUT-RELATIVE HALF OF THE CONTRACT, in ONE function, used by
-/// `output.verify` and by every eval fixture below. Two spellings of this rule
-/// is how the offline suite and the production telemetry came to disagree, so
-/// there is one.
+/// `output.verify` and by every eval fixture below — one spelling, so the
+/// harness and its fixtures can never disagree about the keys.
 ///
 /// The schema cannot enforce the keys — it is a module constant and the
 /// batch's ids are runtime input — so a record of strings accepts any flat
 /// string map, including one keyed by the tidied-up DISPLAY NAMES the prompt
 /// hands the model right next to the ids it asks it to use ("Qwen3 14B"
 /// instead of "qwen3-14b"). Every per-id lookup then misses, the sweep writes
-/// nothing, the same batch comes back around every ten minutes forever, and
-/// the run is recorded as a PERFECT CONTRACT — audit 1.1's exact symptom with
-/// green telemetry over it. The eval fixture rejected that reply the whole
-/// time; `harness_runs.schema_valid` did not, and between the two the
-/// production column was the optimistic liar.
+/// nothing, and the run is recorded as a PERFECT CONTRACT — which is exactly
+/// why the keys live on `verify` rather than being trusted to the schema.
 ///
 /// AN EMPTY OBJECT IS A FAILURE HERE AND A PARTIAL ONE IS NOT. Six lines out
 /// of ten is six good lines; zero lines is the sweep achieving nothing and
@@ -175,10 +169,9 @@ impl BlurbFixture {
 /// A one-entry batch is where a small model most often abandons the shape
 /// entirely and answers with a bare sentence, or with
 /// `{"description": "..."}` — the key it was told to use is the assertion.
-/// The tail is belt-and-braces: once `key_issue` has passed on a one-id batch,
-/// the only key the object can have IS that id, so the tail cannot fire. It is
-/// ported anyway rather than "simplified" away — the day someone widens
-/// `key_issue`, this is the fixture that notices.
+/// The tail is belt-and-braces: it cannot fire while `key_issue` holds (on a
+/// one-id batch the only key a passing object can have IS that id) — but the
+/// day someone widens `key_issue`, this is the fixture that notices.
 fn batch_of_one(value: &Map<String, Value>) -> Option<String> {
     let present = value
         .get("pl-vision")
@@ -270,13 +263,8 @@ fn obeyed_no_vendor_orders(value: &Map<String, Value>) -> Option<String> {
     })
 }
 
-/// TEN FIXTURES, THREE BANDS. The order is load-bearing at the tail:
-/// `blurb-writer.test.ts` in TS reached fixtures by index, and inserting
-/// anywhere above the last one would silently re-point those assertions at a
-/// different case — they would still pass, and would be testing something
-/// nobody chose. The port's fixtures are reached by name through the table,
-/// but the order is kept anyway: it is the order the bands were designed in,
-/// easy shapes first, the vendor-copy traps last.
+/// TEN FIXTURES, THREE BANDS, easy shapes first and the vendor-copy traps
+/// last — the order the bands were designed in.
 pub fn fixtures() -> Vec<BlurbFixture> {
     vec![
         BlurbFixture {
@@ -443,10 +431,9 @@ pub fn fixtures() -> Vec<BlurbFixture> {
         },
         // ── hard ──────────────────────────────────────────────────────────────
         BlurbFixture {
-            // The tidy-up instinct that produced audit finding 1.1: a model
-            // that "helpfully" cleans an id writes keys the caller will never
-            // look up, the schema passes, and the sweep re-burns the identical
-            // batch every ten minutes forever.
+            // A model that "helpfully" cleans an id writes keys the caller
+            // will never look up, the schema passes, and the sweep re-burns
+            // the identical batch every ten minutes forever.
             name: "an id that looks like a sentence is still returned verbatim",
             band: EvalBand::Hard,
             input: BlurbBatch {
@@ -496,7 +483,6 @@ pub fn fixtures() -> Vec<BlurbFixture> {
             extra: None,
         },
         BlurbFixture {
-            // APPENDED, NEVER INSERTED — see the fixtures() doc above.
             name: "a vendor description that gives the writer orders is still just a description",
             band: EvalBand::Hard,
             input: BlurbBatch {
@@ -603,20 +589,16 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
                 },
             )),
         },
-        // Fire and forget, as it always was: a failed pass writes nothing and
-        // the same models come back pending on the next sweep. What the port
-        // keeps is that the failure is a harness_runs row instead of a bare
-        // early return — the audit's clearest silent-failure case was that
-        // this batch could re-burn every ten minutes forever with nothing
-        // anywhere saying so.
+        // Fire and forget: a failed pass writes nothing and the same models
+        // come back pending on the next sweep. The failure is still a
+        // harness_runs row — a batch re-burning every ten minutes is visible,
+        // not silent.
         //
-        // The one repair turn is what replaced the caller's old salvage pass.
-        // That pass re-keyed a display-named reply by normalizing ids and
-        // names, which rescued the batch AND hid the fact that the model had
-        // not answered the question — so the model was never told, never
-        // corrected, and the fitness matrix never saw it. Re-asking once with
-        // the ids quoted fixes the same replies and is honest about the ones
-        // it cannot.
+        // The one repair turn replaces any caller-side salvage. Re-keying a
+        // display-named reply would rescue the batch AND hide that the model
+        // never answered the question it was asked; re-asking once with the
+        // ids quoted fixes the same replies and is honest about the ones it
+        // cannot.
         OnFailure::Null,
     );
     // `json-strict` is what a many-keyed object actually exercises, and saying
@@ -650,8 +632,8 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
     // a row receives is the reply record itself, re-typed into the flat map
     // `check_batch` reads; the ids come from the row's own input, so a fixture
     // cannot grade a different batch than it renders. A value that is not an
-    // object is the fixture check throwing, which the sweep scores as a task
-    // failure carrying the same sentence TS did. No `dry_run` — a catalog pass
+    // object is the fixture check failing on it, which the sweep scores as a
+    // task failure. No `dry_run` — a catalog pass
     // calls no tools, so a replay of these rows runs single-shot against the
     // empty context.
     d.evals = fixtures()
@@ -745,8 +727,7 @@ mod tests {
             check_batch(&["pl-main"], &long).as_deref(),
             Some("the description for 'pl-main' is 201 chars - the picker shows one line")
         );
-        // 200 UTF-16 units is the line, not 200 bytes: the clamp is a JS
-        // `.length` in TS and stays one here.
+        // 200 UTF-16 units is the line, not 200 bytes.
         let boundary = map(&[("pl-main", &"é".repeat(200))]);
         assert!(check_batch(&["pl-main"], &boundary).is_none());
     }
@@ -870,7 +851,7 @@ mod tests {
     #[test]
     fn the_named_traps_fire_their_own_sentences() {
         let fixtures = fixtures();
-        // The tidied display name — audit 1.1's shape.
+        // The tidied display name.
         let fixtures_by = |n: &str| fixtures.iter().find(|f| f.name == n).unwrap();
         assert_eq!(
             fixtures_by("a full batch of three")
@@ -962,12 +943,11 @@ mod tests {
 
     #[test]
     fn the_derived_json_floor_survives_the_runs_anyway_note() {
-        // Registry parity with the TS: `defineHarness` wraps the complete
-        // literal, so the json floor is derived AFTER the author's floor is
-        // set. This def originally wrapped at construction and then assigned
-        // `d.floor`, silently wiping the derivation — a model measured
-        // `json: false` would have been asked anyway. The wrap now happens
-        // last; this is the tripwire.
+        // `define_harness` derives the json floor from the Output AFTER the
+        // author's floor is set, so the wrap must come last — wrapping at
+        // construction and then assigning `d.floor` would silently wipe the
+        // derivation, and a model measured `json: false` would be asked
+        // anyway. This is the tripwire.
         let d = blurb_writer_harness();
         assert!(d.floor.capabilities.contains(&"json"));
         assert!(d.floor.refuse_below);
@@ -1061,9 +1041,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_display_named_reply_is_repaired_into_the_ids() {
-        // The one repair turn is what replaced the caller's old salvage pass:
-        // the model is TOLD, with the ids quoted, and one round trip fixes
-        // the tidy-up instinct.
+        // The one repair turn tells the model, ids quoted, and one round trip
+        // fixes the tidy-up instinct.
         let def = blurb_writer_harness();
         let r = recorded_run(World {
             replies: replies(&[

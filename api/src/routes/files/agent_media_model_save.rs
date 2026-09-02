@@ -1,4 +1,4 @@
-// /api/agent-media/{model}/save — port of ui/src/routes/api/agent-media.$model.save.ts.
+// /api/agent-media/{model}/save.
 // POST { path, title?, folderId? | folder? } → copy an image out of the
 // agent's container into a durable FILE artifact (uploads-backed), optionally
 // straight into a folder. For science. And company meme folders. Callable by
@@ -26,9 +26,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-/// `z.string().trim().max(N).optional()` — trim runs before the bound, and
-/// there is no minimum: a title of only whitespace clears (as the empty
-/// string, which the fallback below replaces with the filename).
+/// Trimmed, max N, optional — trim runs before the bound, and there is no
+/// minimum: a title of only whitespace clears (as the empty string, which
+/// the fallback below replaces with the filename).
 fn trimmed_optional(
     obj: &serde_json::Map<String, Value>,
     key: &str,
@@ -179,8 +179,7 @@ pub async fn post(
     .await
     {
         Ok(u) => u,
-        // No catch in the TS — the route lets the throw carry to the
-        // framework's own 500.
+        // a failed save carries to the framework's own 500.
         Err(e) => {
             tracing::error!("[agent-media] upload save failed: {e}");
             return thrown_internal_error();

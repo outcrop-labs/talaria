@@ -1,19 +1,16 @@
 // THE harness contract. A harness DECLARES what it needs; it never chooses a
-// transport, a model, a parser, or a failure policy. The runner (`run.rs`, to
-// come) honors the declaration, and it is the only code that talks to a model.
+// transport, a model, a parser, or a failure policy. The runner (`run.rs`)
+// honors the declaration, and it is the only code that talks to a model.
 //
 // WHY THIS FILE EXISTS
-//   `PLATFORM_AGENTS` in platform-agents.ts already names nine harnesses and
-//   describes each one's job — and carries none of the things that make a
-//   harness a harness. The prompt, the output shape, the fallback chain, the
-//   failure behavior and the guard pass live in eight other files, hand-written
-//   nine times over, and `PLATFORM_AGENTS[].auto` is a PROSE DESCRIPTION of a
-//   chain implemented elsewhere and free to drift from it (it already has:
-//   'pl-main when judging is enabled without a pick' is spelled out in judge.ts
-//   and in six other files besides). This interface is the other half of that
-//   registry — the executable half.
+//   `PLATFORM_AGENTS` in platform_agents.rs names the harnesses and describes
+//   each one's job — and carries none of the things that make a harness a
+//   harness. Before this interface, the prompt, the output shape, the fallback
+//   chain, the failure behavior and the guard pass were hand-written per call
+//   site, free to drift from that prose. This interface is the other half of
+//   that registry — the executable half.
 //
-//   The cost of the nine copies is not aesthetic. Each one answers "the model
+//   The cost of the copies is not aesthetic. Each one answers "the model
 //   returned something I could not use" DIFFERENTLY and SILENTLY: the judge
 //   escalates to a human (so a weak judge model is a notification storm), the
 //   blurb writer returns 0 and re-burns the same batch every ten minutes
@@ -26,24 +23,15 @@
 // Talaria.
 //
 // THE ERASURE, and why it follows the runs engine's precedent rather than
-// fighting for generics. TS defs are `HarnessDefinition<I, O>` with the
-// author's own input type and zod schema threaded through `render`, `verify`
-// and `evals`. Rust has no existential the registry could hold across 23 defs
-// without making every one a monomorphized instantiation the registry cannot
-// name — so, exactly as `runs/define.rs` erases a run's typed input into a
-// `Value` column, a harness def erases I/O at the definition site: `render`
-// takes `(&Value, &RenderContext)` and the def's own closure deserializes its
-// typed input internally, and `verify`/`ground` do the same. The contract the
-// TS generics enforced — that `render`'s input and `schema`'s subject are the
-// same type — becomes the closure's own `serde_json::from_value`, whose
-// failure reads as a failed contract exactly like a TS throw.
-//
-// DEFERRED TO THE FITNESS PLANE (batch 5's tail): `EvalCase`/`EvalContext`,
-// `NO_TOOLS`, and the `dryRun`/`evals` slots — they import the fitness
-// toolbox's world, and this module must stay importable without it. The two
-// floor helpers those fixtures lean on (`count_problem`,
-// `below_answer_floor`) cross NOW because they are this module's own pure
-// exports.
+// fighting for generics. Rust has no existential the registry could hold
+// across every def without making each a monomorphized instantiation the
+// registry cannot name — so, exactly as `runs/define.rs` erases a run's
+// typed input into a `Value` column, a harness def erases I/O at the
+// definition site: `render` takes `(&Value, &RenderContext)` and the def's
+// own closure deserializes its typed input internally, and `verify`/`ground`
+// do the same. The contract generics would enforce — that `render`'s input
+// and `schema`'s subject are the same type — is the closure's own
+// `serde_json::from_value`, whose failure reads as a failed contract.
 
 use std::sync::Arc;
 
@@ -82,18 +70,16 @@ impl Role {
 /// a different contract, and inventing the slot before something needs it is
 /// how the union rots.
 ///
-/// RE-DECIDED, NOT INHERITED, when the tool probes were armed. The `vision`
-/// probe wants image content and is the first caller ever to want any, so the
-/// question was live: widen `content` to the OpenAI content-parts union, or
-/// leave vision unmeasurable. It stays a string, because a HALF-WIDENED union
-/// is worse than none and half is all that is reachable from here —
-/// `completeViaGateway`'s signature takes `content: string`, and every
-/// consumer of a message list in the tree reads `.content` as one:
-/// `groundingTextOf` and `extractToolRecord` for the guard pass,
-/// `lastUserMessage` and `anchorJson` in the runner, `estimateTokens` on both
-/// metering paths, and 23 harness `render`s. A union that only the persona
-/// payload honored would report `[object Object]` into the ledger and ground
-/// the guard against nothing.
+/// RE-DECIDED, NOT INHERITED. The `vision` probe wants image content and is
+/// the first caller ever to want any, so the question was live: widen
+/// `content` to the OpenAI content-parts union, or leave vision unmeasurable.
+/// It stays a string, because a HALF-WIDENED union is worse than none and
+/// half is all that is reachable from here — every consumer of a message
+/// list reads `content` as one string: the guard pass's grounding text and
+/// tool-record extraction, the runner's last-user-message and anchor-JSON
+/// reads, token estimation on both metering paths, and every harness
+/// `render`. A union only one payload path honored would report
+/// `[object Object]` into the ledger and ground the guard against nothing.
 ///
 /// So `content` stays a string, and `vision` is measured through a seam that
 /// does not need it (the image/probe turns build their own multimodal body).
@@ -212,13 +198,12 @@ pub struct RoleFloor {
     /// — the runner intersects the known-missing capabilities with this array
     /// and then does nothing with the result unless the harness refuses. So a
     /// floor that declares capabilities WITHOUT refusing is an inert
-    /// declaration that reads to the next author as a hard requirement, which
-    /// is how the eight ports arrived with two spellings of "needs JSON, runs
-    /// anyway": one wrote `capabilities: []` and five wrote
-    /// `capabilities: ['json']`, and both ran identically. Keep this EMPTY
-    /// unless `refuse_below` is true, and say what the job leans on in
-    /// `requires` — which is what the fitness matrix scores, and which never
-    /// blocks. The registry's tests enforce the pairing.
+    /// declaration that reads to the next author as a hard requirement — and
+    /// "needs JSON, runs anyway" spelled with or without the list runs
+    /// identically. Keep this EMPTY unless `refuse_below` is true, and say
+    /// what the job leans on in `requires` — which is what the fitness
+    /// matrix scores, and which never blocks. The registry's tests enforce
+    /// the pairing.
     pub capabilities: Vec<&'static str>,
     /// True: refuse the run and say which capability is missing. False: run
     /// anyway and let the result carry the fact. Never silently half-work.
@@ -277,35 +262,33 @@ impl RoleFloor {
 
 /// Input → messages. THE ONLY THING A HARNESS AUTHOR WRITES BY HAND. Takes the
 /// type-erased input (see the module header); the closure deserializes its own
-/// type and a decode failure is a failed contract, exactly like a TS `render`
-/// that throws.
+/// type and a decode failure is a failed contract.
 pub type RenderFn =
     Arc<dyn Fn(&Value, &RenderContext) -> Result<Vec<Message>, String> + Send + Sync>;
 
 /// A text harness's narrowing step: receives the raw reply, returns the value,
-/// or `None` to fail the contract (which is exactly what the titler's
-/// quote-and-fence stripping always did by hand).
+/// or `None` to fail the contract — nothing usable, which every caller reads
+/// as "keep what you had".
 ///
 /// The value is a `Value`, not a string, because a text harness may parse a
 /// HYBRID — the librarian's reply is a markdown body plus a trailing `TAGS:`
-/// line, and its clean consumes the line and returns `{body, tags}`. That is
-/// the TS contract (`clean` returns the typed value; the runner stores it as
-/// the run's value), and it is why redaction re-applies the WHOLE contract to
-/// the scrubbed text: a redacted hybrid is rebuilt by the same parse, not
-/// handed back half-scrubbed.
+/// line, and its clean consumes the line and returns `{body, tags}` — and the
+/// runner stores the result as the run's value. That is also why redaction
+/// re-applies the WHOLE contract to the scrubbed text: a redacted hybrid is
+/// rebuilt by the same parse, not handed back half-scrubbed.
 pub type CleanFn = Arc<dyn Fn(&str) -> Result<Option<Value>, String> + Send + Sync>;
 
-/// z.preprocess — the def's own restructure of a PARSED reply before the
-/// schema sees it. One job in the tree needs this and it is not decoration:
-/// when a provider is asked for JSON at the protocol level,
+/// PreFn — the def's own restructure of a PARSED reply before the schema sees
+/// it. One job in the tree needs this and it is not decoration: when a
+/// provider is asked for JSON at the protocol level,
 /// `response_format: {"type":"json_object"}` obliges some models to emit a
 /// top-level OBJECT, which makes an envelope (`{"tickets": [...]}`) the only
 /// shape a correct answer can arrive in for an array-shaped contract. The
 /// harness unwraps it here rather than spending a repair turn telling the
 /// model to stop doing what its provider's strict mode compels.
 ///
-/// Runs per candidate span, exactly where zod runs it: after parse, before
-/// validation. Pure and cheap — it is on the same hot path as the parser.
+/// Runs per candidate span, after parse and before validation. Pure and
+/// cheap — it is on the same hot path as the parser.
 pub type PreFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
 
 /// THE RELATION BETWEEN THE INPUT AND THE OUTPUT — the half of a harness
@@ -350,10 +333,10 @@ pub type PreFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
 /// repairs on the same loop against the same counter, it sets
 /// `schema_valid: false`, and it lands on the `harness_runs` row honestly.
 ///
-/// `Err` IS THE TS THROW — harness-author code meeting model output, and a
-/// throw out of any of `render`/`clean`/`verify`/`ground` is a failed
-/// contract rather than the one exception that escapes a runner whose whole
-/// promise is that a bad model produces a RESULT.
+/// `Err` IS A FAILED CONTRACT — harness-author code meeting model output; an
+/// `Err` out of any of `render`/`clean`/`verify`/`ground` fails the contract
+/// rather than escaping a runner whose whole promise is that a bad model
+/// produces a RESULT.
 ///
 /// IT IS TOLD WHAT `render` WAS TOLD. The context argument is the SAME
 /// `RenderContext` the prompt was built from, and it exists because the
@@ -383,7 +366,7 @@ pub type VerifyFn =
 /// results overflowed, and the runner derives its record from the messages IT
 /// sent — which for a harness turn contain no tool messages at all — or, on
 /// the fleet path, marks the record overflowed because a persona's tool loop
-/// ran inside the agent. So the rule self-skipped on all 23 harnesses, and the
+/// ran inside the agent. So the rule self-skipped on every harness, and the
 /// one path in the product whose defining failure mode is a fabricated
 /// citation had to run it OUTSIDE the runner over a record it built by hand.
 ///
@@ -418,16 +401,14 @@ pub struct Grounding {
     pub errored: Option<bool>,
 }
 
-/// The erasure of TS `ground: (input: I) => Grounding | null` — `Ok(None)` is
-/// the absent hook.
+/// `Ok(None)` is the absent hook.
 pub type GroundFn = Arc<dyn Fn(&Value) -> Result<Option<Grounding>, String> + Send + Sync>;
 
 // ── The output contract and the failure policy ───────────────────────────────
 
 /// The output contract. `Json` puts the runner in structured mode: it asks for
 /// JSON at the protocol level when the model can honor that, parses with the
-/// one balanced-brace extractor, and repairs on a malformed reply (audit 1.4 —
-/// nothing in the tree retried before this).
+/// one balanced-brace extractor, and repairs on a malformed reply.
 ///
 /// For `Text` with no `clean`, the value is the reply by construction. `clean`
 /// is where a text harness narrows, and `verify` is the OTHER half of the
@@ -486,16 +467,14 @@ pub enum Fallback {
 ///              to find out is a caller that stops escalating the day somebody
 ///              rewords the message.
 ///
-/// `Throw` MEANS ANY FAILURE TO PRODUCE A VALUE, which is what a caller reads
-/// it to mean and what it did not do. The runner RETURNS for everything that
-/// happens before or during the call — nothing in the chain routes, the floor
-/// refuses, `render` fails, the transport dies — so `throw` used to cover the
-/// contract failure and nothing else, and the policy had to be restated by
-/// hand at every call site. Five callers restated it; the two that did not
-/// BOTH shipped a bug: research synthesis saved an empty report, marked the
-/// run `done`, indexed it and notified the requester after a 502, and the
-/// channel planner answered "nothing to plan yet" on a channel full of work
-/// because its agent container was restarting. It now throws on all of them.
+/// `Throw` MEANS ANY FAILURE TO PRODUCE A VALUE. The runner RETURNS for
+/// everything that happens before or during the call — nothing in the chain
+/// routes, the floor refuses, `render` fails, the transport dies — so the
+/// policy needs no restating by hand at any call site. Getting that wrong is
+/// how research synthesis once saved an empty report, marked the run `done`,
+/// indexed it and notified the requester after a 502, and how the channel
+/// planner answered "nothing to plan yet" on a channel full of work because
+/// its agent container was restarting. It throws on all of them.
 ///
 /// THE OTHER THREE STAY CONTRACT-SCOPED, and that asymmetry is deliberate
 /// rather than left over. They describe what a caller GETS when the model
@@ -505,7 +484,8 @@ pub enum Fallback {
 /// surface" token during a gateway outage, so a dead provider would read as a
 /// normal quiet pass on every sweep. `Escalate` on a pre-call failure would
 /// have the judge notify every board editor about every ticket for as long as
-/// the gateway is down — the notification storm this whole audit is about. A
+/// the gateway is down — exactly the notification storm the policy exists to
+/// avoid. A
 /// caller that wants either of those on an unreachable model has the result's
 /// `answered` flag to say so explicitly, which is a sentence somebody wrote on
 /// purpose rather than a policy that widened under them.
@@ -560,8 +540,7 @@ pub struct HarnessDefinition {
     /// The floor for THIS role, and what happens below it.
     pub floor: RoleFloor,
 
-    /// Model resolution, declared not written — the chain that was hand-copied
-    /// into seven files (audit 1.10).
+    /// Model resolution, declared not written.
     pub model: ModelSpec<'static>,
 
     /// Input → messages. THE ONLY THING A HARNESS AUTHOR WRITES BY HAND.
@@ -604,7 +583,7 @@ pub struct HarnessDefinition {
     /// Today its only declarers are the `tools` and `tool-select` probes,
     /// which is the point: offering four disjoint tools and reading back which
     /// one the model called is the only honest way to measure the capability
-    /// that widens the Inbox command harness (audit 1.8). A harness that
+    /// that widens the Inbox command harness. A harness that
     /// offers tools must be pinned to a GATEWAY model — a fleet persona's
     /// tool loop belongs to the agent, and the fleet transport refuses rather
     /// than pretending otherwise.
@@ -695,9 +674,7 @@ pub fn define_harness(mut h: HarnessDefinition) -> HarnessDefinition {
 
 // ── The fixture floor helpers ────────────────────────────────────────────────
 //
-// The two pure exports the fitness fixtures lean on. They cross now because
-// they are this module's own — the eval-case TYPE stays behind with the
-// fitness plane.
+// The pure exports the fitness fixtures lean on.
 
 /// WHAT A FIXTURE'S `check` MAY CONCLUDE.
 ///
@@ -790,9 +767,8 @@ pub struct CountLimit {
 }
 
 pub fn count_problem(actual: i64, limit: &CountLimit) -> Option<String> {
-    // Math.round on a positive fraction rounds half UP in JS; Rust's f64
-    // round() rounds half away from zero — identical for the positives a
-    // count limit ever sees.
+    // `f64::round` rounds half away from zero; half-up and half-away-from-
+    // zero differ only on negative halves, which a count limit never sees.
     let slack = |n: i64| -> i64 {
         std::cmp::max(
             1,
@@ -877,8 +853,7 @@ pub fn below_answer_floor(value: &str, floor: &AnswerFloor) -> Option<String> {
     {
         return None;
     }
-    // JSON.stringify's array spelling, so the sentence an admin reads matches
-    // the one the TS suite wrote.
+    // JSON-array spelling for the list — the sentence is pinned by tests.
     let list = serde_json::to_string(&floor.mentions).unwrap_or_default();
     Some(format!(
         "the answer never engages with what it was given - it mentions none of {list}"
@@ -886,17 +861,12 @@ pub fn below_answer_floor(value: &str, floor: &AnswerFloor) -> Option<String> {
 }
 
 /// One tool call the fitness suite's dry run observed — the half of a
-/// behavioural fixture that prose cannot see. `errored` is the JS
-/// `error === null` test flipped (false is a call that succeeded); `args` is
-/// what the call was made with, kept raw because every fixture that reads it
-/// reads one field (`args.status`, `args.tags`).
+/// behavioural fixture that prose cannot see. `errored` is false for a call
+/// that succeeded; `args` is what the call was made with, kept raw because
+/// every fixture that reads it reads one field (`args.status`, `args.tags`).
 ///
-/// A THIRD fixture-floor helper, and modeled here for the same reason the
-/// other two crossed: `EvalContext` stays behind with the fitness plane (see
-/// the header), but a fixture table that cannot state what a check-in DID is
-/// a table of upper bounds — the one-sided shape the garbage census exists to
-/// catch. When the fitness plane crosses, its `calls` field maps onto this
-/// record and the fixture tables that read it move across unchanged.
+/// A fixture table that cannot state what a check-in DID is a table of upper
+/// bounds — the one-sided shape the garbage census exists to catch.
 #[derive(Debug, Clone)]
 pub struct CheckCall {
     pub tool: String,
@@ -906,14 +876,13 @@ pub struct CheckCall {
 
 /// Everything a behavioural fixture's `check` is handed besides the reply.
 ///
-/// The `calls` half crosses complete. The two fields after it are the WORLD
-/// half — what the dry run's sandbox says about the state the model left
-/// behind: `world` is the sandbox's world AFTER the run, exactly TS's
-/// `EvalContext.world` (kept a `Value` because the three surfaces disagree —
-/// the toolkit sandbox's boards and tickets, the coding workspace's
-/// `{ failure }`, the credential sandbox's spend log — and the def's own
-/// fixture helpers are where each gets narrowed), and `exhausted` is the
-/// turn-budget flag, false on every run that finished.
+/// The WORLD half is what the dry run's sandbox says about the state the
+/// model left behind: `world` is the sandbox's world AFTER the run (kept a
+/// `Value` because the three surfaces disagree — the toolkit sandbox's
+/// boards and tickets, the coding workspace's `{ failure }`, the credential
+/// sandbox's spend log — and the def's own fixture helpers are where each
+/// gets narrowed), and `exhausted` is the turn-budget flag, false on every
+/// run that finished.
 #[derive(Debug, Clone, Default)]
 pub struct CheckCtx {
     pub calls: Vec<CheckCall>,
@@ -923,8 +892,8 @@ pub struct CheckCtx {
 
 impl CheckCtx {
     /// The workspace oracle's verdict on the files as the model left them —
-    /// `ctx.world.failure` in the TS tables. A missing world reads as no
-    /// failure, which is what a fixture that was never dry-run wants.
+    /// `ctx.world.failure`. A missing world reads as no failure, which is
+    /// what a fixture that was never dry-run wants.
     pub fn failure(&self) -> Option<&str> {
         self.world
             .as_ref()
@@ -932,13 +901,12 @@ impl CheckCtx {
             .and_then(Value::as_str)
     }
 
-    /// `ctx.calls.filter(c => c.tool === t)` — every call to one tool,
-    /// failures included.
+    /// Every call to one tool, failures included.
     pub fn calls_of(&self, tool: &str) -> Vec<&CheckCall> {
         self.calls.iter().filter(|c| c.tool == tool).collect()
     }
 
-    /// …with `c.error === null` on top of it.
+    /// …only the calls that did not error.
     pub fn successful(&self, tool: &str) -> Vec<&CheckCall> {
         self.calls
             .iter()
@@ -950,10 +918,9 @@ impl CheckCtx {
         self.calls.iter().any(|c| c.tool == tool)
     }
 
-    /// The fitness toolbox's `calledBefore`: did a call to `first` precede a
-    /// call to `second`? The read-before-write assertions lean on it —
-    /// earliest `first` against latest `second` is exactly "some pair, in
-    /// order".
+    /// Did a call to `first` precede a call to `second`? The
+    /// read-before-write assertions lean on it — earliest `first` against
+    /// latest `second` is exactly "some pair, in order".
     pub fn called_before(&self, first: &str, second: &str) -> bool {
         match (
             self.calls.iter().position(|c| c.tool == first),
@@ -964,7 +931,7 @@ impl CheckCtx {
         }
     }
 
-    /// `[...new Set(tools)].join(', ')` — a sentence names each tool once.
+    /// Each tool named once, comma-joined — a sentence names each tool once.
     pub fn distinct_tools<'a>(calls: impl IntoIterator<Item = &'a CheckCall>) -> String {
         let mut seen: Vec<&str> = Vec::new();
         for c in calls {
@@ -978,8 +945,7 @@ impl CheckCtx {
 
 /// The two-verdict checks of the defs that cannot gap ARE this enum's
 /// `Pass`/`Fail` half — `None` is a pass, `Some` is a fail — so this
-/// conversion is how the fitness plane folds those tables onto `CheckResult`
-/// when it crosses.
+/// conversion is how those tables fold onto `CheckResult`.
 impl From<Option<String>> for CheckResult {
     fn from(problem: Option<String>) -> Self {
         match problem {
@@ -991,19 +957,18 @@ impl From<Option<String>> for CheckResult {
 
 // ── The fitness plane ────────────────────────────────────────────────────────
 //
-// The two slots that were deferred when this module crossed (see the header):
-// the FIXTURES a def ships and the DRY-RUN declaration that says what a replay
-// of them runs against. They live here, after the fixture-floor helpers, so a
-// def file can declare both without importing anything from fitness/.
+// The FIXTURES a def ships and the DRY-RUN declaration that says what a
+// replay of them runs against. They live here, after the fixture-floor
+// helpers, so a def file can declare both without importing anything from
+// fitness/.
 
 /// A fixture's check, type-erased the same way `render` is: the value arrives
-/// as the parsed reply (the def's closure deserializes its own output type) and
-/// the context is `CheckCtx` — `EvalContext` crossed as that record, with
-/// `calledBefore` a method rather than a closure field.
+/// as the parsed reply (the def's closure deserializes its own output type)
+/// and the context is `CheckCtx`.
 pub type CheckFn = Arc<dyn Fn(&Value, &CheckCtx) -> CheckResult + Send + Sync>;
 
 /// One fixture the model-fitness suite replays through the runner with a
-/// candidate model pinned (audit part 3, tier 2).
+/// candidate model pinned.
 ///
 /// `check` is deliberately a plain assertion over the parsed value rather than
 /// an expected output: most harness assertions are string facts ("3-7 words",
@@ -1011,9 +976,9 @@ pub type CheckFn = Arc<dyn Fn(&Value, &CheckCtx) -> CheckResult + Send + Sync>;
 /// deterministic check keeps the suite fast, cheap and free of the
 /// who-judges-the-judge regress.
 ///
-/// Built through `EvalCase::new` (band defaults to Standard, exactly as the TS
-/// optional did — a fixture only states a band when it means one) and the
-/// `.band(..)` setter, so a def's table reads in fixture order.
+/// Built through `EvalCase::new` (band defaults to Standard — a fixture only
+/// states a band when it means one) and the `.band(..)` setter, so a def's
+/// table reads in fixture order.
 pub struct EvalCase {
     pub name: &'static str,
     /// The def's own typed input, as the `render` closure will receive it.
@@ -1083,10 +1048,10 @@ pub struct CredentialSpec {
 }
 
 /// Overrides on the sandbox's standard world — a ticket in a particular state,
-/// a gap already filed, a DM already sent. A FUNCTION OF THE INPUT (a flat
-/// record crosses as a closure returning the constant) because a flat record
-/// read once per DEFINITION can only ever pose questions about one world, and
-/// the most valuable fixture in a group is routinely the one that changes it.
+/// a gap already filed, a DM already sent. A FUNCTION OF THE INPUT (a fixed
+/// world is just a closure returning the constant) because a record read once
+/// per DEFINITION can only ever pose questions about one world, and the most
+/// valuable fixture in a group is routinely the one that changes it.
 pub type WorldFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
 
 /// What a replay of this def's fixtures runs against. `None` on every def whose
@@ -1244,9 +1209,9 @@ mod tests {
             Some("23 words — the prompt asks for 3-7 words")
         );
         // Pluralization follows the count, not the unit's spelling. Even
-        // tolerance 0 keeps the slack floor of one — TS's Math.max(1, ·) — so
-        // "at most 10" accepts 11 and rejects 12: "tolerance: 0 for hard
-        // edges" means one unit of grace, never zero.
+        // tolerance 0 keeps the slack floor of one, so "at most 10" accepts
+        // 11 and rejects 12: "tolerance: 0 for hard edges" means one unit of
+        // grace, never zero.
         let tickets = CountLimit {
             min: None,
             max: Some(10),

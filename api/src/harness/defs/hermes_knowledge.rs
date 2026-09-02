@@ -1,5 +1,4 @@
 // CAN THIS MODEL BE A HERMES AGENT — over the knowledgebase, specifically.
-// Port of harness/defs/hermes-knowledge.ts.
 //
 // WHY A "HERMES" HARNESS FAMILY EXISTS AT ALL. Every other harness in this
 // directory measures a PLATFORM FEATURE that happens to need a model: the
@@ -9,11 +8,10 @@
 // It tells them almost nothing about the other half of the product. A Hermes
 // persona is handed FORTY-SIX workspace tools and a human's request in plain
 // English, and what it does next is the whole job — nobody wrote a prompt for
-// "go find out whether we have a runbook for this". Before the TS file this
-// ports, 19 of those 46 tools had never been put in front of a model by the
-// sweep, and the knowledgebase was the largest hole: 1 of 9. They were modelled
-// in `toolbox/talaria-tools.ts` and simulated in `toolbox/sandbox.ts` —
-// described, dispatched, never asked.
+// "go find out whether we have a runbook for this". The knowledgebase was
+// the largest hole in that coverage: before this harness, 1 of its 9 tools
+// had ever been put in front of a model by the sweep. The rest were modelled
+// and simulated in the fitness sandbox — described, dispatched, never asked.
 //
 // WHAT IT MEASURES, AND WHY THESE SIX BEHAVIOURS. Every fixture below is a
 // failure an org actually pays for when it puts an agent in front of its
@@ -43,11 +41,11 @@
 // substance the transcript can prove, never on style.
 //
 // THE SANDBOX HALF IS DECLARED, NOT EMBEDDED. `dry_run` below names the seven
-// tools a replay offers; the thing that DISPATCHES them and mutates the
-// `fitness/toolbox/world.rs` record crosses with the sandbox itself. The TS
-// suite drives the real handlers (`makeSandbox`); this file's tests hand-build
-// the same post-states, which is why their comments quote what each scripted
-// call would have done.
+// tools a replay offers; the dispatch that serves them and mutates the
+// `fitness/toolbox/world.rs` record lives in the sandbox itself, covered by
+// its own test. This file's tests hand-build the post-states its handlers
+// leave behind, which is why their comments quote what each scripted call
+// would do.
 
 use std::sync::Arc;
 
@@ -91,8 +89,8 @@ fn called(ctx: &CheckCtx, tool: &str) -> bool {
     ctx.any_call(tool)
 }
 
-/// Every call to one tool, refusals included — the TS file's own `callsOf`,
-/// which three of the eight fixtures count over directly.
+/// Every call to one tool, refusals included — three of the eight fixtures
+/// count over these directly.
 fn calls_of<'a>(ctx: &'a CheckCtx, tool: &str) -> Vec<&'a CheckCall> {
     ctx.calls_of(tool)
 }
@@ -102,19 +100,16 @@ fn calls_of<'a>(ctx: &'a CheckCtx, tool: &str) -> Vec<&'a CheckCall> {
 /// `CheckCtx.world` is `None` whenever the harness was not dry-run, which is a
 /// real production path rather than a hypothetical: a RENDERED HERMES PERSONA
 /// runs its own tool loop inside its container, so the sweep sees tool names and
-/// never the world they acted on. A fixture that reads `w.kb_docs` there does
-/// not merely fail the model — in the TS it THREW, in a check, mid-sweep.
+/// never the world they acted on. A fixture that reads `w.kb_docs` there cannot
+/// answer its question at all.
 ///
 /// So the absence is answered as what it is: the fixture could not fairly ask
 /// its question, which is a gap reported to US. That is the same discipline the
-/// turn-budget and empty-search rules follow in `fitness/evals.ts`.
+/// turn-budget and empty-search rules follow in `fitness/evals.rs`.
 ///
-/// THE PORT NARROWS ONE STEP FURTHER THAN THE CAST DID. TS wrote
-/// `(ctx.world as SandboxWorld | null) ?? null`, which never validates, so a
-/// world of the wrong shape read as undefined fields and a model failure. Here
-/// the decode goes through `SandboxWorld::from_value`, and a world that does
+/// And the decode goes through `SandboxWorld::from_value`: a world that does
 /// not decode is the same gap as no world at all — the fixture could not ask
-/// its question either way.
+/// its question either way — rather than garbage fields and a model failure.
 fn world(ctx: &CheckCtx) -> Option<SandboxWorld> {
     ctx.world.as_ref().and_then(SandboxWorld::from_value)
 }
@@ -158,7 +153,7 @@ fn input(prompt: &str) -> HermesKnowledgeInput {
     }
 }
 
-/// EIGHT FIXTURES, THREE BANDS, in the TS table's order.
+/// EIGHT FIXTURES, THREE BANDS.
 pub fn fixtures() -> Vec<HermesKnowledgeFixture> {
     vec![
         HermesKnowledgeFixture {
@@ -230,20 +225,13 @@ pub fn fixtures() -> Vec<HermesKnowledgeFixture> {
         HermesKnowledgeFixture {
             name: "takes ids from a listing rather than inventing them",
             band: EvalBand::Standard,
-            // THE PROMPT CARRIES THE CONTENT, and the first version did not — which
-            // made this the only fixture in the set that failed on EVERY model, and
-            // the health view flagged it `ours` on the strength of that alone.
-            //
-            // Both models did the right thing. The system prompt above says never to
-            // write something you cannot point at a source for; the fixture then asked
-            // for a page on a subject the knowledgebase has nothing about. deepseek
-            // listed the spaces, searched three ways, found nothing and said so: "I
-            // can't write this page from what's in the knowledgebase — there's nothing
-            // to base it on." That is the behaviour the OTHER fixtures reward, and
-            // this one punished it.
-            //
-            // The measurement here is about IDS, not about sourcing. So the request
-            // supplies what to write, and the fixture is free to ask its actual
+            // THE PROMPT CARRIES THE CONTENT, and that is deliberate. The system
+            // prompt above says never to write something you cannot point at a
+            // source for, so a fixture that asked for a page on a subject the
+            // knowledgebase has nothing about would fail every well-behaved
+            // model — the refusal is the behaviour the OTHER fixtures reward.
+            // The measurement here is about IDS, not sourcing, so the request
+            // supplies what to write and the fixture is free to ask its actual
             // question.
             input: input(
                 "Write up a short page called \"On-call handoffs\" in the Engineering space. The content, from this morning's team decision: the rotation changes at 10:00 Monday, the outgoing engineer writes a handoff note in the ticket, and anything still open is walked through live.",
@@ -499,8 +487,8 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
         // Pinned by the caller in production — the agent assigned to the
         // conversation — and pinned by the sweep to the candidate, because "how
         // does THIS model do" is the whole question. Empty chain for the same
-        // reason work-session's is: a turn that quietly ran on the utility model
-        // would still be filed as this agent's own work.
+        // reason `work_session.rs`'s is: a turn that quietly ran on the utility
+        // model would still be filed as this agent's own work.
         ModelSpec {
             pin: None,
             role: None,
@@ -514,7 +502,7 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
         }),
         Output::Text {
             // A turn that is entirely tool calls is a legitimate turn — see the
-            // same note on work-session. `clean` trims and never rejects.
+            // same note on `work_session.rs`. `clean` trims and never rejects.
             clean: Some(Arc::new(|raw: &str| {
                 Ok(Some(Value::String(raw.trim().to_string())))
             })),
@@ -540,12 +528,11 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
     // runner's default transport (no tools, no tool choice) would disarm the
     // very thing this harness exists to measure.
     d.tools = Some(ToolPolicy::Own);
-    // THE NINE KNOWLEDGE TOOLS, and nothing else. Production hands a persona all
+    // THE KNOWLEDGE TOOLS, and nothing else. Production hands a persona all
     // forty-six; a benchmark that did the same would measure tolerance for
     // irrelevant options rather than knowledge work. `search_knowledge` is in
     // here because a real agent has it and choosing between search and browse IS
-    // part of the job. (The list is the TS's own seven, said "nine" by its own
-    // comment — the LIST is what a dry run reads, so seven is what crosses.)
+    // part of the job.
     //
     // EIGHT MODEL TURNS, the budget every Hermes def gives its loop.
     d.dry_run = Some({
@@ -561,16 +548,15 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
         dry.max_turns = Some(8);
         dry
     });
-    // NO DECLARED WORLD — the TS block has no `world`, and the base world's two
-    // spaces and two docs are the whole stage this family poses its questions
-    // over. Noted because the other two Hermes defs DO declare one, and a reader
-    // diffing the three should not wonder which is the oversight.
+    // NO DECLARED WORLD, and it is deliberate: the base world's two spaces and
+    // two docs are the whole stage this def poses its questions over. Noted
+    // because the other two Hermes defs DO declare one — a reader comparing
+    // the three should not wonder which is the oversight.
 
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
     // keeps its own check; the fold only re-types the value — a text harness's
     // reply arrives as a JSON string, and a value that is not one is the fixture
-    // check throwing, which the sweep scores as a task failure carrying the same
-    // sentence TS did.
+    // check failing on it, which the sweep scores as a task failure.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -609,12 +595,10 @@ mod tests {
         }
     }
 
-    /// The `CheckCtx` a dry run of this def's script would have produced. The TS
-    /// suite drives the real sandbox (`makeSandbox`) and reads back
-    /// `sandbox.calls` / `sandbox.world`; the dispatch half has not crossed yet,
-    /// so these tests hand-build the same post-states — the call log carrying
-    /// the sandbox's own success/refusal flags, and the world its handlers would
-    /// have left.
+    /// The `CheckCtx` a dry run of this def would have produced, hand-built:
+    /// these tests drive no live sandbox, they state the post-states its
+    /// dispatch leaves behind — the call log carrying the sandbox's own
+    /// success/refusal flags, and the world its handlers would leave.
     fn ctx(calls: Vec<CheckCall>, world: SandboxWorld) -> CheckCtx {
         CheckCtx {
             calls,
@@ -1022,7 +1006,7 @@ mod tests {
 
     #[test]
     fn the_world_reading_fixture_gaps_rather_than_failing_without_a_world() {
-        // A fixture that reads `w.kbDocs` on a run that produced no world does
+        // A fixture that reads `w.kb_docs` on a run that produced no world does
         // not fail the model — it abstains, as NO_WORLD spells. (This is the
         // discipline the documents and governance suites assert fixture-list-
         // wide; here the corpus fixture is the one that reaches the world.)
@@ -1049,11 +1033,10 @@ mod tests {
 
     #[test]
     fn cannot_be_passed_by_a_model_that_calls_nothing_and_says_something_agreeable() {
-        // THE CENSUS THAT MATTERS, and the one the TS suite keeps for this file:
-        // a fixture set where "sounds helpful" scores well is measuring
-        // agreeableness. Every fixture here must reject an agent that did
-        // nothing — a gap is not a pass, so the world-reading fixture abstains
-        // and the rest fail, and neither scores.
+        // THE CENSUS THAT MATTERS: a fixture set where "sounds helpful" scores
+        // well is measuring agreeableness. Every fixture here must reject an
+        // agent that did nothing — a gap is not a pass, so the world-reading
+        // fixture abstains and the rest fail, and neither scores.
         let ctx = CheckCtx::default();
         for fixture in fixtures() {
             let out = (fixture.check)("Sure — I have taken care of that for you.", &ctx);

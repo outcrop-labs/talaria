@@ -1,9 +1,7 @@
-// The runs engine — port of ui/src/server/runs/** (batch 4). One module per
-// TS file, dependency-ordered: the lease primitive everything stands on, the
-// `runs` store (every write a CAS), the definitions/state machine, the driver
-// (enqueue/drive/cancel), the awaiting decision path, and the reclaim sweep.
-// The registered scheduler that drives reclaim and the run kinds land later in
-// the batch; until the handoff slice, nothing here is armed.
+// The runs engine. Dependency-ordered: the lease primitive everything stands
+// on, the `runs` store (every write a CAS), the definitions/state machine, the
+// driver (enqueue/drive/cancel), the awaiting decision path, and the reclaim
+// sweep the scheduler drives.
 
 pub mod decide;
 pub mod define;
@@ -44,8 +42,7 @@ struct RealEdges {
     /// The announcer `pause` rides after the park: approve through the same
     /// `announce_approval` the raiser calls, so a question is announced exactly
     /// once from whichever path reached it first. It answers 0 on every
-    /// internal failure and leaves the key unmarked for the sweep — the same
-    /// contract TS's catch-all wrapper gave.
+    /// internal failure and leaves the key unmarked for the sweep.
     announce: AnnounceFn,
 }
 
@@ -85,16 +82,12 @@ fn real_edges(pg: sqlx::PgPool, rt: RealtimeDeps) -> RealEdges {
 }
 
 /// The full real assembly: the store, the lease, the realtime publish, the
-/// registry lookup, and — the piece the coexistence assembly in work_dispatch
-/// stubs out — the REAL pause, wired through decide's `pause_fn` to the
-/// approvals plane's one resolver and one announcer.
+/// registry lookup, and the REAL pause, wired through decide's `pause_fn` to
+/// the approvals plane's one resolver and one announcer.
 ///
-/// This is the handoff assembly the codebase's comments kept promising: it is
-/// what the Rust scheduler's `run-reclaim` job drives reclaimed runs through,
-/// and what work_dispatch's `dispatch_deps` returns — unconditionally, since
-/// the cutover deleted the TS sweep that the coexistence-era stub once
-/// deferred to (its loud refusal was the honest edge while nothing in Rust
-/// drove). A driven run that parks a question actually parks it.
+/// It is what the scheduler's `run-reclaim` job drives reclaimed runs through,
+/// and what work_dispatch's `dispatch_deps` returns. A driven run that parks
+/// a question actually parks it.
 pub fn real_run_deps(
     pg: sqlx::PgPool,
     redis: redis::aio::ConnectionManager,
@@ -126,8 +119,8 @@ pub fn real_run_deps(
 }
 
 /// The answer half of the same assembly: what `decide` runs with when a
-/// person resolves a parked question through a route. Its `run` IS the
-/// handoff RunDeps (a decided run with `start` may resume driving), and its
+/// person resolves a parked question through a route. Its `run` is the full
+/// RunDeps (a decided run with `start` may resume driving), and its
 /// audience/announce edges are the same closures the pause parks through —
 /// built once, shared, so the question and its answer cannot disagree about
 /// who was involved.

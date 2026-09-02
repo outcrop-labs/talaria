@@ -15,16 +15,11 @@
 //   for that harness — see `narrow_guard_config`), or if a floor declares
 //   capabilities it never refuses on.
 //
-// THE THREE LAYERS in TS — builtin < app-shipped < admin-custom, merged by id
-// — narrow to ONE here. The app layer is a build-time `import.meta.glob` over
-// TS modules under `apps/*/harnesses/`; app code stays TS (the port's
-// constitution), so its loader does too, and with it `listActivityHarnesses`
-// — the merge entry point has nothing to merge until an app can ship a Rust
-// def. The admin-custom layer is deliberately empty on both sides (an
+// THE LAYERS — the source vocabulary keeps three (builtin < app-shipped <
+// admin-custom, merged by id); only the first is real here, registered
+// statically. The admin-custom layer is deliberately empty on both sides (an
 // activity harness is CODE — `render`, `evals[].check` — and Talaria does not
-// run code out of a database row). What crosses is the layer every consumer
-// reads first: the builtins, statically, plus `builtin_by_id` for the
-// scheduler's jobs, which is this port's first live consumer.
+// run code out of a database row). `builtin_by_id` is the scheduler's lookup.
 //
 // THE PLATFORM_AGENTS CROSS-CHECK, and the two places the lists do NOT line
 // up. Both are real and neither is forced:
@@ -58,30 +53,20 @@
 // A HARNESS THAT IS NOT IN `BUILTINS` IS INVISIBLE, and invisible in the two
 // ways that matter most: the fitness suite cannot replay its eval fixtures, so
 // every assertion its author wrote is dead code, and the admin panel cannot
-// show its floor. Registering is the last step of a port, not a follow-up —
-// which is why this file crossed only after the last def of the batch.
-//
-// THE SIX STILL-TO-CROSS IDS — 'hermes:knowledge', 'hermes:documents',
-// 'hermes:governance', 'hermes:google', 'hermes:research' and 'secrets:
-// handles' — are TS defs deferred WITH the fitness plane (they need the
-// `CredentialWorld` and dry-run executor that plane brings), not forgotten
-// ones; each joins this list in the same commit as its def, and the id-list
-// test below is what makes forgetting impossible. Their `evals` land with them
-// — the eval-fixture half of the registry (`evalNames`, `bandOf`) is fitness-
-// plane state and is deliberately absent here.
+// show its floor.
 
 use std::sync::LazyLock;
 
 use super::define::{EvalBand, HarnessDefinition};
 use super::defs;
 
-/// Where a registered harness came from. Kept as the TS vocabulary so the
-/// admin panel's data round-trips when its route crosses; today only `Builtin`
-/// is constructed.
+/// Where a registered harness came from — the admin panel's wire vocabulary,
+/// so a source serializes the same way on both sides. Only `Builtin` is
+/// constructed today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HarnessSource {
     Builtin,
-    /// App-shipped, by slug. The loader stays TS — see the header.
+    /// App-shipped, by slug — not constructed today; see the header.
     App(&'static str),
     Custom,
 }
@@ -175,8 +160,8 @@ static DEFS: [LazyLock<HarnessDefinition>; 35] = [
     // that arrangement is enforced in code; this is the MODEL half, which until
     // now nothing measured. See `defs/secret_handles.rs`.
     LazyLock::new(defs::secret_handles::secret_handles_harness),
-    // The three coding harnesses, one per Workbench effort slot — the columns
-    // that used to read "No harness in this install is bound to this".
+    // The three coding harnesses, one per Workbench effort slot — the fitness
+    // matrix binds a harness to a slot, one harness per column.
     LazyLock::new(defs::workbench::workbench_light_harness),
     LazyLock::new(defs::workbench::workbench_standard_harness),
     LazyLock::new(defs::workbench::workbench_heavy_harness),
@@ -202,16 +187,15 @@ static BUILTINS: LazyLock<Vec<RegisteredHarness>> = LazyLock::new(|| {
         .collect()
 });
 
-/// The builtin layer alone. The TS twin is the synchronous export the registry
-/// tests assert against; here it is also what the scheduler's jobs resolve
-/// their harnesses through.
+/// The builtin layer alone — the whole shipped set, in panel order; the tests
+/// below assert against it, and `builtin_by_id` narrows it to the scheduler's
+/// lookup.
 pub fn builtin_activity_harnesses() -> &'static [RegisteredHarness] {
     &BUILTINS
 }
 
-/// The scheduler's lookup: one harness by id, from the shipped set. App-layer
-/// ids cannot appear here (see the header) and callers that need them go
-/// through TS until that changes.
+/// The scheduler's lookup: one harness by id, from the shipped set — nothing
+/// outside the builtins can appear here.
 pub fn builtin_by_id(id: &str) -> Option<&'static RegisteredHarness> {
     BUILTINS.iter().find(|h| h.def.id == id)
 }
@@ -352,9 +336,8 @@ mod tests {
     fn keeps_the_refusal_list_empty_unless_it_actually_refuses() {
         // The runner reads `floor.capabilities` only when `refuse_below` is
         // true. Declaring capabilities without refusing is inert, and it reads
-        // to the next author as a hard requirement — which is exactly how the
-        // TS port arrived with two spellings of "needs JSON, runs anyway". The
-        // ask belongs in `requires`.
+        // to the next author as a hard requirement. The ask belongs in
+        // `requires`.
         for h in builtin_activity_harnesses() {
             if !h.def.floor.refuse_below {
                 assert!(
@@ -420,9 +403,8 @@ mod tests {
 
     #[test]
     fn keeps_the_census_of_contracts_a_schema_cannot_state() {
-        // THE CENSUS, in `check-invariants.mjs`'s sense: the list is the
-        // document, and moving a harness on or off it has to be a deliberate
-        // edit here.
+        // THE CENSUS: the list is the document, and moving a harness on or off
+        // it has to be a deliberate edit here.
         //
         // WHAT IT PROTECTS. `harness_runs.schema_valid` is the OBSERVED half of
         // the model-fitness matrix, and it is only worth reading if it agrees
@@ -434,11 +416,10 @@ mod tests {
         // value. Four shipped bugs were that one gap; `output.verify` is where
         // each of them now lives.
         //
-        // THE THREE ENTRIES THE TS CENSUS DOES NOT HAVE. TS states some of
-        // these contracts as zod `.refine`s on the schema itself (muse.ts:
-        // handle ≥ 2, the complete-record rules); Rust's `Schema` has no
-        // post-parse refine hook, so those refines crossed as `verify`
-        // closures — the only slot that runs after the schema — with their
+        // THREE ENTRIES COME FROM REFINES. Contracts a zod `.refine` would
+        // state on the schema itself (muse's handle floor, the complete-record
+        // rules) live here instead: `Schema` has no post-parse refine hook, so
+        // `verify` — the only slot that runs after the schema — carries them,
         // messages verbatim. Same behavior, same repair turn, different slot;
         // they belong in this census for the same reason (deleting one
         // silently turns the column back into an optimistic liar).
@@ -492,17 +473,11 @@ mod tests {
         }
     }
 
-    // The TS registry also asserts every harness ships eval fixtures ("an
-    // unscored harness is an invisible one"). That assertion crosses with the
-    // fixture tables themselves — see `ships_eval_fixtures` below.
-
     #[test]
     fn ships_eval_fixtures() {
         // AN UNSCORED HARNESS IS AN INVISIBLE ONE: the fitness suite replays
         // `evals`, and a def without any is a column the matrix can never fill.
-        // The TS twin of this test is what caught phase 3 — nine defs landed
-        // with 32 fixtures between them and none were registered. Every def in
-        // this array declares at least one fixture, by name, so a fixture with
+        // Every def declares at least one fixture, by name, so a fixture with
         // an empty name cannot smuggle a def past the count either.
         for h in builtin_activity_harnesses() {
             assert!(
@@ -660,20 +635,13 @@ mod tests {
 
     #[test]
     fn gives_a_subject_of_the_call_harness_no_chain_to_fall_back_on() {
-        // The drift this locks: nine of those thirteen once declared a
-        // non-empty chain and three declared an empty one, for the same
-        // situation, each with a comment explaining why its spelling was the
-        // right one. The non-empty version justified itself as "so the fitness
-        // suite can score this on an install with no fleet" — but the fitness
-        // suite PINS the candidate model, which is its entire question, so
-        // nothing ever read those steps.
-        //
-        // What they would have done if read is the reason this is an assertion
-        // and not a preference: a work-session turn resolved off 'utility' runs
-        // on a model that is not the assigned agent and is still filed to the
-        // ticket as that agent's work. Empty means the runner returns "no model
-        // available for harness <id>" instead — a sentence an operator can act
-        // on.
+        // The reason this is an assertion and not a preference: a work-session
+        // turn resolved off a fallback chain runs on a model that is not the
+        // assigned agent and is still filed to the ticket as that agent's work.
+        // Empty means the runner returns "no model available for harness <id>"
+        // instead — a sentence an operator can act on. (A fallback would not
+        // even serve the fitness suite: it PINS the candidate model, which is
+        // its entire question, so it never reads chain steps.)
         for h in builtin_activity_harnesses() {
             // A ROLE-ASSIGNED harness is excluded, and it is the one legitimate
             // exception: 'workbench:*' names a `MODEL_ROLES` role, which an

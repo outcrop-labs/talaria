@@ -1,18 +1,14 @@
-// THE CREDENTIALS AN AGENT MAY USE WITHOUT EVER READING — port of
-// ui/src/server/workspace-secrets.ts. `secret-vault.ts` stops a credential in
-// context from reaching a provider; this is the other half: a way for an agent
-// to USE one anyway — push with a PAT, pull from a private registry — while the
-// value stays on this side of the wire. The agent is given a NAME and the
-// platform substitutes the VALUE at the boundary that spends it.
+// THE CREDENTIALS AN AGENT MAY USE WITHOUT EVER READING. The secret-vault
+// seal on the chat plane stops a credential in context from reaching a
+// provider; this is the other half: a way for an agent to USE one anyway —
+// push with a PAT, pull from a private registry — while the value stays on
+// this side of the wire. The agent is given a NAME and the platform
+// substitutes the VALUE at the boundary that spends it.
 //
 // A DOC, NOT A ROW, because that is how credentials arrive: a deploy needs a
 // PAT, a registry password and a signing key together. TWO LIFETIMES: a `vault`
 // doc persists; a `relay` is one-shot, consumed on first resolve — which is the
 // whole reason `uses_remaining` exists.
-//
-// NOT CARRIED HERE (they cross with the surfaces that call them):
-// `spendHandlesInToolCall` and the handle briefing/soul strings ride with the
-// mcp and agent-plane families; `handlesHeldBy` with the admin tail.
 //
 // WHAT THIS DELIBERATELY DOES NOT DO: hand a value to anything that will show
 // it to a model. `resolve_handles` is for OUTBOUND boundaries, and its result
@@ -74,8 +70,8 @@ pub struct SecretEntryInput {
 
 /// The listing wire shape — KEYS AND LABELS ONLY. There is no field here that
 /// carries a value: every listing surface and log line is built from this, so
-/// the value has nowhere to escape to by accident. Field order is the TS
-/// interface's, which is the SQL select order plus the appended collections.
+/// the value has nowhere to escape to by accident. Field order is the SQL
+/// select order plus the appended collections.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretDoc {
@@ -111,7 +107,7 @@ pub struct EntryLabel {
 }
 
 // Row decode — the house plain-cell helpers (uuid columns ::text, timestamps
-// read as truncated epoch ms the way the TS driver's Date does).
+// read as truncated epoch ms).
 fn cell_str(r: &sqlx::postgres::PgRow, col: &str) -> String {
     r.try_get(col).unwrap_or_default()
 }
@@ -140,11 +136,11 @@ fn cell_hosts(r: &sqlx::postgres::PgRow, col: &str) -> Vec<String> {
 const URL_HOST: &str =
     r#"(?:https?|ssh|git)://(?:[^@/\s]*@)?([a-z0-9][a-z0-9.-]*[a-z0-9])(?::\d+)?"#;
 const SCP_HOST: &str = r#"(?:^|[\s"'`])(?:[a-z0-9_.-]+@)([a-z0-9][a-z0-9.-]*[a-z0-9]):"#;
-// TS carries a lookahead `(?=[\s"'`/:,]|$)` here, which the regex crate cannot
-// express. The candidates are found without it and verified by hand below —
-// equivalent because every char a candidate spans past its prefix is
-// `[a-z0-9.-]`, none of which can start a new match, so no match is lost by
-// continuing the scan from the candidate's end.
+// No lookahead here — the regex crate cannot express one. Candidates are
+// found without it and verified by hand below, which is equivalent: every
+// char a candidate spans past its prefix is `[a-z0-9.-]`, none of which can
+// start a new match, so no match is lost by continuing the scan from the
+// candidate's end.
 const BARE_HOST: &str = r#"(?:^|[\s"'`=])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24})"#;
 
 fn url_host_re() -> &'static Regex {
@@ -189,7 +185,7 @@ pub fn hosts_in(text: &str) -> Vec<String> {
         }
     }
     // The hand-rolled half of BARE_HOST's lookahead: the char after the
-    // candidate must be one the JS pattern would have accepted.
+    // candidate must be one of the boundary chars.
     for caps in bare_host_re().captures_iter(&lower) {
         let Some(m) = caps.get(1) else { continue };
         let host = m.as_str();
@@ -338,8 +334,7 @@ pub async fn resolve_handles(
             });
             continue;
         }
-        // TS: `new Date(expiresAt).getTime() <= Date.now()` — an unparseable
-        // value is NaN and therefore NOT expired; None here plays that role.
+        // An absent expiry is not an expired one — None means "no bound".
         if cell_opt_i64(doc, "expires_ms").is_some_and(|t| t <= now_ms()) {
             unresolved.push(UnresolvedHandle {
                 handle,
@@ -560,8 +555,8 @@ pub struct SpendOutcome {
 }
 
 /// Resolve handle mentions INSIDE a gateway `tools/call` arguments object,
-/// rewriting `rpc.params.arguments` in place (spendHandlesInToolCall). The
-/// gateway's one spend boundary: a credential is spent exactly when it rides
+/// rewriting `rpc.params.arguments` in place. The gateway's one spend
+/// boundary: a credential is spent exactly when it rides
 /// an outbound tool call, and the report (`used`, names never values) is what
 /// the relay route logs.
 ///
@@ -578,8 +573,8 @@ pub async fn spend_handles_in_tool_call(
     if rpc.get("method").and_then(Value::as_str) != Some("tools/call") {
         return Ok(SpendOutcome::default());
     }
-    // `!rpc.params?.arguments` — JS truthiness: absent, null, false, 0 and ""
-    // don't spend; anything else (object, array, non-empty string) does.
+    // Arguments truthiness: absent, null, false, 0 and "" don't spend;
+    // anything else (object, array, non-empty string) does.
     let js_truthy = |v: &Value| match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -612,8 +607,8 @@ pub async fn spend_handles_in_tool_call(
             unresolved: resolved.unresolved,
         });
     }
-    // `rpc.params.arguments = JSON.parse(resolved.text)` — the assignment is
-    // whatever parses back, not necessarily an object.
+    // The rewritten arguments are whatever parses back, not necessarily an
+    // object.
     match serde_json::from_str::<Value>(&resolved.text) {
         Ok(next) => {
             *arguments = next;
@@ -943,9 +938,8 @@ pub async fn get_secret_doc(pg: &PgPool, name: &str) -> Result<Option<SecretDoc>
     }))
 }
 
-/// Every doc, newest first (listSecretDocs) — the admin console's inventory.
-/// SecretDoc already serializes in the TS wire shape; this is the same data
-/// the reading routes serve, so console and agent see one truth.
+/// Every doc, newest first — the admin console's inventory. SecretDoc is the
+/// same data the reading routes serve, so console and agent see one truth.
 pub async fn list_secret_docs(pg: &PgPool) -> Result<Vec<SecretDoc>, String> {
     let names: Vec<(String,)> =
         sqlx::query_as("select name from workspace_secrets order by created_at desc")
@@ -961,9 +955,9 @@ pub async fn list_secret_docs(pg: &PgPool) -> Result<Vec<SecretDoc>, String> {
     Ok(out)
 }
 
-/// Which handles does one agent hold, and how (handlesHeldBy) — direct
-/// grants plus folder grants, gated on expiry and remaining uses. The
-/// admin console's per-agent security view.
+/// Which handles one agent holds, and how — direct grants plus folder grants,
+/// gated on expiry and remaining uses. The admin console's per-agent security
+/// view.
 pub async fn handles_held_by(pg: &PgPool, agent_model: &str) -> Result<Vec<Value>, String> {
     let rows = sqlx::query(
         "select s.name, s.title, e.key, e.label, \
@@ -1347,8 +1341,8 @@ pub async fn delete_secret_folder(
     Ok(true)
 }
 
-/// Who a folder share names. An empty one answers `false` — the TS route
-/// builds `{}` when the body named neither a person nor an agent.
+/// Who a folder share names. An empty one answers `false` — a body naming
+/// neither a person nor an agent.
 #[derive(Default)]
 pub struct FolderWho {
     pub user_id: Option<String>,
@@ -1646,9 +1640,8 @@ mod tests {
         );
         // …unless its last label is a file extension.
         assert!(hosts_in("cat package.json").is_empty());
-        // The bare-host boundary: a candidate followed by a char the JS
-        // lookahead would refuse (here a digit) is not a host, and the letters
-        // it stopped before cannot start another one.
+        // The bare-host boundary: a candidate followed by a digit is not a
+        // host, and the letters it stopped before cannot start another one.
         assert!(hosts_in("x=a.b.com1").is_empty());
         // Port on a URL form is not part of the host.
         assert_eq!(

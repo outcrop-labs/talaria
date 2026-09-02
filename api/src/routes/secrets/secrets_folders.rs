@@ -1,4 +1,4 @@
-// /api/secrets/folders — port of ui/src/routes/api/secrets.folders.ts.
+// /api/secrets/folders.
 //
 // The Secrets view's own organisation, not the Files browser's. Sharing a
 // folder is the point, not a bonus: a set somebody is actively working on
@@ -25,12 +25,11 @@ use crate::workspace_secrets::{
     rename_secret_folder, share_secret_folder,
 };
 
-/// The four verbs, one body. The union's near-miss table (probed): the
-/// `action` literal picks the branch; inside it a WRONG JSON TYPE anywhere —
-/// missing, null, number where a string/boolean belongs — aborts the branch
-/// and the union answers its own 'Invalid input', while a well-typed value
-/// that fails a format or bound surfaces that field's sentence, in schema
-/// order.
+/// The four verbs, one body. The `action` literal picks the branch; inside
+/// it a WRONG JSON TYPE anywhere — missing, null, number where a
+/// string/boolean belongs — aborts the branch and the union answers its own
+/// 'Invalid input', while a well-typed value that fails a format or bound
+/// surfaces that field's sentence, in schema order.
 #[derive(Debug)]
 enum FolderPost {
     Create {
@@ -105,9 +104,9 @@ fn parse_post(obj: &serde_json::Map<String, Value>) -> Result<FolderPost, String
         }
         Some("share") => {
             let id = typed_str("id")?;
-            // `on` aborts the whole branch when it is not a boolean — the
-            // probe with `on: 'yes'` answers 'Invalid input' even when the
-            // id is bad too.
+            // `on` aborts the whole branch when it is not a boolean —
+            // `on: 'yes'` answers 'Invalid input' even when the id is bad
+            // too.
             let on = match obj.get("on") {
                 Some(Value::Bool(b)) => *b,
                 _ => return Err(invalid_input()),
@@ -171,7 +170,7 @@ pub async fn post(
         Err(gate) => return gate,
     };
     let parsed = parse(&body);
-    // The TS schema is a zod UNION, and a union flattens EVERY failure to the
+    // The body schema is a UNION, and a union flattens EVERY failure to the
     // same two words — even a body that isn't an object at all.
     let obj = match parsed.as_object() {
         Some(o) => o,
@@ -269,8 +268,8 @@ pub async fn post(
             user_id,
             agent_model,
         } => {
-            // The TS route's truthiness ladder: a named person wins, an agent
-            // named only as the empty string names nobody.
+            // Truthiness ladder: a named person wins; an agent named only as
+            // the empty string names nobody.
             let who = if let Some(uid) = user_id.as_deref() {
                 FolderWho {
                     user_id: Some(uid.to_string()),

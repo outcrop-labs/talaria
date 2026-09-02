@@ -1,7 +1,7 @@
-// OAuth 2.1 for remote MCP servers — port of ui/src/server/mcp-oauth.ts. The
-// auth most first-party servers (Linear, Stripe, Vercel, GitHub) actually
-// speak: no header to paste, the flow is negotiated per the MCP authorization
-// spec — 401 + WWW-Authenticate → protected-resource metadata → authorization
+// OAuth 2.1 for remote MCP servers — the auth most first-party servers
+// (Linear, Stripe, Vercel, GitHub) actually speak: no header to paste, the
+// flow is negotiated per the MCP authorization spec — 401 +
+// WWW-Authenticate → protected-resource metadata → authorization
 // server metadata → DYNAMIC CLIENT REGISTRATION → authorization-code + PKCE →
 // sealed token store → silent refresh. Tokens are held per SUBJECT: 'org'
 // (one shared connection) or a user id (per-user connected accounts). The
@@ -13,8 +13,7 @@
 // resource-metadata URL arrives in the upstream's own WWW-Authenticate header,
 // the authorization server comes out of that document, and the
 // registration/token endpoints come out of the AS metadata. The token POST
-// then carries our client_secret. Two defences, both required and both
-// carried from TS verbatim:
+// then carries our client_secret. Two defences, both required:
 //   1. every request goes through safe_fetch (no loopback/link-local/private
 //      targets, and each redirect hop re-validated), and
 //   2. every discovered URL is PINNED to the registrable domain of the server
@@ -22,9 +21,8 @@
 //      infrastructure and nowhere else.
 //
 // The config lives in mcp_servers.oauth as the raw jsonb Value: pg owns its
-// key order (canonical on write), both runtimes must read and re-store the
-// same row, and a typed struct re-serializing in declaration order would
-// diverge from the TS spread for nothing.
+// key order (canonical on write), so a typed struct re-serializing in
+// declaration order would rewrite stored rows for nothing.
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,8 +79,7 @@ struct Pinned {
 }
 
 impl Pinned {
-    /// TS's `check(url, what)` — Err carries the same sentence the route
-    /// answers with.
+    /// Err carries the same sentence the route answers with.
     fn check(&self, url: &str, what: &str) -> Result<String, String> {
         let Ok(parsed) = reqwest::Url::parse(url) else {
             return Err(format!("{what} is not a valid URL"));
@@ -412,9 +409,9 @@ pub async fn ensure_oauth_config(
 // ── Client registration + the authorize/callback dance ──────────────────────
 
 /// The registered (or manually pinned) client: id + PLAINTEXT secret. The
-/// secret rides along because registration produced one (TS's shape); the
-/// only consumer that POSTs it is the callback, which reads the same pair
-/// back through `client_of` — start_oauth itself only ever needs the id.
+/// secret rides along because registration produced one; the only consumer
+/// that POSTs it is the callback, which reads the same pair back through
+/// `client_of` — start_oauth itself only ever needs the id.
 struct ClientCreds {
     id: String,
     #[allow(dead_code)]
@@ -642,7 +639,7 @@ fn parse_token_response(j: &Value) -> Value {
     serde_json::json!({
         "accessToken": js_string_lossy(j.get("access_token")),
         "refreshToken": j.get("refresh_token").filter(|v| !v.is_null()).map(|v| js_string_lossy(Some(v))),
-        // typeof expires_in === 'number' — a JSON number, never bool/string.
+        // expires_in counts only as a JSON number — never bool/string.
         "expiresAt": j.get("expires_in").and_then(Value::as_f64)
             .map(|s| now_ms() + (s * 1000.0) as i64).unwrap_or(0),
         "tokenType": j.get("token_type").filter(|v| !v.is_null()).map(|v| js_string_lossy(Some(v))).unwrap_or_else(|| "Bearer".into()),
@@ -671,7 +668,7 @@ fn token_body(pairs: Vec<(&str, String)>) -> String {
         .join("&")
 }
 
-/// x-www-form-urlencoded with the JS set: space → '+', everything unreserved
+/// x-www-form-urlencoded matching URLSearchParams: space → '+', unreserved
 /// passed through, '~' kept (URLSearchParams does not escape it).
 fn url_enc(s: &str) -> String {
     let mut out = String::new();
@@ -948,8 +945,8 @@ pub async fn oauth_meta(pg: &PgPool, server_id: &str) -> Result<Option<Value>, s
     Ok(Some(serde_json::json!({
         "dcr": !oauth.get("registrationEndpoint").map(Value::is_null).unwrap_or(true),
         "clientSet": oauth.get("client").is_some(),
-        // `documentation ?? null` — the field is null when discovery found
-        // none, and the TS interface says null, never undefined.
+        // null when discovery found none — the wire shape says null, never
+        // undefined.
         "documentation": oauth.get("documentation").and_then(Value::as_str),
     })))
 }

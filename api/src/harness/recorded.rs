@@ -1,16 +1,11 @@
 // THE RECORDED-TRANSCRIPT HARNESS: run any harness against written-down model
-// replies, with no gateway, no fleet, no database and no clock. Port of
-// harness/recorded.ts.
+// replies, with no gateway, no fleet, no database and no clock.
 //
-// THIS IS AN EXTRACTION, NOT A NEW IDEA. run.rs's test module drove the runner
-// this way to port the run.test.ts corpus, and that pattern IS the
-// recorded-transcript harness the audit asks for. What it was not, was
-// reachable: it lived inside one test module, so every def's tests (22 files
-// of them) and — once the fitness plane crosses — the eval sweep would each
-// have had to write a second copy. A second copy of a fake is worse than a
-// second copy of real code, because the assertions it supports quietly become
-// assertions about the fake. run.rs's tests construct this module; nothing
-// else ever grows a third.
+// ONE FAKE WORLD, CONSTRUCTED ONCE. Every def's tests and the fitness sweep
+// drive their runs through this module; a second copy of a fake is worse
+// than a second copy of real code, because the assertions it supports
+// quietly become assertions about the fake. run.rs's tests construct it too
+// — nothing else ever grows another.
 //
 // WHAT IS FAKE AND WHAT IS REAL, which is the whole design:
 //
@@ -28,7 +23,7 @@
 //
 // THE CAPABILITY DEFAULT IS UNKNOWN, deliberately. An absent fact is the state
 // a fresh self-host is in, and `missing_capabilities` treats unknown as
-// present (capability.ts's cardinal rule: only a fact that positively says
+// present (capability.rs's cardinal rule: only a fact that positively says
 // "no" counts as missing). A helper that defaulted to "everything works"
 // would hide every floor refusal, which is the behavior most worth testing.
 
@@ -154,11 +149,10 @@ pub struct RecordedWorld {
 impl Default for RecordedWorld {
     fn default() -> Self {
         RecordedWorld {
-            // The run-corpus default: a reply the judge-shaped test defs
-            // accept, so `World::default()` is a WORKING run and a case
-            // opts into failure by naming replies. (recorded.ts's own
-            // default is the neutral `{"ok":true}`; cases here always run
-            // real defs, so the working-run default is the useful one.)
+            // The default: a reply the judge-shaped test defs accept, so
+            // `RecordedWorld::default()` is a WORKING run and a case opts
+            // into failure by naming replies — cases here always run real
+            // defs, so the working-run default is the useful one.
             replies: replies(&["{\"verdict\":\"pass\",\"summary\":\"looks right\"}"]),
             model: RecordedModel::Default,
             endpoints: None,
@@ -193,9 +187,9 @@ pub struct RecordedRun {
     clock: Arc<Mutex<i64>>,
 }
 
-/// `personaKeysFrom` — the real resolver over recorded agent-version rows,
-/// same fold as the `persona_keys` edge's `persona_capability_keys` but over
-/// rows a test owns.
+/// The real resolver over recorded agent-version rows — the same fold the
+/// `persona_keys` edge's `persona_capability_keys` runs, but over rows a
+/// test owns.
 pub fn persona_keys_from(model: &str, rows: &[PersonaRow]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for t in persona_index(rows).get(model).into_iter().flatten() {
@@ -326,8 +320,8 @@ impl RecordedRun {
                     })
                 })
             },
-            // capability.ts's cardinal rule, reproduced exactly: only a fact
-            // that positively says "no" counts as missing. Unknown is not
+            // capability.rs's cardinal rule, exactly: only a fact that
+            // positively says "no" counts as missing. Unknown is not
             // missing.
             missing_capabilities: {
                 let world = world.clone();
@@ -418,8 +412,7 @@ impl RecordedRun {
                     Box::pin(async move { Some(guard_config_of(&world)) })
                 })
             },
-            // The REAL gate-safe rules — `gate_safe` was split out of
-            // `guard_text` for exactly this call.
+            // The REAL rules registry — `guard::gate_safe`, not a stub.
             guard_text: {
                 let world = world.clone();
                 Arc::new(move |text, input| {

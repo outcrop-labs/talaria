@@ -1,5 +1,5 @@
 // Invites — the third door in (after env allow-lists and verified sign-up
-// domains), port of ui/src/server/invites.ts. An admin invites an email; the
+// domains). An admin invites an email; the
 // invitee gets a transactional email with a /join link and signs in with
 // Google on that address. Invites expire, revoke instantly, and re-send with
 // a fresh token.
@@ -15,7 +15,7 @@ use crate::secretbox::SecretBox;
 
 const TTL_DAYS: i32 = 14;
 
-/// The invite row in the TS select's wire order, timestamps ISO.
+/// The invite row in wire order, timestamps ISO.
 fn invite_json(
     id: String,
     email: String,
@@ -37,7 +37,7 @@ fn invite_json(
     })
 }
 
-/// Recent invites, newest first (listInvites).
+/// Recent invites, newest first.
 pub async fn list_invites(pg: &PgPool) -> Vec<serde_json::Value> {
     let rows: Result<
         Vec<(
@@ -71,7 +71,7 @@ pub async fn list_invites(pg: &PgPool) -> Vec<serde_json::Value> {
     }
 }
 
-/// 24 random bytes, base64url — node's randomBytes(24).toString('base64url').
+/// 24 random bytes, base64url.
 fn fresh_token() -> Result<String, String> {
     let mut buf = [0u8; 24];
     getrandom::fill(&mut buf).map_err(|e| e.to_string())?;
@@ -183,7 +183,7 @@ async fn send_invite_email(
     }
 }
 
-/// Create (or refresh) an invite and send the email (createInvite). An
+/// Create (or refresh) an invite and send the email. An
 /// existing PENDING invite for the address is retired — one live invite per
 /// address, re-invited with a fresh token and a fresh 14 days.
 pub async fn create_invite(
@@ -194,7 +194,8 @@ pub async fn create_invite(
     origin: Option<&str>,
 ) -> Result<(serde_json::Value, bool, Option<String>), String> {
     let e = email.trim().to_lowercase();
-    // /^[^\s@]+@[^\s@]+\.[^\s@]+$/ — local@domain.tld, no spaces anywhere.
+    // local@domain.tld, no spaces anywhere: one @, and a dotted domain with
+    // a non-empty tail.
     let looks_like_email = !e.contains(char::is_whitespace)
         && match e.find('@') {
             Some(at) if at > 0 && e.rfind('@') == Some(at) => match e[at + 1..].find('.') {
@@ -249,7 +250,7 @@ pub async fn create_invite(
     Ok((invite, email_sent, email_error))
 }
 
-/// Revoke (revokeInvite): a no-op on an already-accepted invite — acceptance
+/// Revoke: a no-op on an already-accepted invite — acceptance
 /// is history, not a lever.
 pub async fn revoke_invite(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
     sqlx::query(

@@ -1,14 +1,13 @@
-// /api/notifications — port of ui/src/routes/api/notifications.ts. The
-// caller's inbox: GET is the bell's one read (list, unread, prefs, digest,
-// the instance switch, whether THIS user may flip it), PUT marks read, PATCH
-// changes routing. The mail fan-out behind the prefs (sendGatedMail, the
-// outbox, the drain) is scheduler plane — batch 5 — so it is not here; this
-// file ends at the rows and the switches the SPA reads and writes.
+// /api/notifications. The caller's inbox: GET is the bell's one read (list,
+// unread, prefs, digest, the instance switch, whether THIS user may flip it),
+// PUT marks read, PATCH changes routing. The mail fan-out behind the prefs
+// (the outbox, the drain) is scheduler plane, so it is not here; this file
+// ends at the rows and the switches the SPA reads and writes.
 //
-// The admin gate is a role check on an ALREADY-required user, exactly where
-// TS puts it: after the body's 400s, before any write, so a member who sends
-// prefs and delivery in one PATCH gets 403 and NEITHER change — one PATCH can
-// never half-apply.
+// The admin gate is a role check on an ALREADY-required user, ordered after
+// the body's 400s and before any write, so a member who sends prefs and
+// delivery in one PATCH gets 403 and NEITHER change — one PATCH can never
+// half-apply.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -33,7 +32,7 @@ const ROUTE_OPTS: &[&str] = &["in_app", "email", "both"];
 const DIGEST_OPTS: &[&str] = &["on", "off"];
 
 /// The validated PrefsPatch: each field Option<"present">, which is the very
-/// thing the root refine counts.
+/// thing the at-least-one check counts.
 #[derive(Debug)]
 struct PrefsPatch {
     prefs: Option<serde_json::Map<String, Value>>,
@@ -41,19 +40,17 @@ struct PrefsPatch {
     delivery: Option<bool>,
 }
 
-/// notifications.ts's PrefsPatch, checks in zod's schema order: prefs (the
-/// record, then its two refines), digest, delivery — then the root refine.
-/// Every message is probed against the ui's zod 4.3.6 and pinned in the test
-/// at the bottom of this file.
+/// The validated PATCH body, checks in schema order: prefs (the record, then
+/// its two refines), digest, delivery — then the at-least-one check. Every
+/// message is pinned in the test at the bottom of this file.
 fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPatch, String> {
     let prefs = match obj.get("prefs") {
         None => None,
         Some(v) => {
-            // z.record(z.string().max(40), ROUTE): entry by entry in document
-            // order, key then value. A key past 40 chars is the GENERIC
-            // record-key message (not the string-max spelling), and a value
-            // that is not exactly a route is the enum's message whatever its
-            // JSON type.
+            // The prefs record: entry by entry in document order, key then
+            // value. A key past 40 chars is the GENERIC record-key message
+            // (not the string-max spelling), and a value that is not exactly
+            // a route is the enum's message whatever its JSON type.
             let m = v.as_object().ok_or_else(|| record_msg(zod_type_name(v)))?;
             for (k, val) in m {
                 if utf16_len(k) > 40 {
@@ -63,8 +60,8 @@ fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPat
                     return Err(enum_msg(ROUTE_OPTS));
                 }
             }
-            // .refine(non-empty) then .refine(all-known) — the field's own
-            // refines outrank the root's, so `{}` with a valid digest beside
+            // non-empty before all-known — the field's own checks outrank
+            // the body-wide at-least-one, so `{}` with a valid digest beside
             // it still answers the first one's message.
             if m.is_empty() {
                 return Err("nothing to update".into());
@@ -127,7 +124,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
     };
     // prefs + digest from one row, so the two can never be read a moment
-    // apart (getNotifySettings); the spread lands them here in TS's order.
+    // apart — and the response keeps this key order.
     let (prefs, digest) = get_notify_settings(&state.pg, &user.id).await;
     let email_enabled = delivery_or_off(&state.pg).await;
     Json(json!({
@@ -155,8 +152,8 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // ids absent OR EMPTY both mean "all of mine" — TS's own ids.length > 0
-    // guard folds them together, and so does the data layer.
+    // ids absent OR EMPTY both mean "all of mine" — the data layer folds
+    // them together.
     let ids = match optional_uuid_array_member(obj, "ids", 200) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -165,10 +162,9 @@ pub async fn put(
         tracing::error!("[notifications] mark-read failed: {e}");
         return thrown_internal_error();
     }
-    // The brief nudge TS fires detached after the update — the FULL one now
-    // that the realtime plane has crossed: clear the sweep throttle AND ring
-    // the bell. Awaiting it costs one UPDATE; its failure is logged, never the
-    // caller's, which is TS's `.catch(() => {})`.
+    // The brief nudge, fired after the update — the FULL one: clear the
+    // sweep throttle AND ring the bell. Awaiting it costs one UPDATE; its
+    // failure is logged, never the caller's.
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = mark_brief_stale(&notify, std::slice::from_ref(&user.id)).await {
         tracing::error!("[notifications] brief nudge failed: {e}");
@@ -237,8 +233,7 @@ pub async fn patch(
         .await
         {
             Ok(v) => v,
-            // Includes the no-row corner ('no such user' on TS) — the
-            // recorded platform-500 divergence.
+            // Includes the no-row corner — a user with no row 500s here.
             Err(e) => {
                 tracing::error!("[notifications] set settings failed: {e}");
                 return thrown_internal_error();
@@ -268,7 +263,6 @@ mod tests {
 
     #[test]
     fn prefs_patch_matches_the_zod_probe_table() {
-        // Every row probed against PrefsPatch in the ui's zod 4.3.6.
         // The record's type message, one spelling per received type.
         let cases = [
             (json!([]), "array"),
@@ -307,7 +301,8 @@ mod tests {
                 "Invalid option: expected one of \"in_app\"|\"email\"|\"both\""
             );
         }
-        // The field's refines, in order: empty before unknown-before-root.
+        // The field's checks, in order: empty before unknown, both before
+        // the body-wide at-least-one.
         assert_eq!(
             patch(json!({ "prefs": {} })).unwrap_err(),
             "nothing to update"
@@ -361,9 +356,9 @@ mod tests {
                 .delivery,
             Some(true)
         );
-        // The root refine: nothing present (or only stripped unknowns) is
-        // 'nothing to update', and it runs LAST — a bad prefs beside an
-        // otherwise-empty body answers prefs' message.
+        // The at-least-one check: nothing present (or only stripped
+        // unknowns) is 'nothing to update', and it runs LAST — a bad prefs
+        // beside an otherwise-empty body answers prefs' message.
         assert_eq!(patch(json!({})).unwrap_err(), "nothing to update");
         assert_eq!(
             patch(json!({ "bogus": "x" })).unwrap_err(),

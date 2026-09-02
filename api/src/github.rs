@@ -6,7 +6,7 @@
 // as email. Repo access per agent is a separate explicit grant table —
 // connecting GitHub grants nothing to anyone by itself.
 //
-// Port of ui/src/server/github.ts whole: the token half the secrets route
+// The whole connection in one module: the token half the secrets route
 // rides (config read, RS256 app JWT, per-repo-scoped installation tokens,
 // the repo→installation routing table, the sandbox credential) plus the
 // admin half the workbench family owns — live-verified status, installation
@@ -40,9 +40,9 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// github.ts GithubConfig — the whole shape now that the admin half crossed.
-/// The defaults merge is TS's `{...DEFAULTS, ...raw, app: {...DEFAULTS.app,
-/// ...(raw.app ?? {})}}`: per-key, so extraction here is the same merge.
+/// The whole config shape. Defaults merge per key — top-level over
+/// top-level, `app` keys over `app` keys — which is what the per-field
+/// extraction below performs.
 #[derive(Debug, Clone, Default)]
 pub struct GithubConfig {
     /// 'app' | 'pat' | null (unconfigured).
@@ -104,11 +104,11 @@ pub async fn get_github_config(pg: &PgPool) -> GithubConfig {
     }
 }
 
-/// setGithubConfig — the patch merge, the seals, the setting write, and the
+/// The patch merge, the seals, the setting write, and the
 /// cache invalidation. A secret that arrives is sealed (an EMPTY string
-/// clears, exactly as TS's truthiness check); one that doesn't arrive keeps
+/// clears); one that doesn't arrive keeps
 /// its sealed predecessor. `installationIds`/`appId`/`repoCreationOrgs` use
-/// TS's `??` — undefined keeps, any value (empty included) replaces.
+/// `??` semantics — undefined keeps, any value (empty included) replaces.
 pub async fn set_github_config(
     pg: &PgPool,
     sb: &SecretBox,
@@ -175,8 +175,8 @@ pub async fn set_github_config(
 
 /// The three-state patch fields: Unset keeps the current value, Set(None)
 /// clears, Set(Some) replaces. `app_id`/`installation_ids`/`repo_creation_
-/// orgs` are plain Option (TS's `??` has no null-vs-undefined distinction
-/// for them — a null appId would be a type error in the zod schema).
+/// orgs` are plain Option — those keys carry no null-vs-undefined
+/// distinction on the wire.
 pub enum PatchField<T> {
     Unset,
     Set(Option<T>),
@@ -192,7 +192,7 @@ pub struct GithubConfigPatch<'a> {
     pub repo_creation_orgs: Option<&'a [&'a str]>,
 }
 
-/// `gh()` — one request builder for every GitHub call: the three fixed
+/// One request builder for every GitHub call: the three fixed
 /// headers plus the bearer, any method, and a JSON body when there is one.
 async fn gh(
     path: &str,
@@ -218,7 +218,7 @@ async fn gh(
     req.send().await.map_err(|e| format!("github request: {e}"))
 }
 
-/// ghJson — `gh()` plus the ok-check and the error the workbench surfaces:
+/// `gh()` plus the ok-check and the error the workbench surfaces:
 /// `GitHub <METHOD> <path> → <status>: <first 200 chars>`.
 async fn gh_json(
     path: &str,
@@ -242,8 +242,8 @@ async fn gh_json(
 }
 
 /// RS256 app JWT — GitHub Apps authenticate to /app endpoints with this.
-/// Header/payload are the TS literals byte-for-byte (`JSON.stringify` key
-/// order); `iat` is backdated 60s and `exp` is +9m, exactly as github.ts.
+/// Header/payload are fixed literals in `JSON.stringify` key order; `iat` is
+/// backdated 60s and `exp` is +9m.
 /// `now_secs` is injectable so the vectors pin the bytes.
 pub fn app_jwt_at(app_id: &str, private_key_pem: &str, now_secs: i64) -> Result<String, String> {
     let unsigned = format!(
@@ -381,7 +381,7 @@ fn repo_install_cache() -> &'static Mutex<Option<RepoInstallCache>> {
 /// Repos the connection can reach — the union across all selected
 /// installations (multi-org), paged, capped at 5 pages per source. The
 /// listing doubles as the repo→installation routing table for token minting;
-/// the cache lives for 10 minutes, exactly as github.ts's does.
+/// the cache lives for 10 minutes.
 pub async fn list_reachable_repos(pg: &PgPool, sb: &SecretBox) -> Vec<String> {
     let cfg = get_github_config(pg).await;
     let mut map: HashMap<String, String> = HashMap::new();
@@ -461,8 +461,8 @@ async fn paged_repos(token: &str, first_path: &str) -> Vec<String> {
     out
 }
 
-/// `<https://api.github.com/...>; rel="next"` → the path. The regex in TS
-/// anchors on the api.github.com origin; the path is what `gh()` wants.
+/// `<https://api.github.com/...>; rel="next"` → the path. The regex anchors
+/// on the api.github.com origin; the path is what `gh()` wants.
 fn next_link_path(link: &str) -> Option<String> {
     let re = regex::Regex::new(r#"<https://api\.github\.com([^>]+)>;\s*rel="next""#).ok()?;
     re.captures(link)
@@ -544,7 +544,7 @@ pub async fn granted_repos(pg: &PgPool, agent_id: &str) -> Vec<String> {
 }
 
 /// Atomic grant replace — a crash can never leave the agent grantless by
-/// accident. `keep` is TS's `repos.slice(0, 100)`.
+/// accident. `keep` is capped at 100.
 pub async fn set_granted_repos(pg: &PgPool, agent_id: &str, keep: &[String]) -> Result<(), String> {
     let keep = &keep[..keep.len().min(100)];
     let mut tx = pg
@@ -574,9 +574,9 @@ pub async fn set_granted_repos(pg: &PgPool, agent_id: &str, keep: &[String]) -> 
 
 // ── The admin/status plane (workbench.github, the doctor verb) ────────────────
 
-/// github.ts GithubStatus — redacted, live-verified, never leaking secrets.
+/// Redacted, live-verified, never leaking secrets.
 /// Field order is the wire's: base first (mode, app, patSet,
-/// repoCreationOrgs), then the spread's appended configured/account/error.
+/// repoCreationOrgs), then the appended configured/account/error.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubStatus {
@@ -704,7 +704,7 @@ pub async fn github_status(pg: &PgPool, sb: &SecretBox) -> GithubStatus {
         };
     }
     // Unconfigured (or configured-but-incomplete without a live check): the
-    // calm null error, exactly TS's fall-through.
+    // calm null error.
     base
 }
 

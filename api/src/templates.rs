@@ -1,16 +1,14 @@
-// Templates — the port of ui/src/server/templates.ts, grown slice by slice.
-// The board-bindings half serves the boards family; the resolution chain
-// (the order everywhere a template applies: explicit pick → agent binding →
-// board default → none) crossed with the tasks slice — create_task seeds an
-// empty description through it. Still TS: the org-wide library CRUD
-// (/api/templates) and the versioning snapshot under updateTemplate, batch 5.
+// Templates — the org-wide library of markdown skeletons plus the bindings
+// that pick one. The resolution chain (the order everywhere a template
+// applies: explicit pick → agent binding → board default → none) serves
+// every consumer — create_task seeds an empty description through it.
 
 use sqlx::PgPool;
 
 use crate::agent_auth::epoch_ms_to_iso;
 
-/// A board's template binding (templates.ts BoardTemplateBinding): which
-/// ticket template the board uses, and whether it is the default.
+/// A board's template binding: which ticket template the board uses, and
+/// whether it is the default.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardTemplateBinding {
@@ -18,8 +16,7 @@ pub struct BoardTemplateBinding {
     pub is_default: bool,
 }
 
-/// The board's bindings — TS's select carries no ORDER BY, and the client
-/// treats the set as a set, so neither does this.
+/// The board's bindings — no ORDER BY: the client treats the set as a set.
 pub async fn board_templates(
     pg: &PgPool,
     board_id: &str,
@@ -39,10 +36,9 @@ pub async fn board_templates(
         .collect())
 }
 
-/// Replace a board's template set (templates.ts setBoardTemplates). One
-/// transaction: delete, then re-insert each id with is_default set by
-/// identity with `default_id`. Duplicates in the list are swallowed by the
-/// conflict clause, exactly as TS's `on conflict do nothing` does.
+/// Replace a board's template set. One transaction: delete, then re-insert
+/// each id with is_default set by identity with `default_id`. Duplicates in
+/// the list are swallowed by the conflict clause.
 pub async fn set_board_templates(
     pg: &PgPool,
     board_id: &str,
@@ -70,8 +66,8 @@ pub async fn set_board_templates(
 
 // ── The library row + resolution chain ───────────────────────────────────────
 
-/// A template row (templates.ts Template) — the org-wide library of markdown
-/// skeletons + prompt guidance. `body` is the skeleton the filled document
+/// A template row — the org-wide library of markdown skeletons + prompt
+/// guidance. `body` is the skeleton the filled document
 /// must keep; `guidance` is for the agent filling it, never shown on the
 /// ticket.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -106,9 +102,9 @@ impl From<TemplateRow> for Template {
     }
 }
 
-/// getTemplate — one row by id, any kind (callers that care check `kind`
-/// themselves, which is exactly how the resolution chain treats a dead or
-/// wrong-kind reference: fall through to the next link).
+/// One row by id, any kind — callers that care check `kind` themselves,
+/// which is exactly how the resolution chain treats a dead or wrong-kind
+/// reference: fall through to the next link.
 pub async fn get_template(pg: &PgPool, id: &str) -> Result<Option<Template>, sqlx::Error> {
     // AssertSqlSafe: the interpolation is this crate's COLS column list.
     let sql = format!("select {COLS} from templates where id = $1::uuid");
@@ -119,8 +115,8 @@ pub async fn get_template(pg: &PgPool, id: &str) -> Result<Option<Template>, sql
     Ok(row.map(Template::from))
 }
 
-/// listTemplates — the whole library, kind-grouped (the library page's tab
-/// order), or one kind's list.
+/// The whole library, kind-grouped (the library page's tab order), or one
+/// kind's list.
 pub async fn list_templates(pg: &PgPool, kind: Option<&str>) -> Result<Vec<Template>, sqlx::Error> {
     let sql = match kind {
         Some(_) => format!("select {COLS} from templates where kind = $1 order by name asc"),
@@ -134,8 +130,8 @@ pub async fn list_templates(pg: &PgPool, kind: Option<&str>) -> Result<Vec<Templ
     Ok(rows.into_iter().map(Template::from).collect())
 }
 
-/// createTemplate — body/guidance default to empty (a skeleton can start as
-/// a name and get its body in the editor).
+/// Body/guidance default to empty — a skeleton can start as a name and get
+/// its body in the editor.
 pub async fn create_template(pg: &PgPool, t: NewTemplate<'_>) -> Result<Template, sqlx::Error> {
     let sql = format!(
         "insert into templates (name, kind, body, guidance, created_by) \
@@ -162,9 +158,8 @@ pub struct NewTemplate<'a> {
 
 /// The each-if-defined patch: only the fields the request carried move, each
 /// restamps `updated_at`, and a BODY edit is versioned (the template editor
-/// shows the history). Snapshot failures are swallowed — same as TS's
-/// `.catch(() => {})`, and for the same reason: the edit stands, the history
-/// row is the nice-to-have.
+/// shows the history). Snapshot failures are swallowed: the edit stands, the
+/// history row is the nice-to-have.
 pub async fn update_template(
     pg: &PgPool,
     id: &str,
@@ -183,7 +178,6 @@ pub async fn update_template(
             .bind(id)
             .execute(pg)
             .await?;
-        // Skeleton edits are versioned — the template editor shows the history.
         let _ = crate::internal_history::snapshot(pg, "template", id, body, patch.author).await;
     }
     if let Some(guidance) = patch.guidance {
@@ -236,9 +230,8 @@ pub async fn set_agent_templates(
     Ok(())
 }
 
-/// An agent's template overrides (agentTemplateBindings) — an engineering
-/// agent always writing eng tickets, regardless of board. No row → no
-/// bindings, never an error.
+/// An agent's template overrides — an engineering agent always writing eng
+/// tickets, regardless of board. No row → no bindings, never an error.
 pub struct AgentTemplateBindings {
     pub ticket_template_id: Option<String>,
     pub plan_template_id: Option<String>,
@@ -267,15 +260,15 @@ pub async fn agent_template_bindings(
     })
 }
 
-/// The context resolveTemplate resolves against — every link optional, absent
-/// links skipped.
+/// The context resolution runs against — every link optional, absent links
+/// skipped.
 pub struct ResolveContext<'a> {
     pub explicit_id: Option<&'a str>,
     pub agent_model: Option<&'a str>,
     pub board_id: Option<&'a str>,
 }
 
-/// getTemplate narrowed to the requested kind — the chain's shared
+/// One row narrowed to the requested kind — the chain's shared
 /// "dead or wrong-kind reference falls through" step.
 async fn template_of_kind(
     pg: &PgPool,
@@ -329,9 +322,8 @@ pub async fn resolve_template(
     Ok(None)
 }
 
-/// The prompt block a template contributes to an agent's instructions
-/// (templatePrompt). `what` names the surface — ticket descriptions or the
-/// plan document.
+/// The prompt block a template contributes to an agent's instructions. `what`
+/// names the surface — ticket descriptions or the plan document.
 pub fn template_prompt(t: &Template, what: &str) -> String {
     let mut parts = vec![format!(
         "Format {what} on this template — keep its headings/section structure, \

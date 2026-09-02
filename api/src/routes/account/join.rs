@@ -1,4 +1,4 @@
-// /api/join — port of ui/src/routes/api/join.ts.
+// /api/join.
 //
 // Public invite lookup for the /join page: token → who's invited, by whom, to
 // which org. Expired/revoked/accepted tokens read as gone.

@@ -1,14 +1,9 @@
 // The Titler, declared. Names things as they take shape: chats and plans after
-// their first exchange, research runs from their question. Port of
-// harness/defs/titler.ts.
+// their first exchange, research runs from their question.
 //
-// This is the smallest harness in the product and it is the one that proves the
-// contract, because everything it used to do by hand is now somebody else's
-// problem: the eight-line fallback chain (audit 1.10 — hand-copied verbatim into
-// four files, 'pl-main' spelled out as a literal in seven), the try/catch that
-// turned an upstream hiccup into a silent null, and the metering it never did at
-// all. What is left below is the three prompts, the output contract, and the
-// floor — which is the entire point of the port.
+// This is the smallest harness in the product: everything around the ask —
+// model resolution, failure handling, metering — is the runner's, and what is
+// left below is the three prompts, the output contract, and the floor.
 //
 // THE FLOOR IS EMPTY ON PURPOSE. Naming a chat is the most forgiving job in
 // Talaria: the reply is one short line, nothing downstream parses it, and a
@@ -19,11 +14,10 @@
 // actually leans on — following "reply with ONLY the title" — so the fitness
 // suite can score it and an admin can see the weakness, but nothing here blocks.
 //
-// THE FIXTURES ARE THE FITNESS SUITE'S ROW, held here as a table because
-// `EvalCase`'s world (the toolbox, the census) crosses with the fitness plane.
-// The check closes over the SAME input the model was given, so the restatement
-// assertion is measured against the real transcript rather than a copy that can
-// drift away from it — the same reason `titleCase` captured `input` in TS.
+// THE FIXTURES ARE THE FITNESS SUITE'S ROW, held here as a table. The check
+// closes over the SAME input the model was given, so the restatement assertion
+// is measured against the real transcript rather than a copy that can drift
+// away from it.
 
 use std::sync::{Arc, OnceLock};
 
@@ -59,18 +53,18 @@ pub struct TitlerInput {
 
 // ── The prompts ──────────────────────────────────────────────────────────────
 
-// Verbatim from the hand-written titler: three jobs that share a shape and not a
-// wording. A chat is named for its subject, a plan for what it delivers, a
-// research run for what it investigates — and the research prompt has to say
-// "not a question" out loud, because the input IS a question and a small model
-// will otherwise hand it straight back.
+// Three jobs that share a shape and not a wording. A chat is named for its
+// subject, a plan for what it delivers, a research run for what it
+// investigates — and the research prompt has to say "not a question" out
+// loud, because the input IS a question and a small model will otherwise
+// hand it straight back.
 //
-// THE MISMATCH THIS CLOSES. `title_problem` rejects a generic lead-in for all
-// three kinds — it is one function with one `GENERIC_LEAD_IN` — but only the
-// `chat` prompt ever mentioned it. A `plan` or `research` title beginning
-// "Discussion of…" was graded against a rule its prompt had not stated, which
-// is the defect this whole audit is about: a suite is only a measurement of the
-// platform if it grades what the platform actually asks for.
+// WHY THE RULES ARE SHARED. `title_problem` rejects a generic lead-in for all
+// three kinds — one function, one `GENERIC_LEAD_IN` — so every kind has to be
+// told the rule. Grading a `plan` or `research` title against a rule its
+// prompt never stated measures our prompt rather than the model: a suite is
+// only a measurement of the platform if it grades what the platform actually
+// asks for.
 const TITLE_RULES: &str = "No quotes, no trailing punctuation, never a generic filler opening like \"Chat about\" or \"Discussion of\". Reply with ONLY the title.";
 
 pub fn prompt_for(kind: TitleKind) -> String {
@@ -104,11 +98,9 @@ fn clip(s: &str, max: usize) -> &str {
 /// Raw reply -> a title, or None to fail the contract (the caller then keeps
 /// the title it already had).
 ///
-/// The unwrapping half is `first_meaningful_line` (harness/text.rs) — the shared
-/// text-harness extractor, which is where this def's hand-written copy went when
-/// the reconcile pass found the summarizer carrying the same eight lines with a
-/// one-character difference. What stays here is what is TRUE OF TITLES and of
-/// nothing else:
+/// The unwrapping half is `first_meaningful_line` (harness/text.rs), the
+/// shared text-harness extractor. What stays here is what is TRUE OF TITLES
+/// and of nothing else:
 ///   - the trailing period, including the ideographic '。': the prompt says no
 ///     trailing punctuation and models add one anyway.
 ///   - the 90-character clamp with an ellipsis: a title is rendered in a sidebar
@@ -119,9 +111,9 @@ fn clip(s: &str, max: usize) -> &str {
 /// fitness suite's job (see `fixtures`), not a reason to leave a chat unnamed.
 pub fn clean_title(raw: &str) -> Option<String> {
     let line = first_meaningful_line(raw)?;
-    // `replace(/[.。]$/, '')` removes ONE trailing character when it is a period,
-    // not a run of them — "Sprint 14 planning.." keeps its second dot, and the
-    // fitness rule (not the narrowing) is what flags it.
+    // ONE trailing character is removed, never a run of them — "Sprint 14
+    // planning.." keeps its second dot, and the fitness rule (not the
+    // narrowing) is what flags it.
     let stripped = match line.strip_suffix('。') {
         Some(s) => s,
         None => line.strip_suffix('.').unwrap_or(&line),
@@ -210,15 +202,11 @@ fn restates_input(title: &str, text: &str) -> bool {
 /// admin reads in the fitness drill-down, so it says the observed fact rather
 /// than the rule id.
 pub fn title_problem(title: &str, input: &TitlerInput, mentions: &[&str]) -> Option<String> {
-    // THE ANSWER FLOOR, and it is here because the word MINIMUM used to be doing
-    // this job by accident. `{"nope": true}` is two words, so `n < 3` rejected it
-    // — and the moment the count was given a margin (below), all ten titler
-    // fixtures started passing on that literal string. The garbage census caught
-    // it, which is exactly what it is for.
-    //
-    // A floor and a count are different assertions and now say so separately:
-    // this one is "is this an answer at all", the one below is "is it
-    // title-shaped".
+    // THE ANSWER FLOOR: "is this an answer at all". It cannot live in the word
+    // count — `{"nope": true}` is two words, inside any margin a count can
+    // give. The floor and the count are different assertions and say so
+    // separately: this one is "is this an answer at all", the one below is
+    // "is it title-shaped".
     let floor = AnswerFloor {
         min_chars: 8,
         mentions: mentions.iter().map(|s| (*s).to_string()).collect(),
@@ -457,16 +445,16 @@ pub fn titler_harness() -> HarnessDefinition {
         "titler",
         "Titler",
         "Names things as they take shape: chats and plans after their first exchange, research runs from their question.",
-        // The chain that was hand-written here: the Titler pin from Models →
-        // Platform, then the Utility role, then the env default, then the first
-        // routable model. Same order, one implementation (harness_model.rs) — and
-        // no `role` field, because the DEFAULT chain already carries a 'utility'
-        // step. Declaring `role: "utility"` as well would win one step earlier
-        // and record `harness_runs.chain_step = 'role'` for the same resolved
-        // model, so two harnesses resolving identically would report different
-        // steps to the fitness page. 'utility' means "the Utility role model
-        // carried this" everywhere; 'role' is reserved for a harness that has a
-        // role of its own.
+        // The Titler pin from Models → Platform, then the Utility role, then
+        // the env default, then the first routable model — the DEFAULT chain,
+        // one implementation (harness_model.rs). No `role` field, because the
+        // DEFAULT chain already carries a 'utility' step. Declaring
+        // `role: "utility"` as well would win one step earlier and record
+        // `harness_runs.chain_step = 'role'` for the same resolved model, so
+        // two harnesses resolving identically would report different steps to
+        // the fitness page. 'utility' means "the Utility role model carried
+        // this" everywhere; 'role' is reserved for a harness that has a role
+        // of its own.
         ModelSpec {
             pin: Some("titler"),
             role: None,
@@ -525,8 +513,8 @@ pub fn titler_harness() -> HarnessDefinition {
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
     // keeps its own floor terms and its own transcript (see `fixtures`); the
     // fold only re-types the value — a text harness's reply arrives as a JSON
-    // string, and a value that is not one is the fixture check throwing, which
-    // the sweep scores as a task failure carrying the same sentence TS did.
+    // string, and a value that is not one is the fixture check failing on it,
+    // which the sweep scores as a task failure.
     // No `dry_run`: a titler turn calls no tools, so a replay of these rows
     // runs single-shot against the empty context.
     d.evals = fixtures()
@@ -636,8 +624,8 @@ mod tests {
 
     #[test]
     fn the_answer_floor_rejects_the_non_answer_the_word_minimum_used_to_catch() {
-        // The literal string that scored all ten fixtures as passing once the
-        // count got its margin: fourteen characters, two words, mentions none.
+        // The literal non-answer: fourteen characters, two words, mentions
+        // none — inside any word-count margin, so only the floor catches it.
         let hit = problem(
             "{\"nope\": true}",
             TitleKind::Chat,

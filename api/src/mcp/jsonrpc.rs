@@ -1,13 +1,11 @@
 // JSON-RPC 2.0 over MCP — the wire shape and the method envelope every
-// in-process MCP surface in this repo speaks. Port of ui/src/server/
-// mcp-jsonrpc.ts: three dispatchers carried private copies of the `Rpc`
-// interface, two carried byte-identical `result`/`rpcError` builders and the
-// whole initialize/initialized/ping/tools-list/tools-call switch — identical
-// except for the server's name and what a tool call actually does, which is
-// exactly what a callback is for.
+// in-process MCP surface in this repo speaks: the whole
+// initialize/initialized/ping/tools-list/tools-call switch, identical across
+// dispatchers except for the server's name and what a tool call actually
+// does, which is exactly what a callback is for.
 //
-// A leaf beside mcp_registry.rs: the registry, the app dispatcher, and the
-// workbench dispatcher all consume it, and none may import the others.
+// A leaf: the registry, the app dispatcher, and the workbench dispatcher all
+// consume it, and none may import the others.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,13 +14,13 @@ use axum::http::StatusCode;
 use serde_json::{Map as JsonMap, Value, json};
 
 /// The one MCP protocol revision Talaria speaks as a SERVER — the fallback
-/// answer when a client doesn't name one (mcp-protocol.ts pins this single
-/// literal for every direction; bumping it is a protocol decision).
+/// answer when a client doesn't name one (a single literal pinned for every
+/// direction; bumping it is a protocol decision).
 pub const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 
 /// `result(id, res)` — the id echoes whatever the caller sent, or null when
-/// absent (`id ?? null`, so an explicit null stays null and a JSON-RPC
-/// notification's missing id becomes null).
+/// absent (an explicit null stays null; a JSON-RPC notification's missing id
+/// becomes null).
 pub fn result(id: &Value, res: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id_or_null(id), "result": res })
 }
@@ -111,8 +109,8 @@ pub async fn dispatch_jsonrpc(
         "tools/call" => {
             let name = pobj.get("name").and_then(Value::as_str);
             let Some(tool) = tools.iter().find(|t| Some(t.name.as_str()) == name) else {
-                // `${rpc.params?.name}` interpolates undefined as "undefined"
-                // — the literal TS prints for a missing name, not "".
+                // a missing name renders as the literal "undefined" — the
+                // wire shape, not "".
                 let shown = name.unwrap_or("undefined");
                 return (
                     StatusCode::OK,
@@ -244,7 +242,7 @@ mod tests {
             json!("tool \"nope\" is not available here")
         );
 
-        // No name at all: `${undefined}` prints "undefined" in TS.
+        // No name at all: the literal "undefined" goes into the message.
         let rpc = json!({ "id": 2, "method": "tools/call", "params": {} });
         let (_, body) = dispatch_jsonrpc(&rpc, tools(), "s", never_call()).await;
         assert_eq!(

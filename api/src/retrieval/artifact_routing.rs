@@ -4,14 +4,11 @@
 //   none   never indexed anywhere — scrub every copy
 //   <id>   explicit custom-brain assignment: it lives ONLY there
 // Privacy trumps routing: a private artifact never lands in a shared brain.
-// Port of ui/src/server/retrieval/artifact-routing.ts.
 //
-// THE TWO BORROWED HELPERS. TS pulls `targetsForArtifact` from artifacts.ts
-// and `indexPlanDoc` from plan-doc.ts; neither of those modules has crossed
-// whole, so their one function each lives here until its home does. The
-// alternative — importing from a half-ported module — is not available in a
-// compiled language, and duplicating a four-line query next to its only
-// caller reads better than a `plan_doc` module that exists for one fn.
+// THE TWO SINGLE-CALLER HELPERS. `targets_for_artifact` and `index_plan_doc`
+// each have exactly one caller — this module — so they live here: a
+// four-line query next to its only caller reads better than a module that
+// exists for one fn.
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -24,14 +21,13 @@ use crate::retrieval::sources::{
     index_activity, index_personal, unindex_activity, unindex_personal,
 };
 
-/// An artifact's links, in the direction routing cares about (artifacts.ts
-/// ArtifactTarget).
+/// An artifact's links, in the direction routing cares about.
 struct ArtifactTarget {
     target_type: String,
     target_id: String,
 }
 
-/// targetsForArtifact (artifacts.ts).
+/// The artifact's outgoing links.
 async fn targets_for_artifact(pg: &PgPool, artifact_id: &str) -> Vec<ArtifactTarget> {
     // Fire-and-forget callers only: a failed read is no links, which routes
     // like an unlinked artifact rather than failing the re-placement.
@@ -50,10 +46,9 @@ async fn targets_for_artifact(pg: &PgPool, artifact_id: &str) -> Vec<ArtifactTar
     .collect()
 }
 
-/// Keep the activity brain current on a plan document (plan-doc.ts
-/// indexPlanDoc; ACL: the plan's owner). Respects the artifact's routing —
-/// 'none'/explicit-brain docs stay out of the activity brain (this module
-/// owns those placements).
+/// Keep the activity brain current on a plan document (ACL: the plan's
+/// owner). Respects the artifact's routing — 'none'/explicit-brain docs
+/// stay out of the activity brain (this module owns those placements).
 async fn index_plan_doc(
     pg: &PgPool,
     qd: &QdrantDeps,
@@ -87,7 +82,7 @@ async fn index_plan_doc(
 
 /// Re-place an artifact according to its routing. Idempotent; call after any
 /// routing change (and the backfill/sweep call it for non-auto artifacts).
-/// Never fails: every branch's writes are fire-and-forget in the TS, and a
+/// Never fails: every branch's writes are fire-and-forget, and a
 /// re-placement that threw would fail a backfill page over one artifact.
 pub async fn apply_artifact_routing(
     pg: &PgPool,
@@ -194,8 +189,7 @@ pub async fn apply_artifact_routing(
 }
 
 /// A `json!` object as the Map the IndexDoc payload wants — with
-/// preserve_order this is insertion-ordered, the shape TS's object literals
-/// gave the payload column.
+/// preserve_order this is insertion-ordered, the payload column's shape.
 fn obj(v: Value) -> serde_json::Map<String, Value> {
     match v {
         Value::Object(m) => m,

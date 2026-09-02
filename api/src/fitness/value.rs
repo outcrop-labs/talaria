@@ -322,7 +322,7 @@ pub fn slots_by_harness(bindings: &[SlotBinding]) -> HashMap<String, Vec<String>
 
 // ── One model's row ──────────────────────────────────────────────────────────
 
-/// Share of daily runs by band, in the TS payload's shape: a flat record keyed
+/// Share of daily runs by band, in the payload's shape: a flat record keyed
 /// by the band's lowercase name. Sums to 1 across the workload.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub struct BandShares {
@@ -712,9 +712,9 @@ pub async fn value_view(deps: &ValueDeps) -> Result<ValueView, String> {
 
 #[cfg(test)]
 mod tests {
-    // Ported one-for-one from value.test.ts: 33 its, no database anywhere near
-    // them. `value_view` runs over injected edges, so the whole-read tests are
-    // async; everything else is plain arithmetic.
+    // 33 its, no database anywhere near them. `value_view` runs over injected
+    // edges, so the whole-read tests are async; everything else is plain
+    // arithmetic.
     use super::*;
     use crate::fitness::evals::{BandScores, HarnessMeta};
     use crate::fitness::score::{BindingVia, BoundHarness, FitnessSlot};

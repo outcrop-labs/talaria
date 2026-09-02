@@ -1,8 +1,7 @@
-// The outbound hop — port of buildUpstream + fetchUpstream (llm-gateway.ts):
-// provider base/key, request_defaults merged UNDER the client body, the
-// credential seal, the learned-param pre-strip, then the POST with its two
-// adaptations (dev hostname fallback, parameter-rejection recovery) and the
-// live stat ring.
+// The outbound hop: provider base/key, request_defaults merged UNDER the
+// client body, the credential seal, the learned-param pre-strip, then the
+// POST with its two adaptations (dev hostname fallback, parameter-rejection
+// recovery) and the live stat ring.
 
 use crate::gateway::params::{
     ContractDrop, classify_param, contract_capability, prestrip_learned, record_capability,
@@ -57,9 +56,9 @@ pub fn deep_merge(base: &Value, extra: &Value) -> Value {
     }
 }
 
-/// One assembled upstream request. `vault` and `contract_drops` ride the call
-/// the way they ride UpstreamCall in TS — the caller reads drops AFTER the
-/// fetch resolves (a live 400 can add one mid-call).
+/// One assembled upstream request. `vault` and `contract_drops` ride the
+/// call — the caller reads drops AFTER the fetch resolves (a live 400 can
+/// add one mid-call).
 pub struct UpstreamCall {
     pub url: String,
     pub headers: Vec<(String, String)>,
@@ -218,8 +217,8 @@ impl Reply {
 fn localhost_fallback(url: &str) -> Option<String> {
     let mut u = url::Url::parse(url).ok()?;
     let host = u.host_str()?.to_string();
-    // Ported from the TS regex `[^/:]+`: anything with a dot or colon is a
-    // real address, not a compose service name.
+    // Anything with a dot or colon is a real address, not a compose service
+    // name.
     if host.contains('.') || host.contains(':') || host == "localhost" {
         return None;
     }
@@ -246,8 +245,8 @@ async fn send_once(
     headers: &[(String, String)],
     body: &Value,
 ) -> reqwest::Result<reqwest::Response> {
-    // A FRESH timeout per attempt, like the fresh AbortSignal per attempt in
-    // TS — a retry must not inherit the first attempt's spent clock.
+    // A FRESH timeout per attempt — a retry must not inherit the first
+    // attempt's spent clock.
     let mut req = http()
         .post(url)
         .timeout(std::time::Duration::from_millis(UPSTREAM_TIMEOUT_MS))
@@ -380,8 +379,8 @@ struct GatewayStat {
     ts: i64,
     ms: i64,
     ok: bool,
-    /// Recorded for parity with TS's diagnostic buffer; no reader on this side
-    /// of the port yet.
+    /// Recorded on every stat; the pulse does not read it (kept for
+    /// diagnostics).
     #[allow(dead_code)]
     model: String,
 }
@@ -407,7 +406,7 @@ pub fn record_gateway_stat(ms: i64, ok: bool, model: &str) {
     }
 }
 
-/// The pulse's shape — port of llm-gateway.ts `GatewayPulse`.
+/// The pulse's shape.
 pub struct GatewayPulse {
     /// Upstream calls in the last 15 minutes (this app process).
     pub requests: i64,
@@ -417,7 +416,7 @@ pub struct GatewayPulse {
     pub p95: Option<i64>,
 }
 
-/// What the ring says about the last fifteen minutes — port of `gatewayPulse`.
+/// What the ring says about the last fifteen minutes.
 /// The model-fitness page reads this beside a run's price so a bad number has
 /// a context, and the sweep writes it into a `LatencyReading` per model.
 pub fn gateway_pulse() -> GatewayPulse {
@@ -426,7 +425,7 @@ pub fn gateway_pulse() -> GatewayPulse {
     let recent: Vec<&GatewayStat> = ring.iter().filter(|s| s.ts > cutoff).collect();
     let mut times: Vec<i64> = recent.iter().map(|s| s.ms).collect();
     times.sort_unstable();
-    // TS's percentile is the nearest-rank index, not an interpolation: the
+    // The percentile is the nearest-rank index, not an interpolation: the
     // p95 of eleven calls is the eleventh, not a blend of the tenth and
     // eleventh. An empty ring answers null, never zero — zero would read as
     // "instant" rather than "no calls".

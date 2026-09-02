@@ -1,4 +1,4 @@
-// /api/research — port of ui/src/routes/api/research.ts.
+// /api/research.
 // GET → recent runs scoped to the viewer + the mode catalog. POST { question,
 // mode?, agentModel? } → start a run. Humans and agents both start research;
 // an agent researches AS ITSELF, pinned to its own model.
@@ -169,9 +169,9 @@ pub async fn post(
         )
     };
 
-    // A queued/running duplicate of the same question is a double-click. TS's
-    // own spelling, raw column and all — the projection's run-aware CASE is
-    // `active_research_on`'s, and the route never called it.
+    // A queued/running duplicate of the same question is a double-click —
+    // answered by a raw column scan, not the projection's run-aware CASE
+    // (`active_research_on`).
     let dupe: Option<(String,)> = match sqlx::query_as(
         "select id::text from research_runs \
          where question = $1 and status in ('queued', 'running') limit 1",

@@ -1,9 +1,8 @@
-// /api/fleet/agents/{id}/secrets — port of
-// ui/src/routes/api/fleet.agents.$id.secrets.ts. Per-agent secrets,
-// write-only. GET → names + timestamps (never values). PUT { name, value }
-// → set/replace. DELETE { name } → remove. Admin, or the owner of a
-// personal assistant. Takes effect on the next start from Talaria. Every
-// write audits — secret NAMES only, never values.
+// /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
+// names + timestamps (never values). PUT { name, value } → set/replace.
+// DELETE { name } → remove. Admin, or the owner of a personal assistant.
+// Takes effect on the next start from Talaria. Every write audits — secret
+// NAMES only, never values.
 
 use crate::agent_secrets::{delete_agent_secret, list_agent_secrets, set_agent_secret};
 use crate::audit::{AuditEntry, log_audit};
@@ -104,9 +103,9 @@ pub async fn delete(
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     // Body { name } — matches PUT's transport. When the body doesn't parse
-    // (unparseable JSON, wrong shape, failed zod — anything parseBody would
-    // have answered), the old ?name= query spelling still works, and THAT
-    // path is only length-checked by truthiness.
+    // (unparseable JSON, wrong shape, failed validation), the old ?name=
+    // query spelling still works, and THAT path is only length-checked by
+    // truthiness.
     let body_name = as_object(&parse(&body))
         .ok()
         .and_then(|obj| string_member(obj, "name", 1, 64).ok());
@@ -130,7 +129,7 @@ pub async fn delete(
     Json(json!({ "ok": true })).into_response()
 }
 
-/// searchParams.get — the FIRST value for the key.
+/// Query lookup — the FIRST value for the key.
 fn query_param(uri: &Uri, key: &str) -> Option<String> {
     uri.query().and_then(|q| {
         q.split('&').find_map(|pair| {
@@ -154,7 +153,7 @@ fn percent_decode(v: &str) -> String {
         match bytes[i] {
             b'%' => {
                 // get() handles the trailing-% boundary; a bad hex pair
-                // passes through verbatim, as URLSearchParams does.
+                // passes through verbatim.
                 let hex = bytes
                     .get(i + 1..i + 3)
                     .and_then(|h| std::str::from_utf8(h).ok())

@@ -1,6 +1,6 @@
 // Per-agent MCP servers, read from and written to the versioned Hermes config
-// (raw.mcp_servers) — port of ui/src/server/agent-mcp.ts. Edits ride the same
-// machinery as model edits: a NEW immutable version, optionally applied
+// (raw.mcp_servers). Edits ride the same machinery as model edits: a NEW
+// immutable version, optionally applied
 // (re-render + restart). Untouched entries pass through byte-for-byte —
 // headers, tool filters, timeouts all survive.
 
@@ -35,7 +35,7 @@ fn entry(name: &str, raw: &Map<String, Value>) -> McpServerEntry {
             .get("url")
             .map(crate::body::js_string)
             .unwrap_or_default(),
-        // `typeof entry.timeout === 'number'` — a JSON number, nothing else.
+        // a JSON number, nothing else — strings and null don't count.
         timeout: raw.get("timeout").and_then(Value::as_i64),
         extras: raw
             .keys()
@@ -45,7 +45,7 @@ fn entry(name: &str, raw: &Map<String, Value>) -> McpServerEntry {
     }
 }
 
-/// The roster read (mcp.ts + the fleet-defs console): the agent's own config
+/// The roster read across the fleet: each agent's own config
 /// version's servers, with the Talaria toolkit surfaced first for managed
 /// agents (it's injected at RENDER time, not stored in the version).
 pub async fn list_agent_mcp(pg: &PgPool) -> Result<Vec<AgentMcp>, sqlx::Error> {
@@ -96,11 +96,11 @@ pub async fn list_agent_mcp(pg: &PgPool) -> Result<Vec<AgentMcp>, sqlx::Error> {
         .collect())
 }
 
-/// Merge add/remove onto the previous config's raw.mcp_servers
-/// (applyMcpEdits). Added entries get the agent's X-Agent-Name header — the
-/// fleet's convention. The Map is insertion-ordered like a JS object, so the
-/// merged key order (removed keys dropped in place, re-added keys keeping
-/// their original position, new keys appended) matches TS exactly.
+/// Merge add/remove onto the previous config's raw.mcp_servers. Added
+/// entries get the agent's X-Agent-Name header — the fleet's convention.
+/// The Map is insertion-ordered, and the merged key order is a contract:
+/// removed keys dropped in place, re-added keys keeping their original
+/// position, new keys appended.
 pub fn apply_mcp_edits(prev: &Value, slug: &str, add: &[Value], remove: &[String]) -> Value {
     let mut servers: Map<String, Value> = prev
         .get("raw")
@@ -125,8 +125,7 @@ pub fn apply_mcp_edits(prev: &Value, slug: &str, add: &[Value], remove: &[String
             "headers".into(),
             serde_json::json!({ "X-Agent-Name": slug }),
         );
-        // `...(s.timeout ? { timeout } : {})` — truthy: 0 and undefined both
-        // omit the field.
+        // truthy check: 0 and absent both omit the field.
         if let Some(t) = s.get("timeout").and_then(Value::as_i64)
             && t != 0
         {

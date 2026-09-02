@@ -1,23 +1,20 @@
-// THE DEF-SIDE SCHEMA — the small declarative shape a Rust harness
-// definition validates a model's reply against. It is the zod half of a TS
-// def's `output.schema`, ported as data: zod's ONE declaration serves both
-// validation and the wire schema, and this type keeps that dual role (the
-// wire renderer reads the same value — json-schema's port composes with it).
+// THE DEF-SIDE SCHEMA — the small declarative shape a harness definition
+// validates a model's reply against. One declaration serves both validation
+// and the wire schema: json_schema's renderer reads the same value.
 //
-// WHAT IT REPRODUCES, AND FROM WHERE. zod's safeParse reports a list of
-// issues, and harness/json.ts turns those issues into the sentences a model
-// reads back on its repair turn: "missing required field 'verdict'",
-// "field 'issues[1]' should be string, got number", "field 'verdict' must
-// be one of \"pass\" | \"revise\"". Those sentences are behavioral — a model
-// acts on them — so the grammar here is not inspired by zod, it is PROBED
-// from it: every code, `expected` word, path shape, and message below was
-// printed by zod 4.3.6 itself (bun probe, this repo's ui dependency) and is
-// pinned in json.rs's tests. Notably, from the probes:
+// WHAT IT REPRODUCES. zod's safeParse reports a list of issues, and json.rs
+// turns those issues into the sentences a model reads back on its repair
+// turn: "missing required field 'verdict'", "field 'issues[1]' should be
+// string, got number", "field 'verdict' must be one of \"pass\" |
+// \"revise\"". Those sentences are behavioral — a model acts on them — so
+// the grammar here is zod's own, exactly: every code, `expected` word, path
+// shape, and message below matches zod 4.3.6's output and is pinned in the
+// tests. Notably:
 //
-//   · a MISSING key reports invalid_type with `received undefined` — json.ts
-//     converts it to "missing required field" by asking the INPUT whether the
-//     key was absent (absent and wrong-typed are different instructions to a
-//     model);
+//   · a MISSING key: zod reports invalid_type with `received undefined`; the
+//     walk asks the INPUT whether the key was absent and answers "missing
+//     required field" (absent and wrong-typed are different instructions to
+//     a model);
 //   · `.optional()`/`.nullable()` are WRAPPERS, not unions — a wrong-typed
 //     value inside `z.string().nullable().optional()` reports
 //     `expected string`, not a union failure;
@@ -26,9 +23,9 @@
 //   · a RECORD's root mismatch says `record`, not `object`;
 //   · a z.union that fails every branch reports one issue whose message is
 //     exactly "Invalid input" — the one place zod's own prose reaches the
-//     model, through json.ts's default branch;
-//   · issues arrive in DECLARATION order (probe: {a,b,c} all missing →
-//     paths [a],[b],[c]), and every issue is collected — zod does not abort
+//     model, through the Message arm;
+//   · issues arrive in DECLARATION order ({a,b,c} all missing → paths
+//     [a],[b],[c]), and every issue is collected — zod does not abort
 //     on the first.
 //
 // THE VALIDATOR RETURNS THE ZOD-SHAPED OUTPUT, not the input echoed: unknown
@@ -39,16 +36,16 @@
 //
 // LENGTH IS UTF-16 CODE UNITS, because zod's is: `z.string().max(40)` counts
 // JS `.length`, an emoji is 2, and `<=40 characters` in the message means
-// those units. Rust `chars().count()` would call it 1 and pass a string zod
-// fails — a fidelity bug neither side could see without an astral-plane tag.
+// those units. Rust `chars().count()` would call it 1 and pass a string the
+// contract fails — a fidelity bug invisible without an astral-plane tag.
 //
-// NOT HERE (deliberately): `.transform()` — it runs AFTER validation, so in
-// the port it is the def's own code mapping over the validated Value, and
-// the wire schema's `io: 'input'` rule (render the side the MODEL emits) is
-// exactly the statement that transforms do not belong in the contract. Also
-// not here: `.strict()` (no def uses it — unrecognized_keys never fires),
-// `.preprocess()` (one site, research's envelope unwrap, which ports with
-// research's def as a pre-step over the candidate).
+// NOT HERE (deliberately): `.transform()` — it runs AFTER validation, so it
+// is the def's own code mapping over the validated Value, and the wire
+// schema's `io: 'input'` rule (render the side the MODEL emits) is exactly
+// the statement that transforms do not belong in the contract. Also not
+// here: `.strict()` (no def uses it — unrecognized_keys never fires),
+// `.preprocess()` (one site — research's envelope unwrap, which lives as the
+// def's `PreFn`, a pre-step over the parsed candidate).
 
 use serde_json::Value;
 
@@ -59,8 +56,8 @@ pub enum Seg {
     Idx(usize),
 }
 
-/// One validation issue, carrying exactly what harness/json.ts's
-/// `describeIssue` needs to sentence it. `expected` matches zod's own word.
+/// One validation issue, carrying exactly what `describe_issue` needs to
+/// sentence it. `expected` matches zod's own word.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Issue {
     /// The key was absent where the schema demanded a value.
@@ -101,7 +98,7 @@ impl Field {
     }
 }
 
-/// The schema algebra, closed over what the ten JSON harness defs declare.
+/// The schema algebra, closed over what the JSON harness defs declare.
 #[derive(Debug, Clone)]
 pub enum Schema {
     /// `z.unknown()` — anything, passed through.
@@ -373,8 +370,8 @@ fn walk(
                         }
                     }
                 }
-                // Unknown keys strip — zod's default object, and the probes
-                // confirm nothing reports them.
+                // Unknown keys strip — zod's default object; nothing
+                // reports them.
                 Value::Object(out)
             }
         },
@@ -409,14 +406,13 @@ fn walk(
     }
 }
 
-// ── The sentences (json.ts's describeIssue, over this module's issues) ──────
+// ── The sentences (describe_issue, over this module's issues) ────────────────
 
-/// zod 4.3.6's datetime grammar, probed rather than read from a spec:
-/// `YYYY-MM-DDTHH:MM:SS[.f+]Z`, separators uppercase, UTC only (a `+01:00`
-/// offset is invalid), the date CALENDAR-valid (Feb 30 and hour 24 fail),
-/// and the fraction, when present, at least one digit with no upper cap.
-/// Years 0000 and 9999 pass. Every deviation is the one `invalid_format`
-/// issue upstream.
+/// zod 4.3.6's exact datetime grammar: `YYYY-MM-DDTHH:MM:SS[.f+]Z`,
+/// separators uppercase, UTC only (a `+01:00` offset is invalid), the date
+/// CALENDAR-valid (Feb 30 and hour 24 fail), and the fraction, when present,
+/// at least one digit with no upper cap. Years 0000 and 9999 pass. Every
+/// deviation is the one `invalid_format` issue upstream.
 pub fn is_zod_datetime(s: &str) -> bool {
     let b = s.as_bytes();
     let dig = |at: usize| b.get(at).is_some_and(|c| c.is_ascii_digit());
@@ -499,7 +495,7 @@ pub fn path_label(path: &[Seg]) -> String {
 
 /// zod's `typeof` name for a JSON value — the `got` word in a repair
 /// sentence. Parsed JSON never yields undefined; 'nothing' is kept for the
-/// value-at-a-missing-path case, which TS reaches through `valueAt`.
+/// value-at-a-missing-path case (`value_at` below).
 pub fn type_name(v: Option<&Value>) -> &'static str {
     match v {
         None | Some(Value::Null) => match v {
@@ -527,9 +523,8 @@ pub fn value_at<'a>(root: &'a Value, path: &[Seg]) -> Option<&'a Value> {
     Some(cur)
 }
 
-/// One issue as the sentence a model reads. Every branch mirrors a probed
-/// zod issue rendered by harness/json.ts's describeIssue — see the module
-/// header for which probe pinned which word.
+/// One issue as the sentence a model reads. Every branch is zod's own
+/// sentence for that issue class — see the module header for the grammar.
 pub fn describe_issue(issue: &(Vec<Seg>, Issue), root: &Value) -> String {
     let (path, kind) = issue;
     let label = path_label(path);
@@ -609,10 +604,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // Every assertion below is a zod 4.3.6 probe output, not an intention.
-    // The probes ran against the exact def shapes (judge's verdict object,
-    // the briefer's nullable-optional id, research's trimmed query, the
-    // blurb writer's record).
+    // Every assertion below is zod 4.3.6's own output, not an intention —
+    // checked against the exact def shapes (judge's verdict object, the
+    // briefer's nullable-optional id, research's trimmed query, the blurb
+    // writer's record).
 
     fn verdict_schema() -> Schema {
         Schema::Object(vec![
@@ -674,8 +669,8 @@ mod tests {
             let root = json!({"verdict": bad, "summary": "s"});
             let (_, issues) = validate(&schema, &root);
             assert_eq!(issues.len(), 1, "{bad}");
-            // `got` is the value JSON-stringified — quotes and all — because
-            // the probe prints values through JSON.stringify.
+            // `got` is the value JSON-stringified — quotes and all — zod
+            // prints values through JSON.stringify.
             let got = serde_json::to_string(&bad).unwrap();
             assert_eq!(
                 describe_issue(&issues[0], &root),
@@ -777,8 +772,8 @@ mod tests {
             "missing required field 'plan.title'"
         );
         // A missing INTERMEDIATE object reports as its own missing field —
-        // the probe shows invalid_type expected 'object' at ['plan'], which
-        // isAbsent converts the same way.
+        // zod's invalid_type `expected 'object'` at ['plan'] lands on the
+        // same sentence.
         let (_, issues) = validate(&schema, &json!({}));
         assert_eq!(
             describe_issue(&issues[0], &json!({})),
@@ -884,7 +879,7 @@ mod tests {
         assert_eq!(out, json!({"q": "padded"}));
     }
 
-    // ── the three variants muse brought, each pinned to a zod 4.3.6 probe ────
+    // ── the muse variants, each pinned to zod 4.3.6's own output ─────────────
 
     #[test]
     fn bounded_number_sentences_are_the_probed_ones() {
@@ -960,9 +955,9 @@ mod tests {
             let (_, issues) = validate(&schema, &json!({ "dueDate": good }));
             assert!(issues.is_empty(), "{good}");
         }
-        // Every one of these answered the SAME probe issue: invalid_format,
-        // message "Invalid ISO datetime" — the shapes a model actually
-        // writes when it guesses at a date field.
+        // Every one of these is the SAME issue: invalid_format, message
+        // "Invalid ISO datetime" — the shapes a model actually writes when
+        // it guesses at a date field.
         for bad in [
             "2026-03-06",                // date only
             "Friday",                    // prose

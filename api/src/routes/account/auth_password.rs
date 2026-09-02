@@ -1,7 +1,6 @@
-// POST /api/auth/password { username, password } — port of
-// ui/src/routes/api/auth/password.ts. Sets the session cookie. Credentials
-// live in user_password_credentials (Admin → People); the provider exists
-// while any account does. No allow-list applies here — an account was
+// POST /api/auth/password { username, password }. Sets the session cookie.
+// Credentials live in user_password_credentials (Admin → People); the provider
+// exists while any account does. No allow-list applies here — an account was
 // admitted by an admin when it was created; login checks the stored hash only.
 
 use crate::body::{as_object, parse, string_member};
@@ -23,8 +22,7 @@ use std::time::Duration;
 //   • per IP — catches spraying across many usernames, but only counts when a
 //     trusted proxy is configured (see client_ip); otherwise every request
 //     looks like the same 'direct' client, which is the safe direction.
-// Both live in Redis under the TS key shape, so they survive a restart, hold
-// across instances, and are shared with the TS route while both exist.
+// Both live in Redis, so they survive a restart and hold across instances.
 const USER_LIMIT: i64 = 10;
 const IP_LIMIT: i64 = 30;
 const WINDOW_SECONDS: i64 = 15 * 60;

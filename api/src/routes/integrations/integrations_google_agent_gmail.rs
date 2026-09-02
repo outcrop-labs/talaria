@@ -1,7 +1,6 @@
-// /api/integrations/google/agent/gmail — port of
-// ui/src/routes/api/integrations/google.agent.gmail.ts. Agent-facing Gmail: a
-// personal assistant acts as its owner; a general fleet agent acts on the
-// shared ORG mailbox.
+// /api/integrations/google/agent/gmail. Agent-facing Gmail: a personal
+// assistant acts as its owner; a general fleet agent acts on the shared ORG
+// mailbox.
 // GET  → read recent mail (free)
 // POST → DRAFT an email; queued for approval (the owner, or an admin for org).
 
@@ -44,7 +43,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             "No Google account is connected for this agent (its owner, or the org account).",
         );
     };
-    // `|| 'in:inbox'` — absent OR empty folds to the inbox default.
+    // Absent OR empty q folds to the inbox default.
     let q = query_pairs(uri.query())
         .get("q")
         .cloned()
@@ -74,7 +73,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `.default('')` — absent folds to the empty string.
+    // Absent subject folds to the empty string.
     let subject = match optional_max_string_member(obj, "subject", 500) {
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
@@ -153,7 +152,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .into_response()
 }
 
-/// Date.now() — the one clock the agent mailbox reads.
+/// Epoch-ms clock — the one time the agent mailbox reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

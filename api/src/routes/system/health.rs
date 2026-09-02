@@ -1,9 +1,7 @@
-// Liveness/readiness — port of ui/src/routes/api/healthz.ts, same contract:
-// public by design (a health check that needs auth tells you nothing when
-// auth is what's broken) and SAFE to expose (booleans, latencies and short
-// machine error codes only — never connection strings, hostnames or driver
-// messages). Reachable only directly on this service's port; the TS proxy
-// forwards /api/llm/v1/*, not this path.
+// /api/healthz — liveness/readiness. Public by design (a health check that
+// needs auth tells you nothing when auth is what's broken) and SAFE to
+// expose (booleans, latencies and short machine error codes only — never
+// connection strings, hostnames or driver messages).
 
 use crate::state::AppState;
 use axum::Json;
@@ -17,8 +15,8 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2_500);
 #[derive(serde::Serialize)]
 pub struct Check {
     pub ok: bool,
-    /// Null on failure, like the TS body — a check that didn't complete has
-    /// no latency to report.
+    /// Null on failure — a check that didn't complete has no latency to
+    /// report.
     #[serde(rename = "latencyMs")]
     pub latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,8 +62,7 @@ pub async fn get(State(state): State<AppState>) -> Response {
 
 async fn pg_ping(state: &AppState) -> Result<(), sqlx::Error> {
     // A raw round trip on the pool — never anything that could migrate or
-    // wait on the TS migration advisory lock (the same reason the TS healthz
-    // uses getSql(), not db()).
+    // wait on the migration advisory lock.
     sqlx::query("select 1").execute(&state.pg).await.map(|_| ())
 }
 
@@ -108,11 +105,11 @@ where
 
 /// Driver errors are not safe to echo. Keep the short machine code
 /// (ECONNREFUSED, 28P01, TIMEOUT) and drop everything else — the full error
-/// is logged above. Port of healthz.ts's safeCode, same `[A-Z0-9_]{1,20}` gate.
+/// is logged above. The gate is `[A-Z0-9_]{1,20}`.
 fn safe_code<E: std::error::Error + 'static>(e: &E) -> String {
     let as_dyn: &dyn std::error::Error = e;
-    // sqlx database errors carry the server's SQLSTATE (uppercase alphanumerics)
-    // — exactly the class the TS regex admits.
+    // sqlx database errors carry the server's SQLSTATE (uppercase
+    // alphanumerics) — exactly the class the gate admits.
     if let Some(sqlx::Error::Database(dbe)) = as_dyn.downcast_ref::<sqlx::Error>()
         && let Some(code) = dbe.code()
         && (1..=20).contains(&code.len())

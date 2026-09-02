@@ -1,5 +1,5 @@
-// /api/admin/search — port of ui/src/routes/api/admin.search.ts. LIVE WEB
-// SEARCH — where it points, and whether it is actually answering.
+// /api/admin/search. LIVE WEB SEARCH — where it points, and whether it is
+// actually answering.
 //
 // WHY THE REACHABILITY CHECK IS AN ADMIN SURFACE AND NOT A LOG LINE. When
 // search is down, the way an operator currently finds out is that an agent
@@ -33,7 +33,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     let stored = get_setting(&state.pg, SEARCH_URL_KEY, Value::String(String::new())).await;
     let health = search_reachable(&state.pg, &real_deps()).await;
-    // Boolean(process.env.SEARXNG_URL) — SET-BUT-EMPTY is false.
+    // SEARXNG_URL set-but-empty reads as false.
     let from_env = std::env::var("SEARXNG_URL")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
@@ -61,14 +61,14 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ url: z.string().max(300) }) — empty is a real instruction.
+    // url max 300 — empty is a real instruction.
     let raw = match crate::body::string_member(obj, "url", 0, 300) {
         Ok(u) => u,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // Empty means "use the environment / the bundled instance" — an admin
     // clearing the field is a real instruction, not a validation failure.
-    // .replace(/\/$/, '') — ONE trailing slash.
+    // strip ONE trailing slash.
     let url = raw.trim().strip_suffix('/').unwrap_or(raw.trim());
     if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {
         return house_error(

@@ -1,13 +1,12 @@
-// Bearer-key authentication — port of ui/src/server/llm-keys.ts's
-// authenticateKey, the exact query the TS gateway runs, so a key works against
-// whichever runtime serves /api/llm/v1 today. The secret is `tlk_<hex>`, shown
-// once at mint; only sha256-hex(lowercase) is stored in llm_api_keys.key_hash.
+// Bearer-key authentication for the LLM relay. The secret is `tlk_<hex>`,
+// shown once at mint; only sha256-hex(lowercase) is stored in
+// llm_api_keys.key_hash.
 
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
-/// The per-key ceilings (#265), read on the same hot-path query as TS — the
-/// chat relay (phase 2) will enforce them. None = unlimited.
+/// The per-key ceilings (#265), read on the same hot-path query — the chat
+/// relay enforces them. None = unlimited.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KeyCaps {
     pub tokens: Option<f64>,
@@ -35,12 +34,12 @@ pub fn sha256_hex(s: &str) -> String {
     out
 }
 
-/// Strip one leading `Bearer\s+` (case-insensitive) — the route's regex, minus
-/// the regex. ASCII whitespace only: JS `\s` also matches exotic unicode
-/// spaces, none of which can legally appear in an Authorization header value.
+/// Strip one leading `Bearer` (case-insensitive) plus at least one ASCII
+/// whitespace char — exotic unicode spaces don't count, and none can legally
+/// appear in an Authorization header value anyway.
 /// Returns the secret candidate, or None when the header isn't Bearer-shaped
-/// (`Basic …`, missing, or `Bearer` with no whitespace — JS `\s+` requires at
-/// least one, and a header like `Bearertlk_…` must NOT authenticate).
+/// (`Basic …`, missing, or `Bearer` with no whitespace — at least one space
+/// is required, and a header like `Bearertlk_…` must NOT authenticate).
 pub fn bearer_secret(header: Option<&str>) -> Option<&str> {
     let h = header?;
     // Byte-wise prefix check — `h[..6]` on a non-ASCII header could split a
@@ -59,17 +58,16 @@ pub fn bearer_secret(header: Option<&str>) -> Option<&str> {
 
 /// Resolve a `tlk_` secret to its owner. Ok(None) = unknown/revoked/malformed.
 /// The caller owns the detached last_used_at update (a fire-and-forget write,
-/// never worth failing a request over — same `.catch(() => {})` as TS).
+/// never worth failing a request over).
 pub async fn authenticate_key(
     pg: &PgPool,
     secret: &str,
 ) -> Result<Option<KeyIdentity>, sqlx::Error> {
     if !secret.starts_with("tlk_") {
-        return Ok(None); // not even a lookup — TS's startsWith gate
+        return Ok(None); // not even a lookup — the prefix gate
     }
-    // ::text for the uuid columns (KeyIdentity speaks String), ::float8 for
-    // parity with llm-keys.ts: bigint/numeric arrive as strings in the TS
-    // driver, so it casts; f64 is the same read in Rust.
+    // ::text for the uuid columns (KeyIdentity speaks String); ::float8 so
+    // bigint/numeric caps read as f64 rather than strings.
     type KeyRow = (
         String,
         String,
@@ -105,8 +103,8 @@ mod tests {
 
     #[test]
     fn sha256_hex_is_the_ts_digest() {
-        // `printf '%s' 'tlk_abc' | sha256sum` — the value TS's digest('hex')
-        // stores in key_hash, lowercase hex.
+        // `printf '%s' 'tlk_abc' | sha256sum` — lowercase hex, exactly as
+        // key_hash stores it.
         assert_eq!(
             sha256_hex("tlk_abc"),
             "263d00eaf6bf7f006b141bfdd38d30d3aebb3e5d65badf8968daee880830a5f7"
@@ -126,12 +124,12 @@ mod tests {
     fn bearer_parsing_matches_the_route_regex() {
         use bearer_secret as b;
         assert_eq!(b(Some("Bearer tlk_x")), Some("tlk_x"));
-        assert_eq!(b(Some("bearer tlk_x")), Some("tlk_x")); // /i
-        assert_eq!(b(Some("BEARER   tlk_x")), Some("tlk_x")); // \s+ eats all
-        assert_eq!(b(Some("Bearer tlk_a extra")), Some("tlk_a extra")); // one replace, at the front only
+        assert_eq!(b(Some("bearer tlk_x")), Some("tlk_x")); // case-insensitive
+        assert_eq!(b(Some("BEARER   tlk_x")), Some("tlk_x")); // all leading whitespace eaten
+        assert_eq!(b(Some("Bearer tlk_a extra")), Some("tlk_a extra")); // one strip, at the front only
         assert_eq!(b(None), None);
         assert_eq!(b(Some("Basic dXNlcg==")), None);
-        assert_eq!(b(Some("Bearer")), None); // \s+ needs one
+        assert_eq!(b(Some("Bearer")), None); // needs one space
         assert_eq!(b(Some("Bearertlk_x")), None); // no whitespace, no match — must NOT authenticate
         assert_eq!(b(Some("x Bearer tlk_x")), None); // ^ anchored
     }

@@ -1,34 +1,31 @@
 // THE INBOX FOCUS HARNESSES — the brief, the command, and the detached reply.
-// Port of harness/defs/inbox-focus.ts.
 //
 // WHY THIS FILE EXISTS (audit 1.3, the sharpest case in the document): one
 // feature had TWO structured-output strategies and picked between them by
-// which model the user happened to choose — `requestJsonObject()`
-// (proxyChat, response_format json_object, temp 0.1) versus
-// `requestGatewayJsonObject()` (completeViaGateway, NO response_format, a
-// prompt suffix, temp 0.2). The same command on the same item was a strict
-// JSON request on the persona path and prompt-and-pray on the gateway path.
-// The runner applies the same schema, the same temperature and the same
-// repair turn to both transports now, so the harness stops caring which
-// model the user picked — which is the whole point.
+// which model the user happened to choose — a strict response_format JSON
+// request at temperature 0.1 on one transport, prompt-and-pray with a
+// suffix at 0.2 on the other. The same command on the same item was a
+// different contract depending on that choice. The runner applies the same
+// schema, the same temperature and the same repair turn to both transports,
+// so the harness stops caring which model the user picked — which is the
+// whole point.
 //
 // THE SAFETY INVARIANT, unchanged and NOT delegated to the schema:
-// `validate_command_object` (ported below from inbox-focus-policy.ts)
-// rejects any `actionId` outside the allowlist, and it still runs AFTER the
-// schema parse. A schema validates SHAPE; that function validates AUTHORITY,
-// and the two are not interchangeable. The allowlist itself comes from
-// `allowed_focus_action_ids`, exported here precisely so that the list
-// `render` shows the model, the list `verify` grades against, and the list
-// the adapter enforces cannot drift apart — they are the same function.
+// `validate_command_object` rejects any `actionId` outside the allowlist,
+// and it still runs AFTER the schema parse. A schema validates SHAPE; that
+// function validates AUTHORITY, and the two are not interchangeable. The
+// allowlist itself comes from `allowed_focus_action_ids`, exported here
+// precisely so that the list `render` shows the model, the list `verify`
+// grades against, and the list the adapter enforces cannot drift apart —
+// they are the same function.
 //
-// WHAT CROSSED WITH THE DEF, and what did not: the prompt builder
-// (`build_inbox_conversation_prompt`, with the surface briefs, the tool
-// line, and the history limiter) and `validate_command_object` crossed
-// because the def renders through the REAL builder and the tests gate
-// through the REAL validator — a fixture must replay what production sends,
-// not a copy of it that can drift. The rest of inbox-focus-policy.ts
-// (deterministicProposal, fingerprint, the item sort) crosses with the
-// inbox adapter when that route does.
+// WHAT LIVES HERE: the prompt builder (`build_inbox_conversation_prompt`,
+// with the surface briefs, the tool line, and the history limiter) and
+// `validate_command_object` — the def renders through the REAL builder and
+// the tests gate through the REAL validator, because a fixture must replay
+// what production sends, not a copy of it that can drift. The deterministic
+// proposal, the fingerprint and the item sort live with the adapter side in
+// `crate::inbox_focus`.
 //
 // THE MODEL IS FIXED, as in the briefer: all three defs declare an EMPTY
 // chain, because production always pins the owner's own assistant
@@ -126,7 +123,8 @@ pub struct FocusCommandInput {
     pub instruction: String,
     pub history: Vec<OwnedTurn>,
     pub mode: FocusCommandMode,
-    /// What `deterministicProposal`'s three regexes matched, if anything.
+    /// What `deterministic_proposal`'s three regexes (inbox_focus/policy.rs)
+    /// matched, if anything.
     pub deterministic_action_id: Option<String>,
     /// Which seat this call sits in. The specialist is a bounded second
     /// opinion from a delegate model; the orchestrator is the owner's own
@@ -137,10 +135,9 @@ pub struct FocusCommandInput {
     pub specialist: Value,
 }
 
-/// The Inbox with no item in focus. The TS def received prebuilt messages;
-/// the Rust def carries the parts and renders through the REAL prompt builder
-/// itself, which is the same one-path guarantee the TS fixture helper made —
-/// a fixture replays what production sends, not a copy of it that can drift.
+/// The Inbox with no item in focus. The def carries the parts and renders
+/// through the REAL prompt builder itself — a fixture replays what
+/// production sends, not a copy of it that can drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FocusReplyInput {
@@ -150,7 +147,7 @@ pub struct FocusReplyInput {
     pub history: Vec<OwnedTurn>,
 }
 
-// ── The conversation prompt (port of the policy half the def needs) ─────────
+// ── The conversation prompt ──────────────────────────────────────────────────
 
 /// One turn of the panel's conversation history: the wire shape the prompt
 /// embeds and the shape the input carries, so a fixture replays the exact
@@ -341,9 +338,9 @@ pub fn surface_tool_line(surface: Option<&str>) -> String {
     }
 }
 
-/// The focus half the command prompt serializes — the item minus its actions,
-/// exactly the fields the TS built by hand. The ACTION list travels its own
-/// line (the ceiling sentence), so it is deliberately not in this object.
+/// The focus half the command prompt serializes — the item minus its
+/// actions. The ACTION list travels its own line (the ceiling sentence), so
+/// it is deliberately not in this object.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FocusForPrompt<'a> {
@@ -354,10 +351,10 @@ struct FocusForPrompt<'a> {
     metadata: &'a Value,
 }
 
-/// Port of `buildInboxConversationPrompt`. Two branches: the focused command
-/// (tools disabled, one JSON object, the allowlist as a CEILING) and the
-/// detached assistant conversation (tools on, the surface line, the
-/// staleness rules). Both carry the same trust boundary — see the matching
+/// The conversation prompt builder. Two branches: the focused command (tools
+/// disabled, one JSON object, the allowlist as a CEILING) and the detached
+/// assistant conversation (tools on, the surface line, the staleness
+/// rules). Both carry the same trust boundary — see the matching
 /// UNTRUSTED_INPUT clauses.
 pub fn build_inbox_conversation_prompt(
     instruction: &str,
@@ -473,9 +470,10 @@ pub fn allowed_focus_action_ids(input: &FocusCommandInput, widened: bool) -> Vec
     if widened {
         return on_item;
     }
-    // Belt and braces with `deterministicProposal`, which already checks the
-    // action exists. Stating the invariant here too means "never outside the
-    // item's own actions" is true by construction in ONE place.
+    // Belt and braces with `deterministic_proposal` (inbox_focus/policy.rs),
+    // which already checks the action exists. Stating the invariant here too
+    // means "never outside the item's own actions" is true by construction
+    // in ONE place.
     match &input.deterministic_action_id {
         Some(id) if on_item.contains(id) => vec![id.clone()],
         _ => Vec::new(),
@@ -492,7 +490,7 @@ fn mode_note(mode: FocusCommandMode) -> &'static str {
     }
 }
 
-// ── The authority gate (port of validateCommandObject) ───────────────────────
+// ── The authority gate ───────────────────────────────────────────────────────
 
 /// What the adapter does with a validated command: a proposal (an action the
 /// owner may confirm) or a clarification (no action).
@@ -558,12 +556,10 @@ pub fn validate_command_object(
 
 // ── Shared prose checks ──────────────────────────────────────────────────────
 
-/// EVERYTHING TRUE OF EVERY BRIEF, stated once. The two fixtures this harness
-/// shipped with checked different halves of it — one asserted the lengths and
-/// skipped the action, the other did the reverse — so which one you read
-/// decided what you believed. The adapter clamps at 240/500 and a brief that
-/// overruns reaches the owner's card cut off mid-sentence, which is a defect
-/// rather than a style note.
+/// EVERYTHING TRUE OF EVERY BRIEF, stated once — fixtures that each check
+/// different halves of it are how a suite comes to disagree with itself. The
+/// adapter clamps at 240/500 and a brief that overruns reaches the owner's
+/// card cut off mid-sentence, which is a defect rather than a style note.
 fn brief_problem(value: &Value) -> Option<String> {
     let question = value.get("question")?.as_str()?; // schema guarantees presence
     let recommendation = value.get("recommendation")?.as_str()?;
@@ -607,10 +603,10 @@ fn action_id_of(value: &Value) -> Option<&str> {
     value.get("actionId").and_then(|v| v.as_str())
 }
 
-/// The floor every detached reply has to clear. On its own the old
-/// twenty-character bound measured nothing — every reply clears it — so this
-/// adds the two failures that actually reach the owner: an empty answer, and
-/// a reply that is only a question back.
+/// The floor every detached reply has to clear. On its own a bare
+/// twenty-character minimum measures nothing — every reply clears it — so
+/// this adds the two failures that actually reach the owner: an empty
+/// answer, and a reply that is only a question back.
 fn reply_problem(value: &str, min_chars: usize) -> Option<String> {
     let text = value.trim();
     let len = utf16_len(text);
@@ -619,8 +615,8 @@ fn reply_problem(value: &str, min_chars: usize) -> Option<String> {
             "the assistant returned {len} characters, which is not an answer"
         ));
     }
-    // `/^[^.!]*\?$/` — a bare question mark ending, with no sentence ever
-    // finished before it, on a reply too short to be anything else.
+    // A bare question mark ending — no sentence ever finished before it — on
+    // a reply too short to be anything else.
     if len < 120 && text.ends_with('?') && !text.contains(['.', '!']) {
         return Some("answered the owner with only a question back".into());
     }
@@ -741,12 +737,11 @@ pub fn inbox_brief_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.1);
-    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The
-    // checks already take the value as it arrives — a brief IS the JSON
-    // object this def outputs — so there is nothing to re-type: the fold only
-    // erases the table's fn pointer into the closure shape the fitness plane
-    // stores, with `None` reading as a pass exactly as the TS suite did.
-    // See `brief_fixtures`.
+    // THE FIXTURE TABLE, as `EvalCase`s. The checks already take the value
+    // as it arrives — a brief IS the JSON object this def outputs — so there
+    // is nothing to re-type: the fold only erases the table's fn pointer
+    // into the closure shape `EvalCase` stores, with `None` reading as a
+    // pass. See `brief_fixtures`.
     d.evals = brief_fixtures()
         .into_iter()
         .map(|f| {
@@ -831,15 +826,14 @@ pub fn inbox_command_harness() -> HarnessDefinition {
             // against it, and the adapter gates on it — from one function,
             // with the same `widened` the prompt was built with.
             //
-            // WHAT THIS FIXES, and it is the last instance of the defect this
-            // whole round was about: an out-of-list `actionId` used to be
-            // rejected by `validateCommandObject` AFTER the run, so the
-            // harness recorded `schema_valid: true` for a proposal its caller
-            // dropped on the floor. The offline fixture and the production
-            // column disagreed on the one harness where the disagreement
-            // matters most. Now the model gets one repair turn naming the ids
-            // it may use, and a model that still cannot stay inside them is
-            // recorded as having failed.
+            // WHAT THIS FIXES: an out-of-list `actionId` used to be rejected
+            // by `validate_command_object` AFTER the run, so the harness
+            // recorded `schema_valid: true` for a proposal its caller dropped
+            // on the floor. The offline fixture and the production column
+            // disagreed on the one harness where the disagreement matters
+            // most. Now the model gets one repair turn naming the ids it may
+            // use, and a model that still cannot stay inside them is recorded
+            // as having failed.
             //
             // It never grants anything: `validate_command_object` still runs
             // afterwards and is still the authority gate. This makes the
@@ -849,10 +843,11 @@ pub fn inbox_command_harness() -> HarnessDefinition {
                 |value: &Value, input: &Value, ctx: &RenderContext| {
                     let ci: FocusCommandInput =
                         serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
-                    // The shape refinement the TS schema carried (`refine` on
-                    // reply): a `reply` with no text to post is not a proposal,
-                    // it is a malformed reply, and failing it here earns the
-                    // model a repair turn with the concrete reason — the exact
+                    // A refinement the schema DSL cannot express (a conditional
+                    // requirement on payload.message when actionId is `reply`):
+                    // a `reply` with no text to post is not a proposal, it is a
+                    // malformed reply, and failing it here earns the model a
+                    // repair turn with the concrete reason — the exact
                     // small-model failure repair exists for.
                     let action_id = action_id_of(value);
                     if action_id == Some("reply") {
@@ -922,10 +917,10 @@ pub fn inbox_command_harness() -> HarnessDefinition {
         requires: vec!["tool-select", "instruction-following"],
         note: "Models proven to pick the right action from several are offered every action on the card; every other model may only confirm the one a regex already matched.",
     });
-    // THE FIXTURE TABLE, folded the same way (see `command_fixtures`). The
-    // allowlist relation rides on every row — the census test holds it on the
-    // tables themselves — so what crosses here is the suite's safety
-    // assertion, not just its scoring.
+    // THE FIXTURE TABLE, as `EvalCase`s the same way (see
+    // `command_fixtures`). The allowlist relation rides on every row — the
+    // census test holds it on the tables themselves — so what rides here is
+    // the suite's safety assertion, not just its scoring.
     d.evals = command_fixtures()
         .into_iter()
         .map(|f| {
@@ -1009,7 +1004,7 @@ pub fn inbox_reply_harness() -> HarnessDefinition {
     // The floor is empty ON PURPOSE and the note says so: a plainer answer
     // from a small model is still an answer, and this harness refuses on
     // nothing. (This note is what the registry's names-itself-for-a-human
-    // check reads — it caught this port arriving without one.)
+    // check reads.)
     d.floor = RoleFloor::runs_anyway(
         "Runs on anything; a plainer answer from a small model is still an answer.",
     );
@@ -1019,10 +1014,10 @@ pub fn inbox_reply_harness() -> HarnessDefinition {
         redact: true,
     });
     d.temperature = Some(0.2);
-    // THE FIXTURE TABLE, folded the same way (see `reply_fixtures`). The
-    // reply's checks unbox the string themselves — the table keeps one uniform
-    // shape per harness, the value boxed as a JSON string — so the fold hands
-    // the value through untouched rather than re-typing it here.
+    // THE FIXTURE TABLE, as `EvalCase`s the same way (see `reply_fixtures`).
+    // The reply's checks unbox the string themselves — the table keeps one
+    // uniform shape per harness, the value boxed as a JSON string — so the
+    // fold hands the value through untouched rather than re-typing it here.
     d.evals = reply_fixtures()
         .into_iter()
         .map(|f| {
@@ -1717,12 +1712,11 @@ fn check_reply_no_pasted_system_prompt(value: &Value, _ctx: &CheckCtx) -> Option
     }
 }
 
-/// NINE REPLY FIXTURES. This harness shipped with ONE, asserting only that
-/// the reply was over twenty characters — which every reply is, so it
-/// measured nothing at all. What it should measure is what the DETACHED
-/// prompt actually asks for: answer the owner, keep it short, act only
-/// through tools you actually called, keep sign-offs in the queue, and never
-/// leak chain-of-thought.
+/// NINE REPLY FIXTURES. A suite of one length assertion measures nothing —
+/// every reply clears twenty characters. What this table measures is what
+/// the DETACHED prompt actually asks for: answer the owner, keep it short,
+/// act only through tools you actually called, keep sign-offs in the queue,
+/// and never leak chain-of-thought.
 pub fn reply_fixtures() -> Vec<InboxFixture> {
     vec![
         InboxFixture {
@@ -1933,9 +1927,9 @@ mod tests {
 
     #[test]
     fn the_allowlist_ignores_a_deterministic_match_that_is_not_on_the_item() {
-        // deterministicProposal already checks this. Restating it here means
-        // "never outside the item's own actions" is true by construction in
-        // one place.
+        // `deterministic_proposal` already checks this. Restating it here
+        // means "never outside the item's own actions" is true by
+        // construction in one place.
         let mut input = command_input();
         input.deterministic_action_id = Some("delete".into());
         assert!(allowed_focus_action_ids(&input, false).is_empty());
@@ -2160,9 +2154,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_reply_buried_in_prose_is_repaired_not_lost() {
-        // The exact shape that broke indexOf('{')/lastIndexOf('}'): an
-        // object, then an explanation containing a brace. Nothing in the tree
-        // re-asked before.
+        // The exact shape that defeats a first-brace/last-brace scan: an
+        // object, then an explanation containing a brace.
         let mut input = command_input();
         input.deterministic_action_id = Some("approve_task".into());
         let (result, turn, _) = command_turn(
@@ -2270,10 +2263,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_unparseable_run_returns_null_so_the_caller_keeps_its_own_fallback() {
-        // Fire-and-forget is the property that must survive the port: the
-        // caller falls through to the specialist, then the deterministic
-        // proposal, then a clarification. None of that happens if this
-        // throws.
+        // Fire-and-forget is the property that must hold: the caller falls
+        // through to the specialist, then the deterministic proposal, then a
+        // clarification. None of that happens if this throws.
         let (result, turn, r) = command_turn(
             &command_input(),
             World {
@@ -2383,13 +2375,12 @@ mod tests {
 
     #[test]
     fn the_json_defs_carry_the_derived_json_floor_and_the_reply_does_not_refuse() {
-        // Registry parity: in the TS, `defineHarness` wraps the COMPLETE
-        // literal, so the derived json floor survives a `runs-anyway` note.
-        // This port originally wrapped at construction and then overwrote
-        // `d.floor`, wiping the derivation — the refusal test above is what
-        // caught it, because a floor without `json` cannot refuse on a
-        // measured `json: false`. The wrap now happens last, and this
-        // assertion is the tripwire that keeps it that way.
+        // `define_harness` wraps the COMPLETE literal, so the derived json
+        // floor survives a `runs_anyway` note. Wrapping at construction and
+        // then overwriting `d.floor` would wipe the derivation — the refusal
+        // test above is what catches that, because a floor without `json`
+        // cannot refuse on a measured `json: false`. The wrap happens last,
+        // and this assertion is the tripwire that keeps it that way.
         for d in [inbox_brief_harness(), inbox_command_harness()] {
             assert!(d.floor.capabilities.contains(&"json"), "{}", d.id);
             assert!(d.floor.refuse_below, "{}", d.id);
@@ -2442,10 +2433,10 @@ mod tests {
 
     #[test]
     fn each_def_carries_its_own_fixture_table() {
-        // The tables predate the fold — the sweep read them straight out of
-        // these fns — so a def that lost its `evals` assignment would still
-        // pass the size-and-spread census above. This is the tripwire: name,
-        // band and input all cross the fold unchanged, one row per fixture.
+        // The size-and-spread census above reads the tables, not the defs,
+        // so a def that lost its `evals` assignment would still pass it. This
+        // is the tripwire: name, band and input all land on the def
+        // unchanged, one row per fixture.
         for (def, fx) in [
             (inbox_brief_harness(), brief_fixtures()),
             (inbox_command_harness(), command_fixtures()),

@@ -1,4 +1,4 @@
-// /api/mcp/servers/$id — port of ui/src/routes/api/mcp.servers.$id.ts.
+// /api/mcp/servers/{id}.
 // One registry server: PUT patches config / assignment / user access / tool
 // refresh in one idempotent surface; DELETE unregisters (assignments, user
 // access, and connected accounts cascade). Fleet re-renders after mutations.
@@ -63,7 +63,7 @@ pub async fn put(
 
     // Self-heal: failed/aged discovery re-probes and backfills on any touch.
     if let Err(e) = ensure_oauth_config(&state.pg, &server.id, &server.url).await {
-        // TS awaits this bare — a throw is the route's 500, not a 400.
+        // a self-heal throw is the route's 500, not a 400.
         tracing::error!("[mcp] oauth self-heal failed: {e}");
         return thrown_internal_error();
     }
@@ -73,11 +73,10 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Some(oauth_client) = &patch.oauth_client {
-        // `${new URL(request.url).origin}/api/mcp/oauth/callback` — the
-        // callback this instance registers with the provider. In dev the
-        // TS oracle serves the browser origin (:5273); the Rust port's
-        // callers come through the same SvelteKit hop, so the ORIGIN HEADER
-        // of the request is the one both runtimes share.
+        // `{origin}/api/mcp/oauth/callback` — the callback this instance
+        // registers with the provider. Callers come through the frontend
+        // hop, so the request's ORIGIN HEADER is the browser-facing origin —
+        // not this API's own.
         let origin = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|v| v.to_str().ok())
@@ -138,8 +137,8 @@ pub async fn put(
         )
         .await
         {
-            // The guards' refusals and a DB failure both throw in TS — the
-            // route has no catch around this call.
+            // A guard's refusal and a DB failure alike are the route's 500 —
+            // nothing catches this call.
             tracing::error!("[mcp] server update failed: {e}");
             return thrown_internal_error();
         }
@@ -285,8 +284,8 @@ pub async fn put(
     }
     spawn_render(&state.pg, &sb);
     // Live cutover for the agents this change touches: a running Hermes
-    // only wires MCP servers at start, so carriers roll blue/green. TS fires
-    // each `void …catch()` — never awaited, never the caller's problem.
+    // only wires MCP servers at start, so carriers roll blue/green. Rolls
+    // are fire-and-forget — never awaited, never the caller's problem.
     let touched_access =
         patch.enabled.is_some() || patch.all_agents.is_some() || patch.auth_mode.is_some();
     if touched_access {
@@ -381,7 +380,7 @@ fn spawn_render(pg: &sqlx::PgPool, sb: &crate::secretbox::SecretBox) {
     });
 }
 
-/// `void roll…().catch(() => {})` — the future resolves on its own.
+/// Fire-and-forget: the roll future resolves (or dies) on its own.
 fn spawn_roll(fut: impl std::future::Future<Output = ()> + Send + 'static) {
     tokio::spawn(async move {
         let _ = fut.await;

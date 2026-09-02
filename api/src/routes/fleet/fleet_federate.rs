@@ -1,7 +1,7 @@
-// POST /api/fleet/federate — port of ui/src/routes/api/fleet.federate.ts.
-// Federate outside agents into Talaria: read a Hermes-format directory and
-// create each agent natively (Talaria def, fresh key + state volume, our
-// chassis, skills copied in). One-way and re-runnable. Admin.
+// POST /api/fleet/federate. Federate outside agents into Talaria: read a
+// Hermes-format directory and create each agent natively (Talaria def,
+// fresh key + state volume, our chassis, skills copied in). One-way and
+// re-runnable. Admin.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, trimmed_string_member};
@@ -29,8 +29,8 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().trim().min(1).max(500) — a server-side path to a
-    // Hermes-format directory (admin trust model).
+    // trim, 1..500 — a server-side path to a Hermes-format directory
+    // (admin trust model).
     let dir = match trimmed_string_member(obj, "dir", 1, 500) {
         Ok(d) => d,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

@@ -1,7 +1,7 @@
-// GET /api/llm/v1/models — port of ui/src/routes/api/llm.v1.models.ts.
-// OpenAI-compatible model list for external tools pointing a tlk_ key at
-// base_url http://<talaria>/api/llm/v1. Byte-compat matters: clients diff this
-// list, so field order and the 401 envelope are pinned (error.rs tests).
+// GET /api/llm/v1/models. OpenAI-compatible model list for external tools
+// pointing a tlk_ key at base_url http://<talaria>/api/llm/v1. Byte-stability
+// matters: clients diff this list, so field order and the 401 envelope are
+// pinned (error.rs tests).
 
 use crate::auth::{authenticate_key, bearer_secret};
 use crate::error::{openai_error, thrown_internal_error};
@@ -31,25 +31,22 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .and_then(|v| v.to_str().ok());
     let identity = match bearer_secret(auth) {
         Some(secret) => authenticate_key(&state.pg, secret).await,
-        None => Ok(None), // no header: not even a lookup, like the TS path
+        None => Ok(None), // no header: not even a lookup
     };
     let identity = match identity {
         Ok(Some(id)) => id,
         Ok(None) => return openai_error(StatusCode::UNAUTHORIZED, "invalid API key"),
         Err(e) => {
             tracing::error!("[llm/v1/models] key lookup failed: {e}");
-            // TS has no envelope here — a throw reaches the platform's 500.
-            // A fixed house sentence is the same posture: status only, no
-            // driver text past the boundary.
+            // No envelope here — status only, no driver text past the
+            // boundary.
             return thrown_internal_error();
         }
     };
 
-    // Detached last_used_at, exactly TS's `void sql…catch(() => {})`: a
-    // bookkeeping write must never fail a request that already authenticated.
-    // `id::text = $1` because the bind is a String (TS's driver sends untyped
-    // text PG coerces itself; sqlx types it as text, which has no implicit
-    // uuid comparison).
+    // Detached last_used_at: a bookkeeping write must never fail a request
+    // that already authenticated. `id::text = $1` because the bind is a
+    // String — sqlx types it as text, which has no implicit uuid comparison.
     let pg = state.pg.clone();
     let key_id = identity.key_id;
     tokio::spawn(async move {
@@ -63,10 +60,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
     });
 
-    // The same order the TS query produces: local endpoints first, then name
-    // asc — first-seen order is what owned_by's endpoint list preserves.
-    // `models` is a jsonb column: sqlx maps Vec<String> to text[], so the
-    // decode goes through Json<Vec<String>>.
+    // Local endpoints first, then name asc — first-seen order is what
+    // owned_by's endpoint list preserves. `models` is a jsonb column: sqlx
+    // maps Vec<String> to text[], so the decode goes through
+    // Json<Vec<String>>.
     let eps = match sqlx::query_as::<_, (String, sqlx::types::Json<Vec<String>>)>(
         "select name, models from llm_endpoints order by (class = 'local') desc, name asc",
     )

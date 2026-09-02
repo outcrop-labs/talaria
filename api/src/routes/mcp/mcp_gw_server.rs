@@ -1,4 +1,4 @@
-// /api/mcp/gw/$server — port of ui/src/routes/api/mcp.gw.$server.ts.
+// /api/mcp/gw/{server}.
 // The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
 // upstream URL or credential: their configs point here, the agent's own
 // credential identifies the caller (agent-auth), and the gateway
@@ -21,12 +21,13 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-/// `rpc.params?.name ?? ''` — the gate's key (never matches a tool list) and
-/// the template's subject (`undefined` when absent, a bare string otherwise).
+/// the called tool's name — the gate's key ("undefined" never matches a
+/// tool list) and the rejection sentence's subject ("undefined" when
+/// absent, the bare string otherwise).
 fn called_tool(rpc: Option<&Value>) -> String {
     match rpc.and_then(|r| r.pointer("/params/name")) {
         Some(Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(), // JS template of a non-string value
+        Some(other) => other.to_string(), // a non-string name embeds its serialized form
         None => "undefined".to_string(),
     }
 }
@@ -67,7 +68,7 @@ pub async fn post(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    // Pass the CALLER, never `caller.model`. `subjectModel`/`subjectProven`
+    // Pass the CALLER, never `caller.model`. `subject_model`/`subject_proven`
     // read a bare string as PROVEN, so downgrading to the name here throws
     // away `legacy` — and this route is where that matters most: it resolves
     // the acting owner and can put that human's OAuth bearer token into
@@ -167,10 +168,9 @@ pub async fn post(
     }
 
     // App-published servers dispatch IN-PROCESS in TS through the app module
-    // — authors' TS/node code, which is the port's rule 10 (never-port
-    // surface). The coexistence proxy holds `app-*` servers on TS for
-    // exactly this reason; a direct hit here answers the boundary sentence
-    // instead of pretending to dispatch.
+    // — authors' TS/node code, which rule 10 keeps on the TS side (the
+    // never-port surface). `app-*` servers live there, not here; a direct
+    // hit answers the boundary sentence instead of pretending to dispatch.
     if let Some(app_slug) = &eff.server.app_slug {
         return house_error(
             StatusCode::BAD_GATEWAY,
@@ -199,7 +199,7 @@ pub async fn post(
         );
     }
 
-    // Header assembly in the TS spread order: content-type, accept,
+    // Header assembly order: content-type, accept,
     // [mcp-session-id], ...upstreamHeaders, and for the builtin toolkit the
     // caller's OWN credential — the toolkit calls back into this API as the
     // same agent, so substituting a server-held key here would make that hop
@@ -413,8 +413,8 @@ async fn relay(
         .unwrap_or_else(|_| thrown_internal_error())
 }
 
-/// `filterMsg` over JSON or SSE-framed text: `data:` lines are parsed,
-/// filtered, and re-serialized in place (`data: ${JSON.stringify(...)}` with
+/// The tools/list filter over JSON or SSE-framed text: `data:` lines are
+/// parsed, filtered, and re-serialized in place (`data: ${JSON.stringify(...)}` with
 /// the single-space separator); anything unparseable passes through
 /// untouched, and a non-SSE body is parsed whole — or passed verbatim when
 /// it isn't parseable either.

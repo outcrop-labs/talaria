@@ -1,6 +1,5 @@
 // The approval census — every thing a human is currently expected to approve,
-// in one shape, with the person who owes the answer attached. Port of
-// ui/src/server/approvals.ts.
+// in one shape, with the person who owes the answer attached.
 //
 // WHY THIS FILE EXISTS
 //   "Approvals" is not one queue in Talaria. It is five, and they were written
@@ -82,7 +81,7 @@ use sqlx::PgPool;
 
 const LOG: &str = "[approvals]";
 
-/// The five queues. Serialized as the TS union's strings (`google_action`, …),
+/// The five queues. Serialized as its snake_case strings (`google_action`, …),
 /// which is what the announce marks' failed-kind log lines and the digest's
 /// counters are written in terms of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -112,8 +111,7 @@ impl ApprovalKind {
 /// because this module once returned the content half alone and every consumer
 /// that needed the other went and fetched the admin list by hand — which is how
 /// an approval bounded to a board was announced to NOBODY while the SLA
-/// reported it to admins the census had never heard of. (Moved here from
-/// runs/decide.rs, which held it for the seam until the census crossed.)
+/// reported it to admins the census had never heard of.
 #[derive(Debug, Clone, serde::Serialize, Default, PartialEq)]
 pub struct Disclosure {
     pub content: Vec<String>,
@@ -158,7 +156,7 @@ pub struct PendingApproval {
 /// escalation stage then addresses the ticket's board editors, who are the
 /// people the decision route was always going to let act.
 fn ticket_owners(assignees: Option<&Value>) -> Vec<String> {
-    // TS guards `Array.isArray` before filtering to strings; a non-array cell
+    // A non-array cell
     // (null, a hand-edited object) means no owners rather than a decode error.
     assignees
         .and_then(|v| v.as_array())
@@ -231,8 +229,8 @@ async fn google_action_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sq
                     // The focus queue is the surface that owns this decision.
                     href: "/".into(),
                     waiting_since: epoch_ms_to_iso(created_ms),
-                    // TS: `isOrg || !ownerUserId ? [] : [ownerUserId]` — the row's
-                    // truthiness, which over a uuid column is null and nothing else.
+                    // Org rows name no owner; over a uuid
+                    // column the only null-ish value is null.
                     owner_user_ids: match (&owner_user_id, is_org) {
                         (Some(owner), false) => vec![owner.clone()],
                         _ => Vec::new(),
@@ -315,8 +313,8 @@ async fn workbench_plan_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, s
                     (None, Some(t)) => format!(" for {t}"),
                     (None, None) => String::new(),
                 };
-                // TS slices the plan at 240 UTF-16 units; `clamp_text` cuts 240
-                // bytes on a char boundary — the standing surrogate divergence.
+                // `clamp_text` caps the plan at 240
+                // bytes on a char boundary — a lone surrogate never splits.
                 let plan_line = {
                     let trimmed = plan.trim();
                     if trimmed.is_empty() {
@@ -449,8 +447,8 @@ async fn repo_request_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sql
     Ok(rows
         .into_iter()
         .map(|(id, agent_model, org, name, why, created_ms, board_id)| {
-            // TS slices at 240 UTF-16 units; the clamp is 240 bytes on a char
-            // boundary — the standing surrogate divergence.
+            // The clamp is 240 bytes on a char
+            // boundary — a lone surrogate never splits.
             let why_line = {
                 let trimmed = why.trim();
                 if trimmed.is_empty() {
@@ -495,8 +493,7 @@ async fn repo_request_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sql
 /// impossible one: a row from a newer deploy, or a kind whose module is not in
 /// this instance's import graph, and it is the same call the runner makes when
 /// it declines to drive a kind it does not know — leave it for an instance that
-/// has it. (Moved here from runs/decide.rs, which held it for the seam until
-/// the census crossed.)
+/// has it.
 pub fn run_decision_approval(
     run: &RunRow,
     definition_for: &DefinitionForFn,
@@ -532,9 +529,8 @@ pub fn run_decision_approval(
         );
         return None;
     };
-    // The definition's own code, running inside the census. In TS a throw here
-    // resolved to nobody hearing anything; the Rust `AudienceFn` type cannot
-    // throw, so "cannot say" is structural rather than caught.
+    // The definition's own code, running inside the census. The `AudienceFn`
+    // type cannot throw, so "cannot say" is structural rather than caught.
     let authority = (def.audience)(run);
 
     let options: Vec<&str> = request
@@ -618,9 +614,8 @@ async fn run_decision_approvals(
 ///
 /// One kind failing must not hide the other four — an escalation sweep that
 /// reports nothing because one table was locked is the silence this whole
-/// module is about. Each kind is settled independently (TS races them with
-/// `Promise.allSettled`, which is a concurrency detail; the contract is the
-/// independence); a rejection is logged and recorded in `failed_kinds` so the
+/// module is about. Each kind is settled independently — the contract is
+/// the independence; a rejection is logged and recorded in `failed_kinds` so the
 /// caller can say the census was incomplete rather than say it was empty.
 pub struct PendingApprovals {
     pub approvals: Vec<PendingApproval>,
@@ -665,8 +660,8 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
             }
         }
     }
-    // TS sorts `localeCompare`; ISO-8601 UTC strings compare identically in
-    // byte order — the standing sort divergence, harmless on this shape.
+    // ISO-8601 UTC strings compare identically in
+    // byte order and in collation — oldest first either way.
     approvals.sort_by(|a, b| a.waiting_since.cmp(&b.waiting_since));
     PendingApprovals {
         approvals,
@@ -676,8 +671,8 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
 
 // ── The resolver ──────────────────────────────────────────────────────────────
 
-/// Order-preserving dedupe — TS's `[...new Set(xs)]`, which keeps first
-/// occurrence, and whose order the disclosure halves are written in terms of.
+/// Order-preserving dedupe — first occurrence wins, and that order is what
+/// the disclosure halves are written in terms of.
 fn dedup(ids: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     ids.into_iter()
@@ -1294,9 +1289,8 @@ async fn announce(
 /// raised with no human on it that gets one two minutes later is still
 /// announced to that person by the next sweep.
 ///
-/// Returns how many were reached (either channel); TS's callers wrap this in a
-/// catch that resolves a throw to 0, so every failure inside is logged and
-/// answered 0 — the key stays unmarked for the sweep.
+/// Returns how many were reached (either channel); every failure inside is
+/// logged and answered 0 — the key stays unmarked for the sweep.
 pub async fn announce_approval(deps: &ApprovalDeps, key: &str) -> usize {
     let pending = pending_approvals(deps.pg(), &deps.definition_for).await;
     let Some(approval) = pending.approvals.iter().find(|a| a.key == key) else {
@@ -1324,8 +1318,8 @@ pub async fn announce_approval(deps: &ApprovalDeps, key: &str) -> usize {
     // Marked when EITHER channel landed. A fact that reached the admins is an
     // announcement — leaving it unmarked would repeat it every five minutes
     // for the life of the approval. A mark that failed to WRITE logs and
-    // answers 0, leaving the key unmarked: the sweep will announce again,
-    // which is the same double-send TS's throw produces on the same failure.
+    // answers 0, leaving the key unmarked: the sweep will announce again —
+    // a double-send, the lesser failure.
     if told.content > 0 || told.fact > 0 {
         let mut marks = HashMap::new();
         marks.insert(key.to_string(), epoch_ms_to_iso((deps.now)()));
@@ -1387,10 +1381,9 @@ pub async fn sweep_unannounced(
         if already.contains_key(&approval.key) {
             continue;
         }
-        // TS computes `(now - Date.parse(waitingSince)) / 60_000` and compares
-        // with >=; an unparseable timestamp is NaN, every NaN comparison is
-        // false, and the approval falls through to the announce path — so an
-        // unparseable waiting_since here is Some(0), not a retirement.
+        // Age is (now - waiting_since) in minutes, compared with >=; an
+        // unparseable timestamp behaves as age 0 — it falls through to the
+        // announce path, never to retirement.
         let age_minutes =
             iso_to_epoch_ms(&approval.waiting_since).map(|ms| (now_ms - ms) as f64 / 60_000.0);
         if age_minutes.is_some_and(|age| age >= max_age_minutes) {
@@ -1733,7 +1726,6 @@ mod tests {
 
     #[test]
     fn may_decide_content_is_the_content_half_only() {
-        // (Moved from runs/decide.rs with the predicate.)
         let d = Disclosure {
             content: vec!["u-editor".into()],
             fact: vec!["u-admin".into()],
@@ -1746,7 +1738,7 @@ mod tests {
         assert!(!may_decide_content(&d, "u-stranger"));
     }
 
-    // ── run_decision_approval (moved from runs/decide.rs with the builder) ────
+    // ── run_decision_approval ────────────────────────────────────────────────
 
     fn run_row(
         state: RunState,
@@ -1897,7 +1889,7 @@ mod tests {
         assert!(ticket_owners(Some(&serde_json::json!(null))).is_empty());
         assert!(ticket_owners(Some(&serde_json::json!({"a": 1}))).is_empty());
         assert!(ticket_owners(None).is_empty());
-        // Non-string cells are skipped, as TS's typeof filter does.
+        // Non-string cells are skipped.
         assert_eq!(
             ticket_owners(Some(&serde_json::json!(["user:u1", 7]))),
             ["u1"]

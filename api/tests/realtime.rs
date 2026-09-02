@@ -1,5 +1,4 @@
-// The mirroring half of runs: topics, payload shape, and who may attach —
-// the port of ui/src/server/realtime.test.ts.
+// The mirroring half of runs: topics, payload shape, and who may attach.
 //
 // Redis is faked at the edge boundary rather than mocked per call, because the
 // thing under test IS the routing — "a run event reaches the subscriber on
@@ -8,13 +7,13 @@
 // cannot make it. The fake is a real (in-process) pub/sub: subscribers
 // register topics, `publish` fans out to the ones that match.
 //
-// Two deliberate divergences from the TS suite, both structural: "disconnect
-// on abort" is observed as the hub's sender closing when the receiver drops
-// (a Rust stream ends by its response being dropped, not by an AbortSignal),
-// and the SSE frames are asserted from the built response body — axum offers
-// no Event getter, so the test reads the exact bytes the server would send.
-// The unknown-subject `console.warn` the TS suite spies on is a tracing call
-// here; the verdict is the pinned half (same call the reclaim suite makes).
+// Two structural notes: "disconnect on abort" is observed as the hub's sender
+// closing when the receiver drops (a stream ends by its response being
+// dropped, not by an AbortSignal), and the SSE frames are asserted from the
+// built response body — axum offers no Event getter, so the test reads the
+// exact bytes the server would send. The unknown-subject warning is a tracing
+// call, not spyable; the verdict is the pinned half (same call the reclaim
+// suite makes).
 
 use futures_util::FutureExt;
 use std::collections::HashMap;
@@ -47,8 +46,8 @@ impl Hub {
         }
     }
 
-    /// deps whose publish fans out through the hub — the mock side of the
-    /// ioredis module boundary in the TS suite.
+    /// deps whose publish fans out through the hub — the fake at the deps
+    /// edge where the real redis client would be.
     fn deps(&self) -> RealtimeDeps {
         let publish_topics = self.topics.clone();
         let sub_hub = self.clone();
@@ -173,10 +172,9 @@ async fn run_topic_never_carries_the_decision_question() {
     let deps = hub.deps();
     let rx = hub.subscribe("run:run-q");
 
-    // The driver's internal event holding a question — in TS the "wider object
-    // than the parameter type" a caller could pass; in Rust the struct's own
-    // field. Either way the wire event is rebuilt field by field and the
-    // question must not survive the rebuild.
+    // The driver's internal event holding a question — a field the caller can
+    // set. The wire event is rebuilt field by field and the question must not
+    // survive the rebuild.
     let mut event = run_event("run-q", RunState::Awaiting, "parked");
     event.question = Some(DecisionRequest {
         key: "k".into(),
@@ -254,8 +252,8 @@ async fn a_run_without_an_owner_publishes_no_echo() {
     let mut nobody = hub.subscribe("user:");
 
     run_publish(deps.clone())(run_event("run-o", RunState::Done, "done"), None);
-    // TS's truthy check: an EMPTY owner id is nobody's firehose, not a topic
-    // literally named "user:".
+    // An EMPTY owner id is nobody's firehose, not a topic literally named
+    // "user:".
     run_publish(deps)(run_event("run-o", RunState::Done, "done"), Some(""));
 
     assert!(nobody.try_recv().is_err());
@@ -371,8 +369,8 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
 async fn a_quiet_subscriber_still_gets_the_connected_preamble() {
     // The swallow-failures posture: a subscriber that never connects or never
     // hears anything still opens with `: connected`, so a client knows the
-    // attach itself landed — the quiet stream TS left a dead subscriber
-    // showing. Ended by closing the topic before anything is published.
+    // attach itself landed rather than seeing a dead stream. Ended by closing
+    // the topic before anything is published.
     let hub = Hub::new();
     let deps = hub.deps();
     let response = run_event_stream(&deps, "run-quiet").await;
@@ -385,7 +383,7 @@ async fn a_quiet_subscriber_still_gets_the_connected_preamble() {
 
 // ── The gate ─────────────────────────────────────────────────────────────────
 
-/// Per-test overrides for `watch_deps`, defaulting to the TS fake's posture:
+/// Per-test overrides for `watch_deps`, defaulting to the strict posture:
 /// every predicate answers nothing, admin NO — so every case that does not opt
 /// in asserts the ordinary-member answer, including the org-wide refusal.
 #[derive(Default, Clone)]
@@ -720,9 +718,9 @@ async fn a_subject_type_it_knows_but_whose_id_is_missing_is_refused() {
 
 #[tokio::test]
 async fn deciding_opens_no_subscriber_a_refusal_must_cost_nothing() {
-    // In TS this pins that the gate never constructs a Redis client; here the
-    // type system already forbids it (RunWatchDeps has no subscribe edge), and
-    // the test stays to pin the intent against a future "convenience".
+    // The gate never subscribes: RunWatchDeps has no subscribe edge, so the
+    // type system forbids it — the test stays to pin the intent against a
+    // future "convenience".
     let hub = Hub::new();
     let before = hub.subscriber_count("user:anything");
     let _ = verdict(ownerless(Some("research"), Some("x1"))).await;
@@ -732,9 +730,8 @@ async fn deciding_opens_no_subscriber_a_refusal_must_cost_nothing() {
 
 #[tokio::test]
 async fn a_failing_edge_is_an_error_not_a_refusal() {
-    // The port's one deliberate addition to the TS surface: a predicate that
-    // cannot answer (DB down) must not become a quiet 403 — TS would throw
-    // and the route would 500, and the port keeps those facts distinct.
+    // A predicate that cannot answer (DB down) must not become a quiet 403 —
+    // an error stays an error, the route 500s rather than refusing.
     let deps = RunWatchDeps {
         get_run: Arc::new(|_| {
             async { Err::<Option<RunWatchRow>, String>("relation \"runs\" does not exist".into()) }

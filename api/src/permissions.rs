@@ -1,18 +1,17 @@
-// Fine-grained permissions — port of ui/src/server/permissions.ts. Three
-// layers, most specific wins:
+// Fine-grained permissions. Three layers, most specific wins:
 //   1. per-user overrides        (user_permissions rows — allow or deny)
 //   2. org-wide member defaults  (app_settings 'member_default_permissions')
 //   3. the catalog's shipped defaults below
-// The label/hint/group strings are the admin console's copy — byte-parity with
-// the TS literals, and the 13-entry ORDER is pinned twice over: it is the wire
-// order of the GET catalog, of a member's resolved perms array, and of the
-// z.enum option list in the PUT body's error message.
+// The label/hint/group strings are the admin console's copy, and the
+// 13-entry ORDER is pinned: it is the wire order of the GET catalog, of a
+// member's resolved perms array, and of the enum option list in the PUT
+// body's error message.
 
 use crate::gateway::settings::{get_setting, set_setting};
 use sqlx::PgPool;
 use std::collections::HashMap;
 
-/// One catalog entry (permissions.ts PERMISSIONS) — wire order is the field
+/// One catalog entry — wire order is the field
 /// order the SPA consumes.
 #[derive(serde::Serialize)]
 pub struct PermCat {
@@ -137,7 +136,7 @@ pub const PERM_IDS: [&str; 13] = [
 const ORG_DEFAULTS_KEY: &str = "member_default_permissions";
 
 /// Org-tuned member defaults (admin-editable), sparse over the catalog. The
-/// RAW setting value rides the wire — getOrgDefaultPerms is a passthrough, so
+/// RAW setting value rides the wire — a passthrough, so
 /// whatever jsonb is stored (order included) is what the admin console sees.
 pub async fn get_org_default_perms(pg: &PgPool) -> serde_json::Value {
     get_setting(
@@ -148,9 +147,9 @@ pub async fn get_org_default_perms(pg: &PgPool) -> serde_json::Value {
     .await
 }
 
-/// Tune one member default; `None` is the TS null = back to the shipped
+/// Tune one member default; `None` = back to the shipped
 /// default (key deleted from the sparse map). Key order of the stored object
-/// is preserved for the other entries — delete/set on the same Map, write the
+/// is preserved for the other entries — delete/set on the same map, write the
 /// whole thing back.
 pub async fn set_org_default_perm(
     pg: &PgPool,
@@ -174,7 +173,7 @@ pub async fn set_org_default_perm(
 }
 
 /// One user's overrides as a wire-ready {perm: allowed} object, in row order
-/// (Object.fromEntries — later duplicate rows win, same as the map insert).
+/// — later duplicate rows win, same as a map insert.
 pub async fn get_user_perm_overrides(
     pg: &PgPool,
     user_id: &str,
@@ -238,7 +237,7 @@ pub async fn user_permissions(
             .bind(user_id)
             .fetch_all(pg)
             .await?;
-    // Object.fromEntries: later duplicate rows win, same as the map insert.
+    // Later duplicate rows win, same as a map insert.
     let overrides: HashMap<String, bool> = rows.into_iter().collect();
     Ok(PERMISSIONS
         .iter()
@@ -254,7 +253,7 @@ pub async fn user_permissions(
 }
 
 /// One permission, resolved through the same override → org-default →
-/// catalog chain (permissions.ts hasPerm). Admins: everything.
+/// catalog chain. Admins: everything.
 pub async fn has_perm(
     pg: &PgPool,
     user_id: &str,

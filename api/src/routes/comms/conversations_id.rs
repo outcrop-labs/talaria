@@ -1,4 +1,4 @@
-// /api/conversations/{id} — port of ui/src/routes/api/conversations.$id.ts.
+// /api/conversations/{id}.
 // GET → the conversation + its messages (ownership-checked). PATCH { title }
 // → rename (owner, or a plan collaborator). A renamed title no longer matches
 // the mechanical first-message truncation, so the Titler and its sweep leave

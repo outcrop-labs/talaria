@@ -3,11 +3,10 @@
 // gateway (`/api/llm/v1`) — so every agent call is guarded (confab checks see
 // the full tool trace), metered in one ledger, and observable in one place.
 //
-// Port of ui/src/server/fleet-brain.ts. Two halves: the ROUTING half (the
-// model-set question and the config transform) and the PROVISIONING half
-// (ensure_gateway_brain — the two gateway keys minted into the Talaria-owned
-// fleet .env, the two key-list settings, and the LLM_* lines the containers
-// interpolate).
+// Two halves: the ROUTING half (the model-set question and the config
+// transform) and the PROVISIONING half (ensure_gateway_brain — the two gateway
+// keys minted into the Talaria-owned fleet .env, the two key-list settings,
+// and the LLM_* lines the containers interpolate).
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -161,8 +160,7 @@ pub(crate) fn is_gateway_url(u: &str) -> bool {
         .is_match(u.trim())
 }
 
-/// Read a KEY=value line from env-file text. The captured value is trimmed,
-/// exactly the TS regex's `m[1].trim()`.
+/// Read a KEY=value line from env-file text. The captured value is trimmed.
 pub(crate) fn read_env_line(content: &str, key: &str) -> Option<String> {
     let re = regex::Regex::new(&format!(r"(?m)^{}=(.*)$", regex::escape(key)))
         .expect("env line pattern");
@@ -170,7 +168,7 @@ pub(crate) fn read_env_line(content: &str, key: &str) -> Option<String> {
 }
 
 /// Set or replace a KEY=value line; append if absent. The append shape is
-/// TS-exact, including the leading newline when the file is empty.
+/// fixed, including the leading newline when the file is empty.
 pub(crate) fn upsert_env_line(content: &str, key: &str, value: &str) -> String {
     let re =
         regex::Regex::new(&format!(r"(?m)^{}=.*$", regex::escape(key))).expect("env line pattern");
@@ -238,8 +236,8 @@ async fn ensure_gateway_key(
 
 /// First gateway-resolvable model — a sane default LLM_MODEL so
 /// freshly-added endpoints light up the fleet without hand-editing. None if
-/// nothing is configured. (Same local-first pick the routing half's fallback
-/// makes — TS spells the identical body twice.)
+/// nothing is configured (the same local-first pick the routing half's
+/// fallback makes).
 async fn default_gateway_model(pg: &PgPool) -> Option<String> {
     gateway_model_set(pg).await.fallback
 }
@@ -254,9 +252,8 @@ pub struct GatewayBrain {
 }
 
 /// Provision (or refresh) the fleet's gateway brain in the Talaria-owned .env.
-/// Idempotent; a failure here is the caller's to treat as best-effort — it
-/// never blocks a fleet render (TS's renderFleet wraps the call in try/catch;
-/// the Rust render loop does the same when it lands).
+/// Idempotent; a failure is best-effort — never blocks a fleet render (the
+/// render loop records a warning and moves on).
 pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
     let env_path = crate::fleet::layout::fleet_env();
     if let Some(parent) = env_path.parent() {
@@ -285,9 +282,9 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
     //     and a caveat would contaminate its context. BOTH gateway keys
     //     qualify (findings still record either way).
     //
-    // A stored setting that isn't a string array is the same failure TS would
-    // throw on — the whole brain step fails and the render carries on without
-    // it, rather than silently overwriting a corrupt value.
+    // A stored setting that isn't a string array fails the whole brain step —
+    // the render carries on without it, rather than silently overwriting a
+    // corrupt value.
     let unmetered: Vec<String> = serde_json::from_value(
         get_setting(pg, "gateway_unmetered_keys", json!([GATEWAY_KEY_NAME])).await,
     )
@@ -432,7 +429,7 @@ mod tests {
             "the raw upstream's env name must not survive"
         );
         assert_eq!(out["nested"][0]["base_url"], json!("${LLM_BASE_URL}"));
-        // MCP servers ride through byte-for-byte
+        // MCP servers ride through untouched
         assert_eq!(
             out["specs"]["mcp_servers"]["talaria"]["url"],
             json!("http://x/talaria")
@@ -442,7 +439,7 @@ mod tests {
 
     #[test]
     fn a_spec_object_is_terminal_its_own_children_never_walk() {
-        // TS's walk returns at the spec branch — a spec carries no nested
+        // The walk returns at the spec branch — a spec carries no nested
         // specs, so anything nested inside one rides through untouched. This
         // pins that branch semantics, not an accident of the walk order.
         let raw = json!({
@@ -519,8 +516,8 @@ mod tests {
             "A=9\nLLM_BASE_URL = http://x/api/llm/v1  \n# comment\nB=2\n"
         );
 
-        // Appends after stripping trailing newlines — and an empty file gains a
-        // LEADING newline, the exact TS template shape.
+        // Appends after stripping trailing newlines — and an empty file gains
+        // a LEADING newline.
         assert_eq!(upsert_env_line("", "K", "v"), "\nK=v\n");
         assert_eq!(upsert_env_line("A=1\n\n\n", "K", "v"), "A=1\nK=v\n");
     }

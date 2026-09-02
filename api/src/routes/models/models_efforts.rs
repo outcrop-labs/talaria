@@ -1,8 +1,9 @@
-// /api/models/efforts — port of ui/src/routes/api/models.efforts.ts. The
-// composer's effort-picker feed: which reasoning-effort levels THIS model id
-// may be asked for, plus the default it should start from. Thin by the house
-// rule (routes parse and serialize; the decisions live in model_efforts.rs
-// and persona.rs) — the route adds only the auth gate and the query string.
+// /api/models/efforts.
+// The composer's effort-picker feed: which reasoning-effort levels THIS
+// model id may be asked for, plus the default it should start from. Thin by
+// the house rule (routes parse and serialize; the decisions live in
+// model_efforts.rs and persona.rs) — the route adds only the auth gate and
+// the query string.
 //
 // `model` accepts both spellings the chat surfaces speak: a fleet persona id
 // (base or tier) or a gateway catalog id. `efforts` is `[]` when nothing
@@ -36,11 +37,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if let Err(gate) = require_user(&state, &headers).await {
         return gate;
     }
-    // searchParams.get('model')?.trim() — the client sends encodeURIComponent,
-    // so an OpenRouter name's slashes arrive as %2F and must be decoded
-    // (form_urlencoded is URLSearchParams' decoder), and `get` answers with
-    // the FIRST occurrence when a query string repeats the key, so this finds
-    // rather than collects.
+    // the client sends encodeURIComponent, so an OpenRouter name's slashes
+    // arrive as %2F and must be decoded (form_urlencoded is the matching
+    // decoder) — and a repeated `model` key answers with the FIRST
+    // occurrence, so this finds rather than collects.
     let model = uri.query().and_then(|q| {
         url::form_urlencoded::parse(q.as_bytes())
             .find(|(k, _)| k == "model")
@@ -62,7 +62,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     // The configured default, held against the levels just read: a level the
     // model no longer publishes (the admin swapped models, the metadata
     // changed) is not a default, it is a stale string. persona_configured_effort
-    // never fails — the TS side's `.catch(() => null)` is already its nature.
+    // never fails — null is already its nature.
     let configured = persona_configured_effort(&state.pg, &model).await;
     let default = configured.filter(|c| efforts.contains(c));
     Json(json!({ "efforts": efforts, "default": default })).into_response()

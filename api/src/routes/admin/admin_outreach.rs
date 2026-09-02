@@ -1,6 +1,6 @@
-// /api/admin/outreach — port of ui/src/routes/api/admin.outreach.ts.
-// GET → config + per-agent proactive flags + recent events. PUT → save both.
-// Admin-only; the sweep itself stays off unless `enabled`.
+// /api/admin/outreach. GET → config + per-agent proactive flags + recent
+// events. PUT → save both. Admin-only; the sweep itself stays off unless
+// `enabled`.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{NumKind, array_too_big_msg, as_object, boolean_member, number_member, parse};
@@ -69,11 +69,9 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ enabled: z.boolean(),
-    //             intervalMinutes: z.number().int().min(15).max(1440),
-    //             dailyDmCap: z.number().int().min(1).max(20),
-    //             proactiveAgents: z.array(z.string()).max(100) }) — keys in
-    // schema order, rejections in zod's own words.
+    // Keys in schema order, rejections in the schema's own words: enabled
+    // (bool), intervalMinutes (int 15..1440), dailyDmCap (int 1..20),
+    // proactiveAgents (strings, at most 100).
     let enabled = match boolean_member(obj, "enabled") {
         Ok(e) => e,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

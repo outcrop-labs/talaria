@@ -1,10 +1,7 @@
 // The fleet's LAYOUT — where the rendered fleet lives on disk and what every
-// docker-level name resolves to. Port of the constant block at the top of
-// ui/src/server/fleet-render.ts (lines 32-63, 171, 205-235), lifted into its
-// own module because the write plane (fleet-create, fleet-render,
-// fleet-docker) all resolves through these and one path rule must have one
-// definition — gateway/provider.rs already carried a private copy of
-// `fleet_dir` from the read side, and it delegates here now.
+// docker-level name resolves to. Its own module because every write-plane
+// caller (create, render, docker) resolves through these and one path rule
+// must have one definition.
 //
 // THE INVARIANT BEHIND `fleet_project`: one fleet per compose project is the
 // identity the whole lifecycle assumes (container names, volume names,
@@ -16,25 +13,24 @@
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// The MCP gateway base as fleet containers reach it — the UI server over the
-/// docker host bridge (same pattern as the talaria-mcp fleet URL).
+/// The MCP gateway base as fleet containers reach it — the app server over
+/// the docker host bridge (same pattern as the talaria-mcp fleet URL).
 pub fn mcp_gw_base() -> String {
     match std::env::var("TALARIA_MCP_GW_URL") {
         Ok(url) => url,
-        // TS `??` — an env var set but EMPTY is not nullish and would be
-        // used verbatim; var() only errors on unset/invalid UTF-8, so this
-        // arm is exactly the unset case.
+        // A set-but-empty env var is used verbatim; var() errs only on
+        // unset/invalid UTF-8, so the Err arm is exactly the unset case.
         Err(_) => format!("http://host.docker.internal:{}/api/mcp/gw", app_port()),
     }
 }
 
-/// The port the app server listens on (vite/prod PORT, 5273 in dev).
+/// The port the app server listens on (PORT env, 5273 in dev).
 pub(crate) fn app_port() -> String {
     std::env::var("PORT").unwrap_or_else(|_| "5273".into())
 }
 
-/// FLEET_DIR (fleet-render.ts:38) — the render output tree the renderer
-/// materializes and every docker command addresses.
+/// The render output tree (FLEET_DIR) the renderer materializes and every
+/// docker command addresses.
 pub fn fleet_dir() -> PathBuf {
     if let Ok(d) = std::env::var("TALARIA_FLEET_DIR") {
         return PathBuf::from(d);
@@ -55,7 +51,7 @@ pub fn fleet_env() -> PathBuf {
 }
 
 /// The chassis every agent renders from: one service block + per-slug extras.
-/// Talaria-owned (extracted once at cutover from the legacy stack).
+/// Talaria-owned.
 pub fn chassis_file() -> PathBuf {
     match std::env::var("TALARIA_CHASSIS_FILE") {
         Ok(f) => PathBuf::from(f),
@@ -92,8 +88,8 @@ pub const LEGACY_DOCKER_PROJECT: &str = "ai";
 pub const GATEWAY_PORT_BASE: i64 = 8770;
 
 /// The EXTERNAL docker network the whole fleet joins (compose never creates
-/// external networks — fleet-docker ensures it exists before any `up`). The
-/// name lives in the chassis; 'talaria' is the fresh-install default.
+/// external networks — the docker module ensures it exists before any `up`).
+/// The name lives in the chassis; 'talaria' is the fresh-install default.
 pub async fn fleet_network_name() -> String {
     let text = match tokio::fs::read_to_string(chassis_file()).await {
         Ok(t) => t,

@@ -1,8 +1,7 @@
-// /api/admin/storage — port of ui/src/routes/api/admin.storage.ts. Object
-// storage (uploads blob store) config. GET → config (secrets masked) + blob
-// stats + migration/sync status + the built-in bucket's endpoint. PUT → save
-// config. POST → connection tests, local→bucket migration, or a full sync to
-// the replica.
+// /api/admin/storage. Object storage (uploads blob store) config. GET →
+// config (secrets masked) + blob stats + migration/sync status + the
+// built-in bucket's endpoint. PUT → save config. POST → connection tests,
+// local→bucket migration, or a full sync to the replica.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, enum_member, object_msg, optional_enum_member, parse, zod_type_name};
@@ -53,9 +52,9 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     .into_response()
 }
 
-/// One Target block (the five required S3 fields + the optional secret) —
-/// `Target` in admin.storage.ts, every rejection in zod's own words. The
-/// prefix's `regex(/^$|^[a-zA-Z0-9._/-]+\/$/)` carries its custom sentence.
+/// One Target block (the five required S3 fields + the optional secret),
+/// every rejection in the schema's own words. The prefix regex carries its
+/// custom sentence.
 fn target_of(o: &serde_json::Map<String, Value>) -> Result<BucketTarget, String> {
     use crate::body::{boolean_member, optional_max_string_member, string_member};
     let endpoint = string_member(o, "endpoint", 0, 300)?;
@@ -87,7 +86,7 @@ fn target_of(o: &serde_json::Map<String, Value>) -> Result<BucketTarget, String>
     })
 }
 
-/// `.trim().replace(/\/+$/, '')` — strip whitespace, then EVERY trailing slash.
+/// strip whitespace, then EVERY trailing slash.
 fn trim_endpoint(mut e: String) -> String {
     e = e.trim().to_string();
     while e.ends_with('/') {
@@ -114,8 +113,8 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Body key order: mode, the Target spread, replica — mode's enum message
-    // is the one the harness pinned.
+    // Body key order: mode, the Target spread, replica — a bad mode answers
+    // before any Target field can.
     let mode = match enum_member(obj, "mode", &["local", "internal", "s3"]) {
         Ok(m) => m,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -140,8 +139,8 @@ pub async fn put(
     };
 
     let current = get_storage_config(&state.pg, &sb).await;
-    // `body.secretAccessKey || current.secretAccessKey` — JS ||: the blank
-    // secret on a local config is "keep what's stored", never "erase".
+    // The || spelling: a blank secret means "keep what's stored", never
+    // "erase".
     let mut target = target;
     target.endpoint = trim_endpoint(target.endpoint);
     if target.secret_access_key.is_empty() {
@@ -199,8 +198,9 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ action: z.enum([...]).optional() }) — absent action is the
-    // no-op branch, anything else answers the enum's own message.
+    // action is an optional enum (test|test-replica|migrate|sync) — a bad
+    // value answers the enum's own message, and an absent action falls
+    // through to "unknown action" below.
     let action =
         match optional_enum_member(obj, "action", &["test", "test-replica", "migrate", "sync"]) {
             Ok(a) => a,
@@ -208,7 +208,7 @@ pub async fn post(
         };
     let cfg = get_storage_config(&state.pg, &sb).await;
     let audit = |action: &str, after: Option<Value>| {
-        // fire-and-forget, exactly the TS `void logAudit(...)`
+        // fire-and-forget — the audit line never blocks the verb.
         let pg = state.pg.clone();
         let actor = actor_of(&user);
         let action = format!("storage.{action}");
@@ -228,8 +228,7 @@ pub async fn post(
             .await;
         });
     };
-    // TS wraps every action in one try/catch → 400 {error}; the Rust halves
-    // return Result<_, String>, mapped to the same shape.
+    // Every action failure answers the same shape: a 400 {error}.
     match action.as_deref() {
         Some("test") => {
             // Test what the current mode would actually use.

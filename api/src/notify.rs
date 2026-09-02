@@ -1,15 +1,14 @@
-// Notifications — ui/src/server/notifications.ts, whole: the user's inbox
-// (list, unread count, mark-read), the per-user routing table in
-// users.notify_prefs, the instance email master switch in app_settings, the
-// single writer (`add_notification`) every filing of a row goes through, and
-// the mail plane — the one door out, the outbox, the breaker, and the drain
-// the scheduler ticks. The transport itself (SMTP/Resend) and the shared mail
-// chrome live in email.rs; the digest builds on the same door.
+// Notifications: the user's inbox (list, unread count, mark-read), the
+// per-user routing table in users.notify_prefs, the instance email master
+// switch in app_settings, the single writer (`add_notification`) every filing
+// of a row goes through, and the mail plane — the one door out, the outbox,
+// the breaker, and the drain the scheduler ticks. The transport itself
+// (SMTP/Resend) and the shared mail chrome live in email.rs; the digest
+// builds on the same door.
 //
-// The class vocabulary is lib/notify-classes.ts ported whole: classes,
-// fallbacks, the digest's reserved key. resolve/digest DERIVE the effective
-// answer here exactly as there, from the same jsonb, so a hand-edited row
-// degrades identically on both runtimes.
+// The class vocabulary — classes, fallbacks, the digest's reserved key — is
+// declared here once; resolve/digest DERIVE the effective answer from the
+// stored jsonb, so a hand-edited row degrades to the same defaults.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -22,7 +21,7 @@ use crate::realtime::{RealtimeDeps, UserEvent, publish_user};
 use serde_json::Value;
 use sqlx::PgPool;
 
-/// One class as lib/notify-classes.ts declares it — id and the fallback route
+/// One class as declared above — id and the fallback route
 /// a person who never touched the switch gets. Order is the wire order: the
 /// resolved prefs object serializes in this sequence.
 pub const NOTIFY_CLASSES: &[(&str, &str)] = &[
@@ -44,8 +43,8 @@ fn is_route(v: &Value) -> bool {
 }
 
 /// The full routing table: stored choice when it is a route we understand,
-/// the class fallback otherwise (lib/notify-classes.ts resolveNotifyPrefs).
-/// Key order is NOTIFY_CLASSES order — what Object.fromEntries gives there.
+/// the class fallback otherwise.
+/// Key order is NOTIFY_CLASSES order.
 pub fn resolve_prefs(stored: &Value) -> Value {
     let mut m = serde_json::Map::new();
     for (id, fallback) in NOTIFY_CLASSES {
@@ -63,8 +62,7 @@ pub fn resolve_prefs(stored: &Value) -> Value {
 
 /// The effective digest answer: an explicit on/off wins outright; with no
 /// explicit choice it is DERIVED in the direction that cannot spam — someone
-/// who routed every class in-app is not mailed a digest either
-/// (lib/notify-classes.ts digestEnabled).
+/// who routed every class in-app is not mailed a digest either.
 pub fn digest_enabled(stored: &Value) -> bool {
     if let Some(explicit) = stored.get(DIGEST_PREF_KEY).and_then(|v| v.as_str())
         && matches!(explicit, "on" | "off")
@@ -79,8 +77,7 @@ pub fn digest_enabled(stored: &Value) -> bool {
 
 /// The notification row as the LIST serves it — the select's key order
 /// (id, kind, title, body, href, readAt, createdAt). Timestamps ride as
-/// epoch-ms → ISO, which is byte-identical to postgres.js handing TS a Date
-/// and JSON.stringify writing toISOString.
+/// epoch-ms → ISO, millisecond precision, UTC.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Notification {
@@ -138,8 +135,8 @@ pub async fn unread_count(pg: &PgPool, user_id: &str) -> Result<i32, sqlx::Error
 }
 
 /// Mark specific notifications read, or all of the user's when ids is
-/// omitted — and when it is EMPTY, which TS's own `ids.length > 0` guard
-/// folds into the same all-rows update.
+/// omitted — and when it is EMPTY, which folds into the same all-rows
+/// update.
 pub async fn mark_notifications_read(
     pg: &PgPool,
     user_id: &str,
@@ -171,10 +168,9 @@ pub async fn mark_notifications_read(
 
 // ── The write: one notification, filed ───────────────────────────────────────
 
-/// `kind` (what the writer called it) → the class a user has an opinion about
-/// (lib/notify-classes.ts KIND_CLASS). Kinds are free-form strings at ~10 call
-/// sites and predate this table; the map is how they stay free-form without
-/// every new one inventing a setting.
+/// `kind` (what the writer called it) → the class a user has an opinion about.
+/// Kinds are free-form strings at ~10 call sites and predate this table; the
+/// map is how they stay free-form without every new one inventing a setting.
 fn kind_class(kind: &str) -> Option<&'static str> {
     Some(match kind {
         // Someone pointed at you on purpose.
@@ -193,7 +189,7 @@ fn kind_class(kind: &str) -> Option<&'static str> {
     })
 }
 
-/// The class a notification belongs to (notifyClassOf). Every class id is also
+/// The class a notification belongs to. Every class id is also
 /// accepted as a kind, so a new writer can name the class directly and skip
 /// the table.
 ///
@@ -242,8 +238,7 @@ impl NotifyDeps {
     }
 }
 
-/// daily-brief-stale.ts markBriefStale, complete now that the realtime plane
-/// has crossed: mark these people's current brief as needing a sweep, AND tell
+/// Mark these people's current brief as needing a sweep, AND tell
 /// their open pages it moved.
 ///
 /// Bounded to the last 48 hours so a long-lived account does not have every
@@ -253,8 +248,7 @@ impl NotifyDeps {
 /// four scoped queries and up to one model call; this clears the throttle and
 /// rings the bell, and the next read does the work.
 pub async fn mark_brief_stale(deps: &NotifyDeps, user_ids: &[String]) -> Result<(), sqlx::Error> {
-    // TS: [...new Set(userIds)].filter(Boolean) — deduped, and an empty id is
-    // nobody's brief, not a row to look up.
+    // Deduped, and an empty id is nobody's brief, not a row to look up.
     let mut ids: Vec<String> = user_ids.to_vec();
     ids.sort();
     ids.dedup();
@@ -282,7 +276,7 @@ pub async fn mark_brief_stale(deps: &NotifyDeps, user_ids: &[String]) -> Result<
     Ok(())
 }
 
-/// notifications.ts addNotification — THE single writer. Ten call sites file
+/// THE single writer. Ten call sites file
 /// rows; this one decides where they go. The caller's contract is fire and
 /// forget: the row is the record, and everything after it is a delivery that
 /// must not cost the request it rode in on.
@@ -316,10 +310,9 @@ pub async fn add_notification(
         .unwrap_or("in_app")
         .to_string();
     let wants_mail = matches!(route.as_str(), "email" | "both");
-    // The gate read is the 10s-cached one (TS getNotifyDelivery without
-    // `fresh`): a notification is filed on request paths, and the drain
-    // re-reads fresh anyway, so the cache's whole job is saving a settings
-    // query per mention.
+    // The gate read is the 10s-cached one: a notification is filed on request
+    // paths, and the drain re-reads fresh anyway, so the cache's whole job is
+    // saving a settings query per mention.
     let will_mail = wants_mail && delivery_gate(&deps.pg).await;
 
     let (notification_id,): (String,) = sqlx::query_as(
@@ -403,7 +396,7 @@ pub async fn get_notify_settings(pg: &PgPool, user_id: &str) -> (Value, &'static
 /// Merge a patch into the stored blob and return the effective settings.
 /// Unknown keys are dropped rather than stored — the column is jsonb and this
 /// is the writer that keeps it honest. Err (no row) is the deleted-user
-/// corner: TS throws 'no such user' out of the route.
+/// corner.
 pub async fn set_notify_settings(
     pg: &PgPool,
     user_id: &str,
@@ -441,17 +434,16 @@ pub async fn set_notify_settings(
 }
 
 /// Is this instance sending notification mail? Off unless the settings row
-/// says exactly true — a hand-edited row must not be able to turn mail on
-/// (getNotifyDelivery). get_setting already falls back on a failed read,
-/// which is deliveryOrOff's catch.
+/// says exactly true — a hand-edited row must not be able to turn mail on.
+/// get_setting already falls back on a failed read, so this never errors.
 pub async fn get_notify_delivery(pg: &PgPool) -> bool {
     let stored = get_setting(pg, DELIVERY_KEY, serde_json::json!({})).await;
     stored.get("emailEnabled") == Some(&Value::Bool(true))
 }
 
 /// Turn notification email on or off for the whole instance — the admin
-/// master switch (setNotifyDelivery). The 10s in-process cache and the
-/// console.warn on TS are not wire-visible; the DB row is the contract.
+/// master switch. The 10s in-process read cache is not wire-visible; the DB
+/// row is the contract.
 pub async fn set_notify_delivery(pg: &PgPool, email_enabled: bool) -> Result<(), sqlx::Error> {
     set_setting(
         pg,
@@ -465,19 +457,18 @@ pub async fn set_notify_delivery(pg: &PgPool, email_enabled: bool) -> Result<(),
 //
 // Every mail Talaria sends ON BEHALF OF A NOTIFICATION OR A DIGEST leaves
 // through `send_gated_mail`, and nothing else in this crate may call the
-// transport for that purpose. scripts/check-invariants.mjs fails the TS build
-// on a fifth caller of sendEmail, because this is the second time this exact
-// bug has been written:
+// transport for that purpose — scripts/check-invariants.mjs fails the tree on
+// a caller that tries, because this exact bug has been written twice:
 //
-//   · `addNotification` asked the switch, so notification mail was gated.
-//   · `runDigest` called sendEmail directly and never asked, so an admin who
-//     turned email OFF still got a daily digest mailed to every user in the
-//     workspace — from a control that is named "email delivery", is audited,
-//     and did not do what its name said.
+//   · notification mail asked the switch, so it was gated.
+//   · the digest called the transport directly and never asked, so an admin
+//     who turned email OFF still got a daily digest mailed to every user in
+//     the workspace — from a control that is named "email delivery", is
+//     audited, and did not do what its name said.
 //
 // The fix is not another `if enabled` at the second call site. Two copies of
 // a rule is how the first one drifts. It is one function both paths must go
-// through (and the digest's port crosses through this same door).
+// through (the digest crosses through this same door).
 //
 // It reads the switch FRESH on every single mail, not once per batch. A kill
 // switch you throw at 03:00 has to stop the drain that is already running, not
@@ -506,7 +497,7 @@ async fn read_delivery_switch(pg: &PgPool) -> Result<bool, sqlx::Error> {
     Ok(stored.as_ref().and_then(|v| v.get("emailEnabled")) == Some(&Value::Bool(true)))
 }
 
-/// TS getNotifyDelivery() — the 10s-cached read `add_notification` gates on.
+/// The 10s-cached switch read `add_notification` gates on.
 /// A failed read is off (the answer that sends less mail) and is NOT cached:
 /// a blip must not pin the wrong answer for ten seconds.
 const DELIVERY_TTL_MS: i64 = 10_000;
@@ -544,7 +535,7 @@ pub struct GatedSendResult {
 // refused". Per mail, on a workspace-wide digest pass, it is the outage.
 static BLOCKED_WARN: LazyLock<Mutex<(i64, i64)>> = LazyLock::new(|| Mutex::new((0, 0)));
 
-/// One mail offered to the door — the TS sendGatedMail object param.
+/// One mail offered to the door.
 pub struct GatedMail<'a> {
     pub to: &'a str,
     pub subject: &'a str,
@@ -628,11 +619,7 @@ pub async fn send_gated_mail(
 // would otherwise open eight SMTP connections at once, and a burst is exactly
 // when a provider starts rate-limiting.
 //
-// What this replaced (on the TS side) was a single promise chain with
-// `.then(send)` appended per notification — no depth, so a dead SMTP server
-// did not stop anything, it accumulated, and the only bound on the whole
-// structure was the heap. So: a real queue, with the four things a queue
-// needs to be safe.
+// A real queue, with the four things a queue needs to be safe:
 //   DEPTH    — MAX_QUEUED, and past it new mail is refused at the door.
 //   DROP     — refuse the NEWEST rather than evicting the oldest. Load
 //              shedding at the entrance is predictable and it never throws
@@ -715,10 +702,9 @@ struct OutboxState {
 /// a drain is mid-send. The tokio mutex below it is the serial consumer.
 pub struct Outbox {
     state: Mutex<OutboxState>,
-    /// One drain at a time. TS hands a concurrent caller the in-flight
-    /// promise (shared result); here the second caller waits for the first
-    /// pass to finish and then finds whatever is left. The invariant that
-    /// matters — never two drains sending at once — is identical either way.
+    /// One drain at a time. A concurrent caller waits for the in-flight pass
+    /// to finish and then finds whatever is left — the invariant that matters
+    /// is never two drains sending at once.
     serial: tokio::sync::Mutex<()>,
 }
 
@@ -839,13 +825,13 @@ impl Outbox {
         };
         while offers > 0 {
             offers -= 1;
-            // PEEKED, not popped. What the TS version replaced took the item
-            // off the queue before the send, so a failure destroyed it: three
-            // mails timed out and simply vanished — nothing requeued, nothing
-            // retried, and no in-app trace of them either. Nothing leaves this
-            // queue until it has been delivered, refused by the switch, or
-            // given up on out loud. (The clone is the peek: the row itself
-            // stays in the queue for the whole await.)
+            // PEEKED, not popped. Taking the item off the queue before the
+            // send would make a failure destroy it: a mail that timed out
+            // would simply vanish — nothing requeued, nothing retried, and no
+            // in-app trace of it either. Nothing leaves this queue until it
+            // has been delivered, refused by the switch, or given up on out
+            // loud. (The clone is the peek: the row itself stays in the queue
+            // for the whole await.)
             let Some(item) = self
                 .state
                 .lock()
@@ -977,8 +963,8 @@ impl Outbox {
     }
 }
 
-/// The process outbox — one per process, like the TS globalThis slot, because
-/// the job that drains it is `per_instance` by the same reasoning.
+/// The process outbox — one per process, because the job that drains it is
+/// `per_instance`: no other instance can see this queue.
 pub fn outbox() -> &'static Outbox {
     static OUTBOX: LazyLock<Outbox> = LazyLock::new(|| Outbox {
         state: Mutex::new(outbox_state()),
@@ -1029,7 +1015,7 @@ pub struct NotificationMailStats {
 }
 
 /// What the outbox is doing, for verification and for anything that wants to
-/// report on it (server/alerts.ts turns these numbers into the observability
+/// report on it (alerts.rs turns these numbers into the observability
 /// surface). PROCESS-LOCAL, like the queue it describes, so it reports on the
 /// instance that answered the request.
 pub fn notification_mail_stats() -> NotificationMailStats {
@@ -1098,7 +1084,7 @@ pub async fn drain_notification_mail(deps: &DrainDeps, budget_ms: i64) -> MailDr
 // ── The email itself ─────────────────────────────────────────────────────────
 
 /// This deployment's canonical base URL, or None when it has no VERIFIED
-/// domain (instance.ts instanceBaseUrl). Every absolute in-app link in a mail
+/// domain. Every absolute in-app link in a mail
 /// is built on it — the digest's deep links and its button, the notification
 /// mail's settings link — so "no verified domain" has to mean "no links",
 /// never "links that do not resolve".
@@ -1219,9 +1205,9 @@ async fn send_notification_email(
     sb: &crate::secretbox::SecretBox,
     m: &QueuedMailPayload,
 ) -> SendOneResult {
-    // The recipient lookup failing is a FAILED SEND, not "no address": TS
-    // wraps the whole body in a catch so anything that breaks composition
-    // counts toward the breaker instead of escaping into the drain.
+    // The recipient lookup failing is a FAILED SEND, not "no address":
+    // anything that breaks composition counts toward the breaker instead of
+    // escaping into the drain.
     let to = match sqlx::query_scalar::<_, Option<String>>(
         "select email from users where id = $1::uuid",
     )
@@ -1329,7 +1315,7 @@ async fn mark_read_on_delivery(pg: &PgPool, notification_id: &str) {
     }
 }
 
-/// Production drain edges over the pool + secretbox. The flip's boot path
+/// Production drain edges over the pool + secretbox. The boot path in jobs.rs
 /// builds these (the secretbox loads through AppState) and registers the job.
 pub fn real_drain_deps(pg: PgPool, sb: crate::secretbox::SecretBox) -> Arc<DrainDeps> {
     let delivery: DeliveryFn = {
@@ -1465,12 +1451,11 @@ pub fn register_notification_mail_job(deps: Arc<DrainDeps>) {
     crate::scheduler::register_job(notification_mail_job_spec(deps));
 }
 
-/// The members of a channel — who a message in it might be about
-/// (daily-brief-stale.ts channelMemberIds).
+/// The members of a channel — who a message in it might be about.
 ///
-/// Kept here rather than in channels.rs for the cycle reason the TS file
-/// states: channels' insert needs the brief nudge, and the brief's delegation
-/// layer needs channels' insert. It is one query and it is the only thing this
+/// Kept here rather than in channels.rs to break the cycle: channels' insert
+/// needs the brief nudge, and the brief's delegation layer needs channels'
+/// insert. It is one query and it is the only thing this
 /// module needs to know about a channel.
 pub async fn channel_member_ids(
     pg: &sqlx::PgPool,
@@ -1484,10 +1469,9 @@ pub async fn channel_member_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// A message landed in a conversation (daily-brief-stale.ts
-/// briefsFollowMessage). Detached on purpose: the person who sent it is waiting
-/// on the POST that wrote it, and their reply must not block on somebody
-/// else's brief bookkeeping.
+/// A message landed in a conversation. Detached on purpose: the person who
+/// sent it is waiting on the POST that wrote it, and their reply must not
+/// block on somebody else's brief bookkeeping.
 ///
 /// WHAT IT DOES NOT DO IS SWEEP. A sweep is four scoped queries and up to one
 /// model call, and posting a message in a busy DM would fire one per message
@@ -1895,7 +1879,7 @@ mod tests {
             job_message(&budget, None).as_deref(),
             Some("nothing sent this pass — 2 mail(s) still queued")
         );
-        // The full tally, every clause present and in TS order.
+        // The full tally, every clause present and in order.
         let full = MailDrainResult {
             sent: 3,
             failed: 1,

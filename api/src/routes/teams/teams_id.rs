@@ -1,10 +1,8 @@
-// /api/teams/{id} — port of ui/src/routes/api/teams.$id.ts. PATCH { name } →
-// rename (owner); DELETE → delete (owner) — the member rows cascade and its
-// boards survive as personal boards (team_id set null, not cascaded), which
-// is why both are owner-gated. A non-uuid {id} hits teamRole's raw SQL bind:
-// TS answers the platform's plain-text 500, this port the house envelope
-// (RUST-MIGRATION.md, divergences). Gate order is TS's: uuid bind, then the
-// owner check, then the body — a non-owner with a bad body gets the 403.
+// /api/teams/{id}. PATCH { name } → rename (owner); DELETE → delete (owner)
+// — the member rows cascade and its boards survive as personal boards
+// (team_id set null, not cascaded), which is why both are owner-gated. A
+// non-uuid {id} → the house 500. Gate order: uuid bind, then the owner
+// check, then the body — a non-owner with a bad body gets the 403.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member};

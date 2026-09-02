@@ -1,7 +1,6 @@
-// Teams — a group of users that collectively own/access boards. Port of
-// ui/src/server/teams.ts, SQL verbatim (only the uuid/epoch casts added for
-// sqlx). The member rows cascade on team delete; boards survive as personal
-// boards (team_id set null, not cascaded) — the delete stays owner-gated.
+// Teams — a group of users that collectively own/access boards. The member
+// rows cascade on team delete; boards survive as personal boards (team_id
+// set null, not cascaded) — the delete stays owner-gated.
 
 use crate::agent_auth::epoch_ms_to_iso;
 use sqlx::PgPool;
@@ -52,7 +51,7 @@ pub async fn list_teams(pg: &PgPool, user_id: &str) -> Result<Vec<Team>, sqlx::E
         .collect())
 }
 
-/// The caller's role in a team, None when not a member (teams.ts teamRole).
+/// The caller's role in a team, None when not a member.
 pub async fn team_role(
     pg: &PgPool,
     user_id: &str,
@@ -135,9 +134,8 @@ pub async fn list_team_members(pg: &PgPool, team_id: &str) -> Result<Vec<TeamMem
 
 /// Add (or re-role) a member by email. Ok(None) = added; Ok(Some(sentence))
 /// = the fixed 400 the route answers when nobody has signed in with that
-/// email; Err = a DB failure, which the route 500s (TS's throw escapes the
-/// route). The lookup is by the trimmed+lowercased email, exactly as TS does
-/// inside its query.
+/// email; Err = a DB failure, which the route 500s. The lookup is by the
+/// trimmed+lowercased email.
 pub async fn add_team_member(
     pg: &PgPool,
     team_id: &str,
@@ -165,7 +163,7 @@ pub async fn add_team_member(
 }
 
 /// Remove a member — never an owner (the `role <> 'owner'` guard makes it a
-/// silent no-op, like TS's fire-and-forget delete).
+/// silent no-op).
 pub async fn remove_team_member(
     pg: &PgPool,
     team_id: &str,

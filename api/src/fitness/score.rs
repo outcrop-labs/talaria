@@ -85,7 +85,7 @@ use crate::platform_agents::PLATFORM_AGENTS;
 /// other surface said `unfit`, and the difference rendered as raw text with
 /// its own inline colour table.
 ///
-/// Serializes lowercase exactly as the TS union spells it.
+/// Serializes lowercase — the wire spelling every surface reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FitnessBand {
@@ -342,10 +342,10 @@ const DECLARED_EDGES: [DeclaredEdge; 1] = [DeclaredEdge {
 }];
 
 /// The edges the binding pass resolves over: every question answered with a
-/// refusal, and every ROLE the chain consults recorded on the way past. This
-/// is the TS `rolesReaching` dependency set (`resolveRoleModel` adds to `seen`
-/// and returns null, everything else null/false/empty) — a chain that falls
-/// through every step, so the set of roles it asked for is the answer.
+/// refusal, and every ROLE the chain consults recorded on the way past
+/// (`role_model` adds to the seen-set and returns None, everything else
+/// None/false/empty) — a chain that falls through every step, so the set of
+/// roles it asked for is the answer.
 struct RefusingEdges {
     roles: Mutex<Vec<String>>,
 }

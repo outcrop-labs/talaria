@@ -1,5 +1,4 @@
-// The Google OAuth CLIENT credentials — port of
-// ui/src/server/google/client-config.ts. The record lives in app_settings
+// The Google OAuth CLIENT credentials. The record lives in app_settings
 // (`google_oauth_client`) with the secret SEALED (secretbox); env
 // (AUTH_GOOGLE_CLIENT_ID/_SECRET) remains the fallback, and the record wins
 // only when it is complete — a half-saved record never takes over from
@@ -36,7 +35,7 @@ pub async fn resolve_google_client(pg: &PgPool, sb: &SecretBox) -> Option<Google
     if let (Some(client_id), Some(enc)) = (client_id, enc) {
         // Sealed with a lost/rotated key → fall through to env rather than die.
         if let Ok(client_secret) = sb.open(enc) {
-            // `stored.hd ?? null`: absent → null; a present string rides as-is.
+            // hd: absent → null; a present string rides as-is.
             let hd = stored.get("hd").and_then(|v| v.as_str()).map(String::from);
             return Some(GoogleClient {
                 client_id: client_id.to_string(),
@@ -112,9 +111,8 @@ pub struct ClientConfigPatch {
 
 /// Patch the stored client. The secret follows the house rule: a non-empty
 /// string seals + stores it, null/'' clears it, absent leaves it untouched.
-/// A client id that trims to nothing is the one refusal — the TS route lets
-/// the throw escape (no catch, no boundary), which surfaces as an unstructured
-/// 500; the caller maps the Err to the same.
+/// A client id that trims to nothing is the one refusal — the Err surfaces as
+/// an unstructured 500; the caller maps it the same way.
 pub async fn set_google_client_config(
     pg: &PgPool,
     sb: &SecretBox,
@@ -153,7 +151,8 @@ pub async fn set_google_client_config(
         return Err("a client id is required".into());
     }
 
-    // StoredClient's literal order — the stored jsonb keeps it.
+    // Literal key order (clientId, clientSecretEnc, hd) — the stored jsonb
+    // keeps it.
     let mut next = serde_json::Map::new();
     next.insert("clientId".into(), serde_json::Value::String(next_client_id));
     next.insert(

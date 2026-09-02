@@ -5,10 +5,9 @@
 // Hermes reads skills per invocation, so edits here are live — no restart.
 // Each skill is a directory holding a SKILL.md (plus optional support files).
 //
-// Port of ui/src/server/agent-skills.ts — the write half (ownerRoot, safeJoin,
-// writeSkill) the agent-hire run seeds a fresh agent with, and the read/
-// mutation surface (listAllSkills, readSkill, delete/rename/copy, the
-// Summarizer queue) the skills routes serve.
+// The write half is what the agent-hire run seeds a fresh agent with; the
+// read/mutation surface (list, read, delete/rename/copy, the Summarizer
+// queue) is what the skills routes serve.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -79,7 +78,7 @@ fn safe_join(root: &std::path::Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// Write (or overwrite) a skill's SKILL.md, snapshotting the revision when
-/// the content changed. Best-effort history, like TS's `.catch(() => {})` —
+/// the content changed. Best-effort history —
 /// a skill a hire cannot snapshot still lands on disk.
 pub async fn write_skill(
     pg: &PgPool,
@@ -101,9 +100,9 @@ pub async fn write_skill(
     Ok(())
 }
 
-// ── The read half (listAllSkills and friends) ────────────────────────────────
+// ── The read half ────────────────────────────────────────────────────────────
 
-/// One owner as the listing shows it (agent-skills.ts `OwnerInfo`).
+/// One owner as the listing shows it.
 struct OwnerInfo {
     owner: String,
     label: String,
@@ -142,8 +141,7 @@ async fn owners(pg: &PgPool) -> Result<Vec<OwnerInfo>, sqlx::Error> {
 }
 
 /// The owner table including roots — the richer lookup the read/mutation
-/// surface needs (ownerRoot). Unknown owner is an error, byte-identical to
-/// TS's `throw new Error(...)`.
+/// surface needs. Unknown owner is an error.
 async fn owner_info(pg: &PgPool, owner: &str) -> Result<OwnerInfo, String> {
     owners(pg)
         .await
@@ -166,8 +164,7 @@ pub async fn owner_model(pg: &PgPool, owner: &str) -> Option<String> {
 /// PLATFORM skills — the canonical set Talaria seeds into the shared root
 /// (scripts/skills/*). Essential plumbing like talaria-toolkit: every agent
 /// depends on them, so editing/renaming/deleting is locked to admins.
-/// A missing directory reads as the empty set, exactly like TS's
-/// `.catch(() => [])`.
+/// A missing directory reads as the empty set.
 pub fn platform_skill_names() -> std::io::Result<Vec<String>> {
     let dir = std::env::current_dir()?.join("../scripts/skills");
     let mut names = Vec::new();
@@ -215,9 +212,9 @@ pub fn summarize_fallback(md: &str) -> String {
         let stripped = t.strip_prefix("description:").map(|rest| rest.trim_start());
         let picked = match stripped {
             // strip_prefix already guarantees the ':' — an EMPTY remainder is
-            // `description:` with nothing after, which TS's `(.+)` does not
-            // match (it needs one non-newline char), so only a non-empty
-            // remainder wins.
+            // `description:` with nothing after, which the picker's grammar
+            // does not match (it needs one non-newline char), so only a
+            // non-empty remainder wins.
             Some(rest) if !rest.is_empty() => Some(rest.to_string()),
             _ => None,
         };
@@ -290,9 +287,9 @@ pub async fn list_all_skills(state: &AppState) -> Result<Vec<OwnerSkills>, sqlx:
                 });
             }
         }
-        // TS sorts with localeCompare; skill names live in [a-z0-9._-], where
+        // Skill names live in [a-z0-9._-], where
         // byte order and en collation agree on everything but punctuation
-        // ties — documented as equivalent for the seeded alphabet.
+        // ties — equivalent for this alphabet.
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         out.push(OwnerSkills {
             owner: o.owner,
@@ -305,8 +302,7 @@ pub async fn list_all_skills(state: &AppState) -> Result<Vec<OwnerSkills>, sqlx:
     Ok(out)
 }
 
-/// A skill dir's non-dot files, read-order as the OS returns it (TS's
-/// readdir filter — no sort there either).
+/// A skill dir's non-dot files, SORTED — the order the wire promises.
 async fn visible_files(dir: &std::path::Path) -> Vec<String> {
     match tokio::fs::read_dir(dir).await {
         Ok(mut rd) => {
@@ -318,10 +314,9 @@ async fn visible_files(dir: &std::path::Path) -> Vec<String> {
                     out.push(n.to_string());
                 }
             }
-            // The oracle serves SORTED entries — node's readdir sorts, and the
-            // TS api runs under node (raw getdents order, which tokio's
-            // read_dir returns, differs). Skill file names are ASCII, where
-            // byte order and node's order agree.
+            // SORTED — tokio's read_dir returns raw getdents order, which is
+            // not sorted. Skill file names are ASCII, where byte order and
+            // collation agree.
             out.sort();
             out
         }
@@ -329,8 +324,8 @@ async fn visible_files(dir: &std::path::Path) -> Vec<String> {
     }
 }
 
-/// `readSkill` — the SKILL.md body and the dir's visible files. A missing
-/// skill dir is an error (readdir without a catch); a missing SKILL.md is
+/// The SKILL.md body and the dir's visible files. A missing
+/// skill dir is an error; a missing SKILL.md is
 /// empty content.
 pub async fn read_skill(
     pg: &PgPool,
@@ -350,7 +345,7 @@ pub async fn read_skill(
             files.push(n.to_string());
         }
     }
-    // node's readdir (the TS runtime) sorts; see visible_files.
+    // sorted like visible_files — the order the wire promises.
     files.sort();
     let content = tokio::fs::read_to_string(dir.join("SKILL.md"))
         .await
@@ -358,7 +353,7 @@ pub async fn read_skill(
     Ok((content, files))
 }
 
-/// `deleteSkill` — only remove things that look like a skill dir.
+/// Delete — only remove things that look like a skill dir.
 pub async fn delete_skill(pg: &PgPool, owner: &str, name: &str) -> Result<(), String> {
     let o = owner_info(pg, owner).await?;
     let dir = safe_join(&o.root, name)?;
@@ -375,7 +370,7 @@ pub async fn delete_skill(pg: &PgPool, owner: &str, name: &str) -> Result<(), St
     Ok(())
 }
 
-/// `renameSkill` — rename in place (same owner). Refuses to clobber.
+/// Rename in place (same owner). Refuses to clobber.
 pub async fn rename_skill(
     pg: &PgPool,
     owner: &str,
@@ -395,7 +390,7 @@ pub async fn rename_skill(
     Ok(())
 }
 
-/// `copySkill` — the whole dir, support files included, to another owner —
+/// Copy — the whole dir, support files included, to another owner —
 /// optionally removing the source (= move, e.g. promote dept → shared).
 pub async fn copy_skill(
     pg: &PgPool,
@@ -426,7 +421,7 @@ pub async fn copy_skill(
     Ok(())
 }
 
-/// node's `cp(recursive)`: dirs, files, and nothing clever about links.
+/// A plain recursive copy: dirs, files, and nothing clever about links.
 async fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dst)
         .await
@@ -446,7 +441,7 @@ async fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
-// ── The Summarizer storage half (skill-summaries.ts) ────────────────────────
+// ── The Summarizer storage half ───────────────────────────────────────────────
 //
 // The prompt, the model chain and the one-line extraction live in the
 // harness def; this is the content hash, the in-flight dedupe and the upsert.
@@ -472,7 +467,7 @@ pub struct StoredSummary {
     pub summary: String,
 }
 
-/// All stored summaries in one query — listAllSkills consults this map.
+/// All stored summaries in one query — the listing consults this map.
 pub async fn stored_summaries(
     pg: &PgPool,
 ) -> Result<std::collections::HashMap<String, StoredSummary>, sqlx::Error> {
@@ -563,7 +558,7 @@ pub async fn move_summary(
     to_name: &str,
 ) -> Result<(), sqlx::Error> {
     // A unique violation on (to_owner, to_name) — the one way the update
-    // fails — falls back to the delete, exactly like TS's `.catch` ladder.
+    // fails — falls back to the delete.
     let moved = sqlx::query(
         "update skill_summaries set owner = $3, name = $4 where owner = $1 and name = $2",
     )

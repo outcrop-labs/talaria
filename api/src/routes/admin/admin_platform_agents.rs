@@ -1,9 +1,8 @@
-// /api/admin/platform-agents — port of ui/src/routes/api/admin.platform-agents.ts.
-// Platform sub-agents — Talaria's own workers — and which model powers each.
-// GET → registry + assignments + assignable models. PUT { id, model|null } →
-// assign (null = back to auto). The Judge's pick lives in its own
-// judge_config (shared with the Guard panel) — this route reads/writes it
-// there so there's one source of truth. Admins only.
+// /api/admin/platform-agents. Platform sub-agents — Talaria's own workers —
+// and which model powers each. GET → registry + assignments + assignable
+// models. PUT { id, model|null } → assign (null = back to auto). The Judge's
+// pick lives in its own judge_config (shared with the Guard panel) — this
+// route reads/writes it there so there's one source of truth. Admins only.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -26,8 +25,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
-/// The assignable ids in catalog order — z.enum's set, and the order the
-/// `efforts` map builds in.
+/// The assignable ids in catalog order — also the order the `efforts` map
+/// builds in.
 fn assignable_ids() -> Vec<&'static str> {
     PLATFORM_AGENTS
         .iter()
@@ -41,7 +40,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         return gate;
     }
     // assignments = the raw setting, with judge overlaid from judge_config —
-    // an undefined judge model DROPS the key (undefined never serializes).
+    // a missing judge model DROPS the key rather than spelling null.
     let mut assignments = match get_platform_agent_models(&state.pg).await {
         Value::Object(o) => o,
         _ => serde_json::Map::new(),
@@ -55,8 +54,8 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
             assignments.remove("judge");
         }
     }
-    // (await gatewayModels()).map — no catch: a gateway read failure is a 500
-    // here, unlike the judge panel's graceful [].
+    // No catch here: a gateway read failure is a 500, unlike the judge
+    // panel's graceful [].
     let models: Vec<String> = match gateway_models(&state.pg).await {
         Ok(m) => m.into_iter().map(|m| m.id).collect(),
         Err(e) => {
@@ -68,7 +67,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     let mut efforts = serde_json::Map::new();
     for id in assignable_ids() {
         let slot = agent_slot(id);
-        let effort = prefs.get(&slot).cloned().unwrap_or(Value::Null); // ?? null
+        let effort = prefs.get(&slot).cloned().unwrap_or(Value::Null); // null when unset
         efforts.insert(id.to_string(), effort);
     }
     Json(serde_json::json!({
@@ -96,9 +95,9 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ id: z.enum(IDS), model: z.string().max(200).nullish(),
-    //             effort: z.string().min(1).max(24).nullish() }) — the enum's
-    // message lists every assignable id in catalog order.
+    // id (enum over the assignable ids — the message lists them in catalog
+    // order), model (string max 200, nullish), effort (string 1..24,
+    // nullish).
     let id = match enum_member(obj, "id", &assignable_ids()) {
         Ok(i) => i,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -126,11 +125,11 @@ pub async fn put(
         Some(v) => return house_error(StatusCode::BAD_REQUEST, &string_msg(zod_type_name(v))),
     };
 
-    // `if (body.model && ...)` — the truthy spelling: an empty string skips
-    // the gateway check entirely (and later writes as a clear).
+    // The truthy spelling: an empty model string skips the gateway check
+    // entirely (and later writes as a clear).
     if let Some(Some(m)) = &model {
         if m.is_empty() {
-            // falsy in TS — no membership check
+            // empty string — no membership check
         } else {
             let on_gateway = match gateway_models(&state.pg).await {
                 Ok(models) => models.iter().any(|g| &g.id == m),
@@ -198,7 +197,7 @@ pub async fn put(
                 target_label: None,
                 before: None,
                 after: Some({
-                    // { effort } — undefined drops, null serializes.
+                    // absent drops the key; null serializes as null.
                     let mut m = serde_json::Map::new();
                     m.insert(
                         "effort".into(),
@@ -211,8 +210,8 @@ pub async fn put(
         .await;
     }
 
-    // TS writes model: undefined as `model !== undefined` gates the branch —
-    // absent never reaches either store.
+    // An absent model never reaches either store — only present (string or
+    // null) does.
     if let Some(model) = &model {
         if id == "judge" {
             let mut cfg = get_judge_config(&state.pg).await;

@@ -1,4 +1,4 @@
-// /api/conversations — port of ui/src/routes/api/conversations.ts. GET
+// /api/conversations. GET
 // ?kind=plan → the user's plan conversations; anything else → their chats.
 // Newest activity first; the client groups them by agent.
 
@@ -20,7 +20,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(resp) => return resp,
     };
-    // searchParams.get('kind') === 'plan' ? 'plan' : 'chat'
+    // ?kind=plan selects plans; every other value (absent included) → chats.
     let kind = uri
         .query()
         .and_then(|q| {

@@ -1,7 +1,7 @@
-// /api/workbench/repos/{agentId} — port of ui/src/routes/api/workbench.
-// repos.$agentId.ts. Per-agent workbench repo grants — explicit, like MCP
-// assignment. GET → the connection's reachable pool + this agent's grants;
-// PUT → replace the grant set (validated against the pool). agents.manage.
+// /api/workbench/repos/{agentId}. Per-agent workbench repo grants —
+// explicit, like MCP assignment. GET → the connection's reachable pool +
+// this agent's grants; PUT → replace the grant set (validated against the
+// pool). agents.manage.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -16,8 +16,7 @@ use crate::github as gh;
 use crate::session::require_perm;
 use crate::state::AppState;
 
-/// `select 1 from agent_defs where id = $id::uuid`.catch(() => []) — the
-/// catch folds a non-uuid param into "no such agent", never a 500.
+/// A non-uuid id folds into "no such agent", never a 500.
 async fn agent_exists(pg: &sqlx::PgPool, id: &str) -> bool {
     sqlx::query_scalar::<_, i32>("select 1 from agent_defs where id = $1::uuid")
         .bind(id)
@@ -59,8 +58,8 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // Required array (min 0 — an empty PUT clears the grants), elements ≤200,
-    // ≤100 items. Validation runs before the agent check in TS (parseBody
-    // first), the agent check before the pool filter.
+    // ≤100 items. Validation runs before the agent check, the agent check
+    // before the pool filter.
     let repos = match string_array_member(obj, "repos", 0, 200, 0, 100) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

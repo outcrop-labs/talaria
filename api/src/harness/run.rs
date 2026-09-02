@@ -1,8 +1,8 @@
-// THE RUNNER — port of harness/run.ts. The one piece of code that talks to a
+// THE RUNNER — the one piece of code that talks to a
 // model on a harness's behalf: it resolves the model, holds the capability
 // floor, widens on measured facts, renders, calls, parses, repairs, guards,
 // redacts, applies the declared failure policy, and meters. Everything a
-// harness DECLARS in `define.rs` is honored here, and nothing else in the tree
+// harness DECLARES in `define.rs` is honored here, and nothing else in the tree
 // decides any of it.
 //
 // WHY THE EDGES ARE INJECTED. Thirteen closures stand between the runner and
@@ -14,23 +14,15 @@
 // here is what Talaria does with it"), and the only way to hold that still is
 // to write the bad reply down and assert against it — which needs a transport
 // that hands back recorded answers. The REAL edges are `real_deps` below; a
-// `RunContext` may replace the set wholesale (tests, and later the fitness
-// suite's replay transport).
+// `RunContext` may replace the set wholesale (tests, and the fitness suite's
+// replay transport).
 //
-// WHAT DELIBERATELY DID NOT CROSS YET:
-//   - `RunContext.signal`. The TS runner forwards an AbortSignal to the
-//     transport; `TransportRequest` has no slot for one until the streaming
-//     surfaces cross (batch 5), so cancellation lands with them rather than as
-//     a dead field here.
-//   - the real transport edge is `dispatch_transport` — `pickTransport`,
-//     gateway or fleet persona by `transport_kind`. The STREAMED pair crosses
-//     with the streaming surfaces (a harness that streams asks for it via
-//     `StreamOptions`, and the inbox focus assistant is its first caller);
-//     until then a caller that needs one injects the edge, which is what the
-//     seam is for.
+// WHAT IS DELIBERATELY ABSENT:
+//   - cancellation. `TransportRequest` carries no signal slot, so a
+//     `RunContext.signal` would be a dead field — nothing between the runner
+//     and the provider could act on an abort.
 //
-// THREE RULES THIS FILE OBEYS, restated from guardrails.ts because the runner
-// is where they bite:
+// THREE RULES THIS FILE OBEYS — the runner is where they bite:
 //   FLAGGED CONTENT NEVER RE-ENTERS A MODEL'S CONTEXT — the repair turn is the
 //   one place the runner puts model output back in, so it goes through the
 //   gate-safe rules first, and the repair prompt carries the parser error and
@@ -85,10 +77,10 @@ impl std::fmt::Display for HarnessError {
 
 impl std::error::Error for HarnessError {}
 
-/// One harness run's outcome. See the TS `HarnessResult` docs for the two
-/// columns that are deliberately not comparable across harnesses
-/// (`schema_valid`) and the two flags that exist because `answered`/`refused`
-/// answer different questions than `raw`/`error` do.
+/// One harness run's outcome. `schema_valid` is deliberately not comparable
+/// across harnesses — each def states its own contract — and `answered` and
+/// `refused` exist as flags because they answer different questions than
+/// `raw`/`error` do.
 #[derive(Debug, Clone)]
 pub struct HarnessResult {
     /// The harness's value — a parsed `Value` for a JSON harness, a
@@ -148,8 +140,8 @@ pub type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// The spec's 'static half comes from the def; the caller's runtime user id
 /// (which enables the 'preferred' step) rides alongside rather than inside,
 /// because a `ModelSpec<'static>` cannot borrow a `RunContext` field and the
-/// edge's boxed future owns everything it touches. The edge merges them —
-/// exactly TS's `{ ...def.model, ...(ctx.userId ? { userId } : {}) }`.
+/// edge's boxed future owns everything it touches. The edge merges them: the
+/// def's model, with the caller's user id when there is one.
 pub type ResolveModelFn = Arc<
     dyn Fn(ModelSpec<'static>, Option<String>) -> BoxFut<Option<(String, ModelChainStep)>>
         + Send
@@ -172,7 +164,7 @@ pub type RecordFindingsFn = Arc<dyn Fn(Vec<Finding>, FindingMeta) -> BoxFut<()> 
 pub type RecordRunFn = Arc<dyn Fn(HarnessRunRow) -> BoxFut<()> + Send + Sync>;
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
-/// Where the guard's findings were filed — the half of `recordFindings`'s meta
+/// Where the guard's findings were filed — the half of `record_findings`'s meta
 /// the runner knows and a caller never restates.
 #[derive(Debug, Clone)]
 pub struct FindingMeta {
@@ -182,10 +174,10 @@ pub struct FindingMeta {
     pub mode: GuardMode,
 }
 
-/// The runner's world. Every TS `.catch(() => …)` on a dep edge has moved
-/// INTO `real_deps` — the real edges degrade (routing errors to no endpoints,
-/// a dead settings read to defaults) and the stub edges a test supplies never
-/// fail, so the runner itself holds no error policy for its own telemetry.
+/// The runner's world. Every degradation policy lives in `real_deps` — the
+/// real edges degrade (routing errors to no endpoints, a dead settings read
+/// to defaults) and the edges a test supplies never fail, so the runner
+/// itself holds no error policy for its own telemetry.
 pub struct HarnessDeps {
     pub resolve_model: ResolveModelFn,
     /// The admin's slot-level effort preference, validated against the model's
@@ -205,8 +197,8 @@ pub struct HarnessDeps {
     /// used it.
     pub reach: ReachFn,
     pub transport: TransportFn,
-    /// None is TS's `.catch(() => null)`: a guard config that could not be
-    /// read means no guard pass and no findings, not a failed run.
+    /// None means the config could not be read: no guard pass and no
+    /// findings, not a failed run.
     pub guard_config: GuardConfigFn,
     /// The gate-safe rules over plain text — `input` is the turn's own
     /// grounding material.
@@ -217,8 +209,8 @@ pub struct HarnessDeps {
 }
 
 /// The real edges: one PgPool (and the gateway transport's state handle)
-/// cloned into thirteen closures. Nothing here fails outward — every TS
-/// `.catch` on a dep call is reproduced as a degradation inside the edge.
+/// cloned into thirteen closures. Nothing here fails outward — every
+/// degradation a dep call might need lives inside the edge itself.
 pub fn real_deps(state: &AppState) -> HarnessDeps {
     // One pool clone per edge: each closure is `move`, and the pool is not
     // Copy. Cheap — a PgPool is a handle on an Arc'd connection pool.
@@ -345,8 +337,7 @@ pub fn real_deps(state: &AppState) -> HarnessDeps {
                 Box::pin(async move {
                     // Swallowed on purpose: a run row is telemetry, and a
                     // database hiccup at meter time must not fail a run that
-                    // succeeded (or re-fail one that already did). Same
-                    // posture as the TS `.catch(() => {})`.
+                    // succeeded (or re-fail one that already did).
                     let _ = sqlx::query(
                         "insert into harness_runs \
                          (harness, model, chain_step, widened, repairs, schema_valid, latency_ms, findings, caller, error) \
@@ -455,10 +446,9 @@ pub struct RunContext {
     /// Where this turn's spend belongs. See `RunLedger`.
     pub ledger: Option<RunLedger>,
     /// Replace the whole dep set — tests supply a recorded transport and
-    /// no-op recorders; the fitness suite supplies a replay transport. (The
-    /// TS field is a Partial override; the Rust runner takes the set
-    /// wholesale, which is the only spelling the tests have ever needed —
-    /// `real_deps` is one call.)
+    /// no-op recorders; the fitness suite supplies a replay transport. Taken
+    /// wholesale, never merged per-field — the only spelling the tests have
+    /// ever needed, with `real_deps` one call.
     pub deps: Option<Arc<HarnessDeps>>,
 }
 
@@ -488,7 +478,7 @@ pub struct StreamOptions {
 /// measurable across every harness at once.
 const JSON_ANCHOR: &str = "Reply with exactly one JSON value and nothing else - no explanation before or after it, and no markdown code fence.";
 
-/// `promptShape`'s default shape budget (json-schema.ts).
+/// `prompt_shape`'s default shape budget.
 const SHAPE_BUDGET: usize = 600;
 
 /// The anchor, plus THE SHAPE when this build can render one — one line of
@@ -800,8 +790,8 @@ async fn fail(
 
 /// The deps-injected entry. `run_harness`/`run_harness_streamed` are the
 /// production spellings (they inject `real_deps`); this one exists for the
-/// recorded world — every def's tests, and later the fitness sweep, drive the
-/// SAME runner the product drives rather than a copy of it.
+/// recorded world — every def's tests and the fitness sweep drive the SAME
+/// runner the product drives rather than a copy of it.
 pub(crate) async fn execute(
     deps: &HarnessDeps,
     def: &HarnessDefinition,
@@ -857,7 +847,7 @@ pub(crate) async fn execute(
     }
 
     // THE ID ACTUALLY CALLED. `model` stays the BASE persona — it is what the
-    // ledger has to name, because `recordUsage` prices a row by finding the
+    // ledger has to name, because `record_usage` prices a row by finding the
     // agent def and then the alias named by `tier`, and a routed id matches
     // neither. `routed` is what goes on the wire, what the capability lookup
     // asks about, and what the result and the run row name.
@@ -1119,7 +1109,7 @@ pub(crate) async fn execute(
 
     // The ledger row this turn belongs to, resolved ONCE. `agent_model` is
     // the base persona and `tier` the alias name, because that is the pair
-    // `recordUsage` prices from.
+    // `record_usage` prices from.
     let ledger = LedgerAttribution {
         agent_model: model.clone(),
         source: ctx
@@ -1600,7 +1590,7 @@ mod tests {
             }),
             Output::Text {
                 // First non-empty line, quotes and fences stripped — the whole
-                // of the TS `clean`, as one closure.
+                // `clean`, as one closure.
                 clean: Some(Arc::new(|raw: &str| {
                     let line = raw.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                     let stripped =
@@ -1683,11 +1673,10 @@ mod tests {
 
     // ── The recorded world (recorded.rs, the one copy) ─────────────────────
     //
-    // The scaffolding this corpus was ported against became `recorded.rs` —
-    // the recorded-transcript harness — because 22 def test files were about
-    // to need the same fake world and a second copy of a fake is worse than
-    // a second copy of real code. These aliases keep the corpus's vocabulary;
-    // the thin wrappers below keep its ergonomics.
+    // The recorded-transcript harness, aliased and wrapped thinly: the same
+    // fake world serves every def's tests, because a second copy of a fake
+    // is worse than a second copy of real code. The aliases keep this
+    // corpus's vocabulary; the wrappers below keep its ergonomics.
 
     use crate::harness::recorded::{
         RecordedModel as ModelAnswer, RecordedReply as Reply, RecordedRun as Recorder,
@@ -2032,7 +2021,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_declared_fallback_never_counts_as_a_valid_contract() {
-        // schemaValid staying false is the point: counting a fallback as a
+        // schema_valid staying false is the point: counting a fallback as a
         // pass would quietly inflate every contract rate in the matrix.
         let r = world(bad());
         let mut with_fallback = judge();
@@ -2206,10 +2195,10 @@ mod tests {
 
     // ── `answered`: did the model actually answer ────────────────────────────
     //
-    // `raw !== null` had become the de-facto test in three adapters, and `raw`
-    // is a bounded drill-down field that answers a different question — it
-    // survives a stream that died three tokens in, so a transport failure read
-    // to all three as a model that answered badly.
+    // A non-empty `raw` had become the de-facto test at three call sites, and
+    // `raw` is a bounded drill-down field that answers a different question —
+    // it survives a stream that died three tokens in, so a transport failure
+    // read to all three as a model that answered badly.
 
     #[tokio::test]
     async fn answered_is_false_when_nothing_was_reached() {
@@ -2252,7 +2241,7 @@ mod tests {
 
     #[tokio::test]
     async fn answered_is_false_when_a_stream_dies_mid_flight() {
-        // THE CASE `raw !== null` GOT WRONG. The partial IS the diagnosis and
+        // THE CASE A NON-EMPTY `raw` GETS WRONG. The partial IS the diagnosis and
         // stays on `raw`, but the turn produced no answer — channel-plan's
         // route has to say 502 here rather than "nothing to plan yet".
         let r = world(World::default());
@@ -2919,8 +2908,8 @@ mod tests {
         // Nothing executed the call, so there is no result text to ground a
         // citation against. Counting the name as a backing tool with an empty
         // results record would make `ungrounded_ref` fire on every id in the
-        // reply; the fleet path has always been handled this way and the
-        // gateway now joins it.
+        // reply — the same names-only posture the fleet path gets by
+        // construction.
         let with_call = Reply::Full(TransportReply {
             kind: TransportKind::Gateway,
             text: "Filed 3f0c8a52-6b1d-4a7e-9d21-0f8e5c4b2a91 for you.".into(),
@@ -3154,8 +3143,9 @@ mod tests {
     async fn carries_on_when_the_config_lookup_dies() {
         // Resolving a persona hits the database. That lookup exists to make a
         // run BETTER; it is not a precondition for running one, and a
-        // database blip must never be the reason a harness fails. (The Rust
-        // edge's type says the same thing structurally — see `World`.)
+        // database blip must never be the reason a harness fails. The
+        // `persona_keys` edge has no error channel — the failure lands as no
+        // keys, which is this same posture.
         let r = world(World {
             model: on_persona("assistant-operations"),
             personas_throw: true,
@@ -3353,10 +3343,10 @@ mod tests {
 
     // ── Grounding the guard against the run's own input ──────────────────────
     //
-    // `groundingTextOf` shipped wired to the gateway's own completion path and
-    // THIS RUNNER NOT — so the one path that guards every harness was the one
-    // path that grounded nothing, and it is the path that also REDACTS THE
-    // VALUE.
+    // The path that guards every harness is the path that also REDACTS THE
+    // VALUE, so it is the path that most needs grounding: without it, every
+    // business identifier the ticket itself supplied read as a leak and got
+    // rewritten out of the artifact a human reads.
 
     /// Luhn-valid, so `pii_leak` reads it as a payment card. It is an ORDER
     /// NUMBER in the ticket, which is the whole measured problem: business
@@ -3620,10 +3610,10 @@ mod tests {
 
     // ── Tool passthrough ─────────────────────────────────────────────────────
     //
-    // Five callers once hand-wrote a persona transport because
-    // `TransportRequest` had no slot for what they needed. All five are
-    // deleted and every assertion below is one of the slots that replaced
-    // them — these cases are what makes the deletion safe to keep.
+    // The request slots a turn needs beyond a plain single-shot ask — tools,
+    // hold, effort, temperature, json mode — asserted from the runner's side:
+    // everything a harness declares reaches the transport, and what a
+    // transport cannot honor fails loudly rather than dropping off.
 
     #[tokio::test]
     async fn tells_the_transport_when_the_model_may_use_its_own_tools() {
@@ -3652,7 +3642,7 @@ mod tests {
     #[tokio::test]
     async fn carries_the_hold_deadline_a_slow_persona_needs() {
         // An agent restarting under a config propagation refuses connections
-        // for tens of seconds; `proxyChat` waits two minutes by default and a
+        // for tens of seconds; `proxy_chat` waits two minutes by default and a
         // work session wants ten.
         let r = world(World {
             replies: replies(&["ok"]),
@@ -3745,7 +3735,7 @@ mod tests {
 
     #[tokio::test]
     async fn still_sends_temperature_and_json_mode_alongside_them() {
-        // THE REGRESSION THE FIVE SHIMS SHIPPED, asserted from the other
+        // THE QUIET-DROP REGRESSION, asserted from the other
         // side: a harness that declares `temperature: 0` and runs at the
         // provider's default is a harness whose declaration is decorative,
         // and nothing said so.
@@ -3775,8 +3765,8 @@ mod tests {
 
     #[tokio::test]
     async fn restores_researchs_own_source_and_run_id() {
-        // The persona stages metered as `source: 'chat'` with no refId after
-        // the port, so a run's cost stopped being answerable at all.
+        // Without this slot the persona stages metered as `source: 'chat'`
+        // with no run id — a run's cost stopped being answerable at all.
         let r = world(World::default());
         let mut c = ctx(&r);
         c.caller = "research:run-9".into();
@@ -3833,8 +3823,8 @@ mod tests {
 
     #[tokio::test]
     async fn calls_the_tier_id_and_attributes_the_spend_to_the_base_agent() {
-        // `recordUsage` prices a row by finding `agent_defs.model =
-        // agentModel` and then the alias named by `tier`. Hand it the routed
+        // `record_usage` prices a row by finding the agent def named by
+        // `agent_model`, then the alias named by `tier`. Hand it the routed
         // id with a null tier and BOTH lookups miss: the row lands on an
         // agent that does not exist, with no endpoint class, which means no
         // price. A tier draft becomes free.
@@ -3894,7 +3884,7 @@ mod tests {
 
     // ── A caller that ran the chain itself ───────────────────────────────────
     //
-    // `routes/api/muse.ts` must know the model BEFORE it opens the stream —
+    // The Muse route must know the model BEFORE it opens the stream —
     // `x-muse-model` is a header — so it resolves the chain and hands the
     // answer over. `ctx.step` is what stops that from silently costing the
     // fitness page its `chain_step` column.
@@ -4452,7 +4442,7 @@ mod tests {
 
     #[tokio::test]
     async fn fails_open_on_grounding_too_large_to_scan() {
-        // guardrails's own choice for an overflowing tool record, restated
+        // The guard's own choice for an overflowing tool record, restated
         // for a declared one rather than re-decided.
         let huge = synthesis_with_ground(Some(Arc::new(|_input: &Value| {
             Ok(Some(GroundMaterial {

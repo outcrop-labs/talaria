@@ -1,7 +1,5 @@
-// Mentions — port of ui/src/server/mentions.ts, whole (it is 53 lines and
-// the tasks/comment routes need it). Shared @mention handling across
-// surfaces (channels, ticket comments, and — as they land — plans and
-// research). A mention notifies any member the actor can reach; agent
+// Mentions — shared @mention handling across surfaces (channels, ticket
+// comments, plans). A mention notifies any member the actor can reach; agent
 // mentions are surfaced separately by each surface (channels trigger replies;
 // comments pull the agent's attention).
 
@@ -33,9 +31,8 @@ fn user_mention_tokens(name: Option<&str>, email: Option<&str>) -> Vec<String> {
     tokens
 }
 
-/// The @tokens present in a body (lowercased, without the leading @). TS's
-/// regex is `/@([a-z0-9][a-z0-9-]*)/gi`: the first char after @ must be
-/// alphanumeric, then alphanumerics and dashes.
+/// The @tokens present in a body (lowercased, without the leading @): the
+/// first char after @ must be alphanumeric, then alphanumerics and dashes.
 fn mention_tokens(content: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let bytes = content.as_bytes();
@@ -74,7 +71,7 @@ fn mention_tokens(content: &str) -> Vec<String> {
     out
 }
 
-/// A mentionable member (mentions.ts Mentionee) — the shape `list_members`
+/// A mentionable member — the shape `list_members`
 /// already returns.
 pub struct Mentionee {
     pub user_id: String,

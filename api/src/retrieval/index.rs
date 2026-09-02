@@ -1,7 +1,6 @@
 // The retrieval core: index a source document into a collection (chunk → embed
 // → upsert, idempotent by content hash), and search across a principal's
-// accessible collections with ranked, merged results. Port of
-// ui/src/server/retrieval/index.ts.
+// accessible collections with ranked, merged results.
 //
 // What a point actually holds — be precise about this, the ACL depends on it:
 // a pointer (sourceType/sourceId/href/title), an ACL payload, and a VERBATIM
@@ -100,12 +99,11 @@ fn sha256_hex(s: &str) -> String {
 /// identity (it's the ACL), so a visibility change must invalidate the hash
 /// even when the text is untouched.
 ///
-/// BYTE-COMPATIBLE WITH THE TS: `JSON.stringify` of the entries sorted by
-/// key. That matters because rag_points.content_hash rows written by either
-/// runtime must agree or every post-flip re-index would churn. Nested-object
-/// values serialize their keys in SORTED order here where the TS would keep
-/// insertion order — the known one divergence, invisible to every payload
-/// this codebase actually writes (they are all flat).
+/// BYTE-STABLE: a JSON array of the entries sorted by key. The exact bytes
+/// are load-bearing — rag_points.content_hash rows already written must keep
+/// matching or every re-index would churn. Nested-object values serialize
+/// their keys in SORTED order — invisible to every payload this codebase
+/// actually writes (they are all flat).
 fn payload_digest(p: Option<&Map<String, Value>>) -> String {
     let mut entries: Vec<(&String, &Value)> = p.map(|m| m.iter().collect()).unwrap_or_default();
     entries.sort_by(|a, b| a.0.cmp(b.0));
@@ -118,9 +116,9 @@ fn payload_digest(p: Option<&Map<String, Value>>) -> String {
     serde_json::to_string(&array).expect("a payload digest is plain data")
 }
 
-/// `text.split(/\n\s*\n/)` — paragraphs are separated by a blank-ish line,
-/// i.e. any whitespace run containing a second newline. Hand-rolled: the
-/// crate carries no regex dependency and this is the only split of its kind.
+/// Paragraphs are separated by a blank-ish line — any whitespace run
+/// containing a second newline. Hand-rolled: the crate carries no regex
+/// dependency and this is the only split of its kind.
 fn split_paragraphs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut seg = String::new();
@@ -152,8 +150,8 @@ fn split_paragraphs(text: &str) -> Vec<String> {
 }
 
 /// Paragraph-aware chunking with a soft size cap (~500 tokens ≈ 2000 chars).
-/// Sizes are UTF-16 lengths — that is what the TS `.length` reads, and what
-/// the 400-char snippet budget is spent in.
+/// Sizes are UTF-16 lengths — the unit the 400-char snippet budget is
+/// spent in.
 fn chunk(text: &str, max: usize) -> Vec<String> {
     let paras: Vec<String> = split_paragraphs(text)
         .into_iter()
@@ -724,8 +722,8 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        // Byte-identical to the TS: JSON.stringify of key-sorted entries,
-        // null KEPT (only `undefined` is filtered, and JSON has none).
+        // The exact bytes: a JSON array of key-sorted entries, null KEPT —
+        // key order and null-vs-absent are both part of the digest.
         assert_eq!(
             payload_digest(Some(&a)),
             r#"[["boardId","b1"],["ownerUserId",null],["visibility","org"]]"#

@@ -1,6 +1,6 @@
 // WHAT TALARIA ITSELF CAN SUPPLY, right now, on this install.
-// Port of ui/src/server/capability-platform.ts, DISPATCH HALF — the supply half
-// (the measured, minute-cached advertisement) already crossed into
+// The DISPATCH half — the supply half
+// (the measured, minute-cached advertisement) lives in
 // capability_reach.rs with the reach model, which is why PLATFORM_SERVER lives
 // there and is re-exported here rather than spelled twice.
 //
@@ -21,10 +21,10 @@
 // Nothing crashed. The sweep recorded a search stage that ran, called its tool,
 // and produced no sources.
 //
-// That is the exact failure the TS file's header warns about: a supplier we
+// That is the exact failure this module exists to prevent: a supplier we
 // cannot honor is worse than no supplier, because None refuses honestly and
 // this returns a confident uncited answer. Advertising and dispatch ship
-// together, and on the Rust side they are one import apart so they cannot drift.
+// together, one import apart, so they cannot drift.
 //
 // Shaped like `McpToolResult` — `{ text, structured }` — because every caller
 // already speaks it and a platform tool should be indistinguishable from a
@@ -35,9 +35,8 @@ use sqlx::PgPool;
 
 use crate::search::{SearchDeps, search_web};
 
-/// The TS home of this const is capability-platform.ts (capability-reach imports
-/// it back for type shapes); the Rust supply half crossed into capability_reach
-/// first, so THAT is the one spelling and this is its platform-facing alias.
+/// Spelled once, in capability_reach (where the supply half lives); this is
+/// its platform-facing alias.
 pub use crate::capability_reach::PLATFORM_SERVER;
 
 /// Is this supplier Talaria itself, rather than a registered MCP server? Every
@@ -49,18 +48,18 @@ pub fn is_platform_server(server: &str) -> bool {
 
 /// One tool result, flattened to the two things a caller needs: the text the
 /// model should see, and whatever structured payload the tool also returned
-/// (None is TS's `structured: null`).
+/// (None is the wire's `structured: null`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlatformToolResult {
     pub text: String,
     pub structured: Option<Value>,
 }
 
-/// RUN ONE OF TALARIA'S OWN TOOLS. `web_search` is the one tool on the native
-/// surface; `describe_image` is advertised when the vision role is filled and
-/// refuses loudly here until the vision harness crosses (see the branch — an
-/// advertisement that cannot dispatch is the exact bug this file exists to
-/// prevent); anything else is not ours to run.
+/// RUN ONE OF TALARIA'S OWN TOOLS. `web_search` is the one tool dispatched
+/// here; `describe_image` is advertised when the vision role is filled but is
+/// served by the vision route, never this dispatcher — so its branch below is
+/// a loud refusal (an advertisement that cannot dispatch is the exact bug
+/// this file exists to prevent); anything else is not ours to run.
 ///
 /// The search engine edge is injected rather than hard-wired so the tool is
 /// testable against a scripted SearXNG; the caller that has no opinion passes
@@ -108,14 +107,10 @@ pub async fn call_platform_tool(
     }
 
     if tool == "describe_image" {
-        // The vision harness (ui/src/server/vision.ts) has not crossed. TS
-        // dispatches it in-process through the harness runner; nothing on the
-        // Rust side can honor the call, so the honest answer is a refusal that
-        // names the gap — the platform supply still ADVERTISES vision when the
-        // role is filled (a TS mirror), which makes this the loud half of an
-        // advertising/dispatch pair that closes when vision.ts crosses. Inert
-        // today: no ported harness consults the vision supply yet. Recorded in
-        // RUST-MIGRATION.md's ledger.
+        // The vision harness (vision.rs, serving /api/vision/describe) is
+        // never dispatched through here — a caller reaching this branch routed
+        // a supplier to the wrong surface, so the honest answer is a refusal
+        // that names the gap rather than a half-answer.
         return Err(
             "describe_image runs on the vision harness, which has not crossed to Rust yet — \
              this supplier should not have been reachable from a Rust stage"

@@ -1,5 +1,4 @@
-// /api/agent/gap — port of ui/src/routes/api/agent.gap.ts.
-// POST — an agent reports a capability gap (the honesty loop). Deduped by
+// /api/agent/gap. POST — an agent reports a capability gap (the honesty loop). Deduped by
 // work-shape server-side: repeats bump seen_count, never re-notify. Lands in
 // the Studio's Suggested queue; the ticket (if given) gets an audit line.
 
@@ -170,7 +169,7 @@ pub async fn post(
         }
     };
     if let Some(task) = task.as_ref() {
-        // `.catch(() => {})` — the audit line is best-effort.
+        // the audit line is best-effort — a failed log is not a failed report.
         let seen = if gap.seen_count > 1 {
             format!(", seen {}×", gap.seen_count)
         } else {
@@ -189,7 +188,8 @@ pub async fn post(
     let note = if gap.first {
         "Gap recorded — it will be suggested to the team in the Studio. Continue as best you can or set the ticket blocked with a comment.".to_string()
     } else {
-        // The × is a literal in the TS template.
+        // × is a literal multiplication sign in the sentence, not a format
+        // artifact.
         format!(
             "Known gap (seen {}×) — already suggested to the team. Do not report it again; continue as best you can or set the ticket blocked.",
             gap.seen_count

@@ -1,5 +1,5 @@
-// Model Roles — which model handles each CLASS of activity. Port of
-// model-roles.ts. Resolution contract: an assignment only wins while it still
+// Model Roles — which model handles each CLASS of activity. Resolution
+// contract: an assignment only wins while it still
 // ROUTES on the gateway; otherwise callers fall back to their own heuristics
 // (env default → pl-main → first routable, sonar preference scan), so a
 // deleted model can never silently break a subsystem. Unset = auto.
@@ -30,8 +30,8 @@ pub struct RoleSpec {
     pub requires: &'static [&'static str],
 }
 
-/// The role catalog, in the admin panel's row order. Labels and hints are the
-/// product copy — verbatim from the TS table.
+/// The role catalog, in the admin panel's row order. Labels and hints are
+/// the product copy.
 pub const MODEL_ROLES: [RoleSpec; 11] = [
     RoleSpec {
         role: "research-recon",
@@ -132,8 +132,8 @@ pub const MODEL_ROLES: [RoleSpec; 11] = [
 
 const KEY: &str = "model_roles";
 
-/// Raw assignments, unvalidated — the row rides to the wire exactly as stored
-/// (TS returns getSetting's value with no filtering).
+/// Raw assignments, unvalidated — the row rides to the wire exactly as
+/// stored, no filtering.
 pub async fn get_model_roles(pg: &PgPool) -> serde_json::Value {
     get_setting(pg, KEY, serde_json::json!({})).await
 }
@@ -148,8 +148,7 @@ pub async fn set_model_role(
     let obj = match cur.as_object_mut() {
         Some(o) => o,
         None => {
-            // A non-object stored row is replaced wholesale, same as the TS
-            // write over an equally broken value.
+            // A non-object stored row is replaced wholesale.
             cur = serde_json::json!({});
             cur.as_object_mut().unwrap()
         }
@@ -167,7 +166,7 @@ pub async fn set_model_role(
 
 /// The explicitly assigned model for a role — but only while it still routes.
 /// None means "auto": the caller applies its own fallback heuristic. A
-/// database failure propagates (TS throws to the same 500).
+/// database failure propagates to the caller's 500.
 ///
 /// AUDIT 1.6 asked whether this should also drop an assignment the model is
 /// unfit for. It must NOT. An admin's explicit pick disappearing into the auto

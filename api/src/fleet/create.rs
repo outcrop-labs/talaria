@@ -3,8 +3,7 @@
 // template, from the platform defaults (first local endpoint's model). The
 // soul is a scaffold (or supplied, e.g. Muse-designed). A fresh gateway key
 // is allocated into the fleet .env (which the renderer + manifest read).
-// Port of the create half of ui/src/server/fleet-create.ts (the delete half
-// crosses with the fleet admin routes that call it).
+// The delete half lives at the bottom of this file.
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -21,7 +20,7 @@ use crate::gateway::registry::list_endpoints;
 /// template cloning and for handle renames.
 pub fn restamp_slug(value: &Value, from: &str, to: &str) -> Value {
     // Both slugs passed the alphabet on their way in, so neither carries
-    // regex metacharacters; the \b guards the boundary the way TS's does.
+    // regex metacharacters; \b guards the boundary.
     // Built per call — a hire stamps once, never in a loop.
     let re = regex::Regex::new(&format!(r"\b{from}\b")).expect("slug alphabets are regex-safe");
     fn walk(value: &Value, re: &regex::Regex, to: &str) -> Value {
@@ -57,8 +56,8 @@ replace this section with a real personality and operating principles.)
 }
 
 /// Ensure a HERMES_KEY_<SLUG> exists in the fleet .env; returns whether
-/// created. The read is NOT best-effort — TS's readFile throws and so a hire
-/// against an unreadable fleet env fails honestly.
+/// created. The read is NOT best-effort — a hire against an unreadable fleet
+/// env fails honestly.
 pub async fn ensure_agent_key(slug: &str) -> Result<bool, String> {
     let env_path = crate::fleet::layout::fleet_env();
     let name = format!("HERMES_KEY_{}", slug.to_uppercase());
@@ -86,7 +85,7 @@ pub async fn ensure_agent_key(slug: &str) -> Result<bool, String> {
     // The file is fleet-wide plaintext credentials — never leave it readable
     // to every local account (fleet-render writes it 0600; appending must not
     // undo that, and an install created before that rule gets fixed here).
-    // Best-effort, like TS's chmod().catch().
+    // Best-effort.
     if let Ok(meta) = tokio::fs::metadata(&env_path).await {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = meta.permissions();
@@ -113,9 +112,8 @@ pub struct CreatedAgent {
     pub key_created: bool,
 }
 
-/// The whole create flow (fleet-create.ts createAgent): alphabets, exists
-/// pre-check, template-or-defaults config, the fleet key, the def row, and
-/// the v1 version.
+/// The whole create flow: alphabets, exists pre-check, template-or-defaults
+/// config, the fleet key, the def row, and the v1 version.
 pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<CreatedAgent, String> {
     if !slug_ok(&input.slug) {
         return Err("slug must be short lowercase alphanumeric (e.g. \"analyst\")".into());
@@ -133,7 +131,7 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         return Err(format!("agent \"{}\" already exists", input.slug));
     }
 
-    // TS truthiness on the way in: an empty-string templateId is no template.
+    // An empty-string templateId is no template (truthiness on the way in).
     let template_id = input.template_id.as_deref().filter(|t| !t.is_empty());
     let (config, note) = match template_id {
         Some(template_id) => {
@@ -162,7 +160,8 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
                 .find(|e| e.class == "local" && !e.models.is_empty())
                 .or_else(|| eps.iter().find(|e| !e.models.is_empty()))
                 .ok_or("no models configured. Add an LLM endpoint first.")?;
-            // TS truthiness on contextLength: null and 0 both skip the key.
+            // contextLength: null and 0 both skip the key (truthiness on the
+            // way in).
             let context_length = ep.context_length.filter(|c| *c != 0);
             let main = ModelTarget {
                 endpoint: ep.name.clone(),
@@ -245,8 +244,8 @@ pub async fn create_or_resume(
                     def,
                     key_created: false,
                 }),
-                // TS rethrows the original when the row never appears — the
-                // exists error was about something else wearing this text.
+                // The row never appeared — the exists error was about
+                // something else wearing this text, so rethrow the original.
                 None => Err(e),
             }
         }
@@ -254,7 +253,7 @@ pub async fn create_or_resume(
     }
 }
 
-// ── The delete half (fleet-create.ts deleteAgentForever) ─────────────────────
+// ── The delete half ──────────────────────────────────────────────────────────
 
 /// Remove an agent FOREVER — the row (versions + secrets cascade with it),
 /// every access reference keyed by its model string, leftover containers,
@@ -331,8 +330,7 @@ pub async fn delete_agent_forever(
         let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
         let agent_key = format!("{}=", crate::fleet::layout::agent_key_var(&slug));
         // The seeded comment rides out with the HERMES key line it announced
-        // (TS attaches the optional `(# added by Talaria (agent create)\n)?`
-        // group to the HERMES_KEY pattern only).
+        // — only that line's pattern owns it, never the agent-key line.
         let comment = "# added by Talaria (agent create)";
         let comment_line = format!("{comment}\n");
         let mut next = String::with_capacity(content.len());
@@ -407,7 +405,7 @@ mod tests {
             "no boundary, no replace"
         );
         assert_eq!(out["raw"]["nested"]["args"][1], serde_json::json!("sloane"));
-        // keys never touched — only values, like TS's walk
+        // keys never touched — only values walk
         assert!(out.get("raw").is_some());
     }
 

@@ -1,11 +1,11 @@
-// Model capability records — the read half of harness/capability.ts, plus the
-// ONE writer this port needs (the catalog refresh's ranked merge). A stored
+// Model capability records — the read half, the catalog refresh's ranked
+// merge, and the forget button. A stored
 // fact is data, never a verdict: UNKNOWN IS NOT FALSE is the whole contract,
 // and `missing_capabilities` is the only question the model-identity plane
-// asks (role-assignment fitness). The probe/gateway writers and the forget
-// button port with the surfaces that own them.
+// asks (role-assignment fitness). The probe/gateway writers live with the
+// surfaces that own them.
 //
-// The precedence rule survives the port intact because it must: a catalog
+// The precedence rule is the point: a catalog
 // refresh is a daily cadence across every model an endpoint serves, and under
 // last-write-wins it would erase a probe result with marketing copy. Rank:
 // probe > declared > catalog > learned; equal rank still wins (a re-probe can
@@ -26,7 +26,7 @@ pub fn capability_key(endpoint: &str, upstream_model: &str) -> String {
     format!("{endpoint}:{upstream_model}")
 }
 
-/// The capability union, in capability.ts's declaration order.
+/// The capability union, in declaration order.
 pub const ALL_CAPABILITIES: [&str; 9] = [
     "json",
     "json-strict",
@@ -72,8 +72,8 @@ fn now_ms() -> u64 {
 }
 
 /// ms since the epoch for a stored ISO string, None when unparseable — the
-/// parse accepts exactly the `toISOString()` shape this system writes (the
-/// house formatter's inverse, no clock crate); anything else is expired.
+/// parse accepts exactly the ISO shape the house formatter writes (its
+/// inverse, no clock crate); anything else is expired.
 fn parse_iso_ms(at: &str) -> Option<u64> {
     crate::agent_auth::iso_to_epoch_ms(at).map(|ms| ms.max(0) as u64)
 }
@@ -126,7 +126,7 @@ impl CapabilityFact {
     }
 }
 
-/// readFact: anything that isn't a well-formed, unexpired fact is not a fact.
+/// Anything that isn't a well-formed, unexpired fact is not a fact.
 pub fn read_fact(raw: &serde_json::Value, now: u64) -> Option<CapabilityFact> {
     let f = raw.as_object()?;
     let value = f.get("value")?.as_bool()?;
@@ -185,10 +185,10 @@ pub async fn missing_capabilities(pg: &PgPool, key: &str, required: &[&str]) -> 
         .collect()
 }
 
-/// Serialize writes in process, exactly as the TS module does: every write
+/// Serialize writes in process: every write
 /// here is a read-modify-write of ONE app_settings row, and unserialized
 /// concurrent writes lose facts outright. The cross-process race is accepted
-/// by the TS design for the same writers. A tokio mutex (not std) because the
+/// (same writers, different processes). A tokio mutex (not std) because the
 /// guard is held across the awaited settings read/write — an std guard there
 /// would make every caller's future !Send.
 fn write_lock() -> &'static tokio::sync::Mutex<()> {
@@ -251,7 +251,7 @@ pub async fn forget_capabilities(pg: &PgPool, key: &str) -> Result<(), sqlx::Err
     Ok(())
 }
 
-/// The JSON shape `Date.now()` arithmetic never sees but tests do.
+/// Tests pin the stored JSON shape and the rank/TTL arithmetic.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,5 @@
-// Server-side persistence of an assistant stream — port of
-// ui/src/server/chat-persist.ts. Runs detached from the client response (fed
+// Server-side persistence of an assistant stream.
+// Runs detached from the client response (fed
 // by a teed branch), so an in-progress reply is saved even if the client
 // disconnects/reloads. Throttled flushes during streaming; final on end.
 // Also records the turn in the token ledger (real usage or a char estimate).
@@ -35,7 +35,7 @@ use crate::state::AppState;
 use crate::titler::maybe_retitle_conversation;
 use crate::workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 
-/// chat-persist.ts TurnMeta.plan — set for plan conversations: replies feed
+/// Set for plan conversations: replies feed
 /// the activity brain, owner-scoped.
 #[derive(Debug, Clone)]
 pub struct PlanMeta {
@@ -43,7 +43,7 @@ pub struct PlanMeta {
     pub title: Option<String>,
 }
 
-/// chat-persist.ts TurnMeta.
+/// The turn's identity, threaded from /api/chat through the chain.
 #[derive(Debug, Clone)]
 pub struct TurnMeta {
     pub agent_model: String,
@@ -56,7 +56,7 @@ pub struct TurnMeta {
 static CONTINUING: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
 
-/// Claude-style flow (continueConversation): messages sent while a reply
+/// Claude-style flow: messages sent while a reply
 /// streamed queued into history — start the NEXT turn covering them. Called
 /// when a reply finishes and when a queued message lands with nothing in
 /// flight; chains until the conversation goes quiet. No-op unless the last
@@ -157,7 +157,7 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         None,
     )
     .await;
-    // TS: `if (!upstream.ok …)` — the row is marked error and the chain STOPS
+    // The row is marked error and the chain STOPS
     // HERE, before any persist. Persisting the error body instead parses zero
     // events, flushes an EMPTY 'complete' row, and the tail re-chains — and
     // prior_messages reads through empty rows, so "the last message is the
@@ -174,7 +174,7 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
     };
-    // Detached, as the TS `void` — the chain's own tail continues it. The
+    // Detached — the chain's own tail continues it. The
     // plain-fn seam is load-bearing: this chain is continue → persist →
     // continue …, and routing the spawn through a non-generic helper is what
     // keeps either half's opaque future type from having to prove the other's
@@ -209,7 +209,7 @@ fn spawn_persist(
     });
 }
 
-/// chat-persist.ts persistAssistantStream's usageMeta.
+/// The usage-side facts the ledger needs about the turn.
 #[derive(Debug, Clone)]
 pub struct PersistMeta {
     pub agent_model: String,
@@ -218,7 +218,7 @@ pub struct PersistMeta {
     pub plan: Option<PlanMeta>,
 }
 
-/// Drain an assistant stream into the reply row (persistAssistantStream).
+/// Drain an assistant stream into the reply row.
 /// `forward`, when present, is the client's teed branch: every chunk rides to
 /// the caller first (a send failure is the client hanging up — the drain
 /// keeps going, exactly what a tee does to its other branch), while the
@@ -336,8 +336,8 @@ pub async fn persist_assistant_stream(
                     frame_error = frame_error.or(Some(message));
                 }
             }
-            // TS: `Date.now() - lastFlush > 400` with lastFlush starting at
-            // 0 — the first event flushes immediately.
+            // lastFlush starts unset — the first event flushes immediately,
+            // then every 400ms.
             if last_flush.is_none_or(|t| t.elapsed() > Duration::from_millis(400)) {
                 last_flush = Some(Instant::now());
                 flush!("streaming");

@@ -1,7 +1,7 @@
-// /api/admin/secrets — port of ui/src/routes/api/admin.secrets.ts. The
-// secrets inventory. GET is a VIEW over the stores that own each value —
-// presence, provenance and readability, never the value itself. DELETE
-// clears one row's ciphertext, or every row that cannot be read.
+// /api/admin/secrets. The secrets inventory. GET is a VIEW over the stores
+// that own each value — presence, provenance and readability, never the
+// value itself. DELETE clears one row's ciphertext, or every row that
+// cannot be read.
 //
 // This is the in-app half of `talaria reset secrets`. The CLI clears
 // everything sealed because it cannot tell what is broken; this can, so it
@@ -33,9 +33,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     Json(secret_health(&state.pg, &sb, &state.cfg.secret_root).await).into_response()
 }
 
-/// DELETE body: z.union([{ id: string(1..200) }, { unreadable: true }]) —
-/// branch A wins when both would parse (zod strips the extra key), so the
-/// id path is checked first. Neither branch surviving is "Invalid input".
+/// DELETE body: { id: string 1..200 } or { unreadable: true }.
 pub async fn delete(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -52,9 +50,9 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // z.union([{ id: z.string().min(1).max(200) },
-    //           { unreadable: z.literal(true) }]) — dispatch by key presence,
-    // each branch answering zod's own words.
+    // dispatch by key presence, each branch answering its own words — the
+    // id path is checked first (it wins when both would parse, extra keys
+    // stripped), and neither branch surviving is "Invalid input".
     let id = match obj.get("id") {
         None => None,
         Some(v) => match v.as_str() {
@@ -109,8 +107,7 @@ pub async fn delete(
             }
         }
     } else if obj.get("unreadable") == Some(&Value::Bool(true)) {
-        // z.literal(true) — anything else on this key answers the literal's
-        // own message.
+        // must be exactly true — anything else falls to the blanket below.
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
             Err(e) => {

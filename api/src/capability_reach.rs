@@ -1,6 +1,6 @@
 // CAN THIS DEPLOYMENT DO IT — as opposed to: can this model do it.
-// Port of capability-reach.ts, with capability-platform.ts's supply half (the
-// two files cross together because each is the other's reason to exist).
+// The platform's SUPPLY half lives here too; the dispatch half is
+// capability_platform.rs (each is the other's reason to exist).
 //
 // THE CATEGORY ERROR THIS FIXES, in the words of the bug report that found it:
 // "search can be TOOL DRIVEN in Talaria, so saying a MODEL is not capable is
@@ -40,8 +40,8 @@ pub enum ReachVia {
 /// The registered tool that supplies a capability (`via == Tool`). Serializable
 /// because it rides in a run's CHECKPOINT: a research run resolved to the tool
 /// path must keep driving through the same supplier across re-entries, and the
-/// checkpoint column is where that resolution survives (serde shape = the TS
-/// `{ server, tool }` exactly, so TS-written rows re-enter here and back).
+/// checkpoint column is where that resolution survives (serde shape
+/// `{ server, tool }` — the checkpoint jsonb's spelling).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Supplier {
     pub server: String,
@@ -124,7 +124,7 @@ const TOOL_REACHABLE: &[ToolReachRule] = &[
 ];
 
 /// An ADMIN'S OWN WIRING, which always wins over the heuristic below. The map
-/// value is the TS `CapabilityProviders` entry exactly: absent key = nothing
+/// value: absent key = nothing
 /// said; `None` = an explicit "nothing supplies this here"; `Some(pin)` = the
 /// supplier, however odd its name. (A malformed row — neither null nor an
 /// object — is dropped rather than guessed at; the write path validates, so
@@ -135,7 +135,7 @@ pub type Providers = HashMap<String, Option<Supplier>>;
 pub const PROVIDERS_KEY: &str = "capability_providers";
 
 /// The two columns of an MCP registry row this module owns. The full registry
-/// type crosses with the MCP plane; reach reads names, enabledness and tools,
+/// type lives with the MCP plane; reach reads names, enabledness and tools,
 /// and deliberately nothing else.
 #[derive(Clone)]
 pub struct ReachServer {
@@ -381,7 +381,7 @@ pub async fn reach_for<D: ReachDeps + Sync>(
     out
 }
 
-// ── Talaria's own supply, checked (capability-platform.ts) ──────────────────
+// ── Talaria's own supply, checked ──────────────────────────────────────────
 
 /// How long a probe of our own tool may take before we call it unavailable.
 /// Short: this runs on the path that opens the fitness page and starts a
@@ -395,12 +395,10 @@ const CHECK_MS: Duration = Duration::from_millis(4_000);
 // the reach probe and a live search can never disagree about where the engine
 // is, because there is one spelling.
 
-/// `searchReachable` reduced to the question platform supply asks: is the
+/// The question platform supply asks: is the
 /// org's web-search backend answering with results? ONE canary query through
 /// the real client (search.rs) — bounded here by CHECK_MS so a dead instance
-/// cannot stall the reach edge. This probe USED to be a second spelling of the
-/// GET; it rides the full client now, which is what its own note said would
-/// happen when the client crossed.
+/// cannot stall the reach edge.
 async fn search_canary_ok(pg: &PgPool) -> bool {
     match tokio::time::timeout(
         CHECK_MS,

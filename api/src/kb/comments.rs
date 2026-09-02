@@ -3,9 +3,9 @@
 // Access rides the doc's effective permissions (space-inherited + grants):
 // anyone who can READ a doc can discuss it. Participants get notified.
 //
-// Port of ui/src/server/kb-comments.ts. The engine takes the notification
-// deps in (the comment fan-out is detached, exactly like TS's void-IIFE), so
-// the routes decide which realtime plane a write publishes through.
+// The engine takes the notification deps in (the comment fan-out is
+// detached), so the routes decide which realtime plane a write publishes
+// through.
 
 use sqlx::PgPool;
 
@@ -13,8 +13,8 @@ use crate::kb::perms::can_read;
 use crate::kb::{effective_doc_perms, get_doc};
 use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 
-/// KbComment — field order is the ROW wire order (TS's column aliases are the
-// JSON.stringify order).
+/// One comment — field order is the wire order: the struct follows ROW_COLS,
+/// which fixes the JSON key order.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbComment {
@@ -117,9 +117,8 @@ pub async fn add_comment(
     let comment = KbComment::from(row);
 
     // Notify the doc owner + everyone already in the thread (never the
-    // author) — detached, whole-fanout best-effort, exactly TS's void-IIFE
-    // with the outer .catch: nothing about the notification may fail the
-    // comment the user just typed.
+    // author) — detached, whole-fanout best-effort: nothing about the
+    // notification may fail the comment the user just typed.
     let fanout = CommentFanout {
         pg: pg.clone(),
         notify: notify.clone(),
@@ -153,7 +152,7 @@ impl CommentFanout {
         let Some(doc) = get_doc(&self.pg, &self.doc_id).await? else {
             return Ok(());
         };
-        // A Set, like TS: the owner may also be in the thread.
+        // Deduped below: the owner may also be in the thread.
         let mut targets: Vec<String> = Vec::new();
         if let Some(owner) = &doc.owner_user_id {
             targets.push(owner.clone());

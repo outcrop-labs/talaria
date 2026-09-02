@@ -1,11 +1,10 @@
-// Rate limiting — port of ui/src/server/rate-limit.ts. Redis-backed so a
-// counter survives a restart and holds across BOTH runtimes during the
-// migration (same key space, same window arithmetic). A fixed window (INCR +
+// Rate limiting. Redis-backed so a
+// counter survives a restart. A fixed window (INCR +
 // EXPIRE on first hit), not a sliding one: it can let through up to 2x the
 // limit across a window boundary, which is the right trade for a brake whose
 // goal is "thousands become dozens", not exact accounting.
 //
-// Unit-tested now; wired into the chat-completions route's rpm brake.
+// Wired into the chat-completions route's rpm brake.
 
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
@@ -17,8 +16,7 @@ pub struct RateLimitResult {
     pub retry_after: i64,
 }
 
-/// The Redis key for a limiter name. Byte-identical to the TS spelling so the
-/// two runtimes share one counter, whatever is serving the route today.
+/// The Redis key for a limiter name — `talaria:rl:` prefix, a stable shape.
 pub fn redis_key(key: &str) -> String {
     format!("talaria:rl:{key}")
 }
@@ -63,7 +61,7 @@ pub async fn rate_limit_reset(redis: &mut ConnectionManager, key: &str) {
     let _: Result<i64, _> = redis.del(redis_key(key)).await;
 }
 
-/// The client's address, for limiting purposes only (rate-limit.ts clientIp).
+/// The client's address, for limiting purposes only.
 ///
 /// X-Forwarded-For is caller-supplied and trivially rotated, so trusting it
 /// blindly turns a per-IP limit into no limit at all. It is only honored when
@@ -105,9 +103,8 @@ mod tests {
 
     #[test]
     fn key_shape_matches_the_ts_limiter() {
-        // The gateway chat route's key is `gw:key:{keyId}` in TS
-        // (llm.v1.chat.completions.ts); the shared counter depends on this
-        // exact string.
+        // The gateway chat route's key is `gw:key:{keyId}`;
+        // the shared counter depends on this exact string.
         assert_eq!(redis_key("gw:key:abc"), "talaria:rl:gw:key:abc");
     }
 }

@@ -1,8 +1,7 @@
-// /api/tasks/{id}/dependencies — port of ui/src/routes/api/
-// tasks.$id.dependencies.ts. POST { dependsOnId } → this ticket is blocked
-// by another. DELETE → remove. Editors or board-allowed agents may add (part
-// of triage); removal is human-only. The dependency target must live on the
-// same board.
+// /api/tasks/{id}/dependencies. POST { dependsOnId } → this ticket is
+// blocked by another. DELETE → remove. Editors or board-allowed agents may
+// add (part of triage); removal is human-only. The dependency target must
+// live on the same board.
 
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::boards::{board_allows_agent, board_role, can_edit};
@@ -190,8 +189,8 @@ pub async fn delete(
     if let Some(gate) = crate::params::uuid_gate("tasks", "DELETE dependency", &id) {
         return gate;
     }
-    // TS answers one 403 for both a missing ticket and a role failure — the
-    // dependency plane does not reveal whether the id exists.
+    // One 403 for both a missing ticket and a role failure — the dependency
+    // plane does not reveal whether the id exists.
     let task = match get_task(&state.pg, &id).await {
         Ok(t) => t,
         Err(e) => {

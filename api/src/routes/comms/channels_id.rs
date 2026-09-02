@@ -1,4 +1,4 @@
-// /api/channels/{id} — port of ui/src/routes/api/channels.$id.ts.
+// /api/channels/{id}.
 // GET → channel detail (role + members + agents). PUT → rename / set topic
 // (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
 // purges the channel's activity points so nothing orphans in the index).
@@ -66,7 +66,7 @@ pub async fn put(
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // The owner check stands BEFORE the body parse, as in the TS.
+    // The owner check stands before the body parse.
     if !owner_gate(&state, &user.id, &id).await {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
@@ -75,14 +75,14 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `z.string().min(1).max(80).optional()` — the empty name is the min
-    // failure, not a value (unlike the topic below).
+    // name: min 1, max 80, optional — the empty name is a min failure, not
+    // a value (unlike the topic below).
     let name = match optional_string_member(obj, "name", 80) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Three states, not two: `z.string().max(300).nullish()` — absent leaves
-    // the topic alone, present-null clears it, a string sets it.
+    // Three states, not two (max 300): absent leaves the topic alone,
+    // present-null clears it, a string sets it.
     let topic = match present_nullable_max_string_member(obj, "topic", 300) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -115,7 +115,7 @@ pub async fn delete(
     if !owner_gate(&state, &user.id, &id).await {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    // searchParams.get('hard') === '1'
+    // ?hard=1 — exact match — hard-deletes; any other value archives.
     let hard = uri
         .query()
         .and_then(|q| {
@@ -136,7 +136,8 @@ pub async fn delete(
         return thrown_internal_error();
     }
     // A hard delete removes the channel's messages — purge their activity
-    // points too so nothing is orphaned in the index. (`void ... .catch`)
+    // points too so nothing orphans in the index. Fire-and-forget: the
+    // purge's errors are swallowed.
     if hard {
         let pg = state.pg.clone();
         let channel_id = id.clone();

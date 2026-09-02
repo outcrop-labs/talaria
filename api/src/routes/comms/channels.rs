@@ -1,4 +1,4 @@
-// /api/channels — port of ui/src/routes/api/channels.ts.
+// /api/channels.
 // GET → the user's channels/relays/DMs (agents see the channels they've been
 // added to, elevated assistants every non-DM). POST { name, topic?, kind? } →
 // create a channel (default) or a Relay (kind 'group'), behind the
@@ -49,11 +49,11 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // Comms decay and the outreach sweep used to be kicked from here; they
-    // are scheduler jobs on both sides now. The three below are still
-    // request-kicked: `maybe_sweep_titles` and `maybe_rag_sweep` have the
-    // same "an idle instance never does it" bug, and `ensure_mcp_service` is
-    // a supervisor, which is a scheduler job in everything but name.
+    // Comms decay and the outreach sweep are scheduler jobs, not kicked from
+    // here. These three ride the request path: `maybe_sweep_titles` and
+    // `maybe_rag_sweep` have the same "an idle instance never does it" bug,
+    // and `ensure_mcp_service` is a supervisor, which is a scheduler job in
+    // everything but name.
     maybe_sweep_titles(state.clone()); // retroactive + ongoing naming (hourly, detached)
     ensure_mcp_service(); // keep the fleet's toolkit MCP endpoint alive (probe-guarded)
     maybe_rag_sweep(state.clone()); // incremental catch-up indexing (15-minute throttle)
@@ -118,7 +118,7 @@ pub async fn post(
             ),
         );
     }
-    // `body.topic ?? null` — absent and present-null both create with none.
+    // absent and present-null both create with no topic.
     match create_channel(&state.pg, &user.id, &name, topic.flatten().as_deref(), kind).await {
         Ok(channel) => Json(json!({ "channel": channel })).into_response(),
         Err(e) => {

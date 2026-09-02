@@ -1,6 +1,6 @@
-// /api/inbox/focus/summary — port of ui/src/routes/api/inbox.focus.summary.ts.
-// GET → the one-screen summary of the caller's focus state: how many items
-// are queued (snoozed ones excluded), as {count}.
+// /api/inbox/focus/summary. GET → the one-screen summary of the caller's
+// focus state: how many items are queued (snoozed ones excluded), as
+// {count}.
 
 use crate::error::thrown_internal_error;
 use crate::inbox_focus::focus_summary;

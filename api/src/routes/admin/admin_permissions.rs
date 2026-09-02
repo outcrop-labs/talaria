@@ -1,9 +1,9 @@
-// /api/admin/permissions — port of ui/src/routes/api/admin.permissions.ts.
-// Fine-grained permissions admin. GET → the catalog + org member defaults +
-// every user's overrides. PUT { userId, perm, allowed|null } → set/clear a
-// per-user override (null = back to the org default). PUT { orgDefault:
-// { perm, enabled|null } } → tune what plain members can do out of the box
-// (null = back to the shipped default). Admins only; both paths audit.
+// /api/admin/permissions. Fine-grained permissions admin. GET → the catalog
+// + org member defaults + every user's overrides. PUT { userId, perm,
+// allowed|null } → set/clear a per-user override (null = back to the org
+// default). PUT { orgDefault: { perm, enabled|null } } → tune what plain
+// members can do out of the box (null = back to the shipped default).
+// Admins only; both paths audit.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse};
@@ -24,8 +24,8 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     if let Err(gate) = require_admin(&state, &headers).await {
         return gate;
     }
-    // Every override row, folded per user in ROW order ((overrides[userId]
-    // ??= {})[perm] = allowed — insertion order is the wire order).
+    // Every override row, folded per user in ROW order — insertion order
+    // is the wire order.
     let rows: Result<Vec<(String, String, bool)>, sqlx::Error> =
         sqlx::query_as("select user_id::text, perm, allowed from user_permissions")
             .fetch_all(&state.pg)
@@ -54,14 +54,14 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     .into_response()
 }
 
-/// The PUT body is a z.union of two shapes. Extra keys don't fail a branch
-/// (zod strips them), and branch A wins when both parse, because zod tries
-/// them in order. When neither parses, zod answers "Invalid input" — with one
-/// probed exception (zod 4.3.6): the union returns the sole NON-ABORTED
-/// branch's own issues, and the only non-aborting failure this schema can
-/// produce is the uuid FORMAT check on a string userId (type errors and enum
-/// misses abort their branch; branch B holds nothing but enum/boolean checks,
-/// so it is never the survivor). That one shape answers "Invalid UUID".
+/// The PUT body is a union of two shapes. Extra keys never fail a branch,
+/// and branch A wins when both parse (A is tried first). When neither
+/// parses the answer is "Invalid input" — with one exception: the sole
+/// NON-ABORTED branch's own issue rides, and the only non-aborting failure
+/// this schema can produce is the uuid FORMAT check on a string userId
+/// (type errors and enum misses abort their branch; branch B holds nothing
+/// but enum/boolean checks, so it is never the survivor). That one shape
+/// answers "Invalid UUID".
 fn parse_union_body(obj: &serde_json::Map<String, Value>) -> Result<UnionBody, String> {
     // Branch A: { userId: uuid, perm: enum, allowed: bool|null }
     let a = (
@@ -215,13 +215,13 @@ mod tests {
         v.as_object().cloned().unwrap()
     }
 
-    // The probed zod 4.3.6 table for this route's z.union — every row is an
-    // observed message, not a guess. The one non-generic row is branch A's
-    // uuid format near-miss (the union's sole-non-aborted-branch return).
+    // The union's message table — every row an observed answer, not a
+    // guess. The one non-generic row is branch A's uuid format near-miss
+    // (the sole-non-aborted-branch return).
     #[test]
     fn union_table_matches_zod() {
         let uuid = "d3327760-cdd8-41db-9099-4410ea14043b";
-        // Both branches match → A wins (zod tries them in order).
+        // Both branches match → A wins (tried in order).
         let both = parse_union_body(&obj(json!({
             "userId": uuid, "perm": "research.run", "allowed": true,
             "orgDefault": { "perm": "research.run", "enabled": true },

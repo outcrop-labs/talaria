@@ -1,15 +1,14 @@
 // PAUSE AS APPROVAL. The two sides of `awaiting`: `pause` puts a run down on a
 // question and tells the people entitled to answer it, `decide` checks that the
-// person answering is one of them and puts the run back to work. Port of
-// ui/src/server/runs/decide.ts.
+// person answering is one of them and puts the run back to work.
 //
 // WHY THIS IS NOT A NEW CONCEPT
 //   A run that needs a human IS an approval. The product already has exactly one
 //   answer to "a person owes a decision, who may be told what it says, who is
-//   nagged, and what happens when nobody looks" — server/approvals.ts, and the
-//   forty lines of header on it are all scar tissue from getting that answer
-//   wrong. A "needs input" queue for runs would be a second inbox with a second
-//   disclosure rule, and the second one is always the one that leaks.
+//   nagged, and what happens when nobody looks" — the approvals crate, whose
+//   header is all scar tissue from getting that answer wrong. A "needs input"
+//   queue for runs would be a second inbox with a second disclosure rule, and
+//   the second one is always the one that leaks.
 //
 //   So a parked run is `ApprovalKind = 'run_decision'`, gathered by
 //   `pendingApprovals`, announced by `announceApproval`, swept by
@@ -50,14 +49,14 @@
 //   `store.answer`, and this file is the only caller that gets to reach it with
 //   a person's name attached.
 //
-// THE SEAMS. The approvals census has crossed (crate `approvals`), so the four
-// shapes this file shares with it — `Disclosure`, `PendingApproval`,
-// `run_decision_approval`, `may_decide_content` — live THERE and are imported
-// here. `audience_for` / `announce` / `mark_brief_stale` remain fields on the
+// THE SEAMS. The four shapes this file shares with the approvals plane —
+// `Disclosure`, `PendingApproval`, `run_decision_approval`,
+// `may_decide_content` — live in crate `approvals` and are imported here.
+// `audience_for` / `announce` / `mark_brief_stale` remain fields on the
 // deps rather than imports, because the engine's deps are closures over a
 // `dyn RunStore` with no pool in them; the real edges (a `PgPool` and a
 // `ConnectionManager` over `ApprovalDeps`/`NotifyDeps`) are adapted onto these
-// seams by the run-kinds boot slice. Their CONTRACTS are the TS ones:
+// seams by the boot wiring in runs/mod.rs. Their CONTRACTS:
 // `audience_for` resolves an `Authority` to the two halves of a `Disclosure`
 // and resolves "could not say" to NOBODY, never to "everybody"; `announce`
 // files the approval with the notify machinery and returns how many people were
@@ -97,7 +96,7 @@ pub fn run_approval_key(kind: &str, run_id: &str, question_key: &str) -> String 
 
 // `run_decision_approval` — the row → approval translation this file's
 // `DecideDeps.approval_for` is defaulted to, and the predicate
-// `may_decide_content` — now live in the approvals module with the census that
+// `may_decide_content` — live in the approvals module with the census that
 // builds the same shape for the other four kinds. Imported above; see
 // `crate::approvals` for the fail-closed contract both carry.
 
@@ -108,10 +107,9 @@ pub type AnnounceFn = Arc<dyn Fn(&str) -> BoxFuture<'static, usize> + Send + Syn
 pub type MarkBriefStaleFn = Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, ()> + Send + Sync>;
 pub type ApprovalForFn = Arc<dyn Fn(&RunRow) -> Option<PendingApproval> + Send + Sync>;
 
-/// The edges `pause` touches. TS gave `pause` the whole `DecideDeps` and let the
-/// DRIVER's `deps.pause` default to it lazily; a Rust struct literal resolves
-/// eagerly, and `DecideDeps` wraps `RunDeps` which contains the pause — so the
-/// pause is built from the edges instead. Same world, one construction order:
+/// The edges `pause` touches. The pause cannot borrow `DecideDeps` (which
+/// wraps `RunDeps`, whose `pause` field is the thing being built), so it is
+/// built from the edges instead. One construction order:
 /// edges → `pause_fn` → `RunDeps` → `DecideDeps`.
 #[derive(Clone)]
 pub struct PauseDeps {
@@ -166,7 +164,7 @@ pub enum PauseResult {
     /// The park did not land, and every reason is a normal one: another
     /// instance owns the run now, somebody cancelled it, the row is gone. The
     /// question is simply not asked; nothing is half-parked. The state rides
-    /// inside the reason, where the TS result carried it beside.
+    /// inside the reason.
     Refused { reason: WriteFailure },
 }
 
@@ -197,8 +195,7 @@ pub async fn pause(args: PauseArgs, deps: &PauseDeps) -> Result<PauseResult, sql
     };
 
     let approval_key = run_approval_key(&run.kind, &run.id, &args.question.key);
-    // TS slices the phase at 300 UTF-16 units; the clamp here is 300 bytes on a
-    // char boundary — the standing surrogate divergence, as on the note below.
+    // The phase is clamped to 300 bytes on a char boundary.
     let phase = clamp_text(args.phase.as_deref().unwrap_or(&run.phase), 300);
     let decision = RunDecision {
         request: args.question.clone(),
@@ -251,8 +248,8 @@ pub async fn pause(args: PauseArgs, deps: &PauseDeps) -> Result<PauseResult, sql
     // how many people could have been told; the announcement itself goes through
     // the announcer, which resolves it again from the census. That is not a
     // wasted round trip, it is the guarantee: nothing in this file may hand the
-    // announcer an audience of its own. The seam's contract carries the TS
-    // resolver's error posture — "could not say" resolves to NOBODY, never to
+    // announcer an audience of its own. The seam's contract is the resolver's
+    // error posture — "could not say" resolves to NOBODY, never to
     // everybody.
     let audience = match (deps.definition_for)(&run.kind) {
         Some(def) => (deps.audience_for)(&(def.audience)(&parked)).await,
@@ -281,7 +278,7 @@ pub async fn pause(args: PauseArgs, deps: &PauseDeps) -> Result<PauseResult, sql
     })
 }
 
-/// The driver's `PauseFn` over `pause` — the adapter the handoff slice puts in
+/// The driver's `PauseFn` over `pause` — the adapter `real_run_deps` wires into
 /// `RunDeps.pause`. The driver's coarser `PauseOutcome` is the contract it
 /// needs; the `Disclosure` stays on this side.
 pub fn pause_fn(deps: PauseDeps) -> PauseFn {
@@ -330,10 +327,9 @@ pub fn pause_fn(deps: PauseDeps) -> PauseFn {
 
 /// THE `awaiting → queued` write, and the reason it is not exported.
 ///
-/// This is the only statement in the system that takes a row out of `awaiting`,
-/// and for one round of the TS project it lived in run.ts as a public
-/// `answerRun` with no authority check in it — beside `decide()`, which has one.
-/// Two doors into one write, one of them open, makes the gate a convention: a
+/// This is the only statement in the system that takes a row out of `awaiting`.
+/// Exporting it would put two doors into one write — this one and `decide()`,
+/// which has the authority check — and two doors make the gate a convention: a
 /// route that imported the more obvious name would resume somebody else's run on
 /// the strength of a request body.
 ///
@@ -455,8 +451,8 @@ pub async fn decide(args: DecideArgs, deps: &DecideDeps) -> Result<DecideResult,
             state: None,
         });
     };
-    // TS checks state and question together: either way there is nothing parked
-    // here to answer.
+    // State and question are checked together: either way there is nothing
+    // parked here to answer.
     let request = match run
         .decision
         .as_ref()
@@ -528,10 +524,9 @@ pub async fn decide(args: DecideArgs, deps: &DecideDeps) -> Result<DecideResult,
         // what actually closes the race with a second decider.
         key: request.key.clone(),
         option_id: option.id.clone(),
-        // Free text from a person, clamped — TS at 2000 UTF-16 units, here at
-        // 2000 bytes on a char boundary (the standing surrogate divergence). It
-        // is a note for the step and for the audit trail — never an instruction
-        // that widens what the run may do.
+        // Free text from a person, clamped to 2000 bytes on a char boundary.
+        // It is a note for the step and for the audit trail — never an
+        // instruction that widens what the run may do.
         note: args
             .note
             .as_deref()
@@ -669,8 +664,8 @@ mod tests {
         );
     }
 
-    // `may_decide_content` and `run_decision_approval` are tested where they
-    // now live, in crate::approvals.
+    // `may_decide_content` and `run_decision_approval` are tested in
+    // crate::approvals.
 
     #[test]
     fn pending_question_is_none_unless_parked_unanswered() {

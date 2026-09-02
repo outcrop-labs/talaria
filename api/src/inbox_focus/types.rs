@@ -1,16 +1,15 @@
-// inbox-focus-types.ts — the wire shapes of the Inbox focus family.
+// The wire shapes of the Inbox focus family.
 //
-// Every struct here serializes in TS DECLARATION order; that order is part of
-// the byte contract (the oracle serves `JSON.stringify` of these literals).
-// Shapes with CONDITIONAL fields (built per branch with spreads) do not get a
-// struct at all — the engine builds them with `json!`, whose `preserve_order`
-// map reproduces each site's key order exactly.
+// Every struct here serializes in declaration order; that order is part of
+// the byte contract. Shapes with CONDITIONAL fields (built per branch) do
+// not get a struct at all — the engine builds them with `json!`, whose
+// `preserve_order` map reproduces each site's key order exactly.
 
 use serde::Serialize;
 use serde_json::Value;
 
-/// FOCUS_SOURCE_TYPES (inbox-focus-types.ts) — the four provenances a queue
-/// item can have, in the order the queue builder concatenates them.
+/// The four provenances a queue item can have, in the order the queue
+/// builder concatenates them.
 pub const FOCUS_SOURCE_TYPES: [&str; 4] = ["approval", "task", "channel", "notification"];
 
 /// One evidence line on a queue card. Reused from the harness def, which owns
@@ -51,8 +50,8 @@ pub fn wire_item(item: &RawFocusItem) -> Value {
     serde_json::to_value(wire_item_struct(item)).expect("raw focus item serializes")
 }
 
-/// The typed half of `wire_item` — declaration order, no skips: the TS type
-/// serializes every field on every card.
+/// The typed half of `wire_item` — declaration order, no skips: every field
+/// serializes on every card.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FocusItemWire<'a> {
@@ -130,15 +129,15 @@ pub struct AssistantBrief {
 
 // ── The timeline ─────────────────────────────────────────────────────────────
 
-/// An entry's focus context. Kept as the ORIGINAL Value (not a struct) because
-/// two spellings exist on the wire and both must round-trip byte-identically:
-/// fresh contexts are built in TS literal order, DB contexts come back in
-/// PostgreSQL's jsonb key order — and the TS side serializes whichever it
-/// read. `focus_of` is the validator both producers share.
+/// An entry's focus context. Kept as the ORIGINAL Value (not a struct)
+/// because two spellings exist on the wire and both must round-trip
+/// unchanged: fresh contexts are built in literal key order, DB contexts
+/// come back in PostgreSQL's jsonb key order. `focus_of` is the validator
+/// both producers share.
 pub type FocusContext = Value;
 
 /// One timeline message entry (the `message` variant). `attachments` is
-/// `?? []` in TS — always an array, possibly empty.
+/// always an array, possibly empty.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageEntry {
@@ -166,8 +165,8 @@ pub struct ContextEntry {
 }
 
 /// A decision's timeline record (the `activity` variant). The three
-/// confirmation fields are conditional (`?:`) — skip_serializing_if keeps
-/// them absent, which is what the TS literal spreads do.
+/// confirmation fields are conditional — `skip_serializing_if` keeps them
+/// absent when None.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEntry {
@@ -188,9 +187,8 @@ pub struct ActivityEntry {
     pub undo_expires_at: Option<String>,
 }
 
-/// InboxTimelineEntry — internally tagged with `kind`, variant fields in TS
-/// declaration order. `kind` serializes FIRST (the tag), which is exactly the
-/// TS literal's key order.
+/// Internally tagged with `kind`, variant fields in declaration order;
+/// `kind` serializes first (the tag).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InboxTimelineEntry {
@@ -248,10 +246,10 @@ pub enum InboxCommandEvent {
 
 // ── The ad-hoc result shapes ─────────────────────────────────────────────────
 //
-// FocusActionResult and FocusCommandResult have NO fixed key order: each TS
+// FocusActionResult and FocusCommandResult have NO fixed key order: each
 // branch spells its own literal (some put `message` before `decisionId`, the
 // catch paths after it). The engine therefore builds them per site as Values
-// via `json!` — see inbox_focus.rs — and these aliases name the intent.
+// via `json!`, and these aliases name the intent.
 pub type FocusActionResult = Value;
 pub type FocusCommandResult = Value;
 

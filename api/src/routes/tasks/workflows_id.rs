@@ -1,9 +1,9 @@
-// /api/workflows/{id} — port of ui/src/routes/api/workflows.$id.ts. PUT
-// patch and DELETE, both agents.manage. Gate order is TS's: perm, body, then
-// the SQL bind — so a member with a bad body gets the 403, and a non-uuid id
-// only reaches the bind when a field is PRESENT (an empty patch runs no SQL
-// and answers ok even for a non-uuid id). No 404: a missed id updates or
-// deletes nothing and the route still answers ok.
+// /api/workflows/{id}. PUT patch and DELETE, both agents.manage. Gate
+// order: perm, body, then the SQL bind — so a member with a bad body gets
+// the 403, and a non-uuid id only reaches the bind when a field is PRESENT
+// (an empty patch runs no SQL and answers ok even for a non-uuid id).
+// No 404: a missed id updates or deletes nothing and the route still
+// answers ok.
 
 use super::workflows::{match_json, toolkits_json, validate_workflow_body};
 use crate::body::{as_object, parse};

@@ -82,8 +82,9 @@ pub fn hermes_tools() -> Vec<ToolDefinition> {
 }
 
 /// JS `.length` on a string — UTF-16 code units, not bytes. The tool SAYS
-/// "bytes" and TS reports `.length`; the oracle diffs against TS, so the
-/// number has to agree with it rather than with the word.
+/// "bytes" but reports `.length`, and the dry-run fixtures' expected numbers
+/// are UTF-16 lengths — the number has to agree with those rather than with
+/// the word.
 fn js_len(s: &str) -> usize {
     s.encode_utf16().count()
 }

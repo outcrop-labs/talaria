@@ -11,7 +11,6 @@
 // lives here is the live upgrade status (the 60s cache /alerts polls), the
 // reindex run's READ SHAPE the admin panel consumes, and the cache drop the
 // run calls after every collection it rebuilds.
-// Port of ui/src/server/retrieval/migrate.ts.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -43,8 +42,8 @@ pub struct CollectionStatus {
     pub missing: bool,
 }
 
-/// The wire view of the embed service — `{modelId, dim}` camelCase, the TS
-/// interface the panel declares. (EmbedInfo itself is the internal shape;
+/// The wire view of the embed service — `{modelId, dim}` camelCase, the
+/// shape the panel consumes. (EmbedInfo itself is the internal shape;
 /// this is the one that rides a response body.)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,9 +67,7 @@ pub struct RetrievalUpgradeStatus {
 
 // ── The 60s status cache ─────────────────────────────────────────────────────
 //
-// Process-local, exactly like TS's module state. Both runtimes keep their own
-// during coexistence (each serves what it can compute); after the flip this
-// is the one cache, and the reindex run drops it through
+// Process-local. The reindex run drops it through
 // `invalidate_upgrade_status` after every collection it rebuilds — a cached
 // "needs reindex" surviving the rebuild that fixed it is an alarm that trains
 // people to ignore alarms.
@@ -100,8 +97,7 @@ fn store_status(at: Instant, value: RetrievalUpgradeStatus) {
 }
 
 /// Drop the 60s status cache. Called by the reindex run after every
-/// collection it rebuilds — the run's own `invalidate` edge, wired when the
-/// upgrade-status surface crossed with this module.
+/// collection it rebuilds.
 pub fn invalidate_upgrade_status() {
     *cache_cell().lock().unwrap() = None;
 }
@@ -147,9 +143,8 @@ async fn compute_upgrade_status(
             dense_dim: info.as_ref().and_then(|i| i.dense_dim),
             hybrid: info.as_ref().map(|i| i.hybrid).unwrap_or(false),
             dim_mismatch: match (&embed, &info) {
-                // TS: `!!embed && !!info?.denseDim && info.denseDim !==
-                // embed.dim` — a dense dim of 0 is falsy there and no match
-                // here either.
+                // A dense dim of 0 counts as absent — it never flags a
+                // mismatch.
                 (Some(e), Some(i)) => i.dense_dim.is_some_and(|d| d != 0 && d != e.dim as i64),
                 _ => false,
             },
@@ -188,8 +183,8 @@ fn fold_flags(
 
 // ── The reindex run's read shape ─────────────────────────────────────────────
 
-/// THE READ SHAPE, unchanged: `components/admin/retrieval.ts` declares
-/// exactly these fields and polls while `state === 'running'`.
+/// THE READ SHAPE: the admin panel declares exactly these fields and polls
+/// while `state === 'running'`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReindexStatus {
@@ -422,7 +417,7 @@ mod tests {
             vec![col(false, true, false)],
         );
         let j = serde_json::to_value(&s).unwrap();
-        // Field order is the interface's declaration order, camelCase, the
+        // Field order is the struct's declaration order, camelCase — the
         // bytes the panel was built against.
         assert_eq!(
             j,

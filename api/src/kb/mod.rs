@@ -8,13 +8,11 @@ pub mod perms;
 // doc "official" indexes it into the org-kb RAG collection so agents ground on
 // it; un-officializing / deleting removes it.
 //
-// Port of ui/src/server/kb.ts. The read half predates the write (the refs cone
-// needed it in batch 3); batch 5 completed the plane in place. Field
-// declaration order is WIRE order: these structs serialize straight to the
-// JSON the TS routes stringified, and the TS column aliases are that order —
-// getDoc puts `sort` before `ownerUserId`, the DOC_META list puts
-// `ownerUserId` before `sort` (and drops body/okf), so the two shapes are two
-// structs, not one struct reordered per call site.
+// Field declaration order is WIRE order: these structs serialize straight to
+// the JSON the routes return, and each read's column list fixes that order —
+// the doc detail (DOC_COLS) puts `sort` before `ownerUserId`, the doc list
+// (DOC_META_COLS) puts `ownerUserId` before `sort` (and drops body/okf), so
+// the two shapes are two structs, not one struct reordered per call site.
 
 use sqlx::PgPool;
 
@@ -28,7 +26,7 @@ use crate::retrieval::sources::{
     EFFECTIVE_DOC_SELECT, KbDocSync, kb_doc_of, resync_space_docs, sync_kb_doc, unindex_kb_doc,
 };
 
-/// A KB space (kb.ts KbSpace) — full row shape, in SPACE_COLS wire order.
+/// A KB space — full row shape, in SPACE_COLS wire order.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbSpace {
@@ -47,7 +45,7 @@ pub struct KbSpace {
     pub created_at: String,
 }
 
-/// A KB doc (kb.ts KbDoc) — full row shape, in getDoc's wire order.
+/// A KB doc — full row shape, in DOC_COLS wire order.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbDoc {
@@ -75,8 +73,8 @@ pub struct KbDoc {
     pub updated_at: String,
 }
 
-/// The list/tree shape (kb.ts KbDocMeta) — no body, no okf, and
-/// `ownerUserId` BEFORE `sort` (the detail order swaps them).
+/// The list/tree shape — no body, no okf, and `ownerUserId` BEFORE `sort`
+/// (the detail order swaps them).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbDocMeta {
@@ -173,8 +171,8 @@ pub async fn get_space(pg: &PgPool, id: &str) -> Result<Option<KbSpace>, sqlx::E
     Ok(row.map(KbSpace::from))
 }
 
-/// createSpace input — `description`/`icon` absent vs null are the same thing
-/// here (both insert null), so plain Options.
+/// Space-create input — `description`/`icon` absent vs null are the same
+/// thing here (both insert null), so plain Options.
 pub struct NewSpace {
     pub name: String,
     pub description: Option<String>,
@@ -200,8 +198,8 @@ pub async fn create_space(pg: &PgPool, input: &NewSpace) -> Result<KbSpace, sqlx
     Ok(KbSpace::from(row))
 }
 
-/// updateSpace patch — tri-state (`Option<Option<T>>`) where TS distinguishes
-/// absent (`undefined`, no update) from explicit null (clear the column).
+/// Space-update patch — tri-state (`Option<Option<T>>`): absent means no
+/// update, explicit null clears the column.
 #[derive(Default)]
 pub struct SpacePatch {
     pub name: Option<String>,
@@ -270,8 +268,8 @@ pub async fn update_space(
         }
     }
     let next = get_space(pg, id).await?;
-    // Version the overview like a doc (name + body snapshot) on content change
-    // — errors swallowed exactly as TS's `.catch(() => {})`.
+    // Version the overview like a doc (name + body snapshot) on content
+    // change — errors swallowed; the snapshot must never fail the save.
     if let Some(space) = &next
         && (patch.body.is_some() || patch.name.is_some())
     {
@@ -287,7 +285,7 @@ pub async fn update_space(
     // A space's visibility IS the effective visibility of every doc that
     // inherits it, so re-place them: making a space private has to pull its
     // docs out of the org brain, and nothing else would (the docs' own rows
-    // didn't change). Detached — TS's `void resyncSpaceDocs(id).catch(...)`.
+    // didn't change). Detached — the resync never blocks the save.
     if patch.visibility.is_some() {
         let (pg, space_id) = (pg.clone(), id.to_string());
         tokio::spawn(async move {
@@ -491,8 +489,8 @@ pub async fn get_doc(pg: &PgPool, id: &str) -> Result<Option<KbDoc>, sqlx::Error
     Ok(row.map(KbDoc::from))
 }
 
-/// getPublicDoc — same shape as getDoc MINUS ragRouting (routing is internal;
-/// a public reader learns nothing about the org's brain wiring).
+/// The public read by slug. The route projects only title/body/updatedAt —
+/// routing and every other internal column stay off the public wire.
 pub async fn get_public_doc(pg: &PgPool, slug: &str) -> Result<Option<KbDoc>, sqlx::Error> {
     // AssertSqlSafe: the interpolation is this crate's DOC_COLS column list.
     let sql =
@@ -519,8 +517,8 @@ pub async fn list_docs(pg: &PgPool, space_id: &str) -> Result<Vec<KbDocMeta>, sq
 /// A starter body for OKF-structured agent docs (machine-consumable).
 pub const OKF_TEMPLATE: &str = "---\ntitle:\nsummary:\ntags: []\nsource: talaria-kb\n---\n\n## Overview\n\n## Facts\n\n## Procedures\n";
 
-/// createDoc input. `title` defaults 'Untitled', `kind` defaults 'human' (an
-/// agent-kind doc starts from OKF_TEMPLATE).
+/// Doc-create input. `title` defaults 'Untitled', `kind` defaults 'human'
+/// (an agent-kind doc starts from OKF_TEMPLATE).
 pub struct NewDoc {
     pub space_id: String,
     pub parent_id: Option<String>,
@@ -551,8 +549,7 @@ pub async fn create_doc(pg: &PgPool, input: &NewDoc) -> Result<KbDoc, sqlx::Erro
         .ok_or_else(|| sqlx::Error::RowNotFound)
 }
 
-/// saveDoc patch — tri-state where TS distinguishes absent from explicit null
-/// (icon, parentId).
+/// Doc-save patch — tri-state: absent vs explicit null (icon, parent_id).
 #[derive(Default)]
 pub struct DocPatch {
     pub title: Option<String>,
@@ -648,7 +645,7 @@ pub async fn save_doc(
     let next = get_doc(pg, id).await?;
     if let Some(next) = &next {
         // Snapshot on content change; re-route RAG on any content/visibility
-        // change — errors swallowed exactly as TS's `.catch(() => {})`.
+        // change — errors swallowed; neither may fail the save.
         if patch.body.is_some() || patch.title.is_some() {
             let _ = snapshot(
                 pg,
@@ -723,7 +720,7 @@ pub async fn delete_doc(
 
 /// Set a doc's RAG routing ('auto' | 'none' | a custom brain id) and re-place
 /// it immediately. Owner-only at the route layer — routing changes who can
-/// retrieve the doc's content. Err = "unknown brain" (the TS throw verbatim).
+/// retrieve the doc's content. Err = "unknown brain".
 pub async fn set_doc_routing(
     pg: &PgPool,
     qd: &QdrantDeps,
@@ -914,9 +911,9 @@ pub struct KbSearchHit {
     /// Spaces are documents too (their overview) — hits open the space itself.
     pub kind: String,
     pub snippet: String,
-    /// Not in the TS interface — but it IS on the wire: searchDocs pushes the
-    /// raw SQL row (select-order keys, rank selected last) straight into the
-    /// response. Declaration order mirrors the select list.
+    /// On the wire even though the panel's typed shape does not name it: a
+    /// hit is the raw SQL row (select-order keys, rank selected last).
+    /// Declaration order mirrors the select list.
     pub rank: f64,
 }
 
@@ -958,11 +955,11 @@ pub async fn search_docs(
         return Ok(Vec::new());
     }
     // rank crosses as TEXT, parsed back to f64 below: ts_rank returns FLOAT4,
-    // and the double it promotes to differs from the double postgres.js parses
-    // from PG's shortest float4 text ("0.09910322") — 0.09910322153520584 on
-    // the wire would diverge from TS. rank_f stays numeric for the order-by;
-    // the outer projection re-aliases so the row's key order matches TS's
-    // select-star either side.
+    // and PG's shortest float4 text ("0.09910322") is the value the wire has
+    // always carried — promoting the binary float instead would render its
+    // full f64 expansion (0.09910322153520584). rank_f stays numeric for the
+    // order-by; the outer projection re-aliases so the row's key order
+    // matches the select list.
     let hits = sqlx::query(
         "select id::text, space_id, space_name, title, icon, visibility, kind, snippet, rank_f::text as rank \
          from ( \
@@ -1041,7 +1038,7 @@ pub async fn search_docs(
             visibility: r.try_get("visibility").unwrap_or_default(),
             kind,
             snippet: r.try_get("snippet").unwrap_or_default(),
-            // text→f64, the postgres.js path (see the SQL comment above).
+            // text→f64 — the path the SQL comment above pins.
             rank: r
                 .try_get::<String, &str>("rank")
                 .ok()
@@ -1057,7 +1054,7 @@ pub async fn search_docs(
     Ok(out)
 }
 
-/// The viewer searchDocs filters for — id + the author string (email ?? name).
+/// The viewer search filters for — id + the author string (email ?? name).
 pub struct SearchViewer<'a> {
     pub user_id: &'a str,
     pub who: Option<&'a str>,
@@ -1106,9 +1103,9 @@ pub async fn get_backlinks(pg: &PgPool, doc_id: &str) -> Result<Vec<KbBacklink>,
         .collect())
 }
 
-/// randomBytes(8).toString('hex') — the 16-char public slug, minted on first
-/// publish. Shared with the artifacts plane (its first-publish slug mint is
-/// the same shape).
+/// 8 random bytes as hex — the 16-char public slug, minted on first publish.
+/// Shared with the artifacts plane (its first-publish slug mint is the same
+/// shape).
 pub(crate) fn random_slug() -> String {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).expect("system rng");

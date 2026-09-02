@@ -1,7 +1,6 @@
 // The LIVING PLAN DOCUMENT synchronizer, declared. A plan conversation carries
 // a document beside it, and after a turn lands the plan's own agent rewrites
-// that document from the conversation so far. Port of
-// harness/defs/plan-doc.ts.
+// that document from the conversation so far.
 //
 // THE OUTPUT CONTRACT IS THE WHOLE DOCUMENT, NOT A PATCH — read this before
 // changing anything here, because every decision below follows from it.
@@ -16,26 +15,25 @@
 //     gutting     the model answers with a summary of the document instead of
 //                 the document, or with a fresh skeleton it likes better.
 //
-//   What protected against that before the port was one line — an empty-reply
-//   throw — which catches only a completely empty reply. Anything non-empty
-//   was saved, including a two-line reply over a twelve-section plan. The
-//   audit does not name this one; it is a finding from the port, and
-//   `plan_doc_regression` below is the fix. It lives here, next to the
-//   contract it defends, and it is `pub` because it has exactly two callers
-//   that must never disagree: the plan-doc job refuses the save, and the
-//   fixtures at the bottom score a model on it. Same arrangement as
-//   `allowed_focus_action_ids` in defs/inbox-focus.
+//   An empty-reply check alone does not protect against either: it catches
+//   only a completely empty reply, while anything non-empty gets saved,
+//   including a two-line reply over a twelve-section plan.
+//   `plan_doc_regression` below is the guard against that. It lives here,
+//   next to the contract it defends, and it is `pub` because it has exactly
+//   two callers that must never disagree: the plan-doc job refuses the save,
+//   and the fixtures at the bottom score a model on it. Same arrangement as
+//   `allowed_focus_action_ids` in defs/inbox_focus.
 //
 //   The document is versioned (`saveArtifact` snapshots through
 //   `internal-history`), so a bad revision is recoverable and this guard does
 //   not have to be paranoid — which is exactly why it refuses the shapes that
 //   are unambiguously not a rewrite and lets a judgement call through.
 //
-// WHAT ELSE THE PORT CLOSES: the document is persisted AND indexed into the
-// activity brain, and it was written by an unguarded `proxyChat` call (audit
-// 1.5). A pasted credential in a planning chat went into the document, into
-// the index, and back out of retrieval later as fact. `guard.redact` covers
-// that now.
+// THE DOCUMENT IS PERSISTED AND INDEXED: it lands in the activity brain as
+// well as the artifact store, and retrieval hands it back later as fact. A
+// pasted credential in a planning chat that reaches the document goes into
+// the index and back out of retrieval — `guard.redact` below is what stops
+// that chain.
 
 use std::sync::{Arc, OnceLock};
 
@@ -56,8 +54,8 @@ use crate::harness_model::ModelSpec;
 /// Everything the model is shown. The template block and the workflow map
 /// arrive RENDERED, because producing either is a database read and this module
 /// must stay importable without booting Talaria — the fitness suite enumerates
-/// every definition before it has one. camelCase on the wire — the TS def's
-/// declared JSON contract.
+/// every definition before it has one. camelCase on the wire
+/// (`templatePrompt`, `routingMap`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanDocInput {
@@ -75,8 +73,8 @@ pub struct PlanDocInput {
 
 // ── The prompts ──────────────────────────────────────────────────────────────
 
-/// Preserved VERBATIM from plan-doc.ts. The last paragraph is the contract
-/// `clean_plan_doc` enforces, and it is stated to the model in the same words.
+/// The wording is pinned: the last paragraph is the contract `clean_plan_doc`
+/// enforces, stated to the model in the same words it is checked by.
 fn sync_prompt() -> String {
     [
         "You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable.",
@@ -93,8 +91,8 @@ fn sync_routing(map: &str) -> String {
     )
 }
 
-/// The widened pass. ADDITIVE — the narrow branch is today's prompt unchanged,
-/// so nothing that works today starts answering differently after the port.
+/// The widened pass. ADDITIVE — the narrow branch is the prompt unchanged, so
+/// nothing that works today starts answering differently.
 ///
 /// What it buys is the structure a plan document is actually read for, and the
 /// reason it is gated is the reason the whole widening mechanism exists: a
@@ -126,8 +124,7 @@ fn any_heading_line() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(?m)^\s*#").unwrap())
 }
 
-/// Fence and lead-in stripping, preserved from `cleanDoc` in plan-doc.ts
-/// including its bounds, which are not arbitrary:
+/// Fence and lead-in stripping, with bounds that are not arbitrary:
 ///
 ///   the fence     a model that wraps the whole document in ``` loses the fence
 ///                 rather than storing it as the first line of the plan.
@@ -142,12 +139,12 @@ fn any_heading_line() -> &'static Regex {
 ///                 if anything above the `# ` is itself a heading, the document
 ///                 simply starts with a different level and there is no lead-in
 ///                 to remove. This is a test on LINES, not a substring test for
-///                 '#': as `.includes('#')` it was defeated by any '#' inside
-///                 the narration itself — "Updating the plan for PR #42 now.",
+///                 '#': a substring test is defeated by any '#' inside the
+///                 narration itself — "Updating the plan for PR #42 now.",
 ///                 "Posted this in #platform too." — which are the two most
 ///                 likely sentences for an engineering persona to open with,
-///                 and the narration was then saved as the document's first
-///                 line and indexed into the activity brain.
+///                 and the narration then lands as the document's first line
+///                 and is indexed into the activity brain.
 ///
 /// `None` when nothing usable came back, which the runner turns into
 /// `OnFailure::Null` and the caller reads as KEEP THE EXISTING DOCUMENT.
@@ -156,9 +153,8 @@ pub fn clean_plan_doc(raw: &str) -> Option<String> {
     if let Some(caps) = fenced().captures(text) {
         text = caps.get(1).map_or("", |m| m.as_str()).trim();
     }
-    // `search` in JS returns a UTF-16 offset, so the 400 bound is measured in
-    // UTF-16 units exactly as it was; the slice itself is taken at the byte
-    // offset the same match reports here.
+    // The 400 bound is measured in UTF-16 units; the slice itself is taken at
+    // the byte offset the match reports.
     if let Some(m) = heading_line().find(text) {
         let units = utf16_len(&text[..m.start()]);
         if units > 0 && units < 400 && !any_heading_line().is_match(&text[..m.start()]) {
@@ -215,7 +211,7 @@ pub fn plan_doc_regression(current: &str, next: &str) -> Option<String> {
         return None;
     }
 
-    // `[...new Set(sections(before))]` — the dedup preserving first order.
+    // Dedup preserving first order.
     let mut had: Vec<String> = Vec::new();
     for s in sections(before) {
         if !had.contains(&s) {
@@ -245,7 +241,7 @@ pub fn plan_doc_regression(current: &str, next: &str) -> Option<String> {
     }
     // TRUNCATED. Sections went missing AND the document came back shorter,
     // which together are the signature of a reply that stopped at the token
-    // cap. The lengths are UTF-16 units, as `.length` was.
+    // cap. The lengths are UTF-16 units.
     if !lost.is_empty() && (utf16_len(after) as f64) < utf16_len(before) as f64 * SHRUNK {
         return Some(format!(
             "a rewrite that dropped {} and came back shorter than the document it was given",
@@ -494,8 +490,7 @@ pub struct PlanDocFixture {
     pub check: fn(&str) -> Option<String>,
 }
 
-/// TEN FIXTURES, THREE BANDS. The order is the TS table's order: the
-/// preservation cases first, the traps last.
+/// TEN FIXTURES, THREE BANDS — preservation cases first, traps last.
 pub fn fixtures() -> Vec<PlanDocFixture> {
     vec![
         PlanDocFixture {
@@ -519,7 +514,6 @@ pub fn fixtures() -> Vec<PlanDocFixture> {
             check: folds_the_turn_and_leaves_the_question_open,
         },
         PlanDocFixture {
-            // No band in TS: the default is 'standard'.
             name: "returns the document and nothing else",
             band: EvalBand::Standard,
             input: PlanDocInput {
@@ -659,9 +653,8 @@ pub fn plan_doc_harness() -> HarnessDefinition {
         Arc::new(|input: &Value, ctx: &RenderContext| {
             let pi: PlanDocInput =
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
-            // `[SYNC_PROMPT, templatePrompt, widened].filter(Boolean).join('\n\n')`
-            // — TS truthiness drops an empty template block along with a
-            // missing one.
+            // Truthiness drops an empty template block along with a missing
+            // one.
             let mut parts = vec![sync_prompt()];
             if let Some(t) = pi.template_prompt.as_deref().filter(|t| !t.is_empty()) {
                 parts.push(t.to_string());
@@ -670,8 +663,8 @@ pub fn plan_doc_harness() -> HarnessDefinition {
                 parts.push(WIDENED.to_string());
             }
             let mut system = parts.join("\n\n");
-            // `input.routingMap?.trim()` — the truthiness is on the TRIMMED
-            // map, so a whitespace-only routing context is no routing context.
+            // The truthiness is on the TRIMMED map, so a whitespace-only
+            // routing context is no routing context.
             if let Some(map) = pi.routing_map.as_deref().map(str::trim)
                 && !map.is_empty()
             {
@@ -738,15 +731,14 @@ pub fn plan_doc_harness() -> HarnessDefinition {
         rules: Some(vec!["secret_leak", "pii_leak"]),
         redact: true,
     });
-    // No temperature: the hand-written call sent none, so the plan agent's
-    // own default is what has always written these documents.
+    // No temperature: the plan agent's own default is what writes these
+    // documents.
 
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — ten
     // fixtures over the one shared document (see `fixtures`). The fold re-types
     // the value the way every text def's does: the run's value is the CLEANED
-    // document, which is exactly what the TS check received, and a value that
-    // is not a string is the fixture check throwing, which the sweep scores as
-    // a task failure carrying the same sentence the TS sweep did.
+    // document, and a value that is not a string is the fixture check failing
+    // on it, which the sweep scores as a task failure.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -841,8 +833,8 @@ mod tests {
 
     #[test]
     fn a_gutted_rewrite_is_refused_even_at_full_length() {
-        // `sections` matches the `# ` title too, exactly as the TS regex does —
-        // so a restructured document has lost the title as well.
+        // `sections` matches the `# ` title too, so a restructured document
+        // has lost the title as well.
         let next = "# A plan I prefer\n\n## Overview\nEverything, in general terms.";
         assert_eq!(
             plan_doc_regression(CURRENT_DOC, next).as_deref(),
@@ -1076,8 +1068,7 @@ mod tests {
         assert!(res.answered && res.schema_valid, "{:?}", res.error);
         assert_eq!(res.value, Some(Value::String(doc)));
         let req = r.req_at(0);
-        // No temperature was ever sent for this call, so the plan agent's own
-        // default writes the document.
+        // No temperature — the plan agent's own default writes the document.
         assert_eq!(req.temperature, None);
         assert!(
             req.messages[0]

@@ -1,6 +1,6 @@
-// Human-readable model identity, populated automatically — port of
-// model-info.ts (both halves: the catalog read and the org-voice rewrite
-// pass). OpenRouter's public catalog (no key) carries a pretty name +
+// Human-readable model identity, populated automatically — both halves: the
+// catalog read and the org-voice rewrite pass. OpenRouter's public catalog
+// (no key) carries a pretty name +
 // description for essentially every major model; we match registered ids
 // against it the same way the price oracle does (full id for slashed ids,
 // unambiguous suffix for bare ones) and serve a display label + a one-line
@@ -27,8 +27,9 @@ fn normalize(s: &str) -> String {
 
 /// JS `\s` — what the collapse regex and the sentence split both mean by
 /// whitespace. Rust's `char::is_whitespace` differs at the edges (﻿ is
-/// JS-\s and not Unicode White_Space; \u{85} is the reverse), and the port
-/// keeps the JS set so a description's edge characters collapse the same way.
+/// JS-\s and not Unicode White_Space; \u{85} is the reverse), and this
+/// module keeps the JS set so a description's edge characters collapse the
+/// same way.
 fn is_js_ws(c: char) -> bool {
     matches!(
         c,
@@ -83,10 +84,10 @@ fn to_blurb(description: &str) -> String {
         }
     };
     if utf16_len(first) > 160 {
-        // JS slice(0, 157) cuts UTF-16 units and can split a surrogate pair;
-        // Rust strings cannot hold half a pair, so cut at the last whole char
-        // that fits. (Only reachable with an astral character straddling unit
-        // 157 of a 160+-unit sentence.)
+        // The clamp cuts UTF-16 units; a naive slice could split a surrogate
+        // pair, and Rust strings cannot hold half a pair, so cut at the last
+        // whole char that fits. (Only reachable with an astral character
+        // straddling unit 157 of a 160+-unit sentence.)
         let mut units = 0usize;
         let mut end = 0usize;
         for (i, c) in first.char_indices() {
@@ -109,8 +110,8 @@ struct Catalog {
 }
 
 /// Build the lookup tables from OpenRouter's `data` rows (pure, for tests).
-/// Later duplicates overwrite earlier in `by_id` (Map.set), append in
-/// `by_suffix` — the ambiguity signal.
+/// Later duplicates overwrite earlier in `by_id`, append in `by_suffix` —
+/// the ambiguity signal.
 fn build_catalog(data: &[serde_json::Value]) -> Catalog {
     let mut by_id = HashMap::new();
     let mut by_suffix: HashMap<String, Vec<ModelInfo>> = HashMap::new();
@@ -218,11 +219,10 @@ fn clone_of(c: &Cache) -> Cache {
     }
 }
 
-/// Info for one registered model id — port of modelInfo: catalog label + the
-/// org-voice blurb when it's been written, else the raw catalog blurb. None
-/// when nothing matches. The blurb override read PROPAGATES its error: TS's
-/// `await sql` rejects, and the caller (the /api/models Promise.all) turns
-/// that into the same 500.
+/// Info for one registered model id: catalog label + the org-voice blurb
+/// when it's been written, else the raw catalog blurb. None when nothing
+/// matches. The blurb override read PROPAGATES its error — the caller (the
+/// /api/models fan-out) turns that into a 500.
 pub async fn model_info(pg: &PgPool, model_id: &str) -> Result<Option<ModelInfo>, sqlx::Error> {
     let Some(cat) = catalog().await else {
         return Ok(None);
@@ -255,16 +255,15 @@ pub fn clear_model_info_cache() {
 //
 // One batched completion through the Catalog writer turns the vendor's
 // marketing line into the org's own voice, cached in model_blurbs. The pass
-// is OPPORTUNISTIC: any catalog read may kick it, throttled, detached, never
-// blocking the request — the TS shape exactly.
+// runs as the registered scheduler job — detached from any request path,
+// throttled, never blocking a caller.
 
 const REWRITE_BATCH: usize = 10;
 const REWRITE_THROTTLE_MS: u64 = 10 * 60_000;
 
-/// The TS `blurb.trim().slice(0, 200)` — UTF-16 units, because `slice` is.
-/// Cutting a string Rust can't hold half of means stopping at the last whole
-/// character that fits (only reachable when an astral character straddles
-/// unit 200).
+/// trim, then clamp to 200 UTF-16 units. Cutting a string Rust can't hold
+/// half of means stopping at the last whole character that fits (only
+/// reachable when an astral character straddles unit 200).
 fn clamp_200(s: &str) -> String {
     let mut units = 0usize;
     let mut end = 0usize;
@@ -302,15 +301,13 @@ fn written_rows(
         .collect()
 }
 
-/// Rewrite catalog blurbs for registered models that don't have one yet —
-/// port of rewritePendingBlurbs. Returns how many were written. A PARTIAL
-/// batch is still a good pass: the models the reply skipped stay pending and
-/// come back around on the next kick, which is why the row selection walks
-/// `pending` rather than iterating whatever the model returned. The harness
-/// run's own failure is a no-write pass (warned, not propagated): TS's runner
-/// answers `{ value: null }` rather than throwing, and the kick's `.catch`
-/// swallows even a genuine throw — the worst outcome TS allowed was "nothing
-/// written this pass", and the port keeps exactly that ceiling.
+/// Rewrite catalog blurbs for registered models that don't have one yet.
+/// Returns how many were written. A PARTIAL batch is still a good pass: the
+/// models the reply skipped stay pending and come back around on the next
+/// run, which is why the row selection walks `pending` rather than iterating
+/// whatever the model returned. The harness run's own failure is a no-write
+/// pass (warned, not propagated) — the worst outcome is "nothing written
+/// this pass".
 pub async fn rewrite_pending_blurbs(
     state: &crate::state::AppState,
     batch: usize,
@@ -342,9 +339,9 @@ pub async fn rewrite_pending_blurbs(
     .into_iter()
     .collect();
 
-    // TS awaits catalogInfo per id; the catalog fetch is cached, so the Rust
-    // pass resolves every id against the one snapshot the cache hands back.
-    // No catalog → no pending candidate resolves → nothing to do.
+    // The catalog fetch is cached, so every id resolves against the one
+    // snapshot the cache hands back. No catalog → no pending candidate
+    // resolves → nothing to do.
     let cat = catalog().await;
     let mut pending: Vec<BlurbCandidate> = Vec::new();
     for id in &bare {
@@ -421,14 +418,9 @@ pub async fn rewrite_pending_blurbs(
 // ── The registered job ───────────────────────────────────────────────────────
 //
 // The scheduler owns the cadence; the module owns the work. The job runs the
-// rewrite pass (batch of ten, ten-minute floor) on the throttle as its
-// interval — the number was always the intended cadence. During the port's
-// coexistence era a throttled kick (any /api/models read could fire the pass
-// detached) was the only trigger that existed, because the schedule still
-// lived in TS; the job armed at the flip and the kick retired with the
-// cutover. NOT in REQUIRED_JOBS, same as TS's optional jobs: its failure mode
-// is a stale blurb next to a catalog that self-heals on the next pass, not
-// work that silently never happens.
+// rewrite pass (batch of ten) on the throttle as its interval. NOT in
+// REQUIRED_JOBS: its failure mode is a stale blurb next to a catalog that
+// self-heals on the next pass, not work that silently never happens.
 
 /// The job the scheduler runs. NOT `per_instance`: it writes `model_blurbs`
 /// rows every instance can read, and two instances passing at once would
@@ -438,9 +430,8 @@ pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> crate::schedul
     JobSpec {
         name: JobName::BlurbRewrite,
         every_ms: REWRITE_THROTTLE_MS,
-        // Early: the whole point of the kick was that blurbs are ready
-        // before anyone opens the model picker, and the job can be earlier
-        // still — a minute lets the instance come up first.
+        // Early: blurbs are ready before anyone opens the model picker —
+        // a minute lets the instance come up first.
         first_run_delay_ms: Some(60_000),
         // One harness call over a batch of ten candidates.
         max_run_ms: Some(2 * 60_000),
@@ -462,7 +453,7 @@ pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> crate::schedul
 }
 
 /// Declare the sweep to the scheduler — the function boot calls. The job is
-/// the pass's only trigger since the cutover retired the route kick.
+/// the pass's only trigger.
 pub fn register_blurb_rewrite_job(deps: std::sync::Arc<BlurbDeps>) {
     crate::scheduler::register_job(blurb_rewrite_job_spec(deps));
 }
@@ -493,11 +484,11 @@ mod tests {
         assert_eq!(to_blurb(&long), format!("{}…", "a".repeat(157)));
         let exact = "a".repeat(160);
         assert_eq!(to_blurb(&exact), exact);
-        // The clamp counts UTF-16 units, not bytes. ONE RECORDED DIVERGENCE:
-        // TS `slice(0, 157)` will cut mid-surrogate-pair (158 units, one of
-        // them a lone surrogate); Rust cuts at the char boundary — 78 emoji +
-        // '…' = 157 units. Lone surrogates are not representable in UTF-8, and
-        // the case needs a >160-unit first sentence of astral chars. Cosmetic.
+        // The clamp counts UTF-16 units, not bytes. Cutting at unit 157 with
+        // an astral char straddling it lands on the char boundary — 78 emoji
+        // + '…' = 157 units — because a lone surrogate is not representable
+        // in UTF-8 (the case needs a >160-unit first sentence of astral
+        // chars. Cosmetic.)
         let emoji = "😀".repeat(81); // 162 units, 324 bytes
         let got = to_blurb(&emoji);
         assert_eq!(utf16_len(&got), 157); // 156 units of emoji (78 chars) + '…'
@@ -525,7 +516,7 @@ mod tests {
         assert_eq!(info.blurb, "Good at code.");
         // A BARE catalog id is unreachable from a bare lookup — the suffix
         // index only ever registers ids with a slash, so "nodot" is indexed
-        // nowhere. TS bug-for-bug: its bySuffix skips slice(1) == '' too.
+        // nowhere (an empty suffix is never registered either).
         assert!(info_in(&cat, "nodot").is_none());
         assert!(info_in(&cat, "never-heard-of").is_none());
         // Normalize: dots become dashes on lookup too.
@@ -626,8 +617,8 @@ mod tests {
         });
         let spec = blurb_rewrite_job_spec(deps);
         assert_eq!(spec.name.as_str(), "blurb-rewrite");
-        // The kick's throttle was always the intended cadence; the job just
-        // owns it instead of the request path.
+        // The throttle is the intended cadence; the job owns it off the
+        // request path.
         assert_eq!(spec.every_ms, 10 * 60_000);
         assert_eq!(spec.first_run_delay_ms, Some(60_000));
         assert_eq!(spec.max_run_ms, Some(2 * 60_000));

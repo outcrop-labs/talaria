@@ -1,5 +1,4 @@
-// /api/channels/{id}/messages/{msgId} — port of
-// ui/src/routes/api/channels.$id.messages.$msgId.ts.
+// /api/channels/{id}/messages/{msgId}.
 // PATCH { content } → edit your own message (edited marker shows).
 // DELETE → remove it: the author, or the channel owner tidying up. A thread
 // root takes its replies with it.
@@ -50,7 +49,7 @@ pub async fn patch(
     if msg.author_type != "user" || msg.author != author {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    // The body parses only after the author gate — zod's complaints come last.
+    // The body parses only after the author gate — validation errors come last.
     let parsed = crate::body::parse(&body);
     let obj = match as_object(&parsed) {
         Ok(o) => o,

@@ -1,8 +1,7 @@
-// /api/fleet/agents/{id}/crons/{jobId} — port of
-// ui/src/routes/api/fleet.agents.$id.crons.$jobId.ts. One cron job: DELETE →
-// remove. POST { action } → pause | resume | run ("run" queues it for the
-// next scheduler tick, ≤60s). PUT { name? schedule? prompt? } → edit in
-// place. Admin or owner.
+// /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
+// { action } → pause | resume | run ("run" queues it for the next scheduler
+// tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
+// owner.
 
 use crate::agent_crons::{
     edit_cron_job, pause_cron_job, remove_cron_job, resume_cron_job, run_cron_job,
@@ -57,8 +56,8 @@ pub async fn delete(
     }
 }
 
-/// PUT { name? schedule? prompt? } — any subset; zod's members are
-/// untrimmed (min 1 / max n on the raw string).
+/// PUT { name? schedule? prompt? } — any subset; members are untrimmed
+/// (min 1 / max n on the raw string).
 pub async fn put(
     State(state): State<AppState>,
     Path((id, job_id)): Path<(String, String)>,

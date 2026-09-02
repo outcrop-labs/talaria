@@ -1,6 +1,5 @@
-// POST /api/integrations/google/agent/gmail/organize — port of
-// ui/src/routes/api/integrations/google.agent.gmail.organize.ts. File/archive/
-// read messages by label. THE HITL LINE, stated once because it is the one
+// POST /api/integrations/google/agent/gmail/organize — file/archive/read
+// messages by label. THE HITL LINE, stated once because it is the one
 // judgment this route makes: sends and invites leave the building under the
 // owner's identity and queue for approval; filing, archiving and mark-read
 // stay INSIDE the mailbox and are reversible, so they apply immediately — that
@@ -83,7 +82,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     }
 }
 
-/// Date.now() — the one clock the agent mailbox reads.
+/// Epoch-ms clock — the one time the agent mailbox reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -6,21 +6,21 @@
 // platform harness — the Muse, the librarian, the briefer's structured turns —
 // does not, and cannot, because nothing in the UI process speaks MCP to itself.
 // The platform's own tool surface is a different, much smaller thing — one
-// tool, `web_search`, held out by the research harness (`harness/defs/research.ts`
+// tool, `web_search`, held out by the research harness (`harness/defs/research.rs`
 // owns its schema). Conflating the two is the mistake this header exists to
 // prevent: a fitness report that says "this model can use Talaria's tools" has
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
 //     hermes      44 tools, over MCP, inside the agent container   THIS FILE
-//     platform     handed to a model by a harness via `toolDefs`   research.ts (search)
+//     platform     handed to a model by a harness via `toolDefs`   research.rs (search)
 //
 // WHY A COPY AND NOT AN IMPORT. The real registrations live in `mcp/src/index.ts`,
 // a separate package whose module body STARTS AN MCP SERVER and whose every
 // handler calls Talaria's HTTP API. Importing it from the fitness suite would
 // boot a server and reach for a network on `import`. So the definitions are
-// copied here — and the sync test at the foot of this file (the port of
-// `talaria-tools.sync.test.ts`) reads `mcp/src/index.ts` and fails if a name, a
+// copied here — and the sync test at the foot of this file reads
+// `mcp/src/index.ts` and fails if a name, a
 // DESCRIPTION or a PARAMETER NAME has drifted, which is what keeps "a copy of
 // our base tools" true six months from now rather than merely true today.
 //
@@ -49,10 +49,6 @@
 // `dryRun.tools`, which is where it belongs — a tool surface is a prompt, and
 // handing a briefing chat the board-governance tools measures its tolerance for
 // noise rather than its ability to answer a question.
-//
-// Port of ui/src/server/fitness/toolbox/talaria-tools.ts; the header above is
-// carried over verbatim, and `mcp/src/index.ts` names the same file from the
-// repo root as it did from the UI tree.
 
 use serde_json::{Value, json};
 use std::sync::LazyLock;
@@ -129,7 +125,7 @@ pub struct SandboxTool {
     pub needs_google: bool,
 }
 
-// ── The schema helpers (the TS str/num/bool/strs/oneOf, one line each) ───────
+// ── The schema helpers (str/num/bool/strs/oneOf, one line each) ──────────────
 
 fn str_schema(description: &str) -> Value {
     json!({ "type": "string", "description": description })
@@ -160,11 +156,11 @@ const COLORS: &[&str] = &[
 
 // ── The catalog ──────────────────────────────────────────────────────────────
 
-/// WHY A `static` WHEN THE TS HOLDS A `const`: the schemas are `serde_json`
-/// `Value`s built by `json!`, and a Rust `const` cannot hold one (`json!`
-/// expands to runtime inserts, not a const constructor). `LazyLock` builds the
-/// catalog once on first use and hands out `&'static` entries, so `tools_named`
-/// still borrows the one table the way the TS's frozen array does.
+/// WHY A `LazyLock` AND NOT A `const`: the schemas are `serde_json` `Value`s
+/// built by `json!`, and a Rust `const` cannot hold one (`json!` expands to
+/// runtime inserts, not a const constructor). `LazyLock` builds the catalog
+/// once on first use and hands out `&'static` entries, so `tools_named`
+/// borrows the one table for the life of the process.
 pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
     vec![
         // ── Boards & tickets ───────────────────────────────────────────────────
@@ -885,8 +881,7 @@ mod tests {
 
     /// Resolved from `CARGO_MANIFEST_DIR`, not from the cwd: cargo test can be
     /// invoked from the repo root or from `api/`, and a cwd-relative path
-    /// silently points at a different tree depending on which. (The TS resolved
-    /// the same file from its own module URL for exactly that reason.)
+    /// silently points at a different tree depending on which.
     fn mcp_source() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mcp/src/index.ts")
     }
@@ -897,9 +892,9 @@ mod tests {
     }
 
     /// The scans below run over a `Vec<char>` rather than slicing the `&str`:
-    /// the source carries multi-byte punctuation (—, ’) and the TS's byte-ish
-    /// `i - 1` / `i + 40` arithmetic must never land mid-character here, where
-    /// a slice would panic instead of mis-hinting.
+    /// the source carries multi-byte punctuation (—, ’) and byte-offset
+    /// arithmetic must never land mid-character, where a slice would panic
+    /// instead of mis-hinting.
     fn char_index(source: &str, byte: usize) -> usize {
         source[..byte].chars().count()
     }
@@ -1080,8 +1075,8 @@ mod tests {
 
     /// The catalog's own argument keys and required set, from the JSON schema it
     /// carries. Insertion order (`serde_json`'s `preserve_order` keeps the
-    /// object faithful to the TS literal the way `Object.keys` was), so the
-    /// key-order assertion below means the same thing it meant in the TS.
+    /// object faithful to the literal), so the key-order assertion below
+    /// compares like against like.
     fn params_of(tool: &SandboxTool) -> RealParams {
         let p = &tool.parameters;
         let keys = p
@@ -1228,9 +1223,9 @@ mod tests {
         // enforces the same thing in CI; this is the unit-level statement of it, so
         // a new registration fails in the suite a developer runs first.
         //
-        // (The TS test's other half — every catalogued tool is BACKED by the
-        // sandbox's dispatch — lives with the sandbox module's port, because
-        // `backedToolNames` is sandbox.ts's export, not this catalog's.)
+        // (The test's other half — every catalogued tool is BACKED by the
+        // sandbox's dispatch — lives with the sandbox module, because
+        // `BACKED_TOOLS` is sandbox.rs's export, not this catalog's.)
         let real = real_descriptions(&source());
         let unmodelled: Vec<&String> = real
             .keys()

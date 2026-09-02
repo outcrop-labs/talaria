@@ -1,5 +1,5 @@
-// /api/brief/item — port of ui/src/routes/api/brief.item.ts.
-// POST { sourceKey, action, tz } → check off, dismiss, or restore one brief
+// /api/brief/item. POST { sourceKey, action, tz } → check off, dismiss, or
+// restore one brief
 // line. The owner's own verdict on their own document — scoped to the
 // caller's brief inside `mark_brief_item`, so a key belonging to somebody
 // else's day resolves to no line rather than to theirs.
@@ -19,20 +19,19 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// The POST body, TS's `Body` zod shape.
+/// The POST body: sourceKey, action, tz.
 struct ItemBody {
     source_key: String,
     action: String,
-    /// `.nullable().optional()` — the tri-state a browser may or may not say.
+    /// tz: the tri-state a browser may or may not say.
     tz: Option<String>,
 }
 
 fn validate(obj: &serde_json::Map<String, serde_json::Value>) -> Result<ItemBody, String> {
     let source_key = string_member(obj, "sourceKey", 1, 200)?;
     let action = enum_member(obj, "action", &["check", "dismiss", "restore"])?;
-    // `.nullable().optional()` — the helper answers the already-flattened
-    // Option (absent and null are the same thing to the engine, which takes
-    // `tz: Option<&str>`).
+    // the helper answers the already-flattened Option (absent and null are
+    // the same thing to the engine, which takes `tz: Option<&str>`).
     let tz = nullable_optional_string_member(obj, "tz", 64)?;
     Ok(ItemBody {
         source_key,

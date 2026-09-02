@@ -4,8 +4,6 @@
 // into fleet/agents/<slug>/secrets.env (0600), which the rendered service
 // loads via env_file. Values are write-only through the API: names and
 // timestamps list; plaintext never leaves the server.
-//
-// Port of ui/src/server/agent-secrets.ts.
 
 use sqlx::PgPool;
 use std::path::Path;
@@ -109,8 +107,8 @@ pub async fn delete_agent_secret(
 
 /// Write (or remove) the agent's secrets env file for the renderer. Returns
 /// whether the service should declare an env_file. An unsealable row fails
-/// the render, matching TS: a secret the server can no longer open must not
-/// silently vanish from a container that runs on it.
+/// the render — a secret the server can no longer open must not silently
+/// vanish from a container that runs on it.
 pub async fn materialize_agent_secrets(
     pg: &PgPool,
     sb: &SecretBox,
@@ -155,8 +153,8 @@ pub async fn materialize_agent_secrets(
     Ok(true)
 }
 
-/// writeFile(mode 0600) + the catch-chmod the TS pair performs: create-mode
-/// only applies to new files, so an existing file is chmod'd explicitly.
+/// Write mode 0600: create-mode only applies to new files, so an existing
+/// file is chmod'd explicitly.
 async fn write_0600(path: &Path, content: &str) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::OpenOptions::new()

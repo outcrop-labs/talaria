@@ -1,7 +1,7 @@
-// /api/inbox/focus/state — port of ui/src/routes/api/inbox.focus.state.ts.
-// PUT → mark a focus item viewed, or snooze it until a time. The lock is the
-// whole route's: the state write and the snooze's decision row are one Inbox
-// action, and a second one mid-flight is what the 409 refuses.
+// /api/inbox/focus/state. PUT → mark a focus item viewed, or snooze it
+// until a time. The lock is the whole route's: the state write and the
+// snooze's decision row are one Inbox action, and a second one mid-flight
+// is what the 409 refuses.
 
 use crate::body::{
     as_object, enum_member, optional_boolean_member, present_nullable_datetime_member,
@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-/// The PUT body, TS's `Body` zod shape.
+/// The PUT body shape.
 struct StateBody {
     source_type: String,
     source_id: String,
@@ -32,8 +32,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<StateBody, String> {
     let source_id = string_member(obj, "sourceId", 1, 500)?;
     let snoozed_until = present_nullable_datetime_member(obj, "snoozedUntil")?;
     let viewed = optional_boolean_member(obj, "viewed")?.unwrap_or(false);
-    // `.refine((body) => body.snoozedUntil !== undefined || body.viewed,
-    // 'state change required')` — present-null still counts as a change (it
+    // 'state change required' — present-null still counts as a change (it
     // clears the snooze); only absent-and-not-viewed is the empty request.
     if snoozed_until.is_none() && !viewed {
         return Err("state change required".into());
@@ -92,8 +91,8 @@ pub async fn put(
             "That focus item is no longer available.",
         );
     }
-    // `body.snoozedUntil ? … : null` — truthiness: only a present non-null
-    // (the regex guarantees non-empty) value records the snooze decision row.
+    // truthiness: only a present non-null (the regex guarantees non-empty)
+    // value records the snooze decision row.
     let timeline_entry = match body.snoozed_until.as_ref().and_then(|o| o.as_deref()) {
         Some(snoozed_until) => match record_inbox_snooze(
             &state,

@@ -1,6 +1,6 @@
-// /api/fleet/defs/$id/mcp — port of ui/src/routes/api/fleet.defs.$id.mcp.ts.
-// POST → add/remove MCP servers on an agent as a NEW config version (same
-// versioned-internals contract as model edits), optionally applied live.
+// /api/fleet/defs/{id}/mcp. POST → add/remove MCP servers on an agent as a
+// NEW config version (same versioned-internals contract as model edits),
+// optionally applied live.
 
 use crate::agent_defs::{add_version_if_changed, list_versions};
 use crate::agent_mcp::apply_mcp_edits;
@@ -41,7 +41,7 @@ struct AddServer {
 
 fn parse_add(obj: &Map<String, Value>) -> Result<Vec<AddServer>, String> {
     let Some(v) = obj.get("add") else {
-        return Ok(Vec::new()); // `.default([])`
+        return Ok(Vec::new()); // absent → empty
     };
     let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
     let mut out = Vec::new();
@@ -88,7 +88,7 @@ fn parse_add(obj: &Map<String, Value>) -> Result<Vec<AddServer>, String> {
 
 fn parse_remove(obj: &Map<String, Value>) -> Result<Vec<String>, String> {
     let Some(v) = obj.get("remove") else {
-        return Ok(Vec::new()); // `.default([])`
+        return Ok(Vec::new()); // absent → empty
     };
     let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
     let mut out = Vec::new();
@@ -134,7 +134,7 @@ pub async fn post(
     }
     .unwrap_or(false);
 
-    // getAgentDef — the columns this route touches, in its column order.
+    // the def read — the columns this route touches, in its column order.
     let def: Option<(String, String, bool, String, String)> = match sqlx::query_as(
         "select id::text, slug, managed, department, display_name from agent_defs where id = $1::uuid",
     )
@@ -144,7 +144,7 @@ pub async fn post(
     {
         Ok(row) => row,
         Err(e) => {
-            // A non-uuid id is the same postgres refusal TS throws on.
+            // a non-uuid id is the same postgres refusal — this 500 arm.
             tracing::error!("[fleet/defs/mcp] def read failed: {e}");
             return thrown_internal_error();
         }
@@ -237,7 +237,7 @@ pub async fn post(
     }
     let mut applied = false;
     if created && apply && managed {
-        // Roll, don't restart — see fleet.defs.$id.edit.
+        // Roll, don't restart — see fleet_defs_id_edit.
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
             Err(e) => {

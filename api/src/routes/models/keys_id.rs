@@ -1,9 +1,6 @@
-// /api/keys/{id} — port of ui/src/routes/api/keys.$id.ts. DELETE revokes one
-// of MY keys (the hash stays for audit); PUT sets my key's self-imposed
-// policy (#265). A non-uuid {id} is a recorded divergence: TS's raw SQL bind
-// throws and its platform answers a plain-text 500; this port logs and
-// answers the house envelope (RUST-MIGRATION.md, divergences — the
-// google-client precedent).
+// /api/keys/{id}. DELETE revokes one of MY keys (the hash stays for audit);
+// PUT sets my key's self-imposed policy (#265). A non-uuid {id} logs and
+// answers the house envelope 500 — not a thrown platform error.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{NumKind, as_object, nullable_number_member, parse};
@@ -17,10 +14,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// TS reaches Postgres with the raw path param and lets the $id::uuid bind
-/// reject garbage; here the parse is just the gate — the original string
-/// flows on to the query and the audit row verbatim, as params.id does.
-/// Some(gate) = the 500 to return.
+/// The uuid parse is just a gate — the original string flows on to the
+/// query and the audit row verbatim. Some(gate) = the 500 to return.
 fn uuid_or_500(id: &str, action: &str) -> Option<Response> {
     crate::params::uuid_gate("keys", action, id)
 }
@@ -67,8 +62,7 @@ pub async fn put(
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // Validation before the uuid gate, like TS: parseBody runs before
-    // setKeyPolicy ever reaches the bind, so a bad body wins the 400.
+    // Body validation before the uuid gate — a bad body wins the 400.
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
         Ok(o) => o,
@@ -91,9 +85,9 @@ pub async fn put(
     if let Some(gate) = uuid_or_500(&id, "PUT") {
         return gate;
     }
-    // The echo: `body.x ?? null` — absent and null both answer null, but a
-    // literal 0 STAYS 0 in the response and the audit row even though the
-    // write normalizes it to unlimited. js_num so 1000 echoes as "1000".
+    // The echo: absent and null both answer null, but a literal 0 STAYS 0
+    // in the response and the audit row even though the write normalizes it
+    // to unlimited. js_num so 1000 echoes as "1000".
     let policy_json = json!({
         "spendCapTokens": spend_cap_tokens.map(crate::body::js_num),
         "spendCapUsd": spend_cap_usd.map(crate::body::js_num),

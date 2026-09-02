@@ -1,6 +1,5 @@
 // WHERE A RESEARCH RUN WAS ASKED FOR, so the answer can go back there.
-// Port of research-origin.ts — a Redis-only leaf with no database and no
-// harness, which is why it crosses whole.
+// A Redis-only leaf with no database and no harness.
 //
 // THE HOLE THIS FILLS. `research` starts a detached run and hands the agent a
 // runId; the tool description then tells it to POLL `research_status`. Inside
@@ -24,8 +23,8 @@
 // THE TWO HALVES, and they are different questions:
 //
 //   the TURN     which conversation this agent is answering in right now.
-//                Written by the chat route on the way INTO a turn (still TS
-//                until the chat family crosses), read moments later when the
+//                Written by the chat route on the way INTO a turn, read
+//                moments later when the
 //                agent's tool call comes back through here. Short TTL — it is
 //                a fact about an in-flight turn.
 //   the ORIGIN   which conversation is owed the answer to this run. Written
@@ -63,9 +62,7 @@ fn origin_key(run_id: &str) -> String {
 }
 
 /// This agent is now answering in this conversation. Called on the way INTO a
-/// turn, never on the way out. (Still called from the TS chat route while the
-/// chat family lives there; the port keeps it so the key this module reads is
-/// written by a caller that can move without it changing shape.)
+/// turn, never on the way out.
 pub async fn mark_agent_turn(state: &AppState, agent_model: &str, conversation_id: &str) {
     if let Ok(mut conn) = state.redis().await
         && let Ok(()) = conn

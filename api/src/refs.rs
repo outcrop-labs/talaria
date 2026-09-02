@@ -5,9 +5,7 @@
 // history rebuild (queued turns, resumes, channel transcripts) without
 // re-fetching. ACL-checked against the ATTACHER at attach time.
 //
-// Port of ui/src/server/refs.ts, whole — resolveRefs is what tasks.$id PUT
-// stamps, and refBlocks is pure. The readers it leans on (kb, artifacts,
-// kb_perms) crossed with it, read halves only.
+// `resolve_refs` is what the tasks.$id PUT stamps; `ref_blocks` is pure.
 
 use serde_json::Value;
 
@@ -15,14 +13,14 @@ use crate::artifacts::{artifact_to_markdown, get_artifact};
 use crate::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
 use crate::kb::{effective_doc_perms, get_doc};
 
-/// A ref as the request names it (refs.ts MessageRef).
+/// A ref as the request names it.
 #[derive(Debug, Clone)]
 pub struct MessageRef {
     pub ref_type: String, // 'kb-doc' | 'artifact'
     pub id: String,
 }
 
-/// The chip persisted into the message's attachments array (refs.ts RefChip).
+/// The chip persisted into the message's attachments array.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefChip {
@@ -63,8 +61,7 @@ impl RefUser<'_> {
 
 /// Resolve + ACL-check refs for a user. Unknown/forbidden refs are dropped
 /// silently — attaching must never leak whether a private thing exists.
-/// Read errors (a doc row that fails to load) are treated the same as a miss,
-/// mirroring the TS `.catch(() => null)` legs.
+/// Read errors (a doc row that fails to load) are treated the same as a miss.
 pub async fn resolve_refs(
     pg: &sqlx::PgPool,
     user: &RefUser<'_>,

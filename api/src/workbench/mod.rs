@@ -12,11 +12,9 @@ pub mod mcp;
 // 'auto' attaches when a profile's fit rules match the agent (department /
 // role); 'on' forces the explicit profile (else best fit, else 'dev').
 //
-// Port of ui/src/server/workbench.ts: mount safety, the seeded 'dev'
-// profile, listProfiles, resolveWorkbench (the read plane the fleet render
-// resolves through), and updateProfile + the wire the /api/workbench routes
-// own. setAgentWorkbench / setAgentWorkbenchTuning stay TS with the
-// agent-settings surface that owns them.
+// Mount safety, the seeded 'dev' profile, the profile list, the read the
+// fleet render resolves through, the profile update, and the wire the
+// /api/workbench routes own.
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
@@ -36,7 +34,7 @@ pub struct WorkbenchProfile {
     pub harnesses: Vec<String>,
     pub auto_attach: AutoAttach,
     /// The column as stored, for the wire: postgres normalizes jsonb object
-    /// keys (shorter first, then bytewise) on write, and TS stringifies the
+    /// keys (shorter first, then bytewise) on write, and the wire carries the
     /// row's object verbatim — so `{"roles":…,"departments":…}` is the byte
     /// order the SPA sees. The typed struct above is for matching, not wire.
     pub auto_attach_wire: Value,
@@ -284,7 +282,7 @@ pub struct ProfilePatch {
     pub enabled: Option<bool>,
 }
 
-/// updateProfile — the coalesce update, returning whether the slug existed.
+/// The coalesce update, returning whether the slug existed.
 pub async fn update_profile(
     pg: &PgPool,
     slug: &str,
@@ -370,9 +368,9 @@ pub async fn resolve_workbench(
     Ok(best_fit().cloned())
 }
 
-/// Per-agent workbench mount switch (fleet.defs.$id PATCH). `profile` follows
-/// TS's `undefined`-means-leave-it: `None` here skips the second column, so a
-/// caller that only flips the switch keeps the stored profile pick.
+/// Per-agent workbench mount switch (fleet.defs.$id PATCH). `profile` is
+/// leave-it-when-absent: `None` skips the second column, so a caller that
+/// only flips the switch keeps the stored profile pick.
 pub async fn set_agent_workbench(
     pg: &PgPool,
     id: &str,
@@ -398,10 +396,9 @@ pub async fn set_agent_workbench(
 
 /// Per-agent workbench tuning: the harness pick + effort→model overrides —
 /// the knobs the agent-view dropdowns write. `models` is the RAW PATCH OBJECT
-/// (TS's `Partial<Record<'light'|'standard'|'heavy', string|null>>`): an
-/// absent key leaves the stored override, null or '' clears it, a value sets
-/// it. Only the three effort keys are read; anything else a caller smuggles
-/// in is ignored.
+/// over the three effort keys: an absent key leaves the stored override, null
+/// or '' clears it, a value sets it. Only the three effort keys are read;
+/// anything else a caller smuggles in is ignored.
 pub async fn set_agent_workbench_tuning(
     pg: &PgPool,
     id: &str,

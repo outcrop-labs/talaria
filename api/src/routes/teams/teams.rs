@@ -1,6 +1,6 @@
-// /api/teams — port of ui/src/routes/api/teams.ts. GET → the caller's teams,
-// resolved through ACTING user (a personal assistant acts as its owner — the
-// identity-proxy model); POST { name } → create (humans only: requireUser).
+// /api/teams. GET → the caller's teams, resolved through ACTING user (a
+// personal assistant acts as its owner — the identity-proxy model);
+// POST { name } → create (humans only: requireUser).
 
 use crate::body::{as_object, parse, string_member};
 use crate::error::{house_error, thrown_internal_error};
@@ -53,8 +53,8 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    // TS spreads {id, name, createdAt} then role then memberCount — the
-    // create response's key order differs from the list's on purpose.
+    // create's key order — id, name, createdAt, then role, memberCount —
+    // differs from the list response's on purpose.
     Json(json!({
         "team": {
             "id": id,

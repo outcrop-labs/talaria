@@ -1,13 +1,13 @@
-// Uploads — port of ui/src/server/uploads.ts, whole now that the family
-// crosses: the canonical metadata a message stamps when it references files
-// (resolveAttachments), the BYTES a transcript rebuild re-reads from a
-// textual attachment (getUpload + attachmentTextBlocks), and the write/serve
-// plane the routes exercise (saveUpload, the streamed capped form read, and
-// serveUpload's inline/download decision). Metadata sits in `uploads`, bytes
-// wherever the storage config says (local disk default, or any S3-compatible
-// bucket); each row's `path` records where ITS bytes live, so changing the
-// mode never strands existing files. The admin storage console's stats and
-// detached migrate/sync jobs live here too.
+// Uploads — file blobs and their canonical metadata. The metadata a message
+// stamps when it references files (resolve_attachments), the BYTES a
+// transcript rebuild re-reads from a textual attachment (get_upload +
+// attachment_text_blocks), and the write/serve plane the routes exercise
+// (save_upload, the streamed capped form read, and serve_upload's
+// inline/download decision). Metadata sits in `uploads`, bytes wherever the
+// storage config says (local disk default, or any S3-compatible bucket);
+// each row's `path` records where ITS bytes live, so changing the mode never
+// strands existing files. The admin storage console's stats and detached
+// migrate/sync jobs live here too.
 
 use axum::extract::multipart::Multipart;
 use axum::http::header;
@@ -23,9 +23,8 @@ use crate::storage::{self, read_blob};
 
 pub const MAX_BYTES: usize = 25 * 1024 * 1024;
 
-/// An upload's canonical metadata (uploads.ts Attachment). `refType` is set
-/// only on knowledge/artifact reference chips (refs.rs); upload rows never
-/// carry it.
+/// An upload's canonical metadata. `refType` is set only on
+/// knowledge/artifact reference chips (refs.rs); upload rows never carry it.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
@@ -35,14 +34,12 @@ pub struct Attachment {
     pub size: i64,
 }
 
-/// uploads.ts isImage (`/^image\//.test(mime)`) — the mime that may be
-/// referenced as an image block.
+/// The `image/` prefix — the mime that may be referenced as an image block.
 pub fn is_image(mime: &str) -> bool {
     mime.starts_with("image/")
 }
 
-/// UPLOADS_DIR — env override, else `.uploads` under the process cwd (the TS
-/// server resolves the same way from its own cwd).
+/// Env override, else `.uploads` under the process cwd.
 pub fn uploads_dir() -> std::path::PathBuf {
     std::env::var("TALARIA_UPLOADS_DIR")
         .ok()
@@ -55,7 +52,7 @@ pub fn uploads_dir() -> std::path::PathBuf {
 /// message) and return their canonical metadata, preserving caller order —
 /// including duplicates, which the caller's list asked for twice. Unknown ids
 /// are dropped silently: a missing row is not worth failing a whole patch
-/// over, and the TS behavior is the same.
+/// over.
 pub async fn resolve_attachments(
     pg: &PgPool,
     ids: &[String],
@@ -88,9 +85,9 @@ pub async fn resolve_attachments(
 
 // ── The byte read ──────────────────────────────────────────────────────────
 
-/// One upload's bytes, wherever the row's `path` says they live (getUpload):
-/// the row's metadata plus readBlob — disk, the configured bucket, or the
-/// replica behind it. A blob that cannot be found is None; the callers that
+/// One upload's bytes, wherever the row's `path` says they live: the row's
+/// metadata plus read_blob — disk, the configured bucket, or the replica
+/// behind it. A blob that cannot be found is None; the callers that
 /// shape transcripts treat a missing file as context that quietly isn't
 /// there, never as a failed read. `(bytes, mime, filename)`.
 pub async fn get_upload(
@@ -113,7 +110,7 @@ pub async fn get_upload(
         .map(|bytes| (bytes, mime, filename)))
 }
 
-/// uploads.ts TEXT_MIME — the mimes whose bytes become prompt context.
+/// The mimes whose bytes become prompt context.
 static TEXT_MIME: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r"^text/|^application/(json|xml|javascript|x-yaml|yaml|csv|toml|sql|markdown)|(\+json|\+xml)$",
@@ -121,8 +118,8 @@ static TEXT_MIME: LazyLock<regex::Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// How much of a file's text rides in one block (FILE_CLIP): a transcript is
-/// context, not an archive.
+/// How much of a file's text rides in one block: a transcript is context, not
+/// an archive.
 const FILE_CLIP: usize = 6_000;
 
 fn file_candidates(attachments: &serde_json::Value) -> Vec<&serde_json::Value> {
@@ -139,9 +136,8 @@ fn file_candidates(attachments: &serde_json::Value) -> Vec<&serde_json::Value> {
         .collect()
 }
 
-/// uploads.ts attachmentAsDataUrl: one image upload as a `data:<mime>;base64`
-/// URL — the block a vision model sees. A missing row or a lost blob is None
-/// (the caller's `.catch(() => null)` skip), never an error.
+/// One image upload as a `data:<mime>;base64` URL — the block a vision model
+/// sees. A missing row or a lost blob is None, never an error.
 pub async fn attachment_as_data_url(pg: &PgPool, sb: &SecretBox, id: &str) -> Option<String> {
     let (bytes, mime, _filename) = get_upload(pg, sb, id).await.ok()??;
     use base64::Engine as _;
@@ -150,11 +146,10 @@ pub async fn attachment_as_data_url(pg: &PgPool, sb: &SecretBox, id: &str) -> Op
     Some(url)
 }
 
-/// The prompt block a message's textual file uploads contribute
-/// (attachmentTextBlocks): up to `max_files` text-mime attachments, each
-/// re-read from storage and clipped. Ref chips are NOT file uploads (they
-/// carry their content inline — ref_blocks); a non-array or a row whose blob
-/// is gone contributes nothing, exactly TS's `.catch(() => null)` skip.
+/// The prompt block a message's textual file uploads contribute: up to
+/// `max_files` text-mime attachments, each re-read from storage and clipped.
+/// Ref chips are NOT file uploads (they carry their content inline —
+/// ref_blocks); a non-array or a row whose blob is gone contributes nothing.
 pub async fn attachment_text_blocks(
     pg: &PgPool,
     sb: &SecretBox,
@@ -168,8 +163,8 @@ pub async fn attachment_text_blocks(
         let Ok(Some((bytes, _mime, filename))) = get_upload(pg, sb, id).await else {
             continue;
         };
-        // Buffer.toString('utf8') replaces invalid sequences with U+FFFD —
-        // from_utf8_lossy is the same replacement, not a failure.
+        // Bytes become text lossily — invalid sequences turn into U+FFFD
+        // rather than failing the block.
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let clipped = if crate::body::utf16_len(&text) > FILE_CLIP {
             format!(
@@ -203,8 +198,8 @@ const INLINE_MIME: [&str; 6] = [
     "application/pdf",
 ];
 
-/// The upload's bytes as served (uploads.ts serveUpload) — the single place
-/// the inline/download decision is made, so no route can widen it on its own.
+/// The upload's bytes as served — the single place the inline/download
+/// decision is made, so no route can widen it on its own.
 /// Downloads additionally carry a sandbox CSP: even a type mislisted above
 /// stays inert when navigated to directly, on top of the attachment
 /// disposition.
@@ -254,9 +249,8 @@ pub fn serve_upload(bytes: Vec<u8>, mime: &str, filename: &str, cache: &str) -> 
 /// bigger is refused before the form has a reason to finish parsing.
 const FORM_ENVELOPE_BYTES: usize = 64 * 1024;
 
-/// readUploadForm's outcome. TS reads the whole form then asks for the `file`
-/// entry; the first `file`-named part decides, exactly like FormData.get — if
-/// it carries no filename it is a plain string field, never skipped over for a
+/// The form read's outcome. The first `file`-named part decides — if it
+/// carries no filename it is a plain string field, never skipped over for a
 /// later one. Both failure reasons map to the same 400 (`no file`) at the
 /// route, so Malformed and NoFile stay distinct only for the log line.
 pub enum FormRead {
@@ -334,9 +328,8 @@ pub async fn read_upload_form(headers: &HeaderMap, mut multipart: Multipart) -> 
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
-/// extname → keep only `.` and alphanumerics, ≤12 chars — the safe tail of
-/// the original name, same shape TS keeps. A leading dot is the dotfile
-/// convention, not an extension (Node's extname agrees).
+/// Keep only `.` and alphanumerics, ≤12 chars — the safe tail of the
+/// original name. A leading dot is the dotfile convention, not an extension.
 fn safe_ext(filename: &str) -> String {
     let Some(dot) = filename.rfind('.') else {
         return String::new();
@@ -351,9 +344,9 @@ fn safe_ext(filename: &str) -> String {
         .collect()
 }
 
-/// saveUpload — id first (the key and the disk name derive from it), bytes to
-/// the active target or disk, a detached replica mirror that must never fail
-/// the upload, then the row. Returns the FULL input filename/mime (the row
+/// Id first (the key and the disk name derive from it), bytes to the active
+/// target or disk, a detached replica mirror that must never fail the
+/// upload, then the row. Returns the FULL input filename/mime (the row
 /// stores the sliced forms; the wire answers what the caller sent).
 pub async fn save_upload(
     pg: &PgPool,
@@ -438,13 +431,13 @@ pub enum UploadViewer<'a> {
     },
 }
 
-/// canAccessUpload — owner and admins always; anyone else only when the upload
-/// is REACHABLE through a container they can read (a conversation they're in,
+/// Owner and admins always; anyone else only when the upload is REACHABLE
+/// through a container they can read (a conversation they're in,
 /// a channel they're a member of, a ticket on a board they belong to, or an
 /// artifact they can read). Agents mirror that through their own access model.
 /// Fail closed.
 pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewer<'_>) -> bool {
-    // TS: JSON.stringify([{ id: uploadId }]) — the containment probe.
+    // The containment probe — the exact JSON an attachments column holds.
     let r#ref = format!(r#"[{{"id":"{upload_id}"}}]"#);
 
     if let UploadViewer::Agent { model } = viewer {
@@ -613,9 +606,9 @@ pub fn upload_not_found() -> Response {
     crate::error::house_error(StatusCode::NOT_FOUND, "not found")
 }
 
-// ── The admin storage console (uploads.ts uploadStats + migrate/sync) ────────
+// ── The admin storage console: stats + detached migrate/sync ───────────────
 
-/// Where every blob lives, by path prefix (uploadStats): `s3://…` external,
+/// Where every blob lives, by path prefix: `s3://…` external,
 /// `s3+internal://…` the bundled bucket, anything else local disk — plus the
 /// local-disk byte total.
 pub async fn upload_stats(pg: &PgPool) -> serde_json::Value {
@@ -639,9 +632,8 @@ pub async fn upload_stats(pg: &PgPool) -> serde_json::Value {
     }
 }
 
-/// One detached job's progress, as the console polls it (MigrateStatus).
-/// Hand-built so `error`/`finishedAt` are OMITTED until they exist, exactly
-/// like TS's optional fields.
+/// One detached job's progress, as the console polls it. Hand-built so
+/// `error`/`finishedAt` are OMITTED until they exist.
 #[derive(Clone)]
 struct JobStatus {
     running: bool,
@@ -697,7 +689,7 @@ pub async fn sync_status(pg: &PgPool) -> serde_json::Value {
 }
 
 /// Move every local-disk blob into the active bucket (internal or external).
-/// Runs DETACHED; the caller polls migrateStatus(). Local files are left in
+/// Runs DETACHED; the caller polls migrate_status(). Local files are left in
 /// place (the row's path is the source of truth) — uploads-dir cleanup is the
 /// operator's call. A job already running is returned, not double-started.
 pub async fn migrate_uploads_to_s3(
@@ -761,8 +753,7 @@ pub async fn migrate_uploads_to_s3(
     Ok(initial)
 }
 
-/// blobBasename — the last path segment, for a disk path or an s3:// URI
-/// alike (`path.slice(path.lastIndexOf('/') + 1)`).
+/// The last path segment, for a disk path or an s3:// URI alike.
 fn blob_basename(path: &str) -> &str {
     match path.rfind('/') {
         Some(i) => &path[i + 1..],
@@ -772,7 +763,7 @@ fn blob_basename(path: &str) -> &str {
 
 /// Copy EVERY blob (disk, internal, external — wherever each lives) into the
 /// replica bucket, keyed canonically so per-upload mirror writes and this
-/// full sync land on the same objects. Runs DETACHED; poll syncStatus().
+/// full sync land on the same objects. Runs DETACHED; poll sync_status().
 pub async fn sync_uploads_to_replica(
     pg: &PgPool,
     sb: &SecretBox,
@@ -851,8 +842,8 @@ mod tests {
             "application/ld+json",
             "image/svg+xml",
             "application/xhtml+xml",
-            // The ^-anchored alternatives have no end anchor in the JS
-            // pattern, so a PREFIX matches: "jsonl" starts with "json".
+            // The ^-anchored alternatives have no end anchor, so a PREFIX
+            // matches: "jsonl" starts with "json".
             "application/jsonl",
         ] {
             assert!(TEXT_MIME.is_match(m), "should match {m}");
@@ -882,9 +873,9 @@ mod tests {
             { "id": "3", "mime": "application/json" }
         ]);
         let c = file_candidates(&a);
-        // Three candidates: the id-less text entry DOES pass the filter — in
-        // TS its read then misses (getUpload(undefined) → catch → skip), so
-        // the filter itself must keep it.
+        // Three candidates: the id-less text entry DOES pass the filter —
+        // its read then misses (no id to fetch), so the filter itself must
+        // keep it.
         assert_eq!(c.len(), 3);
         assert_eq!(c[0].get("id").unwrap(), "1");
         assert!(c[1].get("id").is_none());
@@ -934,7 +925,7 @@ mod tests {
         assert_eq!(safe_ext("a.tar.gz"), ".gz");
         assert_eq!(safe_ext("noext"), "");
         assert_eq!(safe_ext("x./weird\\name.png"), ".png");
-        // A dotfile's dot is the name, not an extension (path.extname agrees).
+        // A dotfile's dot is the name, not an extension.
         assert_eq!(safe_ext(".hidden"), "");
     }
 }

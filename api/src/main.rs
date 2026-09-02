@@ -1,5 +1,5 @@
 // talaria-api — the api: every /api/* route except the four permanent TS
-// residents (docs/RUST-MIGRATION.md tells the port's story). Process shell
+// residents (the app modules, which stay TS). Process shell
 // only: config, tracing, pools, router, graceful shutdown. Everything
 // observable lives in the library (src/lib.rs) — the router itself in
 // routes::router, so integration tests drive the exact stack this serves.
@@ -9,7 +9,7 @@ use talaria_api::{config, config::Config, db, jobs, routes, scheduler, state::Ap
 
 #[tokio::main]
 async fn main() {
-    // Fail once, with every problem named — config.rs is env.ts's philosophy.
+    // Fail once, with every problem named.
     let cfg = match Config::from_env() {
         Ok(c) => c,
         Err(problems) => {
@@ -27,8 +27,8 @@ async fn main() {
 
     let root_source = cfg.secret_root.source();
     if root_source == config::RootSource::AuthSecretFallback {
-        // Same warning secretbox.ts prints at boot: this database is sealed
-        // with AUTH_SECRET, whose own documentation calls it safe to rotate.
+        // This database is sealed with AUTH_SECRET, whose own documentation
+        // calls it safe to rotate.
         tracing::warn!(
             "[secretbox] encryption root is AUTH_SECRET (fallback), not TALARIA_SECRET_KEY — \
              rotating AUTH_SECRET makes every stored secret unrecoverable."
@@ -38,13 +38,12 @@ async fn main() {
     let bind = cfg.bind;
     let state = AppState::new(db::pool(&cfg), Arc::new(cfg));
 
-    // The schedule is this process's — the only runtime left, so boot arms
+    // The schedule is this process's — boot arms
     // it unless the kill switch is set (`TALARIA_SCHEDULER=off`; see the
     // arming-switch header in scheduler.rs). `arm` retries until Postgres
-    // and Redis answer — boot itself stays independent of both, exactly
-    // like the TS entry's probe-before-arm always was. The off posture logs
-    // HERE: nothing downstream of the gate runs, so nothing else could say
-    // why the schedule is silent.
+    // and Redis answer — boot itself stays independent of both. The off
+    // posture logs HERE: nothing downstream of the gate runs, so nothing
+    // else could say why the schedule is silent.
     if scheduler::scheduler_disabled() {
         tracing::warn!(
             "[scheduler] disabled by TALARIA_SCHEDULER=off — no background jobs will run on this instance"

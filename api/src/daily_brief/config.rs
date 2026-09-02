@@ -1,5 +1,4 @@
-// When the daily brief opens, and where that answer comes from — port of
-// ui/src/server/daily-brief-config.ts.
+// When the daily brief opens, and where that answer comes from.
 //
 // THE RULE IS "TWO HOURS BEFORE NORMAL WORKING HOURS", which is a product
 // decision with a clock attached, so it is stated as a workday start and a lead
@@ -33,7 +32,7 @@ pub struct BriefConfig {
 }
 
 fn default_zone() -> String {
-    // `process.env.TZ || 'UTC'` — an empty TZ env is unset for these purposes.
+    // TZ env → UTC; an empty TZ env counts as unset.
     std::env::var("TZ")
         .ok()
         .filter(|z| !z.is_empty())

@@ -27,15 +27,15 @@ use crate::gateway::provider::http;
 use crate::safe_fetch::{SafeFetch, safe_fetch};
 use crate::secretbox::SecretBox;
 
-/// The protocol revision Talaria speaks at the MCP handshake. TS home:
-/// ui/src/server/mcp-protocol.ts — one revision for both directions of the
-/// conversation (what our dispatchers answer and what every client asks).
-/// The literal lives in mcp_jsonrpc (the leaf every dispatcher shares);
-/// re-exported here because the registry is where TS kept it.
+/// The protocol revision Talaria speaks at the MCP handshake — one revision
+/// for both directions of the conversation (what our dispatchers answer and
+/// what every client asks). The literal lives in mcp::jsonrpc (the leaf
+/// every dispatcher shares); re-exported here for the importers that reach
+/// it via the registry.
 pub use crate::mcp::jsonrpc::MCP_PROTOCOL_VERSION;
 
-/// The column list every full-row read spells (mcp-registry.ts ROW) — the
-/// wire's field order IS this order.
+/// The column list every full-row read spells — the wire's field order IS
+/// this order.
 const ROW: &str = "id::text, name, label, description, url, headers, timeout_secs::int8, enabled, \
                    all_agents, auth_mode::text, tools, \
                    (trunc(extract(epoch from tools_refreshed_at) * 1000))::bigint as tools_refreshed_ms, \
@@ -43,7 +43,7 @@ const ROW: &str = "id::text, name, label, description, url, headers, timeout_sec
                    app_slug::text, created_by, \
                    (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
 
-/// A registry row, every column (the TS `McpServer`). The jsonb columns ride
+/// A registry row, every column. The jsonb columns ride
 /// as the raw Value — pg owns their key order and the wire answer must carry
 /// it byte-for-byte.
 pub struct McpServer {
@@ -69,7 +69,7 @@ pub struct McpServer {
     /// Talaria's own toolkit — governable here, but not removable/reconfigurable.
     pub builtin: bool,
     /// Set when a Talaria APP publishes this server — its calls dispatch
-    /// in-process on the TS side (port rule 10).
+    /// in-process on the TS side (app modules stay TS/node).
     pub app_slug: Option<String>,
     pub created_by: Option<String>,
     pub created_ms: i64,
@@ -148,7 +148,7 @@ pub fn server_wire(s: &McpServer) -> Value {
     })
 }
 
-/// `getMcpServer`: id OR name, one row.
+/// By id OR name, one row.
 pub async fn get_mcp_server(
     pg: &PgPool,
     id_or_name: &str,
@@ -188,11 +188,10 @@ pub struct McpToolResult {
 /// instead would act as a shared identity on a server explicitly configured to
 /// never be one. Better to fail and say so.
 ///
-/// AND REFUSES ONE EDGE THE TS SIDE DISPATCHES IN-PROCESS, named so the
-/// failure reads as the port rule it is: an APP-PUBLISHED server dispatches
-/// through the compiled app module (apps/*/mcp.ts — authors' TS/node code,
-/// never port surface; docs/RUST-MIGRATION.md rule 10). OAuth servers no
-/// longer refuse here — their org bearer rides `org_session` like TS.
+/// AND REFUSES ONE EDGE DISPATCHED IN-PROCESS: an APP-PUBLISHED server
+/// dispatches through the compiled app module (apps/*/mcp.ts — authors'
+/// TS/node code, owned by the app runtime). OAuth servers do not refuse
+/// here — the org bearer rides `org_session`.
 pub async fn call_mcp_tool(
     pg: &PgPool,
     sb: &SecretBox,
@@ -283,10 +282,10 @@ struct OrgReply {
 /// One POST of the conversation: org headers plus session plus (on OAuth
 /// servers) the org bearer, JSON or SSE-framed reply parsed, the session
 /// header carried forward.
-/// undici's rejection message, which is what the TS org session handed its
-/// catch: transport failures read bare "fetch failed" (the cause chain carries
-/// the detail, `(e as Error).message` does not) and an AbortSignal.timeout
-/// expiry reads like every other DOM timeout.
+/// Rejection sentences in undici's shape, because these exact strings are
+/// the surface callers see: transport failures read bare "fetch failed"
+/// (the cause chain carries the detail, the message does not) and a timeout
+/// expiry reads "The operation was aborted due to timeout".
 pub(crate) fn undici_message(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         "The operation was aborted due to timeout".into()
@@ -295,9 +294,9 @@ pub(crate) fn undici_message(e: &reqwest::Error) -> String {
     }
 }
 
-/// The same shapes for the safe-fetch leg — with one exception: a blocked URL
-/// throws BlockedUrlError on both sides, and its refusal sentence is the
-/// message that surfaces, so it passes through verbatim.
+/// The same shapes for the safe-fetch leg — except a blocked URL, whose
+/// refusal sentence is itself the message that surfaces, so it passes
+/// through verbatim.
 fn undici_safe_message(e: crate::safe_fetch::SafeError) -> String {
     match e {
         crate::safe_fetch::SafeError::Timeout => "The operation was aborted due to timeout".into(),
@@ -312,10 +311,9 @@ async fn org_call(
     body: &Value,
     session_id: Option<&str>,
 ) -> Result<OrgReply, String> {
-    // Header assembly in the TS order — content-type, accept, org headers,
-    // builtin identity, bearer, session — so a later spread overriding an
-    // earlier key (a session header named in `headers`, say) overrides the
-    // same way.
+    // Header assembly order — content-type, accept, org headers, builtin
+    // identity, bearer, session — so a later entry overriding an earlier key
+    // (a session header named in `headers`, say) wins the same way.
     let mut pairs: Vec<(String, String)> = vec![
         ("content-type".into(), "application/json".into()),
         (
@@ -330,7 +328,7 @@ async fn org_call(
     }
     if server.builtin {
         // The builtin toolkit authenticates with the fleet key as Talaria
-        // itself (an empty key when the env is unset is the TS spelling).
+        // itself — an empty key when the env is unset, not an absent header.
         pairs.push(("X-Agent-Name".into(), "talaria".into()));
         pairs.push((
             "X-Api-Key".into(),
@@ -348,9 +346,10 @@ async fn org_call(
 
     // Everything but the built-in toolkit is a URL (and a header set) someone
     // with agents.manage typed — straight through the SSRF guard. The builtin
-    // row is Talaria's own MCP service on loopback, written by the TS
-    // `ensureBuiltinMcp` and un-editable by design (`updateMcpServer` refuses
-    // url/headers patches on builtin), so it is infrastructure, not input.
+    // row is Talaria's own MCP service on loopback, written by
+    // `ensure_builtin_mcp` and un-editable by design (`update_mcp_server`
+    // refuses url/headers patches on builtin), so it is infrastructure, not
+    // input.
     let (status, headers, text) = if server.builtin {
         let mut req = http().post(&server.url).timeout(timeout_ms);
         for (k, v) in &pairs {
@@ -407,11 +406,10 @@ fn read_tool_result(
     tool: &str,
 ) -> Result<McpToolResult, String> {
     let body = raw.as_ref().and_then(Value::as_object);
-    // TS `if (body?.error)` — truthy: a present non-null error object fails the
-    // call even when the HTTP layer said 200.
+    // A present non-null error object fails the call even when the HTTP
+    // layer said 200.
     if let Some(err) = body.and_then(|b| b.get("error")).filter(|e| !e.is_null()) {
-        // `message ?? 'unknown error'` — nullish only, so an EMPTY message is
-        // itself, not "unknown".
+        // Nullish-only default — an EMPTY message is itself, not "unknown".
         let msg = err
             .get("message")
             .and_then(Value::as_str)
@@ -503,8 +501,8 @@ pub async fn ensure_builtin_mcp(pg: &PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// The Workbench tool catalog as the registry caches it (name + description
-/// capped at 300, exactly WORKBENCH_TOOLS.map in mcp-registry.ts).
+/// The Workbench tool catalog as the registry caches it — name + description
+/// capped at 300.
 fn workbench_catalog() -> Value {
     Value::Array(
         crate::workbench::mcp::workbench_tools()
@@ -544,7 +542,7 @@ fn utf16_slice(s: &str, n: usize) -> String {
 }
 
 pub async fn list_mcp_servers(pg: &PgPool) -> Result<Vec<McpServer>, sqlx::Error> {
-    let _ = ensure_builtin_mcp(pg).await; // best-effort, exactly TS's .catch(() => {})
+    let _ = ensure_builtin_mcp(pg).await; // best-effort — a failed ensure must not fail the list
     // AssertSqlSafe: the interpolation is this crate's ROW column list.
     let sql = format!("select {ROW} from mcp_servers order by builtin desc, name");
     let rows: Vec<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
@@ -553,7 +551,7 @@ pub async fn list_mcp_servers(pg: &PgPool) -> Result<Vec<McpServer>, sqlx::Error
     Ok(rows.into_iter().map(server_of_row).collect())
 }
 
-/// Input to [`create_mcp_server`] — the zod-parsed POST body, schema order.
+/// Input to [`create_mcp_server`] — the parsed POST body, schema order.
 pub struct NewServer<'a> {
     pub name: &'a str,
     pub label: Option<&'a str>,
@@ -562,14 +560,14 @@ pub struct NewServer<'a> {
     pub headers: Option<&'a Map<String, Value>>,
     pub timeout_secs: Option<i64>,
     pub auth_mode: &'a str,
-    /// Declared header forms; defaults fill in exactly TS's normalization.
+    /// Declared header forms; defaults fill in per the schema's normalization.
     pub required_headers: &'a Value,
     pub created_by: &'a str,
 }
 
 pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<McpServer, String> {
-    // `(input.requiredHeaders ?? []).map(...)` — name/description/isSecret/
-    // placeholder, with the nullish defaults baked in.
+    // name/description/isSecret/placeholder, with the nullish defaults
+    // baked in.
     let declared: Vec<Value> = input
         .required_headers
         .as_array()
@@ -635,7 +633,7 @@ pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Re
             .await
             .map_err(|e| e.to_string())?;
     let Some((builtin, app_slug)) = row else {
-        return Ok(()); // updates below match zero rows, same no-op as TS
+        return Ok(()); // updates below match zero rows — a no-op
     };
     if builtin
         && (patch.url.is_some()
@@ -738,7 +736,7 @@ pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
     let Some((builtin, app_slug)) = row else {
-        return Ok(()); // delete below matches zero rows, same no-op as TS
+        return Ok(()); // delete below matches zero rows — a no-op
     };
     if builtin {
         return Err("the built-in Talaria toolkit cannot be removed".into());
@@ -914,15 +912,15 @@ pub async fn get_user_credentials(
         return Ok(None);
     };
     let opened = sb.open(&enc).map_err(|e| e.to_string())?;
-    // A failed parse reads as "no connected account" (TS returns null), which
-    // the caller treats as no access — never a thrown 500.
+    // A failed parse reads as "no connected account" (null), which the
+    // caller treats as no access — never a thrown 500.
     Ok(serde_json::from_str(&opened).ok())
 }
 
 // ── Effective resolution (the gateway's brain) ──────────────────────────────
 
 /// The human an AGENT CALLER may act for — its owner when it is a personal
-/// assistant, None otherwise (users.ts assistantOwnerFor). A legacy caller
+/// assistant, None otherwise. A legacy caller
 /// gets None: identified, but not proven to BE that assistant — and this
 /// resolution hands out that human's connected account.
 async fn assistant_owner_for(
@@ -1068,8 +1066,7 @@ pub async fn effective_mcp_for(
 }
 
 /// `{...a, k: v}` — an existing key keeps its position and takes the value;
-/// a new one appends (the JS object spread rule preserve_order already
-/// implements; this is the pairs-list spelling of it).
+/// a new one appends (the pairs-list spelling of the object-spread rule).
 fn set_header(pairs: &mut Vec<(String, String)>, key: &str, value: &str) {
     if let Some((_, v)) = pairs.iter_mut().find(|(k, _)| k == key) {
         *v = value.to_string();
@@ -1091,9 +1088,9 @@ pub async fn refresh_mcp_tools(
         return Err("not found".into());
     };
     if server.app_slug.is_some() {
-        // App servers: the catalog comes from the compiled module — authors'
-        // TS/node code, never port surface (rule 10). Named so the 502 reads
-        // as the port boundary it is.
+        // App servers: the catalog comes from the compiled app module —
+        // authors' TS/node code, owned by the app runtime, not something this
+        // registry path can fetch.
         return Err(format!(
             "app \"{}\" publishes its catalog from the app module, which stays TS by the port's rule 10",
             server.app_slug.unwrap_or_default()
@@ -1184,12 +1181,11 @@ async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), Strin
     Ok(())
 }
 
-// (mcp-registry.ts serversForAgent + the three row checks it consults.) This
-// one legitimately answers about a THIRD PARTY — fleet-render and the /api/mcp
-// admin listing ask "what should <model> carry?" with no caller in hand — so
-// a bare model string stays accepted. It grants nothing on its own: the
-// credential is never rendered, only a gateway URL, and the gateway re-derives
-// access per request through `effectiveMcpFor`.
+// `servers_for_agent` legitimately answers about a THIRD PARTY — fleet-render
+// and the /api/mcp admin listing ask "what should <model> carry?" with no
+// caller in hand — so a bare model string stays accepted. It grants nothing
+// on its own: the credential is never rendered, only a gateway URL, and the
+// gateway re-derives access per request through `effective_mcp_for`.
 
 /// Does this server have OAuth tokens for a subject ('org' or a user id)?
 async fn has_oauth_tokens(
@@ -1208,11 +1204,11 @@ async fn has_oauth_tokens(
 }
 
 // (Does this server have per-user credentials stored? — the pub
-// has_user_credentials earlier in this file is that same read.)
+// `has_user_credentials` earlier in this file is that same read.)
 
-/// model → owner_user_id for every PERSONAL assistant (users.ts
-/// personalAssistantOwners). The render passes a bare model string — proven
-/// by construction there — so the owner map is the whole lookup.
+/// model → owner_user_id for every PERSONAL assistant. The render passes a
+/// bare model string — proven by construction there — so the owner map is
+/// the whole lookup.
 async fn personal_assistant_owners(pg: &PgPool) -> Result<HashMap<String, String>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "select model, owner_user_id::text from agent_defs where owner_user_id is not null",

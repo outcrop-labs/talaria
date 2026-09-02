@@ -1,9 +1,8 @@
-// /api/inbox/focus/actions — port of ui/src/routes/api/inbox.focus.actions.ts.
-// POST → execute a focus-inbox action: fire an action, confirm or cancel a
-// pending decision, undo the last one. Every button on a queue card funnels
-// through this one entry, under the Inbox lock; the timeline entry is
-// attached before the lock drops so the response's entry agrees with the row
-// it just wrote.
+// /api/inbox/focus/actions. POST → execute a focus-inbox action: fire an
+// action, confirm or cancel a pending decision, undo the last one. Every
+// button on a queue card funnels through this one entry, under the Inbox
+// lock; the timeline entry is attached before the lock drops so the
+// response's entry agrees with the row it just wrote.
 //
 // The result's own `status` picks the HTTP code: stale → 409 (the item
 // changed under the click), failed → 422 (the action refused), else 200. The
@@ -31,8 +30,8 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<FocusActionInput, St
     let payload = obj.get("payload").cloned();
     let command_decision_id = optional_uuid_member(obj, "commandDecisionId")?;
     let decision_id = optional_uuid_member(obj, "decisionId")?;
-    // `z.string().min(20).max(200)` — tokens are ≥20 chars by construction;
-    // a short one is a client bug, and the min is part of the contract.
+    // min 20 / max 200 — tokens are ≥20 chars by construction; a short
+    // one is a client bug, and the min is part of the contract.
     let confirmation_token = match obj.get("confirmationToken") {
         None => None,
         Some(_) => Some(string_member(obj, "confirmationToken", 20, 200)?),

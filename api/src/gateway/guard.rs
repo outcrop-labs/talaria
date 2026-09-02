@@ -1,13 +1,13 @@
-// Confab guardrail — port of ui/src/server/guardrails.ts, reduced to the two
-// doors that have crossed: `guard_completion` (the gateway route's config →
-// rules → findings → caveat, recording as it goes) and `guard_text` (the
+// Confab guardrail — `guard_completion` (the gateway route's config →
+// rules → findings → caveat, recording as it goes), `guard_text` (the
 // gate-safe rules over plain text, which agent-writes and the judge pre-pass
-// call), plus `redact_secrets` for the strict rewrite and the pieces they
+// call), `guard_chat_reply` (the comms loop's streamed variant), plus
+// `redact_secrets` for the strict rewrite and the pieces they
 // lean on. A cheap, model-agnostic STRUCTURAL check on model output: no LLM
 // call, no added model tokens — regex over the answer plus the turn's tool
 // record derived from the request messages.
 //
-// The checks (first three from the Hermes confab-guard plugin):
+// The checks:
 //   zero_tool_claim   — claims a completed action, but no external tool ran
 //   ungrounded_ref    — cites a link/UUID that wasn't in any tool result
 //   fabricated_outage — claims an outage, but no tool actually errored
@@ -21,11 +21,11 @@
 // something to rewrite either. The two halves of that decision are declared
 // per rule as Groundable, and `evaluate` is the only place that reads it.
 //
-// JS regex parity: \b and \d are ASCII in JS; the regex crate's are Unicode.
-// Every ported pattern substitutes (?-u:\b) / (?-u:\d) the way the vault does.
-// The two JS LOOKAHEADS (SSN group exclusions, FUTURE's negation exceptions)
-// are hand-checked in code — the regex crate has no lookaround. Sentence
-// splitting (a JS lookbehind) is hand-rolled the same way.
+// JS-shaped regex semantics: \b and \d are ASCII in JS; the regex crate's are
+// Unicode. Every pattern substitutes (?-u:\b) / (?-u:\d), the way the vault
+// does. The two JS LOOKAHEADS (SSN group exclusions, FUTURE's negation
+// exceptions) are hand-checked in code — the regex crate has no lookaround.
+// Sentence splitting (a JS lookbehind) is hand-rolled the same way.
 
 use crate::gateway::settings::get_setting;
 use crate::gateway::vault;
@@ -38,8 +38,9 @@ use std::sync::OnceLock;
 const B: &str = r"(?-u:\b)";
 const D: &str = r"(?-u:\d)";
 
-/// JS regex source with ASCII semantics restored. `(?i)` where TS used the
-/// flag; the substitution is textual, exactly the vault's trick.
+/// JS regex source with ASCII semantics restored — `flags` prefixes the
+/// pattern (`(?i)` for case-insensitive); the substitution is textual, the
+/// vault's trick.
 fn js(src: &str, flags: &str) -> Regex {
     let pat = format!("{flags}{}", src.replace("\\b", B).replace("\\d", D));
     Regex::new(&pat).unwrap_or_else(|e| panic!("guard pattern must compile: {e} ({pat})"))
@@ -71,7 +72,7 @@ pub struct GuardConfig {
     pub policed_hosts: Vec<String>,
 }
 
-/// Port of getGuardConfig's `{...DEFAULT_CONFIG, ...stored}` — off modes and
+/// Stored config over defaults — off modes and
 /// garbage values fall back to the default, field by field.
 pub async fn guard_config(pg: &PgPool) -> GuardConfig {
     let raw = get_setting(pg, "guardrails_config", serde_json::json!({})).await;
@@ -154,7 +155,7 @@ pub struct ToolRecord {
 }
 
 /// `asText`: string content is itself; null/absent is ''; anything else is its
-/// JSON serialization (with preserve_order, object key order matches JS).
+/// JSON serialization (preserve_order keeps object key insertion order).
 fn as_text(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
@@ -166,7 +167,7 @@ fn as_text(content: &Value) -> String {
 /// Derive the turn's tool record from the request messages: everything since
 /// the last user message. Works for any OpenAI-style tool loop, any model.
 /// `anyError` tests the FULL joined results; only the stored text is zeroed
-/// on overflow — that is TS's order of operations, not an accident.
+/// on overflow — deliberate order of operations, not an accident.
 pub fn extract_tool_record(messages: &[Value]) -> ToolRecord {
     let mut start = 0;
     for (i, m) in messages.iter().enumerate().rev() {
@@ -266,8 +267,8 @@ fn normalize_for_grounding(s: &str) -> String {
         .collect()
 }
 
-/// The normalized haystack, built once per guarded call (TS memoizes one
-/// entry for the same reason: redaction asks the same question again).
+/// The normalized haystack, built once per guarded call — redaction asks
+/// the same question again.
 pub struct Grounding {
     haystack: String,
 }
@@ -305,7 +306,7 @@ pub fn grounding_text_of(messages: &[Value]) -> String {
     utf16_tail(&joined, INPUT_CAP).to_string()
 }
 
-// ── Claim heuristics (ported faithfully from confab-guard) ──────────────────
+// ── Claim heuristics ─────────────────────────────────────────────────────────
 
 // THE VOCABULARY IS THE RULE: what zero_tool_claim can SEE is exactly this
 // list. An artifact must be a thing that CANNOT EXIST WITHOUT A SYSTEM ACTION
@@ -363,9 +364,9 @@ fn claim_landed() -> &'static Regex {
 /// heuristic. `I can` AND `I could` carry a negation exception, and it was a
 /// real evasion: "the gateway is rate limited, so I could not get an answer"
 /// is past-tense INABILITY, not a future offer — without the exception the
-/// fabricated outage in the first half went unscored. The exceptions are JS
-/// lookaheads, checked by hand here; the trailing \b of TS's group is checked
-/// as "the rest does not start with a word character".
+/// fabricated outage in the first half goes unscored. The negation
+/// exceptions are the `*_excludes` regexes below; the trailing word boundary
+/// is `starts_word_char` (the rest must not start with a word character).
 fn future_plain() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -418,7 +419,7 @@ fn is_future(s: &str) -> bool {
     false
 }
 
-/// JS SENT_SPLIT is a lookbehind (`(?<=[.!?\n])\s+`) — hand-rolled: a sentence
+/// Sentence split at `(?<=[.!?\n])\s+`, hand-rolled: a sentence
 /// boundary is a whitespace run whose preceding char is . ! ? or \n.
 fn split_sentences(text: &str) -> Vec<&str> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -530,7 +531,7 @@ fn uuid_re() -> &'static Regex {
     })
 }
 
-/// Port of urlHostTail: trim, strip trailing punctuation, strip the scheme
+/// Trim, strip trailing punctuation, strip the scheme
 /// (case-insensitively), cut at # then ?, split host from tail.
 fn url_host_tail(url: &str) -> (String, String) {
     let mut u = url
@@ -644,8 +645,8 @@ fn ssn_re() -> &'static Regex {
     RE.get_or_init(|| js(r"\b\d{3}-\d{2}-\d{4}\b", ""))
 }
 
-/// TS's SSN pattern carries three negative lookaheads (area ∉ {000, 666, 9xx},
-/// group ≠ 00, serial ≠ 0000) — hand-checked here.
+/// Three exclusions (area ∉ {000, 666, 9xx},
+/// group ≠ 00, serial ≠ 0000) — checked by hand, not by the regex.
 fn ssn_valid(m: &str) -> bool {
     let parts: Vec<&str> = m.split('-').collect();
     if parts.len() != 3 {
@@ -664,7 +665,7 @@ fn card_re() -> &'static Regex {
 fn iban_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // No (?i) in TS: IBAN country codes and the body are uppercase-only.
+        // No (?i): IBAN country codes and the body are uppercase-only.
         js(
             r"\b(?:DE|FR|GB|NL|ES|IT|CH|AT|BE|PT|IE|PL|SE|NO|DK|FI)\d{2}[A-Z0-9]{10,30}\b",
             "",
@@ -681,8 +682,8 @@ fn digits_of(raw: &str) -> String {
     raw.chars().filter(|c| *c != ' ' && *c != '-').collect()
 }
 
-/// Same rule as detect_secret: the first UNGROUNDED hit wins, in the SSN →
-/// card → IBAN priority the labels have always had; a wholly grounded text
+/// Same rule as detect_secret: the first UNGROUNDED hit wins, in SSN →
+/// card → IBAN priority; a wholly grounded text
 /// reports its first hit marked rather than nothing.
 fn detect_pii(text: &str, grounding: &Grounding) -> Option<ShapeHit> {
     let mut grounded: Option<ShapeHit> = None;
@@ -751,8 +752,8 @@ pub enum Groundable {
 }
 
 /// Serialized for the callers that PIN findings to their own rows
-/// (`channel_messages.guard`): key order is the TS interface's, and `grounded`
-/// is absent-when-false exactly as the TS optional is.
+/// (`channel_messages.guard`): the key order is the stored shape's, and
+/// `grounded` is absent-when-false.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
     pub check: String,
@@ -771,7 +772,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// The audience a reply is about to reach (guardrails.ts `GuardContext.spread`).
+/// The audience a reply is about to reach.
 /// CONTAINED is the 1:1 default — a DM back to the person who pasted the data.
 /// BROADCAST is a channel: the reply lands in front of everyone in the room and
 /// in the retrieval index behind it, an audience the source material never
@@ -788,7 +789,7 @@ pub enum Spread {
 /// What a caller can honestly say about the turn's tool results. A path with
 /// the full record has both; the harness guard pass holds a tool NAMES list
 /// and derives its record from it — `results` it can reconstruct, `errorInfo`
-/// (guardrails.ts: "did anything error?") it cannot, because a name is not an
+/// ("did anything error?") it cannot, because a name is not an
 /// outcome. A rule whose `needs` cannot be supplied is SKIPPED (no false
 /// positive) rather than run on missing data — the same posture as
 /// `gate_safe`, one level up.
@@ -815,7 +816,7 @@ struct RuleDef {
     severity: &'static str,
     default_on: bool,
     groundable: Option<Groundable>,
-    /// Runs over plain text with no tool record (guardrails.ts gateSafe) —
+    /// Runs over plain text with no tool record —
     /// the rules `guard_text` may use. The tool-record rules (zero_tool_claim,
     /// ungrounded_ref, fabricated_outage) have nothing to be true AGAINST on
     /// that path: an MCP comment claiming "I opened the PR" is backed by a
@@ -875,9 +876,8 @@ const RULES: &[RuleDef] = &[
 /// The context one guarded completion runs against. `input_text` is the RAW
 /// grounding text (ungrounded_ref matches refs against it verbatim, lowercased
 /// only); `grounding` is its normalized form for span grounding. The gateway
-/// always supplies the full input (`grounding_text_of`), so GuardContext's
-/// narrow `userMessage` fallback has no caller here. `spread` is Contained on
-/// every gateway path; the comms reply loop is the broadcast caller.
+/// always supplies the full input (`grounding_text_of`). `spread` is Contained
+/// on every gateway path; the comms reply loop is the broadcast caller.
 pub struct GuardContext<'a> {
     pub answer: &'a str,
     pub tool_record: &'a ToolRecord,
@@ -978,8 +978,8 @@ fn evaluate(rule: &RuleDef, ctx: &GuardContext, config: &GuardConfig) -> Option<
             ..finding
         }),
         // Contained: both halves drop — the data came from this person and is
-        // going back to this person. Broadcast REVERSES it (guardrails.ts
-        // `GuardContext.spread`): the audience argument no longer holds, so
+        // going back to this person. Broadcast REVERSES it:
+        // the audience argument no longer holds, so
         // the finding survives as grounded (still not evidence about the
         // model) and the persisted copy still gets scrubbed.
         Groundable::FindingAndRedaction => match ctx.spread {
@@ -1017,8 +1017,8 @@ pub fn run_guardrails(
         .collect()
 }
 
-/// The one spelling of "is this rule on" — `checks[id] ?? default_on`, the
-/// TS `ruleEnabled`. Both `run_guardrails`'s filter and `guard_text`'s read
+/// The one spelling of "is this rule on" — `checks[id] ?? default_on`.
+/// Both `run_guardrails`'s filter and `guard_text`'s read
 /// it so the two loops cannot drift.
 fn rule_enabled(config: &GuardConfig, rule: &RuleDef) -> bool {
     config
@@ -1028,8 +1028,8 @@ fn rule_enabled(config: &GuardConfig, rule: &RuleDef) -> bool {
         .unwrap_or(rule.default_on)
 }
 
-/// A def's `guard.rules` narrowed onto the live config (run.ts
-/// narrowGuardConfig): a rule runs only when the def names it AND the admin
+/// A def's `guard.rules` narrowed onto the live config: a rule runs only when
+/// the def names it AND the admin
 /// left it on. `None` (no guard block) returns the config untouched. Every
 /// RULES id gets an explicit entry so the narrowed config's `checks` is a
 /// total map — absent would fall back to the default, which is not what a
@@ -1177,7 +1177,7 @@ pub async fn guard_completion(
     (findings, caveat, config.mode)
 }
 
-/// Layered tiering over PLAIN TEXT (guardrails.ts guardText): the gate-safe
+/// Layered tiering over PLAIN TEXT: the gate-safe
 /// rules with an empty tool record — the judge's cheap structural pre-pass and
 /// the agent-writes door both call this. Returns [] when the guard is off.
 ///
@@ -1189,14 +1189,14 @@ pub async fn guard_completion(
 ///
 /// Never fails: a guard that errored loudly on a database hiccup would take
 /// down commenting, posting and DMs alongside it.
-/// The comms reply guard (guardrails.ts `guardChatReply`): a streamed reply
+/// The comms reply guard: a streamed reply
 /// the caller holds a TOOL NAMES list for — not the full record, so the record
 /// is the derived one (`overflowed` — results were too big to inspect, fail
 /// open on grounding) and `available` honestly says neither half is supplied.
 /// `spread` is the audience argument; a CHANNEL IS A BROADCAST.
 ///
-/// Returns the findings and the mode; `record_findings` inside drops grounded
-/// ones, exactly as the TS `.catch(() => {})` call does.
+/// Returns the findings and the mode; grounded findings never reach the
+/// record — `record_findings` drops them.
 pub async fn guard_chat_reply(
     pg: &PgPool,
     answer: &str,
@@ -1242,7 +1242,7 @@ pub async fn guard_chat_reply(
     (findings, config.mode)
 }
 
-/// redactFindings: scrub each finding's SNIPPET in place — a pinned finding
+/// Scrub each finding's SNIPPET in place — a pinned finding
 /// carries a verbatim excerpt of the flagged span, and `zero_tool_claim` does
 /// not truncate its own. Contained redaction with no grounding: the snippet is
 /// evidence, and broadcast already stripped the exemption upstream.
@@ -1350,13 +1350,13 @@ pub fn redact_secrets(text: &str, grounding: Option<&Grounding>) -> (String, boo
     (out, redacted)
 }
 
-// ── The admin surface (guardrails.ts guardRuleMeta / listFindings / guardStats)
+// ── The admin surface ────────────────────────────────────────────────────────
 
 /// The rules' UI metadata, RULES order — which rules exist, how bad a hit is,
 /// whether they run by default. Labels live here and not on RuleDef because
 /// only this listing ever reads them.
 pub fn guard_rule_meta() -> Vec<serde_json::Value> {
-    // (id, label) — the pairs guardrails.ts carries inline on each rule.
+    // (id, label) — one pair per rule.
     const LABELS: &[(&str, &str)] = &[
         (
             "zero_tool_claim",
@@ -1388,16 +1388,15 @@ pub fn guard_rule_meta() -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// A `real` column's value as the JSON number TS puts on the wire. Postgres
-/// sends float4 as its shortest round-tripping decimal ("0.8"); postgres.js
-/// parses THAT string into a double, so the wire number is
-/// parse(shortest(f32)) — never `f32 as f64`, which would print
+/// A `real` column's value as the JSON number on the wire. Postgres
+/// sends float4 as its shortest round-tripping decimal ("0.8"); the wire
+/// number is parse(shortest(f32)) — never `f32 as f64`, which would print
 /// 0.800000011920929 for the 0.8 the admin panel is meant to see.
 fn real_to_json_f64(v: f32) -> f64 {
     format!("{v}").parse().unwrap_or(v as f64)
 }
 
-/// Recent findings, newest first (listFindings). The limit clamp is the
+/// Recent findings, newest first. The limit clamp is the
 /// module's own (min 1, max 500).
 pub async fn list_guard_findings(
     pg: &PgPool,
@@ -1461,7 +1460,7 @@ pub async fn list_guard_findings(
     })
 }
 
-/// Total findings plus the count per check (guardStats).
+/// Total findings plus the count per check.
 pub async fn guard_stats(pg: &PgPool) -> serde_json::Value {
     let rows: Result<Vec<(String, i64)>, _> =
         sqlx::query_as("select check_type, count(*)::int8 from guard_findings group by check_type")
@@ -1652,7 +1651,7 @@ mod tests {
         assert!(is_card_number("4111-1111-1111-1111")); // Luhn-valid
         assert!(!is_card_number("4111-1111-1111-1112")); // one off
         assert!(iban_re().is_match("DE89370400440532013000"));
-        assert!(!iban_re().is_match("de89370400440532013000")); // lowercase is not an IBAN in TS
+        assert!(!iban_re().is_match("de89370400440532013000")); // lowercase is not an IBAN
     }
 
     #[test]

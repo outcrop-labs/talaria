@@ -1,9 +1,8 @@
-// Conversations — the port of ui/src/server/conversations.ts, grown slice by
-// slice. The gate predicate landed with the runs watch gate (realtime.rs
-// resolves a run with a `conversation` subject through it); the agent read
-// and priorMessages landed with the plan-draft plane, whose transcript is a
-// conversation's turns with refs and file bytes re-read. The message, plan,
-// and title planes land here, with the chat family's own batch.
+// Conversations — the access gates (realtime.rs resolves a run with a
+// `conversation` subject through the same predicate), prior-turn transcripts
+// for the gateway, the listing/detail wire views, plan membership, the
+// message-row plumbing a streamed reply writes through, and the title
+// defaults.
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -14,12 +13,11 @@ use crate::refs::ref_blocks;
 use crate::secretbox::SecretBox;
 use crate::uploads::attachment_text_blocks;
 
-/// conversations.ts accessibleConversation, reduced to the question its
-/// callers that only gate ask: does this row exist for this person? TS
-/// selects five columns and answers `rows.length`; the WHERE clause is the
-/// whole rule and is ported verbatim — the OWNER, or (a PLAN, and a member):
-/// a chat does not admit collaborators, and that distinction is decided here
-/// and nowhere else. Re-deciding it at a call site would be a second answer.
+/// The access gate, reduced to the question its callers that only gate ask:
+/// does this row exist for this person? The WHERE clause is the whole rule —
+/// the OWNER, or (a PLAN, and a member): a chat does not admit
+/// collaborators, and that distinction is decided here and nowhere else.
+/// Re-deciding it at a call site would be a second answer.
 pub async fn conversation_accessible(
     pg: &PgPool,
     user_id: &str,
@@ -42,9 +40,8 @@ pub async fn conversation_accessible(
 
 /// The same predicate with the one column the plan-draft POST needs after it
 /// passes: the conversation's own agent, which drafts. None covers both "not
-/// accessible" and "accessible but agentless" — TS's `?.agentModel ?? null`
-/// reads the same either way, and the route answers 'plan not found' for
-/// both, never leaking which.
+/// accessible" and "accessible but agentless", and the route answers
+/// 'plan not found' for both, never leaking which.
 pub async fn accessible_conversation_agent(
     pg: &PgPool,
     user_id: &str,
@@ -65,8 +62,8 @@ pub async fn accessible_conversation_agent(
     Ok(row.filter(|(m,)| !m.is_empty()).map(|(m,)| m))
 }
 
-/// One prior turn as a transcript line (conversations.ts priorMessages'
-/// mapped row): the role the gateway saw, and the content after voice
+/// One prior turn as a transcript line: the role the gateway saw, and the
+/// content after voice
 /// prefixes, ref chips and file bytes are folded in.
 #[derive(Debug, Clone)]
 pub struct PriorMessage {
@@ -74,15 +71,15 @@ pub struct PriorMessage {
     pub content: String,
 }
 
-/// Prior turns (role + content) for the gateway, oldest first
-/// (conversations.ts priorMessages). Multiplayer plans prefix user turns
+/// Prior turns (role + content) for the gateway, oldest first. Multiplayer
+/// plans prefix user turns
 /// with the author's name so the agent can tell voices apart; 1:1 threads
 /// stay plain. Attached knowledge/artifact refs ride along on every rebuild
 /// — a queued turn or resume never loses them — while textual file uploads
 /// re-read their bytes for the RECENT TAIL only (FILE_TAIL = 12).
 ///
 /// A message row a non-array attachments value cannot crash this walk: the
-/// ref/file legs treat it as nothing, which is what the TS shape checks do.
+/// ref/file legs treat it as nothing.
 pub async fn prior_messages(
     pg: &PgPool,
     sb: &SecretBox,
@@ -121,8 +118,7 @@ pub async fn prior_messages(
     let multi_voice = rows.iter().any(|r| r.members > 0);
     // Textual file uploads re-read their bytes on every rebuild — scope that
     // to the recent tail; ref chips carry their content inline and always
-    // ride. The bound is the row count AFTER the SQL filter, exactly TS's
-    // `i >= rows.length - FILE_TAIL`.
+    // ride. The bound is the row count AFTER the SQL filter.
     const FILE_TAIL: usize = 12;
     let total = rows.len();
     let mut out: Vec<PriorMessage> = Vec::with_capacity(total);
@@ -154,15 +150,9 @@ pub async fn prior_messages(
         .collect())
 }
 
-/// Create a conversation for a user + agent (conversations.ts
-/// createConversation). An explicit plan template (plan surface only) is the
-/// highest link in the template resolution chain; null falls through to the
-/// agent's binding — and a non-plan kind never carries one, decided here so
-/// no caller re-decides it.
-/// conversations.ts accessibleConversation — the full row the chat route
-/// gates and reads on: whose conversation this is, which kind, which agent,
-/// and the caller's standing. Chats never admit collaborators; that rule
-/// lives in the WHERE clause, as in TS.
+/// The full row the chat route gates and reads on: whose conversation this
+/// is, which kind, which agent, and the caller's standing. Chats never admit
+/// collaborators; that rule lives in the WHERE clause.
 #[derive(Debug)]
 pub struct AccessibleConversation {
     pub agent_model: String,
@@ -218,11 +208,11 @@ pub async fn accessible_conversation(
 
 // ── The listing/detail wire views ─────────────────────────────────────────────
 //
-// Key order is the TS select's (postgres.js returns columns in select order
-// and json() stringifies the row as-is): the sidebar row, and the detail's
-// conversation + message rows.
+// Wire key order follows the SQL select order — the struct fields are
+// declared to match it: the sidebar row, and the detail's conversation +
+// message rows.
 
-/// listConversations' row — the sidebar's view of a thread.
+/// The sidebar's view of a thread — the listing row.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationListRow {
@@ -239,8 +229,8 @@ pub struct ConversationListRow {
     pub owner_label: Option<String>,
 }
 
-/// The user's conversations of a given kind, newest activity first
-/// (conversations.ts listConversations). Plans are multiplayer: your own AND
+/// The user's conversations of a given kind, newest activity first. Plans
+/// are multiplayer: your own AND
 /// ones shared with you; chats stay strictly your own.
 pub async fn list_conversations(
     pg: &PgPool,
@@ -304,7 +294,7 @@ pub async fn list_conversations(
         .collect())
 }
 
-/// getConversation's conversation — the detail page's narrower row.
+/// The detail page's narrower conversation row.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationDetail {
@@ -315,9 +305,8 @@ pub struct ConversationDetail {
     pub role: String,
 }
 
-/// One message row, exactly the TS select's column set — the nullable jsonb
-/// trio serializes as null (the keys are always present on the wire, the TS
-/// interface's `?` notwithstanding). `guard` is the one nullable column of
+/// One message row — the nullable jsonb trio serializes as null (the keys
+/// are always present on the wire). `guard` is the one nullable column of
 /// the set (messages table): unguarded rows carry null, not [].
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,8 +324,8 @@ pub struct MessageRow {
     pub author_label: Option<String>,
 }
 
-/// A conversation + its messages in order (conversations.ts getConversation).
-/// Access: yours — or a plan you're a member of; RESEARCH ACCESS FOLLOWS THE
+/// A conversation + its messages in order. Access: yours — or a plan you're
+/// a member of; RESEARCH ACCESS FOLLOWS THE
 /// RUN, not a second membership list (research_runs/research_members decide),
 /// so a person cannot keep the conversation after losing the report.
 pub async fn get_conversation(
@@ -436,7 +425,7 @@ pub async fn get_conversation(
     )))
 }
 
-/// A plan's humans, owner first then collaborators (listPlanMembers).
+/// A plan's humans, owner first then collaborators.
 #[derive(Debug)]
 pub struct PlanMember {
     pub user_id: String,
@@ -471,7 +460,7 @@ pub async fn list_plan_members(
         .collect())
 }
 
-/// The user's standing on a plan (planRole): owner, collaborator, or nothing.
+/// The user's standing on a plan: owner, collaborator, or nothing.
 /// Nothing is also "not a plan" — the `kind = 'plan'` clause keeps chat
 /// conversations out, and callers treat null as absent.
 pub async fn plan_role(
@@ -493,7 +482,7 @@ pub async fn plan_role(
     Ok(row.and_then(|(role,)| role))
 }
 
-/// Add a collaborator (addPlanMember). Idempotent — re-sharing with someone
+/// Add a collaborator. Idempotent — re-sharing with someone
 /// already on the plan is a no-op, not an error.
 pub async fn add_plan_member(
     pg: &PgPool,
@@ -511,7 +500,7 @@ pub async fn add_plan_member(
     Ok(())
 }
 
-/// Remove a collaborator (removePlanMember). The owner is not a member row, so
+/// Remove a collaborator. The owner is not a member row, so
 /// this only ever removes collaborators.
 pub async fn remove_plan_member(
     pg: &PgPool,
@@ -528,7 +517,7 @@ pub async fn remove_plan_member(
     Ok(())
 }
 
-/// Next sequence number for a conversation (nextSeq).
+/// Next sequence number for a conversation.
 pub async fn next_seq(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
     let (next,): (i32,) = sqlx::query_as(
         "select coalesce(max(seq), -1) + 1 as next from messages where conversation_id = $1::uuid",
@@ -539,10 +528,9 @@ pub async fn next_seq(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::E
     Ok(next)
 }
 
-/// Insert the user's turn (insertUserMessage); returns the message id —
-/// activity indexing keys on it. `metadata` is always an object on the wire
-/// (TS default `{}`), so the effort stamp rides as a member, never as the
-/// whole value.
+/// Insert the user's turn; returns the message id — activity indexing keys
+/// on it. `metadata` is always an object (default `{}`), so the effort stamp
+/// rides as a member, never as the whole value.
 pub async fn insert_user_message(
     pg: &PgPool,
     conversation_id: &str,
@@ -567,8 +555,8 @@ pub async fn insert_user_message(
     Ok(id)
 }
 
-/// The conversation's in-flight assistant reply, if any
-/// (activeStreamingAssistant). A streaming row older than 10 minutes is a
+/// The conversation's in-flight assistant reply, if any. A streaming row
+/// older than 10 minutes is a
 /// crashed persist — mark it errored and report none, so a dead stream can
 /// never wedge the conversation's turn-taking.
 pub async fn active_streaming_assistant(
@@ -600,8 +588,8 @@ pub async fn active_streaming_assistant(
     }
 }
 
-/// The reasoning effort the NEWEST user message asked for, or null
-/// (lastUserMessageEffort). The queued-message contract: /api/chat stamps
+/// The reasoning effort the NEWEST user message asked for, or null. The
+/// queued-message contract: /api/chat stamps
 /// `metadata.effort` on the row, and the continuation chain reads it back
 /// here — a message that never picked one answers null, which is the default
 /// again, which is correct.
@@ -622,8 +610,7 @@ pub async fn last_user_message_effort(
     Ok((!effort.trim().is_empty()).then(|| effort.to_string()))
 }
 
-/// Create the assistant row, status='streaming' (insertStreamingAssistant);
-/// returns its id.
+/// Create the assistant row, status='streaming'; returns its id.
 pub async fn insert_streaming_assistant(
     pg: &PgPool,
     conversation_id: &str,
@@ -642,8 +629,8 @@ pub async fn insert_streaming_assistant(
     Ok(id)
 }
 
-/// Flush accumulated assistant state (updateAssistant) — throttled during
-/// streaming, final at end.
+/// Flush accumulated assistant state — throttled during streaming, final at
+/// end.
 pub async fn update_assistant(
     pg: &PgPool,
     message_id: &str,
@@ -666,8 +653,8 @@ pub async fn update_assistant(
     Ok(())
 }
 
-/// Pin confab-guard findings to a reply (setMessageGuard). Metadata only —
-/// the UI renders a caveat; transcripts never see it.
+/// Pin confab-guard findings to a reply. Metadata only — the UI renders a
+/// caveat; transcripts never see it.
 pub async fn set_message_guard(
     pg: &PgPool,
     message_id: &str,
@@ -682,7 +669,7 @@ pub async fn set_message_guard(
 }
 
 /// Bump the conversation's updated_at, setting a title from the first turn
-/// only while the row's own is empty (touchConversation).
+/// only while the row's own is empty.
 pub async fn touch_conversation(
     pg: &PgPool,
     conversation_id: &str,
@@ -710,8 +697,8 @@ pub async fn touch_conversation(
     Ok(())
 }
 
-/// The mechanical default chat.ts stamps at creation — a title still equal
-/// to it means nobody has named the conversation on purpose. Shared with the
+/// The mechanical default stamped at creation — a title still equal to it
+/// means nobody has named the conversation on purpose. Shared with the
 /// titler's gate and the sweep.
 pub fn mechanical_from(s: &str) -> String {
     // JS: s.replace(/\s+/g, ' ').trim().slice(0, 80) — collapse runs of any
@@ -721,9 +708,9 @@ pub fn mechanical_from(s: &str) -> String {
 }
 
 /// A message's `content` JS length for the ledger's char estimate: UTF-16
-/// units for a string, the PART COUNT for an image turn's array (TS
-/// `m.content.length` on either shape — the estimate is a fallback, and the
-/// odd unit for image turns is TS behavior verbatim).
+/// units for a string, the PART COUNT for an image turn's array
+/// (`m.content.length` on either shape — the estimate is a fallback, and the
+/// odd unit for image turns ships deliberately).
 pub fn content_js_length(v: &Value) -> usize {
     match v {
         Value::String(s) => s.encode_utf16().count(),
@@ -732,16 +719,17 @@ pub fn content_js_length(v: &Value) -> usize {
     }
 }
 
-/// chat.ts titleFrom — same shape as the titler's mechanical default (a
-/// conversation's first title IS the mechanical one until the Titler says
-/// otherwise).
+/// Same shape as the titler's mechanical default — a conversation's first
+/// title IS the mechanical one until the Titler says otherwise.
 pub fn title_from(s: &str) -> String {
     mechanical_from(s)
 }
 
-/// chat.ts createConversation — the row /api/chat inserts for a brand-new
-/// conversation. `plan_template_id` only ever binds for kind='plan' (the TS
-/// column-level default covers chat).
+/// The row /api/chat inserts for a brand-new conversation. An explicit plan
+/// template (plan surface only) is the highest link in the template
+/// resolution chain — null falls through to the agent's binding — and a
+/// non-plan kind never carries one: `plan_template_id` binds only for
+/// kind='plan', decided here so no caller re-decides it.
 pub async fn create_conversation(
     pg: &PgPool,
     user_id: &str,

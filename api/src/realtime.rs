@@ -1,5 +1,5 @@
-// Real-time fan-out over Redis pub/sub → SSE — the port of
-// ui/src/server/realtime.ts. Mutations publish a small event to a topic
+// Real-time fan-out over Redis pub/sub → SSE.
+// Mutations publish a small event to a topic
 // (`board:<id>`, `channel:<id>`, `run:<id>`, `user:<id>`); each connected
 // client holds an SSE stream fed by a dedicated Redis subscriber. Multiplayer
 // without websockets.
@@ -10,10 +10,6 @@
 // The client re-fetches through the ordinary route, which applies the ordinary
 // read ACL. A payload that carried the content would be a second read path with
 // no gate on it — the fan-out would become the disclosure.
-//
-// Same Redis as the TS side for as long as both runtimes serve routes: a
-// publish from either runtime's publishers reaches either runtime's
-// subscribers, which is what lets a topic cross before its writers do.
 
 use crate::runs::define::RunState;
 use crate::runs::run::RunEvent;
@@ -32,18 +28,17 @@ const LOG: &str = "[realtime]";
 
 // ── The two edges to Redis ───────────────────────────────────────────────────
 
-/// The publish edge: fire-and-forget, errors logged not propagated — TS's
-/// `void redis.publish(...).catch(log)`. A publish that BLOCKED the caller
+/// The publish edge: fire-and-forget, errors logged not propagated.
+/// A publish that BLOCKED the caller
 /// would make every mutation wait on Redis; a publish that ERRORED the caller
 /// would fail the write it is announcing, when the write already landed.
 pub type PublishFn = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// The subscribe edge: open a DEDICATED subscriber connection for one client
-/// and hand back the receiving end of its forwarder. NEVER FAILS — TS swallows
-/// connect/subscribe failures (an unhandled rejection there would take down
-/// the whole server process); the Rust edge logs and returns a receiver
-/// nobody feeds, so the client sees its `: connected` preamble and pings and
-/// no events — exactly the quiet stream a dead subscriber left in TS.
+/// and hand back the receiving end of its forwarder. NEVER FAILS — a
+/// connect/subscribe failure is logged and returns a receiver nobody feeds,
+/// so the client sees its `: connected` preamble and pings and no events, the
+/// quiet stream of a dead subscriber.
 pub type SubscribeFn =
     Arc<dyn Fn(String) -> BoxFuture<'static, mpsc::Receiver<String>> + Send + Sync>;
 
@@ -81,7 +76,7 @@ impl RealtimeDeps {
     /// The stream half alone — what an SSE route needs. The publish edge is a
     /// documented no-op: streams only ever subscribe, and forcing the shared
     /// manager's first-connect handshake on them would make opening a watch
-    /// depend on the publisher's connection, a dependency TS never had.
+    /// depend on the publisher's connection.
     pub fn streams_only(redis_url: &str) -> Self {
         let subscribe = match redis::Client::open(redis_url) {
             Ok(client) => redis_subscribe(client),
@@ -98,9 +93,8 @@ impl RealtimeDeps {
 
     /// The publish half alone — what a notification write needs. The subscribe
     /// edge is the quiet one: nothing on this plane will ever open a stream.
-    /// `None` is Redis unreachable at construction, and it resolves to the
-    /// same logged silence TS's publishUser try/catch already tolerates per
-    /// call — the row underneath is the record, the fan-out is a delivery.
+    /// `None` is Redis unreachable at construction, resolved to a logged
+    /// silence — the row underneath is the record, the fan-out is a delivery.
     pub fn publish_only(conn: Option<redis::aio::ConnectionManager>) -> Self {
         Self {
             publish: match conn {
@@ -216,8 +210,7 @@ pub fn publish_channel(deps: &RealtimeDeps, channel_id: &str, event: &ChannelEve
     (deps.publish)(&format!("channel:{channel_id}"), &payload);
 }
 
-/// An SSE response of a board's events. The boards event routes cross with the
-/// boards family; the stream itself is realtime's and ports now.
+/// An SSE response of a board's events.
 pub async fn board_event_stream(deps: &RealtimeDeps, board_id: &str) -> Response {
     sse_response((deps.subscribe)(format!("board:{board_id}")).await)
 }
@@ -246,10 +239,9 @@ pub async fn channel_event_stream(deps: &RealtimeDeps, channel_id: &str) -> Resp
 // run has stopped and is asking you something) is exactly the one that happens
 // while their attention is elsewhere.
 //
-// Notifications publish here too (`addNotification` → `{type:'notification'}`,
+// Notifications publish here too (`add_notification` → `{type:'notification'}`,
 // the bell's signal) alongside runs and the brief — which is what the topic was
-// NAMED for: it is the person's, not any one feature's. That port (notify's
-// write half) is a later slice in this batch.
+// NAMED for: it is the person's, not any one feature's.
 
 /// What goes over `run:<id>`.
 ///
@@ -284,11 +276,9 @@ pub struct RunWireEvent {
 
 impl RunWireEvent {
     /// THE WIRE EVENT IS BUILT FIELD BY FIELD from the driver's internal
-    /// event, never serialized from it. TS builds a fresh object because
-    /// TypeScript cannot stop a caller passing a WIDER object than the
-    /// parameter type; Rust's type system makes the extra fields unnameable,
-    /// and this constructor keeps the loudest one — `question` — unnamed on
-    /// the way out too, so the day someone "simplifies" this to
+    /// event, never serialized from it — the constructor keeps the loudest
+    /// internal field, `question`, unnamed on
+    /// the way out, so the day someone "simplifies" this to
     /// `serde_json::to_string(&event)` the missing field is the diff.
     fn from_internal(event: &RunEvent) -> Self {
         Self {
@@ -313,9 +303,8 @@ impl RunWireEvent {
 /// incapable of leaking. Keeping it id-shaped from the start means that day is
 /// a routing change and not a disclosure review.
 ///
-/// The enum IS the wire shape — TS re-builds the event field by field before
-/// serializing because its union type cannot stop a wider object; a Rust enum
-/// has no wider object to pass.
+/// The enum IS the wire shape — serialized directly, with no wider object to
+/// accidentally pass.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(
     tag = "type",
@@ -357,14 +346,14 @@ pub fn publish_user(deps: &RealtimeDeps, user_id: &str, event: &UserEvent) {
     (deps.publish)(&format!("user:{user_id}"), &payload);
 }
 
-/// run.ts publishRunEvent — the real `RunDeps.publish` assembly, the piece the
-/// driver's deps point at once the handoff slice arms it. The run topic gets
+/// The real `RunDeps.publish` assembly the driver's deps point at. The run
+/// topic gets
 /// the wire event; the owner's firehose gets the id-shaped echo, because the
 /// phone watching "what do I have in flight" is not watching this run.
 pub fn run_publish(deps: RealtimeDeps) -> crate::runs::run::PublishFn {
     Arc::new(move |event: RunEvent, owner_user_id: Option<&str>| {
         publish_run(&deps, &event.run_id, &RunWireEvent::from_internal(&event));
-        // TS's `if (ownerUserId)` is a truthy check — an empty owner id is
+        // An empty owner id is
         // nobody's firehose, not a topic named "user:".
         if let Some(owner) = owner_user_id.filter(|o| !o.is_empty()) {
             publish_user(
@@ -394,7 +383,7 @@ pub async fn user_event_stream(deps: &RealtimeDeps, user_id: &str) -> Response {
 
 // ── SSE framing ──────────────────────────────────────────────────────────────
 
-/// topicEventStream's frames: the `: connected` preamble, then one `data:`
+/// The topic stream's frames: the `: connected` preamble, then one `data:`
 /// frame per pub/sub message. Payloads are one line by construction —
 /// `serde_json::to_string` never emits a literal newline, and axum asserts on
 /// one rather than corrupting the stream.
@@ -414,18 +403,16 @@ fn topic_frames(
     ))
 }
 
-/// The SSE response TS's routes build: `text/event-stream` (set by `Sse`
-/// itself), `Cache-Control: no-cache, no-transform` (TS's header verbatim), and
-/// a 25s `: ping` keep-alive. Three documented divergences, all in the keep:
-/// axum pings only when the stream has been IDLE for the interval — TS pinged
-/// unconditionally — and any data frame resets the timer, which is the same
-/// job a ping does for an intermediary; TS's `Connection: keep-alive` header
-/// is not set, because HTTP/1.1 defaults to keep-alive and hyper owns that
-/// header on this side; and a stream whose subscriber dies ENDS (the
+/// The SSE response the event routes build: `text/event-stream` (set by `Sse`
+/// itself), `Cache-Control: no-cache, no-transform`, and
+/// a 25s `: ping` keep-alive. axum pings only when the stream has been IDLE
+/// for the interval — any data frame resets the timer, doing the same job a
+/// ping does for an intermediary; no `Connection: keep-alive` header is set,
+/// because HTTP/1.1 defaults to keep-alive and hyper owns that header; and a
+/// stream whose subscriber dies ENDS (the
 /// forwarder's sender drops, the receiver closes) rather than pinging into the
 /// void until the client gives up — an EventSource reconnects on stream end
-/// and gets a fresh subscriber, the same recovery TS left to the client's
-/// timeout but from the server's own initiative.
+/// and gets a fresh subscriber, recovery from the server's own initiative.
 fn sse_response(rx: mpsc::Receiver<String>) -> Response {
     let mut res = Sse::new(topic_frames(rx))
         .keep_alive(
@@ -462,7 +449,8 @@ fn sse_response(rx: mpsc::Receiver<String>) -> Response {
 // That direction is not a coin flip: a refusal on a run somebody should have
 // seen is a missing live update they can still get by reloading, while an
 // allow on a run they should not have seen is a disclosure with no floor under
-// it, because a `subject_type` is free text by design and a future port can
+// it, because a `subject_type` is free text by design and a future run
+// definition can
 // introduce one at any time without touching this file. Defaulting the unknown
 // case to "allow" would make every new subject type a silent widening.
 //
@@ -555,10 +543,9 @@ pub struct RunWatchDeps {
     pub is_admin: AdminFn,
 }
 
-/// May this person attach to `run:<id>`? An `Err` is an edge failing — in TS
-/// the same failure propagates out of `mayWatchRun` and the route answers 500;
-/// the port keeps it an error rather than converting it to a refusal, because
-/// a broken predicate and an answered refusal are different facts.
+/// May this person attach to `run:<id>`? An `Err` is an edge failing — kept
+/// an error rather than converted to a refusal, because a broken predicate
+/// and an answered refusal are different facts.
 pub async fn may_watch_run(
     user_id: &str,
     run_id: &str,
@@ -568,9 +555,8 @@ pub async fn may_watch_run(
         Some(run) => run,
         None => return Ok(RunWatchVerdict::Missing),
     };
-    // TS's truthiness, encoded once: in all three of these columns an empty
-    // string is as absent as a null (`if (run.ownerUserId)`, `!subjectType`,
-    // `!subjectId`), and every branch below reads the filtered Options.
+    // An empty string is as absent as a null in all three of these columns,
+    // and every branch below reads the filtered Options.
     let owner = run.owner_user_id.as_deref().filter(|s| !s.is_empty());
     let subject_type = run.subject_type.as_deref().filter(|s| !s.is_empty());
     let subject_id = run.subject_id.as_deref().filter(|s| !s.is_empty());
@@ -637,7 +623,7 @@ pub async fn may_watch_run(
             }
         }
         "conversation" => {
-            // `accessibleConversation`, not "owned conversation": a PLAN
+            // Accessible, not owned: a PLAN
             // admits its collaborators and a chat does not, and that
             // distinction is already decided in one place (conversations.rs).
             // Re-deciding it here would be a second answer.
@@ -649,8 +635,8 @@ pub async fn may_watch_run(
         }
         other => {
             // LOUD, because this is a gap in this file and not a misbehaving
-            // caller. `subject_type` is free text so a port can add one
-            // without a migration; the cost of that freedom is that a new
+            // caller. `subject_type` is free text so a run definition can add
+            // one without a migration; the cost of that freedom is that a new
             // subject type must be taught here or its runs have no live view.
             // Refusing keeps the failure visible and recoverable (reload
             // works); allowing would make it invisible and not.
@@ -662,10 +648,8 @@ pub async fn may_watch_run(
     }
 }
 
-/// The real watch edges: the same predicates the TS module defers its imports
-/// to (there, deferral breaks a load-time cycle; here, the modules are just
-/// modules). Each returns the sqlx error text in the `Err` string — the route
-/// logs it and answers 500, the answer a throwing predicate produced in TS.
+/// The real watch edges over the pool. Each returns the sqlx error text in
+/// the `Err` string — the route logs it and answers 500.
 pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
     // One clone per edge: every closure owns its pool handle outright.
     let get_run_pg = pg.clone();

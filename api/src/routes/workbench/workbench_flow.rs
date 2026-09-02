@@ -1,6 +1,6 @@
-// /api/workbench/flow — port of ui/src/routes/api/workbench.flow.ts.
-// Per-repo git flow (PR base + optional testing branch). GET → configured
-// flows + the reachable pool; PUT → set one repo's flow. agents.manage.
+// /api/workbench/flow. Per-repo git flow (PR base + optional testing
+// branch). GET → configured flows + the reachable pool; PUT → set one
+// repo's flow. agents.manage.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -44,9 +44,9 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         Ok(r) => r,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().max(100).nullable().optional() — then `?.trim() || null`:
-    // absent, null, and blank-after-trim ALL land as null, so the PUT always
-    // sets both columns (a PUT with only one field clears the other).
+    // Max-100 nullable-optional strings, then trim-or-null: absent, null,
+    // and blank-after-trim ALL land as null, so the PUT always sets both
+    // columns (a PUT with only one field clears the other).
     let read = |key: &str| nullish_max_string_member(obj, key, 100);
     let norm = |v: Option<String>| Some(v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
     let base = match read("baseBranch") {

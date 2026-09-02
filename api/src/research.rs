@@ -1,5 +1,4 @@
 // Research runs — Perplexity-grade cited research, Talaria-native.
-// Port of ui/src/server/research.ts.
 //
 // Three modes, mapped to depth budgets and sonar horsepower:
 //   recon       one search pass, minutes — a cited answer
@@ -16,8 +15,8 @@
 // not off the research record — one source of truth for whether a run is
 // alive. The run row is the authority because it is the thing being driven;
 // the research record's own columns are a TERMINAL outcome, and they are what
-// this reads when there is no run at all, which is every row created before
-// the port.
+// this reads when there is no run at all — every row that predates the runs
+// row.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -28,9 +27,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-// RE-EXPORTED, not re-declared. `plan_search` and its companions moved into
-// the run definition with the pipeline they belong to; the module that owns
-// the work owns its resolution, and every caller keeps the import it had.
+// RE-EXPORTED, not re-declared. `plan_search` and its companions live in the
+// run definition with the pipeline they belong to — the module that owns the
+// work owns its resolution; callers import them from here.
 use crate::realtime::RealtimeDeps;
 pub use crate::runs::defs::research::{
     ModeBudget, NO_SEARCH_REASON, SearchPlan, budget_for, plan_search, research_modes,
@@ -42,8 +41,8 @@ use crate::work_dispatch::dispatch_deps;
 
 /// What the agent in a research conversation is for: answer from the report,
 /// cite the same [n] markers, and never state as established anything the
-/// sources do not support. Used by the chat plane when it crosses; declared
-/// here because it is research's own contract, not chat's.
+/// sources do not support. Used by the chat plane; declared here because it
+/// is research's own contract, not chat's.
 pub const RESEARCH_MODE_PROMPT: &str = "This is a conversation ABOUT a research report you produced, on the Research surface. Several teammates may be in it; the report and its numbered sources sit beside the chat.
 
 Answer from the report and its sources first. Cite the same [n] markers the report uses so anyone can check you, and never state something as established that the sources do not support — this is a surface where everything looks cited, so an uncited claim of yours will be read as a finding.
@@ -55,15 +54,13 @@ Do not re-research something the report already covers — say what it says and 
 // ── The report-side machinery ─────────────────────────────────────────────────
 //
 // The citation registry itself (`SourceRegistry`, `MARKER_RE`,
-// `ResearchSource`) is in source_registry.rs, the one leaf both hosts share.
-// What stays here consumes it.
+// `ResearchSource`) is in source_registry.rs. What stays here consumes it.
 
 /// THE SOURCES SECTION THE PIPELINE APPENDS, matched so it can be replaced.
 ///
 /// Anchored to a line start and to the END of the document, because a report
 /// may legitimately discuss the word "Sources" in its prose and a loose match
-/// would truncate a report at the first mention of one. (The TS's trailing
-/// `$` after `[\s\S]*` matches nothing further and is dropped here.)
+/// would truncate a report at the first mention of one.
 static SOURCES_SECTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)\n*^## Sources\s*$[\s\S]*").expect("compiles"));
 
@@ -145,9 +142,9 @@ pub fn strip_unknown_markers(doc: &str, known_idx: &[u64]) -> (String, u64, Hash
             n.parse::<u64>().is_ok_and(|n| !known.contains(&n))
         })
         .count() as u64;
-    // Fences before markers, the TS order: a fence line is structural, and
-    // stripping it first is what keeps the marker pass from ever seeing a
-    // bracket the fence itself introduced.
+    // Fences before markers: a fence line is structural, and stripping it
+    // first is what keeps the marker pass from ever seeing a bracket the
+    // fence itself introduced.
     let unfenced = FENCE_CLEAN.replace_all(doc.trim(), "");
     let cleaned = MARKER_RE.replace_all(&unfenced, |c: &regex::Captures| {
         let m = c.get(0).expect("the whole match exists").as_str();
@@ -163,15 +160,14 @@ pub fn strip_unknown_markers(doc: &str, known_idx: &[u64]) -> (String, u64, Hash
     (cleaned.to_string(), dropped, cited)
 }
 
-/// The wrapping fence the TS strips in the same expression as the markers.
+/// The wrapping fence, stripped in the same pass as the markers.
 static FENCE_CLEAN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^```[a-z]*\n?|\n?```$").expect("compiles"));
 
 // ── The projection ────────────────────────────────────────────────────────────
 
-/// One research run as the surfaces read it (research.ts ResearchRun). The
-/// wire is camelCase because these rows are also written by TS during
-/// coexistence; the field set is the join below, verbatim.
+/// One research run as the surfaces read it. The wire is camelCase — the
+/// surfaces' shape; the field set is the join below, verbatim.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchRun {
@@ -196,11 +192,11 @@ pub struct ResearchRun {
     pub awaiting: Option<Value>,
     pub artifact_id: Option<String>,
     /// NOT on this wire shape: the run's conversation_id and parent_run_id
-    /// exist as columns (and on the TS interface, as `string | null`), but no
-    /// TS response carries them — the ROW projection never selects them, so
-    /// JSON.stringify never emits the keys. The conversation id is served by
-    /// its own route (`ensure_research_conversation`); the parent link is
-    /// write-only. Emitting them as nulls here broke the list's byte-parity.
+    /// exist as columns but the ROW projection never selects them, so the
+    /// wire never carries the keys. The conversation id is served by its own
+    /// route (`ensure_research_conversation`); the parent link is write-only.
+    /// Emitting them as nulls would hand every reader two keys no client
+    /// knows.
     pub error: Option<String>,
     pub stats: Value,
     pub created_at: String,
@@ -227,8 +223,8 @@ const STATUS: &str = "case \
     else 'queued' end";
 
 /// The full row, in the field order ResearchRun serializes. Timestamps come
-/// back as epoch milliseconds and are spelled by `epoch_ms_to_iso` — the same
-/// JS-ISO string the TS projection rendered its Dates into.
+/// back as epoch milliseconds and are spelled by `epoch_ms_to_iso` — ISO
+/// strings, millisecond precision, UTC.
 const ROW: &str = "research_runs.id::text, research_runs.owner_user_id::text, \
     research_runs.requested_by, research_runs.agent_model, research_runs.mode, \
     research_runs.question, research_runs.title, \
@@ -356,7 +352,7 @@ pub async fn research_role(
     Ok(if member { Some("member") } else { None })
 }
 
-/// One member of a run (research.ts ResearchMember).
+/// One member of a run.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchMember {
@@ -459,9 +455,8 @@ pub async fn active_research_on(
 
 /// Research this person should be told about in an ambient briefing: what is
 /// in flight, plus anything that failed in the last week. It exists so the
-/// projection is spelled once — the briefing asked `research_runs` directly
-/// once, and a stale column narrating a run nobody was driving is the same
-/// class of bug as the sentence this port deleted.
+/// projection is spelled once — reading `research_runs` directly would let a
+/// stale column narrate a run nobody is driving.
 pub async fn briefable_research(
     pg: &PgPool,
     user_id: &str,
@@ -492,13 +487,12 @@ pub async fn briefable_research(
 
 /// Throw the run away: STOP IT FIRST, then delete the record.
 ///
-/// DELETE used to be one `delete from research_runs`, which under the port
-/// stops nothing — the work lives on the `runs` row, and the driver holding
-/// it goes on planning, searching and synthesizing a report for a record that
-/// no longer exists. The run's own steps do check `row_exists` and stop, so
-/// nothing was permanently wrong; the cost was up to one whole step (eleven
-/// minutes, and a billed search inside it) spent on work somebody had just
-/// thrown away.
+/// The delete alone stops nothing — the work lives on the `runs` row, and the
+/// driver holding it goes on planning, searching and synthesizing a report
+/// for a record that no longer exists. The run's own steps do check
+/// `row_exists` and stop, so nothing is permanently wrong; the cost is up to
+/// one whole step (eleven minutes, and a billed search inside it) spent on
+/// work somebody had just thrown away.
 ///
 /// THE ORDER IS THE POINT. `cancel_run` is a compare-and-set with no lease
 /// predicate, so it lands from any instance and every subsequent write by the
@@ -509,9 +503,9 @@ pub async fn briefable_research(
 ///
 /// The report artifact SURVIVES, unchanged: deleting a run clears the queue
 /// entry, not the knowledge. A cancel that cannot land is logged and the
-/// delete proceeds — `missing` (a row from before the port) and `terminal`
-/// (a finished run) are both perfectly normal, and neither is a reason to
-/// leave the record behind.
+/// delete proceeds — `missing` (a record with no run behind it) and
+/// `terminal` (a finished run) are both perfectly normal, and neither is a
+/// reason to leave the record behind.
 pub async fn delete_research_run(
     state: &crate::state::AppState,
     run_id: &str,
@@ -551,9 +545,8 @@ pub async fn get_research_run(
     id: &str,
 ) -> Result<Option<(ResearchRun, Vec<ResearchSource>)>, sqlx::Error> {
     // NO SWEEP HERE, AND NONE IN THE LIST EITHER. A restart is not a failure;
-    // no read of this table decides anything about a run's health any more,
-    // and the event that used to produce an epitaph now produces a resume —
-    // see runs/reclaim.rs, which is where that sweep went.
+    // no read of this table decides anything about a run's health. A run left
+    // mid-flight is resumed by the reclaim sweep — runs/reclaim.rs.
     let sql = projection_sql("where research_runs.id = $1::uuid");
     let row = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
@@ -591,26 +584,23 @@ pub async fn get_research_run(
 /// the owner on its `input`, so a process that dies between the two inserts
 /// leaves something the reclaim sweep can pick up — and the run's first step
 /// writes the research record from that input when it is not there. The other
-/// order leaves the opposite: a research record nobody is driving, nothing to
-/// reclaim, and no stale sweep left to notice it.
+/// order leaves the opposite: a research record nobody is driving, and
+/// nothing to reclaim.
 ///
 /// ONE RUN PER RESEARCH RECORD, AND ONE UUID NAMING BOTH. `enqueue`
 /// deduplicates nothing above the row, so the id is passed in rather than
 /// generated inside it: a caller that retried with the same id would collide
 /// on the primary key instead of starting a second run doing the same work.
-/// The duplicate-QUESTION check that stops a double click is /api/research's,
-/// and it is unchanged.
+/// The duplicate-QUESTION check that stops a double click is /api/research's.
 ///
-/// SIGNATURE UNCHANGED, including the up-front refusal when the workspace
-/// cannot search: that is a 400 the caller shows in the form, and turning it
-/// into a run that fails a second later would be a worse answer to the same
-/// question. The run's first step re-checks it, for the resume case.
+/// THE REFUSAL IS UP FRONT when the workspace cannot search: that is a 400
+/// the caller shows in the form, and turning it into a run that fails a
+/// second later would be a worse answer to the same question. The run's
+/// first step re-checks it, for the resume case.
 ///
 /// ORDER (same as plan_drafts): enqueue with the inline drive — the run row,
 /// its publish, and the drive; this process's scheduler advances the run,
-/// and the reclaim sweep is the guarantee either way. (During coexistence
-/// the enqueue was row-and-publish only, leaving the drive to the TS sweep;
-/// that runtime left with the cutover.)
+/// and the reclaim sweep is the guarantee either way.
 pub async fn start_research(
     state: &crate::state::AppState,
     input: ResearchInput,
@@ -645,8 +635,7 @@ pub async fn start_research(
             subject_type: Some("research".into()),
             subject_id: Some(id.clone()),
             phase: Some("queued".into()),
-            // The drive is inline: this process is the only runtime, so
-            // enqueue means row + publish + drive.
+            // The drive is inline — enqueue means row + publish + drive.
             start: Some(true),
         },
         &deps,
@@ -811,9 +800,8 @@ pub async fn research_run_for_conversation(
 
 #[cfg(test)]
 mod tests {
-    // Port of research-extend.test.ts — the document-merge invariants, which
-    // are the one place this module can corrupt a document a person has
-    // already read.
+    // The document-merge invariants — the one place this module can corrupt a
+    // document a person has already read.
     use super::*;
 
     fn src(idx: u64, url: &str) -> ResearchSource {

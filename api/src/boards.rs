@@ -1,7 +1,5 @@
-// Boards — the port of ui/src/server/boards.ts, grown slice by slice: the
-// visibility fragment and role resolution crossed first (the read families
-// and the runs watch gate needed them); the CRUD, membership and agent-policy
-// surface crosses with the boards route family.
+// Boards — visibility, role resolution, CRUD, membership, and the agent
+// policy every board-scoped gate obeys.
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::users::is_elevated_assistant;
@@ -10,10 +8,9 @@ use sqlx::PgPool;
 /// SQL fragment: the board `b` is one this USER can see — a direct member, or
 /// a member of the team that owns it — and not archived. `includeArchived`
 /// drops the archival arm for `listBoards`, the one caller with a deliberate
-/// view of retired boards (it states its own). The fragment is quoted SQL text
-/// here (postgres.js composes it as a tagged fragment); the two placeholder
+/// view of retired boards (it states its own). The two placeholder
 /// SPELLINGS are passed in because the fragment can sit at any position in a
-/// larger query's bind order — TS binds the same userId value at each site.
+/// larger query's bind order — callers bind the same user id at each site.
 pub fn board_visibility_sql(user_1: &str, user_2: &str, include_archived: bool) -> String {
     let arms = format!(
         "(exists (select 1 from board_members bvm where bvm.board_id = b.id and bvm.user_id = {user_1}::uuid) \
@@ -26,28 +23,26 @@ pub fn board_visibility_sql(user_1: &str, user_2: &str, include_archived: bool) 
     }
 }
 
-/// boards.ts RANK: which of two roles wins when both queries answer. The sort
-/// is TS's `roles.sort((a, b) => RANK[b] - RANK[a])[0]` — descending by rank,
+/// Which of two roles wins when both queries answer —
+/// descending by rank,
 /// first wins.
 fn role_rank(role: &str) -> i32 {
     match role {
         "owner" => 3,
         "editor" => 2,
         "viewer" => 1,
-        // TS would compute RANK[unknown] - … as NaN and sort arbitrarily; the
-        // map above is the whole declared set, and anything else ranks below
-        // all of it rather than jittering the order.
+        // Anything else ranks below all of it rather than jittering the
+        // order — the map above is the whole declared set.
         _ => 0,
     }
 }
 
-/// boards.ts boardRole: the caller's strongest role on a board. Two arms,
+/// The caller's strongest role on a board. Two arms,
 /// UNION ALL — a direct `board_members` row, and membership of the TEAM that
 /// owns it (a team OWNER acts as board owner, any other team member as
 /// editor) — then the RANK pick when both answer. Null = no relationship at
 /// all. This is the one predicate every "may this person see this board"
-/// question routes through; the runs watch gate (realtime.rs) is the caller
-/// that crossed first.
+/// question routes through.
 pub async fn board_role(
     pg: &sqlx::PgPool,
     user_id: &str,
@@ -71,8 +66,8 @@ pub async fn board_role(
 }
 
 /// SQL fragment: the board `b` is one this AGENT may touch under its board
-/// policy — `allow_all_agents`, or listed on the board — and not archived
-/// (boards.ts agentBoardPolicySql). This is `board_allows_agent`'s question,
+/// policy — `allow_all_agents`, or listed on the board — and not archived.
+/// This is `board_allows_agent`'s question,
 /// as a fragment, for the set-scoping queries that cannot call a per-row
 /// predicate without an N+1. The elevated-assistant bypass stays OUT of it:
 /// that exemption is policy, and the SQL sites it would widen are reach
@@ -84,18 +79,18 @@ pub fn agent_board_policy_sql(model_1: &str) -> String {
     )
 }
 
-/// boards.ts canEdit: the write gate. Owner or editor may change a board;
+/// The write gate. Owner or editor may change a board;
 /// viewer and no-relationship may not.
 pub fn can_edit(role: Option<&str>) -> bool {
     matches!(role, Some("owner") | Some("editor"))
 }
 
-/// The user-path wire shape (boards.ts Board). One struct serves the two
-/// shapes TS writes: the LIST row always carries the requester's role and a
-/// judgeMode (the column is not-null default 'inherit'); the CREATE return
-/// carries role 'owner' and NO judgeMode — `skip_serializing_if` is what
-/// reconciles them, so the key is present in every list row and absent from
-/// every create response, byte-for-byte what the two TS returns emit.
+/// The user-path wire shape. One struct serves the
+/// two shapes the wire emits: the LIST row always carries the requester's
+/// role and a judgeMode (the column is not-null default 'inherit'); the
+/// CREATE return carries role 'owner' and NO judgeMode —
+/// `skip_serializing_if` is what reconciles them, so the key is present in
+/// every list row and absent from every create response.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
@@ -127,12 +122,12 @@ type BoardRow = (
     Option<i64>,
 );
 
-/// boards.ts listBoards — every board the user can see (explicit share or via
+/// Every board the user can see (explicit share or via
 /// a team they belong to), retired boards hidden unless `archived` asks for
 /// exactly those. The role is the COALESCE of a direct member row and the
 /// team-derived one (team owner acts as board owner, any other team member as
-/// editor); under the visibility predicate at least one arm answers, so null
-/// role is the never-in-practice corner TS would also serialize as null.
+/// editor); under the visibility predicate at least one arm answers, so a
+/// null role never happens in practice.
 pub async fn list_boards(
     pg: &PgPool,
     user_id: &str,
@@ -187,7 +182,7 @@ pub async fn list_boards(
         .collect())
 }
 
-/// boards.ts boardInfo — existence + name + ARCHIVAL STATE, in one place.
+/// Existence + name + ARCHIVAL STATE, in one place.
 /// `archived_at` is the load-bearing field and the reason this lives here
 /// rather than in each caller: archival is one fact about a board, and it was
 /// being read (or forgotten) independently by the callers of
@@ -218,7 +213,7 @@ pub async fn board_info(pg: &PgPool, board_id: &str) -> Result<BoardInfo, sqlx::
             archived_at: archived_ms.map(epoch_ms_to_iso),
             exists: true,
         },
-        // No row: the TS `row?.name ? … : boardId` arms all collapse to the
+        // No row: every arm collapses to the
         // id, and exists:false is the caller's real answer.
         None => BoardInfo {
             label: board_id.to_string(),
@@ -229,14 +224,8 @@ pub async fn board_info(pg: &PgPool, board_id: &str) -> Result<BoardInfo, sqlx::
 }
 
 // ── One board pass ───────────────────────────────────────────────────────────
-// TS threads an optional BoardFacts memo (boardInfo + agent policy + status
-// meta, keyed by boardId, one pass per loop) so a caller over many tickets
-// pays one query per BOARD, not per ticket. The memo crosses with the loop
-// callers that need it (the heartbeat's assignedWork, the agent-write
-// predicate in tasks.ts); the DEFAULT TS arm is a fresh memo per call, which
-// is semantically identical to the plain sequential reads these functions do
-// — so the routes crossing now are exact, and the loops get their pass when
-// they cross. Nothing here caches: board archival and agent policy are the
+// Callers over many tickets read these per BOARD rather than per ticket, and
+// nothing here caches: board archival and agent policy are the
 // very facts these predicates enforce, and a stale one is a revoked agent
 // that keeps working.
 
@@ -271,7 +260,7 @@ fn ticket_prefix(name: &str) -> String {
     }
 }
 
-/// boards.ts createBoard — a board (personal, or under a team) and its
+/// Create — a board (personal, or under a team) and its
 /// creator-as-owner, in one transaction. The owner's personal assistant
 /// starts ALLOWED in the SAME transaction: there is no window where
 /// `GET /api/boards` lists the board to that assistant under the owner's
@@ -359,10 +348,9 @@ pub async fn rename_board(pg: &PgPool, board_id: &str, name: &str) -> Result<(),
     Ok(())
 }
 
-/// boards.ts setBoardTeam — move a board between teams (null → personal). The
-/// inner Err is TS's `throw new Error('unknown team')`, which the route
-/// catches and re-spells with the human-typed name; the sqlx error is
-/// everything else.
+/// Move a board between teams (null → personal). The
+/// inner Err ('unknown team') is caught by the route and re-spelled with the
+/// human-typed name; the sqlx error is everything else.
 pub async fn set_board_team(
     pg: &PgPool,
     board_id: &str,
@@ -386,8 +374,8 @@ pub async fn set_board_team(
 }
 
 pub async fn archive_board(pg: &PgPool, board_id: &str, archived: bool) -> Result<(), sqlx::Error> {
-    // TS interpolates `archived ? sql`now()` : null` into the same statement;
-    // two spellings here keep the parameter set identical.
+    // Two statements rather than an interpolated now()/null —
+    // the parameter set stays identical.
     let stmt = if archived {
         "update boards set archived_at = now(), updated_at = now() where id = $1::uuid"
     } else {
@@ -436,15 +424,15 @@ pub async fn list_members(pg: &PgPool, board_id: &str) -> Result<Vec<BoardMember
         .collect())
 }
 
-/// shareBoard's two-way answer: the row landed, or the human-readable
-/// refusal TS hands back as `{ok:false, error}` (never a throw — a teammate
+/// The two-way answer: the row landed, or the human-readable
+/// refusal the wire carries as `{ok:false, error}` (never a throw — a teammate
 /// who has not signed in yet is an expected answer, not a failure).
 pub enum ShareOutcome {
     Shared,
     Refused(&'static str),
 }
 
-/// boards.ts shareBoard — share a board with a teammate by email; they must
+/// Share a board with a teammate by email; they must
 /// have signed in before. Upsert: re-sharing an existing member is a role
 /// change, not a conflict.
 pub async fn share_board(
@@ -488,12 +476,12 @@ pub async fn unshare_board(pg: &PgPool, board_id: &str, user_id: &str) -> Result
     Ok(())
 }
 
-/// boards.ts joinEveryoneToBoard — the ensure-time half of org-wide access.
+/// The ensure-time half of org-wide access.
 /// ACCESS IS MATERIALIZED, NOT DERIVED: a dozen read paths speak
 /// `board_members` and nothing else, so the grant is rows — everyone who
 /// exists is joined as an editor when the board is ensured, everyone who
-/// arrives later at sign-in (join_org_wide_boards, already crossed in
-/// users.rs). One currency, zero special cases. Editor deliberately: anyone
+/// arrives later at sign-in (join_org_wide_boards, users.rs).
+/// One currency, zero special cases. Editor deliberately: anyone
 /// can open a ticket and move it along, while owner powers stay with the
 /// owner the board was created under.
 pub async fn join_everyone_to_board(pg: &PgPool, board_id: &str) -> Result<(), sqlx::Error> {
@@ -510,7 +498,7 @@ pub async fn join_everyone_to_board(pg: &PgPool, board_id: &str) -> Result<(), s
 
 // ── Board-scoped agents ──────────────────────────────────────────────────────
 
-/// A board's agent policy (boards.ts BoardAgentConfig): the allow-all flag
+/// A board's agent policy: the allow-all flag
 /// plus the explicit allow-list. Not a wire shape — every consumer reads the
 /// two fields.
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -536,8 +524,7 @@ pub async fn get_board_agent_config(
     .fetch_all(pg)
     .await?;
     Ok(BoardAgentConfig {
-        // No board row (or a null column) is allow-NOBODY, the same default
-        // TS's `!!undefined` lands on.
+        // No board row (or a null column) is allow-NOBODY.
         allow_all: flag.and_then(|(v,)| v).unwrap_or(false),
         models: rows.into_iter().map(|(m,)| m).collect(),
     })
@@ -559,7 +546,7 @@ pub async fn set_board_agent_config(
         .bind(board_id)
         .execute(&mut *tx)
         .await?;
-    // TS inserts the allow-list row by row inside the same transaction; only
+    // The allow-list is inserted row by row inside the same transaction; only
     // a non-allow-all board carries one.
     if !allow_all {
         for m in models {
@@ -577,7 +564,7 @@ pub async fn set_board_agent_config(
     Ok(())
 }
 
-/// boards.ts boardAllowsAgent — whether an agent may be assigned on a board.
+/// Whether an agent may be assigned on a board.
 /// Restrictive by default: a board allows an agent only if allow-all is on OR
 /// the agent is explicitly listed. An admin-elevated personal assistant
 /// passes everywhere (org-wide access) — but only when the CALLER proved it
@@ -607,7 +594,7 @@ pub async fn board_allows_agent(
     is_elevated_assistant(pg, subject).await
 }
 
-/// boards.ts invalidAssignee — validate a mixed assignee list: `user:<uuid>`
+/// Validate a mixed assignee list: `user:<uuid>`
 /// entries must be board members; bare strings are agents and must pass the
 /// board's agent policy. The first human-readable problem, or None when all
 /// pass. Bare strings become Model subjects on purpose: this is the one
@@ -632,7 +619,7 @@ pub async fn invalid_assignee(
     Ok(None)
 }
 
-/// The agent-facing wire shape (TS `Omit<Board, 'role'>`): no membership
+/// The agent-facing wire shape: no membership
 /// role — and no judgeMode, which the two agent listings never select.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -674,7 +661,7 @@ fn agent_board_of(
     }
 }
 
-/// boards.ts listAllBoards — every live board, org-wide, for the
+/// Every live board, org-wide, for the
 /// elevated-assistant listing. No role.
 pub async fn list_all_boards(pg: &PgPool) -> Result<Vec<AgentBoard>, sqlx::Error> {
     let rows: Vec<AgentBoardRow> = sqlx::query_as(
@@ -690,7 +677,7 @@ pub async fn list_all_boards(pg: &PgPool) -> Result<Vec<AgentBoard>, sqlx::Error
     Ok(rows.into_iter().map(agent_board_of).collect())
 }
 
-/// boards.ts listBoardsForAgent — boards an agent may work on (allow-all
+/// Boards an agent may work on (allow-all
 /// boards + boards listing it), via the policy fragment so the listing and
 /// the gate can never disagree about which boards those are.
 pub async fn list_boards_for_agent(
@@ -731,7 +718,7 @@ mod tests {
 
     #[test]
     fn rank_orders_owner_over_editor_over_viewer() {
-        // The RANK map TS sorts by (descending, stable — first wins): a direct
+        // The RANK map (descending, stable — first wins): a direct
         // viewer plus team-editor answers editor, a direct viewer plus
         // team-owner answers owner.
         let mut roles = ["viewer", "editor"];
@@ -793,8 +780,8 @@ mod tests {
         let v = serde_json::to_value(&list_shape).unwrap();
         assert_eq!(v["judgeMode"], serde_json::json!("inherit"));
         assert_eq!(v["role"], serde_json::json!("owner"));
-        // teamName/archivedAt are PRESENT nulls on both shapes — TS writes
-        // the keys, so the SPA's identity checks see them.
+        // teamName/archivedAt are PRESENT nulls on both shapes —
+        // the SPA's identity checks see the keys.
         assert!(v.as_object().unwrap().contains_key("teamName"));
         assert!(v.as_object().unwrap().contains_key("archivedAt"));
 

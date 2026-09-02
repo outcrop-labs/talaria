@@ -3,7 +3,6 @@
 // agents — ONE new version per agent with every stripped tier (auditable),
 // one re-render, one restart wave for running managed containers. An agent's
 // MAIN model is never cascaded away: that requires an explicit reassignment.
-// Port of ui/src/server/fleet-cascade.ts.
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
@@ -45,7 +44,7 @@ fn hits(t: Option<&Value>, endpoint: &str, models: Option<&[String]>) -> bool {
 
 /// Every ENABLED agent whose CURRENT version targets endpoint (+models).
 /// Retired (disabled) agents don't run and don't render — their historical
-/// versions must not block deleting an endpoint (modelUsage).
+/// versions must not block deleting an endpoint (model_usage).
 pub async fn model_usage(
     pg: &PgPool,
     endpoint: &str,
@@ -106,8 +105,7 @@ pub struct CascadeResult {
 
 /// Strip alias/fallback targets of endpoint(+models) from every affected agent
 /// (one new version each), then re-render once and restart running managed
-/// agents. Callers must have verified no agent uses the targets as MAIN
-/// (cascadeRemoval).
+/// agents. Callers must have verified no agent uses the targets as MAIN.
 pub async fn cascade_removal(
     pg: &PgPool,
     sb: &SecretBox,

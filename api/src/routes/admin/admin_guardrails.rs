@@ -1,8 +1,7 @@
-// /api/admin/guardrails — port of ui/src/routes/api/admin.guardrails.ts.
-// Confab guardrail config + observability (admin). GET → config + stats +
-// recent findings. PUT → update config. The config is stored RAW (the
-// five-key zod shape) and the GET is the spread read: defaults under stored,
-// numbers passing through as written — never re-serialized from an f64.
+// /api/admin/guardrails. Confab guardrail config + observability (admin).
+// GET → config + stats + recent findings. PUT → update config. The config
+// is stored RAW (the five-key shape) and the GET reads defaults under
+// stored: numbers pass through as written — never re-serialized from an f64.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -21,10 +20,9 @@ use serde_json::Value;
 
 const CONFIG_KEY: &str = "guardrails_config";
 
-/// getGuardConfig's `{...DEFAULT_CONFIG, ...stored}` for the WIRE: the five
-/// schema keys in DEFAULT_CONFIG's order, each falling to its default when
-/// the stored object lacks it. Values are passed through verbatim (a stored
-/// `minConfidence: 1` reads back as 1, not 1.0).
+/// Defaults-under-stored for the WIRE: the five schema keys in fixed order,
+/// each falling to its default when the stored object lacks it. Values pass
+/// through verbatim (a stored `minConfidence: 1` reads back as 1, not 1.0).
 async fn config_for_wire(pg: &sqlx::PgPool) -> Value {
     let stored = get_setting(pg, CONFIG_KEY, serde_json::json!({})).await;
     let mut out = serde_json::Map::new();
@@ -65,8 +63,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     let config = config_for_wire(&state.pg).await;
     let stats = crate::gateway::guard::guard_stats(&state.pg).await;
-    // listFindings throws to the 500 boundary in TS; a read failure is a
-    // failure, not an empty list.
+    // A findings read failure is a failure, not an empty list.
     let findings = match crate::gateway::guard::list_guard_findings(&state.pg, 50).await {
         Ok(f) => f,
         Err(e) => {
@@ -98,12 +95,12 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Keys in schema order, every rejection in zod's own words:
-    //   mode: z.enum(['off','observe','annotate','strict'])
-    //   checks: z.record(z.string(), z.boolean())
-    //   minConfidence: z.number().min(0).max(1)
-    //   policedHosts: z.array(z.string().max(200)).max(100)
-    //   coach: z.boolean().default(false)
+    // Keys in schema order, every rejection in the schema's own words:
+    //   mode — enum off|observe|annotate|strict
+    //   checks — a string→boolean record
+    //   minConfidence — number, 0..1
+    //   policedHosts — strings (max 200 each), at most 100
+    //   coach — boolean, default false
     let mode = match enum_member(obj, "mode", &["off", "observe", "annotate", "strict"]) {
         Ok(m) => m,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -146,7 +143,7 @@ pub async fn put(
         },
     };
     let coach = match obj.get("coach") {
-        None => false, // .default(false)
+        None => false, // the default
         Some(_) => match boolean_member(obj, "coach") {
             Ok(b) => b,
             Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

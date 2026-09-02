@@ -1,8 +1,7 @@
-// /api/me's data layer — the users.ts pref accessors (preferred model,
-// preferred effort, timezone) plus model-access.ts's member allowlist, the
+// /api/me's data layer — the pref accessors (preferred model,
+// preferred effort, timezone) plus the member model allowlist, the
 // two pieces a profile PUT needs beyond its own row. Each is a plain column
-// read/write; the policy (who may set what) lives in the route, exactly where
-// me.ts keeps it.
+// read/write; the policy (who may set what) lives in the route.
 
 use crate::gateway::models::{EndpointModels, GatewayModel, catalog_of};
 use crate::gateway::settings::get_setting;
@@ -11,7 +10,7 @@ use sqlx::PgPool;
 const ALLOWLIST_KEY: &str = "member_model_allowlist";
 
 /// The three columns GET answers with, in wire order. A missing row is the
-/// all-null answer (TS: `rows[0]?.m ?? null` and friends).
+/// all-null answer.
 pub type PrefRow = (Option<String>, Option<String>, Option<String>);
 
 pub async fn get_prefs(pg: &PgPool, user_id: &str) -> Result<PrefRow, sqlx::Error> {
@@ -68,7 +67,7 @@ pub async fn set_timezone(pg: &PgPool, user_id: &str, tz: Option<&str>) -> Resul
     Ok(())
 }
 
-/// The endpoint rows the catalog reads, in the TS query's order (local first,
+/// The endpoint rows the catalog reads, in query order (local first,
 /// then name asc — first-seen order is what a pooled bare id's endpoint list
 /// preserves).
 async fn endpoint_models(pg: &PgPool) -> Result<Vec<EndpointModels>, sqlx::Error> {
@@ -88,13 +87,12 @@ async fn endpoint_models(pg: &PgPool) -> Result<Vec<EndpointModels>, sqlx::Error
         .collect())
 }
 
-/// gatewayModels() — the every-endpoint catalog, one fetch shared by the
-/// member model gate here as it is in TS.
+/// The every-endpoint catalog, one fetch shared by the member model gate.
 pub async fn gateway_models(pg: &PgPool) -> Result<Vec<GatewayModel>, sqlx::Error> {
     Ok(catalog_of(&endpoint_models(pg).await?))
 }
 
-/// The stored member allowlist (memberModelAllowlist). Non-string entries in
+/// The stored member allowlist. Non-string entries in
 /// a hand-edited row can never equal a model id, so they are dropped here
 /// rather than carried.
 pub async fn member_model_allowlist(pg: &PgPool) -> Vec<String> {
@@ -109,7 +107,7 @@ pub async fn member_model_allowlist(pg: &PgPool) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// May this role use this model id (modelAllowedFor)? Admins and an empty
+/// May this role use this model id? Admins and an empty
 /// allowlist are open; a bare id must be listed; an endpoint-qualified id is
 /// judged by the bare model it pins.
 pub fn model_allowed_for(
@@ -134,16 +132,13 @@ pub fn model_allowed_for(
     false
 }
 
-/// Can this runtime resolve `tz` as a zone (isValidTimeZone)? TS asks
-/// Intl.DateTimeFormat to RESOLVE the name — never a regex — and the answer
-/// is what ECMA-402 accepts. node's V8 and bun's JSC ICUs were probed on the
-/// full table pinned in the test below and agreed on every spelling:
+/// Can this runtime resolve `tz` as a zone? By LOOKUP, never a regex:
 ///
 /// - an IANA name, CASE-INSENSITIVE — "utc", "AMERICA/NEW_YORK", and
-///   "Etc/gmt+5" all resolve, because the runtime canonicalizes while it
-///   looks up. chrono-tz's TZ_VARIANTS is the same tzdb (zones and backward
+///   "Etc/gmt+5" all resolve, because the lookup canonicalizes while it
+///   runs. chrono-tz's TZ_VARIANTS is the full tzdb (zones and backward
 ///   links both: Zulu, US/Pacific, ROC, W-SU, EST5EDT all there), minus the
-///   three names ICU refuses outright (Factory, localtime, posixrules) —
+///   three names nothing resolves anyway (Factory, localtime, posixrules) —
 ///   none of which chrono-tz carries either, so there is no denylist.
 /// - an offset form: `±HH`, `±HH:MM`, or `±HHMM` — two-digit hour ≤ 23 and,
 ///   when present, two-digit minute ≤ 59.
@@ -245,7 +240,7 @@ mod tests {
         // models, never endpoints.
         assert!(model_allowed_for("member", "claude-b/m", &one, &cat));
         // A qualified id no endpoint serves pins nothing the catalog knows —
-        // TS's `entry?.qualified` on undefined is the same refusal.
+        // refused.
         assert!(!model_allowed_for("member", "openrouter/m", &one, &cat));
         // Allowing the qualified spelling does NOT allow the bare one.
         let q = vec!["claude-a/m".to_string()];
@@ -255,9 +250,8 @@ mod tests {
         assert!(!model_allowed_for("member", "openrouter/o-big", &one, &cat));
     }
 
-    /// Every row probed against node 26's Intl AND bun's, where both
-    /// runtimes agreed — this table IS the contract. The lowercase and
-    /// offset rows are the ones a tzdb-exact port would get wrong.
+    /// This accepted/refused table IS the contract. The lowercase and
+    /// offset rows are the ones a naive tzdb lookup would get wrong.
     #[test]
     fn time_zone_table_matches_the_intl_probe() {
         let accepted = [

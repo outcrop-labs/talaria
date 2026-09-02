@@ -1,9 +1,8 @@
-// Google LOGIN — port of the policy half (ui/src/server/auth/google.ts) and
-// the OAuth mechanics it leans on (ui/src/server/google/oauth.ts, the leaf
-// both flows build on). Tokens hand-rolled over TLS, no SDK — the profile
-// comes from Google's userinfo endpoint, never a locally-verified JWT. The
-// CONNECT flow (per-user/org workspace tokens, batch 5) shares the endpoints
-// and exchange shape defined here.
+// Google LOGIN + the OAuth mechanics it leans on — the leaf both flows build
+// on. Tokens hand-rolled over TLS, no SDK — the profile comes from Google's
+// userinfo endpoint, never a locally-verified JWT. The CONNECT flow
+// (per-user/org workspace tokens) shares the endpoints and exchange shape
+// defined here.
 //
 // The endpoints, in full:
 pub const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -24,10 +23,10 @@ use std::collections::HashMap;
 /// The login identity's provider tag.
 pub const PROVIDER: &str = "google";
 
-/// External origin for redirect URIs (oauth.ts resolveOrigin):
-/// AUTH_PUBLIC_URL, else the forwarded proto/host a proxy stated, else the
-/// request's own scheme/host. The coexistence proxy forwards the caller's
-/// origin, so proxied and direct requests derive the same URI.
+/// External origin for redirect URIs: AUTH_PUBLIC_URL, else the forwarded
+/// proto/host a proxy stated, else the request's own scheme/host. The app
+/// host forwards the caller's origin headers, so forwarded and direct
+/// requests derive the same URI.
 pub fn resolve_origin(cfg_public_url: Option<&str>, headers: &HeaderMap, uri: &Uri) -> String {
     if let Some(configured) = cfg_public_url.filter(|s| !s.is_empty()) {
         return configured.to_string();
@@ -59,7 +58,7 @@ pub fn resolve_origin(cfg_public_url: Option<&str>, headers: &HeaderMap, uri: &U
     format!("{proto}://{host}")
 }
 
-/// The login flow's redirect URI (auth/google.ts googleRedirectUri).
+/// The login flow's redirect URI.
 pub fn google_redirect_uri(cfg_public_url: Option<&str>, headers: &HeaderMap, uri: &Uri) -> String {
     format!(
         "{}/api/auth/google/callback",
@@ -67,10 +66,9 @@ pub fn google_redirect_uri(cfg_public_url: Option<&str>, headers: &HeaderMap, ur
     )
 }
 
-/// application/x-www-form-urlencoded serialization with URLSearchParams's
-/// exact byte behavior (WHATWG url spec: space → '+', unreserved passthrough)
-/// — what TS's `new URLSearchParams(...).toString()` produces, parameter
-/// order included, so the consent URL matches byte-for-byte.
+/// application/x-www-form-urlencoded serialization (WHATWG url spec: space →
+/// '+', unreserved passthrough) — append order is preserved, which pins the
+/// consent URLs byte-for-byte.
 fn form_serialize(pairs: &[(&str, &str)]) -> String {
     let mut out = url::form_urlencoded::Serializer::new(String::new());
     for (k, v) in pairs {
@@ -79,7 +77,7 @@ fn form_serialize(pairs: &[(&str, &str)]) -> String {
     out.finish()
 }
 
-/// The consent URL for the login flow (auth/google.ts googleAuthUrl):
+/// The consent URL for the login flow:
 /// access_type=online (proves who you are; nothing is stored), account
 /// chooser forced, the Workspace hd restriction as a HINT (the guarantee is
 /// re-checked on the resolved identity at exchange time).
@@ -99,8 +97,8 @@ pub fn google_auth_url(cfg: &GoogleClient, redirect_uri: &str, state: &str) -> S
     format!("{AUTH_ENDPOINT}?{}", form_serialize(&pairs))
 }
 
-/// The userinfo shape the login flow reads (oauth.ts GoogleUserInfo — optionals
-/// exactly as Google may omit them).
+/// The userinfo shape the login flow reads — optionals exactly as Google may
+/// omit them.
 struct GoogleUserInfo {
     sub: String,
     email: Option<String>,
@@ -110,10 +108,9 @@ struct GoogleUserInfo {
     hd: Option<String>,
 }
 
-/// Exchange the auth code for tokens + the Google identity (oauth.ts
-/// exchangeGoogleTokens, then auth/google.ts's shaping). Errors are strings —
-/// the callback maps every one to the same `exchange_failed` bounce, so the
-/// only place the detail is allowed to live is the log.
+/// Exchange the auth code for tokens + the Google identity. Errors are
+/// strings — the callback maps every one to the same `exchange_failed`
+/// bounce, so the only place the detail is allowed to live is the log.
 pub async fn exchange_google_code(
     pg: &PgPool,
     sb: &SecretBox,
@@ -220,10 +217,9 @@ pub async fn exchange_google_code(
     })
 }
 
-/// The domain of an email address, lowercased (aliasing.ts emailDomainOf):
-/// null when there is no usable one (no @, nothing before it, nothing after
-/// it, null input). lastIndexOf — a plus-addressed org account gates on its
-/// REAL domain.
+/// The domain of an email address, lowercased — None when there is no usable
+/// one (no @, nothing before it, nothing after it, null input). The LAST @
+/// wins: a plus-addressed org account gates on its REAL domain.
 pub fn email_domain_of(email: Option<&str>) -> Option<String> {
     let email = email?;
     let at = email.rfind('@')?;
@@ -250,8 +246,8 @@ pub fn org_login_allowed(org_email: Option<&str>, login_email: Option<&str>) -> 
 }
 
 /// The connected org account's email, or None when there is no live (refresh-
-/// token-carrying) connection — org-connection.ts getOrgEmail, the read the
-/// login gate needs. The full connection status (targets, scopes) is batch 5.
+/// token-carrying) connection — the read the login gate needs. The full
+/// connection status (targets, scopes) lives in org.rs.
 pub async fn org_login_email(pg: &PgPool) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(Option<String>, Option<String>)> =
         sqlx::query_as("select email, refresh_token_enc from google_org_connection where id = 1")
@@ -264,8 +260,7 @@ pub async fn org_login_email(pg: &PgPool) -> Result<Option<String>, sqlx::Error>
     })
 }
 
-/// Parse a query string with URLSearchParams's semantics (percent-decode,
-/// '+' → space). Later duplicates win, like the TS `.get()`.
+/// Parse a query string (percent-decode, '+' → space). Later duplicates win.
 pub fn query_pairs(query: Option<&str>) -> HashMap<String, String> {
     let mut out = HashMap::new();
     if let Some(q) = query {
@@ -283,7 +278,7 @@ fn truncate(s: &str) -> &str {
     }
 }
 
-// ── The CONNECT flow (oauth.ts) — durable workspace tokens ───────────────────
+// ── The CONNECT flow — durable workspace tokens ──────────────────────────────
 //
 // The login flow above proves who you are and stores nothing; the connect
 // flow asks for offline access and seals what comes back. Separate redirect
@@ -330,8 +325,7 @@ pub const ORG_CONNECT_SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/gmail.send",
 ];
 
-/// The connect flow's redirect URIs (oauth.ts googleConnectRedirectUri /
-/// googleOrgConnectRedirectUri).
+/// The connect flow's redirect URIs.
 pub fn google_connect_redirect_uri(
     cfg_public_url: Option<&str>,
     headers: &HeaderMap,
@@ -356,16 +350,14 @@ pub fn google_org_connect_redirect_uri(
 
 /// Whether the Google integration can run at all — an OAuth client exists,
 /// from the Admin UI record or the env fallback (same client as login).
-/// oauth.ts googleIntegrationEnabled.
 pub async fn google_integration_enabled(pg: &PgPool, sb: &SecretBox) -> bool {
     resolve_google_client(pg, sb).await.is_some()
 }
 
-/// The consent URL for a connect flow (oauth.ts googleConnectUrl): offline
-/// access, forced consent (a refresh token even if the user consented
-/// before), granted scopes carried forward, `scopes` defaulting to the
-/// personal set. Parameter order is the TS literal's, `hd` appended last by
-/// `set()` — byte-identical to URLSearchParams.toString().
+/// The consent URL for a connect flow: offline access, forced consent (a
+/// refresh token even if the user consented before), granted scopes carried
+/// forward, `scopes` defaulting to the personal set. Parameter order pinned;
+/// `hd` is appended last, only when set.
 pub fn google_connect_url(
     cfg: &GoogleClient,
     redirect_uri: &str,
@@ -390,8 +382,8 @@ pub fn google_connect_url(
     format!("{AUTH_ENDPOINT}?{}", form_serialize(&refs))
 }
 
-/// What a connect exchange handed back (oauth.ts ExchangedTokens + the two
-/// userinfo fields the savers read).
+/// What a connect exchange handed back — the tokens plus the two userinfo
+/// fields the savers read.
 pub struct ConnectExchange {
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
@@ -402,9 +394,9 @@ pub struct ConnectExchange {
 }
 
 /// Exchange an auth code for tokens + the Google identity — the fetch BOTH
-/// flows run (oauth.ts exchangeGoogleTokens). Errors are strings; the
-/// callback maps every one to the same `exchange_failed` bounce, so the only
-/// place the detail is allowed to live is the log.
+/// flows run. Errors are strings; the callback maps every one to the same
+/// `exchange_failed` bounce, so the only place the detail is allowed to live
+/// is the log.
 pub async fn exchange_google_tokens(
     pg: &PgPool,
     sb: &SecretBox,
@@ -493,9 +485,9 @@ pub async fn exchange_google_tokens(
     })
 }
 
-/// encodeURIComponent — a path-segment escaper for the ids that ride Google's
-/// URLs (a Gmail message id, an email-shaped calendar id). JS leaves the
-/// unreserved set alone and percent-encodes everything else.
+/// A path-segment escaper for the ids that ride Google's URLs (a Gmail
+/// message id, an email-shaped calendar id): the unreserved set stays
+/// literal, everything else percent-encodes.
 pub fn encode_uri_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
@@ -513,10 +505,10 @@ pub fn encode_uri_component(s: &str) -> String {
     out
 }
 
-// ── The connect flow's savers + shared callback body (oauth.ts) ───────────────
+// ── The connect flow's savers + shared callback body ──────────────────────────
 
-/// Exchange the connect code and store the connection (encrypted) for a user —
-/// completeGoogleConnect. The returned email is the callback's to ignore.
+/// Exchange the connect code and store the connection (encrypted) for a user.
+/// The returned email is the callback's to ignore.
 pub async fn complete_google_connect(
     pg: &PgPool,
     sb: &SecretBox,
@@ -550,9 +542,9 @@ pub async fn complete_google_connect(
     Ok(ex.email)
 }
 
-/// Exchange the connect code and store it as the SHARED org connection —
-/// completeGoogleOrgConnect. `connected_by` is the admin who tied the org's
-/// containers to this Google account.
+/// Exchange the connect code and store it as the SHARED org connection.
+/// `connected_by` is the admin who tied the org's containers to this Google
+/// account.
 pub async fn complete_google_org_connect(
     pg: &PgPool,
     sb: &SecretBox,
@@ -584,9 +576,9 @@ pub async fn complete_google_org_connect(
     Ok(ex.email)
 }
 
-/// Which connection a callback stores — handleConnectCallback's two flavors
-/// differ only in what a stored connection MEANS (whose Drive/calendar/mail)
-/// and where the human lands; the org flavor adds the admin gate.
+/// Which connection a callback stores — the two flavors differ only in what
+/// a stored connection MEANS (whose Drive/calendar/mail) and where the human
+/// lands; the org flavor adds the admin gate.
 #[derive(Clone, Copy)]
 pub enum ConnectFlavor {
     /// The tokens are the signed-in user's own.
@@ -595,11 +587,11 @@ pub enum ConnectFlavor {
     Org,
 }
 
-/// The connect flows' shared callback body (oauth.ts handleConnectCallback):
-/// gate on the integration, require a session (the org flavor adds admin),
-/// verify the state cookie, exchange + store, and bounce back with a status
-/// flag the landing page's flash reads. Every bounce clears the one-shot state
-/// cookie — except the /login bounce, which never had one to clear.
+/// The connect flows' shared callback body: gate on the integration, require
+/// a session (the org flavor adds admin), verify the state cookie, exchange +
+/// store, and bounce back with a status flag the landing page's flash reads.
+/// Every bounce clears the one-shot state cookie — except the /login bounce,
+/// which never had one to clear.
 pub async fn handle_connect_callback(
     state: &crate::state::AppState,
     headers: &HeaderMap,
@@ -637,7 +629,8 @@ pub async fn handle_connect_callback(
         }
     };
     let Some(user) = user else {
-        // The bare login bounce — no state-cookie clear (TS's has none either).
+        // The bare login bounce — no state cookie was ever set, so there is
+        // nothing to clear.
         return (
             axum::http::StatusCode::FOUND,
             [(header::LOCATION, "/login")],
@@ -654,7 +647,7 @@ pub async fn handle_connect_callback(
     let cookie_state = crate::session::parse_cookies(headers)
         .and_then(|c| c.get(crate::session::STATE_COOKIE).cloned());
 
-    // TS truthiness throughout: an empty error param is no error, an empty
+    // Truthiness throughout: an empty error param is no error, an empty
     // code/state/cookie is no code/state/cookie.
     if qp.get("error").is_some_and(|e| !e.is_empty()) {
         return back("denied");
@@ -709,7 +702,7 @@ pub async fn handle_connect_callback(
     }
 }
 
-/// Date.now() — the one clock the connect flows read.
+/// The wall clock — the one clock the connect flows read.
 fn wall_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -723,8 +716,7 @@ mod tests {
 
     #[test]
     fn consent_url_matches_the_ts_serialization() {
-        // Order and encoding exactly as URLSearchParams.toString() in
-        // auth/google.ts: spaces as '+', hd appended only when set.
+        // Order and encoding pinned: spaces as '+', hd appended only when set.
         let mut cfg = GoogleClient {
             client_id: "cid-1".into(),
             client_secret: "sec".into(),

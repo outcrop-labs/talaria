@@ -1,7 +1,7 @@
-// /api/admin/instance — port of ui/src/routes/api/admin.instance.ts. The
-// instance's hosting domain. GET → current config. PUT { domain } → set
-// (unverified until the round trip passes); { domain: null } clears.
-// POST { verify: true } → run the self-fetch (the action). Admins only.
+// /api/admin/instance. The instance's hosting domain. GET → current config.
+// PUT { domain } → set (unverified until the round trip passes); { domain:
+// null } clears. POST { verify: true } → run the self-fetch (the action).
+// Admins only.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, literal_true_member, nullable_string_member, parse};
@@ -21,8 +21,8 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     if let Err(gate) = require_admin(&state, &headers).await {
         return gate;
     }
-    // The raw stored config rides the wire (getInstanceDomain is a
-    // passthrough) — null when unset, {domain, verified, verifiedAt} as stored.
+    // The raw stored config rides the wire — null when unset,
+    // {domain, verified, verifiedAt} as stored.
     Json(json!({ "instance": get_instance_domain(&state.pg).await })).into_response()
 }
 
@@ -62,8 +62,7 @@ pub async fn put(
             .await;
             Json(json!({ "instance": instance })).into_response()
         }
-        // The one catch in the TS route: the normalization refusal is its
-        // own 400 sentence, verbatim.
+        // The normalization refusal is its own 400 sentence, verbatim.
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
     }
 }

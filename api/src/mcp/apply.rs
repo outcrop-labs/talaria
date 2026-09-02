@@ -1,5 +1,5 @@
-// Applying MCP registry changes to RUNNING agents — port of
-// ui/src/server/mcp-apply.ts. A config re-render isn't enough: Hermes
+// Applying MCP registry changes to RUNNING agents. A config re-render isn't
+// enough: Hermes
 // establishes its MCP connections at process start, so a newly granted server
 // never appears inside a live container. The fix is the fleet's blue/green
 // roll — the current container keeps serving until its replacement is
@@ -15,8 +15,8 @@ use crate::audit::{AuditEntry, log_audit};
 use crate::fleet::reconcile::roll_agent;
 use crate::secretbox::SecretBox;
 
-/// The process-local roll queue, exactly TS's module state: a deduped
-/// department list plus a running flag the pump clears when it drains.
+/// The process-local roll queue: a deduped department list plus a running
+/// flag the pump clears when it drains.
 static QUEUE: LazyLock<Mutex<(Vec<String>, bool)>> =
     LazyLock::new(|| Mutex::new((Vec::new(), false)));
 

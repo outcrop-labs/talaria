@@ -1,7 +1,7 @@
-// GET /api/auth/providers — port of ui/src/routes/api/auth/providers.ts. The
-// login screen asks one question: what doors exist on this instance? Answered
-// live on every call, so flipping a toggle or creating the first password
-// account changes the screen without a restart:
+// GET /api/auth/providers. The login screen asks one question: what doors
+// exist on this instance? Answered live on every call, so flipping a toggle
+// or creating the first password account changes the screen without a
+// restart:
 //   • google — the Admin UI login toggle (or the AUTH_GOOGLE_ENABLED pin) AND
 //     a resolvable client (Admin UI record or env);
 //   • password — at least one DB-backed account exists (Admin → People);
@@ -64,10 +64,10 @@ pub async fn get(State(state): State<AppState>) -> Response {
             kind: "password",
         });
     }
-    // Surfaced so the login screen can warn instead of silently failing. TS
-    // computes it from env presence; here the process refuses to boot without
-    // both, so the answer is always yes — an unreachable store fails loudly
-    // above instead of rendering a login screen that cannot work.
+    // Surfaced so the login screen can warn instead of silently failing. The
+    // process refuses to boot without both, so the answer is always yes — an
+    // unreachable store fails loudly above instead of rendering a login
+    // screen that cannot work.
     Json(ProvidersBody {
         providers,
         claimable,

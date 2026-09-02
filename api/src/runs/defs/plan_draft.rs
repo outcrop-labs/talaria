@@ -1,6 +1,5 @@
 // THE PLAN-DRAFT RUN — "draft tickets from this conversation" as durable
-// work, on the same runtime research and the workbench already run on.
-// Port of ui/src/server/runs/defs/plan-draft.ts.
+// work, on the same runtime research runs on.
 //
 // WHY A RUN AT ALL, when the old route did this synchronously in one POST: a
 // draft is an agent reading a conversation for tens of seconds, and the human
@@ -33,7 +32,7 @@ use crate::state::AppState;
 pub const PLAN_DRAFT_KIND: &str = "plan-draft";
 
 /// Everything the driver hands the step, camelCase as the row's input column
-/// holds it (plan-draft.ts PlanDraftInput).
+/// holds it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanDraftInput {
@@ -68,9 +67,9 @@ pub struct StoredProposal {
 }
 
 /// TicketProposal's arrays are required by type, but this is model output
-/// arriving as JSON — `to_proposals` already answers a missing array with the
-/// empty one (the same `??` the synchronous route defended with), so the
-/// normalize left to do is the one field the reviewed shape adds.
+/// arriving as JSON — `to_proposals` already answers a missing array with
+/// the empty one, so the normalize left to do is the one field the reviewed
+/// shape adds.
 fn normalize(p: TicketProposal) -> StoredProposal {
     StoredProposal {
         title: p.title,
@@ -179,8 +178,8 @@ async fn plan_draft_step(ctx: RunStepContext, deps: &PlanDraftDeps) -> Result<St
     // reply before persisting it — would still bill twice on every real
     // failure while saving only the rare reclaim.
     let out = (deps.draft_tickets)(&input).await?;
-    // `raw` is for exactly one distinction, the same one the synchronous
-    // route made: the agent ANSWERED but not in tickets, vs nothing to plan.
+    // `raw` is for exactly one distinction: the agent ANSWERED but not in
+    // tickets, vs nothing to plan.
     let note = if out.proposals.is_empty() {
         Some(if out.raw.is_empty() {
             "nothing to plan yet"
@@ -198,21 +197,20 @@ async fn plan_draft_step(ctx: RunStepContext, deps: &PlanDraftDeps) -> Result<St
     })
 }
 
-/// The real step deps, armed with the scheduler handover: the Rust driver
-/// does not exist until the flip arms it, so the deps sit empty until the
-/// boot wiring (which owns the AppState) installs them. An unarmed step is
-/// the loud refusal below — reached only by a driver armed before its deps,
-/// which is exactly what the sentence says.
+/// The real step deps. They need the AppState, which the boot wiring owns, so
+/// they are installed separately from registration; an unarmed step is the
+/// loud refusal below — reached only by a driver armed before its deps,
+/// which is a wiring bug.
 static ARMED_DEPS: OnceLock<PlanDraftDeps> = OnceLock::new();
 
 pub fn arm_plan_draft_step(deps: PlanDraftDeps) {
     let _ = ARMED_DEPS.set(deps);
 }
 
-/// The registered definition, exactly once per process — TS registers at
-/// module load; the Rust equivalent is the first call, which `dispatch` makes
-/// before any enqueue, so the row's kind is always registered before it is
-/// written. The returned `&'static Arc` is the same one the registry holds.
+/// The registered definition, exactly once per process — registered on the
+/// first call, which `dispatch` makes before any enqueue, so the row's kind
+/// is always registered before it is written. The returned `&'static Arc` is
+/// the same one the registry holds.
 pub fn plan_draft_run() -> &'static Arc<RunDefinition> {
     static DEF: OnceLock<Arc<RunDefinition>> = OnceLock::new();
     DEF.get_or_init(|| {
@@ -239,8 +237,8 @@ pub fn plan_draft_run() -> &'static Arc<RunDefinition> {
             // running. The price is the lease TTL: a driver killed mid-draft
             // is reclaimable about five minutes later.
             max_step_ms: 300_000,
-            // TS sets no override — the default three. A draft that killed
-            // three drivers is a bug report, not a fourth try.
+            // No override — the default three. A draft that killed three
+            // drivers is a bug report, not a fourth try.
             max_attempts: crate::runs::define::DEFAULT_MAX_ATTEMPTS,
         })
     })

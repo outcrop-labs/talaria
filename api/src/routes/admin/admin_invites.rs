@@ -1,6 +1,6 @@
-// /api/admin/invites — port of ui/src/routes/api/admin.invites.ts.
-// Invites. GET → recent invites with state. POST { email } → create + send
-// (re-invites re-issue with a fresh token). DELETE { id } → revoke.
+// /api/admin/invites. Invites. GET → recent invites with state. POST
+// { email } → create + send (re-invites re-issue with a fresh token).
+// DELETE { id } → revoke.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member, uuid_member};
@@ -21,9 +21,8 @@ fn invite_actor(user: &SessionUser) -> String {
         .unwrap_or_else(|| "admin".to_string())
 }
 
-/// new URL(request.url).origin — the request's own origin, as the invite
-/// email's fallback base. Behind the SvelteKit hop the ORIGIN header is the
-/// browser's, which is the one both runtimes share.
+/// The request's ORIGIN header — the browser's own origin — as the invite
+/// email's fallback base.
 fn origin_of(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get(axum::http::header::ORIGIN)
@@ -53,8 +52,8 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ email: z.string().max(200) }) — the empty string is legal;
-    // createInvite itself answers it.
+    // email max 200 — the empty string is legal; create_invite itself
+    // answers it.
     let email = match string_member(obj, "email", 0, 200) {
         Ok(e) => e,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -89,7 +88,7 @@ pub async fn post(
                 },
             )
             .await;
-            // emailError is OMITTED until it exists (TS's optional field).
+            // emailError is omitted until it exists.
             let mut out = serde_json::Map::new();
             out.insert("invite".into(), invite);
             out.insert("emailSent".into(), Value::Bool(email_sent));
@@ -116,7 +115,7 @@ pub async fn delete(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // IdBody = z.object({ id: Uuid }) — type message first, then "Invalid UUID".
+    // { id }: type message first, then "Invalid UUID".
     let id = match uuid_member(obj, "id") {
         Ok(i) => i,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

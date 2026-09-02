@@ -4,10 +4,9 @@
 // another flow chose is never clobbered); research runs get a title from
 // their question the moment they start.
 //
-// The sweep (retroactive + ongoing naming, hourly, kicked from the comms
-// read) crossed with the channels family; the interactive
-// `maybeRetitleConversation` walk crossed with the chat family, whose
-// persist tail calls it after every completed reply.
+// Two entry points: the interactive walk (called from the chat family's
+// persist tail after every completed reply) and the hourly sweep (retroactive
+// + ongoing naming, kicked from any comms read).
 //
 // Everything here is fire-and-forget by contract: naming must never block or
 // fail the work it names, so `generate_title` answers None on every failure
@@ -20,12 +19,10 @@ use crate::state::AppState;
 use serde_json::json;
 
 /// One short completion → a clean title, or None when nothing routes / the
-/// model rambles. Callers keep their existing title on None.
-///
-/// Everything this used to do by hand — resolving the model down four
-/// fallback steps, catching the upstream hiccup, taking the first non-empty
-/// line and stripping the quotes off it — is declared in the titler harness
-/// and done by the runner. None still means exactly what it meant.
+/// model rambles. Callers keep their existing title on None. The model
+/// fallback chain, the upstream hiccup, taking the first non-empty line and
+/// stripping the quotes off it — all declared in the titler harness and done
+/// by the runner.
 pub async fn generate_title(state: &AppState, kind: TitleKind, text: &str) -> Option<String> {
     // Ahead of the harness on purpose: an empty transcript has no title in
     // it, and this early-out is what keeps a chat with no user message from
@@ -53,16 +50,15 @@ pub async fn generate_title(state: &AppState, kind: TitleKind, text: &str) -> Op
     run.value.and_then(|v| v.as_str().map(str::to_string))
 }
 
-/// The mechanical default chat.ts stamps at creation — a title still equal to
-/// it means nobody has named the conversation on purpose. (The shape lives in
+/// The mechanical default stamped at creation — a title still equal to it
+/// means nobody has named the conversation on purpose. (The shape lives in
 /// conversations.rs beside the stamp that writes it.)
 use crate::conversations::mechanical_from;
 
-/// Retitle a chat/plan once its first exchange completes
-/// (maybeRetitleConversation). Cheap early-outs: only within the first few
-/// messages, and only while the title is still the truncated first message
-/// (or the bare 'chat' fallback). Fire-and-forget friendly — never fails the
-/// work it names.
+/// Retitle a chat/plan once its first exchange completes. Cheap early-outs:
+/// only within the first few messages, and only while the title is still the
+/// truncated first message (or the bare 'chat' fallback). Fire-and-forget
+/// friendly — never fails the work it names.
 pub async fn maybe_retitle_conversation(state: &AppState, conversation_id: &str) {
     let conv: Option<(Option<String>, String, i64)> = sqlx::query_as(
         "select c.title, c.kind, \
@@ -137,7 +133,7 @@ pub async fn maybe_retitle_conversation(state: &AppState, conversation_id: &str)
 // the mechanical truncation. Batched per pass so one sweep never burns much;
 // failures simply wait for the next pass.
 
-/// How many model calls one sweep pass may spend (SWEEP_LLM_BUDGET).
+/// How many model calls one sweep pass may spend.
 const SWEEP_LLM_BUDGET: u32 = 12;
 
 pub async fn sweep_titles(state: &AppState) -> u32 {
@@ -261,14 +257,15 @@ async fn retitle_conversation_any_length(
     }
 }
 
-/// JS `s.slice(0, n)` on a UTF-16 string — a char-boundary take is the same
-/// for every string without surrogates, and no boundary splits a char here.
+/// Clip to the first n chars. A char-boundary take equals a code-unit take
+/// for any string without surrogates, and none of the text it clips carries
+/// any.
 fn clip_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
 /// Opportunistic scheduling: any comms read may kick a sweep, hourly,
-/// detached. The throttle is process-local, exactly as TS's module boolean is.
+/// detached. The throttle is process-local.
 static LAST_TITLE_SWEEP_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 pub fn maybe_sweep_titles(state: AppState) {

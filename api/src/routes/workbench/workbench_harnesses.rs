@@ -1,12 +1,13 @@
-// /api/workbench/harnesses — port of ui/src/routes/api/workbench.harnesses.ts.
-// The harness registry. GET → merged definitions with sources (any member —
-// grounds the per-agent dropdowns); PUT → register/replace a CUSTOM
-// definition (declarative JSON, no code); DELETE ?slug= removes one.
-// Builtin/app-shipped entries can be shadowed by slug but never deleted.
+// /api/workbench/harnesses. The harness registry. GET → merged definitions
+// with sources (any member — grounds the per-agent dropdowns); PUT →
+// register/replace a CUSTOM definition (declarative JSON, no code);
+// DELETE ?slug= removes one. Builtin/app-shipped entries can be shadowed by
+// slug but never deleted.
 //
-// The stored definition is the zod OUTPUT object: schema-shape key order,
-// absent keys dropped, unknown keys (and unknown nested keys) stripped —
-// probed, not assumed. All messages below are probed zod 4 strings.
+// The stored definition is the schema's OUTPUT object: schema-shape key
+// order, absent keys dropped, unknown keys (and unknown nested keys)
+// stripped. Every message below is the exact zod-dialect sentence the wire
+// answers.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -90,7 +91,7 @@ fn definition_of(obj: &Map<String, Value>) -> Result<Value, String> {
     // BOTH-keys-present object of strings — an object with one good string
     // and one missing/non-string key falls to the union message. Only
     // in-bounds failures of a structurally-matching object surface as the
-    // member's own message (probed).
+    // member's own message.
     let auth = obj.get("auth").ok_or_else(|| "Invalid input".to_string())?;
     match auth {
         Value::String(s) if s == "gateway" => {
@@ -119,7 +120,7 @@ fn definition_of(obj: &Map<String, Value>) -> Result<Value, String> {
         }
         _ => return Err("Invalid input".into()),
     }
-    // env: a record whose KEYS are capped too — an over-long key draws zod's
+    // env: a record whose KEYS are capped too — an over-long key draws the
     // bare "Invalid key in record", not the bound sentence.
     if let Some(env) = obj.get("env") {
         let m = env
@@ -226,7 +227,7 @@ pub async fn delete(State(state): State<AppState>, headers: HeaderMap, uri: Uri)
     if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
         return gate;
     }
-    // searchParams.get('slug') — absent and bare-'?slug' both null.
+    // ?slug= — absent and bare-'?slug' both null.
     let slug = uri
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("slug=")));

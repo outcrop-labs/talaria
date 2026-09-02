@@ -1,6 +1,6 @@
-// Boot configuration, read once. The philosophy is ui/src/server/env.ts's:
-// collect EVERY problem and fail once with the full list, so an operator
-// fixing config one error at a time isn't told about them one at a time.
+// Boot configuration, read once. Collect EVERY problem and fail once with
+// the full list, so an operator fixing config one error at a time isn't
+// told about them one at a time.
 
 use std::net::SocketAddr;
 
@@ -11,8 +11,8 @@ pub struct Config {
     pub database_url: String,
     pub redis_url: String,
     /// The secretbox root material. NEVER logged, never serialized — only its
-    /// provenance is (`root_source`), which is how secretbox.ts's `rootSource`
-    /// reports too.
+    /// provenance is (`root_source` + `name`), which is what the admin
+    /// secrets inventory reports.
     pub secret_root: SecretRoot,
     pub bind: SocketAddr,
 }
@@ -34,13 +34,13 @@ pub enum RootSource {
     /// TALARIA_SECRET_KEY_FILE contents (read + trimmed).
     SecretKeyFile,
     /// AUTH_SECRET doing double duty. Works, but AUTH_SECRET's own docs call
-    /// it safe to rotate — warn, like secretbox.ts does at boot.
+    /// it safe to rotate — warn at boot.
     AuthSecretFallback,
 }
 
 impl SecretRoot {
-    /// DELETE THIS ALLOW with the phase-2 relay (reaches the material via
-    /// AppState::secretbox); only provenance is read until then.
+    /// The root itself — AppState::load builds the SecretBox from it
+    /// (state.rs); the admin surfaces read only provenance.
     #[allow(dead_code)]
     pub fn material(&self) -> &str {
         &self.material
@@ -93,8 +93,8 @@ impl Config {
             problems.push("REDIS_URL must start with redis:// or rediss://".into());
         }
 
-        // Root precedence is secretbox.ts's, verbatim: SECRET_KEY, then the
-        // FILE contents, then AUTH_SECRET. The file is only read when the env
+        // Root precedence: SECRET_KEY, then the FILE contents, then
+        // AUTH_SECRET. The file is only read when the env
         // value is absent, so a broken file path only matters when it matters.
         let (material, source, name) = if !secret_key.is_empty() {
             (secret_key, RootSource::SecretKey, "TALARIA_SECRET_KEY")
@@ -158,7 +158,7 @@ impl Config {
     }
 }
 
-/// process.env with empty strings normalized to unset, like env.ts.
+/// env var with empty strings normalized to unset.
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_default().trim().to_string()
 }

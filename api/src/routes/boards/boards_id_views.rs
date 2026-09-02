@@ -1,10 +1,10 @@
-// /api/boards/{id}/views — port of ui/src/routes/api/boards.$id.views.ts.
-// Saved board views: named filter/layout presets shared with the board.
+// /api/boards/{id}/views. Saved board views: named filter/layout presets
+// shared with the board.
 // GET → the board's views (any member); POST → create; PUT → rename/update
 // config; DELETE → remove (owner/editor). Config is the board URL's search
 // state verbatim (view/group/q/facets) — the client owns its meaning, and
-// unknown keys STRIP on the way in (zod's default), so the stored jsonb is
-// only ever the eight known shapes.
+// unknown keys STRIP on the way in, so the stored jsonb is only ever the
+// eight known shapes.
 
 use crate::boards::{board_role, can_edit};
 use crate::body::{
@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 
 const VIEW_KINDS: &[&str] = &["board", "list", "gantt"];
 
-/// The saved view row (TS's ROW select): id, boardId, name, config, createdBy,
+/// The saved view row on the wire: id, boardId, name, config, createdBy,
 /// position, createdAt, updatedAt.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,10 +54,10 @@ fn view_of(
     }
 }
 
-/// views.ts's Config — eight optional members, no minimums (the empty string
-/// is a legal "clear" on every one of them), zipped back into a JSON object
-/// of only the PRESENT keys in schema order: what z.object's strip-and-keep
-/// leaves TS to hand postgres.
+/// Config — eight optional members, no minimums (the empty string is a
+/// legal "clear" on every one of them), zipped back into a JSON object of
+/// only the PRESENT keys in schema order: the strip-and-keep result handed
+/// to postgres.
 fn validate_config(obj: &Map<String, Value>) -> Result<Value, String> {
     let mut clean = Map::new();
     if let Some(v) = optional_enum_member(obj, "view", VIEW_KINDS)? {
@@ -79,9 +79,9 @@ fn validate_config(obj: &Map<String, Value>) -> Result<Value, String> {
     Ok(Value::Object(clean))
 }
 
-/// Config arrives as an OBJECT or not at all — zod's type message before any
-/// member check, with absent (undefined) and null spelled apart exactly as
-/// zod answers them.
+/// Config arrives as an OBJECT or not at all — the type message answers
+/// before any member check, and absent (undefined) and null are spelled
+/// apart.
 fn config_member(obj: &Map<String, Value>) -> Result<Value, String> {
     match obj.get("config") {
         None => Err("Invalid input: expected object, received undefined".into()),
@@ -97,7 +97,7 @@ fn config_member(obj: &Map<String, Value>) -> Result<Value, String> {
     }
 }
 
-/// The optional spelling PUT uses (`config: Config.optional()`).
+/// PUT's optional spelling of the same member.
 fn optional_config_member(obj: &Map<String, Value>) -> Result<Option<Value>, String> {
     match obj.get("config") {
         None => Ok(None),
@@ -247,8 +247,8 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Two separate statements, TS's shape: a name-only PUT does not touch
-    // the config, and vice versa.
+    // Two separate statements: a name-only PUT does not touch the config,
+    // and vice versa.
     if let Some(name) = &name
         && let Err(e) = sqlx::query(
             "update board_views set name = $1, updated_at = now() \
@@ -363,7 +363,7 @@ mod tests {
             config(json!({ "q": "x".repeat(201) })).unwrap_err(),
             "Too big: expected string to have <=200 characters"
         );
-        // Type check before members, zod's order.
+        // Type check before members.
         assert_eq!(
             config(json!([])).unwrap_err(),
             "Invalid input: expected object, received array"

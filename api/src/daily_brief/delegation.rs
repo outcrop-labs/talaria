@@ -1,7 +1,4 @@
-// Letting your assistant answer for you — port of
-// ui/src/server/daily-brief-delegation.ts whole: the sweep-facing half
-// (mayReply, draftReply, releaseDrafts) and the route-facing half (listGrants,
-// grantReply, revokeReply, decideDraft).
+// Letting your assistant answer for you.
 //
 // THE LINE THIS DOES NOT CROSS. A delegated reply is posted with
 // `author_type = 'agent'` under the assistant's own name — never as the owner.
@@ -209,7 +206,7 @@ pub async fn draft_reply(
 /// response is to click it again.
 ///
 /// Granting permission to send a reply that is already written means sending it.
-/// Stale drafts are left alone, for the same reason the (deferred) decide route
+/// Stale drafts are left alone, for the same reason `decide_draft`
 /// One parked draft the sweep may now send: (id, channel, content, model,
 /// seq it answers, seq of the last thing THEY said).
 type ParkedDraft = (String, String, String, Option<String>, i32, Option<i32>);
@@ -275,9 +272,8 @@ pub async fn release_drafts(
 
 // ── The grant routes' engine ─────────────────────────────────────────────────
 
-/// A live grant as the wire serves it (ReplyGrant) — camelCase, TS field
-/// order. `grantedAt` is an ISO string: postgres hands TS a Date and
-/// JSON.stringify renders it with millisecond precision.
+/// A live grant as the wire serves it (ReplyGrant) — camelCase, wire field
+/// order. `grantedAt` is an ISO string with millisecond precision.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplyGrant {

@@ -1,5 +1,4 @@
-// /api/gaps — port of ui/src/routes/api/gaps.ts.
-// GET → the Studio's Suggested queue: capability gaps agents have reported,
+// /api/gaps. GET → the Studio's Suggested queue: capability gaps agents have reported,
 // ranked by how often the work-shape recurs. Any member reads (the queue is
 // what invites people to tailor); status changes live on /api/gaps/{id}.
 

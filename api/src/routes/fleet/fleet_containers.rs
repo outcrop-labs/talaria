@@ -1,5 +1,5 @@
-// GET /api/fleet/containers — port of ui/src/routes/api/fleet.containers.ts.
-// Container reality per agent (the managed service), admin.
+// GET /api/fleet/containers. Container reality per agent (the managed
+// service), admin.
 
 use crate::error::thrown_internal_error;
 use crate::fleet::docker::container_status;
@@ -23,8 +23,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(r) => r.into_iter().map(|(d,)| d).collect::<Vec<_>>(),
         Err(_) => return thrown_internal_error(),
     };
-    // containerStatus throws on a docker failure — the whole route 500s the
-    // house way (no json body), same as the TS throw.
+    // container_status errors on a docker failure — the whole route 500s
+    // the house way (no json body).
     match container_status(&departments).await {
         Ok(containers) => Json(json!({ "containers": containers })).into_response(),
         Err(_) => thrown_internal_error(),

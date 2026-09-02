@@ -2,7 +2,6 @@
 // (kind 'plan-draft', same uuid) owns the state machine; this module owns the
 // row the review reads: starting one, finding the conversation's latest,
 // saving the walk's edits back, dropping a consumed or discarded batch.
-// Port of ui/src/server/plan-drafts.ts.
 //
 // ONE DRAFT PER CONVERSATION AT A TIME. The single-flight check is read-then-
 // write, so two truly concurrent POSTs can both pass it and enqueue two runs —
@@ -12,10 +11,9 @@
 //
 // THE KEY IS A CONVERSATION OR A CHANNEL. `plan_drafts.conversation_id` holds
 // a plan conversation id on the Plan surface and a CHANNEL id behind the
-// channel Plan button — one domain module, two conversation kinds. It was born
-// with a foreign key to conversations(id) that the channel half violated on
-// every click; the migration dropping that constraint shipped with this port
-// (see pg.ts's MIGRATIONS tail).
+// channel Plan button — one domain module, two conversation kinds, and no
+// foreign key to conversations(id): the channel half would violate it on
+// every click.
 
 use serde::Serialize;
 use sqlx::PgPool;
@@ -30,8 +28,8 @@ use crate::runs::run::{EnqueueOptions, cancel_run, enqueue};
 use crate::state::AppState;
 use crate::work_dispatch::dispatch_deps;
 
-/// The draft as the review reads it (plan-drafts.ts PlanDraft) — the fields
-/// in toDraft's literal order, camelCase on the wire.
+/// The draft as the review reads it — field order pinned,
+/// camelCase on the wire.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanDraft {
@@ -53,7 +51,7 @@ pub struct PlanDraft {
     pub created_at: String,
 }
 
-/// The row both reads reduce to (plan-drafts.ts DraftRow + toDraft). `active`
+/// The row both reads reduce to. `active`
 /// picks the join: the latest draft ANY state (the review's way back), or the
 /// latest whose run is still live (the single-flight check — inner join, so a
 /// draft whose run row is gone does not block a new one).
@@ -78,7 +76,7 @@ async fn draft_for(
          from plan_drafts d {join} \
          order by d.created_at desc limit 1"
     );
-    // The joined row in toDraft's field order: the draft's own columns, then
+    // The joined row in field order: the draft's own columns, then
     // the run's three.
     type DraftRow = (
         String,
@@ -149,7 +147,7 @@ async fn active_draft_for(
     draft_for(pg, conversation_id, true).await
 }
 
-/// What a start needs (plan-drafts.ts startPlanDraft's args).
+/// What a start needs.
 pub struct StartPlanDraft<'a> {
     pub conversation_id: &'a str,
     /// 'plan' | 'channel'
@@ -193,10 +191,6 @@ impl std::fmt::Display for PlanDraftError {
 /// ORDER, and it is load-bearing: enqueue with the inline drive (the run row,
 /// its publish, and the drive), then the domain row. This process's scheduler
 /// advances the run, and the reclaim sweep is the guarantee either way.
-/// (During coexistence the enqueue was row-and-publish only — `start: false`
-/// — leaving the drive to the TS sweep; that runtime left with the cutover.
-/// The run definition had to be byte-correct before that handover, which is
-/// why this plane crossed in the runs batch and not with the chat family.)
 pub async fn start_plan_draft(
     state: &AppState,
     args: StartPlanDraft<'_>,
@@ -286,7 +280,7 @@ pub async fn save_draft_proposals(
 /// and consumed. A still-live run is cancelled first so it stops at its next
 /// boundary instead of landing proposals into a deleted row; a cancel that
 /// cannot happen (Redis down, run already finished) is swallowed and the
-/// delete proceeds, exactly the TS `.catch(() => {})` posture.
+/// delete proceeds.
 pub async fn drop_draft(state: &AppState, conversation_id: &str) -> Result<(), sqlx::Error> {
     let latest: Option<(String,)> = sqlx::query_as(
         "select id::text from plan_drafts where conversation_id = $1::uuid \
@@ -310,7 +304,7 @@ pub async fn drop_draft(state: &AppState, conversation_id: &str) -> Result<(), s
     Ok(())
 }
 
-/// toDraft's status projection: the joined run's state as the review reads
+/// The status projection: the joined run's state as the review reads
 /// it. 'awaiting' cannot happen to this definition (it never parks on a
 /// decision) but a MISSING run row can — that reads as 'done' so the
 /// proposals stay reviewable rather than vanishing with the run row.

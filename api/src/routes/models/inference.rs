@@ -1,4 +1,4 @@
-// /api/inference — port of ui/src/routes/api/inference.ts.
+// /api/inference.
 // Local inference: your own hardware's backends (class=local), probed live,
 // plus what they've served from the token ledger. Config lives on /models.
 
@@ -29,7 +29,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // Each probe runs concurrently, as the TS Promise.all did.
+    // Each probe runs concurrently.
     let probes = endpoints.iter().filter(|ep| ep.class == "local").map(|ep| {
         let state = state.clone();
         let ep = ep.clone();
@@ -118,8 +118,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // `lastAt` is a Date in TS and serializes as Date.toJSON(): UTC with
-    // exactly three fraction digits.
+    // `lastAt` serializes Date-style: UTC with exactly three fraction digits.
     let last_hour: Vec<(String, i32, i64, String)> = match sqlx::query_as(
         "select agent_model as \"agentModel\", count(*)::int as generations, \
                 coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens, \
@@ -154,7 +153,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let states = if departments.is_empty() {
         Vec::new()
     } else {
-        // `.catch(() => [])` — the roster is decoration, not the answer.
+        // a roster failure answers [] — the roster is decoration, not the
+        // answer.
         container_status(&departments).await.unwrap_or_default()
     };
     let mut fleet = json!({ "running": 0, "warming": 0, "unhealthy": 0, "down": 0 });

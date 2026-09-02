@@ -1,4 +1,4 @@
-// /api/channels/{id}/members — port of ui/src/routes/api/channels.$id.members.ts.
+// /api/channels/{id}/members.
 // POST { email } → add a member (any member can invite; they must have
 // signed in before — the engine answers the no-show sentence as a 400).
 // DELETE { userId } → remove a member (owner, or yourself to leave).
@@ -41,7 +41,7 @@ pub async fn post(
     match add_channel_member(&notify, &id, &email).await {
         Ok(None) => Json(json!({ "ok": true })).into_response(),
         // The engine's own sentence ("No user with that email has signed in
-        // yet") rides the 400, exactly as `res.ok ? … : {error: res.error}`.
+        // yet") rides the 400 body verbatim.
         Ok(Some(error)) => house_error(StatusCode::BAD_REQUEST, &error),
         Err(e) => {
             tracing::error!("[channels] member add failed: {e}");

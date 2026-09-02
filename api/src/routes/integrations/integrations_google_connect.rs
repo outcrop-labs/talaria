@@ -1,6 +1,5 @@
-// GET /api/integrations/google/connect — port of
-// ui/src/routes/api/integrations/google.connect.ts. Begin the offline-access
-// consent dance: set the one-shot state cookie and 302 to Google. Requires an
+// GET /api/integrations/google/connect — begin the offline-access consent
+// dance: set the one-shot state cookie and 302 to Google. Requires an
 // authenticated session (the connection binds to this user) — checked BEFORE
 // the enabled gate, unlike the callback, which checks the gate first.
 

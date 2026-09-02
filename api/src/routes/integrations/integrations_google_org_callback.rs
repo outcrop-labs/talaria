@@ -1,5 +1,4 @@
-// GET /api/integrations/google/org/callback — port of
-// ui/src/routes/api/integrations/google.org.callback.ts. Store the SHARED org
+// GET /api/integrations/google/org/callback — store the SHARED org
 // connection. The shared connect body plus the org's two differences: only an
 // admin may tie the org's containers to a Google account, and the landing
 // page is the admin panel whose googleOrg flash reads the status param.

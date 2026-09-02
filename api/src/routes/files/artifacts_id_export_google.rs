@@ -1,6 +1,4 @@
-// /api/artifacts/{id}/export/google — port of
-// ui/src/routes/api/artifacts.$id.export.google.ts. Mirror an artifact into
-// Google Drive.
+// /api/artifacts/{id}/export/google. Mirror an artifact into Google Drive.
 //
 // Whose Drive it lands in depends on the caller (per-user OAuth):
 //   human            → their own connected Drive
@@ -26,12 +24,12 @@ use crate::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
 use crate::session::{actor_of, require_user, who_of};
 use crate::state::AppState;
 
-/// The catch block's three friendly answers. `Failed` also logs — the only
-/// consumer of Google's raw sentence is the log (TS logs it in dev).
+/// The three friendly failure answers. `Failed` also logs — the only
+/// consumer of Google's raw sentence is the log.
 fn export_failed(e: ExportError) -> Response {
     match e {
         ExportError::NotConnected => {
-            // connections.ts requireToken's GoogleNotConnected throw.
+            // the token check's GoogleNotConnected refusal.
             house_error_msg(
                 StatusCode::CONFLICT,
                 "not_connected",
@@ -155,7 +153,7 @@ pub async fn post(
         let connected = match get_connection_status(&state.pg, &user.id).await {
             Ok(c) => c,
             Err(e) => {
-                // TS's isConnected throw lands in the catch → 502.
+                // a failed status read takes the same 502 as a failed export.
                 return export_failed(ExportError::Failed(format!("connection status read: {e}")));
             }
         };
@@ -196,14 +194,14 @@ pub async fn post(
     };
 
     if let Err(e) = record_google_export(&state.pg, &artifact.id, &file.id, &file.url).await {
-        // TS's throw lands in the catch → 502.
+        // a failed record write takes the same 502 as a failed export.
         return export_failed(ExportError::Failed(format!("export record: {e}")));
     }
     Json(json!({ "file": file })).into_response()
 }
 
-/// Date.now() — the one clock the TS surface reads. Centralized so tests
-/// could pin it if this route ever grows one.
+/// The one clock this route reads. Centralized so tests could pin it if
+/// this route ever grows one.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

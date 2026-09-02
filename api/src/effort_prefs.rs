@@ -1,5 +1,5 @@
 // Slot-level reasoning-effort preferences — the admin's "how hard should this
-// CLASS of work think" dial. Port of effort-prefs.ts.
+// CLASS of work think" dial.
 //
 // THE SHAPE. One settings row, keys are the SLOT the turn ran under:
 //   'role:<ModelRole>'    when the model chain's role step (or the utility
@@ -54,8 +54,8 @@ pub async fn get_effort_prefs(pg: &PgPool) -> serde_json::Map<String, serde_json
     out
 }
 
-/// Set or clear one slot. A falsy effort (null, absent, empty/whitespace —
-/// the TS write route's `model: ""` spelling of "clear") deletes the slot.
+/// Set or clear one slot. A falsy effort (null, absent, empty/whitespace)
+/// deletes the slot.
 pub async fn set_effort_pref(
     pg: &PgPool,
     slot: &str,

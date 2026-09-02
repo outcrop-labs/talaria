@@ -1,11 +1,9 @@
-// Object storage for upload blobs — the READ half of ui/src/server/storage.ts,
-// crossed ahead of the uploads family because the runs the flip must drive
-// read blob bytes: a plan draft's transcript re-reads a message's textual
-// attachments (uploads.ts attachmentTextBlocks → getUpload → readBlob), so a
-// Rust-driven run has to find the same bytes the TS one did, wherever they
-// live — local disk, the configured bucket, or the replica behind it. The
-// WRITE half (s3Put/s3Delete, ensureBucket, the admin test action, the
-// config writes) crossed with the admin storage surface.
+// Object storage for upload blobs — the verbs behind `uploads.path`. A
+// transcript re-reads a message's textual attachments (getUpload →
+// readBlob), so a read has to find the bytes wherever they live — local
+// disk, the configured bucket, or the replica behind it. The write side
+// (s3_put/s3_delete, ensure_bucket, the admin probe, the config writes)
+// serves the uploads family and the admin storage surface.
 //
 // No SDK, by house rule: any S3-compatible endpoint (AWS, B2, R2, MinIO, …)
 // behind hand-rolled SigV4 verbs, the same no-SDK fetch pattern as the
@@ -24,14 +22,14 @@ use crate::secretbox::SecretBox;
 
 const KEY: &str = "storage_config";
 
-/// The published dev secret (env.ts DEV_S3_SECRET) — the fallback the
-/// bundled MinIO container runs on. Read paths stay unguarded on purpose
-/// (refusing them would brick blobs already stored — storage.ts's own
-/// posture); the refusal lives at the write-time doors, which are TS.
+/// The published dev secret — the fallback the bundled MinIO container runs
+/// on. Read paths stay unguarded on purpose (refusing them would brick blobs
+/// already stored); the refusal lives at the write-time doors
+/// (`refuse_dev_secret`).
 pub const DEV_S3_SECRET: &str = "talaria-dev-secret";
 
-/// One bucket to talk to (storage.ts BucketTarget). `secret_access_key` is
-/// UNSEALED in memory here; it is never logged and never serialized.
+/// One bucket to talk to. `secret_access_key` is UNSEALED in memory here;
+/// it is never logged and never serialized.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BucketTarget {
     pub endpoint: String,
@@ -47,7 +45,8 @@ pub struct BucketTarget {
 }
 
 impl BucketTarget {
-    /// The enabled + fully-configured replica, if any (replicaTarget).
+    /// Fully configured: the four fields a signed request cannot live
+    /// without.
     fn ready(&self) -> bool {
         !self.endpoint.is_empty()
             && !self.bucket.is_empty()
@@ -56,13 +55,13 @@ impl BucketTarget {
     }
 }
 
-/// targetReady — the four fields a signed request cannot live without.
+/// Ready to sign — the four fields a signed request cannot live without.
 pub fn target_ready(t: &BucketTarget) -> bool {
     t.ready()
 }
 
-/// refuseDevSecret — the published dev password may never gate production
-/// bytes. The Rust api's production is the same NODE_ENV=production posture.
+/// The published dev password may never gate production bytes —
+/// NODE_ENV=production is the production posture.
 pub fn refuse_dev_secret(t: &BucketTarget) -> Result<(), String> {
     if std::env::var("NODE_ENV").as_deref() == Ok("production")
         && t.secret_access_key == DEV_S3_SECRET
@@ -76,9 +75,9 @@ pub fn refuse_dev_secret(t: &BucketTarget) -> Result<(), String> {
     Ok(())
 }
 
-/// Where writes go (activeTarget): the internal container, the configured
-/// bucket, or None for local disk. Internal ensures its bucket exists
-/// (idempotent, process-cached).
+/// Where writes go: the internal container, the configured bucket, or None
+/// for local disk. Internal ensures its bucket exists (idempotent,
+/// process-cached).
 pub async fn active_target(cfg: &StorageConfig) -> Result<Option<(BucketTarget, bool)>, String> {
     if cfg.mode == "internal" {
         let target = internal_target();
@@ -92,7 +91,7 @@ pub async fn active_target(cfg: &StorageConfig) -> Result<Option<(BucketTarget, 
     Ok(None)
 }
 
-/// The enabled + fully-configured replica, if any (replicaTarget).
+/// The enabled + fully-configured replica, if any.
 pub fn replica_target(cfg: &StorageConfig) -> Option<BucketTarget> {
     if cfg.replica_enabled && target_ready(&cfg.replica) {
         Some(cfg.replica.clone())
@@ -101,8 +100,8 @@ pub fn replica_target(cfg: &StorageConfig) -> Option<BucketTarget> {
     }
 }
 
-/// The whole config (StorageConfig): the primary target's fields flat, the
-/// mode, and the optional replica — the exact shape `storage_config` holds.
+/// The whole config: the primary target's fields flat, the mode, and the
+/// optional replica — the exact shape `storage_config` holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageConfig {
     /// 'local' | 'internal' | 's3'.
@@ -129,9 +128,8 @@ impl Default for StorageConfig {
     }
 }
 
-/// The bundled MinIO container (internalTarget). Defaults match
-/// docker/dev-compose.yml; `talaria setup` writes the secret into ui/.env
-/// and `talaria dev` exports it for both sides.
+/// The bundled MinIO container. Defaults match docker/dev-compose.yml; the
+/// TALARIA_S3_* and TALARIA_MINIO_PORT vars override each leg.
 pub fn internal_target() -> BucketTarget {
     fn env_or(key: &str, fallback: &str) -> String {
         std::env::var(key)
@@ -155,8 +153,8 @@ pub fn internal_target() -> BucketTarget {
 }
 
 /// The raw jsonb as stored, before defaults are applied — a map so the
-/// merge can mirror TS's spread exactly (present keys override, absent keys
-/// keep the default; the `null`-override corner is noted at the merge).
+/// merge is field-wise (present keys override, absent keys keep the
+/// default; the `null`-override corner is noted at the merge).
 fn str_field(raw: &serde_json::Map<String, serde_json::Value>, key: &str, default: &str) -> String {
     raw.get(key)
         .and_then(|v| v.as_str())
@@ -164,12 +162,12 @@ fn str_field(raw: &serde_json::Map<String, serde_json::Value>, key: &str, defaul
         .to_string()
 }
 
-/// getStorageConfig's merge: DEFAULTS filled out with whatever the row says,
-/// nested replica merged the same way. A present `null` in the row would
-/// OVERRIDE to null under TS's spread where this reads the default — the
-/// difference is observable only through the truthiness `ready()` asks for,
-/// and a null and a default-empty string answer every question the same way
-/// (except pathStyle, which the admin panel writes as a real boolean).
+/// The merge: defaults filled out with whatever the row says, nested
+/// replica merged the same way. A present `null` reads the default here
+/// rather than overriding to null — the difference is observable only
+/// through the emptiness `ready()` asks for, and a null and a default-empty
+/// string answer every question the same way (except pathStyle, which the
+/// admin panel writes as a real boolean).
 fn merged(raw: &serde_json::Value) -> StorageConfig {
     let d = StorageConfig::default();
     let Some(obj) = raw.as_object() else {
@@ -214,8 +212,8 @@ fn merged(raw: &serde_json::Value) -> StorageConfig {
 }
 
 /// The unseal step a non-empty secret goes through. A cipher that does not
-/// open is EMPTY (TS's catch → ''), which makes the target not-ready — the
-/// same fail-closed posture as a never-configured bucket.
+/// open is EMPTY, which makes the target not-ready — the same fail-closed
+/// posture as a never-configured bucket.
 fn unseal(sb: &SecretBox, token: &str) -> String {
     if token.is_empty() {
         return String::new();
@@ -223,7 +221,7 @@ fn unseal(sb: &SecretBox, token: &str) -> String {
     sb.open(token).unwrap_or_default()
 }
 
-/// getStorageConfig — the row (or {}), merged over defaults, secrets unsealed.
+/// The row (or {}), merged over defaults, secrets unsealed.
 pub async fn get_storage_config(pg: &PgPool, sb: &SecretBox) -> StorageConfig {
     let raw = get_setting(pg, KEY, serde_json::json!({})).await;
     let mut cfg = merged(&raw);
@@ -232,8 +230,8 @@ pub async fn get_storage_config(pg: &PgPool, sb: &SecretBox) -> StorageConfig {
     cfg
 }
 
-/// setStorageConfig — the whole config, secrets SEALED at rest. An empty
-/// secret stays empty (local mode has none to keep).
+/// The whole config written, secrets SEALED at rest. An empty secret stays
+/// empty (local mode has none to keep).
 pub async fn set_storage_config(pg: &PgPool, sb: &SecretBox, cfg: &StorageConfig) {
     let seal = |plain: &str| -> String {
         if plain.is_empty() {
@@ -267,9 +265,9 @@ pub async fn set_storage_config(pg: &PgPool, sb: &SecretBox, cfg: &StorageConfig
     let _ = crate::gateway::settings::set_setting(pg, KEY, &value).await;
 }
 
-/// publicStorageConfig — the admin GET's masked view: never the secrets, only
-/// whether each is set. Wire order is the TS destructure's ({...rest} then
-/// hasSecret), the replica object likewise.
+/// The admin GET's masked view: never the secrets, only whether each is set.
+/// `hasSecret` rides last in each object; the replica object follows the
+/// primary's shape.
 pub async fn public_storage_config(pg: &PgPool, sb: &SecretBox) -> serde_json::Value {
     let cfg = get_storage_config(pg, sb).await;
     let t = &cfg.target;
@@ -298,8 +296,8 @@ pub async fn public_storage_config(pg: &PgPool, sb: &SecretBox) -> serde_json::V
 
 // ── URL + region ─────────────────────────────────────────────────────────────
 
-/// Derive the region when the field is blank (regionFor): B2 and AWS embed it
-/// in the host (s3.us-west-004.backblazeb2.com, s3.eu-central-1.amazonaws.com);
+/// Derive the region when the field is blank: B2 and AWS embed it in the
+/// host (s3.us-west-004.backblazeb2.com, s3.eu-central-1.amazonaws.com);
 /// R2 wants the literal "auto"; everything else falls back to us-east-1, which
 /// MinIO also accepts.
 pub fn region_for(t: &BucketTarget) -> String {
@@ -322,7 +320,7 @@ pub fn region_for(t: &BucketTarget) -> String {
     "us-east-1".into()
 }
 
-/// new URL(endpoint).host — host[:port], or '' for an unparseable endpoint.
+/// host[:port] of the endpoint, or '' when there is nothing parseable.
 fn host_of(endpoint: &str) -> String {
     let rest = endpoint
         .strip_prefix("https://")
@@ -331,9 +329,9 @@ fn host_of(endpoint: &str) -> String {
     rest.split(['/', '?', '#']).next().unwrap_or("").to_string()
 }
 
-/// RFC 3986-encode a key, keeping `/` as the segment separator. The five
-/// sub-delims JS's encodeURIComponent leaves alone (!'()* excepted) are
-/// percent-encoded uppercase — the S3 canonical form.
+/// RFC 3986-encode a key, keeping `/` as the segment separator. Everything
+/// but the unreserved set — including !'()* — percent-encodes uppercase,
+/// the S3 canonical form.
 fn encode_key(key: &str) -> String {
     fn enc_seg(seg: &str, out: &mut String) {
         for b in seg.bytes() {
@@ -398,7 +396,7 @@ fn object_url(t: &BucketTarget, key: &str) -> (String, String, String) {
         (
             format!("{scheme}://{host}{path}"),
             path,
-            host, // the signed host: bucket-prefixed (JS sets base.host, port rides along inside `authority`)
+            host, // the signed host: bucket-prefixed, port riding along inside
         )
     }
 }
@@ -431,7 +429,7 @@ fn signed_get(t: &BucketTarget, key: &str, amz_date: &str) -> (String, String) {
     let date_stamp = &amz_date[..8];
     let region = region_for(t);
     let payload_hash = sha256_hex(b"");
-    // Sorted, exactly the three headers TS signs on a GET.
+    // Sorted: exactly the three headers a GET signs.
     let canonical_headers =
         format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
     let signed_headers = "host;x-amz-content-sha256;x-amz-date";
@@ -462,9 +460,9 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The signed PUT. The canonical request carries the payload's own hash and,
-/// when a content-type rides the request, that header too — TS signs exactly
-/// `Object.keys(headers).sort()`, which puts content-type FIRST, and the
-/// signature is over that ordering.
+/// when a content-type rides the request, that header too — headers sign
+/// sorted, which puts content-type FIRST, and the signature is over that
+/// ordering.
 fn signed_put(
     t: &BucketTarget,
     key: &str,
@@ -501,8 +499,8 @@ fn signed_put(
     (url, authorization)
 }
 
-/// s3Put: the same sentence TS throws on failure (`storage PUT {status}:
-/// {body ≤300}`).
+/// The signed PUT. Failure is the sentence `storage PUT {status}:
+/// {body ≤300}`.
 pub async fn s3_put(t: &BucketTarget, key: &str, bytes: &[u8], mime: &str) -> Result<(), String> {
     let content_type = if mime.is_empty() {
         "application/octet-stream"
@@ -535,9 +533,9 @@ pub async fn s3_put(t: &BucketTarget, key: &str, bytes: &[u8], mime: &str) -> Re
     Ok(())
 }
 
-/// CreateBucket, tolerant of "already exists" (ensureBucket). Cached per
-/// process per target so internal mode doesn't re-check on every upload —
-/// TS survives HMR via globalThis; the Rust api doesn't reload, a static set.
+/// CreateBucket, tolerant of "already exists". Cached per process per target
+/// so internal mode doesn't re-check on every upload — the api never
+/// reloads, so a static set is enough.
 static ENSURED_BUCKETS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
@@ -587,7 +585,7 @@ pub async fn ensure_bucket(t: &BucketTarget) -> Result<(), String> {
         let status = res.status();
         let body = res.bytes().await.unwrap_or_default();
         let text = String::from_utf8_lossy(&body);
-        // The same two "fine, it exists" spellings TS accepts.
+        // The two "fine, it exists" spellings S3 answers with.
         if !(text.contains("BucketAlreadyOwnedByYou") || text.contains("BucketAlreadyExists")) {
             return Err(format!(
                 "storage create-bucket {}: {}",
@@ -600,8 +598,8 @@ pub async fn ensure_bucket(t: &BucketTarget) -> Result<(), String> {
     Ok(())
 }
 
-/// s3Get: 404 is Ok(None); anything else not-ok is the same sentence TS
-/// throws (`storage GET {status}: {body ≤300}`); ok is the bytes.
+/// The signed GET: 404 is Ok(None); anything else not-ok is `storage GET
+/// {status}: {body ≤300}`; ok is the bytes.
 pub async fn s3_get(t: &BucketTarget, key: &str) -> Result<Option<Vec<u8>>, String> {
     let amz_date = amz_now();
     let (url, authorization) = signed_get(t, key, &amz_date);
@@ -629,9 +627,8 @@ pub async fn s3_get(t: &BucketTarget, key: &str) -> Result<Option<Vec<u8>>, Stri
     Ok(Some(body.to_vec()))
 }
 
-/// s3Delete — signed DELETE. The probe's cleanup step; a failure there is
-/// swallowed by the caller (TS: `.catch(() => {})`), so this surfaces the
-/// error for anyone who does care.
+/// The signed DELETE. The probe's cleanup step; a failure there is swallowed
+/// by the caller, so this surfaces the error for anyone who does care.
 pub async fn s3_delete(t: &BucketTarget, key: &str) -> Result<(), String> {
     let amz_date = amz_now();
     // DELETE signs exactly like the GET — same three headers, empty payload.
@@ -657,9 +654,9 @@ pub async fn s3_delete(t: &BucketTarget, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// testStorage — the round-trip probe: PUT a tiny object, GET it back, DELETE
-/// it. Returns a human-readable failure reason rather than throwing, for the
-/// admin panel.
+/// The round-trip probe: PUT a tiny object, GET it back, DELETE it. Returns
+/// a human-readable failure reason rather than throwing, for the admin
+/// panel.
 pub async fn test_storage(t: &BucketTarget) -> serde_json::Value {
     if !target_ready(t) {
         return serde_json::json!({
@@ -695,8 +692,8 @@ pub async fn test_storage(t: &BucketTarget) -> serde_json::Value {
     }
 }
 
-/// YYYYMMDDTHHMMSS.mmmZ — `new Date().toISOString()` with the punctuation
-/// removed. Takes the epoch ms so the civil-from-days math is pinnable.
+/// YYYYMMDDTHHMMSS.mmmZ — ISO-8601 UTC with the punctuation removed. Takes
+/// the epoch ms so the civil-from-days math is pinnable.
 fn amz_of(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let millis = ms.rem_euclid(1000);
@@ -732,7 +729,7 @@ fn amz_now() -> String {
 static S3_PATH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(s3\+internal|s3)://([^/]+)/(.+)$").unwrap());
 
-/// readBlob — one blob, wherever the row says it lives:
+/// One blob, wherever the row says it lives:
 ///   1. `s3+internal://bucket/key` → the bundled MinIO (env-configured);
 ///      `s3://bucket/key` → the CONFIGURED target with that bucket;
 ///      anything else → a filesystem path.
@@ -841,8 +838,8 @@ mod tests {
     fn keys_encode_rfc3986_uppercase_with_slashes_kept() {
         assert_eq!(encode_key("uploads/a b+c!.txt"), "uploads/a%20b%2Bc%21.txt");
         assert_eq!(encode_key("a~b-c_d.e"), "a~b-c_d.e");
-        // The JS sub-delims encodeURIComponent spares: !'()* are the ones the
-        // replace() puts back uppercase-percent.
+        // The sub-delims a lax encoder spares — !'()* — percent-encode
+        // uppercase here.
         assert_eq!(encode_key("'*()"), "%27%2A%28%29");
     }
 
@@ -882,10 +879,9 @@ mod tests {
         assert!(url.ends_with('/'));
     }
 
-    /// Pinned against TWO independent implementations: the TS replica of
-    /// storage.ts's s3Fetch (scripts scratch, bun + node:crypto) and a
-    /// from-spec Python signer, which agreed with each other byte-for-byte
-    /// on both inputs. The first is AWS's own documented example keypair.
+    /// Pinned vectors. The first is AWS's own documented SigV4 example
+    /// keypair; the second is the house MinIO shape, independently verified
+    /// against a from-spec signer that agreed byte-for-byte.
     #[test]
     fn sigv4_signatures_match_the_cross_language_vectors() {
         let aws = target(
@@ -934,9 +930,9 @@ mod tests {
 
     #[test]
     fn amz_dates_match_node_to_isostring_vectors() {
-        // Pinned against `new Date(ms).toISOString()` (bun), punctuation
-        // removed — including the epoch and a leap day, which is where a
-        // hand-rolled civil calendar goes quietly wrong.
+        // ISO-8601 UTC with the punctuation removed — pinned including the
+        // epoch and a leap day, which is where a hand-rolled civil calendar
+        // goes quietly wrong.
         assert_eq!(amz_of(0), "19700101T000000.000Z");
         assert_eq!(amz_of(1_709_164_800_000), "20240229T000000.000Z");
         assert_eq!(amz_of(1_769_664_000_000), "20260129T052000.000Z");
@@ -979,7 +975,7 @@ mod tests {
         assert_eq!(cfg.replica.bucket, "backup");
         assert_eq!(cfg.replica.region, ""); // replica fields default empty, not inherited
         assert!(cfg.replica.path_style); // the replica default is path-style too
-        // A non-object row is the defaults (getSetting's fallback shape).
+        // A non-object row is the defaults (get_setting's fallback shape).
         assert_eq!(merged(&serde_json::json!(null)).mode, "local");
     }
 

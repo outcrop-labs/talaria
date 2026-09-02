@@ -1,8 +1,8 @@
-// /api/artifacts/{id}/links — port of ui/src/routes/api/artifacts.$id.links.ts.
+// /api/artifacts/{id}/links.
 // Attach / detach an artifact to/from a target (KB doc, ticket, channel).
 // The caller must be able to read the artifact — a human-only surface, so the
-// gate runs before the body is even parsed (TS's order, kept: a bad body on a
-// link you can't make is a 403, not a 400).
+// gate runs before the body is even parsed: a bad body on a link you can't
+// make is a 403, not a 400.
 
 use axum::Json;
 use axum::extract::{Path, State};

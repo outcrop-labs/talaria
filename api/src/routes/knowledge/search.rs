@@ -1,14 +1,14 @@
-// /api/search — port of ui/src/routes/api/search.ts.
+// /api/search.
 //
 // LIVE WEB SEARCH — the endpoint behind the `web_search` MCP tool, and the one
 // place an agent or a signed-in user reaches this deployment's search.
 //
-// IT ASKS THE RESOLVER, NOT SEARXNG. This used to call the SearXNG client
-// directly, which meant every fleet agent was pinned to Talaria's own instance
-// while the research harness and the fitness sweep resolved search properly —
-// registry first, our engine as the floor. An org that had registered Exa got
-// it everywhere EXCEPT in the agents doing their actual work. One resolver now
-// answers for all of them (web_search.rs).
+// IT ASKS THE RESOLVER, NOT SEARXNG. Calling the SearXNG client directly here
+// would pin every fleet agent to Talaria's own instance while the research
+// harness and the fitness sweep resolve search properly — registry first, our
+// engine as the floor. An org that registers Exa gets it everywhere EXCEPT in
+// the agents doing their actual work. One resolver answers for all of them
+// (web_search.rs).
 //
 // THE SAME DOOR AS `search_knowledge`, deliberately: a fleet agent authenticates
 // with its agent key and a person with their session, and neither gets a
@@ -57,7 +57,7 @@ pub async fn post(
     let limit = match obj.get("limit") {
         None => None,
         Some(v) => match v.as_i64() {
-            // z.number().int().min(1).max(25)
+            // limit: optional integer, 1..=25 — anything else is the sentence.
             Some(n) if (1..=25).contains(&n) => Some(n as f64),
             _ => {
                 return house_error(

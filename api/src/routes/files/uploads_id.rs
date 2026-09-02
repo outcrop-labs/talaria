@@ -1,4 +1,4 @@
-// /api/uploads/{id} — port of ui/src/routes/api/uploads.$id.ts.
+// /api/uploads/{id}.
 // GET → serve an attachment's bytes: signed-in users, or fleet agents (agent
 // key) pulling ticket/chat attachments they were handed. The inline/download
 // decision lives in serve_upload — one allowlist, no route widens it on its

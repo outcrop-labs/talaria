@@ -1,5 +1,4 @@
-// /api/agent/message-user — port of ui/src/routes/api/agent.message-user.ts.
-// POST (agent key) → an agent starts or continues a direct conversation with
+// /api/agent/message-user. POST (agent key) → an agent starts or continues a direct conversation with
 // a human teammate. The message lands as a normal turn in their chat with
 // this agent plus an inbox notification. Personal assistants reach only
 // their owner; every agent↔user pair is rate-capped per day.

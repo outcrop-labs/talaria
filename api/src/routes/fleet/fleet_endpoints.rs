@@ -1,5 +1,5 @@
-// /api/fleet/endpoints — port of ui/src/routes/api/fleet.endpoints.ts. The
-// model-backend registry (Models tab). GET → all endpoints. POST → add one.
+// /api/fleet/endpoints. The model-backend registry (Models tab). GET → all
+// endpoints. POST → add one.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -125,13 +125,13 @@ struct Validated {
     model_prices: Value,
 }
 
-/// The POST body (zod): name 2–60, provider 2–40, baseUrl url-or-null, class
+/// The POST body: name 2–60, provider 2–40, baseUrl url-or-null, class
 /// enum, apiKeyEnv provider-key-shaped, apiKey raw, models ≤100 ids,
 /// modelPrices an {in,out} record.
 fn validate(obj: &serde_json::Map<String, Value>) -> Result<Validated, String> {
     let name = string_member(obj, "name", 2, 60)?;
     let provider = string_member(obj, "provider", 2, 40)?;
-    // z.string().url().max(300).nullish() — absent and null both map to null.
+    // baseUrl — url, ≤300, nullish: absent and null both map to null.
     let base_url = match obj.get("baseUrl") {
         None | Some(Value::Null) => None,
         Some(_) => Some(crate::body::url_member(obj, "baseUrl", 300)?),
@@ -160,7 +160,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<Validated, String> {
     })
 }
 
-/// `z.string().regex(/^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/) .max(80).nullish()`.
+/// Nullish key-env name — `LLM_API_KEY` or `[A-Z][A-Z0-9_]*_API_KEY`, ≤80.
 fn nullish_key_env(
     obj: &serde_json::Map<String, Value>,
     key: &str,
@@ -185,8 +185,7 @@ fn nullish_key_env(
     }
 }
 
-/// `z.record(z.string().max(k), z.object({ in: nonneg?, out: nonneg? }))` —
-/// keys bounded, values an object of two optional non-negative numbers.
+/// A record keyed by model (≤ key_max) → { in?: nonneg, out?: nonneg }.
 /// (shared with the PUT patch in fleet_endpoints_id.rs)
 pub(crate) fn price_record(v: &Value, key_max: usize) -> Result<Value, String> {
     let map = v

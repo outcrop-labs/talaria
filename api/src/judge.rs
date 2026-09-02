@@ -1,15 +1,13 @@
-// Automated QA judge — the port of ui/src/server/judge.ts, grown slice by
-// slice. The tasks family serves a ticket's review rows (listJudgeReviews),
-// which crosses here; the gate itself (runJudgeForTask) runs the judge
-// harness, so it crosses with the harness plane at the scheduler handover —
-// until then the TS gate keeps writing these rows and Rust keeps reading
-// them, which is the coexistence shape every shared table in this port uses.
+// Automated QA judge — the read side this crate serves: a ticket's review
+// rows and the gate's config. The gate itself (runJudgeForTask) runs in the
+// judge harness (harness/defs/judge.rs), which writes the judge_reviews rows
+// read here.
 
 use crate::agent_auth::epoch_ms_to_iso;
 use sqlx::PgPool;
 
-/// One review row (judge.ts JudgeReview): what the quality gate concluded the
-/// last time it ran on this ticket, and who ran it.
+/// One review row: what the quality gate concluded the last time it ran on
+/// this ticket, and who ran it.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JudgeReview {
@@ -21,7 +19,7 @@ pub struct JudgeReview {
     pub created_at: String,
 }
 
-/// A ticket's reviews, newest first — judge.ts listJudgeReviews.
+/// A ticket's reviews, newest first.
 pub async fn list_judge_reviews(
     pg: &PgPool,
     task_id: &str,
@@ -51,16 +49,16 @@ pub async fn list_judge_reviews(
         .collect())
 }
 
-// ── Config (judge.ts getJudgeConfig / setJudgeConfig) ────────────────────────
+// ── Config ────────────────────────────────────────────────────────────────────
 // One row in app_settings decides whether the gate runs, on which model, and
-// with what global stance. The admin routes own the writes; every runner on
-// either side of the coexistence line reads the same row.
+// with what global stance. The admin routes own the writes; every runner
+// reads the same row.
 
 const CONFIG_KEY: &str = "judge_config";
 
-/// The judge's config in wire order ({enabled, model, mode}) — DEFAULT_CONFIG
-/// merged over the stored partial, TS's `{...DEFAULT_CONFIG, ...stored}`. A
-/// stored value of the wrong type falls to the default per field.
+/// The judge's config in wire order ({enabled, model, mode}) — defaults
+/// merged over the stored partial. A stored value of the wrong type falls
+/// to the default per field.
 pub async fn get_judge_config(pg: &PgPool) -> serde_json::Value {
     let stored = crate::gateway::settings::get_setting(pg, CONFIG_KEY, serde_json::json!({})).await;
     let mut out = serde_json::Map::new();
@@ -94,7 +92,7 @@ pub async fn get_judge_config(pg: &PgPool) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-/// Store the whole config (setJudgeConfig is a full-object write).
+/// Store the whole config — a full-object write.
 pub async fn set_judge_config(pg: &PgPool, config: &serde_json::Value) {
     let _ = crate::gateway::settings::set_setting(pg, CONFIG_KEY, config).await;
 }

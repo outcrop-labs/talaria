@@ -1,11 +1,10 @@
-// AGENT WORK SESSIONS, as a durable run — the port of
-// ui/src/server/runs/defs/work-session.ts.
+// AGENT WORK SESSIONS, as a durable run.
 //
 // WHAT A SESSION IS. What used to be a `for` loop inside a fire-and-forget
 // promise, guarded by a process-local `Set`, is a run: the loop index is the
 // checkpoint, the guard is a Redis lease, and a driver that dies is reclaimed
-// and re-enters at the turn it left. See work-dispatch.ts's header for the
-// push side of that story.
+// and re-enters at the turn it left. See work_dispatch's header for the push
+// side of that story.
 //
 // THE STEP MACHINE, and why it has three stages rather than one turn per step.
 //   A turn does TWO outward things: it calls a model (billed, and the agent's
@@ -37,12 +36,10 @@
 // on to the next turn against the ticket's LIVE state. A lost turn is cheap.
 // A duplicated one is a second agent working the same ticket.
 //
-// CROSS-RUNTIME CHECKPOINTS. The TS driver owned these rows first, so the
-// checkpoint column arrives in the exact TS spelling (`stageAttempt`,
-// `lastTail`, `notBefore`) and this port reads and writes that spelling — a
-// Rust driver that resumed a TS-parked session must agree with the TS driver
-// about where the session is, and a renamed field would reset every live
-// session at the handover. Pinned by round-trip tests.
+// CHECKPOINT SPELLING. The checkpoint column's spelling (`stageAttempt`,
+// `lastTail`, `notBefore`) is fixed: rows written by earlier deploys must
+// keep resuming, and a renamed field would reset every live session
+// mid-work. Pinned by round-trip tests.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -72,10 +69,10 @@ pub const WORK_SESSION_KIND: &str = "work-session";
 /// looping agent can't burn unbounded tokens. The session also ends the
 /// moment the ticket leaves the working statuses.
 ///
-/// IT IS IN THE CHECKPOINT, so it SURVIVES A RESUME. That is the difference
-/// the durable port makes: before, a restart mid-session lost the count, the
-/// heartbeat re-dispatched, and the agent got a fresh twelve turns on work it
-/// had already spent twelve turns on.
+/// IT IS IN THE CHECKPOINT, so it SURVIVES A RESUME — without that, a
+/// restart mid-session loses the count, the heartbeat re-dispatches, and the
+/// agent gets a fresh twelve turns on work it had already spent twelve turns
+/// on.
 pub const MAX_SESSION_TURNS: i64 = 12;
 
 /// How long a reclaimed session waits before sending its NEXT turn, when the
@@ -114,10 +111,9 @@ const LOG: &str = "[work-session]";
 /// Version 8 is RFC 9562's "custom" — an honest label for "the bytes are a
 /// SHA-256 of a name", which is what they are; v5 would claim SHA-1.
 ///
-/// PINNED to the TS implementation by vectors generated from
-/// runs/defs/work-session.ts itself — both runtimes must derive the SAME id
-/// from the same ticket or the coexistence claim (Rust enqueues, TS drives)
-/// silently splits one session into two.
+/// PINNED by fixed vectors, not re-derived here (which would test the
+/// derivation against itself): two processes deriving different ids from the
+/// same ticket would silently split one session into two.
 pub fn session_run_id(task_id: &str, agent_model: &str, generation: u32) -> String {
     let digest = Sha256::digest(format!(
         "{WORK_SESSION_KIND}\u{0}{task_id}\u{0}{agent_model}\u{0}{generation}"
@@ -139,8 +135,8 @@ pub fn session_run_id(task_id: &str, agent_model: &str, generation: u32) -> Stri
 
 // ── Input and checkpoint ─────────────────────────────────────────────────────
 
-/// Wire shape (`taskId`/`agentModel`/…) — the TS row's spelling, kept so a
-/// Rust-enqueued row is legible to the TS driver and vice versa.
+/// Wire shape (`taskId`/`agentModel`/…) — the row's spelling, kept stable so
+/// rows written by earlier deploys stay legible.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSessionInput {
@@ -186,9 +182,9 @@ enum TurnKind {
     Reconcile,
 }
 
-/// The three-stage machine, in the TS wire spelling (`stage` tag, camelCase
-/// fields, `notBefore` present only on the retired-turn path — TS writes it
-/// with a conditional spread, so this side skips it when None).
+/// The three-stage machine, in the wire spelling (`stage` tag, camelCase
+/// fields, `notBefore` present only on the retired-turn path — skipped when
+/// None).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "stage",
@@ -251,22 +247,21 @@ fn as_checkpoint(raw: &Value) -> Result<Option<WorkSessionCheckpoint>, String> {
 
 /// Where the ticket is now — the session's continue/stop signal.
 ///
-/// THIS ASKS THE ONE PREDICATE. The TS file once computed its own
-/// working/terminal test — a fourth spelling of "may this agent still work
-/// this ticket?" — and it omitted BOTH archival clauses and the board's agent
-/// policy, so a person archiving the ticket, archiving its board, or revoking
-/// the agent's grant did not stop the live session already running. Now:
+/// THIS ASKS THE ONE PREDICATE. Never a hand-rolled working/terminal test —
+/// a hand-rolled spelling once omitted BOTH archival clauses and the board's
+/// agent policy, so a person archiving the ticket, archiving its board, or
+/// revoking the agent's grant did not stop the live session already running.
 /// `agent_ticket_refusal` answers authority, `working_keys` answers "still in
 /// play", assignment is the one thing left that is genuinely local to a
 /// session — and `stop` carries the reason so the activity line says WHY the
 /// session ended instead of just naming a column.
 ///
-/// IT IS ASKED ON EVERY TURN, and the durable port makes that MORE
-/// load-bearing rather than less: a resumed session has been away for as long
-/// as a deploy plus a reclaim, so the world it left is not the world it wakes
-/// up in. It also hands back the TICKET it asked about, so the prompt for
-/// that turn is built from the same read the authority came from and cannot
-/// describe a ticket that has since moved.
+/// IT IS ASKED ON EVERY TURN, and durability makes that MORE load-bearing
+/// rather than less: a resumed session has been away for as long as a deploy
+/// plus a reclaim, so the world it left is not the world it wakes up in. It
+/// also hands back the TICKET it asked about, so the prompt for that turn is
+/// built from the same read the authority came from and cannot describe a
+/// ticket that has since moved.
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub task: tasks::Task,
@@ -453,11 +448,11 @@ async fn real_board_hint(pg: PgPool, board_id: String) -> Result<BoardHint, Stri
 }
 
 /// Skill NAMES the agent can load: directories under the shared fleet root
-/// and the agent's own, matching the skill-name grammar. TS reads these out
-/// of `listAllSkills`, whose other half (SKILL.md summaries, queued
-/// regeneration) is the skills ROUTE family's plane and deliberately not
-/// dragged in here — the session asks one question, "which skills exist",
-/// and a name-only read answers it without firing the summarizer.
+/// and the agent's own, matching the skill-name grammar. Names only — the
+/// other half of the skills plane (SKILL.md summaries, queued regeneration)
+/// is the skills ROUTE family's and deliberately not dragged in here: the
+/// session asks one question, "which skills exist", and a name-only read
+/// answers it without firing the summarizer.
 static SKILL_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("^[a-z0-9][a-z0-9._-]*$").unwrap());
 
@@ -479,7 +474,7 @@ async fn real_skill_names(pg: PgPool, agent_model: String) -> Result<HashSet<Str
 
 async fn add_skill_dir_names(root: &std::path::Path, names: &mut HashSet<String>) {
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
-        return; // no root yet is no skills, not an error — TS readdir catch, same
+        return; // no root yet is no skills, not an error
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         if let Ok(file_type) = entry.file_type().await
@@ -503,12 +498,11 @@ async fn add_skill_dir_names(root: &std::path::Path, names: &mut HashSet<String>
 /// 'ticket' rows are agent-SELF-REPORTED through MCP `log_usage`, and this
 /// turn is metered by Talaria on its own request path.
 ///
-/// ABORT, DIFFERENTLY FROM TS. TS threads an AbortSignal into the transport
-/// so a lost lease cancels the fetch. The Rust harness runner takes no
-/// signal; the driver enforces the same outcome from outside — it races the
-/// step against the step budget and the lease, and DROPPING the step future
-/// cancels the request underneath it. Either way the turn never completes
-/// without checkpointing, and the next entry retires it by `stage_attempt`.
+/// ABORT, FROM OUTSIDE. The harness runner takes no signal, so the driver
+/// enforces the outcome from outside — it races the step against the step
+/// budget and the lease, and DROPPING the step future cancels the request
+/// underneath it. Either way the turn never completes without checkpointing,
+/// and the next entry retires it by `stage_attempt`.
 async fn real_turn(
     state: AppState,
     agent_model: String,
@@ -568,7 +562,7 @@ fn noted(line: &str, checks: &[String]) -> String {
     if checks.is_empty() {
         return line.to_string();
     }
-    // Deduped preserving first-seen order — TS's `new Set(checks)` iteration.
+    // Deduped preserving first-seen order.
     let mut seen: HashSet<&str> = HashSet::new();
     let mut ids: Vec<&str> = Vec::new();
     for c in checks {
@@ -650,10 +644,9 @@ async fn workflow_context(
 ) -> Result<(String, String), String> {
     let flows = (d.workflows_for_task)(pg.clone(), task.clone()).await?;
     // jsonb passthrough: an absent/odd `skills` value is no skills, not a
-    // crashed session. (TS would TypeError on `w.skills.length` and fail the
-    // step; the column is written by the workflow CRUD as an array, so the
-    // difference is theoretical — and the kinder reading is the one that
-    // keeps an agent working.)
+    // crashed session. (The column is written by the workflow CRUD as an
+    // array, so the tolerant read is theoretical — and the kinder reading is
+    // the one that keeps an agent working.)
     let skills_of = |w: &workflows::WorkflowDelivery| -> Vec<String> {
         w.skills
             .as_array()
@@ -766,10 +759,8 @@ fn kits_line(toolkits: &Value) -> String {
 
 /// The dispatch brief — turn one, and the only turn whose prompt describes
 /// the ticket rather than pointing at it. The TEMPLATE is the harness's
-/// `dispatch_prompt` (the two were verbatim twins until the durability port
-/// forked them — a fork is how the fence and the wording drift); this side
-/// supplies what only the durable run knows: the board hint, the workflow
-/// block, and step 2's status instruction.
+/// `dispatch_prompt`; this side supplies what only the session knows: the
+/// board hint, the workflow block, and step 2's status instruction.
 async fn dispatch_prompt(
     d: &WorkSessionDeps,
     pg: &PgPool,
@@ -863,9 +854,9 @@ fn utf16_suffix(s: &str, n: usize) -> &str {
 }
 
 /// `turn - 1` turns are behind us. The plural is spelled out rather than a
-/// `> 2` test because this line is also reachable at turn 1, where the old
-/// loop could not go: a run parked, reclaimed or simply slow enough that the
-/// world changed between the enqueue and the first prompt.
+/// `> 2` test because this line is also reachable at turn 1 — a run parked,
+/// reclaimed or simply slow enough that the world changed between the
+/// enqueue and the first prompt.
 fn turns_so_far(turn: i64) -> String {
     let behind = turn - 1;
     let plural = if behind == 1 { "" } else { "s" };
@@ -1034,9 +1025,8 @@ pub async fn work_session_step(
         };
 
         // ── Send: the one step that spends money ────────────────────────────
-        // The cap is checked BEFORE authority, because that is the order the
-        // loop had: turn 12 was the last one sent, and the line after the
-        // loop was written without asking the ticket anything.
+        // The cap is checked BEFORE authority: turn 12 was the last one sent,
+        // and the cap line is written without asking the ticket anything.
         if *turn > MAX_SESSION_TURNS {
             say(
                 d,
@@ -1301,21 +1291,20 @@ fn audience(run: &RunRow) -> Authority {
     }
 }
 
-/// The real step deps, armed with the scheduler handover: the Rust driver
-/// does not exist until the flip arms it, so the deps sit empty until the
-/// boot wiring (which owns the AppState) installs them. An unarmed step is
-/// the loud refusal below — reached only by a driver armed before its deps,
-/// which is exactly what the sentence says.
+/// The real step deps. They need the AppState, which the boot wiring owns, so
+/// they are installed separately from registration; an unarmed step is the
+/// loud refusal below — reached only by a driver armed before its deps,
+/// which is a wiring bug.
 static ARMED_DEPS: OnceLock<WorkSessionDeps> = OnceLock::new();
 
 pub fn arm_work_session_step(deps: WorkSessionDeps) {
     let _ = ARMED_DEPS.set(deps);
 }
 
-/// The registered definition, exactly once per process — TS registers at
-/// module load; the Rust equivalent is the first call, which `dispatch` makes
-/// before any enqueue, so the row's kind is always registered before it is
-/// written. The returned `&'static Arc` is the same one the registry holds.
+/// The registered definition, exactly once per process — registered on the
+/// first call, which `dispatch` makes before any enqueue, so the row's kind
+/// is always registered before it is written. The returned `&'static Arc` is
+/// the same one the registry holds.
 pub fn work_session_run() -> &'static Arc<RunDefinition> {
     static DEF: OnceLock<Arc<RunDefinition>> = OnceLock::new();
     DEF.get_or_init(|| {
@@ -1365,9 +1354,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // Generated by importing the TS module itself (bun -e over
-    // runs/defs/work-session.ts) — not by re-deriving them here, which would
-    // test the port against the port.
+    // Fixed vectors from the original derivation — not re-derived here,
+    // which would test the derivation against itself.
     #[test]
     fn session_run_id_matches_the_ts_derivation() {
         assert_eq!(
@@ -1434,7 +1422,7 @@ mod tests {
                 board_id: "b-1".into()
             }
         );
-        // TS's truthiness: an empty boardId string is nobody's, not a board
+        // Truthiness: an empty boardId string is nobody's, not a board
         // named "".
         row.input = serde_json::json!({"boardId": ""});
         assert!(matches!(audience(&row), Authority::Nobody));
@@ -1454,7 +1442,7 @@ mod tests {
 
     #[test]
     fn checkpoints_round_trip_the_ts_spellings() {
-        // A TS-written send, with and without notBefore.
+        // A send checkpoint, with and without notBefore.
         let send: WorkSessionCheckpoint = serde_json::from_value(
             json!({"stage":"send","turn":3,"stageAttempt":1,"lastTail":"will DONE soon"}),
         )
@@ -1495,9 +1483,8 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(failed, WorkSessionCheckpoint::Failed { .. }));
-        // The notBefore-less send serializes WITHOUT the key — TS writes it
-        // by conditional spread, so a Rust-written checkpoint a TS driver
-        // reads must not carry a null notBefore it would treat as a number.
+        // The notBefore-less send serializes WITHOUT the key — a checkpoint
+        // must not carry a null notBefore a reader would treat as a number.
         assert!(
             !serde_json::to_value(&send)
                 .unwrap()
@@ -1515,17 +1502,16 @@ mod tests {
                 .unwrap()
                 .generation,
             0
-        ); // `generation ?? 0`
+        ); // generation defaults to 0 when absent
         assert!(as_checkpoint(&json!(null)).unwrap().is_none());
         assert!(as_checkpoint(&json!({"stage":"nonsense"})).is_err());
     }
 
     // ── A fake world to drive whole sessions ────────────────────────────────
     //
-    // No database, no Redis, no model: the step is driven on recording deps,
-    // exactly the way work-session.test.ts drives the TS one. `state` is real
-    // but lazy — the pool dials nothing until a query runs, and no fake dep
-    // ever runs one.
+    // No database, no Redis, no model: the step is driven on recording deps.
+    // `state` is real but lazy — the pool dials nothing until a query runs,
+    // and no fake dep ever runs one.
 
     fn test_state() -> AppState {
         use crate::config::Config;

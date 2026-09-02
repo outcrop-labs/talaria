@@ -1,8 +1,7 @@
-// The background scheduler — the one place periodic server work is timed.
-// Port of ui/src/server/scheduler.ts, whole: the timing, the guarantees and
-// the Redis-lease POLICY (the mechanism is runs/lease.rs, already crossed;
-// the demote-on-completion hold below is the scheduler's own idea, and the
-// comment there says so).
+// The background scheduler — the one place periodic server work is timed:
+// the timing, the guarantees and the Redis-lease POLICY (the mechanism is
+// runs/lease.rs; the demote-on-completion hold below is the scheduler's own
+// idea, and the comment there says so).
 //
 // WHAT THIS FILE GUARANTEES
 //   1. It runs with zero traffic. `start_scheduler` is called once from the
@@ -15,7 +14,7 @@
 //      the same way — the attempt runs inside `catch_unwind`, because a panic
 //      that skipped the cleanup path would leave `running` stuck true and the
 //      overlap guard would turn away every tick behind it forever: the M1
-//      cold-boot wedge, rebuilt in Rust by accident.
+//      cold-boot wedge all over again.
 //   3. A job never overlaps itself — not in this process (the `running` flag)
 //      and not across processes (the Redis lease).
 //   4. Two instances do not double-run a job. The lease is held for the rest
@@ -84,12 +83,11 @@ const SCHED_LEASE_NS: &str = "sched";
 
 /// Every job this deployment expects to be running. Adding a variant here
 /// without registering it fails the boot check in `start_scheduler`, which is
-/// the point: a job whose module never got imported would otherwise be
-/// invisible — the exact failure mode (background work that silently does not
-/// happen) this file exists to end. `BlurbRewrite` is the one this batch ADDS:
-/// its only TS trigger was the `/api/models` handler, which the coexistence
-/// proxy shadows — in any proxied environment the org-voice sweep is dark
-/// until this job carries it.
+/// the point: a job whose register call fell out of the boot list would
+/// otherwise be invisible — the exact failure mode (background work that silently does not
+/// happen) this file exists to end. `BlurbRewrite` must be carried by this
+/// table: the job is the org-voice sweep's only trigger, so a build without
+/// it leaves that sweep dark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JobName {
     CommsDecay,
@@ -124,11 +122,11 @@ impl JobName {
 }
 
 /// The jobs whose absence is SILENCE, and so must fail the boot check loudly.
-/// The two TS optional jobs (mcp-library-refresh, update-check) are out for
-/// their TS reasons: their failure mode is a slower first load or a stale
-/// "last checked" next to a switch the panel shows, not work that silently
-/// never happens. BlurbRewrite is in for the reason above — a dark sweep in
-/// every proxied install is exactly the criterion.
+/// The two optional jobs (mcp-library-refresh, update-check) are out: their
+/// failure mode is a slower first load or a stale "last checked" next to a
+/// switch the panel shows, not work that silently never happens. BlurbRewrite
+/// is in for the reason above — a dark org-voice sweep is exactly the
+/// criterion.
 pub const REQUIRED_JOBS: &[JobName] = &[
     JobName::CommsDecay,
     JobName::OutreachSweep,
@@ -336,12 +334,10 @@ fn disabled_by_env(value: Option<&str>) -> bool {
     value == Some("off")
 }
 
-/// The env-read half of the kill switch. During the port this file also had
-/// a flip predicate (`TALARIA_SCHEDULER=rust`, this process owns the
-/// schedule or TS does) that gated arming, the enqueue sites' inline drive,
-/// and the models route's blurb kick; the cutover deleted the TS runtime,
-/// so all of that is this process's behavior unconditionally and only the
-/// kill switch reads the env at all.
+/// The env-read half of the kill switch — the only env read on the whole
+/// plane: arming, the enqueue sites' inline drive and the models route's
+/// blurb kick are this process's behavior unconditionally, and the one value
+/// that changes anything is `off`.
 pub fn scheduler_disabled() -> bool {
     disabled_by_env(std::env::var("TALARIA_SCHEDULER").ok().as_deref())
 }
@@ -592,8 +588,8 @@ fn tick_now(name: JobName) {
 
 /// Start every registered job. Idempotent. Returns the names actually armed.
 ///
-/// Not armed in dev: `main` calls it only when the flip flag is set, the same
-/// way TS's boot path is the only thing that calls `startScheduler`.
+/// The boot path owns the call (`main` reaches it through `jobs::arm`, behind
+/// the kill switch); nothing in a request path arms a schedule.
 pub fn start_scheduler(conn: redis::aio::ConnectionManager) -> Vec<JobName> {
     // BEFORE the kill switch, deliberately. A required job that never
     // registered means its module was not in the runtime graph — a fact about
@@ -903,7 +899,7 @@ fn health_from(statuses: &[JobStatus], started: bool, now: i64) -> Vec<JobHealth
         }
     }
     // Critical first; within a severity, the registration order the status
-    // walk produced (the sort is stable, matching TS's comparator).
+    // walk produced (the sort is stable).
     out.sort_by(|a, b| match (a.severity, b.severity) {
         (HealthSeverity::Critical, HealthSeverity::Warning) => std::cmp::Ordering::Less,
         (HealthSeverity::Warning, HealthSeverity::Critical) => std::cmp::Ordering::Greater,

@@ -1,6 +1,5 @@
-// /api/integrations/google/org/provision — port of
-// ui/src/routes/api/integrations/google.org.provision.ts. The org workspace
-// provisioning surface (admin). GET → what the panel draws: scope readiness,
+// /api/integrations/google/org/provision — the org workspace provisioning
+// surface (admin). GET → what the panel draws: scope readiness,
 // the provisioned container ids, and every agent's effective send address.
 // POST → run the requested provisions, per-item outcomes back.
 
@@ -24,8 +23,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     if let Err(gate) = require_admin(&state, &headers).await {
         return gate;
     }
-    // TS runs four reads concurrently (Promise.all); each fails the whole
-    // route on error, and none writes, so sequential reads answer the same.
+    // Four independent reads; any failure fails the route, and none writes,
+    // so sequential order answers the same.
     let readiness = match provisioning_readiness(&state.pg).await {
         Ok(r) => r,
         Err(e) => {
@@ -47,9 +46,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // listAgentDefs' row, cut to the five columns this read uses, still
-    // ordered by slug asc. Personal assistants are filtered out — they send
-    // as their owner, where no org alias applies.
+    // The agent_defs row, cut to the five columns this read uses, ordered by
+    // slug asc. Personal assistants are filtered out — they send as their
+    // owner, where no org alias applies.
     type DefRow = (
         String,
         String,
@@ -71,7 +70,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let agents: Vec<Value> = defs
         .into_iter()
-        // `.filter((d) => !d.ownerUserId)` — org agents only
+        // org agents only — an owner_user_id means a personal assistant
         .filter(|(_, _, _, _, owner_user_id)| owner_user_id.is_none())
         .map(|(model, slug, display_name, email_alias, _owner)| {
             let effective = agent_from_address(&slug, email_alias.as_deref(), org_email.as_deref());
@@ -126,8 +125,8 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .await
     {
         Ok(result) => {
-            // Each key rides only when requested — TS's undefined members are
-            // dropped by JSON.stringify, not written as null.
+            // Each key rides only when requested — absent is omitted from the
+            // wire, not written as null.
             let mut body = serde_json::Map::new();
             if let Some(c) = result.calendar {
                 body.insert(
@@ -152,7 +151,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     }
 }
 
-/// Date.now() — the one clock provisioning reads.
+/// Epoch-ms clock — the one time provisioning reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

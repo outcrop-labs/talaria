@@ -1,6 +1,6 @@
-// The read-side assembly — port of daily-brief.ts's `view`/`documentView`.
-// The brief's BriefView is a fixed shape, so it gets typed structs in TS
-// declaration order rather than per-site `json!`.
+// The read-side assembly. The brief's BriefView is a fixed shape, so it gets
+// typed structs whose declaration order is the wire key order rather than
+// per-site `json!`.
 //
 // THE DOCUMENT IS THE LOG FOLDED. `view` takes the row, the entries, the
 // assistant and the live comms state and answers the whole surface: sections
@@ -33,8 +33,8 @@ pub struct CommsStateWire {
     pub draft: Option<Value>,
 }
 
-/// commsLines → the wire control, exactly as documentView maps it: a live
-/// draft projects to its three-key literal, a stale one rides whole.
+/// The wire control off a comms line: a live draft projects to its three-key
+/// literal, a stale one rides whole.
 pub fn comms_state(line: &CommsLine) -> CommsStateWire {
     let draft = line.draft.as_ref().map(|d| {
         if d.stale {
@@ -51,15 +51,15 @@ pub fn comms_state(line: &CommsLine) -> CommsStateWire {
     }
 }
 
-/// One document section — the literal BRIEF_SECTIONS.map spells, in that key
-/// order. `section` borrows from the const array, so it is `'static`.
+/// One document section, in BRIEF_SECTIONS order. `section` borrows from the
+/// const array, so it is `'static`.
 #[derive(Serialize)]
 pub struct SectionWire {
     section: &'static str,
     lines: Vec<BriefLine>,
 }
 
-/// The whole surface, folded (BriefView) — key order is the TS literal's.
+/// The whole surface, folded (BriefView) — field order is the wire key order.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BriefViewWire {
@@ -87,7 +87,7 @@ pub struct BriefViewWire {
 }
 
 /// The rank behind "priority first, then the order the log put them in".
-/// Unknown priorities sink with the `ok` tier, as the TS `?? 3` does.
+/// Unknown priorities sink with the `ok` tier.
 fn priority_rank(priority: Option<&str>) -> i64 {
     match priority {
         Some("p0") => 0,
@@ -121,8 +121,7 @@ pub fn view(
             group.sort_by(|a, b| {
                 // Unresolved first (false < true), then priority, then the seq
                 // the log first put the line at. Rust's sort is stable, so
-                // ties keep fold order — first-insertion, the order TS's Map
-                // held the lines in.
+                // ties keep fold order — first-insertion.
                 a.resolved
                     .cmp(&b.resolved)
                     .then_with(|| {

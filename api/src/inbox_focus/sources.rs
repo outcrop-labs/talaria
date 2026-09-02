@@ -1,9 +1,9 @@
-// inbox-focus-sources.ts — the four provenances a queue item can have.
+// The four provenances a queue item can have.
 //
-// Every SQL statement is the TS one verbatim (epoch-ms extraction instead of
-// Date columns — the wire renders both through `as_iso`), and every metadata
-// record is built in its TS key order: metadata rides the wire and the item
-// fingerprint, and `json!` + preserve_order keeps that order byte-identical.
+// Epoch-ms extraction in the SQL (not Date columns — the wire renders both
+// through `as_iso`), and every metadata record built in a fixed key order:
+// metadata rides the wire and the item fingerprint, and `json!` +
+// preserve_order keeps that order exact.
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -231,7 +231,7 @@ fn approval_evidence_email(payload: &Value) -> Vec<FocusEvidence> {
         };
         out.push(evidence("To", &text));
     }
-    // `p.subject !== undefined` — an empty subject is still a Subject row.
+    // Presence, not emptiness — an empty subject is still a Subject row.
     if let Some(subject) = payload.get("subject") {
         let text = subject.as_str().unwrap_or_default();
         out.push(evidence("Subject", truncate_utf16(text, 1_000)));

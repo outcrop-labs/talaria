@@ -1,7 +1,6 @@
-// The MCP server library — port of ui/src/server/mcp-library.ts. The OFFICIAL
-// MCP registry, queried live and parsed per the LATEST server.json schema
-// (2025-12-11: title, websiteUrl, themed icons, remote header declarations).
-// Ranked for a BUSINESS platform:
+// The MCP server library — the OFFICIAL MCP registry, queried live and
+// parsed per the LATEST server.json schema (2025-12-11: title, websiteUrl,
+// themed icons, remote header declarations). Ranked for a BUSINESS platform:
 //   first-party  verified reverse-DNS namespace AND the hosted endpoint (or
 //                website) lives on that domain — Vercel's own mcp.vercel.com
 //   verified     domain-verified namespace, hosted elsewhere
@@ -23,14 +22,12 @@
 //      the one truly cold load (first request ever, registry up) usually
 //      happens before any user opens the marketplace.
 //
-// Port shape: TS keeps the caches in module state and tests swap the module's
-// imports; here the state lives inside a constructed Library with the edge,
-// the clock, and the icon warm hook injected — `library()` is the production
-// singleton wired to safe_fetch and the shared icon cache. The single-flight
-// is a held flight lock plus a requested-at stamp (a pass that landed after a
-// caller asked is shared with that caller, which is TS's in-flight promise);
-// the scheduled job asks on its own 30min cadence, so an older shelf never
-// satisfies it.
+// The state lives inside a constructed Library with the edge, the clock,
+// and the icon warm hook injected — `library()` is the production singleton
+// wired to safe_fetch and the shared icon cache. The single-flight is a held
+// flight lock plus a requested-at stamp (a pass that landed after a caller
+// asked is shared with that caller); the scheduled job asks on its own 30min
+// cadence, so an older shelf never satisfies it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -188,7 +185,7 @@ fn on_domain(h: Option<&str>, domain: &str) -> bool {
 }
 
 fn strip_brand_label(d: &str) -> &str {
-    // TS: replace(/^(www|mcp|docs|support|api)\./, '') — one leading label.
+    // One leading label only — www/mcp/docs/support/api.
     for label in ["www", "mcp", "docs", "support", "api"] {
         if let Some(rest) = d.strip_prefix(&format!("{label}.")) {
             return rest;
@@ -206,7 +203,7 @@ fn capitalize_first(s: &str) -> String {
 }
 
 fn is_generic_title(title: &str) -> bool {
-    // TS: /^(mcp|mcp[-_]?server|server)$/i
+    // Generic noise, case-insensitive.
     let t = title.to_lowercase();
     matches!(
         t.as_str(),
@@ -215,8 +212,8 @@ fn is_generic_title(title: &str) -> bool {
 }
 
 fn is_lone_lowercase_word(title: &str) -> bool {
-    // TS: /^[a-z][a-z0-9]*$/ — "linear" → "Linear": lone lowercase words
-    // present as brands.
+    // First char a lowercase letter, rest lowercase/digit — "linear" →
+    // "Linear": lone lowercase words present as brands.
     let mut chars = title.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -416,9 +413,9 @@ impl Library {
         (self.edge)(&req).await
     }
 
-    /// One registry page. Non-OK statuses are the error text TS throws
-    /// (`registry ${status}`); a bad body errors too — resolvePublisher treats
-    /// both as "registry hiccup, try the fallbacks".
+    /// One registry page. Non-OK statuses error as `registry <status>`; a
+    /// bad body errors too — resolvePublisher treats both as "registry
+    /// hiccup, try the fallbacks".
     async fn registry_page(&self, params: &[(&str, &str)]) -> Result<Vec<Value>, String> {
         let mut url = reqwest::Url::parse(REGISTRY_URL).map_err(|e| e.to_string())?;
         {
@@ -595,11 +592,10 @@ impl Library {
 
     /// Single-flight the refresh so N concurrent stale serves trigger ONE
     /// fan-out, not N. A pass that landed at-or-after this caller asked is
-    /// shared with it — TS's in-flight promise, where a caller arriving
-    /// mid-pass attaches to the same promise (`>=`, not `>`, because a pass
-    /// landing in the same millisecond the caller asked is still that
-    /// pass's answer); the scheduled job asks on its own 30min cadence, so a
-    /// shelf that predates its request never satisfies it.
+    /// shared with it (`>=`, not `>`, because a pass landing in the same
+    /// millisecond the caller asked is still that pass's answer); the
+    /// scheduled job asks on its own 30min cadence, so a shelf that predates
+    /// its request never satisfies it.
     pub async fn refresh_featured_once(&self) -> Arc<Vec<LibraryServer>> {
         let requested_at = self.now();
         let _flight = self.flight.lock().await;
@@ -656,9 +652,9 @@ impl Library {
                 by_name.insert(s.registry_name.clone(), s);
             }
         }
-        // Tier, then title — TS sorts localeCompare, this is byte order on
-        // the (ASCII-lowercase-heavy) titles; ordering inside a tier is
-        // presentation, not contract.
+        // Tier, then title — byte order on the (ASCII-lowercase-heavy)
+        // titles, not locale-aware; ordering inside a tier is presentation,
+        // not contract.
         let mut results: Vec<LibraryServer> = by_name.into_values().collect();
         results.sort_by(|a, b| a.tier.cmp(&b.tier).then_with(|| a.title.cmp(&b.title)));
         results.truncate(40);
@@ -804,7 +800,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ── the faked edge, mirroring the TS module mocks ──────────────────────
+    // ── the faked edge ──────────────────────────────────────────────────────
 
     type RegistryFn = Box<dyn Fn(&str) -> Vec<Value> + Send + Sync>;
     type WellKnownFn = Box<dyn Fn(&str) -> Option<Value> + Send + Sync>;
@@ -1051,7 +1047,7 @@ mod tests {
         );
     }
 
-    // ── the four TS module-boundary tests ─────────────────────────────────
+    // ── the module-boundary tests ───────────────────────────────────────────
 
     #[tokio::test]
     async fn resolves_the_featured_shelf_with_bounded_registry_concurrency() {

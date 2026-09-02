@@ -1,16 +1,15 @@
-// THE SANDBOX WORLD'S SHAPE, and the standard instance of it. Port of the type
-// surface + `BASE_WORLD` from ui/src/server/fitness/toolbox/sandbox.ts — split
-// into its own module because two consumers need it before the sandbox itself
-// crosses: the six dry-run defs declare WORLDS (overrides on this record) and
-// their fixtures read the world the run left behind, and the sandbox (the rest
-// of sandbox.ts) mutates it. Holding the shape here keeps those two from
-// drifting apart the way the harness layer's own type erasure once did.
+// THE SANDBOX WORLD'S SHAPE, and the standard instance of it. Split into its
+// own module because two consumers need it without the sandbox: the six
+// dry-run defs declare WORLDS (overrides on this record) and their fixtures
+// read the world the run left behind, while the sandbox (sandbox.rs) mutates
+// it. Holding the shape here keeps those two from drifting apart the way the
+// harness layer's own type erasure once did.
 //
 // SERDE IS THE CONTRACT BETWEEN THE HALVES: a def's `DryRunDecl.world` produces
 // a `Value`, `CheckCtx.world` hands one back, and both directions go through
-// `SandboxWorld`'s serde impl — camelCase, exactly the wire shape the TS world
-// had, because a fixture's assertion and the sandbox's mutation must agree on
-// field names with nothing in the middle to translate.
+// `SandboxWorld`'s serde impl — camelCase, the wire shape, because a
+// fixture's assertion and the sandbox's mutation must agree on field names
+// with nothing in the middle to translate.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -290,8 +289,8 @@ pub struct SandboxEventDraft {
 #[serde(rename_all = "camelCase")]
 pub struct SandboxWorld {
     /// Every field carries `default`, because a def's declared world is a
-    /// PARTIAL override the sandbox merges onto `base_world()` — TS's
-    /// `makeSandbox({ world })` — never a whole record. Deserializing the
+    /// PARTIAL override the sandbox merges onto `base_world()`, never a
+    /// whole record. Deserializing the
     /// merged result is the normal path; deserializing a bare partial yields
     /// defaults everywhere else, which is why only the sandbox does the
     /// merging.
@@ -698,7 +697,7 @@ mod tests {
         assert_eq!(base_world().gaps_filed.len(), 0);
 
         // A def's declared world is a PARTIAL override the sandbox merges onto
-        // `base_world()` (TS: `makeSandbox({ world })`) — deserializing a bare
+        // `base_world()` — deserializing a bare
         // partial therefore yields defaults everywhere else. Only the sandbox
         // merges, and a fixture never reads an unmerged override: an empty
         // override read bare would be an empty Talaria, which is why.

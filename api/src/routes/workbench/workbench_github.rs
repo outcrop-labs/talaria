@@ -1,10 +1,9 @@
-// /api/workbench/github — port of ui/src/routes/api/workbench.github.ts. The
-// Workbench's GitHub connection. Deliberately requireAdmin (not
-// agents.manage): this holds ORG CREDENTIALS (PAT / App private key) — a
-// grantable permission shouldn't reach them. GET → live-verified redacted
-// status (+ ?installations=… lists where the App is installed, the
-// easy-setup picker); PUT → patch config (secrets sealed); DELETE →
-// disconnect.
+// /api/workbench/github. The Workbench's GitHub connection. Deliberately
+// requireAdmin (not agents.manage): this holds ORG CREDENTIALS (PAT / App
+// private key) — a grantable permission shouldn't reach them. GET →
+// live-verified redacted status (+ ?installations=… lists where the App is
+// installed, the easy-setup picker); PUT → patch config (secrets sealed);
+// DELETE → disconnect.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -24,9 +23,9 @@ use crate::github::PatchField;
 use crate::session::{actor_of, require_admin};
 use crate::state::AppState;
 
-/// `z.enum(['app','pat']).nullable().optional()` — the tri-state: absent is
-/// "don't touch" (None), present-null is "clear it" (Some(None)), a present
-/// value must be one of the options.
+/// A nullable-optional enum — the tri-state: absent is "don't touch"
+/// (None), present-null is "clear it" (Some(None)), a present value must be
+/// one of the options.
 fn present_nullable_enum_member(
     obj: &Map<String, Value>,
     key: &str,
@@ -43,8 +42,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if let Err(gate) = require_admin(&state, &headers).await {
         return gate;
     }
-    // searchParams.get('installations') — any NON-EMPTY value is truthy; the
-    // bare `?installations` and `?installations=` are '' and fall through.
+    // ?installations=… — any NON-EMPTY value counts; the bare
+    // `?installations` and `?installations=` are '' and fall through.
     let wants_installations = uri
         .query()
         .map(|q| {
@@ -75,9 +74,9 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // The Body schema → the engine's tri-state patch, field by field in
+    // The body schema → the engine's tri-state patch, field by field in
     // schema order. `pat` and `app` are optional OBJECTS — present-but-wrong
-    // type answers zod's object message.
+    // type answers the object message.
     let mode = match present_nullable_enum_member(obj, "mode", &["app", "pat"]) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

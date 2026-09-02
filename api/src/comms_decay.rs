@@ -3,16 +3,13 @@
 // brain (owner-scoped), then archive out of the sidebar — context survives,
 // scrollback doesn't.
 //
-// Port of comms-decay.ts: the scheduled half (the sweep and its job
-// registration) crossed with batch 4, and `concludeRelay` — the comms
-// family's own surface, whose caller is the conclude route — crossed with
-// the channels family that owns that route.
+// The scheduled half is the sweep and its job registration; `conclude_relay`
+// — the comms family's own surface — is called by the conclude route.
 //
 // THE ACCOUNTING IS THE MODULE. Two of distillation's three outcomes mean
-// "archived NOTHING", and both used to be counted as archives — the sweep
-// reported eight chats distilled, the scrollback went away, and nothing was
-// ever written to the brain. Every count below is taken from what came back,
-// never from "it did not throw", and `considered === archived + skipped-no-model
+// "archived NOTHING", and neither may be counted as an archive. Every count
+// below is taken from what came back, never from "it did not throw", and
+// `considered === archived + skipped-no-model
 // + skipped-empty + failed` is the property that makes the hourly log line
 // checkable rather than decorative.
 
@@ -29,8 +26,8 @@ use crate::state::AppState;
 use serde_json::json;
 use sqlx::PgPool;
 
-/// `TALARIA_CHAT_TTL_DAYS`, floored at one day. Read per pass like TS's
-/// `TTL_DAYS()` so a config change needs no restart.
+/// `TALARIA_CHAT_TTL_DAYS`, floored at one day. Read per pass, so a config
+/// change needs no restart.
 fn ttl_days() -> i64 {
     std::env::var("TALARIA_CHAT_TTL_DAYS")
         .ok()
@@ -39,9 +36,8 @@ fn ttl_days() -> i64 {
         .max(1)
 }
 
-/// The deploy-day bound. This sweep ARCHIVES people's conversations, and until
-/// the scheduler existed it only ran when traffic happened to kick it — so the
-/// first pass may find a long backlog. One pass never touches more than this
+/// The deploy-day bound. This sweep ARCHIVES people's conversations, and
+/// the first pass may find a long backlog. One pass never touches more than this
 /// many, and a pass runs at most hourly, so the worst case is ~8 archives an
 /// hour (~190/day) draining gradually rather than a wall of "where did my
 /// chats go" on the morning of a deploy.
@@ -114,10 +110,9 @@ pub struct IdleConv {
 
 /// The per-conversation work as one injected edge — everything below
 /// `sweep_idle_chats`'s accounting: read the messages, run the distiller,
-/// index the distillation twice, file the artifact, archive. The seam sits
-/// exactly where TS's test mocks sit (`runHarness`, `indexActivity`,
-/// `createArtifact`, the sql), so the accounting can be pinned without any
-/// of them. `Err` is the caught-throw path: an infrastructure failure the
+/// index the distillation twice, file the artifact, archive. The seam
+/// exists so the accounting can be pinned in tests without any of that.
+/// `Err` is the caught-throw path: an infrastructure failure the
 /// sweep counts as `failed` and moves on.
 pub type DistillFn = Arc<
     dyn Fn(IdleConv) -> futures_util::future::BoxFuture<'static, Result<DistillOutcome, String>>
@@ -130,7 +125,7 @@ pub struct DecayDeps {
     pub distill: DistillFn,
 }
 
-/// The production edge: `distillConversation` whole.
+/// The production edge: `distill_conversation` whole.
 pub fn real_decay_deps(state: &AppState) -> DecayDeps {
     let st = state.clone();
     DecayDeps {
@@ -168,17 +163,15 @@ async fn distill_conversation(state: &AppState, conv: IdleConv) -> Result<Distil
         60_000,
     );
 
-    // BEHAVIOR CHANGE KEPT FROM THE PORT BEFORE THIS ONE, deliberately: a
-    // conversation with nothing in it now archives without needing a model at
-    // all. The chain used to be resolved first, so a wholly empty chat on an
-    // install with no Distiller model came back 'no-model' — unarchivable for
+    // A conversation with nothing in it archives without needing a model at
+    // all — resolving the chain first would leave a wholly empty chat on an
+    // install with no Distiller model stuck 'no-model': unarchivable for
     // ever, and counted into the skipped-no-model total that makes the job
     // fail. There is no substance to lose here, so the never-archive-on-a-
     // failed-distillation rule has nothing to protect.
     if !transcript.trim().is_empty() {
         // `user_id` is what turns on the owner's preferred model and the
-        // member allowlist — the two things `museModelFor` used to supply by
-        // hand before the harness declared the chain.
+        // member allowlist when the harness resolves the distiller chain.
         let run = run_harness(
             state,
             &distiller_harness(),
@@ -283,7 +276,7 @@ pub struct DecaySweepResult {
 }
 
 /// The accounting loop, split from the query so the invariants can be pinned
-/// without a database — exactly the seam TS's tests fake below.
+/// without a database.
 async fn run_sweep(idle: Vec<IdleConv>, distill: &DistillFn) -> DecaySweepResult {
     let mut result = DecaySweepResult {
         considered: idle.len(),
@@ -400,10 +393,10 @@ pub async fn conclude_relay(
         return Err("nothing to conclude: the relay has no messages".into());
     }
 
-    // The model chain and the empty-reply check moved into the concluder
-    // harness. The failures are still mapped BY HAND rather than with an
-    // onFailure-throw policy, and the reason is down to one: these strings
-    // are user-facing copy, not a developer's error message.
+    // The model chain and the empty-reply check live in the concluder
+    // harness; the failure arms are mapped BY HAND here, and the reason is
+    // down to one: these strings are user-facing copy, not a developer's
+    // error message.
     let run = run_harness(
         state,
         &crate::harness::defs::concluder::concluder_harness(),
@@ -481,7 +474,7 @@ pub async fn conclude_relay(
 pub fn comms_decay_job_spec(deps: Arc<DecayDeps>) -> JobSpec {
     JobSpec {
         name: JobName::CommsDecay,
-        // Unchanged from the kick's throttle: hourly.
+        // Hourly.
         every_ms: 60 * 60_000,
         // Not at the instant of boot: a crash-looping instance should never
         // reach a job that archives, and a deploy should settle before it
@@ -501,9 +494,8 @@ pub fn comms_decay_job_spec(deps: Arc<DecayDeps>) -> JobSpec {
     }
 }
 
-/// Declare the sweep to the scheduler — the function the flip calls from
-/// boot. TS registers at module load next to the work; Rust's deps are runtime
-/// values, so the registration is a call, with the same consequence: it is
+/// Declare the sweep to the scheduler — called from boot. The deps are
+/// runtime values, so the registration is a call rather than a static; it is
 /// what puts the job in the runtime graph, and 'comms-decay' is in
 /// REQUIRED_JOBS, so an instance that boots without reaching it prints a
 /// MISSING JOBS error instead of quietly never decaying a chat.
@@ -518,11 +510,11 @@ mod tests {
     use serde_json::Value;
     use std::sync::Mutex;
 
-    // Port of comms-decay.test.ts. THE INVARIANT UNDER TEST: `distill` has
-    // three outcomes and two of them mean "archived NOTHING". Counting either
-    // as an archive is how the substance of a conversation is destroyed.
-    // Everything below the accounting loop is faked here exactly as the TS
-    // suite fakes it, so every assertion is about THIS module's accounting.
+    // THE INVARIANT UNDER TEST: `distill` has three outcomes and two of
+    // them mean "archived NOTHING". Counting either as an archive is how
+    // the substance of a conversation is destroyed. Everything below the
+    // accounting loop is faked, so every assertion is about THIS module's
+    // accounting.
 
     fn run_with(model: Option<&str>, value: Option<&str>) -> HarnessResult {
         HarnessResult {

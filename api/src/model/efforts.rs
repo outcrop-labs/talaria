@@ -1,11 +1,10 @@
-// Which reasoning-effort levels a model id may be asked for — port of
-// model-efforts.ts.
+// Which reasoning-effort levels a model id may be asked for.
 //
 // THE ONE QUESTION THIS FILE ANSWERS, asked by two surfaces and enforced by
 // two routes: "may the composer offer an effort picker for THIS id, and which
 // levels may it list?" Two voices can vouch, and only these two: the
 // per-model metadata the catalog refresh already extracts and stores
-// (model_catalog.rs, filled when an admin adds models on /models) — the
+// (model::catalog, filled when an admin adds models on /models) — the
 // provider's own `supported_efforts` — and an admin's declaration
 // (`llm_endpoints.model_efforts`, edited on the endpoint modal) for providers
 // whose catalog says nothing. A model neither voice has published levels for
@@ -39,7 +38,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// THE SECOND VOICE THAT CAN VOUCH (port of withDeclaredEfforts's lookup).
+/// THE SECOND VOICE THAT CAN VOUCH.
 /// An admin's declaration REPLACES the catalog's ladder for that endpoint's
 /// build of the model — a human's word outranks a provider's, the same
 /// standing a declared capability fact has over a catalog one — and never
@@ -174,8 +173,7 @@ pub fn reset_efforts_backfill() {
 
 /// Run (or join) one endpoint's refresh. The throttle is re-checked INSIDE the
 /// per-endpoint guard: whoever stamps first runs, and callers that queued on
-/// the guard see the fresh stamp and stand down — the TS pending-promise map's
-/// semantics.
+/// the guard see the fresh stamp and stand down.
 async fn refresh_throttled(state: &AppState, ep: &LlmEndpoint) {
     let guard = {
         let mut map = inflight().lock().unwrap();
@@ -215,7 +213,7 @@ pub async fn ensure_efforts_catalog(state: &AppState, model: &str) -> Vec<String
     let store = crate::gateway::settings::get_setting(pg, KEY, serde_json::json!({})).await;
     // The endpoints that could serve this id: a persona's own targets, or the
     // pool a catalog id lands on. Same resolution rule as the read above,
-    // first-seen order preserved ([...new Set(...)]).
+    // first-seen order preserved.
     let mut names: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let source: Vec<String> = if !targets.is_empty() {

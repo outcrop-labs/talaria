@@ -1,17 +1,16 @@
 // The reclaim sweeper — the thing that makes "survives a restart" TRUE.
 //
-// WHAT IT REPLACES
-//   server/research.ts:349 has a sweep with exactly this shape and exactly the
-//   wrong body:
+// THE FAILURE THIS FILE EXISTS TO DELETE. The pre-run sweeper had exactly this
+// shape and exactly the wrong body:
 //
 //     update research_runs set status = 'error',
 //       error = 'run went stale (app restarted mid-research?)'
 //
-//   It does not resume the run. It gives up on it, forty-five minutes later,
-//   and tells the person who asked for a research report that it failed — for
+//   It did not resume the run. It gave up on it, forty-five minutes later,
+//   and told the person who asked for a research report that it failed — for
 //   the crime of a deploy landing while they waited. Nothing was lost when that
 //   process died: the work up to the last checkpoint was on disk and the next
-//   step was re-enterable. That sentence is the bug this whole project exists
+//   step was re-enterable. That sentence is the bug this whole engine exists
 //   to delete, and this file is where it gets deleted: the same event (a driver
 //   stopped renewing) produces a RESUME instead of an epitaph.
 //
@@ -29,7 +28,7 @@
 // `awaiting` IS NOT STALE, no matter how long it sits. It is parked on a
 // question a person has not answered yet; that is a healthy state and it may
 // last days. A sweeper that treated "old and not moving" as "broken" would
-// auto-fail every paused run in the product, which is `research.ts`'s bug
+// auto-fail every paused run in the product, which is the same bug
 // wearing a different hat — and worse, because the run would be destroyed while
 // the notification asking about it was still in somebody's inbox. The guard is
 // `is_drivable` (runs/define.rs, which says the same thing in its doc comment)
@@ -51,10 +50,9 @@
 // the whole sweeper with no database, no Redis and no clock.
 //
 // THE REGISTRATION is `reclaim_job_spec`/`register_reclaim_job` at the bottom
-// of this file: the four numbers below in their four slots, not perInstance,
-// armed by the flip's boot path (Rust's deps are runtime values, so the call
-// — not the module load — is what puts the job in the runtime graph). Until
-// the flip arms the scheduler, registering costs nothing and running nothing.
+// of this file: the four numbers below in their four slots, not perInstance.
+// The deps are runtime values (the pool, the realtime fan-out), so the boot
+// call — not the module load — is what puts the job in the runtime graph.
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
@@ -69,8 +67,8 @@ const LOG: &str = "[runs/reclaim]";
 /// twenty-second-old lease is the kind of rounding that makes somebody stop
 /// reading the line.
 ///
-/// TS rounds (`Math.round`); Rust truncates — they differ only inside the
-/// discarded fraction of a minute or second, in a log line nothing parses.
+/// Truncates rather than rounds; the difference lives inside a discarded
+/// fraction, in a log line nothing parses.
 fn dur(ms: i64) -> String {
     if ms < 90_000 {
         format!("{}s", (ms / 1_000).max(0))
@@ -150,8 +148,8 @@ pub type DueFn =
     Arc<dyn Fn(i64) -> BoxFuture<'static, Result<Vec<RunRow>, sqlx::Error>> + Send + Sync>;
 
 /// The hand-over edge. The error is a String because that is its whole payload
-/// here: the sweep counts it and the log/job line carries its text, exactly as
-/// TS carries `errText(e)` — nothing downstream branches on the error's type.
+/// here: the sweep counts it and the log/job line carries its text — nothing
+/// downstream branches on the error's type.
 pub type DriveFn =
     Arc<dyn Fn(String) -> BoxFuture<'static, Result<DriveResult, String>> + Send + Sync>;
 
@@ -174,7 +172,7 @@ pub fn due_fn(store: Arc<dyn RunStore>) -> DueFn {
     })
 }
 
-/// The real drive edge over `run::drive`. Exists so the assembly slice wires
+/// The real drive edge over `run::drive`. Exists so the boot wiring hands over
 /// one function instead of restating the error mapping.
 pub fn drive_fn(deps: Arc<RunDeps>) -> DriveFn {
     Arc::new(move |run_id| {
@@ -259,7 +257,7 @@ pub async fn sweep_reclaimable_runs(
         // `awaiting` is NOT stale. It is parked on a person, which is a
         // healthy state that may last days, and driving it would re-ask the
         // question it is already parked on — or, if this sweeper had been
-        // written the way research.ts writes one, mark it failed for the crime
+        // written the pre-run way, mark it failed for the crime
         // of waiting. `is_drivable` is the shared predicate (define.rs) rather
         // than a state comparison spelled out again here, and the store's
         // query already agrees with it. This says it a SECOND time on purpose:
@@ -292,7 +290,7 @@ pub async fn sweep_reclaimable_runs(
         // one pass late (harmless: the next pass takes it) rather than one
         // reclaimed early (which the Redis lease would refuse anyway).
         //
-        // An UNPARSEABLE expiry counts as expired, same as TS: a lease stamp
+        // An UNPARSEABLE expiry counts as expired: a lease stamp
         // the app cannot read is not evidence a driver is alive.
         let expires_at = run
             .lease_expires_at
@@ -305,10 +303,10 @@ pub async fn sweep_reclaimable_runs(
 
         let Some(def) = (deps.definition_for)(&run.kind) else {
             // NOT an error on the row, for the same reason `drive` refuses to
-            // make it one: a kind this instance never imported is still
-            // perfectly drivable by an instance that has it, and failing the
-            // run here would destroy work on the strength of a local import
-            // graph.
+            // make it one: a kind this build cannot define is still
+            // perfectly drivable by an instance that can, and failing the
+            // run here would destroy work on the strength of a local
+            // registry.
             out.unknown_kinds += 1;
             tracing::warn!(
                 "{LOG} {}: no definition for kind \"{}\" on this instance — leaving it for one that \
@@ -337,9 +335,7 @@ pub async fn sweep_reclaimable_runs(
         // The arithmetic mirrors store.claim's, deliberately, because that is
         // what it is predicting: the claim adds one to `attempt` only when the
         // previous state was `running` (a reclaim), so this is the count the
-        // driver will be holding when it makes the call. The TS `??
-        // DEFAULT_MAX_ATTEMPTS` collapsed when `max_attempts` became a
-        // required field on the definition.
+        // driver will be holding when it makes the call.
         let max_attempts = def.max_attempts;
         let attempt_after_claim = run.attempt + i32::from(run.state == RunState::Running);
         let spent = attempt_after_claim >= max_attempts as i32;
@@ -437,8 +433,7 @@ fn give_up_line(run: &RunRow, attempt_after_claim: i32, error: Option<&str>, now
         error.unwrap_or("no message"),
         run.phase
     );
-    // An unparseable `updated_at` drops the clause rather than the line — the
-    // TS version guards `Number.isFinite` for the same reason.
+    // An unparseable `updated_at` drops the clause rather than the line.
     if let Some(moved) = crate::agent_auth::iso_to_epoch_ms(&run.updated_at) {
         line.push_str(&format!(" {} ago", dur((now - moved).max(0))));
     }
@@ -491,7 +486,7 @@ pub fn describe_sweep(r: &ReclaimSweep) -> String {
 /// for "nothing to do", and an Err for failure.
 ///
 /// The error is a String because that is its whole payload at this boundary —
-/// the scheduler records the text, exactly as TS records `errText`. Two
+/// the scheduler records the text. Two
 /// failure paths land here: a due query that could not run (mapped from the
 /// store's error) and a pass with thrown hand-overs (composed below).
 pub async fn run_reclaim_job(deps: &ReclaimDeps) -> Result<Option<String>, String> {
@@ -523,7 +518,7 @@ pub async fn run_reclaim_job(deps: &ReclaimDeps) -> Result<Option<String>, Strin
 }
 
 /// The wire name of a state, for log lines that quote the row. `RunState`'s
-/// serde form is lowercase; `Debug` would say "Awaiting" where TS says
+/// serde form is lowercase; `Debug` would print "Awaiting" where the wire says
 /// "awaiting", and the sentence is pinned by a test.
 fn state_name(state: RunState) -> &'static str {
     match state {
@@ -570,10 +565,9 @@ pub fn reclaim_job_spec(deps: Arc<ReclaimDeps>) -> crate::scheduler::JobSpec {
     }
 }
 
-/// Declare the sweep to the scheduler. TS registers at module load next to the
-/// work; Rust's deps are runtime values (the pool, the realtime fan-out), so
-/// the registration is a function the flip calls from boot — same rule, same
-/// consequence: the call is what puts the job in the runtime graph, and
+/// Declare the sweep to the scheduler. The deps are runtime values (the pool,
+/// the realtime fan-out), so the registration is a function the boot wiring
+/// calls — the call is what puts the job in the runtime graph, and
 /// 'run-reclaim' is in REQUIRED_JOBS, so an instance that somehow boots
 /// without reaching it prints a MISSING JOBS error instead of running with no
 /// durability at all.
@@ -631,7 +625,7 @@ mod tests {
         assert!(line.contains("after 3 attempt(s)"));
         assert!(line.contains("stopped without finishing or checkpointing"));
         assert!(line.contains("last progress \"reading the sources\""));
-        // The sentence research.ts shipped, which this file exists to delete.
+        // The sentence this file exists to delete.
         assert!(!line.contains("went stale"));
         // How long ago it last moved, and whose it was.
         assert!(line.contains("2 minutes ago"));
@@ -648,10 +642,9 @@ mod tests {
         assert!(!line.contains("was waiting on it"));
     }
 
-    /// The four declared timings, provably the four numbers the job runs with
-    /// — the Rust half of runs/boot.test.ts's pin. A spec built with the
-    /// constants in the wrong slot is a job that runs at the wrong rate while
-    /// every comment still says the right thing.
+    /// The four declared timings, provably the four numbers the job runs
+    /// with. A spec built with the constants in the wrong slot is a job that
+    /// runs at the wrong rate while every comment still says the right thing.
     #[test]
     fn the_job_spec_carries_the_declared_timings() {
         let deps = Arc::new(ReclaimDeps {

@@ -1,5 +1,5 @@
-// /api/boards/{id}/statuses — port of ui/src/routes/api/boards.$id.statuses.ts.
-// Board statuses (custom workflow columns). GET → the ordered list incl. the
+// /api/boards/{id}/statuses. Board statuses (custom workflow columns). GET →
+// the ordered list incl. the
 // system Blocked column, with the diagnostics that explain whether agents may
 // start/stop work on each (any member — the reader who cannot fix it can at
 // least tell the owner why the board is stuck). POST create, PUT update/
@@ -213,8 +213,8 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // The union resolves by shape: a statusKey member picks the patch arm
-    // (zod's first schema strips the unknown `order` key), anything else
-    // must be the reorder arm.
+    // (which ignores an unknown `order` key), anything else must be the
+    // reorder arm.
     if obj.contains_key("statusKey") {
         let status_key = match string_member(obj, "statusKey", 1, 40) {
             Ok(v) => v,
@@ -277,8 +277,8 @@ pub async fn put(
         let order = match crate::body::optional_string_array_member(obj, "order", 1, 40, 50) {
             Ok(Some(v)) => v,
             Ok(None) => {
-                // zod's union names the first arm's missing key when neither
-                // matches; `statusKey` is that key.
+                // when neither arm matches, the error names the first arm's
+                // missing key — statusKey.
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     "Invalid input: expected string, received undefined",
@@ -324,8 +324,8 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // reassignTo is required with a max only (no min): the empty string is a
-    // legal value zod admits, and delete_status answers it with the
-    // pick-a-surviving refusal rather than a length complaint.
+    // legal value, and delete_status answers it with the pick-a-surviving
+    // refusal rather than a length complaint.
     let reassign_to = match optional_max_string_member(obj, "reassignTo", 40) {
         Ok(Some(v)) => v,
         Ok(None) => {

@@ -1,13 +1,13 @@
-// /api/me — port of ui/src/routes/api/me.ts. The signed-in person's own
-// profile: GET reads the three preference columns, PUT edits display name
-// (users row + the live session, so the SPA's corner never waits for a
-// re-login), preferred model (the member gate runs HERE, not just in the
-// picker), platform-default reasoning effort, and IANA zone.
+// /api/me. The signed-in person's own profile: GET reads the three preference
+// columns, PUT edits display name (users row + the live session, so the SPA's
+// corner never waits for a re-login), preferred model (the member gate runs
+// HERE, not just in the picker), platform-default reasoning effort, and IANA
+// zone.
 //
-// The PUT's application order is me.ts's own: name lands first (DB and
-// session), so a body carrying both a name and a refused model/timezone has
-// already changed the name by the time the 403/400 answers — TS applies the
-// fields in sequence with no transaction, and the port does not invent one.
+// The PUT applies its fields in sequence with no transaction: name lands
+// first (DB and session), so a body carrying both a name and a refused
+// model/timezone has already changed the name by the time the 403/400
+// answers.
 
 use crate::body::{as_object, optional_string_member, parse, present_nullable_string_member};
 use crate::error::{house_error, thrown_internal_error};
@@ -24,8 +24,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 /// The validated PUT body — each field Option<"present">, the very thing the
-/// root refine counts. The nullable trio keeps present-and-null (the explicit
-/// "clear") distinct from absent ("don't touch").
+/// at-least-one check counts. The nullable trio keeps present-and-null (the
+/// explicit "clear") distinct from absent ("don't touch").
 #[derive(Debug)]
 struct MePatch {
     name: Option<String>,
@@ -34,10 +34,10 @@ struct MePatch {
     timezone: Option<Option<String>>,
 }
 
-/// me.ts's body schema, checks in declaration order (name, preferredModel,
+/// The PUT body schema, checks in declaration order (name, preferredModel,
 /// preferredEffort, timezone — the first bad field's message is the answer),
-/// then the root refine. Every message is probed against the ui's zod 4.3.6
-/// and pinned in the test at the bottom of this file.
+/// then the at-least-one check. Every message is pinned in the test at the
+/// bottom of this file.
 fn validate_me_patch(obj: &serde_json::Map<String, Value>) -> Result<MePatch, String> {
     let name = optional_string_member(obj, "name", 80)?;
     let preferred_model = present_nullable_string_member(obj, "preferredModel", 200)?;
@@ -99,8 +99,8 @@ pub async fn put(
 
     let mut updated = user.clone();
     if let Some(raw) = &patch.name {
-        // The bounds ran on the RAW string (zod's order); the trim is the
-        // handler's — so a spaces-only name is legal here and stores "".
+        // The bounds run on the RAW string, before the handler's trim — so
+        // a spaces-only name is legal here and stores "".
         let name = raw.trim();
         if let Err(e) = set_user_name(&state.pg, &user.id, name).await {
             tracing::error!("[me] set name failed: {e}");
@@ -108,8 +108,7 @@ pub async fn put(
         }
         match update_session_user(&state, &headers, &json!({ "name": name })).await {
             Ok(Some(next)) => updated = next,
-            // A session that vanished mid-request keeps the auth-time user —
-            // TS's `?? user`.
+            // A session that vanished mid-request keeps the auth-time user.
             Ok(None) => {}
             Err(e) => {
                 tracing::error!("[me] session patch failed: {e}");
@@ -143,11 +142,11 @@ pub async fn put(
         }
     }
     if let Some(choice) = &patch.preferred_effort {
-        // Deliberately NOT validated against any one model's published levels
-        // (me.ts's own comment): the preference travels across every model
-        // the user talks to, and each surface applies it only where that
-        // model's metadata vouches for the level. The length bound in the
-        // schema is the whole server-side contract.
+        // Deliberately NOT validated against any one model's published
+        // levels: the preference travels across every model the user talks
+        // to, and each surface applies it only where that model's metadata
+        // vouches for the level. The length bound in the schema is the whole
+        // server-side contract.
         if let Err(e) = set_preferred_effort(&state.pg, &user.id, choice.as_deref()).await {
             tracing::error!("[me] set preferred effort failed: {e}");
             return thrown_internal_error();
@@ -266,8 +265,8 @@ mod tests {
             patch(json!({ "name": "", "timezone": 5 })).unwrap_err(),
             "Too small: expected string to have >=1 characters"
         );
-        // The root refine: nothing present (unknown keys strip) answers
-        // 'nothing to update'.
+        // The at-least-one rule: nothing present (unknown keys strip)
+        // answers 'nothing to update'.
         assert_eq!(patch(json!({})).unwrap_err(), "nothing to update");
         assert_eq!(
             patch(json!({ "bogus": 1 })).unwrap_err(),

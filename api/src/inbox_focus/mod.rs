@@ -5,33 +5,27 @@ pub mod sources;
 pub mod timeline;
 pub mod types;
 
-// inbox-focus.ts + inbox-focus-assistant.ts — the Inbox Focus Queue engine.
+// The Inbox Focus Queue engine.
 //
 // A normalized, decision-first read model over Talaria's existing sources.
 // Source tables remain authoritative. This module owns only queue ranking,
 // per-user focus state, constrained assistant briefs/commands, and allowlisted
 // action execution.
 //
-// THE ADAPTERS (a separate file in TS, folded in ahead of the engine because
-// the engine is their only caller) are four `runHarness` calls with a deadline
-// wrapped around each. The deadlines are the entire point of that layer: ten
-// seconds for a turn nobody is watching (a card's one-line brief, a structured
-// validation with an honest fallback), ninety for a reply somebody asked for
-// and is watching words arrive. TS carried them as an AbortSignal threaded to
-// the transport; the port wraps the run future in `tokio::time::timeout` and
-// lets the future's drop be the abort — the one recorded divergence (a
-// transport mid-request is dropped rather than signal-noticed, same 10s/90s
-// wall clock, same error surfaces; the TS `parentSignal.throwIfAborted`
-// re-check has no equivalent, which only matters when a parent abort raced a
-// completing run).
+// THE ADAPTERS are four harness runs with a deadline wrapped around each.
+// The deadlines are the entire point of that layer: ten seconds for a turn
+// nobody is watching (a card's one-line brief, a structured validation with
+// an honest fallback), ninety for a reply somebody asked for and is watching
+// words arrive. The timeout wraps the run future and the future's drop is the
+// abort — a transport mid-request is dropped rather than signal-noticed, same
+// 10s/90s wall clock, same error surfaces.
 //
-// ERROR MODEL: TS functions here throw two kinds of thing — a postgres.js
-// error (→ the platform's generic 500) and `new Error(sentence)` where the
-// sentence is a product fact (`That response model is no longer available to
-// this account.`, a secretbox that cannot seal). `FocusError` keeps the two
-// apart; the routes map both to the house 500 the way every migrated group
-// maps a TS throw, except where a caller's own catch is the contract (the
-// actions route's `{status:'failed'}` paths are values here, not throws).
+// ERROR MODEL: the engine fails two ways — a database error (→ the
+// platform's generic 500) and a product sentence (`That response model is no
+// longer available to this account.`, a secretbox that cannot seal).
+// `FocusError` keeps the two apart; the routes map both to the house 500,
+// except where a caller's own catch is the contract (the actions route's
+// `{status:'failed'}` paths are values here, not throws).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -91,8 +85,8 @@ const DEADLINE_MS: u64 = 10_000;
 /// was merely interrupted. A person who has asked a question will wait.
 const REPLY_DEADLINE_MS: u64 = 90_000;
 
-/// What a TS `throw` out of the engine is: a database failure, or a product
-/// sentence thrown as `new Error(sentence)`.
+/// A failure out of the engine: a database error, or a product sentence
+/// carried as a message.
 #[derive(Debug)]
 pub enum FocusError {
     Db(sqlx::Error),
@@ -125,24 +119,23 @@ fn token_hash(token: &str) -> String {
     sha256_hex(token)
 }
 
-/// `randomToken(24)` — 24 random bytes, base64url no pad. NOT the session
-/// module's 32-byte token; the confirmation token's length is what the
-/// cipher column stores.
+/// 24 random bytes, base64url no pad. NOT the session module's 32-byte token;
+/// the confirmation token's length is what the cipher column stores.
 fn random_token_24() -> String {
     let mut buf = [0u8; 24];
     getrandom::fill(&mut buf).expect("system rng");
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// `new Date().toISOString()` — shared with the conversation module.
+/// The current time as ISO — shared with the conversation module.
 pub(crate) fn now_iso() -> String {
     crate::agent_auth::epoch_ms_to_iso(now_ms())
 }
 
-// ── The assistant adapters (inbox-focus-assistant.ts) ────────────────────────
+// ── The assistant adapters────────────────────────
 
-/// `requestFocusBrief` — one brief for one queue item, on the owner's own
-/// assistant. `valid_brief` still runs on the parsed value: the schema proved
+/// One brief for one queue item, on the owner's own assistant. `valid_brief`
+/// still runs on the parsed value: the schema proved
 /// the shape, and this clamps the strings to what the card can render and
 /// drops a `recommendedActionId` the item does not offer. None means the
 /// caller keeps whatever brief it already had — fire-and-forget by design.
@@ -168,8 +161,8 @@ pub async fn request_focus_brief(
     Ok(valid_brief(result.value.as_ref(), &input.actions))
 }
 
-/// `requestFocusCommand` — one command turn, on whichever model this seat
-/// uses. THE AUTHORITY GATE: `validate_command_object` runs AFTER the schema
+/// One command turn, on whichever model this seat uses. THE AUTHORITY GATE:
+/// `validate_command_object` runs AFTER the schema
 /// parse and is not negotiable — the schema proved the value has a `message`
 /// and an optional `actionId`, and this proves the `actionId` is one the
 /// owner's instruction actually authorized. The allowlist comes from
@@ -207,7 +200,7 @@ pub async fn request_focus_command(
     Ok(validate_command_object(&value, &allowed))
 }
 
-/// `replyTurn` — a detached conversational reply. `max` is applied to the
+/// A detached conversational reply. `max` is applied to the
 /// finished text rather than to the stream: truncating at the end produces
 /// the same cap, and a guarded or repaired reply is what gets persisted.
 /// `value.slice(0, max) || null` — an empty reply is None.
@@ -242,9 +235,9 @@ fn finished_reply(value: Option<Value>, max: usize) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-/// `requestText` — the reply on a FLEET PERSONA (`inbox:{model}` ledger
-/// attribution). Two exports rather than one because both signatures are
-/// somebody else's call sites; they are one harness underneath.
+/// The reply on a FLEET PERSONA (`inbox:{model}` ledger attribution). Two
+/// exports rather than one because both signatures are somebody else's call
+/// sites; they are one harness underneath.
 pub async fn request_text(
     state: &AppState,
     model: &str,
@@ -254,8 +247,8 @@ pub async fn request_text(
     reply_turn(state, model, input, max, &format!("inbox:{model}")).await
 }
 
-/// `requestGatewayText` — the same reply on an ORG GATEWAY model the owner
-/// picked; the caller names its own ledger attribution.
+/// The same reply on an ORG GATEWAY model the owner picked; the caller names
+/// its own ledger attribution.
 pub async fn request_gateway_text(
     state: &AppState,
     model: &str,
@@ -265,18 +258,16 @@ pub async fn request_gateway_text(
     reply_turn(state, model, input, 20_000, caller).await
 }
 
-/// `streamReply` — the same conversational reply, STREAMED: deltas as the
-/// model writes them, because a status line that sits there for a
-/// twenty-second turn with nothing under it reads exactly like the assistant
-/// not replying.
+/// The same conversational reply, STREAMED: deltas as the model writes them,
+/// because a status line that sits there for a twenty-second turn with
+/// nothing under it reads exactly like the assistant not replying.
 ///
-/// The TS original is an async generator whose RETURN value is the run's own
-/// guarded text — not the concatenated deltas. The port's shape: a channel of
-/// deltas plus the join handle carrying the final value. The consumer drains
-/// `deltas` (None = the run finished and dropped its emitter), then awaits
-/// `done` for the guarded text or the failure. A timeout drops the run
-/// future, which drops the emitter, which closes the channel — the abort and
-/// the close are the same event, as in TS.
+/// Shape: a channel of deltas plus the join handle carrying the run's own
+/// guarded text — not the concatenated deltas. The consumer drains `deltas`
+/// (None = the run finished and dropped its emitter), then awaits `done` for
+/// the guarded text or the failure. A timeout drops the run future, which
+/// drops the emitter, which closes the channel — the abort and the close are
+/// the same event.
 pub struct StreamedReply {
     pub deltas: mpsc::UnboundedReceiver<String>,
     pub done: tokio::task::JoinHandle<Result<Option<String>, String>>,
@@ -294,9 +285,8 @@ pub async fn stream_reply(
     let on_delta: DeltaFn = Arc::new(move |delta: &str| {
         let _ = tx.send(delta.to_string());
     });
-    // The streaming transport is resolved per call by the same rule the
-    // blocking runner uses (`pickStreamingTransport` shares the kind lookup
-    // with `pickTransport`); wrapping `dispatch_stream` in the runner's
+    // The streaming transport is resolved per call by the same kind lookup
+    // the blocking runner uses; wrapping `dispatch_stream` in the runner's
     // StreamFn shape is the whole bridge.
     let stream_state = state.clone();
     let stream: StreamFn = Arc::new(move |req: TransportRequest, emit: DeltaFn| {
@@ -332,7 +322,7 @@ pub async fn stream_reply(
     StreamedReply { deltas: rx, done }
 }
 
-// ── The engine (inbox-focus.ts, in file order) ───────────────────────────────
+// ── The engine ───────────────────────────────
 
 pub async fn focus_assistant_for(
     pg: &PgPool,
@@ -360,9 +350,9 @@ pub async fn focus_assistant_for(
     })
 }
 
-/// One focus-state row, the four fields the queue reads. Timestamps arrive as
-/// epoch ms (the TS side held `Date`s; every use is a `.getTime()` compare or
-/// an ISO render, so the ms is the honest shape).
+/// One focus-state row, the four fields the queue reads. Timestamps arrive
+/// as epoch ms: every use is an ms compare or an ISO render, so ms is the
+/// honest shape.
 struct FocusStateRow {
     snoozed_until: Option<i64>,
     content_fingerprint: Option<String>,
@@ -415,9 +405,9 @@ async fn focus_states(
         .collect())
 }
 
-/// `claimAndGenerateBrief` — the brief cache's claim half, detached like the
-/// TS `void` call. The claim row records the attempt even when the model
-/// fails, so a bad model costs one retry window rather than a spinning card.
+/// The brief cache's claim half, detached — no caller ever waits on it. The
+/// claim row records the attempt even when the model fails, so a bad model
+/// costs one retry window rather than a spinning card.
 fn spawn_claim_and_generate_brief(
     state: &AppState,
     user_id: &str,
@@ -465,10 +455,10 @@ fn spawn_claim_and_generate_brief(
     });
 }
 
-/// `generateBrief` — the persistence half. A null brief leaves the previous
-/// row untouched: the claim row already recorded the attempt, so a bad model
-/// costs one retry window rather than an overwritten card. Every failure is
-/// swallowed here — the TS caller is `void … .catch(() => {})`.
+/// The persistence half. A null brief leaves the previous row untouched: the
+/// claim row already recorded the attempt, so a bad model costs one retry
+/// window rather than an overwritten card. Every failure is swallowed here —
+/// nothing waits on this task, so no caller ever sees them.
 async fn generate_brief(
     state: &AppState,
     user_id: &str,
@@ -498,8 +488,7 @@ async fn generate_brief(
     Ok(())
 }
 
-/// The brief input off a raw item — TS passed the item itself and the def
-/// reads exactly these four fields.
+/// The brief input off a raw item — exactly the four fields the def reads.
 fn brief_input_for(item: &RawFocusItem) -> FocusBriefInput {
     FocusBriefInput {
         source_type: item.source_type.clone(),
@@ -527,8 +516,8 @@ async fn raw_focus_items(
     pg: &PgPool,
     user: &SessionUser,
 ) -> Result<Vec<RawFocusItem>, sqlx::Error> {
-    // TS's Promise.all over the four sources — sequential here stacks four
-    // query round-trips the queue did not need to wait for in series.
+    // The four sources in parallel — sequential would stack four query
+    // round-trips the queue need not wait out in series.
     let (approvals, tasks, channels, notifications) = tokio::try_join!(
         approval_items(pg, user, None),
         task_items(pg, &user.id, None),
@@ -542,17 +531,16 @@ async fn raw_focus_items(
     Ok(sort_items(dedupe_items(all), now_ms()))
 }
 
-/// `listFocusQueue` options. TS spelled both optional with `enrich !== false`
-/// (default true) and `includeSnoozed` (default false); the routes pass them
-/// explicitly.
+/// Queue listing options. Defaults: enrich true, include_snoozed false; the
+/// routes pass both explicitly.
 pub struct FocusQueueOptions {
     pub enrich: bool,
     pub include_snoozed: bool,
 }
 
-/// `listFocusQueue` — the queue a page renders: visible items (snoozed ones
-/// unless asked for), the cache overlay, first-item enrichment with its
-/// detached claim, the counts, and the assistant fact.
+/// The queue a page renders: visible items (snoozed ones unless asked for),
+/// the cache overlay, first-item enrichment with its detached claim, the
+/// counts, and the assistant fact.
 pub async fn list_focus_queue(
     state: &AppState,
     user: &SessionUser,
@@ -578,10 +566,10 @@ pub async fn list_focus_queue(
         .collect();
 
     // First-item enrichment happens on the item objects, before the wire
-    // mapping — `briefStatus` is a field of the card, and the TS code mutates
-    // the same object it later serializes. (The TS order is overlay-then-
-    // enrich on the overlaid item; the overlay touches three other fields, so
-    // enriching pre-mapping is the same bytes.)
+    // mapping — `briefStatus` is a field of the card, and the enrich writes
+    // the very object the mapping later serializes. (Enrich-then-overlay and
+    // overlay-then-enrich land the same bytes: the overlay touches three
+    // other fields.)
     if options.enrich
         && let Some(item) = visible.first_mut()
     {
@@ -655,7 +643,7 @@ pub async fn list_focus_queue(
     }))
 }
 
-/// `focusSummary` — the badge count: visible items, snoozed ones excluded.
+/// The badge count: visible items, snoozed ones excluded.
 pub async fn focus_summary(pg: &PgPool, user: &SessionUser) -> Result<usize, sqlx::Error> {
     let raw = raw_focus_items(pg, user).await?;
     let keys = raw.iter().map(|item| item.key.clone()).collect::<Vec<_>>();
@@ -670,10 +658,9 @@ pub async fn focus_summary(pg: &PgPool, user: &SessionUser) -> Result<usize, sql
         .count())
 }
 
-/// `updateFocusState` — the tri-state snooze and the viewed mark. The outer
-/// Option is TS's `undefined` (don't touch the column) vs a value; TS's
-/// `input.snoozedUntil ? new Date(…) : null` truthiness means an empty string
-/// clears the snooze too, which `filter` reproduces.
+/// The tri-state snooze and the viewed mark. The outer Option is "don't
+/// touch the column" vs a value; truthiness means an empty string clears the
+/// snooze too, which `filter` reproduces.
 pub async fn update_focus_state(
     pg: &PgPool,
     user: &SessionUser,
@@ -743,9 +730,9 @@ async fn pending_approval_for(
     Ok(pending.into_iter().find(|action| action.id == id))
 }
 
-/// `createDecision` — one row per decision, with the focus context written
-/// server-side in TS literal order. `completed_at` is `now()` for exactly the
-/// three terminal statuses, decided in SQL from the status being written.
+/// One row per decision, with the focus context written server-side in
+/// literal key order. `completed_at` is `now()` for exactly the three
+/// terminal statuses, decided in SQL from the status being written.
 #[allow(clippy::too_many_arguments)]
 async fn create_decision(
     pg: &PgPool,
@@ -796,8 +783,8 @@ async fn create_decision(
     Ok(id.0)
 }
 
-/// `exactPreview` — the confirmation card's {title, details}, built per
-/// branch. The approval branch's details are the four audit-shape facts; the
+/// The confirmation card's {title, details}, built per branch. The approval
+/// branch's details are the four audit-shape facts; the
 /// channel reply branch is the message; everything else is the payload
 /// (`payload ?? {}` — only null/absent collapses to the empty object).
 fn exact_preview(
@@ -880,10 +867,10 @@ fn number_of(v: Option<&Value>) -> i64 {
     }
 }
 
-/// `undoDecision` — the only reversible focus action is a mark-read, and only
-/// within the undo window, and only when the source still sits exactly where
-/// the decision left it (the read-at / cursor guards make a race a no-op
-/// rather than a wrong restore).
+/// The only reversible focus action is a mark-read, and only within the undo
+/// window, and only when the source still sits exactly where the decision
+/// left it (the read-at / cursor guards make a race a no-op rather than a
+/// wrong restore).
 async fn undo_decision(
     pg: &PgPool,
     user: &SessionUser,
@@ -958,8 +945,8 @@ async fn undo_decision(
     if let Some(object) = undone_outcome.as_object_mut() {
         object.insert("undone".into(), json!(true));
     }
-    // TS updates `where id = ${decisionId}` — no user_id re-check on the
-    // final write; ownership was proven by the read above.
+    // `where id = ${decisionId}` — no user_id re-check on the final write;
+    // ownership was proven by the read above.
     sqlx::query(
         "update inbox_decisions set status = 'cancelled', outcome = $2, completed_at = now() \
          where id = $1::uuid",
@@ -988,13 +975,12 @@ fn stale_result(message: &str) -> Value {
     json!({ "status": "stale", "message": message })
 }
 
-/// `proposedConfirmation` — the gate's answer: nothing executes, a decision
-/// row holds the exact proposal with the token sealed INTO it, and the token
-/// is handed back once. `source` is carried onto the row because this write
-/// REPLACES the command proposal wholesale, and `reissueFocusConfirmation`
-/// re-derives the same question from what it finds there — dropping it would
-/// leave a widened sign-off looking like an action that never needed
-/// confirming.
+/// The gate's answer: nothing executes, a decision row holds the exact
+/// proposal with the token sealed INTO it, and the token is handed back
+/// once. `source` is carried onto the row because this write REPLACES the
+/// command proposal wholesale, and the reissue path re-derives the same
+/// question from what it finds there — dropping it would leave a widened
+/// sign-off looking like an action that never needed confirming.
 #[allow(clippy::too_many_arguments)]
 async fn proposed_confirmation(
     state: &AppState,
@@ -1081,19 +1067,19 @@ async fn proposed_confirmation(
     }))
 }
 
-/// What `consumeConfirmation` hands back: the proposal's payload plus the two
-/// actor facts stored beside it, so the executed decision is attributed to
-/// the models that proposed it rather than to the click alone.
+/// What the confirmation hand-back carries: the proposal's payload plus the
+/// two actor facts stored beside it, so the executed decision is attributed
+/// to the models that proposed it rather than to the click alone.
 struct ConfirmedProposal {
     payload: Option<Value>,
     agent_model: Option<String>,
     delegate_model: Option<String>,
 }
 
-/// `consumeConfirmation` — the one-way door. A token that matches flips the
-/// row to confirmed and strips the cipher; anything else is a miss, and a
-/// miss that means the source moved FAILS the pending confirmation so the
-/// card stops offering it.
+/// The one-way door. A token that matches flips the row to confirmed and
+/// strips the cipher; anything else is a miss, and a miss that means the
+/// source moved FAILS the pending confirmation so the card stops offering
+/// it.
 async fn consume_confirmation(
     pg: &PgPool,
     user: &SessionUser,
@@ -1166,10 +1152,10 @@ async fn consume_confirmation(
     }))
 }
 
-/// `reissueFocusConfirmation` — a page reload re-asks for a token it already
-/// earned. Validity is re-derived from the stored row; a recoverable cipher
-/// hands back the SAME token (so an old tab and a new tab confirm the same
-/// capability), anything else issues a fresh one.
+/// A page reload re-asks for a token it already earned. Validity is
+/// re-derived from the stored row; a recoverable cipher hands back the SAME
+/// token (so an old tab and a new tab confirm the same capability), anything
+/// else issues a fresh one.
 pub async fn reissue_focus_confirmation(
     state: &AppState,
     user: &SessionUser,
@@ -1212,7 +1198,7 @@ pub async fn reissue_focus_confirmation(
         }
         _ => None,
     };
-    // The SAME question `runFocusAction` asked when it issued this token,
+    // The SAME question the action runner asked when it issued this token,
     // asked again from the stored row: a pending confirmation is valid when
     // the action needs one, or when the source that proposed it does. Reading
     // `action.confirmationRequired` alone here would fail every widened
@@ -1258,7 +1244,7 @@ pub async fn reissue_focus_confirmation(
         && expires_ms > now_ms()
     {
         // The encrypted capability may still be recoverable; a failure here
-        // falls through to the fresh token below (the TS catch, inlined).
+        // falls through to the fresh token below.
         if let Ok(token) = state
             .secretbox()
             .await
@@ -1284,7 +1270,7 @@ pub async fn reissue_focus_confirmation(
         .map_err(FocusError::Throw)?;
     // `{...proposal, preview, confirmationCipher: seal(token)}` — the stored
     // order with the two keys overwritten in place (or appended the first
-    // time), exactly what the TS spread produces.
+    // time).
     let mut updated = proposal.clone();
     if let Some(object) = updated.as_object_mut() {
         object.insert("preview".into(), preview.clone());
@@ -1319,9 +1305,9 @@ pub async fn reissue_focus_confirmation(
     }))
 }
 
-/// What `commandDecision` hands back: the proposal the assistant's command
-/// left on the row, plus WHO proposed it — read from the row the server
-/// wrote, never from the request. A client that could name its own
+/// What the command-proposal read hands back: the proposal the assistant's
+/// command left on the row, plus WHO proposed it — read from the row the
+/// server wrote, never from the request. A client that could name its own
 /// provenance could name itself deterministic and skip the click, which is
 /// the whole gate.
 struct CommandProposalRow {
@@ -1367,10 +1353,10 @@ async fn command_decision(
     }))
 }
 
-/// `replayDecision` — an idempotency answer for a decision already made:
-/// completed (with its undo window), failed (with its recorded error), or a
-/// confirmed row whose outcome never landed (the stale sentence). A decision
-/// still in flight answers null — the caller proceeds as a first run.
+/// An idempotency answer for a decision already made: completed (with its
+/// undo window), failed (with its recorded error), or a confirmed row whose
+/// outcome never landed (the stale sentence). A decision still in flight
+/// answers null — the caller proceeds as a first run.
 async fn replay_decision(
     pg: &PgPool,
     user: &SessionUser,
@@ -1469,9 +1455,9 @@ async fn complete_decision(
     Ok(())
 }
 
-/// `failCommandProposal` — a command proposal that cannot proceed fails ON
-/// ITS OWN ROW (the assistant proposed it; the card should say so), and the
-/// decisionId rides along only when a row was actually updated.
+/// A command proposal that cannot proceed fails ON ITS OWN ROW (the
+/// assistant proposed it; the card should say so), and the decisionId rides
+/// along only when a row was actually updated.
 async fn fail_command_proposal(
     pg: &PgPool,
     user: &SessionUser,
@@ -1511,12 +1497,11 @@ async fn fail_command_proposal(
     })
 }
 
-/// `executeAction` — the five allowlisted mutations. Everything past the
-/// gate lands here, and the audit row names the session user as the actor,
-/// which is only honest because the user clicked. The catch is the TS
-/// `catch`: whatever failed, the decision row records it and the card reads
-/// the message — including a database failure (in TS a postgres.js error is
-/// an `Error`, so its message is what the card reads).
+/// The five allowlisted mutations. Everything past the gate lands here, and
+/// the audit row names the session user as the actor, which is only honest
+/// because the user clicked. Whatever failed, the catch arm records it on
+/// the decision row and the card reads the message — including a database
+/// failure (its message is what the card reads).
 #[allow(clippy::too_many_arguments)]
 async fn execute_action(
     state: &AppState,
@@ -1575,8 +1560,8 @@ async fn execute_action(
     }
 }
 
-/// `finishEarly` — the shared early exit: the proposal fails on its own row
-/// (when there is one) and the caller reads status + message.
+/// The shared early exit: the proposal fails on its own row (when there is
+/// one) and the caller reads status + message.
 async fn finish_early(
     pg: &PgPool,
     existing_decision_id: Option<&str>,
@@ -1703,9 +1688,8 @@ async fn execute_action_arms(
                 .bind(&item.source_id)
                 .fetch_optional(pg)
                 .await?;
-        // Detached fan-out, exactly the TS `void … .catch(() => {})` trio: the
-        // reply is posted; the notifications and agent triggers it causes are
-        // never this response's problem.
+        // Detached fan-out: the reply is posted; the notifications and agent
+        // triggers it causes are never this response's problem.
         if let Some((channel_name, channel_kind)) = channel {
             let label = user.name.clone().unwrap_or_else(|| author.clone());
             if channel_kind == "dm" {
@@ -1763,8 +1747,8 @@ async fn execute_action_arms(
                 .await;
             }
         };
-        // TS short-circuits `!task || !canEdit(await boardRole(...))` — the
-        // board lookup only runs when the task exists, preserved here.
+        // Short-circuit: `!task || !canEdit(boardRole(...))` — the board
+        // lookup only runs when the task exists.
         if !can_edit(board_role(pg, &user.id, &task.board_id).await?.as_deref()) {
             return finish_early(
                 pg,
@@ -1870,7 +1854,7 @@ async fn execute_action_arms(
             Some(r) if matches!(r.status.as_str(), "not_connected" | "failed") => {
                 return Err(FocusError::Throw(r.message.unwrap_or(r.status)));
             }
-            // The whole decideAction result is the outcome — {status:'executed'},
+            // The whole decision result is the outcome — {status:'executed'},
             // {status:'rejected'}, or the already-decided status it answered with.
             Some(r) => outcome = json!({ "status": r.status }),
         }
@@ -1953,10 +1937,10 @@ pub struct FocusActionInput {
     pub undo_decision_id: Option<String>,
 }
 
-/// `runFocusAction` — the one entry the card's every button funnels through.
-/// Cancel and undo are their own verbs; everything else resolves the item,
-/// checks the action against the allowlist, honors a command proposal or a
-/// confirmation token, and then either asks for the click or executes.
+/// The one entry the card's every button funnels through. Cancel and undo
+/// are their own verbs; everything else resolves the item, checks the action
+/// against the allowlist, honors a command proposal or a confirmation token,
+/// and then either asks for the click or executes.
 pub async fn run_focus_action(
     state: &AppState,
     user: &SessionUser,
@@ -2138,9 +2122,9 @@ pub async fn run_focus_action(
     .await
 }
 
-/// `validDelegate` — a delegate must be an enabled agent the owner (or the
-/// org) actually has, and the tier must be one it declares; the routed id
-/// comes back for the ledger.
+/// A delegate must be an enabled agent the owner (or the org) actually has,
+/// and the tier must be one it declares; the routed id comes back for the
+/// ledger.
 async fn valid_delegate(
     pg: &PgPool,
     user_id: &str,
@@ -2164,9 +2148,9 @@ async fn valid_delegate(
     routed_model_for(pg, requested, tier).await
 }
 
-/// `validResponseModel` — the owner's picked gateway model, still allowed for
-/// their account or not. This one THROWS, and the sentence is the product.
-/// Shared with the conversation module (same rule for its response-model pick).
+/// The owner's picked gateway model, still allowed for their account or not.
+/// This one THROWS, and the sentence is the product. Shared with the
+/// conversation module (same rule for its response-model pick).
 pub(crate) async fn valid_response_model(
     pg: &PgPool,
     user: &SessionUser,
@@ -2202,7 +2186,7 @@ pub struct FocusCommandCall {
     pub history: Vec<OwnedTurn>,
 }
 
-/// `{kind:'proposal', ...deterministic}` — the TS spread of CommandProposal,
+/// `{kind:'proposal', ...deterministic}` — the deterministic proposal spread,
 /// whose own key order is {actionId, message, payload?}.
 fn deterministic_turn(d: &CommandProposal) -> CommandTurn {
     CommandTurn {
@@ -2214,8 +2198,7 @@ fn deterministic_turn(d: &CommandProposal) -> CommandTurn {
 }
 
 /// The model-arm wire literal: `{kind, message, actionId?, payload?}` —
-/// conditional keys absent when absent, exactly the TS spreads
-/// `validateCommandObject` produces.
+/// conditional keys absent when absent.
 fn turn_model_json(turn: &CommandTurn) -> Value {
     let mut object = serde_json::Map::new();
     object.insert("kind".into(), json!(turn.kind));
@@ -2244,9 +2227,9 @@ fn turn_proposal_json(turn: &CommandTurn) -> Value {
     Value::Object(object)
 }
 
-/// `runFocusCommand` — the two-seat command turn: a bounded specialist
-/// consultation on a delegate the owner pointed at this item, then their own
-/// assistant orchestrating the answer. Falls through to the specialist, then
+/// The two-seat command turn: a bounded specialist consultation on a
+/// delegate the owner pointed at this item, then their own assistant
+/// orchestrating the answer. Falls through to the specialist, then
 /// the deterministic match, then a clarification — each step gated against
 /// ITS OWN allowlist, and every union of two seats' judgement still needs the
 /// human click that `proposal_source_for` records.
@@ -2380,7 +2363,7 @@ pub async fn run_focus_command(
             "payload": turn.payload.clone().unwrap_or(Value::Null),
             // `source` is written HERE, on the server, next to the
             // fingerprint that already pins this proposal to the item it was
-            // made about. It is what `runFocusAction` reads back to decide
+            // made about. It is what the action runner reads back to decide
             // whether this proposal may run without a click, and writing it
             // anywhere the client can reach would make the gate advisory.
             "source": proposal_source_for(
@@ -2436,9 +2419,9 @@ pub async fn run_focus_command(
     Ok(Some(result))
 }
 
-/// `fromDelegate` — true only when the turn that carried this proposal came
-/// off the specialist seat's fall-through (the one seat fact the proposal
-/// itself cannot record).
+/// True only when the turn that carried this proposal came off the
+/// specialist seat's fall-through (the one seat fact the proposal itself
+/// cannot record).
 fn turn_source_is_delegate(turn: &CommandTurn, specialist_turn: &Option<CommandTurn>) -> bool {
     specialist_turn.is_some() && Some(turn) == specialist_turn.as_ref()
 }

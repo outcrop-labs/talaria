@@ -1,7 +1,6 @@
 // Per-user Google connection — the status read the admin Google-client panel
-// needs (ui/src/server/google/connections.ts getConnectionStatus) plus the
-// token vending the brief's calendar source reads through (getAccessToken).
-// The OAuth exchange and revoke legs port with the integrations plane.
+// needs, plus the token vending every Google surface reads through. The OAuth
+// exchange itself lives in oauth.rs.
 
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::gateway::provider::http;
@@ -14,7 +13,7 @@ use sqlx::PgPool;
 pub const EXPIRY_SKEW_MS: i64 = 60_000;
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 
-/// The connection's public face (GoogleConnectionStatus) — wire order pinned.
+/// The connection's public face — wire order pinned.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionStatus {
@@ -24,8 +23,8 @@ pub struct ConnectionStatus {
     pub connected_at: Option<String>,
 }
 
-/// One row: connected means a refresh token is stored (TS checks truthiness,
-/// so a blank cipher counts as not connected). Scope is the space-joined
+/// One row: connected means a refresh token is stored (truthiness — a blank
+/// cipher counts as not connected). Scope is the space-joined
 /// grant list, null-or-blank → empty.
 /// (email, scope, refresh cipher, created-at epoch ms) — one row.
 type ConnRow = (Option<String>, Option<String>, Option<String>, Option<i64>);
@@ -94,9 +93,9 @@ impl std::fmt::Display for TokenError {
     }
 }
 
-/// Exchange a refresh token for a fresh access token (connections.ts
-/// requestRefresh). Shared by the per-user and org connections. Errors carry
-/// the status and body verbatim — the only consumer is the log.
+/// Exchange a refresh token for a fresh access token. Shared by the per-user
+/// and org connections. Errors carry the status and body verbatim — the only
+/// consumer is the log.
 pub async fn request_refresh(
     pg: &PgPool,
     sb: &SecretBox,
@@ -154,15 +153,14 @@ pub async fn request_refresh(
     ))
 }
 
-/// A valid access token for the user, refreshing if needed (connections.ts
-/// getAccessToken). `Ok(None)` ⇒ not connected. The cached token is reused
-/// while it is comfortably valid; an unopenable cipher falls through to a
-/// refresh rather than erroring the caller.
+/// A valid access token for the user, refreshing if needed. `Ok(None)` ⇒ not
+/// connected. The cached token is reused while it is comfortably valid; an
+/// unopenable cipher falls through to a refresh rather than erroring the
+/// caller.
 ///
 /// Read-through shape: (refresh cipher, access cipher, access expiry epoch ms).
-/// The expiry is read as epoch ms in SQL — TS parses the ISO text with
-/// `new Date`, and hand-matching PG's `timestamptz::text` spelling to a parser
-/// here would be a third way to be wrong about a clock.
+/// The expiry is read as epoch ms in SQL — parsing PG's `timestamptz::text`
+/// spelling back into a clock would just be another way to be wrong.
 type TokenRow = (Option<String>, Option<String>, Option<i64>);
 
 pub async fn get_access_token(
@@ -231,7 +229,7 @@ pub async fn get_access_token(
     Ok(Some(access_token))
 }
 
-// ── The connect flow's writers (connections.ts saveConnection/disconnect) ────
+// ── The connect flow's writers ───────────────────────────────────────────────
 
 /// What an OAuth exchange hands the saver. A missing refresh token (Google
 /// omits it when the user re-consents without prompt=consent) preserves the
@@ -264,7 +262,7 @@ pub async fn save_connection(
     let refresh_enc = seal_opt(input.refresh_token)?;
     let access_enc = seal_opt(input.access_token)?;
     let expires_at = match (input.access_token, input.expires_in_seconds) {
-        // TS's truthiness: an empty-string token or a zero/null expiry writes
+        // Truthiness: an empty-string token or a zero/null expiry writes
         // no expiry at all.
         (Some(t), Some(secs)) if !t.is_empty() && secs != 0 => Some(
             crate::agent_auth::epoch_ms_to_iso(input.now_ms + secs * 1000),
@@ -333,9 +331,9 @@ pub async fn disconnect(pg: &PgPool, sb: &SecretBox, user_id: &str) {
         .await;
 }
 
-/// requireToken's failure: `NotConnected` is the GoogleNotConnected throw
-/// (getAccessToken answered null — a state); `Failed` is everything the
-/// refresh path can throw.
+/// require_token's failure: `NotConnected` means get_access_token answered
+/// null — a state, not an error; `Failed` is everything the refresh path can
+/// throw.
 #[derive(Debug)]
 pub enum RequireError {
     NotConnected,
@@ -348,9 +346,9 @@ impl From<TokenError> for RequireError {
     }
 }
 
-/// A valid access token, or the caller-friendly GoogleNotConnected throw
-/// (connections.ts requireToken). Drive, Gmail, and Calendar all read through
-/// this one door — the error KIND the routes branch on comes from here, once.
+/// A valid access token, or NotConnected for an unconnected user. Drive,
+/// Gmail, and Calendar all read through this one door — the error KIND the
+/// routes branch on comes from here, once.
 pub async fn require_token(
     pg: &PgPool,
     sb: &SecretBox,

@@ -1,27 +1,14 @@
 // The TICKET DRAFTER, declared. One harness behind two surfaces: the channel
 // "Plan" button and the first-class Plan surface's "Draft tickets" control.
-// Port of harness/defs/channel-plan.ts.
 //
-// WHAT THIS REPLACED
-//   `channel-plan.ts` reached the persona gateway by hand and read the reply
-//   back with `extractProposals` — a hand-written balanced-array scanner that
-//   tried every '[' in the text, then coerced each element field by field. It
-//   was the SIXTH structured-output extractor in the tree (audit 1.1) and by
-//   some distance the most careful of them: it knew about string literals, it
-//   walked past a decorative `[DONE]` to find the real array, and it remapped
-//   `dependsOn` through the original→kept index map so dropping a titleless
-//   entry could not leave a dangling reference. All of that was right, and none
-//   of it was reusable — the lesson it had learned lived in one file, exactly
-//   like `research.ts`'s non-greedy fallback.
-//
-//   The scanner is now `harness/json.rs` (which additionally strips fences,
-//   prefers fenced content over prose, and tolerates a trailing comma), and the
-//   COERCION — the part that is genuinely this harness's own contract — is
-//   `to_proposals` below. What the port adds on top: a repair turn on a
-//   malformed reply (audit 1.4 — nothing in the tree re-asked), a guardrail
-//   pass on output that becomes ticket bodies (audit 1.5), and a
-//   `harness_runs` row so an operator can see this harness's contract rate per
-//   model.
+// WHERE THE EXTRACTION LIVES
+//   The balanced-array scanning a reply needs — string literals, a decorative
+//   `[DONE]` ahead of the real array, fences, a trailing comma — is
+//   `harness/json.rs`, shared by every JSON harness; the COERCION — the part
+//   that is genuinely this harness's own contract — is `to_proposals` below.
+//   On top of both: a repair turn on a malformed reply, a guardrail pass on
+//   output that becomes ticket bodies, and a `harness_runs` row so an operator
+//   can see this harness's contract rate per model.
 //
 // WHY THE SCHEMA IS SO FORGIVING, deliberately: a human reviews every proposal
 // in the Plan modal before anything is created, so the cost of a slightly wrong
@@ -108,10 +95,10 @@ pub struct ChannelPlanInput {
     /// the transcript, and the prompt says so.
     #[serde(default)]
     pub plan_doc: Option<String>,
-    /// `templatePrompt(template, 'ticket descriptions')`, already rendered.
+    /// The template block, already rendered for ticket descriptions.
     #[serde(default)]
     pub template_prompt: Option<String>,
-    /// `routingContext()`, already rendered: match rules → skills → agents.
+    /// The routing map, already rendered: match rules → skills → agents.
     #[serde(default)]
     pub routing_map: Option<String>,
 }
@@ -121,20 +108,20 @@ pub struct ChannelPlanInput {
 // Every clause in it is load-bearing and two of them are asserted by the
 // fixtures below ("Don't invent work nobody discussed", "never force a fit").
 //
-// THE ONE EDIT SINCE THE PORT is the array sentence, and it is a small-model
-// fix. "Respond with ONLY a JSON array" followed immediately by the shape of ONE
-// ELEMENT reads, to a 14B, as "respond with this object" — and that is exactly
-// what the fitness sweep caught: a correct single ticket, returned bare. The
-// repair turn rescues it, so production never saw a hard failure, only a second
-// round-trip on every transcript that yielded one ticket. `unwrap_envelope`
-// deliberately CANNOT help here (a bare ticket has a `title`, which is what
-// tells it apart from a wrapper), so the prompt is the only place to fix it: the
-// shape is shown inside its brackets, and the one-ticket case is named, because
-// that is the case the model gets wrong.
+// THE ARRAY SENTENCE IS A SMALL-MODEL FIX. "Respond with ONLY a JSON array"
+// followed immediately by the shape of ONE ELEMENT reads, to a 14B, as
+// "respond with this object" — and that is exactly what the fitness sweep
+// caught: a correct single ticket, returned bare. The repair turn rescues it,
+// so production never sees a hard failure, only a second round-trip on every
+// transcript that yields one ticket. `unwrap_envelope` deliberately CANNOT
+// help here (a bare ticket has a `title`, which is what tells it apart from a
+// wrapper), so the prompt is the only place to fix it: the shape is shown
+// inside its brackets, and the one-ticket case is named, because that is the
+// case the model gets wrong.
 const PLAN_PROMPT: &str = "You are a planning assistant. Break the discussed work into concrete, actionable tickets.\nWhen a plan document is provided, it is the curated source of truth — draft tickets from it and use the transcript only for supporting context; the raw chat never overrides the document.\n\nRespond with ONLY a JSON array — no prose before or after, no markdown fence. The whole reply starts with \"[\" and ends with \"]\", even when there is exactly one ticket: one ticket is an array of one, never a bare object.\n[{\"title\": \"imperative, <= 80 chars\", \"description\": \"markdown body with enough context that someone who didn't read the chat can act on it\", \"priority\": \"low|medium|high|urgent\", \"effort\": \"xs|s|m|l|xl\", \"dependsOn\": [zero-based indices of tickets in THIS array that must finish first], \"tags\": [\"optional routing labels\"]}]\n\nRules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions. Use dependsOn only for real ordering constraints — most tickets have none.\nWhen a workflow map is provided and a ticket clearly falls under one of its workflows, add that workflow's matching label(s) to tags and end the description with one line: \"Routing: <workflow> → <agent>\". Most tickets won't match — then omit tags and the routing line entirely; never force a fit.";
 
-/// The widened pass. ADDITIVE — the narrow branch is today's prompt unchanged,
-/// so no install gets a different answer than it got before the port.
+/// The widened pass. ADDITIVE — the narrow branch is the standing prompt
+/// unchanged, so no install gets a different answer than it already did.
 ///
 /// What a capable model is asked for is not more tickets, it is a defensible
 /// DEPENDENCY GRAPH and honest routing. Both are places where a small model
@@ -183,14 +170,14 @@ pub fn unwrap_envelope(value: &Value) -> Value {
 }
 
 /// Field limits mirror the boards API, so a proposal the human approves in the
-/// review modal can never 400 on create. Unchanged from `extractProposals`.
+/// review modal can never 400 on create.
 const TITLE_MAX: usize = 300;
 const DESCRIPTION_MAX: usize = 20_000;
 const TAG_MAX: usize = 40;
 const MAX_TAGS: usize = 5;
 
-/// `String(x.title ?? '')` — null and missing are the empty string, everything
-/// else goes through JS `String()`.
+/// Null and missing are the empty string; everything else goes through
+/// `js_string` coercion.
 fn field_string(x: &Map<String, Value>, name: &str) -> String {
     match x.get(name) {
         None | Some(Value::Null) => String::new(),
@@ -198,7 +185,7 @@ fn field_string(x: &Map<String, Value>, name: &str) -> String {
     }
 }
 
-/// The coercion, moved from `extractProposals` and otherwise untouched.
+/// The field-by-field coercion.
 ///
 /// THE INDEX REMAP IS THE SUBTLE PART and it is why this is one function over
 /// the whole list rather than a per-element schema: dropping a titleless entry
@@ -206,10 +193,8 @@ fn field_string(x: &Map<String, Value>, name: &str) -> String {
 /// objects→kept map or a surviving ticket ends up blocked by whichever ticket
 /// slid into the index it named. A per-element parse cannot see that.
 pub fn to_proposals(rows: &Value) -> Vec<TicketProposal> {
-    // `rows.filter(x => !!x && typeof x === 'object' && !Array.isArray(x))`,
-    // then `.map((x, i) => ({x, i}))` — the index is the position in THAT
-    // filtered list, which is what the model's dependsOn numbers are read
-    // against, exactly as the TS did.
+    // Objects only; the index is the position in that filtered list, which is
+    // what the model's dependsOn numbers are read against.
     let objects: Vec<&Map<String, Value>> = rows
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_object).collect())
@@ -227,13 +212,13 @@ pub fn to_proposals(rows: &Value) -> Vec<TicketProposal> {
             let mut depends_on: Vec<usize> = Vec::new();
             if let Some(deps) = x.get("dependsOn").and_then(Value::as_array) {
                 for d in deps {
-                    // `newIndex.get(Number(d))`, nothing more — the TS has no
-                    // integer gate because a NaN, a fraction or a negative is
-                    // simply a key no original index equals. The gate here
-                    // exists only to make the `as usize` cast say the same
-                    // thing (a negative saturates to 0 and would falsely match
-                    // the first ticket), and the self-drop and dedup below are
-                    // the TS's own two filters.
+                    // The lookup is `new_index(n)`, nothing more — a NaN, a
+                    // fraction or a negative is simply an index nothing
+                    // equals. The integer gate exists only to make the
+                    // `as usize` cast say the same thing (a negative saturates
+                    // to 0 and would falsely match the first ticket); the
+                    // self-drop and dedup below are the coercion's own two
+                    // filters.
                     let n = js_number(d);
                     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
                         continue;
@@ -281,7 +266,7 @@ pub fn to_proposals(rows: &Value) -> Vec<TicketProposal> {
 
 // ── The contract's two assertions ────────────────────────────────────────────
 
-/// THE ALL-OR-NOTHING TITLE CHECK, the `superRefine` in the TS schema. An
+/// THE ALL-OR-NOTHING TITLE CHECK. An
 /// EMPTY array is a valid answer and always has been — the prompt's strongest
 /// rule is "Don't invent work nobody discussed", and a schema that failed an
 /// empty list would spend the repair turn pushing a model to violate exactly
@@ -364,8 +349,8 @@ pub fn tag_issue(proposals: &[TicketProposal], routing_map: Option<&str>) -> Opt
     if allowed.is_empty() {
         return None;
     }
-    // Dedup on the RAW tag (as a JS Set would), compare on the lowered one —
-    // the sentence reports the casing the model actually sent.
+    // Dedup on the RAW tag, compare on the lowered one — the sentence reports
+    // the casing the model actually sent.
     let mut seen: Vec<&str> = Vec::new();
     for p in proposals {
         for t in &p.tags {
@@ -476,7 +461,7 @@ pub struct ChannelPlanFixture {
     pub check: fn(&[TicketProposal]) -> Option<String>,
 }
 
-/// TEN FIXTURES, THREE BANDS, in the TS table's order.
+/// TEN FIXTURES, THREE BANDS.
 pub fn fixtures() -> Vec<ChannelPlanFixture> {
     vec![
         ChannelPlanFixture {
@@ -726,12 +711,11 @@ pub fn channel_plan_harness() -> HarnessDefinition {
                 parts.push(WIDENED.to_string());
             }
             parts.push(UNTRUSTED_INPUT.to_string());
-            // Order preserved from channel-plan.ts: the workflow map first
-            // (context for the routing rule), then the document, then the
-            // transcript. The document sits ABOVE the transcript because the
-            // prompt calls it the source of truth and the last thing a small
-            // model reads weighs most. All three gates are on the TRIMMED
-            // value but interpolate the raw one, as the TS did.
+            // Order: the workflow map first (context for the routing rule),
+            // then the document, then the transcript. The document sits ABOVE
+            // the transcript because the prompt calls it the source of truth
+            // and the last thing a small model reads weighs most. All three
+            // gates are on the TRIMMED value but interpolate the raw one.
             let mut user_parts: Vec<String> = Vec::new();
             if let Some(map) = ci.routing_map.as_deref()
                 && !map.trim().is_empty()
@@ -755,12 +739,9 @@ pub fn channel_plan_harness() -> HarnessDefinition {
         }),
         // THE DIVISION OF LABOR. The schema states what a schema can: "an
         // array", "of objects" — statements about the reply alone. Everything
-        // else lands in `verify`, which in this port can hold MORE than the
-        // TS's verify could: a TS verify runs after the transform, when the
-        // raw rows are gone, which is why the TS had to bury the title check
-        // in a `superRefine` inside the schema. The Rust `VerifyFn` sees the
-        // pre-coercion value, so the same check lives here with its evidence
-        // intact (same repair loop, same `schema_valid=false`). Everything
+        // else lands in `verify`, which sees the PRE-COERCION value with its
+        // evidence intact (the title check needs the raw rows, and the repair
+        // loop reads its sentence the same way it reads a schema's). Everything
         // this harness could be graded on beyond both ("did it cover the work
         // that was discussed") is a judgement, and a judgement belongs in the
         // eval fixtures where a red cell is a report, not in a contract where
@@ -773,7 +754,8 @@ pub fn channel_plan_harness() -> HarnessDefinition {
             // preamble fails HERE, in sight of the repair turn, instead of
             // filtering to a perfect-looking empty draft.
             schema: Schema::Array(Box::new(Schema::Record(Box::new(Schema::Unknown)))),
-            // `z.preprocess(unwrapEnvelope, …)` — see `unwrap_envelope`.
+            // The envelope unwrap runs before validation — see
+            // `unwrap_envelope`.
             preprocess: Some(Arc::new(unwrap_envelope)),
             // The runner's default: one repair turn.
             repair: None,
@@ -835,18 +817,17 @@ pub fn channel_plan_harness() -> HarnessDefinition {
         rules: Some(vec!["secret_leak", "pii_leak"]),
         redact: true,
     });
-    // No temperature: the hand-written call sent none, so the persona's own
-    // default is what has always answered here. Pinning one now would change
-    // every existing install's drafts for no stated reason.
+    // No temperature: the persona's own default has always answered here;
+    // pinning one would change every existing install's drafts for no stated
+    // reason.
 
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — ten
     // fixtures, every check a deterministic fact about a draft (see
-    // `fixtures`). The TS check received the TRANSFORMED value, the coerced
-    // proposals rather than the raw rows, so the fold runs `to_proposals` —
-    // this def's own transform — before the check: the same value the TS check
-    // was handed, the same sentences out of it. `to_proposals` is total (a
-    // non-array is no proposals, exactly as the coercion always read it), so
-    // there is no throw branch to fold here.
+    // `fixtures`). The checks take the TRANSFORMED value — the coerced
+    // proposals rather than the raw rows — so the fold runs `to_proposals`,
+    // this def's own transform, before the check: the same value the contract
+    // scores, the same sentences out of it. `to_proposals` is total (a
+    // non-array is no proposals), so there is no throw branch to fold here.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -1188,12 +1169,11 @@ mod tests {
 
     #[test]
     fn the_derived_json_floor_survives_the_runs_anyway_note() {
-        // Registry parity with the TS: `defineHarness` wraps the complete
-        // literal, so the json floor is derived AFTER the author's floor is
-        // set. This def originally wrapped at construction and then assigned
-        // `d.floor`, silently wiping the derivation — a model measured
-        // `json: false` would have been asked anyway. The wrap now happens
-        // last; this is the tripwire.
+        // `define_harness` wraps the complete literal, so the json floor is
+        // derived AFTER the author's floor is set — assigning `d.floor` after
+        // the wrap would silently wipe the derivation, and a model measured
+        // `json: false` would be asked anyway. The wrap stays last; this is
+        // the tripwire.
         let d = channel_plan_harness();
         assert!(d.floor.capabilities.contains(&"json"));
         assert!(d.floor.refuse_below);
@@ -1314,7 +1294,7 @@ mod tests {
             repair.content
         );
         // The workflow map is in the user turn, before the document and
-        // transcript, joined by the TS separator.
+        // transcript, joined by the standing `---` separator.
         let user = &r.req_at(0).messages[1].content;
         assert!(
             user.starts_with("Workflow map (match rules → skills → agents):\n"),

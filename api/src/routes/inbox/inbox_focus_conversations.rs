@@ -1,8 +1,7 @@
-// /api/inbox/focus/conversations — port of
-// ui/src/routes/api/inbox.focus.conversations.ts.
-// GET → the panel's chat picker. POST → start a fresh conversation instance.
-// Segmentation is the context strategy: a new instance is how old context is
-// shed, and it is the owner's choice to make (no budget imposes it).
+// /api/inbox/focus/conversations. GET → the panel's chat picker. POST →
+// start a fresh conversation instance. Segmentation is the context
+// strategy: a new instance is how old context is shed, and it is the
+// owner's choice to make (no budget imposes it).
 
 use crate::error::thrown_internal_error;
 use crate::inbox_focus::conversation::{create_inbox_conversation, list_inbox_conversations};
@@ -37,8 +36,8 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
         Ok(u) => u,
         Err(resp) => return resp,
     };
-    // TS passes `null` for the agent model — the instance starts model-less
-    // and picks up the owner's assistant at command time.
+    // no agent model at create — the instance starts model-less and picks
+    // up the owner's assistant at command time.
     match create_inbox_conversation(&state.pg, &user.id, None).await {
         Ok(id) => (
             StatusCode::CREATED,

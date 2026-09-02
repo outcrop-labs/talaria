@@ -1,28 +1,25 @@
-// The Home/Today queue pass — port of `homeQueues` from ui/src/server/home.ts.
+// The Home/Today pass — the three human queues, plus the landing glance.
 //
-// ONLY THE QUEUES, not `homeSummary`: the digest needs exactly these three
+// ONLY THE QUEUES for the digest: it needs exactly these three
 // numbers for every user in the workspace and none of the glance around them.
-// Calling the whole summary per user would have run a Docker round trip once
+// Calling the whole summary per user would run a Docker round trip once
 // per recipient, and an email that says "2 tickets in QA" must count them the
-// SAME WAY the screen does — so copying the query into the digest was never an
-// option in TS and is not one here. One definition, two callers; when the Home
-// route family crosses it ports onto this same fn.
+// SAME WAY the screen does — one definition, two callers.
 //
 // The three queues are the whole job description Talaria gives a person:
 // triage (inbox — needs a human to assign), review (quality_review — needs
 // sign-off), blocked (needs unblocking). Scoped to boards the user can see,
 // which is what `board_visibility_sql` encodes and what keeps a digest line
-// inside the one visibility model rule 4 of digest.ts states.
+// inside the digest's one visibility rule.
 
 use sqlx::PgPool;
 
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::boards::board_visibility_sql;
 
-/// One ticket as Home lists it (home.ts `WorkItem`). `updated_ms` is carried
-/// because the queue's sort is `updated_at desc` — the column arrives here as
-/// the epoch-ms read and is rendered as ISO for shape-parity with the row TS
-/// handed back (a Date there, a string on the wire).
+/// One ticket as Home lists it. `updated_ms` is carried
+/// because the queue's sort is `updated_at desc` — the column arrives as
+/// an epoch-ms read and is rendered as ISO (a string on the wire).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkItem {
@@ -33,9 +30,9 @@ pub struct WorkItem {
     pub title: String,
     pub status: String,
     pub updated_at: String,
-    /// The bucket SQL decided (`blocked`/`review`/`triage`). TS's interface
-    /// doesn't declare it, but its rows go on the wire whole — the field is
-    /// part of the payload even though no reader names it.
+    /// The bucket SQL decided (`blocked`/`review`/`triage`). The rows go on
+    /// the wire whole — the field is part of the payload even though no
+    /// reader names it.
     pub queue: String,
 }
 
@@ -130,7 +127,7 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
         queue: r.queue,
     };
 
-    // Three passes over one row set, exactly as TS filters it: the bucket is
+    // Three passes over one row set: the bucket is
     // SQL's decision, count is the whole bucket, and the list is the bucket
     // capped at the window.
     let mut queues = HomeQueues::default();
@@ -148,14 +145,14 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
     Ok(queues)
 }
 
-// ── The whole glance (home.ts `homeSummary`) ─────────────────────────────────
+// ── The whole glance ─────────────────────────────────────────────────────────
 //
 // The org half: name, an activity pulse everyone sees, and (admins) live
 // alerts + today's spend. Failures degrade to quiet, never 500. Fleet health
 // is NOT here — it left Home with the Fleet tab; Agents and Observability own
 // that question.
 
-/// The org rail's live half (home.ts `OrgGlance`).
+/// The org rail's live half.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgGlance {
@@ -183,9 +180,8 @@ pub struct HomeSummary {
     pub boards: i32,
 }
 
-/// `homeSummary` — the Home/Today landing in one round-shape. `role` is the
-/// caller's (`user.role`), and only admins pay for the alerts count and the
-/// cost overview.
+/// The Home/Today landing in one round-shape. Only admins pay for the
+/// alerts count and the cost overview.
 pub async fn home_summary(
     state: &crate::state::AppState,
     user_id: &str,
@@ -209,9 +205,8 @@ pub async fn home_summary(
     );
     let ((unread,), (boards,)) = (unread_res?, boards_res?);
 
-    // The glance's four reads all fold their own failures, exactly as TS's
-    // `.catch`es do: orgProfile to quiet strings, the feed to empty, alerts
-    // and cost to null.
+    // The glance's four reads all fold their own failures: orgProfile to
+    // quiet strings, the feed to empty, alerts and cost to null.
     let profile_fut = crate::org::org_profile(pg);
     let activity_fut = async {
         crate::activity::activity_feed(pg, user_id, &[], 8, is_admin)

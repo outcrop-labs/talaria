@@ -1,7 +1,6 @@
-// /api/templates/{id} — port of ui/src/routes/api/templates.$id.ts.
-// One template: PUT → edit (kind is immutable — retire and recreate instead),
-// DELETE → remove (bindings cascade/null out; consumers fall through the
-// chain).
+// /api/templates/{id}. One template: PUT → edit (kind is immutable — retire
+// and recreate instead), DELETE → remove (bindings cascade/null out;
+// consumers fall through the chain).
 
 use crate::body::{as_object, optional_max_string_member, parse, trimmed_string_member};
 use crate::error::{house_error, thrown_internal_error};
@@ -63,8 +62,8 @@ pub async fn put(
     }
 }
 
-/// `z.string().trim().min(1).max(120).optional()` — the trim runs before the
-/// bounds, and only when the key is present.
+/// Optional trimmed string — the trim runs before the bounds, and only when
+/// the key is present.
 fn optional_trimmed(
     obj: &serde_json::Map<String, serde_json::Value>,
     key: &str,

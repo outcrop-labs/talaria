@@ -1,6 +1,5 @@
-// GET /api/agents — port of ui/src/routes/api/agents.ts. The fleet the
-// current user may use (definition-backed agents with their model tiers,
-// filtered by per-agent access). Auth-gated.
+// GET /api/agents. The fleet the current user may use (definition-backed
+// agents with their model tiers, filtered by per-agent access). Auth-gated.
 
 use crate::error::thrown_internal_error;
 use crate::fleet::{list_fleet_agents, usable_agent_gate};

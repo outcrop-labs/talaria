@@ -10,11 +10,9 @@ import { focusGold } from '@/components/chat/chat-chrome'
 
 // Markdown → HTML for Markdown.svelte: GFM (tables, task lists, strikethrough,
 // autolinks), soft line breaks, and syntax-highlighted fenced code. Raw HTML is
-// NOT rendered (remark-rehype's safe default drops it — the same guarantee
-// react-markdown gave us), so no sanitization plumbing is needed.
-// Mercury-styled via semantic utilities: what react-markdown did with component
-// overrides, rehypeMercury does with a hast pass below. Reuse — do not
-// re-render markdown inline.
+// NOT rendered (remark-rehype's safe default drops it), so no sanitization
+// plumbing is needed. Mercury styling rides semantic utilities applied by the
+// rehypeMercury hast pass below. Reuse — do not re-render markdown inline.
 
 // ── @mention highlighting ────────────────────────────────────────────────────
 // Same token shape the server notifies on (mentions.ts) plus the channel
@@ -63,7 +61,7 @@ function remarkMentions() {
   }
 }
 
-// ── Mercury element styling (react-markdown `components` → hast pass) ───────
+// ── Mercury element styling (a hast pass) ───────────────────────────────────
 
 interface HastNode {
   type: string
@@ -81,9 +79,9 @@ const el = (tagName: string, properties: Record<string, unknown>, children: Hast
 })
 const text = (value: string): HastNode => ({ type: 'text', value })
 
-// Mirror react-markdown's defaultUrlTransform, which the old pipeline applied
-// to every href/src: keep http(s)/mailto/relative URLs, neuter `javascript:`
-// and friends. The unified pipeline has no such default, so we do it here.
+// URL gate for every href/src: keep http(s)/mailto/relative URLs, neuter
+// `javascript:` and friends. The unified pipeline has no such default, so it
+// is done here.
 const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i
 function safeUrl(value: string): string {
   const colon = value.indexOf(':')
@@ -102,7 +100,7 @@ function safeUrl(value: string): string {
   return ''
 }
 
-// Straight class swaps — byte-identical to the old react-markdown overrides.
+// Straight class swaps — one class string per default element.
 const CLASSES: Record<string, string> = {
   h1: 'mb-2 mt-4 text-xl font-semibold text-fg first:mt-0',
   h2: 'mb-2 mt-4 text-lg font-semibold text-fg first:mt-0',
@@ -159,7 +157,6 @@ function transformNode(node: HastNode): HastNode | null {
 
   // Fenced code first, before generic recursion, so the inner <code> keeps its
   // hljs classes and any other <code> we meet below is by definition inline.
-  // (react-markdown wrapped block code in <pre>; CodeBlock renders its own.)
   if (node.tagName === 'pre') {
     const code = node.children?.find((c) => c.type === 'element' && c.tagName === 'code')
     if (!code) return node
@@ -225,8 +222,7 @@ const processor = unified()
   .use(remarkBreaks)
   .use(remarkMentions)
   .use(remarkRehype)
-  // detect covers unlabeled fences; v7 skips unknown languages by default
-  // (the old `ignoreMissing` flag is gone).
+  // detect covers unlabeled fences; unknown languages are skipped by default.
   .use(rehypeHighlight, { detect: true })
   .use(rehypeMercury)
   .use(rehypeStringify)

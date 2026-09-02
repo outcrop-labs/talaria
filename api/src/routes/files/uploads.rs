@@ -1,4 +1,4 @@
-// /api/uploads — port of ui/src/routes/api/uploads.ts.
+// /api/uploads.
 // POST (multipart/form-data, field "file") → store an attachment, return its
 // metadata. Any signed-in user with the upload perm may upload; the file is
 // served back from /api/uploads/{id}. The body is read through
@@ -19,11 +19,11 @@ use crate::uploads::{FormRead, read_upload_form, save_upload};
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
-    // Result, not Multipart: the bare extractor would reject a body without a
-    // multipart boundary BEFORE this handler runs — answering its own 400 text
-    // ahead of the permission gate. TS parses the form only after gating, and
-    // maps every read failure to `no file`; capturing the rejection here puts
-    // both the order and the body back on the oracle's spelling.
+    // Result, not Multipart: the bare extractor would reject a body without
+    // a multipart boundary BEFORE this handler runs — answering its own 400
+    // text ahead of the permission gate. Capturing the rejection here keeps
+    // the gate first and folds it into the `no file` answer every read
+    // failure takes.
     multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
 ) -> Response {
     let user = match require_perm(&state, &headers, "files.upload").await {
@@ -58,7 +58,7 @@ pub async fn post(
     };
     let sb = state.secretbox().await.unwrap_or_default();
     match save_upload(&state.pg, &sb, &filename, &mime, &bytes, Some(&user.id)).await {
-        // The attachment object itself, not wrapped — TS's `json(att)`.
+        // The attachment object itself, not wrapped.
         Ok(att) => Json(att).into_response(),
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
     }

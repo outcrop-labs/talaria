@@ -1,6 +1,6 @@
-// /api/kb/comments/{id} — port of ui/src/routes/api/kb.comments.$id.ts. One
-// comment. PATCH { resolved } → resolve/unresolve its thread (author, thread
-// starter, or doc owner). DELETE → remove your own comment.
+// /api/kb/comments/{id}. One comment. PATCH { resolved } → resolve/unresolve
+// its thread (author, thread starter, or doc owner). DELETE → remove your own
+// comment.
 
 use axum::Json;
 use axum::extract::{Path, State};

@@ -1,9 +1,8 @@
-// /api/workbench/jobs — port of ui/src/routes/api/workbench.jobs.ts. Workbench
-// jobs from the human side. GET ?taskId= → the ticket's jobs (board members —
-// this is how the plan-approval gate and PR links surface on the ticket).
-// PUT → approve / reject an awaiting job (board editors; rejection abandons
-// with the reason in the ticket's audit trail), or merge a started job into
-// the repo's testing branch.
+// /api/workbench/jobs. Workbench jobs from the human side. GET ?taskId= →
+// the ticket's jobs (board members — this is how the plan-approval gate and
+// PR links surface on the ticket). PUT → approve / reject an awaiting job
+// (board editors; rejection abandons with the reason in the ticket's audit
+// trail), or merge a started job into the repo's testing branch.
 //
 // This is the TICKET strip's job wire, not workbench-mcp's: agentId absent,
 // plan and mergedTestingAt present, testingBranch appended by the handler.
@@ -83,7 +82,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // searchParams.get('taskId') — absent and bare-'?taskId' both null.
+    // ?taskId= — absent and bare-'?taskId' both null.
     let task_id = uri
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("taskId=")));
@@ -125,9 +124,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             return thrown_internal_error();
         }
     };
-    // Promise.all over the rows: each wire gets its repo's testing branch
-    // appended. A repo_flow infra failure here throws in TS (500); Rust keeps
-    // the row and answers testingBranch null only when the flow read says so.
+    // Per-row read: each wire gets its repo's testing branch appended —
+    // testingBranch is null only when the flow read SAYS so; an infra
+    // failure is the 500.
     let mut wires = Vec::with_capacity(rows.len());
     for r in &rows {
         let testing = match gh::repo_flow(&state.pg, &r.3).await {
@@ -200,8 +199,8 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             status: job.7.clone(),
             task_id: job.2.clone(),
         };
-        // The TS route `.catch()`es the engine: BOTH flavors — the tool
-        // sentence and the thrown infra error — fold into one 400 {error}.
+        // BOTH engine flavors — the tool sentence and the thrown infra
+        // error — fold into one 400 {error}.
         let r = merge_job_to_testing(&deps, &merge, &WorkbenchActor::Human(actor.clone())).await;
         return match r {
             Ok(_) => Json(json!({ "ok": true })).into_response(),

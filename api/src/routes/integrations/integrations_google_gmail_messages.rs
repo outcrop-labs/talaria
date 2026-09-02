@@ -1,6 +1,5 @@
-// GET /api/integrations/google/gmail/messages?q= — port of
-// ui/src/routes/api/integrations/google.gmail.messages.ts. Recent mail
-// (metadata only).
+// GET /api/integrations/google/gmail/messages?q= — recent mail (metadata
+// only).
 
 use axum::Json;
 use axum::extract::State;
@@ -19,7 +18,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // `|| 'in:inbox'` — an absent OR EMPTY q both fold to the inbox default.
+    // An absent OR EMPTY q both fold to the inbox default.
     let q = query_pairs(uri.query())
         .get("q")
         .cloned()
@@ -32,7 +31,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     }
 }
 
-/// Date.now() — the one clock the mailbox read carries.
+/// Epoch-ms clock — the one time the mailbox read carries.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

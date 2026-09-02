@@ -1,16 +1,15 @@
-// /api/channels/{id}/plan — port of ui/src/routes/api/channels.$id.plan.ts.
+// /api/channels/{id}/plan.
 // The channel Plan button: POST enqueues a 'plan-draft' run on a channel
 // agent and answers immediately with the queued draft; GET/PATCH/DELETE
 // read, persist edits to, and drop the channel's latest draft. Members only;
 // the drafting agent must be in the channel and usable by the caller.
 // Nothing is created here — the human reviews and creates via the boards API.
 //
-// The two plan-draft routes are twins over one domain module (plan_drafts.rs
-// + the plan-draft run def). TS spells the Start and Save schemas out
-// literally in both route files; this side says them once, here, and
-// plans_id_draft.rs reuses the validators — the one place the pair differs
-// (channels names the drafting agent in the body; the plan surface reads it
-// from the conversation) is the `with_agent` switch, the same shape
+// The two plan-draft routes (this one and plans_id_draft.rs) share one
+// domain module (plan_drafts.rs + the plan-draft run def), and the Start
+// and Save validators are said once, here. The one place the pair differs
+// — channels names the drafting agent in the body; the plan surface reads
+// it from the conversation — is the `with_agent` switch, the same shape
 // workflows' create/patch pair uses.
 
 use crate::body::{
@@ -37,13 +36,14 @@ use serde_json::{Value, json};
 const PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
 const EFFORTS: &[&str] = &["xs", "s", "m", "l", "xl"];
 
-/// The Start body (both route files' zod `Start`): the channel side names the
-/// drafting agent; the plan side inherits it from the conversation.
+/// The Start body: the channel side names the drafting agent; the plan
+/// side inherits it from the conversation.
 #[derive(Debug)]
 pub(crate) struct StartBody {
     pub agent_model: Option<String>,
-    /// `z.string().max(60).nullish()` — null, absent AND '' all mean "no
-    /// tier picked"; '' stays '' in the stored row (`body.tier ?? null`).
+    /// tier: max 60, nullish — null, absent AND '' all mean "no tier
+    /// picked" (the routing ask below skips an empty tier); '' still stays
+    /// '' in the stored row.
     pub tier: Option<String>,
     pub board_id: Option<String>,
     pub template_id: Option<String>,
@@ -69,8 +69,8 @@ pub(crate) fn validate_start(
     })
 }
 
-/// `z.string().max(n).nullish()`: absent and null both pass as None; a
-/// present value is a string within bounds, the empty string included.
+/// Nullish string member: absent and null both pass as None; a present
+/// value is a string within bounds (max n), the empty string included.
 fn nullish_max_string_member(
     obj: &serde_json::Map<String, Value>,
     key: &str,
@@ -82,11 +82,11 @@ fn nullish_max_string_member(
     }
 }
 
-/// The Save body (both route files' zod `Save`): the review walk's writes,
-/// the full batch already normalized — what the run produced plus the human's
-/// edits, arriving as Vec<StoredProposal> exactly as the row stores it.
-/// Fields in zod's schema order, elements in array order, so the first error
-/// is the one parseBody's `issues[0]` would answer.
+/// The Save body: the review walk's writes, the full batch already
+/// normalized — what the run produced plus the human's edits, arriving as
+/// Vec<StoredProposal> exactly as the row stores it. Fields checked in
+/// schema order, elements in array order, so the first bad field of the
+/// first bad element is the error that answers.
 pub(crate) fn validate_save_body(
     obj: &serde_json::Map<String, Value>,
 ) -> Result<Vec<StoredProposal>, String> {
@@ -104,7 +104,7 @@ pub(crate) fn validate_save_body(
         let description = string_member(e, "description", 0, 20_000)?;
         let priority = priority_of(&enum_member(e, "priority", PRIORITIES)?)?;
         let effort = match e.get("effort") {
-            // `.nullable()`, not `.optional()` — the key must be present, and
+            // effort: nullable but required — the key must be present, and
             // null is the model's "did not hazard one".
             None => return Err(enum_msg(EFFORTS)),
             Some(Value::Null) => None,
@@ -126,10 +126,10 @@ pub(crate) fn validate_save_body(
     Ok(out)
 }
 
-/// `z.array(z.number().int())` — required, unbounded, indices into the batch.
-/// The safe-integer bounds are zod's own (the same two-sided messages
-/// body.rs transcribes elsewhere); the >=0 refusal is this side's one
-/// narrowing — a negative "index" cannot name a proposal and the only writer
+/// dependsOn: required, unbounded array of ints — indices into the batch.
+/// The bounds are the safe-integer ones (the same two-sided messages
+/// body.rs spells elsewhere); the >=0 refusal is the one narrowing beyond
+/// them — a negative "index" cannot name a proposal, and the only writer
 /// of this body is our own review walk, which copies the run's output.
 fn depends_on_member(e: &serde_json::Map<String, Value>) -> Result<Vec<usize>, String> {
     let v = e.get("dependsOn").ok_or_else(|| array_msg("undefined"))?;
@@ -159,7 +159,8 @@ fn depends_on_member(e: &serde_json::Map<String, Value>) -> Result<Vec<usize>, S
     Ok(out)
 }
 
-/// `z.array(z.string().max(100))` — required, unbounded, free-form labels.
+/// tags: required, unbounded array of strings (max 100 each) — free-form
+/// labels.
 fn tags_member(e: &serde_json::Map<String, Value>) -> Result<Vec<String>, String> {
     let v = e.get("tags").ok_or_else(|| array_msg("undefined"))?;
     let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
@@ -179,8 +180,9 @@ fn tags_member(e: &serde_json::Map<String, Value>) -> Result<Vec<String>, String
     Ok(out)
 }
 
-/// enum_member has already pinned the spelling; this is the same string as
-/// the typed field the row stores (serde's lowercase rename agrees with zod).
+/// enum_member has already pinned the spelling; this re-parses the same
+/// string into the typed field the row stores (serde's lowercase rename
+/// matches the wire spelling).
 fn priority_of(s: &str) -> Result<Priority, String> {
     serde_json::from_value(json!(s)).map_err(|_| enum_msg(PRIORITIES))
 }
@@ -269,9 +271,8 @@ pub async fn post(
             "you do not have access to that agent",
         );
     }
-    // `(body.tier ? routedModelFor(agent, tier).catch(() => null) : null) ??
-    // agentModel` — a blank tier never asks (truthiness), a failed read or
-    // an unknown tier falls back to the base agent, never a 500.
+    // Tier routing: a blank tier never asks; a failed read or an unknown
+    // tier falls back to the base agent — never a 500.
     let routed = match start.tier.as_deref() {
         Some(t) if !t.is_empty() => routed_model_for(&state.pg, &agent_model, Some(t))
             .await
@@ -453,7 +454,7 @@ mod tests {
             validate_save_body(body.as_object().unwrap()).unwrap_err(),
             "Invalid input: expected int, received number"
         );
-        // 2.0 IS an integer to JS and to Postgres alike.
+        // 2.0 carries no fraction — it IS the integer 2.
         let mut body = save_body(1);
         body["proposals"][0]["dependsOn"] = json!([2.0]);
         assert_eq!(

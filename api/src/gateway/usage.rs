@@ -1,6 +1,6 @@
-// Token ledger — port of ui/src/server/usage.ts: usage normalization across
-// every provider shape, the chars/4 estimate, the priced rolling-window spend
-// read (budget check's read side), and the gateway's usage_events insert.
+// Token ledger: usage normalization across every provider shape, the chars/4
+// estimate, the priced rolling-window spend read (budget check's read side),
+// and the gateway's usage_events insert.
 
 use crate::body::js_num;
 use serde_json::Value;
@@ -21,8 +21,8 @@ pub struct TokenCounts {
     pub reasoning_tokens: i64,
 }
 
-/// Read a number the way TS's `n()` does: only a JSON number counts (a string
-/// digit would be 0 in TS, not parsed), clamped to non-negative integers.
+/// Read a number: only a JSON number counts (a string digit is 0, never
+/// parsed), clamped to non-negative integers.
 fn num(v: Option<&Value>) -> i64 {
     match v {
         Some(Value::Number(n)) if n.as_f64().is_some_and(|f| f.is_finite()) => {
@@ -37,9 +37,8 @@ fn at<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 }
 
 /// Normalise a provider usage object into non-overlapping, separately-priced
-/// counts. Port of normalizeUsage — including the shape detection from the
-/// payload (not the provider name) and the KNOWN GAP on folded cache writes;
-/// see usage.ts:67 for the full rationale.
+/// counts. Shape detection reads the payload (not the provider name); the
+/// KNOWN GAP on folded cache writes is deliberate.
 pub fn normalize_usage(u: Option<&Value>) -> Option<TokenCounts> {
     let u = u?;
     if !u.is_object() {
@@ -63,7 +62,7 @@ pub fn normalize_usage(u: Option<&Value>) -> Option<TokenCounts> {
     } else if at(u, "cache_read_input_tokens").is_none()
         && at(u, "cache_creation_input_tokens").is_none()
     {
-        // Detail-object cache writes are folded in (the KNOWN GAP in usage.ts).
+        // Detail-object cache writes are folded in (the KNOWN GAP).
         cache_write_tokens = cache_write_tokens.min(prompt_tokens);
         prompt_tokens -= cache_write_tokens;
     }
@@ -94,14 +93,15 @@ pub struct SpendWindow {
     pub unpriced_tokens: i64,
 }
 
-// The priced view, verbatim from usage.ts: cloud rows get $ from the user's
+// The priced view: cloud rows get $ from the user's
 // per-model override, else the auto-fetched public rate, else the endpoint
 // default; local rows are $0; cloud rows with no price at all get NULL cost
-// so they can be surfaced as "unpriced". Multipliers per input KIND — TS
-// interpolates the constants into its unsafe string, and so does this: they
-// are VALUES in the text, not binds (an earlier draft bound them, which
-// collided with every caller's own $2 and made the statement unpreparable —
-// a failure budget.rs's `.ok()?` swallowed as "no spend data").
+// so they can be surfaced as "unpriced". Multipliers per input KIND — they
+// are VALUES interpolated into this text, not binds: the view is spliced
+// into larger statements whose callers bind their own $1/$2, and a bound
+// multiplier here would collide with those placeholders and leave the
+// statement unpreparable (a failure budget.rs's `.ok()?` swallows as "no
+// spend data").
 static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "select u.*, \
@@ -127,7 +127,7 @@ fn priced() -> &'static str {
 
 /// Billable spend over a rolling window, optionally for one caller
 /// (`agent_model` — a fleet model id for persona rows, `api:<key>` for
-/// gateway rows). Port of spendSince; called before every budgeted call and
+/// gateway rows). Called before every budgeted call and
 /// cached by budget.rs.
 pub async fn spend_since(
     pg: &PgPool,
@@ -138,7 +138,7 @@ pub async fn spend_since(
     let hours = window_hours.clamp(1, 24 * 365);
     // sqlx can't interpolate the interval literal as a bind for `now() - $1`
     // with unit attached — build `make_interval(hours => $1)` instead, which
-    // stays a bound parameter the way TS's unsafe string does not.
+    // stays a bound parameter.
     let sql = format!(
         "with priced as ({priced}) \
          select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens, \
@@ -164,9 +164,9 @@ pub async fn spend_since(
         .unwrap_or_default())
 }
 
-// ── The token ledger overview (usage.ts costOverview → GET /api/cost) ────────
+// ── The token ledger overview (GET /api/cost) ────────────────────────────────
 
-/// One window's aggregate, in wire order (usage.ts's `t()` shape).
+/// One window's aggregate, in wire order.
 #[derive(Debug, serde::Serialize)]
 pub struct CostWindow {
     pub prompt: i32,
@@ -236,10 +236,10 @@ pub struct CostOverview {
     pub per_day: Vec<CostPerDay>,
 }
 
-/// The token ledger overview (usage.ts costOverview): totals, per-model,
+/// The token ledger overview: totals, per-model,
 /// per-agent, per-day — the Observability cost page's whole read. The nine
-/// aggregates are independent; TS fans them out concurrently and so does
-/// this (alerts + /cost call it on every load).
+/// aggregates are independent and run concurrently
+/// (alerts + /cost call it on every load).
 pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     let priced = priced();
     // AssertSqlSafe everywhere below: each string interpolates only the
@@ -437,7 +437,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     })
 }
 
-// ── Ticket usage (usage.ts taskUsage → the tasks family's detail read) ───────
+// ── Ticket usage (the tasks family's detail read) ────────────────────────────
 
 /// One per-model line of a ticket's usage.
 #[derive(Debug, serde::Serialize)]
@@ -449,7 +449,7 @@ pub struct TaskUsagePerModel {
     pub cost: Option<serde_json::Number>,
 }
 
-/// Token spend reported against one ticket (usage.ts TaskUsage). Agents
+/// Token spend reported against one ticket. Agents
 /// self-report it via MCP log_usage for work done outside Talaria's request
 /// path — by design it adds to the same totals.
 #[derive(Debug, serde::Serialize)]
@@ -469,7 +469,7 @@ pub struct TaskUsage {
 pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::Error> {
     let priced = priced();
     // AssertSqlSafe: the only interpolation is the PRICED const — the task id
-    // stays a bind, exactly as TS's sql.unsafe($1) does.
+    // stays a bind.
     let totals_sql = format!(
         "with priced as ({priced}) \
          select coalesce(sum(prompt_tokens),0)::int as prompt, \
@@ -524,9 +524,9 @@ pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::E
     })
 }
 
-/// Ledger row for a gateway call — port of recordGatewayUsage. Attribution is
+/// Ledger row for a gateway call. Attribution is
 /// direct (we KNOW the endpoint), no agent-def classification involved.
-/// `k()` semantics from TS: non-finite/negative → 0, rounded.
+/// `k` clamps negatives to 0.
 fn k(v: i64) -> i64 {
     v.max(0)
 }
@@ -562,7 +562,7 @@ pub async fn record_gateway_usage(
     .map(|_| ())
 }
 
-// ── Agent-reported spend (usage.ts recordUsage → tasks.$id.usage POST) ───────
+// ── Agent-reported spend (tasks.$id.usage POST) ──────────────────────────────
 
 /// Which model serves this generation: the requested TIER's model when a tier
 /// was routed, else the agent's current MAIN model.
@@ -586,7 +586,7 @@ type ClassCache = std::collections::HashMap<String, (std::time::Instant, Option<
 static CLASS_CACHE: std::sync::LazyLock<std::sync::Mutex<ClassCache>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(ClassCache::new()));
 
-/// classifyAgent — the serving tier-or-main spec for an agent, narrowed to
+/// The serving tier-or-main spec for an agent, narrowed to
 /// what the gateway's pool can honestly claim. Cached 60s per
 /// (agentModel, tier): the def and the endpoint pool both move slower than
 /// that, and the hot path should never feel a classification.
@@ -687,7 +687,7 @@ async fn classify_model(
     }))
 }
 
-/// One agent-reported spend row (usage.ts UsageInput). 'chat'/'channel' rows
+/// One agent-reported spend row. 'chat'/'channel' rows
 /// are gateway-metered by Talaria; 'ticket' rows are agent-SELF-REPORTED (MCP
 /// log_usage) for work done outside Talaria's request path — by design they
 /// add to the same totals (that spend is just as real), guarded by the agent
@@ -703,9 +703,9 @@ pub struct UsageInput<'a> {
     pub estimated: bool,
 }
 
-/// recordUsage — insert one usage_events row, attributed by the classify
-/// plane. Classification failure is swallowed to null here (TS:
-/// `.catch(() => null)`): the row still lands, unattributed.
+/// Insert one usage_events row, attributed by the classify
+/// plane. Classification failure is swallowed to null here:
+/// the row still lands, unattributed.
 pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::Error> {
     let cls = classify_agent(pg, u.agent_model, u.tier)
         .await
@@ -735,7 +735,7 @@ pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::E
 
     // A cloud row landing without a price is the oracle's cue to look again —
     // detached, throttled, and idempotent, so the hot path never feels it. A
-    // probe that itself fails nudges nothing (TS: `.catch(() => {})`).
+    // probe that itself fails nudges nothing.
     if let Some(cls) = cls
         && cls.endpoint_class.as_deref() == Some("cloud")
         && cls.endpoint.is_some()
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn js_numbers_print_like_json_stringify() {
-        // Integral floats lose the ".0" — JSON.stringify(0) is "0".
+        // Integral floats lose the ".0" — zero prints "0".
         assert_eq!(js_num(0.0).to_string(), "0");
         assert_eq!(js_num(1.0).to_string(), "1");
         assert_eq!(js_num(-2.0).to_string(), "-2");
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn empty_usage_is_none_and_strings_do_not_count() {
         assert!(norm(json!({})).is_none());
-        assert!(norm(json!({"prompt_tokens": "500"})).is_none()); // TS n(): a string is 0
+        assert!(norm(json!({"prompt_tokens": "500"})).is_none()); // a string is 0, never parsed
         assert!(normalize_usage(None).is_none());
         // reasoning is clamped inside completion (providers fold it in).
         let c = norm(json!({"prompt_tokens": 10, "completion_tokens": 30,

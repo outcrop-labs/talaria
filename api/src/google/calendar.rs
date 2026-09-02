@@ -1,7 +1,6 @@
-// Google Calendar — port of ui/src/server/google/calendar.ts: read the
-// connected identity's upcoming agenda and create events, acting strictly as
-// that identity (per-user OAuth, or the org account through an
-// already-resolved token).
+// Google Calendar: read the connected identity's upcoming agenda and create
+// events, acting strictly as that identity (per-user OAuth, or the org
+// account through an already-resolved token).
 //
 // The connection door is the shared one (crate::google::connections::get_access_token):
 // `NotConnected` is a normal answer the brief renders as "no calendar section",
@@ -45,16 +44,15 @@ impl std::fmt::Display for CalendarError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             // The words matter: the brief decides connected-vs-unreadable by
-            // substring over this sentence (the TS regex, on the same words).
+            // substring over this sentence.
             CalendarError::NotConnected => write!(f, "not connected"),
             CalendarError::Failed(m) => write!(f, "{m}"),
         }
     }
 }
 
-/// The exact URLSearchParams serialization TS sends (parameter order included),
-/// so the request is byte-identical to the one the TS brief issued.
-/// `calendar_id` empty/None reads 'primary' (calendar.ts eventsUrl).
+/// The events-list URL, parameter order pinned (timeMin, maxResults,
+/// singleEvents, orderBy). `calendar_id` empty/None reads 'primary'.
 fn events_url_with_params(calendar_id: Option<&str>, now_ms: i64, max_results: usize) -> String {
     let wanted = max_results.clamp(1, 50);
     let mut params = url::form_urlencoded::Serializer::new(String::new());
@@ -138,7 +136,7 @@ pub async fn list_upcoming_events_with_token(
 }
 
 /// Fold one Google event to `CalendarEvent`; an event with no id is not an
-/// event (TS would have crashed indexing it — same outcome, said instead).
+/// event — skipped, not a crash.
 fn normalize(e: &serde_json::Value) -> Option<CalendarEvent> {
     let id = e.get("id").and_then(|v| v.as_str())?.to_string();
     let start_obj = e.get("start").filter(|v| v.is_object());
@@ -158,7 +156,7 @@ fn normalize(e: &serde_json::Value) -> Option<CalendarEvent> {
             .and_then(|v| v.as_str())
             .unwrap_or("(no title)")
             .to_string(),
-        // `dateTime ?? date ?? null`
+        // dateTime, else date, else absent
         start: start_date_time.clone().or(start_date),
         end: field(end_obj, "dateTime").or_else(|| field(end_obj, "date")),
         all_day,
@@ -178,7 +176,7 @@ fn normalize(e: &serde_json::Value) -> Option<CalendarEvent> {
     })
 }
 
-// ── Create (calendar.ts createEvent) ─────────────────────────────────────────
+// ── Create ───────────────────────────────────────────────────────────────────
 
 /// CreateEventInput — the route body's fields, validation already applied.
 pub struct CreateEventInput<'a> {
@@ -215,8 +213,8 @@ pub async fn create_event_with_token(
     calendar_id: Option<&str>,
 ) -> Result<CalendarEvent, GoogleError> {
     // allDay → date, else dateTime; the same field name on both ends. The
-    // optional fields ride only when present — TS's JSON.stringify drops
-    // undefined keys, and the body should read like the TS one on the wire.
+    // optional fields ride only when present — absent stays absent in the
+    // body.
     let time_field = if input.all_day { "date" } else { "dateTime" };
     let time_obj = |v: &str| {
         serde_json::Map::from_iter([(
@@ -350,8 +348,8 @@ mod tests {
 
     #[test]
     fn the_request_url_is_the_ts_serialization() {
-        // Parameter order and values exactly as calendar.ts's URLSearchParams:
-        // timeMin first, over-fetched maxResults, singleEvents, orderBy.
+        // Parameter order and values: timeMin first, over-fetched maxResults,
+        // singleEvents, orderBy.
         assert_eq!(
             events_url_with_params(None, 1_788_045_420_000, 12),
             "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-08-29T23%3A17%3A00.000Z&maxResults=36&singleEvents=true&orderBy=startTime"

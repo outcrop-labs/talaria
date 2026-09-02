@@ -1,6 +1,5 @@
-// GET /api/integrations/google/drive/files?q= — port of
-// ui/src/routes/api/integrations/google.drive.files.ts. Browse/search the
-// user's Drive.
+// GET /api/integrations/google/drive/files?q= — browse/search the user's
+// Drive.
 
 use axum::Json;
 use axum::extract::State;
@@ -19,8 +18,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // `?? undefined` — an EMPTY q is a query (the engine's trim decides it is
-    // no filter), only an absent one is None.
+    // An EMPTY q is a query (the engine's trim decides it is no filter); only
+    // an absent one is None.
     let q = query_pairs(uri.query()).get("q").cloned();
     let sb = state.secretbox().await.unwrap_or_default();
     match list_drive_files(&state.pg, &sb, &user.id, now_ms(), q.as_deref(), 25).await {
@@ -29,7 +28,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     }
 }
 
-/// Date.now() — the one clock the Drive surface reads.
+/// Epoch-ms clock — the one time the Drive surface reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
