@@ -19,6 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::sha2::Sha256;
@@ -259,7 +260,12 @@ pub fn app_jwt_at(app_id: &str, private_key_pem: &str, now_secs: i64) -> Result<
             .as_bytes()
         ),
     );
+    // GitHub's App keys download as traditional `-----BEGIN RSA PRIVATE
+    // KEY-----` (SEC1) PEMs; the TS signer handed the PEM to node's crypto,
+    // which reads both labels. PKCS#8 first (the fixture's shape), then the
+    // label GitHub actually ships — the same key either way.
     let key = rsa::RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+        .or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(private_key_pem))
         .map_err(|e| format!("github app key parse: {e}"))?;
     let signing = SigningKey::<Sha256>::new(key);
     let sig = signing.sign(unsigned.as_bytes());

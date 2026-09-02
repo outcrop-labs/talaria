@@ -27,6 +27,14 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **GitHub App keys parse in the label GitHub actually ships** — App keys
+  download as traditional `-----BEGIN RSA PRIVATE KEY-----` (SEC1) PEMs, and
+  the signer read only PKCS#8, so every real key died at install time with
+  `PKCS#8 ASN.1 error: PEM type label invalid` while the frozen fixture (a
+  PKCS#8 key) kept the suite green. The parser now takes PKCS#8 first, then
+  the SEC1 label — the same key either way, and a companion fixture pins the
+  traditional label to the same signed bytes.
+
 - **The port's text-vs-typed bind crashes: three statements that could never
   execute, found by auditing every query in the API.** sqlx declares each
   bind's wire type from the Rust value — a `String` bind crosses as TEXT —
