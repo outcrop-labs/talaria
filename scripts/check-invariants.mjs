@@ -657,6 +657,98 @@ for (const rule of RULES) {
   }
 }
 
+// Destructive-statement guard on the MIGRATIONS array. Every statement is one
+// transaction away from every customer database, and most of the people who
+// will ever append one are writing SQL under time pressure at the end of a
+// feature. The patterns below are the ones that destroy or rewrite data that
+// no checksum can bring back: unmarked, CI fails and the second look happens
+// before the merge, not after a customer boot.
+//
+// The escape hatch is the marker. A statement carrying an inline
+// `-- deliberate: <why>` comment passes every pattern — the marker IS the
+// second look, recorded in the array next to the statement it justifies.
+//
+// History is exempt (GUARD_FROM_INDEX below): the first 304 statements
+// predate the guard, and annotating them now would churn the array's checksums
+// for zero new safety — the checksum law means an edited statement refuses to
+// boot, so the past is already frozen. The number is a literal on purpose and
+// never auto-updates: every future destructive statement demands its marker,
+// forever.
+{
+  const PG = 'ui/src/server/db/pg.ts'
+  const GUARD_FROM_INDEX = 304
+  const MARKER = /--\s*deliberate:\s*\S/
+  // Ordered [test, name] pairs. Drop-index/view/constraint are deliberately
+  // absent: those are routine, reversible cleanup, and the CI schema snapshot
+  // (ui/src/server/db/schema.snapshot.sql) already puts them in the PR diff —
+  // a tripwire that fires on cleanup noise gets widened until it is gone.
+  const PATTERNS = [
+    [/\bdrop\s+(table|column|database|schema|type)\b/, 'drop table/column/database/schema/type'],
+    [/\btruncate\b/, 'truncate'],
+    [/\bdelete\s+from\b/, 'delete from (no where)'],
+    [/\bupdate\b[^;]*\bset\b/, 'update … set (no where)'],
+    [/\balter\s+column\s+[^;]*\b(type|using)\b/, 'alter column type/using'],
+    [/\brename\s+(to|column)\b/, 'rename (api queries reference the name)'],
+  ]
+  // Whole-line TS comments are blanked before backtick pairing — the prose
+  // between entries quotes identifiers in backticks (`schema_migrations`) and
+  // would otherwise pair with the next statement's opening delimiter and
+  // inflate the count. SQL `--` comments live INSIDE statements and survive
+  // (stripComments only blanks whole-line // and /* */ comments).
+  const stripped = stripComments(readFileSync(join(ROOT, PG), 'utf8'))
+  const start = stripped.indexOf('const MIGRATIONS: string[] = [')
+  const body = stripped.slice(start, stripped.indexOf('\n]', start))
+  // Safe to split on backticks: the checks above guarantee no stray backtick
+  // lives anywhere in the array.
+  const statements = [...body.matchAll(/`([^`]*)`/g)]
+  if (statements.length >= GUARD_FROM_INDEX) {
+    const offenders = []
+    statements.forEach(([text, sql], index) => {
+      if (index < GUARD_FROM_INDEX || MARKER.test(text)) return
+      // Normalize: blank single-quoted literals first (so a data value that
+      // says 'truncate this' cannot fire the guard), THEN strip -- comments,
+      // then lowercase for the case-insensitive patterns.
+      const norm = sql
+        .replace(/'(?:[^'\\]|'')*'/g, "''")
+        .replace(/--[^\n]*/g, '')
+        .toLowerCase()
+      for (const [test, name] of PATTERNS) {
+        // delete/update only count when the statement has no where clause —
+        // a scoped delete is a repair, an unscoped one is a wipe.
+        if ((name.includes('no where') && /\bwhere\b/.test(norm)) || !test.test(norm)) continue
+        offenders.push({
+          line: lineOf(stripped, statements[index].index ?? 0),
+          text: `${name}: ${text.trim().split('\n')[0].slice(0, 80)}`,
+        })
+        break
+      }
+    })
+    if (offenders.length) {
+      failures.push({
+        id: 'pg-migration-destructive-unmarked',
+        what: `a MIGRATIONS statement (index >= ${GUARD_FROM_INDEX}) can destroy or rewrite data and carries no \`-- deliberate:\` marker`,
+        fix: [
+          'Add a `-- deliberate: <why>` comment INSIDE the statement so the decision travels with',
+          'the SQL — or make the change non-destructively (add-first, drop in a later release).',
+          `The guard starts at statement ${GUARD_FROM_INDEX}; history before it is frozen by the checksum law.`,
+        ],
+        found: offenders.map((o) => ({ path: PG, line: o.line, text: o.text })),
+      })
+    }
+  } else if (statements.length > 0) {
+    // The array shrank below the guard's baseline. Statements cannot be removed
+    // (the checksum refuses to boot on a database that applied them), so this
+    // is tampering or a parsing regression — either way the guard is inert and
+    // must not pass silently.
+    failures.push({
+      id: 'pg-migration-guard-baseline-lost',
+      what: `the MIGRATIONS array parses as ${statements.length} statements, below the destructive guard's baseline of ${GUARD_FROM_INDEX}`,
+      fix: ['Statements are append-only — find what removed entries, or fix the parser in scripts/check-invariants.mjs.'],
+      found: [],
+    })
+  }
+}
+
 // Census: exact counts per named file, forbidden anywhere else.
 for (const rule of CENSUS) {
   const found = []

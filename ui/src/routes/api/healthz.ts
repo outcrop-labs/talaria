@@ -3,6 +3,7 @@ import { json } from '@/server/http'
 import { getSql } from '@/server/db/pg'
 import { getRedis } from '@/server/db/redis'
 import { rustApiUrl } from '@/server/rust-proxy'
+import { bootMigrationCheck } from '@/server/boot-health'
 
 // Liveness/readiness for whatever is watching the process — a load balancer, a
 // container orchestrator, an uptime monitor, a human at 2am. PUBLIC BY DESIGN:
@@ -51,9 +52,10 @@ async function timed(name: string, ping: () => Promise<unknown>): Promise<Check>
     return { ok: false, latencyMs: null, error: safeCode(e) }
   }
 }
-// doc: Liveness/readiness — SQL and Redis round-trips. PUBLIC BY DESIGN: no
-// doc: session guard, because a health check that needs a session tells you
-// doc: nothing exactly when you need it.
+// doc: Liveness/readiness — SQL and Redis round-trips, plus a `migrations`
+// doc: check that appears (and fails the probe) when the boot migration pass
+// doc: died. PUBLIC BY DESIGN: no session guard, because a health check that
+// doc: needs a session tells you nothing exactly when you need it.
 
 
 export const Route = defineApi('/api/healthz', {
@@ -85,6 +87,13 @@ export const Route = defineApi('/api/healthz', {
         }),
       )
     }
+
+    // A boot migration pass that FAILED (not one still running — slow is not
+    // failed; that path warns and the app still reaches listen()). Without
+    // this check the app serves green while every table query 500s; with it,
+    // the probe (compose healthcheck, deploy gates) sees the truth.
+    const migrations = bootMigrationCheck()
+    if (migrations) checks.migrations = migrations
 
     const ok = Object.values(checks).every((c) => c.ok)
     return json(

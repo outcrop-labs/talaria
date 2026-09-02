@@ -9,6 +9,8 @@
     "build": "vite build && vite build --config vite.server.config.ts",
     "start": "bun server-entry.js",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "migrations:check": "bun scripts/check-migrations.ts",
+    "migrations:snapshot": "bun scripts/check-migrations.ts --update-snapshot",
     "test": "vitest run",
     "test:watch": "vitest"
   },

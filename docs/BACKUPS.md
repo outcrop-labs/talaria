@@ -135,8 +135,9 @@ offsite is still yours.
 
 Restore is destructive: the dump drops and recreates every object it owns.
 
-1. **Stop the app.** It runs migrations on its first query and holds a pool
-   open; neither survives the schema being swapped underneath it.
+1. **Stop the app.** It runs migrations as it boots (and on its first query as
+   a backstop) and holds a pool open; neither survives the schema being
+   swapped underneath it.
 2. **Point at the right database.** `--target` beats `DATABASE_URL`, which beats
    `ui/.env`. Restoring into a *new, empty* database and repointing the app is
    always safer than restoring over a live one.

@@ -448,6 +448,17 @@ async function runBootMigrations() {
       console.log(`[talaria-ui] migrations → applied ${result.applied} statement(s) (${result.total} total, ${Date.now() - started}ms)`)
     }
   } catch (err) {
+    // Record the failure for /api/healthz: the app still serves (the rule in
+    // the header above), but a probe must be able to tell "boot fine" from
+    // "schema broken" — this is what flips the compose healthcheck (and any
+    // deploy gate watching it) instead of a green container that 500s every
+    // table query. A safe short code and a timestamp only, healthz's own law;
+    // the full error is logged on the line below.
+    globalThis.__talariaBootMigrationError = {
+      code:
+        typeof err?.code === 'string' && /^[A-Z0-9_]{1,20}$/.test(err.code) ? err.code : 'MIGRATION_FAILED',
+      at: Date.now(),
+    }
     console.error(
       '[talaria-ui] migrations FAILED — the schema is not in place and every table query will 500 until this is fixed:',
       err,
