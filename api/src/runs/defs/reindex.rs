@@ -544,16 +544,9 @@ async fn index_page(
             let links = if ids.is_empty() {
                 Vec::new()
             } else {
-                sqlx::query(
-                    "select artifact_id::text as \"artifactId\", target_type as \"targetType\", \
-                            target_id::text as \"targetId\" \
-                     from artifact_links \
-                     where artifact_id = any($1) and target_type in ('plan', 'research')",
-                )
-                .bind(&ids)
-                .fetch_all(pg)
-                .await
-                .map_err(|e| e.to_string())?
+                artifact_links_for(pg, &ids)
+                    .await
+                    .map_err(|e| e.to_string())?
             };
 
             for a in &arts {
@@ -576,15 +569,13 @@ async fn index_page(
                     bump(&mut counts, "routedArtifacts");
                     continue;
                 }
-                for l in links
+                for (.., target_type, target_id) in links
                     .iter()
-                    .filter(|l| l.try_get::<String, _>("artifactId").unwrap_or_default() == id)
+                    .filter(|(link_artifact_id, _, _)| *link_artifact_id == id)
                 {
                     if signal.is_aborted() {
                         return Ok(page(false, &last, &counts));
                     }
-                    let target_type = l.try_get::<String, _>("targetType").unwrap_or_default();
-                    let target_id = l.try_get::<String, _>("targetId").unwrap_or_default();
                     if target_type == "plan" {
                         let _ = index_activity(
                             pg,
@@ -638,6 +629,23 @@ async fn index_page(
             })
         }
     }
+}
+
+/// The (artifact_id, target_type, target_id) link rows for one page of
+/// artifacts. The page hands over text ids, so they go back in as a uuid
+/// array — the cast rides the bind, not the column comparison.
+pub async fn artifact_links_for(
+    pg: &sqlx::PgPool,
+    ids: &[String],
+) -> Result<Vec<(String, String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "select artifact_id::text, target_type, target_id \
+         from artifact_links \
+         where artifact_id = any($1::uuid[]) and target_type in ('plan', 'research')",
+    )
+    .bind(ids)
+    .fetch_all(pg)
+    .await
 }
 
 // ── The backfill step, shared by both kinds ──────────────────────────────────
