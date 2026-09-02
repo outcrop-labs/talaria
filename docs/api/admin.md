@@ -1,7 +1,9 @@
 # API reference — admin
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -71,7 +73,7 @@
 
 ## `/api/admin/apps`
 
-Source: [`ui/src/routes/api/admin.apps.ts`](../../ui/src/routes/api/admin.apps.ts)
+Source: [`api/src/routes/admin_apps.rs`](../../api/src/routes/admin_apps.rs)
 
 > App administration. GET → installed apps (+ ?catalog=1 for the marketplace
 > feed). Reads are open to anyone granted the /apps Manage view; mutations
@@ -114,7 +116,7 @@ Source: [`ui/src/routes/api/admin.apps.ts`](../../ui/src/routes/api/admin.apps.t
 
 ## `/api/admin/domains`
 
-Source: [`ui/src/routes/api/admin.domains.ts`](../../ui/src/routes/api/admin.domains.ts)
+Source: [`api/src/routes/admin_domains.rs`](../../api/src/routes/admin_domains.rs)
 
 > Sign-up domains. GET → the list. POST { domain } → add (returns the TXT
 > token to publish). POST { verifyId } → run the DNS check. DELETE { id } →
@@ -144,7 +146,7 @@ Body schema `IdBody` is not an object literal in the route file — see the rout
 
 ## `/api/admin/email`
 
-Source: [`ui/src/routes/api/admin.email.ts`](../../ui/src/routes/api/admin.email.ts)
+Source: [`api/src/routes/admin_email.rs`](../../api/src/routes/admin_email.rs)
 
 > Transactional email config. GET → config with secrets MASKED (set-flags
 > only). POST → patch config; { test: true } → send a test to the caller.
@@ -172,7 +174,7 @@ Source: [`ui/src/routes/api/admin.email.ts`](../../ui/src/routes/api/admin.email
 
 ## `/api/admin/encryption`
 
-Source: [`ui/src/routes/api/admin.encryption.ts`](../../ui/src/routes/api/admin.encryption.ts)
+Source: [`api/src/routes/admin_encryption.rs`](../../api/src/routes/admin_encryption.rs)
 
 > Encryption status + one-click key rotation. Rotating re-generates the data key
 > and re-encrypts every stored secret (provider keys, agent secrets, OAuth
@@ -189,7 +191,7 @@ Body schema `z.object({ newRootSecret: z.string().min(16, 'new root secret must 
 
 ## `/api/admin/google-client`
 
-Source: [`ui/src/routes/api/admin.google-client.ts`](../../ui/src/routes/api/admin.google-client.ts)
+Source: [`api/src/routes/admin_google_client.rs`](../../api/src/routes/admin_google_client.rs)
 
 > The Google OAuth client — the credential the whole Google integration (login
 > + workspace connect) runs on. Admins register it here instead of editing
@@ -213,7 +215,7 @@ Source: [`ui/src/routes/api/admin.google-client.ts`](../../ui/src/routes/api/adm
 
 ## `/api/admin/google-client/login`
 
-Source: [`ui/src/routes/api/admin.google-client.login.ts`](../../ui/src/routes/api/admin.google-client.login.ts)
+Source: [`api/src/routes/admin_google_client.rs`](../../api/src/routes/admin_google_client.rs)
 
 > The Google LOGIN switch — the policy half of the client credential
 > (PUT /api/admin/google-client stores the credential; this decides whether the
@@ -233,7 +235,7 @@ Source: [`ui/src/routes/api/admin.google-client.login.ts`](../../ui/src/routes/a
 
 ## `/api/admin/guardrails`
 
-Source: [`ui/src/routes/api/admin.guardrails.ts`](../../ui/src/routes/api/admin.guardrails.ts)
+Source: [`api/src/routes/admin_guardrails.rs`](../../api/src/routes/admin_guardrails.rs)
 
 > Confab guardrail config + observability (admin). GET → config + stats + recent
 > findings. PUT → update config.
@@ -255,7 +257,7 @@ Source: [`ui/src/routes/api/admin.guardrails.ts`](../../ui/src/routes/api/admin.
 
 ## `/api/admin/instance`
 
-Source: [`ui/src/routes/api/admin.instance.ts`](../../ui/src/routes/api/admin.instance.ts)
+Source: [`api/src/routes/admin_instance.rs`](../../api/src/routes/admin_instance.rs)
 
 > The instance's hosting domain. GET → current config. PUT { domain } → set
 > (unverified until the round trip passes); { domain: null } clears.
@@ -281,7 +283,7 @@ Source: [`ui/src/routes/api/admin.instance.ts`](../../ui/src/routes/api/admin.in
 
 ## `/api/admin/invites`
 
-Source: [`ui/src/routes/api/admin.invites.ts`](../../ui/src/routes/api/admin.invites.ts)
+Source: [`api/src/routes/admin_invites.rs`](../../api/src/routes/admin_invites.rs)
 
 > Invites. GET → recent invites with state. POST { email } → create + send
 > (re-invites re-issue with a fresh token). DELETE { id } → revoke.
@@ -304,7 +306,7 @@ Body schema `IdBody` is not an object literal in the route file — see the rout
 
 ## `/api/admin/judge`
 
-Source: [`ui/src/routes/api/admin.judge.ts`](../../ui/src/routes/api/admin.judge.ts)
+Source: [`api/src/routes/admin_judge.rs`](../../api/src/routes/admin_judge.rs)
 
 > The automated QA judge config (admin). GET → current + available models.
 > PUT → enable/disable + pick the judge model.
@@ -324,7 +326,7 @@ Source: [`ui/src/routes/api/admin.judge.ts`](../../ui/src/routes/api/admin.judge
 
 ## `/api/admin/model-fitness`
 
-Source: [`ui/src/routes/api/admin.model-fitness.ts`](../../ui/src/routes/api/admin.model-fitness.ts)
+Source: [`api/src/routes/admin_model_fitness.rs`](../../api/src/routes/admin_model_fitness.rs)
 
 > GET  ?view=matrix (default) → slots + models + capability facts + cells + runs
 >      ?view=capabilities     → models + facts only (the model pickers)
@@ -375,7 +377,7 @@ Source: [`ui/src/routes/api/admin.model-fitness.ts`](../../ui/src/routes/api/adm
 
 ## `/api/admin/model-roles`
 
-Source: [`ui/src/routes/api/admin.model-roles.ts`](../../ui/src/routes/api/admin.model-roles.ts)
+Source: [`api/src/routes/admin_model_roles.rs`](../../api/src/routes/admin_model_roles.rs)
 
 > Model Roles — which model handles each activity class. GET → the catalog of
 > roles + current assignments + assignable models + fitness issues. PUT
@@ -398,7 +400,7 @@ Source: [`ui/src/routes/api/admin.model-roles.ts`](../../ui/src/routes/api/admin
 
 ## `/api/admin/outreach`
 
-Source: [`ui/src/routes/api/admin.outreach.ts`](../../ui/src/routes/api/admin.outreach.ts)
+Source: [`api/src/routes/admin_outreach.rs`](../../api/src/routes/admin_outreach.rs)
 
 > GET → config + per-agent proactive flags + recent events. PUT → save both.
 > Admin-only; the sweep itself stays off unless `enabled`.
@@ -419,7 +421,7 @@ Source: [`ui/src/routes/api/admin.outreach.ts`](../../ui/src/routes/api/admin.ou
 
 ## `/api/admin/password-accounts`
 
-Source: [`ui/src/routes/api/admin.password-accounts.ts`](../../ui/src/routes/api/admin.password-accounts.ts)
+Source: [`api/src/routes/admin_password_accounts.rs`](../../api/src/routes/admin_password_accounts.rs)
 
 > Admin console API for DB-backed password accounts (Admin → People).
 > GET → the account list. POST → create an account. PUT → set/reset a
@@ -456,7 +458,7 @@ Source: [`ui/src/routes/api/admin.password-accounts.ts`](../../ui/src/routes/api
 
 ## `/api/admin/permissions`
 
-Source: [`ui/src/routes/api/admin.permissions.ts`](../../ui/src/routes/api/admin.permissions.ts)
+Source: [`api/src/routes/admin_permissions.rs`](../../api/src/routes/admin_permissions.rs)
 
 > Fine-grained permissions admin. GET → the catalog + org member defaults +
 > every user's overrides. PUT { userId, perm, allowed|null } → set/clear a
@@ -485,7 +487,7 @@ Source: [`ui/src/routes/api/admin.permissions.ts`](../../ui/src/routes/api/admin
 
 ## `/api/admin/platform-agents`
 
-Source: [`ui/src/routes/api/admin.platform-agents.ts`](../../ui/src/routes/api/admin.platform-agents.ts)
+Source: [`api/src/routes/admin_platform_agents.rs`](../../api/src/routes/admin_platform_agents.rs)
 
 > Platform sub-agents — Talaria's own workers (Muse, Distiller, Concluder, )
 > and which model powers each. GET → registry + assignments + assignable
@@ -508,7 +510,7 @@ Source: [`ui/src/routes/api/admin.platform-agents.ts`](../../ui/src/routes/api/a
 
 ## `/api/admin/rag`
 
-Source: [`ui/src/routes/api/admin.rag.ts`](../../ui/src/routes/api/admin.rag.ts)
+Source: [`api/src/routes/admin_rag.rs`](../../api/src/routes/admin_rag.rs)
 
 > Admin → Retrieval. GET → services health + backfill status + reranker
 > providers/config + KB-space brain bindings. PUT → reranker config and/or a
@@ -543,7 +545,7 @@ Source: [`ui/src/routes/api/admin.rag.ts`](../../ui/src/routes/api/admin.rag.ts)
 
 ## `/api/admin/search`
 
-Source: [`ui/src/routes/api/admin.search.ts`](../../ui/src/routes/api/admin.search.ts)
+Source: [`api/src/routes/admin_search.rs`](../../api/src/routes/admin_search.rs)
 
 > LIVE WEB SEARCH — where it points, and whether it is actually answering.
 >
@@ -564,7 +566,7 @@ Source: [`ui/src/routes/api/admin.search.ts`](../../ui/src/routes/api/admin.sear
 
 ## `/api/admin/secrets`
 
-Source: [`ui/src/routes/api/admin.secrets.ts`](../../ui/src/routes/api/admin.secrets.ts)
+Source: [`api/src/routes/admin_secrets.rs`](../../api/src/routes/admin_secrets.rs)
 
 > The secrets inventory. GET is a VIEW over the stores that own each value —
 > presence, provenance and readability, never the value itself. DELETE clears
@@ -591,7 +593,7 @@ Source: [`ui/src/routes/api/admin.secrets.ts`](../../ui/src/routes/api/admin.sec
 
 ## `/api/admin/settings`
 
-Source: [`ui/src/routes/api/admin.settings.ts`](../../ui/src/routes/api/admin.settings.ts)
+Source: [`api/src/routes/admin_settings.rs`](../../api/src/routes/admin_settings.rs)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -610,7 +612,7 @@ Source: [`ui/src/routes/api/admin.settings.ts`](../../ui/src/routes/api/admin.se
 
 ## `/api/admin/storage`
 
-Source: [`ui/src/routes/api/admin.storage.ts`](../../ui/src/routes/api/admin.storage.ts)
+Source: [`api/src/routes/admin_storage.rs`](../../api/src/routes/admin_storage.rs)
 
 > Object storage (uploads blob store) config. GET → config (secrets masked) +
 > blob location stats + migration/sync status + the built-in bucket's endpoint.
@@ -666,7 +668,7 @@ Source: [`ui/src/routes/api/admin.update.ts`](../../ui/src/routes/api/admin.upda
 
 ## `/api/admin/users`
 
-Source: [`ui/src/routes/api/admin.users.ts`](../../ui/src/routes/api/admin.users.ts)
+Source: [`api/src/routes/admin_users.rs`](../../api/src/routes/admin_users.rs)
 
 > Admin console API. GET → all users with roles + agent allow-lists.
 > PUT { userId, role? , agentModels? } → update either. Admins only.
@@ -690,7 +692,7 @@ Source: [`ui/src/routes/api/admin.users.ts`](../../ui/src/routes/api/admin.users
 
 ## `/api/admin/workspace-secrets`
 
-Source: [`ui/src/routes/api/admin.workspace-secrets.ts`](../../ui/src/routes/api/admin.workspace-secrets.ts)
+Source: [`api/src/routes/admin_workspace_secrets.rs`](../../api/src/routes/admin_workspace_secrets.rs)
 
 > WORKSPACE SECRETS — the credentials agents may USE without ever reading one.
 >

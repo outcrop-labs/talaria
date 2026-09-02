@@ -48,9 +48,11 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
   }
 }
 
-/** The Rust api sidecar (docs/RUST-MIGRATION.md) — the port's dev runtime.
- *  Opt-in with TALARIA_API=on; anything else returns without touching
- *  anything, exactly the pre-port `talaria dev`.
+/** The Rust api sidecar — the app's api since the cutover: every /api/*
+ *  request the dev UI serves is proxied to it, so `talaria dev` brings it up
+ *  by default. Opt OUT with TALARIA_API=off (a box that runs its own instance
+ *  — the sidecar adopts whatever is already listening, so the opt-out is for
+ *  "never, on purpose").
  *
  *  The api binds in-box loopback (127.0.0.1:5274 — no published port, no
  *  compose change) and reads the same connection facts the app does, lifted
@@ -58,11 +60,10 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
  *  `talaria dev` gives every other lifted var.
  *
  *  Non-fatal at every step, on purpose: a box without cargo, or one whose
- *  api fails to build, is a degraded PORT, not a broken app — the TS server
- *  still serves every route. The one thing worth saying loudly is the
- *  sidecar running while nothing proxies to it. */
+ *  api fails to build, still gets the UI — but the app is API-DARK without
+ *  the sidecar now, so every skip says so at full volume. */
 export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
-  if (ctx.env.TALARIA_API !== 'on') return
+  if (ctx.env.TALARIA_API === 'off') return
 
   const port = ctx.env.TALARIA_API_PORT ?? '5274'
   const url = `http://127.0.0.1:${port}`
@@ -79,18 +80,22 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
     return
   }
   if (!await hasCargo(ctx)) {
-    ctx.log.warn('TALARIA_API=on but no cargo on PATH — skipping the Rust api (the TS server serves everything).')
+    ctx.log.warn(
+      'no cargo on PATH — skipping the Rust api. The UI will serve, but every /api/* request fails:' +
+        ' the api is the whole product surface, not a side feature.',
+    )
     return
   }
 
   // The api's config.rs resolves the secret root in this order; lift all
   // three candidates so ui/.env's arrangement works whichever one it uses.
-  // TALARIA_SCHEDULER rides along so ui/.env is the ONE place the scheduler
-  // handoff is declared: the Rust api reads it to arm, vite (which loads the
-  // same file) reads it to stand down. SEARXNG_URL rides for the same reason —
-  // vite hands it to the TS routes (admin.search reports fromEnv by it), and
-  // the Rust read of the same name must see the same value or the two servers
-  // disagree about whether search is env-pinned.
+  // TALARIA_SCHEDULER rides along for one reason now: `off` is the kill
+  // switch, and it has to reach the api process to mean anything. (During
+  // the port the same variable declared which RUNTIME armed the schedule;
+  // the cutover deleted the TS scheduler, so the api arms unless this says
+  // `off`.) SEARXNG_URL rides so the cargo child sees the same value the
+  // vite process does (vite loads ui/.env itself) — the Rust read of it
+  // decides whether search is env-pinned, and the two views must agree.
   const env: Record<string, string> = {}
   for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
@@ -101,8 +106,8 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
     env: { ...process.env, ...env },
     stdio: 'inherit',
   })
-  child.on('error', () => ctx.log.warn('rust api failed to start — the TS server still serves everything.'))
-  child.on('close', (code) => { if (code) ctx.log.warn(`rust api exited ${code} — the TS server still serves everything.`) })
+  child.on('error', () => ctx.log.warn('rust api failed to start — the app has no api until it does; every /api/* request fails.'))
+  child.on('close', (code) => { if (code) ctx.log.warn(`rust api exited ${code} — the app has no api until it is restarted.`) })
   // Ctrl-C reaches cargo through the tty's process group; the handlers are
   // the belt-and-braces path, because a LEAKED api holds :5274 and an open
   // pool against the dev DB until the box dies.

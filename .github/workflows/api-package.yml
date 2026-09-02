@@ -1,0 +1,130 @@
+# The api package — compile the Rust api once, on GitHub's runners, and
+# publish it as an image nothing else has to build.
+#
+# WHY THIS EXISTS. App images build in three places: GitHub runners
+# (release.yml), operators' machines, and customer VMs (Dokploy builds from a
+# checkout; autoDeploy rebuilds every customer on each push to main — see
+# talaria's docs/CONTAINER.md). The api must not compile in ANY of them:
+# rust + aws-lc-sys is minutes of C toolchain those boxes don't have and
+# shouldn't need. So the binary is built here and the root Dockerfile
+# consumes it with `COPY --from` (its `api` stage), keeping a plain
+# `docker build .` dependency-free — docker and network, that's all —
+# everywhere it runs. api/package.Dockerfile is the build itself.
+#
+# TAGS on ghcr.io/outcrop-labs/talaria-api:
+#   sha-<sha12>   immutable, per commit. The provenance tag: release.yml pins
+#                 THIS one into the app image it builds, so a released image
+#                 names the exact api bits it carries (its revision label
+#                 agrees).
+#   main          tracks main's api source — the root Dockerfile's default
+#                 ARG, because main is the ref checkout-builds build.
+#   channel tags  nightly-YYYYMMDD / nightly / X.Y.Z-rc.N / rc / X.Y.Z /
+#                 latest — pushed when release.yml calls this file
+#                 (workflow_call), so the package's channels mirror the app
+#                 image's tag-for-tag.
+#
+# PUSH ORDER is immutable-first (sha, then the caller's dated/versioned, then
+# moving) for the same reason release.yml's is: a failure midway leaves the
+# moving tag pointing at yesterday's honest self.
+#
+# WHY CALLED AND NOT COPIED (release.yml's own argument, verbatim): the
+# package a release pins is built by the same jobs that push `main` — one
+# file, one build. A copy of the steps into release.yml would drift the
+# first time someone edited one and not the other.
+#
+# FIRST RUN after this file lands (one-time, by hand):
+#   1. Actions → api-package → Run workflow (bootstrap: pushes the first
+#      `main` + sha tags — until then, checkout builds have no default
+#      package to consume).
+#   2. Flip the package public: the first push creates it PRIVATE even in a
+#      public repo, and every consumer pulls anonymously (Dokploy boxes,
+#      operators). github.com/outcrop-labs → Packages → talaria-api →
+#      Package settings → Change visibility → Public. Same one-time flip
+#      RELEASING.md records for the app image.
+name: api-package
+
+on:
+  push:
+    branches: [main]
+    # Paths are safe here (chassis.yml's argument): nothing in this file is a
+    # required check. They also keep the `main` tag semantically right — it
+    # tracks the api SOURCE, so a push that doesn't touch the api leaves the
+    # tag pointing at the bits that source still is.
+    paths:
+      - 'api/**'
+      - 'api/package.Dockerfile'
+      - '.github/workflows/api-package.yml'
+  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      ref:
+        description: 'the ref to build (release.yml pins the ref it is publishing)'
+        type: string
+        required: true
+      tags:
+        description: 'extra tags to push, space-separated, immutable-first (the order resolve emits)'
+        type: string
+        required: false
+        default: ''
+    outputs:
+      image:
+        description: 'the sha-tagged package release.yml pins into the app image'
+        value: ${{ jobs.package.outputs.image }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: build + push the api package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      packages: write # the GHCR push
+    concurrency:
+      # Per-ref, never cancelled mid-run: two runs for the same ref build the
+      # same bits, and cancelling a push halfway can leave a moving tag half
+      # moved (release.yml's argument; the sha tag makes re-runs idempotent).
+      group: api-package-${{ inputs.ref || github.ref }}
+      cancel-in-progress: false
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # The workflow's own token, same as release.yml's publish job: GHCR
+      # accepts GITHUB_TOKEN for push within the same repo/org.
+      - name: Log in to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build + push
+        id: build
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}-api
+          EXTRA_TAGS: ${{ inputs.tags }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD | cut -c1-12)
+          # Immutable first: the sha tag, then the caller's channel tags
+          # (resolve already ordered them dated/versioned before moving), then
+          # `main` on a push event — where HEAD is main by definition.
+          tags=("sha-$sha")
+          for t in $EXTRA_TAGS; do tags+=("$t"); done
+          if [ "$EVENT" = push ]; then tags+=(main); fi
+          args=(-f api/package.Dockerfile
+                --platform linux/amd64
+                --build-arg "REVISION=$(git rev-parse HEAD)"
+                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
+          docker build "${args[@]}" .
+          for t in "${tags[@]}"; do
+            echo "pushing $IMAGE:$t"
+            docker push "$IMAGE:$t"
+          done
+          echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
+          echo "pushed $IMAGE for: ${tags[*]}"

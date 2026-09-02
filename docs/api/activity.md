@@ -1,7 +1,9 @@
 # API reference — activity
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -20,7 +22,7 @@
 
 ## `/api/activity`
 
-Source: [`ui/src/routes/api/activity.ts`](../../ui/src/routes/api/activity.ts)
+Source: [`api/src/routes/activity.rs`](../../api/src/routes/activity.rs)
 
 > The merged workspace activity feed, scoped to the requesting user.
 
@@ -30,7 +32,7 @@ Source: [`ui/src/routes/api/activity.ts`](../../ui/src/routes/api/activity.ts)
 
 ## `/api/alerts`
 
-Source: [`ui/src/routes/api/alerts.ts`](../../ui/src/routes/api/alerts.ts)
+Source: [`api/src/routes/alerts.rs`](../../api/src/routes/alerts.rs)
 
 > Derived system alerts (no persistence) for the requesting user.
 
@@ -40,7 +42,7 @@ Source: [`ui/src/routes/api/alerts.ts`](../../ui/src/routes/api/alerts.ts)
 
 ## `/api/cost`
 
-Source: [`ui/src/routes/api/cost.ts`](../../ui/src/routes/api/cost.ts)
+Source: [`api/src/routes/cost.rs`](../../api/src/routes/cost.rs)
 
 > GET /api/cost → the token ledger overview (totals, per-agent, per-day).
 > Org-wide financials: admins + people granted the Observability view.
@@ -51,7 +53,7 @@ Source: [`ui/src/routes/api/cost.ts`](../../ui/src/routes/api/cost.ts)
 
 ## `/api/history`
 
-Source: [`ui/src/routes/api/history.ts`](../../ui/src/routes/api/history.ts)
+Source: [`api/src/routes/history.rs`](../../api/src/routes/history.rs)
 
 > Version history for agent internals (one API over two stores), KB docs,
 > artifacts, and agent-def versions. GET lists; ?id= returns one revision.
@@ -62,7 +64,7 @@ Source: [`ui/src/routes/api/history.ts`](../../ui/src/routes/api/history.ts)
 
 ## `/api/home`
 
-Source: [`ui/src/routes/api/home.ts`](../../ui/src/routes/api/home.ts)
+Source: [`api/src/routes/home.rs`](../../api/src/routes/home.rs)
 
 > The Home/Today summary for the signed-in user.
 
@@ -72,7 +74,7 @@ Source: [`ui/src/routes/api/home.ts`](../../ui/src/routes/api/home.ts)
 
 ## `/api/notifications`
 
-Source: [`ui/src/routes/api/notifications.ts`](../../ui/src/routes/api/notifications.ts)
+Source: [`api/src/routes/notifications.rs`](../../api/src/routes/notifications.rs)
 
 > The caller's notifications: list, unread count, mark-read, and their
 > settings. Delivery-channel config is admin-gated.

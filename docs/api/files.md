@@ -1,7 +1,9 @@
 # API reference — files
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -32,7 +34,7 @@
 
 ## `/api/agent-media/{model}`
 
-Source: [`ui/src/routes/api/agent-media.$model.ts`](../../ui/src/routes/api/agent-media.$model.ts)
+Source: [`api/src/routes/agent_media_model.rs`](../../api/src/routes/agent_media_model.rs)
 
 > GET ?path=/opt/data/ → stream an image out of the agent's container, so
 > media agents produce ("MEDIA:<path>" in replies) renders inline in chat.
@@ -44,7 +46,7 @@ Source: [`ui/src/routes/api/agent-media.$model.ts`](../../ui/src/routes/api/agen
 
 ## `/api/agent-media/{model}/save`
 
-Source: [`ui/src/routes/api/agent-media.$model.save.ts`](../../ui/src/routes/api/agent-media.$model.save.ts)
+Source: [`api/src/routes/agent_media_model_save.rs`](../../api/src/routes/agent_media_model_save.rs)
 
 > POST { path, title?, folderId? | folder? } → copy an image out of the
 > agent's container into a durable FILE artifact (uploads-backed), optionally
@@ -67,7 +69,7 @@ Source: [`ui/src/routes/api/agent-media.$model.save.ts`](../../ui/src/routes/api
 
 ## `/api/artifact-folders`
 
-Source: [`ui/src/routes/api/artifact-folders.ts`](../../ui/src/routes/api/artifact-folders.ts)
+Source: [`api/src/routes/artifact_folders.rs`](../../api/src/routes/artifact_folders.rs)
 
 > Artifact folders. GET → the ones you can read. POST → create one you own.
 
@@ -86,7 +88,7 @@ Source: [`ui/src/routes/api/artifact-folders.ts`](../../ui/src/routes/api/artifa
 
 ## `/api/artifact-folders/{id}`
 
-Source: [`ui/src/routes/api/artifact-folders.$id.ts`](../../ui/src/routes/api/artifact-folders.$id.ts)
+Source: [`api/src/routes/artifact_folders_id.rs`](../../api/src/routes/artifact_folders_id.rs)
 
 > One artifact folder. GET → the folder + its grants (what the Share dialog
 > reads). PUT → rename / icon / reparent / re-share. DELETE → remove (its
@@ -111,7 +113,7 @@ Source: [`ui/src/routes/api/artifact-folders.$id.ts`](../../ui/src/routes/api/ar
 
 ## `/api/artifacts`
 
-Source: [`ui/src/routes/api/artifacts.ts`](../../ui/src/routes/api/artifacts.ts)
+Source: [`api/src/routes/artifacts.rs`](../../api/src/routes/artifacts.rs)
 
 > Artifacts the caller can read. POST creates one (owned by the caller, or —
 > for an agent over MCP — org-visible and editable by that agent).
@@ -133,7 +135,7 @@ Source: [`ui/src/routes/api/artifacts.ts`](../../ui/src/routes/api/artifacts.ts)
 
 ## `/api/artifacts/{id}`
 
-Source: [`ui/src/routes/api/artifacts.$id.ts`](../../ui/src/routes/api/artifacts.$id.ts)
+Source: [`api/src/routes/artifacts_id.rs`](../../api/src/routes/artifacts_id.rs)
 
 > One artifact. Read/edit gated by its audience; sharing owner-only; agents
 > (by key) only edit content when granted the Editor role.
@@ -162,7 +164,7 @@ Source: [`ui/src/routes/api/artifacts.$id.ts`](../../ui/src/routes/api/artifacts
 
 ## `/api/artifacts/{id}/export/google`
 
-Source: [`ui/src/routes/api/artifacts.$id.export.google.ts`](../../ui/src/routes/api/artifacts.$id.export.google.ts)
+Source: [`api/src/routes/artifacts_id_export_google.rs`](../../api/src/routes/artifacts_id_export_google.rs)
 
 > POST /api/artifacts/$id/export/google — mirror an artifact into Google Drive.
 >
@@ -176,7 +178,7 @@ Source: [`ui/src/routes/api/artifacts.$id.export.google.ts`](../../ui/src/routes
 
 ## `/api/artifacts/{id}/links`
 
-Source: [`ui/src/routes/api/artifacts.$id.links.ts`](../../ui/src/routes/api/artifacts.$id.links.ts)
+Source: [`api/src/routes/artifacts_id_links.rs`](../../api/src/routes/artifacts_id_links.rs)
 
 > Attach / detach an artifact to/from a target (KB doc, ticket, channel, ).
 > The caller must be able to read the artifact.
@@ -202,7 +204,7 @@ Source: [`ui/src/routes/api/artifacts.$id.links.ts`](../../ui/src/routes/api/art
 
 ## `/api/artifacts/for`
 
-Source: [`ui/src/routes/api/artifacts.for.ts`](../../ui/src/routes/api/artifacts.for.ts)
+Source: [`api/src/routes/artifacts_for.rs`](../../api/src/routes/artifacts_for.rs)
 
 > Artifacts attached to a given target (e.g. a KB doc), filtered to the ones
 > the caller can read.  GET /api/artifacts/for?targetType=kb-doc&targetId=<id>
@@ -213,7 +215,7 @@ Source: [`ui/src/routes/api/artifacts.for.ts`](../../ui/src/routes/api/artifacts
 
 ## `/api/artifacts/public/{slug}`
 
-Source: [`ui/src/routes/api/artifacts.public.$slug.ts`](../../ui/src/routes/api/artifacts.public.$slug.ts)
+Source: [`api/src/routes/artifacts_public_slug.rs`](../../api/src/routes/artifacts_public_slug.rs)
 
 > Public artifact read — no auth. Only artifacts set to 'public' resolve.
 
@@ -223,7 +225,7 @@ Source: [`ui/src/routes/api/artifacts.public.$slug.ts`](../../ui/src/routes/api/
 
 ## `/api/artifacts/public/{slug}/download`
 
-Source: [`ui/src/routes/api/artifacts.public.$slug.download.ts`](../../ui/src/routes/api/artifacts.public.$slug.download.ts)
+Source: [`api/src/routes/artifacts_public_slug_download.rs`](../../api/src/routes/artifacts_public_slug_download.rs)
 
 > Public download for a public *file* artifact — no auth. Serves the stored
 > bytes; only resolves when the artifact is public and points at an upload.
@@ -236,7 +238,7 @@ Source: [`ui/src/routes/api/artifacts.public.$slug.download.ts`](../../ui/src/ro
 
 ## `/api/uploads`
 
-Source: [`ui/src/routes/api/uploads.ts`](../../ui/src/routes/api/uploads.ts)
+Source: [`api/src/routes/uploads.rs`](../../api/src/routes/uploads.rs)
 
 > POST (multipart/form-data, field "file") → store an attachment, return its
 > metadata. Any signed-in user may upload; the file is served back from
@@ -249,7 +251,7 @@ Source: [`ui/src/routes/api/uploads.ts`](../../ui/src/routes/api/uploads.ts)
 
 ## `/api/uploads/{id}`
 
-Source: [`ui/src/routes/api/uploads.$id.ts`](../../ui/src/routes/api/uploads.$id.ts)
+Source: [`api/src/routes/uploads_id.rs`](../../api/src/routes/uploads_id.rs)
 
 > GET → serve an attachment's bytes: signed-in users, or fleet agents (agent
 > key) pulling ticket/chat attachments they were handed. The inline/download

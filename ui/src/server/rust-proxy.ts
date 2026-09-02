@@ -1,12 +1,14 @@
-// The coexistence switch for the TS→Rust migration (docs/RUST-MIGRATION.md).
-// Route groups migrate one prefix at a time; while a prefix lives here the TS
-// server forwards it, same-origin, to the Rust api on TALARIA_RUST_API_URL.
-// Unset env = this module forwards nothing and behavior is byte-identical —
-// prod environments that never set it never think about Rust.
+// The API boundary, post-cutover (docs/RUST-MIGRATION.md): every /api/*
+// request is the Rust api's, same-origin, on TALARIA_RUST_API_URL. The batch
+// lists that accumulated here route by route are gone — the TS route files
+// they shadowed are deleted with them. What remains in routes/api/ is exactly
+// the residents STAY_TS holds back below.
 //
-// No silent fallback, on purpose: if the env names a Rust api and it is down,
-// the answer is a 502, not a quiet re-serve from TS. A fallback would make
-// "both runtimes serve one group" the failure mode instead of the invariant.
+// Unset env still forwards nothing: dev without the sidecar and tests keep a
+// TS-only process that boots and serves its residents. No silent fallback,
+// on purpose: if the env names a Rust api and it is down, the answer is a
+// 502, not a quiet re-serve from TS. A fallback would make "both runtimes
+// serve one group" the failure mode instead of the invariant.
 //
 // The target is operator env (same standing as the gateway's configured
 // endpoints, not safeFetch's user-supplied URLs); the fetch below is a
@@ -15,267 +17,32 @@
 
 import { json } from './http'
 
-// The compiled switch list. A prefix joins when its Rust port is verified
-// byte-compatible, and leaves when the TS route files it shadows are deleted.
-const PREFIXES = [
-  '/api/llm/v1/',
-  '/api/auth/session',
-  '/api/auth/logout',
-  '/api/auth/password',
-  '/api/auth/providers',
-  '/api/auth/claim',
-  // Prefix, not exact: '/api/auth/google' also matches its own /callback —
-  // the only other route under this path (the CONNECT flow lives elsewhere).
-  '/api/auth/google',
-  '/api/users',
-  '/api/activity',
-  '/api/cost',
-  // The whole keys group: keys.ts + keys.$id.ts are the only routes under
-  // this path, so the prefix is the group. Same for teams — the list, the
-  // {id} rename/delete, and the members sub-route are one plane. Same for
-  // workflows: the list and the {id} patch/remove are the whole group. Same
-  // for notifications — one route file, three methods.
-  '/api/keys',
-  '/api/teams',
-  '/api/workflows',
-  '/api/notifications',
-  // The model-identity plane: the picker catalog (models.ts) and the effort
-  // ladder (models.efforts.ts) are the only routes under /api/models, and
-  // they crossed together — the picker's rows and the composer's effort feed
-  // read the same persona/catalog state.
-  '/api/models',
-  // The boards group, whole: the list/create, the {id} board, and every
-  // sub-route (members, labels, statuses, tasks, agents, templates, views,
-  // events) — plus the tasks group a board hands off to: the ticket, its
-  // comments, dependencies, review gate, usage, and watchers. Statuses and
-  // tasks were the last two files under either path; both are all-Rust now.
-  '/api/boards',
-  '/api/tasks',
-  // The research group: research.ts (the list + start) is the only route at
-  // the bare path. The parameterized half of the family ({id}, {id}/members,
-  // {id}/conversation, {id}/decide) crossed with it and is matched by SHAPES
-  // below — a prefix alone would 404 nothing, but the shapes keep the two
-  // halves of one family in one file, read together.
-  '/api/research',
-  // The rag group: the collection registry (list/create, {id} bindings and
-  // delete) and the search the search_knowledge MCP tool rides. The whole
-  // family under this path — the admin console for it lives at
-  // /api/admin/rag, already in EXACT.
-  '/api/rag',
-  // The knowledgebase plane, whole: spaces and their doc trees, docs with
-  // comments/backlinks/move/live-presence, full-text search, and the two
-  // public slug reads. Every kb.* route file crossed together — the ACL
-  // engine (kb_perms) is shared shape with the rag collections registry, so
-  // the family crossed as one.
-  '/api/kb',
-  // The artifacts plane — the Files surface. THREE prefixes, not one:
-  // '/api/artifacts' does not prefix-match '/api/artifact-folders' (the
-  // match is character-by-character: 's' vs '-' at position 13), and
-  // '/api/uploads' is its own family the file artifacts point at. Links,
-  // public slugs and the Google Drive export all live under the artifacts
-  // prefix proper.
-  '/api/artifacts',
-  '/api/artifact-folders',
-  '/api/uploads',
-  // The admin console. Each prefix IS the whole group — no TS sub-routes
-  // hide under any of these paths. '/api/admin/google-client' covers its own
-  // /login sibling. Still TS: admin.update, and the app-MCP dispatchers
-  // under /api/mcp/gw.
-  '/api/agent-role-templates',
-  '/api/admin/apps',
-  '/api/admin/domains',
-  '/api/admin/email',
-  '/api/admin/encryption',
-  '/api/admin/google-client',
-  '/api/admin/guardrails',
-  '/api/admin/instance',
-  '/api/admin/invites',
-  // The fitness plane — the probe/eval/adversarial battery and its run
-  // engine crossed as one (surface.ts holds every decision; the route is
-  // plumbing on both sides).
-  '/api/admin/model-fitness',
-  '/api/admin/judge',
-  '/api/admin/outreach',
-  '/api/admin/password-accounts',
-  '/api/admin/permissions',
-  '/api/admin/platform-agents',
-  '/api/admin/search',
-  '/api/admin/secrets',
-  '/api/admin/settings',
-  '/api/admin/storage',
-  '/api/admin/users',
-  '/api/admin/workspace-secrets',
-  // The comms plane, whole: the channel list/create, one channel and its
-  // members/agents/read-cursor, messages (with edit/delete/reactions/threads),
-  // the Relay conclude, the live SSE events, and the plan-draft mount that
-  // crossed earlier (its SHAPES entry below is subsumed by this prefix).
-  '/api/channels',
-  // The conversations family: the list and the {id} detail/rename. The
-  // durable chat itself (/api/chat) is whole-path — see EXACT — and /api/dms
-  // is its own one-route family.
-  '/api/conversations',
-  '/api/dms',
-  // The inbox.focus family, whole: the queue read, the badge summary, the
-  // viewed/snooze state write, the assistant actions (with the confirmation
-  // reissue), the SSE command stream, and the segmented conversation picker
-  // with its {id} timeline/archive. Every inbox.focus* route file crossed
-  // together — the focus engine's process-local lock spans the command stream
-  // and the state route, so the family is one plane.
-  '/api/inbox/focus',
-  // The brief family, whole: the document read (with its three kinds of
-  // nothing), the read cursor, the owner's verdict on a line, and the
-  // delegation trio (grants list, grant/revoke, decide a parked reply). The
-  // engine's sweep half crossed earlier with the scheduler — this adds the
-  // reader plane, and the read's sweep-if-due must land on the same Rust
-  // process as the engine that owns it.
-  '/api/brief',
-  // The secrets family, whole: the working secrets a person saves and reads
-  // back, their folders, the one reveal verb, sharing, the one-shot relay,
-  // and git's credential helper door. The vault engine crossed with them —
-  // and the resolve path it serves is what MCP tool-call substitution uses,
-  // so the whole feature reads and writes one Rust process's tables.
-  '/api/secrets',
-  // The integrations/google family, whole: both connect/callback pairs
-  // (personal and org), the org targets/provisioning/health, the
-  // pending-action approval queue, and the per-surface reads and mutations
-  // (calendar, drive, gmail) in both flavors — as the user, and as the agent
-  // acting for its owner or the org. The family crossed with the google
-  // engines; every /api/integrations/* route file is in this set.
-  '/api/integrations',
-  // The workbench family, whole: the profile registry, the per-repo git flow,
-  // the org GitHub connection, the harness registry, the human side of
-  // workbench jobs (ticket strip + approve/reject/merge-to-testing), the
-  // repo-creation approval queue, and the per-agent repo grants — all seven
-  // route files. The workbench MCP dispatcher the fleet's agents speak
-  // crossed with them in the same crate.
-  '/api/workbench',
-  // The MCP registry plane: the roster read, server CRUD (with oauth
-  // sniffing), the marketplace library/icon pair, the admin probe, and the
-  // OAuth start/callback pair — every mcp.* route file EXCEPT the gateway's
-  // app-server dispatch, which STAY_TS below holds back (app servers are
-  // named `app-{slug}` in the registry, so their gateway URL is
-  // /api/mcp/gw/app-… and the path prefix alone would swallow them).
-  '/api/mcp',
-  // The fleet family — the whole plane: the overview, containers, the
-  // hire pair (create + hires), render/reconcile/federate, the defs list
-  // AND the detail trio (defs.$id, defs.$id.edit, defs.$id.versions — the
-  // hire editor's version plane), endpoints (list, edit, live catalog),
-  // crons (fleet-wide and per-agent), per-agent control and secrets, and
-  // the defs.$id.mcp version hook. Nothing under /api/fleet serves from
-  // TS anymore.
-  '/api/fleet',
-  // The remaining singles, one prefix per whole family: the gap ledger
-  // (list + {id} resolve), the template library (list/create + {id}
-  // patch/delete), the skill registry (list + {owner}/{name} CRUD), and
-  // the plans family — draft crossed with the channels mount, doc and
-  // members crossed now, so the family is whole and the draft-only SHAPE
-  // below is retired.
-  '/api/gaps',
-  '/api/templates',
-  '/api/skills',
-  '/api/plans',
-  // The agent plane under ONE prefix, because a character prefix reaches
-  // everything it starts: agent.gap/problem/message-user (the agent-key
-  // half of the product), agent-media (both files), agent-role-templates,
-  // and the agents roster/register/heartbeat that crossed on the fleet
-  // side. No TS route file left matches '/api/agent…'.
-  '/api/agent',
-  // The image describer behind the agent's describe_image tool.
-  '/api/vision',
-] as const
+// The one prefix. '/api' itself (no slash) stays a TS 404, exactly as before
+// the cutover — the SPA shell and the residents are this process's, and no
+// route ever lived at the bare path.
+const PREFIXES = ['/api/'] as const
 
-// Holes carved OUT of the prefixes above: paths that match one of these stay
-// on TS even though a PREFIXES entry covers them. Two residents, both
-// PERMANENT rather than backlog: the port's rule 10 — app modules are app
-// authors' TS/node code, dispatched in-process by the TS gateway; Rust
-// answers a fixed sentence if hit directly (dev setups that point agents
-// straight at :5274), but the proxy never routes an app server's tool
-// traffic anywhere but the runtime that can actually dispatch it (the
-// modules are customer code, never port surface) — and admin.update, which
-// rebuilds ui/dist and restarts the bun process it runs IN: it is the
-// deployer of the TS half itself, so it cannot be served by the other
-// runtime without a redesign at cutover (docs/RUST-MIGRATION.md).
+// The residents: paths that stay on TS even though the prefix covers them.
+// Every one is PERMANENT, not backlog:
+//   rule 10 — app modules are app authors' TS/node code, dispatched
+//   in-process. The app-server gateway (/api/apps/{slug}/…, apps.$app.$.ts)
+//   and the app-MCP dispatch (/api/mcp/gw/app-…, the app branch of
+//   mcp.gw.$server.ts) must run in the runtime that can actually load the
+//   modules; Rust answers a fixed sentence if hit directly (dev setups that
+//   point agents straight at :5274), but the proxy never routes an app
+//   server's traffic anywhere else. Bare /api/apps is NOT a resident — it is
+//   the discovery listing, and it serves from Rust like everything else.
+//   admin.update — it rebuilds ui/dist and restarts the bun process it runs
+//   IN: it is the deployer of the TS half itself, so the other runtime
+//   cannot serve it (the Rust binary's own update path is that route's
+//   redesign, not a port).
+//   healthz — the app process's own liveness answer; the Rust api carries
+//   its own at the same path for whoever asks it there.
 const STAY_TS = [
   /^\/api\/mcp\/gw\/app-/,
-  // ui/src/routes/api/admin.update.ts — permanent resident, see above.
   /^\/api\/admin\/update$/,
-] as const
-
-// Whole-path migrations: the ROUTE is the group, because everything under it
-// besides the route itself still belongs to TS. '/api/agents' is exact (the
-// roster read) while its two fleet-plane sub-routes migrate by shape below —
-// register exactly, heartbeat parameterized. '/api/apps' is the app-server
-// gateway (apps.$app.$ dispatches into app server modules — the gateway is
-// host plumbing and may cross some day, but the modules it dispatches into
-// are app authors' TS/node code and stay TS by the port's rule 10, not by
-// backlog). '/api/me' is exact for the same reason: me.assistant is its own
-// plane (fleet, agents) that migrates whole with that batch.
-// '/api/me/events' is whole-path too — this person's own SSE firehose, which
-// crossed with the realtime slice while the rest of me stayed.
-const EXACT = new Set([
-  '/api/agents',
-  '/api/agents/register',
-  '/api/apps',
-  '/api/me',
-  '/api/me/events',
-  '/api/admin/model-roles',
-  // The retrieval console. EXACT because the /api/admin/rag path names one
-  // route file; the bare /api/rag/* family (collections, search) is a
-  // different path that crossed later and lives in PREFIXES.
-  '/api/admin/rag',
-  // The version-history read plane — one route file over two stores
-  // (internal_versions snapshots, agent_versions). No sub-routes hide under
-  // this path, and nothing else in the tree starts with "/api/history".
-  '/api/history',
-  // The durable chat: one POST route, whole-path — nothing else lives at
-  // /api/chat, and a prefix would be the same set anyway.
-  '/api/chat',
-  // The per-user MCP connect surface — the "your servers" pane. Whole-path
-  // because /api/me itself is exact (see above): me.mcp is its own plane and
-  // crossed with the mcp family, not the me family.
-  '/api/me/mcp',
-  // The assistant plane — same pattern one path down: me.assistant (the
-  // agent-start trio) is its own plane, not part of /api/me's profile read.
-  '/api/me/assistant',
-  // The last one-route families, each whole-path because the route IS the
-  // path: the alert feed, the home cards, global search, the Muse, the
-  // inference ledger read, the join-code claim, and the instance card the
-  // CLI and app servers read to find their API.
-  '/api/alerts',
-  '/api/home',
-  '/api/search',
-  '/api/muse',
-  '/api/inference',
-  '/api/join',
-  '/api/well-known/talaria-instance',
-])
-
-// Parameterized whole-route migrations: the route crossed, but its siblings
-// under the same path have not, so neither EXACT (the id is in the path) nor
-// PREFIXES (it would strand the siblings on a Rust 404) can express it. Each
-// entry is one TS route file's path shape, anchored both ends.
-const SHAPES = [
-  // runs.$id.events.ts — the run's live SSE view, gated by the run's read
-  // ACL. The rest of /api/runs (the list, the detail, cancel, decide) is
-  // still TS until the runs surface crosses as a group.
-  /^\/api\/runs\/[^/]+\/events$/,
-  // memory.$id.ts — the remembered-facts write plane. Bare /api/memory has
-  // no route at all (the list read lives elsewhere), so the shape, not a
-  // prefix, is the family.
-  /^\/api\/memory\/[^/]+$/,
-  // research.ts + research.$id{,.members,.conversation,.decide}.ts — the
-  // research plane crossed whole (domain, def and routes together). The
-  // bare /api/research is a PREFIXES entry (see above); these shapes are the
-  // parameterized rest of the family. Nothing else lives under /api/research,
-  // so the shape set IS the family.
-  /^\/api\/research\/[^/]+$/,
-  /^\/api\/research\/[^/]+\/members$/,
-  /^\/api\/research\/[^/]+\/conversation$/,
-  /^\/api\/research\/[^/]+\/decide$/,
-  // agents.$id.heartbeat.ts — the fleet plane's pull channel (agents call it
-  // themselves, MC-compatible). '/api/agents' is EXACT above and register is
-  // EXACT beside it; only the :id shape needs a pattern.
-  /^\/api\/agents\/[^/]+\/heartbeat$/,
+  /^\/api\/apps\//,
+  /^\/api\/healthz$/,
 ] as const
 
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
@@ -301,7 +68,7 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
   if (!base || STAY_TS.some((r) => r.test(pathname))) return null
-  if (!EXACT.has(pathname) && !PREFIXES.some((p) => pathname.startsWith(p)) && !SHAPES.some((r) => r.test(pathname))) return null
+  if (!PREFIXES.some((p) => pathname.startsWith(p))) return null
 
   const incoming = new URL(request.url)
   const target = base + incoming.pathname + incoming.search

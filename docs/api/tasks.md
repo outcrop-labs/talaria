@@ -1,7 +1,9 @@
 # API reference — tasks
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -28,7 +30,7 @@
 
 ## `/api/tasks/{id}`
 
-Source: [`ui/src/routes/api/tasks.$id.ts`](../../ui/src/routes/api/tasks.$id.ts)
+Source: [`api/src/routes/tasks_id.rs`](../../api/src/routes/tasks_id.rs)
 
 > One ticket. GET → full detail (task, comments, attachments, refs,
 > workflows). PUT → update; agents may triage but cannot self-assign or
@@ -66,7 +68,7 @@ Source: [`ui/src/routes/api/tasks.$id.ts`](../../ui/src/routes/api/tasks.$id.ts)
 
 ## `/api/tasks/{id}/comments`
 
-Source: [`ui/src/routes/api/tasks.$id.comments.ts`](../../ui/src/routes/api/tasks.$id.comments.ts)
+Source: [`api/src/routes/tasks_id_comments.rs`](../../api/src/routes/tasks_id_comments.rs)
 
 > GET → a task's comments (board member or board-allowed agent).
 > POST → add a comment (member or agent).
@@ -85,7 +87,7 @@ Source: [`ui/src/routes/api/tasks.$id.comments.ts`](../../ui/src/routes/api/task
 
 ## `/api/tasks/{id}/dependencies`
 
-Source: [`ui/src/routes/api/tasks.$id.dependencies.ts`](../../ui/src/routes/api/tasks.$id.dependencies.ts)
+Source: [`api/src/routes/tasks_id_dependencies.rs`](../../api/src/routes/tasks_id_dependencies.rs)
 
 > POST { dependsOnId } → this ticket is blocked by another. DELETE → remove.
 > Editors or board-allowed agents may add (part of triage); removal is human-only.
@@ -110,7 +112,7 @@ Source: [`ui/src/routes/api/tasks.$id.dependencies.ts`](../../ui/src/routes/api/
 
 ## `/api/tasks/{id}/review`
 
-Source: [`ui/src/routes/api/tasks.$id.review.ts`](../../ui/src/routes/api/tasks.$id.review.ts)
+Source: [`api/src/routes/tasks_id_review.rs`](../../api/src/routes/tasks_id_review.rs)
 
 > POST /api/tasks/:id/review — the human quality gate. Approve moves the task to
 > the board's done column; reject sends it back to the board's first working
@@ -129,7 +131,7 @@ Source: [`ui/src/routes/api/tasks.$id.review.ts`](../../ui/src/routes/api/tasks.
 
 ## `/api/tasks/{id}/usage`
 
-Source: [`ui/src/routes/api/tasks.$id.usage.ts`](../../ui/src/routes/api/tasks.$id.usage.ts)
+Source: [`api/src/routes/tasks_id_usage.rs`](../../api/src/routes/tasks_id_usage.rs)
 
 > Per-ticket token spend. POST (agents, via MCP log_usage): report tokens
 > burned working this ticket — attributed to the agent's serving endpoint and
@@ -151,7 +153,7 @@ Source: [`ui/src/routes/api/tasks.$id.usage.ts`](../../ui/src/routes/api/tasks.$
 
 ## `/api/tasks/{id}/watchers`
 
-Source: [`ui/src/routes/api/tasks.$id.watchers.ts`](../../ui/src/routes/api/tasks.$id.watchers.ts)
+Source: [`api/src/routes/tasks_id_watchers.rs`](../../api/src/routes/tasks_id_watchers.rs)
 
 > POST { watcher } → follow. DELETE { watcher } → unfollow.
 >
@@ -178,7 +180,7 @@ Source: [`ui/src/routes/api/tasks.$id.watchers.ts`](../../ui/src/routes/api/task
 
 ## `/api/workflows`
 
-Source: [`ui/src/routes/api/workflows.ts`](../../ui/src/routes/api/workflows.ts)
+Source: [`api/src/routes/workflows.rs`](../../api/src/routes/workflows.rs)
 
 > Task workflows — match rules classify tickets; the payload (bound Hermes
 > skills + declared toolkits) rides with dispatched/picked-up work. GET → all (any
@@ -201,7 +203,7 @@ Source: [`ui/src/routes/api/workflows.ts`](../../ui/src/routes/api/workflows.ts)
 
 ## `/api/workflows/{id}`
 
-Source: [`ui/src/routes/api/workflows.$id.ts`](../../ui/src/routes/api/workflows.$id.ts)
+Source: [`api/src/routes/workflows_id.rs`](../../api/src/routes/workflows_id.rs)
 
 > One task workflow: PUT patch, DELETE remove — both agents.manage.
 

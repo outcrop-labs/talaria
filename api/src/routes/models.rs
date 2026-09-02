@@ -8,7 +8,7 @@
 use crate::error::thrown_internal_error;
 use crate::harness_model::muse_model_for;
 use crate::model_access::gateway_models_for;
-use crate::model_info::{maybe_rewrite_blurbs, model_info};
+use crate::model_info::model_info;
 use crate::session::require_user;
 use crate::state::AppState;
 use axum::Json;
@@ -22,17 +22,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // New registered models get their org-voice blurb (throttled, detached —
-    // the pass never blocks the request it was kicked from). The kick is the
-    // sweep's only trigger while TS owns the schedule — the proxy shadows
-    // TS's own kick, so without this one the org-voice sweep is dark in every
-    // proxied install. Once THIS process owns the schedule the blurb-rewrite
-    // job carries the cadence and the kick stands down: the throttle would
-    // serialize the two anyway, but two triggers racing one throttle is two
-    // model calls' worth of contention for one batch of pending ids.
-    if !crate::scheduler::rust_owns_schedule() {
-        maybe_rewrite_blurbs(&state);
-    }
+    // New registered models get their org-voice blurb from the registered
+    // blurb-rewrite job (model_info.rs) — same pass, same throttle, on the
+    // cadence. The coexistence-era kick this route used to fire (the job's
+    // only trigger while TS owned the schedule) retired with the flip: a
+    // kick AND a job on one throttle is two model calls for one batch of
+    // pending ids.
     let catalog = match gateway_models_for(&state.pg, &user.role).await {
         Ok(c) => c,
         Err(e) => {

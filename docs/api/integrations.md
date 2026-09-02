@@ -1,7 +1,9 @@
 # API reference — integrations
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -41,7 +43,7 @@
 
 ## `/api/integrations/google`
 
-Source: [`ui/src/routes/api/integrations/google.ts`](../../ui/src/routes/api/integrations/google.ts)
+Source: [`api/src/routes/integrations_google.rs`](../../api/src/routes/integrations_google.rs)
 
 > GET  → this user's Google connection status (never exposes tokens)
 > DELETE → disconnect (revoke + forget)
@@ -53,7 +55,7 @@ Source: [`ui/src/routes/api/integrations/google.ts`](../../ui/src/routes/api/int
 
 ## `/api/integrations/google/agent/calendar`
 
-Source: [`ui/src/routes/api/integrations/google.agent.calendar.ts`](../../ui/src/routes/api/integrations/google.agent.calendar.ts)
+Source: [`api/src/routes/integrations_google_agent_calendar.rs`](../../api/src/routes/integrations_google_agent_calendar.rs)
 
 > Agent-facing calendar. A personal assistant acts as its owner; a general fleet
 > agent acts on the shared ORG calendar.
@@ -79,7 +81,7 @@ Source: [`ui/src/routes/api/integrations/google.agent.calendar.ts`](../../ui/src
 
 ## `/api/integrations/google/agent/drive`
 
-Source: [`ui/src/routes/api/integrations/google.agent.drive.ts`](../../ui/src/routes/api/integrations/google.agent.drive.ts)
+Source: [`api/src/routes/integrations_google_agent_drive.rs`](../../api/src/routes/integrations_google_agent_drive.rs)
 
 > GET /api/integrations/google/agent/drive?q= → find files in the Drive the
 > calling agent acts for (its owner's, or the shared org Drive). Read-only:
@@ -92,7 +94,7 @@ Source: [`ui/src/routes/api/integrations/google.agent.drive.ts`](../../ui/src/ro
 
 ## `/api/integrations/google/agent/gmail`
 
-Source: [`ui/src/routes/api/integrations/google.agent.gmail.ts`](../../ui/src/routes/api/integrations/google.agent.gmail.ts)
+Source: [`api/src/routes/integrations_google_agent_gmail.rs`](../../api/src/routes/integrations_google_agent_gmail.rs)
 
 > Agent-facing Gmail. A personal assistant acts as its owner; a general fleet
 > agent acts on the shared ORG mailbox.
@@ -116,7 +118,7 @@ Source: [`ui/src/routes/api/integrations/google.agent.gmail.ts`](../../ui/src/ro
 
 ## `/api/integrations/google/agent/gmail/{id}`
 
-Source: [`ui/src/routes/api/integrations/google.agent.gmail.$id.ts`](../../ui/src/routes/api/integrations/google.agent.gmail.$id.ts)
+Source: [`api/src/routes/integrations_google_agent_gmail_id.rs`](../../api/src/routes/integrations_google_agent_gmail_id.rs)
 
 > GET /api/integrations/google/agent/gmail/$id → one FULL message (headers +
 > plain-text body) for the calling agent. The listing tool hands out ids and
@@ -130,7 +132,7 @@ Source: [`ui/src/routes/api/integrations/google.agent.gmail.$id.ts`](../../ui/sr
 
 ## `/api/integrations/google/agent/gmail/labels`
 
-Source: [`ui/src/routes/api/integrations/google.agent.gmail.labels.ts`](../../ui/src/routes/api/integrations/google.agent.gmail.labels.ts)
+Source: [`api/src/routes/integrations_google_agent_gmail_labels.rs`](../../api/src/routes/integrations_google_agent_gmail_labels.rs)
 
 > The label half of inbox organizing. Gmail's folders ARE labels: INBOX and
 > UNREAD are system labels a message carries, and "filing" mail means applying
@@ -151,7 +153,7 @@ Source: [`ui/src/routes/api/integrations/google.agent.gmail.labels.ts`](../../ui
 
 ## `/api/integrations/google/agent/gmail/organize`
 
-Source: [`ui/src/routes/api/integrations/google.agent.gmail.organize.ts`](../../ui/src/routes/api/integrations/google.agent.gmail.organize.ts)
+Source: [`api/src/routes/integrations_google_agent_gmail_organize.rs`](../../api/src/routes/integrations_google_agent_gmail_organize.rs)
 
 > POST → file/archive/read messages by label. THE HITL LINE, stated once
 > because it is the one judgment this route makes: sends and invites leave the
@@ -173,7 +175,7 @@ Source: [`ui/src/routes/api/integrations/google.agent.gmail.organize.ts`](../../
 
 ## `/api/integrations/google/calendar/events`
 
-Source: [`ui/src/routes/api/integrations/google.calendar.events.ts`](../../ui/src/routes/api/integrations/google.calendar.events.ts)
+Source: [`api/src/routes/integrations_google_calendar_events.rs`](../../api/src/routes/integrations_google_calendar_events.rs)
 
 > GET  → upcoming events on the user's primary calendar
 > POST → create an event
@@ -197,7 +199,7 @@ Source: [`ui/src/routes/api/integrations/google.calendar.events.ts`](../../ui/sr
 
 ## `/api/integrations/google/callback`
 
-Source: [`ui/src/routes/api/integrations/google.callback.ts`](../../ui/src/routes/api/integrations/google.callback.ts)
+Source: [`api/src/routes/integrations_google_callback.rs`](../../api/src/routes/integrations_google_callback.rs)
 
 > GET /api/integrations/google/callback → verify state, exchange the code for an
 > offline refresh token, and store the connection for the signed-in user.
@@ -211,7 +213,7 @@ Source: [`ui/src/routes/api/integrations/google.callback.ts`](../../ui/src/route
 
 ## `/api/integrations/google/connect`
 
-Source: [`ui/src/routes/api/integrations/google.connect.ts`](../../ui/src/routes/api/integrations/google.connect.ts)
+Source: [`api/src/routes/integrations_google_connect.rs`](../../api/src/routes/integrations_google_connect.rs)
 
 > GET /api/integrations/google/connect → begin the offline-access consent dance.
 > Requires an authenticated session (we bind the connection to this user).
@@ -222,7 +224,7 @@ Source: [`ui/src/routes/api/integrations/google.connect.ts`](../../ui/src/routes
 
 ## `/api/integrations/google/drive/files`
 
-Source: [`ui/src/routes/api/integrations/google.drive.files.ts`](../../ui/src/routes/api/integrations/google.drive.files.ts)
+Source: [`api/src/routes/integrations_google_drive_files.rs`](../../api/src/routes/integrations_google_drive_files.rs)
 
 > GET /api/integrations/google/drive/files?q= → browse/search the user's Drive.
 
@@ -232,7 +234,7 @@ Source: [`ui/src/routes/api/integrations/google.drive.files.ts`](../../ui/src/ro
 
 ## `/api/integrations/google/drive/import`
 
-Source: [`ui/src/routes/api/integrations/google.drive.import.ts`](../../ui/src/routes/api/integrations/google.drive.import.ts)
+Source: [`api/src/routes/integrations_google_drive_import.rs`](../../api/src/routes/integrations_google_drive_import.rs)
 
 > POST /api/integrations/google/drive/import { fileId } → pull a Drive file in
 > as a new artifact owned by the caller (Doc→doc, Sheet→sheet, else→file).
@@ -249,7 +251,7 @@ Source: [`ui/src/routes/api/integrations/google.drive.import.ts`](../../ui/src/r
 
 ## `/api/integrations/google/gmail/messages`
 
-Source: [`ui/src/routes/api/integrations/google.gmail.messages.ts`](../../ui/src/routes/api/integrations/google.gmail.messages.ts)
+Source: [`api/src/routes/integrations_google_gmail_messages.rs`](../../api/src/routes/integrations_google_gmail_messages.rs)
 
 > GET /api/integrations/google/gmail/messages?q= → recent mail (metadata only).
 
@@ -259,7 +261,7 @@ Source: [`ui/src/routes/api/integrations/google.gmail.messages.ts`](../../ui/src
 
 ## `/api/integrations/google/gmail/send`
 
-Source: [`ui/src/routes/api/integrations/google.gmail.send.ts`](../../ui/src/routes/api/integrations/google.gmail.send.ts)
+Source: [`api/src/routes/integrations_google_gmail_send.rs`](../../api/src/routes/integrations_google_gmail_send.rs)
 
 > POST /api/integrations/google/gmail/send → send a plain-text email as the user.
 
@@ -279,7 +281,7 @@ Source: [`ui/src/routes/api/integrations/google.gmail.send.ts`](../../ui/src/rou
 
 ## `/api/integrations/google/org`
 
-Source: [`ui/src/routes/api/integrations/google.org.ts`](../../ui/src/routes/api/integrations/google.org.ts)
+Source: [`api/src/routes/integrations_google_org.rs`](../../api/src/routes/integrations_google_org.rs)
 
 > The shared org Google connection (admin-managed). General fleet agents act as
 > this identity for Drive/Docs/Calendar/Gmail.
@@ -301,7 +303,7 @@ Source: [`ui/src/routes/api/integrations/google.org.ts`](../../ui/src/routes/api
 
 ## `/api/integrations/google/org/callback`
 
-Source: [`ui/src/routes/api/integrations/google.org.callback.ts`](../../ui/src/routes/api/integrations/google.org.callback.ts)
+Source: [`api/src/routes/integrations_google_org_callback.rs`](../../api/src/routes/integrations_google_org_callback.rs)
 
 > GET /api/integrations/google/org/callback → store the SHARED org connection.
 > The shared connect body plus the org's two differences: only an admin may
@@ -314,7 +316,7 @@ Source: [`ui/src/routes/api/integrations/google.org.callback.ts`](../../ui/src/r
 
 ## `/api/integrations/google/org/connect`
 
-Source: [`ui/src/routes/api/integrations/google.org.connect.ts`](../../ui/src/routes/api/integrations/google.org.connect.ts)
+Source: [`api/src/routes/integrations_google_org_connect.rs`](../../api/src/routes/integrations_google_org_connect.rs)
 
 > GET /api/integrations/google/org/connect → admin begins connecting the shared
 > org Google account (offline access). Wider scopes than the per-user flow:
@@ -326,7 +328,7 @@ Source: [`ui/src/routes/api/integrations/google.org.connect.ts`](../../ui/src/ro
 
 ## `/api/integrations/google/org/health`
 
-Source: [`ui/src/routes/api/integrations/google.org.health.ts`](../../ui/src/routes/api/integrations/google.org.health.ts)
+Source: [`api/src/routes/integrations_google_org_health.rs`](../../api/src/routes/integrations_google_org_health.rs)
 
 > GET /api/integrations/google/org/health → live probe of Drive / Calendar /
 > Gmail with the org connection's token. Admin-only, and deliberately a
@@ -339,7 +341,7 @@ Source: [`ui/src/routes/api/integrations/google.org.health.ts`](../../ui/src/rou
 
 ## `/api/integrations/google/org/provision`
 
-Source: [`ui/src/routes/api/integrations/google.org.provision.ts`](../../ui/src/routes/api/integrations/google.org.provision.ts)
+Source: [`api/src/routes/integrations_google_org_provision.rs`](../../api/src/routes/integrations_google_org_provision.rs)
 
 > The org workspace provisioning surface (admin). GET → what the panel draws:
 > scope readiness, the provisioned container ids, and every agent's effective
@@ -359,7 +361,7 @@ Source: [`ui/src/routes/api/integrations/google.org.provision.ts`](../../ui/src/
 
 ## `/api/integrations/google/pending`
 
-Source: [`ui/src/routes/api/integrations/google.pending.ts`](../../ui/src/routes/api/integrations/google.pending.ts)
+Source: [`api/src/routes/integrations_google_pending.rs`](../../api/src/routes/integrations_google_pending.rs)
 
 > GET /api/integrations/google/pending → the caller's agent-drafted actions
 > awaiting their approval (send email / create event).
@@ -370,7 +372,7 @@ Source: [`ui/src/routes/api/integrations/google.pending.ts`](../../ui/src/routes
 
 ## `/api/integrations/google/pending/{id}`
 
-Source: [`ui/src/routes/api/integrations/google.pending.$id.ts`](../../ui/src/routes/api/integrations/google.pending.$id.ts)
+Source: [`api/src/routes/integrations_google_pending_id.rs`](../../api/src/routes/integrations_google_pending_id.rs)
 
 > POST /api/integrations/google/pending/$id { decision } → approve (executes as
 > the owner) or reject an agent-drafted action.

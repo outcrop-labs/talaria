@@ -606,12 +606,11 @@ pub async fn get_research_run(
 /// into a run that fails a second later would be a worse answer to the same
 /// question. The run's first step re-checks it, for the resume case.
 ///
-/// COEXISTENCE ORDER (same as plan_drafts): while TS owns the schedule,
-/// enqueue with `start: false` — the run row and its publish, no drive; the
-/// TS scheduler's sweep is what advances the queued run, and the reclaim
-/// sweep is the guarantee either way. Once this process owns the schedule
-/// (`TALARIA_SCHEDULER=rust`) the flag drives inline, exactly as TS's own
-/// start route always did.
+/// ORDER (same as plan_drafts): enqueue with the inline drive — the run row,
+/// its publish, and the drive; this process's scheduler advances the run,
+/// and the reclaim sweep is the guarantee either way. (During coexistence
+/// the enqueue was row-and-publish only, leaving the drive to the TS sweep;
+/// that runtime left with the cutover.)
 pub async fn start_research(
     state: &crate::state::AppState,
     input: ResearchInput,
@@ -646,9 +645,9 @@ pub async fn start_research(
             subject_type: Some("research".into()),
             subject_id: Some(id.clone()),
             phase: Some("queued".into()),
-            // The coexistence bridge: no drive while TS owns the sweep, inline
-            // drive (TS's own behavior) once this process does.
-            start: Some(crate::scheduler::rust_owns_schedule()),
+            // The drive is inline: this process is the only runtime, so
+            // enqueue means row + publish + drive.
+            start: Some(true),
         },
         &deps,
     )

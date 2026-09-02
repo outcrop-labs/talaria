@@ -9,7 +9,6 @@
 
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -419,34 +418,17 @@ pub async fn rewrite_pending_blurbs(
     Ok(rows.len())
 }
 
-/// The throttled kick — port of maybeRewriteBlurbs. Any catalog read may fire
-/// it; ten minutes is the floor; the pass runs detached and never blocks the
-/// request it was kicked from. A failed pass only logs: the next kick retries
-/// in ten minutes, and nothing about a missing blurb is worth a 500.
-static LAST_KICK: AtomicU64 = AtomicU64::new(0);
-
-pub fn maybe_rewrite_blurbs(state: &crate::state::AppState) {
-    let now = now_ms();
-    if now.saturating_sub(LAST_KICK.load(Ordering::Relaxed)) < REWRITE_THROTTLE_MS {
-        return;
-    }
-    LAST_KICK.store(now, Ordering::Relaxed);
-    let state = state.clone();
-    tokio::spawn(async move {
-        if let Err(e) = rewrite_pending_blurbs(&state, REWRITE_BATCH).await {
-            tracing::warn!("[model-blurbs] rewrite pass failed: {e}");
-        }
-    });
-}
-
 // ── The registered job ───────────────────────────────────────────────────────
 //
 // The scheduler owns the cadence; the module owns the work. The job runs the
-// same pass the kick runs (same batch, same floor), on the kick's own
-// throttle as its interval — the number was always the intended cadence; the
-// kick was just the only trigger that existed. NOT in REQUIRED_JOBS, same as
-// TS's optional jobs: its failure mode is a stale blurb next to a catalog
-// that self-heals on the next pass, not work that silently never happens.
+// rewrite pass (batch of ten, ten-minute floor) on the throttle as its
+// interval — the number was always the intended cadence. During the port's
+// coexistence era a throttled kick (any /api/models read could fire the pass
+// detached) was the only trigger that existed, because the schedule still
+// lived in TS; the job armed at the flip and the kick retired with the
+// cutover. NOT in REQUIRED_JOBS, same as TS's optional jobs: its failure mode
+// is a stale blurb next to a catalog that self-heals on the next pass, not
+// work that silently never happens.
 
 /// The job the scheduler runs. NOT `per_instance`: it writes `model_blurbs`
 /// rows every instance can read, and two instances passing at once would
@@ -479,10 +461,8 @@ pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> crate::schedul
     }
 }
 
-/// Declare the sweep to the scheduler — the function the flip calls from
-/// boot. When the job arms, the route's `maybe_rewrite_blurbs` kick retires
-/// (the flip slice removes it): both run the same pass, and a kick AND a job
-/// on the same throttle is two model calls for one batch of pending ids.
+/// Declare the sweep to the scheduler — the function boot calls. The job is
+/// the pass's only trigger since the cutover retired the route kick.
 pub fn register_blurb_rewrite_job(deps: std::sync::Arc<BlurbDeps>) {
     crate::scheduler::register_job(blurb_rewrite_job_spec(deps));
 }

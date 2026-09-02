@@ -2,6 +2,7 @@
 // (dist/server/server.js) and serving the client assets (dist/client). Keeps the
 // streaming pump so SSE chat responses flush incrementally.
 import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, extname } from 'node:path'
@@ -390,25 +391,89 @@ process.on('unhandledRejection', (reason) => {
   console.error('[talaria-ui] UNHANDLED REJECTION (process kept alive, this is a bug):', detail)
 })
 
-// ── Background jobs ──────────────────────────────────────────────────────────
+// ── The Rust api ─────────────────────────────────────────────────────────────
 //
-// Comms decay, the outreach sweep and the price refresh used to be fired from
-// inside GET /api/channels, each behind a module-level timestamp. An instance
-// serving no requests therefore ran none of them — ever. They are jobs on
-// `src/server/scheduler.ts` now, and this is where the schedule starts.
+// Every /api/* request this server receives is the Rust api's to answer (the
+// four TS residents aside — src/server/rust-proxy.ts is the boundary), and
+// the background-job schedule is its too: the TS scheduler handshake this
+// entry used to run left with the cutover, because the TS runtime that could
+// have armed it is gone. What stays here is the process shape: production
+// runs one supervisor and one log, so this process owns the api binary as a
+// child — the same contract `talaria dev` gives vite in development.
 //
-// This file is plain JavaScript running the BUILT bundle, so it cannot import
-// the TypeScript module, and the bundle's chunk filenames are content-hashed.
-// The handshake instead: the scheduler publishes itself on a well-known global
-// symbol when its module loads, and one throwaway in-process request warms the
-// app's server graph (routeTree imports every route, which is what pulls the
-// job modules — and therefore the scheduler — in). Then we start it explicitly,
-// before listen(), so the schedule is running the moment traffic can arrive.
-//
-// /api/healthz is the warm-up target on purpose: it is public, cheap, and its
-// body is a real readiness answer, so the boot log says whether Postgres and
-// Redis were reachable at the moment the jobs were armed.
-const SCHEDULER_HANDLE = Symbol.for('talaria.scheduler')
+// · ADOPT before spawn: something already answering on the port is the api —
+//   a separately supervised instance, or a second `bun run start` on the same
+//   box. A second binary would just lose the race for the port and die
+//   loudly.
+// · The hop is wired as a side effect: TALARIA_RUST_API_URL defaults to the
+//   loopback URL the child binds, so the proxy is armed the moment the api
+//   is. (An operator who set the env explicitly keeps their value — it is
+//   where the URL came from.)
+// · Non-fatal on purpose: a missing binary must not stop the SPA from
+//   listening. The proxy answers 502 with its fixed sentence, /api/healthz
+//   names the unreachable check, and the lines below say it at volume.
+//   TALARIA_API=off is the escape hatch for a box that supervises the api
+//   entirely on its own — it disables spawning, not adoption.
+const API_PORT = Number(process.env.TALARIA_API_PORT || 5274)
+const API_URL = process.env.TALARIA_RUST_API_URL || `http://127.0.0.1:${API_PORT}`
+
+let apiChild = null
+let shuttingDown = false
+
+async function apiUp(timeoutMs) {
+  try {
+    await fetch(`${API_URL}/api/healthz`, { signal: AbortSignal.timeout(timeoutMs) })
+    return true // any answer — healthy or its own 503 — means the api is THERE
+  } catch {
+    return false
+  }
+}
+
+async function ensureRustApi() {
+  if (await apiUp(1500)) {
+    process.env.TALARIA_RUST_API_URL = API_URL
+    console.log(`[talaria-ui] rust api → already listening on :${API_PORT}; adopting it`)
+    return
+  }
+  if (process.env.TALARIA_API === 'off') {
+    console.warn(
+      `[talaria-ui] TALARIA_API=off and nothing answered on :${API_PORT} — not spawning the Rust api.` +
+        ' Every /api/* request fails until one is running there.',
+    )
+    return
+  }
+  const bin = process.env.TALARIA_API_BIN || join(__dirname, '../api/target/release/talaria-api')
+  if (!existsSync(bin)) {
+    console.error(
+      `[talaria-ui] no Rust api binary at ${bin} (build it, or set TALARIA_API_BIN) —` +
+        ' every /api/* request will 502. The SPA will serve; the api is the product surface.',
+    )
+    return
+  }
+  apiChild = spawn(bin, [], {
+    env: { ...process.env, TALARIA_API_PORT: String(API_PORT) },
+    stdio: 'inherit',
+  })
+  process.env.TALARIA_RUST_API_URL = API_URL
+  apiChild.on('error', (err) => console.error('[talaria-ui] rust api spawn failed:', err))
+  apiChild.on('close', (code) => {
+    if (shuttingDown) return
+    console.error(
+      `[talaria-ui] RUST API EXITED (code ${code}) — every /api/* request fails until it is back.` +
+        ' Exiting so the supervisor restarts the pair together.',
+    )
+    process.exit(1)
+  })
+  console.log(`[talaria-ui] rust api → ${bin} on :${API_PORT}`)
+  // Wait briefly for the bind: the boot probe below reports the api's
+  // reachability as of boot, and a binary that is merely still execing should
+  // not read as an outage in the first log line. Past five seconds, on we go
+  // — /api/healthz turns healthy whenever the api comes up.
+  if (await apiUp(5000)) console.log(`[talaria-ui] rust api ready on :${API_PORT}`)
+  else console.warn(`[talaria-ui] rust api not answering on :${API_PORT} after 5s — /api/healthz will say when it is`)
+}
+
+await ensureRustApi()
 
 // The probe is awaited BEFORE listen(), so anything it can wait on forever is
 // something that can stop this process ever answering a request — including
@@ -418,12 +483,15 @@ const SCHEDULER_HANDLE = Symbol.for('talaria.scheduler')
 // accepts a socket and then says nothing) is not covered by that.
 //
 // So: a deadline, and past it we carry on. Boot is not allowed to depend on a
-// database being up. Everything downstream already degrades honestly — the jobs
-// report their own failures, healthz answers 503 — but only if we get as far as
-// listening.
+// database being up. Everything downstream already degrades honestly — the
+// proxy 502s, healthz answers 503 — but only if we get as far as listening.
+//
+// (The probe's old second job — warming the job modules so the scheduler
+// handshake could find them — left with the cutover; what it loads now is the
+// residents' graph, which is still every reason to run it before listen().)
 const BOOT_PROBE_TIMEOUT_MS = 20_000
 
-async function startBackgroundJobs() {
+async function bootProbe() {
   const started = Date.now()
   try {
     let bell
@@ -445,48 +513,32 @@ async function startBackgroundJobs() {
       console.log(`[talaria-ui] boot probe /api/healthz → ${probe} (${Date.now() - started}ms)`)
     }
   } catch (err) {
-    // A failed probe is not fatal: the graph may still have loaded, and the
-    // scheduler's own jobs each report their own failures.
-    console.error('[talaria-ui] boot probe failed (starting the scheduler anyway):', err)
+    // A failed probe is not fatal: the graph may still have loaded, and each
+    // dependency reports its own failures.
+    console.error('[talaria-ui] boot probe failed (continuing anyway):', err)
   }
-
-  const scheduler = globalThis[SCHEDULER_HANDLE]
-  if (!scheduler) {
-    // Loud, because the symptom otherwise is silence: no comms decay, no
-    // outreach, no price refresh, and nothing in the log that says so.
-    console.error(
-      '[talaria-ui] NO SCHEDULER: src/server/scheduler.ts never loaded, so NO background job will run' +
-        ' on this instance. Something stopped the job modules being reachable from the route graph.',
-    )
-    return null
-  }
-  // The names it actually armed, in this process's log, at boot: the cheapest
-  // possible answer to "is this instance running the jobs?" on a box serving no
-  // traffic, where there is nothing else to look at.
-  const armed = scheduler.start()
-  console.log(`[talaria-ui] scheduler armed ${armed.length} job(s): ${armed.join(', ') || 'none'}`)
-  return scheduler
 }
 
-const scheduler = await startBackgroundJobs()
+await bootProbe()
 
 const httpServer = createServer(requestHandler)
 
-// A redeploy sends SIGTERM. Stop arming new job runs immediately — a job that
-// ARCHIVES conversations or MESSAGES people should not be started half a second
-// before the process is killed — then stop accepting connections and let
-// in-flight work finish.
-let shuttingDown = false
+// A redeploy sends SIGTERM. Tell the api child first — its own graceful path
+// stops arming job runs and drains in-flight work (a job that ARCHIVES
+// conversations or MESSAGES people must not be killed half a second in) —
+// then stop accepting connections and let in-flight requests finish.
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
     if (shuttingDown) return
     shuttingDown = true
     console.log(`[talaria-ui] ${signal} — shutting down`)
+    apiChild?.kill(signal)
     // An open keep-alive or SSE connection can hold close() indefinitely, and a
     // supervisor that has already sent SIGTERM will SIGKILL us shortly anyway.
     // Exit on our own terms instead, so the log says what happened.
     const forced = setTimeout(() => {
       console.warn('[talaria-ui] shutdown grace expired with connections still open — exiting')
+      apiChild?.kill('SIGKILL')
       process.exit(0)
     }, 15_000)
     forced.unref()
@@ -496,11 +548,26 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
         resolve()
       })
     })
-    Promise.all([scheduler ? scheduler.stop() : Promise.resolve(), closed])
+    // The api got its SIGTERM at the top; once the HTTP side is down, give it
+    // a bounded window to finish its own drain before we exit — a bare `bun
+    // run start` (no supervisor) would otherwise orphan it mid-drain.
+    const apiDown = new Promise((resolve) => {
+      if (!apiChild) return resolve()
+      apiChild.once('close', resolve)
+      const hard = setTimeout(() => {
+        apiChild.kill('SIGKILL')
+        resolve()
+      }, 5_000)
+      hard.unref()
+    })
+    Promise.all([apiDown, closed])
       .catch((err) => console.error('[talaria-ui] shutdown error:', err))
       .finally(() => process.exit(0))
   })
 }
+// The belt for every other exit path (an uncaught exception, a process.exit
+// somewhere in the graph): never leave an api binary running behind us.
+process.on('exit', () => apiChild?.kill('SIGKILL'))
 
 httpServer.listen(port, host, () => {
   console.log(`[talaria-ui] listening on http://${host}:${port}`)

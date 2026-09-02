@@ -11,9 +11,20 @@
 # (/var/lib/talaria, a host bind mounted at the same path — the fleet renderer
 # bakes absolute host paths into agent bind mounts, so state must be host-real).
 #
-# Three stages: build (toolchain + vite/tsc), prod-deps (pruned node_modules —
-# the SSR bundle externalizes node_modules, so they ship too), runtime (bun +
-# docker CLI + compose plugin + git, nothing else).
+# Three stages: build (toolchain + vite/tsc), prod-deps (pruned
+# node_modules — the SSR bundle externalizes node_modules, so they ship too),
+# runtime (bun + docker CLI + compose plugin + git + the api binary, nothing
+# else). The Rust api never compiles here: it arrives as a pre-built package
+# image (the `api` stage below; api/package.Dockerfile is its source of
+# truth), because app images build on GitHub runners, on operators'
+# machines, and on customer VMs — none of which should own a Rust toolchain.
+
+# The api package that stage consumes. Declared HERE, before the first FROM,
+# because FROM-line interpolation only sees args declared at the top level —
+# an ARG between stages belongs to no stage and reads as blank (this file's
+# one live lesson from building it for real). Used by exactly one FROM, so a
+# changed value never invalidates the expensive install/build layers.
+ARG TALARIA_API_IMAGE=ghcr.io/outcrop-labs/talaria-api:main
 
 # ── build ────────────────────────────────────────────────────────────────────
 # Node alongside bun for the same reason CI carries both (see
@@ -41,6 +52,20 @@ RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --fr
 COPY . .
 RUN cd ui && bun run build \
  && cd ../mcp && bun run build
+
+# ── api ──────────────────────────────────────────────────────────────────────
+# The pre-built Rust api, consumed as a package image — never compiled in an
+# app-image build (the stage's whole reason to exist; see api/package.Dockerfile).
+# The default (TALARIA_API_IMAGE, declared at the top) tracks main's package,
+# which api-package.yml publishes on every api-touching push to main — the
+# same ref Dokploy builds, so a checkout build on a deploy box pulls instead
+# of compiling. release.yml pins the exact sha-tagged package it just built,
+# so a released image names the api bits it carries. A local api change
+# overrides the source (docs/CONTAINER.md):
+#
+#   docker build -f api/package.Dockerfile -t talaria-api:local .
+#   docker build --build-arg TALARIA_API_IMAGE=talaria-api:local .
+FROM ${TALARIA_API_IMAGE} AS api
 
 # ── prod-deps ────────────────────────────────────────────────────────────────
 # Runtime node_modules, pruned to production deps. Kept as a separate stage so
@@ -91,6 +116,12 @@ LABEL org.opencontainers.image.title="Talaria" \
 RUN apk add --no-cache docker-cli docker-cli-compose git ca-certificates tzdata libgcc libstdc++
 
 COPY --from=oven/bun:1.4.0-alpine /usr/local/bin/bun /usr/local/bin/bun
+# The api binary: server-entry.js spawns it at boot (adopting any instance
+# already on the port), so the SPA process and the api share one supervisor,
+# one log, and one SIGTERM. musl-static out of the package stage — no runtime
+# packages follow it (the package carries its own ca-certificates story; this
+# runtime's apk line already installs them too).
+COPY --from=api /usr/local/bin/talaria-api /usr/local/bin/talaria-api
 COPY docker/entrypoint.sh /usr/local/bin/talaria-entrypoint
 COPY docker/await-deps.mjs /app/docker/await-deps.mjs
 RUN chmod 755 /usr/local/bin/talaria-entrypoint
@@ -125,6 +156,9 @@ RUN adduser -D -u 10001 talaria \
 # the default posture is plain http (browsers drop Secure cookies over http —
 # flip it behind TLS, see docs/CONTAINER.md), TALARIA_UPDATER=off because the
 # orchestrator (compose/Dokploy) owns deploys and the image has no git checkout.
+# TALARIA_API_BIN tells server-entry.js where the api binary it spawns lives —
+# the path is fixed by the COPY above; the env keeps the entry from guessing a
+# repo-layout path that only exists on dev boxes.
 # State lives under /var/lib/talaria via the existing path overrides, never in
 # default paths inside /app (those are image-owned).
 ENV PORT=5273 \
@@ -132,6 +166,7 @@ ENV PORT=5273 \
     NODE_ENV=production \
     COOKIE_SECURE=0 \
     TALARIA_UPDATER=off \
+    TALARIA_API_BIN=/usr/local/bin/talaria-api \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
     TALARIA_APPS_DIR=/var/lib/talaria/apps \

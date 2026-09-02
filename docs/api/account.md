@@ -1,7 +1,9 @@
 # API reference — account
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -29,7 +31,7 @@
 
 ## `/api/auth/claim`
 
-Source: [`ui/src/routes/api/auth/claim.ts`](../../ui/src/routes/api/auth/claim.ts)
+Source: [`api/src/routes/auth_claim.rs`](../../api/src/routes/auth_claim.rs)
 
 > POST /api/auth/claim { email, password, name? } → the FIRST admin.
 >
@@ -51,7 +53,7 @@ Source: [`ui/src/routes/api/auth/claim.ts`](../../ui/src/routes/api/auth/claim.t
 
 ## `/api/auth/google`
 
-Source: [`ui/src/routes/api/auth/google.ts`](../../ui/src/routes/api/auth/google.ts)
+Source: [`api/src/routes/auth_google.rs`](../../api/src/routes/auth_google.rs)
 
 > GET /api/auth/google → begin the OAuth dance: set a signed state cookie and
 > 302 to Google's consent screen.
@@ -62,7 +64,7 @@ Source: [`ui/src/routes/api/auth/google.ts`](../../ui/src/routes/api/auth/google
 
 ## `/api/auth/google/callback`
 
-Source: [`ui/src/routes/api/auth/google.callback.ts`](../../ui/src/routes/api/auth/google.callback.ts)
+Source: [`api/src/routes/auth_google_callback.rs`](../../api/src/routes/auth_google_callback.rs)
 
 > GET /api/auth/google/callback → verify state, exchange the code, mint the
 > session, and land on the cockpit.
@@ -73,7 +75,7 @@ Source: [`ui/src/routes/api/auth/google.callback.ts`](../../ui/src/routes/api/au
 
 ## `/api/auth/logout`
 
-Source: [`ui/src/routes/api/auth/logout.ts`](../../ui/src/routes/api/auth/logout.ts)
+Source: [`api/src/routes/auth_logout.rs`](../../api/src/routes/auth_logout.rs)
 
 > POST /api/auth/logout → delete the Redis session + clear the cookie.
 
@@ -83,7 +85,7 @@ Source: [`ui/src/routes/api/auth/logout.ts`](../../ui/src/routes/api/auth/logout
 
 ## `/api/auth/password`
 
-Source: [`ui/src/routes/api/auth/password.ts`](../../ui/src/routes/api/auth/password.ts)
+Source: [`api/src/routes/auth_password.rs`](../../api/src/routes/auth_password.rs)
 
 > POST /api/auth/password { username, password } → sets the session cookie.
 > Credentials live in user_password_credentials (Admin → People); the provider
@@ -103,7 +105,7 @@ Source: [`ui/src/routes/api/auth/password.ts`](../../ui/src/routes/api/auth/pass
 
 ## `/api/auth/providers`
 
-Source: [`ui/src/routes/api/auth/providers.ts`](../../ui/src/routes/api/auth/providers.ts)
+Source: [`api/src/routes/auth_providers.rs`](../../api/src/routes/auth_providers.rs)
 
 > GET /api/auth/providers → the providers the login screen should render, and
 > whether the instance is still UNCLAIMED. Everything is computed live:
@@ -117,7 +119,7 @@ Source: [`ui/src/routes/api/auth/providers.ts`](../../ui/src/routes/api/auth/pro
 
 ## `/api/auth/session`
 
-Source: [`ui/src/routes/api/auth/session.ts`](../../ui/src/routes/api/auth/session.ts)
+Source: [`api/src/routes/auth_session.rs`](../../api/src/routes/auth_session.rs)
 
 > GET /api/auth/session → the current user + their denied views + effective
 > permissions (read from the DB each time, so an admin's access change
@@ -129,7 +131,7 @@ Source: [`ui/src/routes/api/auth/session.ts`](../../ui/src/routes/api/auth/sessi
 
 ## `/api/join`
 
-Source: [`ui/src/routes/api/join.ts`](../../ui/src/routes/api/join.ts)
+Source: [`api/src/routes/join.rs`](../../api/src/routes/join.rs)
 
 > Public invite lookup for the /join page: token → who's invited, by whom,
 > to which org. Rate-limited; expired/revoked/accepted tokens read as gone.
@@ -140,7 +142,7 @@ Source: [`ui/src/routes/api/join.ts`](../../ui/src/routes/api/join.ts)
 
 ## `/api/me`
 
-Source: [`ui/src/routes/api/me.ts`](../../ui/src/routes/api/me.ts)
+Source: [`api/src/routes/me.rs`](../../api/src/routes/me.rs)
 
 > The signed-in user's profile. GET → preferences (preferred model, preferred
 > effort, timezone). PUT { name?, preferredModel?, preferredEffort?,
@@ -159,7 +161,7 @@ Body schema `z.object({ name: z.string().min(1).max(80).optional(), preferredMod
 
 ## `/api/me/assistant`
 
-Source: [`ui/src/routes/api/me.assistant.ts`](../../ui/src/routes/api/me.assistant.ts)
+Source: [`api/src/routes/me_assistant.rs`](../../api/src/routes/me_assistant.rs)
 
 > The signed-in user's personal assistant. GET → theirs (or null), with
 > personality + live status. POST → create + start one, optionally named/
@@ -187,7 +189,7 @@ Body schema `z.object({ name: Name.optional(), handle: Handle.optional(), person
 
 ## `/api/me/events`
 
-Source: [`ui/src/routes/api/me.events.ts`](../../ui/src/routes/api/me.events.ts)
+Source: [`api/src/routes/me_events.rs`](../../api/src/routes/me_events.rs)
 
 > GET /api/me/events → SSE stream of THIS person's own firehose: their runs
 > changing state, their notifications landing, their brief being appended to.
@@ -201,7 +203,7 @@ Source: [`ui/src/routes/api/me.events.ts`](../../ui/src/routes/api/me.events.ts)
 
 ## `/api/me/mcp`
 
-Source: [`ui/src/routes/api/me.mcp.ts`](../../ui/src/routes/api/me.mcp.ts)
+Source: [`api/src/routes/me_mcp.rs`](../../api/src/routes/me_mcp.rs)
 
 > Connected accounts (Settings → Connections): per-user MCP servers and
 > whether YOU have connected yours. PUT { serverId, headers } connects
@@ -223,7 +225,7 @@ Source: [`ui/src/routes/api/me.mcp.ts`](../../ui/src/routes/api/me.mcp.ts)
 
 ## `/api/users`
 
-Source: [`ui/src/routes/api/users.ts`](../../ui/src/routes/api/users.ts)
+Source: [`api/src/routes/users.rs`](../../api/src/routes/users.rs)
 
 > GET /api/users → everyone who has signed in (id, email, name). Powers the
 > people pickers (board sharing, teams, channels). Any signed-in user — and

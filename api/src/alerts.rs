@@ -396,20 +396,20 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
             ),
             href: "/observability",
         });
-    } else if unarmed == jobs.len() && std::env::var("TALARIA_SCHEDULER").as_deref() == Ok("rust") {
-        // Not an emergency and not a bug: the schedule was handed to the Rust
-        // api (TALARIA_SCHEDULER=rust), which registers and arms its own
-        // table. This process arming too would double-fire per-instance jobs,
-        // so standing down is the healthy state.
+    } else if unarmed == jobs.len() && std::env::var("TALARIA_SCHEDULER").as_deref() == Ok("off") {
+        // The kill switch, on purpose: an operator set TALARIA_SCHEDULER=off
+        // — a misbehaving job, an incident — so an empty arm table is the
+        // state they asked for. Not an emergency, but worth the page saying
+        // so: a switch left on is how a deployment quietly loses its digest.
         alerts.push(Alert {
             severity: AlertSeverity::Info,
-            title: "Background jobs run on the Rust api".into(),
-            detail: "TALARIA_SCHEDULER=rust, so this process arms nothing by design. The job table lives in the Rust api; its boot log says what it armed, and the same env value is what told this scheduler to stand down.".into(),
+            title: "Background jobs are deliberately off".into(),
+            detail: "TALARIA_SCHEDULER=off, so this instance arms nothing by design — no digest, no approval escalation, no comms decay, no notification mail, anywhere until the switch comes off.".into(),
             href: "/observability",
         });
     } else if unarmed == jobs.len() {
-        // Registered but never armed. Expected on a developer's machine, so it
-        // is only an emergency where a build is actually serving people.
+        // Registered but never armed — and with this process the only
+        // scheduler a deployment has, no other runtime is coming to do it.
         alerts.push(Alert {
             severity: if in_production { AlertSeverity::Critical } else { AlertSeverity::Info },
             title: if in_production {
@@ -422,9 +422,9 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                 "{} job(s) are registered and not one of them has been armed, so nothing is timing them: no digest, no approval escalation, no comms decay, no notification mail.{}",
                 jobs.len(),
                 if in_production {
-                    " Either TALARIA_SCHEDULER=off, or server-entry.js could not find the scheduler handle at boot. The startup log says which."
+                    " The arm loop never completed: Postgres or Redis never answered its probes, so arming is still retrying (see the startup log)."
                 } else {
-                    " Normal under `vite dev`, which does not run server-entry.js on purpose."
+                    " Usually the arm loop still waiting on Postgres or Redis; the startup log says which."
                 }
             ),
             href: "/observability",

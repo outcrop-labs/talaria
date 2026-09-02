@@ -218,22 +218,23 @@ describe('talaria dev — rust api sidecar', () => {
     return port
   }
 
-  test('off by default — TALARIA_API unset touches nothing', async () => {
-    const ctx = fakeCtx()
+  test("opt-out only — TALARIA_API=off touches nothing (unset is the default-ON posture)", async () => {
+    const ctx = fakeCtx({ env: { TALARIA_API: 'off' } })
     await rustApi(ctx, 'DATABASE_URL=x\n')
     expect(ctx.calls).toHaveLength(0)
     expect(ctx.logLines).toHaveLength(0)
   })
 
-  test('no cargo on PATH → warn and skip (the TS server serves everything)', async () => {
+  test('no cargo on PATH (with TALARIA_API unset — the default) → warn and skip, API-DARK at full volume', async () => {
     const port = await closedPort()
-    const ctx = fakeCtx({ env: { TALARIA_API: 'on', TALARIA_API_PORT: String(port) } })
+    const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
     ctx.plant(['cargo', ['--version']], new Error('not found'))
     await rustApi(ctx, 'DATABASE_URL=x\n')
-    // the proxy-URL warning fires in every on-path — ui/.env here has none
+    // the proxy-URL warning fires in every run-path — ui/.env here has none
     expect(ctx.logLines.filter((l) => l.kind === 'warn').map((l) => l.msg)).toEqual([
       expect.stringContaining('TALARIA_RUST_API_URL is not set'),
-      'TALARIA_API=on but no cargo on PATH — skipping the Rust api (the TS server serves everything).',
+      'no cargo on PATH — skipping the Rust api. The UI will serve, but every /api/* request fails:' +
+        ' the api is the whole product surface, not a side feature.',
     ])
     // looked for cargo, but never tried to run it
     expect(ctx.calls.map((c) => [c.cmd, ...c.args])).toEqual([['cargo', '--version']])
@@ -241,7 +242,7 @@ describe('talaria dev — rust api sidecar', () => {
 
   test('something already answering on the port → adopt, never check cargo', async () => {
     await withListener(async (port) => {
-      const ctx = fakeCtx({ env: { TALARIA_API: 'on', TALARIA_API_PORT: String(port) } })
+      const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
       await rustApi(ctx, `TALARIA_RUST_API_URL=http://127.0.0.1:${port}\n`)
       expect(ctx.logLines).toHaveLength(1)
       expect(ctx.logLines[0]).toMatchObject({ kind: 'say', msg: `rust api → already listening on :${port}; adopting it` })

@@ -1,7 +1,9 @@
 # API reference — models
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -19,7 +21,7 @@
 
 ## `/api/inference`
 
-Source: [`ui/src/routes/api/inference.ts`](../../ui/src/routes/api/inference.ts)
+Source: [`api/src/routes/inference.rs`](../../api/src/routes/inference.rs)
 
 > Local inference: your own hardware's backends (class=local), probed live,
 > plus what they've served from the token ledger. Config lives on /models.
@@ -30,7 +32,7 @@ Source: [`ui/src/routes/api/inference.ts`](../../ui/src/routes/api/inference.ts)
 
 ## `/api/keys`
 
-Source: [`ui/src/routes/api/keys.ts`](../../ui/src/routes/api/keys.ts)
+Source: [`api/src/routes/keys.rs`](../../api/src/routes/keys.rs)
 
 > Personal API keys for the Talaria LLM gateway. GET → my keys (+ whether I
 > may mint). POST → mint one; the secret is in THIS response only.
@@ -48,7 +50,7 @@ Source: [`ui/src/routes/api/keys.ts`](../../ui/src/routes/api/keys.ts)
 
 ## `/api/keys/{id}`
 
-Source: [`ui/src/routes/api/keys.$id.ts`](../../ui/src/routes/api/keys.$id.ts)
+Source: [`api/src/routes/keys_id.rs`](../../api/src/routes/keys_id.rs)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -65,7 +67,7 @@ Source: [`ui/src/routes/api/keys.$id.ts`](../../ui/src/routes/api/keys.$id.ts)
 
 ## `/api/models`
 
-Source: [`ui/src/routes/api/models.ts`](../../ui/src/routes/api/models.ts)
+Source: [`api/src/routes/models.rs`](../../api/src/routes/models.rs)
 
 > The gateway model catalog for signed-in users (the /api/llm/v1/models twin
 > without an API key) — powers the preferred-model picker. Role-filtered:
@@ -79,7 +81,7 @@ Source: [`ui/src/routes/api/models.ts`](../../ui/src/routes/api/models.ts)
 
 ## `/api/models/efforts`
 
-Source: [`ui/src/routes/api/models.efforts.ts`](../../ui/src/routes/api/models.efforts.ts)
+Source: [`api/src/routes/models_efforts.rs`](../../api/src/routes/models_efforts.rs)
 
 > The composer's effort-picker feed: which reasoning-effort levels THIS model
 > id may be asked for, plus the default it should start from. Thin by the house

@@ -26,6 +26,9 @@ import type { AdversarialReport, ProvocationScore } from '@/server/fitness/adver
 import type { ProbeReport } from '@/server/fitness/probes'
 import type { Divergence, ObservedHarness, ObservedModel } from '@/server/fitness/observed'
 import type { ModelValue, SlotValue, ValueView, Workload } from '@/server/fitness/value'
+// The wire types, straight from the module that shaped them — the route file
+// that re-exported them is deleted with the cutover, and the shapes are the
+// contract the Rust twin now serves (RUST-MIGRATION.md, R21).
 import type {
   CapabilityState,
   CapabilityView,
@@ -35,7 +38,7 @@ import type {
   RunEstimate,
   TierEstimate,
   TierId,
-} from '@/routes/api/admin.model-fitness'
+} from '@/server/fitness/surface'
 
 /** The run modal's default width. A LITERAL, not an import, and that is the
  *  whole point of the header above: `import { DEFAULT_CONCURRENCY } from

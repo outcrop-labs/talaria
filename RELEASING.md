@@ -87,8 +87,17 @@ repo inactivity. That is the first thing to check.
 
 Pin anything you care about to the right-hand column.
 
+The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
+tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
+release's app-image build is actually pinned to.
+
 ## One-time setup notes
 
+- **The api package needs bootstrapping.** When `api-package.yml` first
+  lands, run it once by hand (Actions → api-package → Run workflow) so the
+  `main` + sha tags exist — until then a checkout build has no default
+  package to consume. Then flip it public like the app image below; the two
+  packages are set up identically.
 - **GHCR visibility.** The first push creates the package **private**.
   Flip it: github.com/outcrop-labs/talaria → Packages → talaria → Package
   settings → Change visibility → Public. Until then, pulls need
@@ -101,7 +110,8 @@ Pin anything you care about to the right-hand column.
 
 ## Deliberately not
 
-- No npm/PyPI publishing — nothing in this repo is a package.
+- No npm/PyPI publishing — the repo's published artifacts are the two
+  images (the app and the api package), nothing else.
 - No signed attestations.
 - No nightly-tag pruning (see above: negligible growth).
 - No auto-changelog; CHANGELOG.md is hand-maintained, and PRs update it.

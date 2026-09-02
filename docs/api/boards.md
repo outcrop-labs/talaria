@@ -1,7 +1,9 @@
 # API reference — boards
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -38,7 +40,7 @@
 
 ## `/api/boards`
 
-Source: [`ui/src/routes/api/boards.ts`](../../ui/src/routes/api/boards.ts)
+Source: [`api/src/routes/boards.rs`](../../api/src/routes/boards.rs)
 
 > GET /api/boards → boards the user owns or that are shared with them.
 > Agent-key + x-agent-name → boards whose policy allows that agent; a personal
@@ -60,7 +62,7 @@ Source: [`ui/src/routes/api/boards.ts`](../../ui/src/routes/api/boards.ts)
 
 ## `/api/boards/{id}`
 
-Source: [`ui/src/routes/api/boards.$id.ts`](../../ui/src/routes/api/boards.$id.ts)
+Source: [`api/src/routes/boards_id.rs`](../../api/src/routes/boards_id.rs)
 
 > PATCH /api/boards/:id { name?, archived?, judgeMode? } → rename/archive/set the
 > QA judge mode (owner/editor). DELETE → owner only.
@@ -82,7 +84,7 @@ Source: [`ui/src/routes/api/boards.$id.ts`](../../ui/src/routes/api/boards.$id.t
 
 ## `/api/boards/{id}/agents`
 
-Source: [`ui/src/routes/api/boards.$id.agents.ts`](../../ui/src/routes/api/boards.$id.agents.ts)
+Source: [`api/src/routes/boards_id_agents.rs`](../../api/src/routes/boards_id_agents.rs)
 
 > GET → { allowAll, models }. PUT → set the board's agent policy (owner/editor,
 > or a personal assistant acting as its owner): either the full { allowAll,
@@ -105,7 +107,7 @@ Source: [`ui/src/routes/api/boards.$id.agents.ts`](../../ui/src/routes/api/board
 
 ## `/api/boards/{id}/events`
 
-Source: [`ui/src/routes/api/boards.$id.events.ts`](../../ui/src/routes/api/boards.$id.events.ts)
+Source: [`api/src/routes/boards_id_events.rs`](../../api/src/routes/boards_id_events.rs)
 
 > GET /api/boards/:id/events → SSE stream of this board's live events (task/
 > comment changes). Auth-gated to board members. Powers multiplayer boards.
@@ -116,7 +118,7 @@ Source: [`ui/src/routes/api/boards.$id.events.ts`](../../ui/src/routes/api/board
 
 ## `/api/boards/{id}/labels`
 
-Source: [`ui/src/routes/api/boards.$id.labels.ts`](../../ui/src/routes/api/boards.$id.labels.ts)
+Source: [`api/src/routes/boards_id_labels.rs`](../../api/src/routes/boards_id_labels.rs)
 
 > Board labels. GET → the registry (any member). POST create, PUT rename/
 > recolor (rename cascades into tickets), DELETE (strips off tickets) —
@@ -152,7 +154,7 @@ Source: [`ui/src/routes/api/boards.$id.labels.ts`](../../ui/src/routes/api/board
 
 ## `/api/boards/{id}/members`
 
-Source: [`ui/src/routes/api/boards.$id.members.ts`](../../ui/src/routes/api/boards.$id.members.ts)
+Source: [`api/src/routes/boards_id_members.rs`](../../api/src/routes/boards_id_members.rs)
 
 > GET → members. POST { email, role } → share (owner/editor). DELETE { userId
 > | email } → unshare. Write actions accept a personal assistant acting as its
@@ -177,7 +179,7 @@ Body schema `z.object({ userId: Uuid.optional(), email: Email.optional() }).refi
 
 ## `/api/boards/{id}/statuses`
 
-Source: [`ui/src/routes/api/boards.$id.statuses.ts`](../../ui/src/routes/api/boards.$id.statuses.ts)
+Source: [`api/src/routes/boards_id_statuses.rs`](../../api/src/routes/boards_id_statuses.rs)
 
 > A board's custom statuses and the diagnostics that explain whether
 > agents may start/stop work on each. Writes are owner/editor.
@@ -223,7 +225,7 @@ Source: [`ui/src/routes/api/boards.$id.statuses.ts`](../../ui/src/routes/api/boa
 
 ## `/api/boards/{id}/tasks`
 
-Source: [`ui/src/routes/api/boards.$id.tasks.ts`](../../ui/src/routes/api/boards.$id.tasks.ts)
+Source: [`api/src/routes/boards_id_tasks.rs`](../../api/src/routes/boards_id_tasks.rs)
 
 > GET → the board's tasks (any member, or a board-allowed agent).
 > POST → create a card (owner/editor, or a board-allowed agent → inbox).
@@ -251,7 +253,7 @@ Source: [`ui/src/routes/api/boards.$id.tasks.ts`](../../ui/src/routes/api/boards
 
 ## `/api/boards/{id}/templates`
 
-Source: [`ui/src/routes/api/boards.$id.templates.ts`](../../ui/src/routes/api/boards.$id.templates.ts)
+Source: [`api/src/routes/boards_id_templates.rs`](../../api/src/routes/boards_id_templates.rs)
 
 > The ticket templates a board uses. GET → bindings. PUT { templateIds,
 > defaultId } → replace the set (owner/editor); defaultId must be in the set.
@@ -270,7 +272,7 @@ Source: [`ui/src/routes/api/boards.$id.templates.ts`](../../ui/src/routes/api/bo
 
 ## `/api/boards/{id}/views`
 
-Source: [`ui/src/routes/api/boards.$id.views.ts`](../../ui/src/routes/api/boards.$id.views.ts)
+Source: [`api/src/routes/boards_id_views.rs`](../../api/src/routes/boards_id_views.rs)
 
 > Saved board views — named filter/layout presets shared with the board.
 > GET → list (any member); POST/PUT/DELETE → owner/editor. Config is the

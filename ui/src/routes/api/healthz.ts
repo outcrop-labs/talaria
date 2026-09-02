@@ -59,19 +59,37 @@ export const Route = defineApi('/api/healthz', {
   GET: async () => {
     // getSql(), not db(): a health check must never run schema migrations
     // or wait on the migration advisory lock. Just a round trip.
-    const [postgres, redis] = await Promise.all([
-      timed('postgres', async () => {
+    const checks: Record<string, Check> = {
+      postgres: await timed('postgres', async () => {
         await getSql()`select 1`
       }),
-      timed('redis', () => getRedis().ping()),
-    ])
+      redis: await timed('redis', () => getRedis().ping()),
+    }
 
-    const ok = postgres.ok && redis.ok
+    // The Rust api this process fronts (the hop is armed — unset means an
+    // unproxied install, and a missing api is not this body's claim). Any
+    // HTTP answer counts as ok, including the api's own 503: its postgres
+    // and redis are the same two the checks above already speak for, so the
+    // only fact this check adds is the one only this side can see — the hop
+    // works. The body stays secret-free by the same rule as the rest: the
+    // URL never rides, safeCode keeps the short code only.
+    const rustApiUrl = process.env.TALARIA_RUST_API_URL
+    if (rustApiUrl) {
+      checks.rustApi = await timed('rustApi', () =>
+        fetch(new URL('/api/healthz', rustApiUrl), {
+          signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+        }).then((res) => {
+          void res.body?.cancel()
+        }),
+      )
+    }
+
+    const ok = Object.values(checks).every((c) => c.ok)
     return json(
       {
         status: ok ? 'ok' : 'degraded',
         uptimeSeconds: Math.round(process.uptime()),
-        checks: { postgres, redis },
+        checks,
       },
       {
         // 503 so a probe fails on its own, without parsing the body.

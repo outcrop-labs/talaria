@@ -1,7 +1,9 @@
 # API reference — teams
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -19,7 +21,7 @@
 
 ## `/api/teams`
 
-Source: [`ui/src/routes/api/teams.ts`](../../ui/src/routes/api/teams.ts)
+Source: [`api/src/routes/teams.rs`](../../api/src/routes/teams.rs)
 
 > GET → the user's teams (humans, or a personal assistant acting as its owner).
 > POST { name } → create a team (user becomes owner; humans only).
@@ -37,7 +39,7 @@ Source: [`ui/src/routes/api/teams.ts`](../../ui/src/routes/api/teams.ts)
 
 ## `/api/teams/{id}`
 
-Source: [`ui/src/routes/api/teams.$id.ts`](../../ui/src/routes/api/teams.$id.ts)
+Source: [`api/src/routes/teams_id.rs`](../../api/src/routes/teams_id.rs)
 
 > PATCH { name } → rename the team (owner). DELETE → delete it (owner); the
 > member rows cascade and its boards survive as personal boards (team_id is
@@ -57,7 +59,7 @@ Source: [`ui/src/routes/api/teams.$id.ts`](../../ui/src/routes/api/teams.$id.ts)
 
 ## `/api/teams/{id}/members`
 
-Source: [`ui/src/routes/api/teams.$id.members.ts`](../../ui/src/routes/api/teams.$id.members.ts)
+Source: [`api/src/routes/teams_id_members.rs`](../../api/src/routes/teams_id_members.rs)
 
 > GET → members (any member). POST { email, role } → add (owner). DELETE { userId } → remove (owner).
 

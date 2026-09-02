@@ -16,13 +16,14 @@ The full per-route reference — path, method, auth class, body fields, statuses
 is generated from the route sources: [`api/`](./api/README.md). Nothing here
 repeats it; this page is the dialect, that one is the dictionary.
 
-The dialect now lives in two runtimes: while the port's coexistence runs, a route
-serves from TS or from the Rust crate (`api/`), never both — and the Rust
-side holds itself to this same dialect byte-for-byte (the 370-pair parity battery
-proved it; the Rust-side authoring rules and the recorded divergences are
-[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A new route lands as a TS route file AND
-its Rust twin in the same change — the proxy has no fallback by design, so a migrated
-prefix must never have routes that exist on only one side.
+The dialect lives in one runtime: the Rust crate (`api/`) serves every
+`/api/*` route except the four permanent TS residents (healthz,
+`/api/admin/update`, the `/api/apps/` dispatch subtree, the app-MCP gateway),
+and it holds itself to this same dialect byte-for-byte — the 370-pair parity
+battery proved it against the TS oracle before the TS API was deleted (the
+Rust-side authoring rules and the recorded divergences are
+[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A new route lands as a Rust route
+file, in this dialect, with its tests.
 
 ## Guards — `server/api-guard.ts`
 
@@ -54,7 +55,7 @@ if (agent) { … }                            // agent.id · agent.model · agen
 
 `x-agent-name` is a cross-check that can narrow access, never grant it; a name contradicting the
 credential is a 403. `agent.legacy` marks a caller authenticated by the org-wide `TALARIA_AGENT_KEY`
-during the migration window — identity asserted, not proven, so anything granting privilege must
+— the pre-per-agent-key path; identity asserted, not proven, so anything granting privilege must
 refuse it.
 
 Fleet-plane endpoints carry their subject in the URL or body, and they take one of two guards — not

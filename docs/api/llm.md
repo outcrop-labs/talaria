@@ -1,7 +1,9 @@
 # API reference — llm
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 > 
@@ -18,7 +20,7 @@
 
 ## `/api/llm/v1/chat/completions`
 
-Source: [`ui/src/routes/api/llm.v1.chat.completions.ts`](../../ui/src/routes/api/llm.v1.chat.completions.ts)
+Source: [`api/src/routes/llm_chat.rs`](../../api/src/routes/llm_chat.rs)
 
 > OpenAI-compatible chat completions — the wire external tools speak.
 > Auth is a personal gateway API key (Bearer), not a session.
@@ -29,7 +31,7 @@ Source: [`ui/src/routes/api/llm.v1.chat.completions.ts`](../../ui/src/routes/api
 
 ## `/api/llm/v1/models`
 
-Source: [`ui/src/routes/api/llm.v1.models.ts`](../../ui/src/routes/api/llm.v1.models.ts)
+Source: [`api/src/routes/llm_models.rs`](../../api/src/routes/llm_models.rs)
 
 > OpenAI-compatible model list for the Talaria LLM gateway. External tools
 > point at base_url http://<talaria>/api/llm/v1 with a minted tlk_ key.

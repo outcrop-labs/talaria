@@ -190,14 +190,13 @@ impl std::fmt::Display for PlanDraftError {
 /// Start (or ride) the conversation's draft. Returns the projected draft —
 /// queued or running; the POST answers with it immediately.
 ///
-/// COEXISTENCE ORDER, and it is load-bearing: while TS owns the schedule,
-/// enqueue with `start: false` (the run row + its publish, no drive), then
-/// the domain row — the TS scheduler's sweep is what advances the queued run,
-/// and the reclaim sweep is the guarantee either way. Once this process owns
-/// the schedule (`TALARIA_SCHEDULER=rust`) the flag drives inline, exactly as
-/// TS's own start path always did. The run definition must exist and be
-/// byte-correct before that handover, which is why this plane crosses in the
-/// runs batch and not with the chat family.
+/// ORDER, and it is load-bearing: enqueue with the inline drive (the run row,
+/// its publish, and the drive), then the domain row. This process's scheduler
+/// advances the run, and the reclaim sweep is the guarantee either way.
+/// (During coexistence the enqueue was row-and-publish only — `start: false`
+/// — leaving the drive to the TS sweep; that runtime left with the cutover.
+/// The run definition had to be byte-correct before that handover, which is
+/// why this plane crossed in the runs batch and not with the chat family.)
 pub async fn start_plan_draft(
     state: &AppState,
     args: StartPlanDraft<'_>,
@@ -236,9 +235,9 @@ pub async fn start_plan_draft(
             subject_type: Some(PLAN_DRAFT_KIND.into()),
             subject_id: Some(id.clone()),
             phase: Some("queued".into()),
-            // The coexistence bridge: no drive while TS owns the sweep, inline
-            // drive (TS's own behavior) once this process does.
-            start: Some(crate::scheduler::rust_owns_schedule()),
+            // The drive is inline: this process is the only runtime, so
+            // enqueue means row + publish + drive.
+            start: Some(true),
         },
         &deps,
     )

@@ -1,7 +1,10 @@
 # API reference
 
-> **Generated** by `bun run docs:api` — do not edit by hand. One file per resource
-> group, one row per (path, method). Requests/responses follow the house envelope
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust
+> port replaced, then frozen: group files now point their Source links at
+> `api/src/routes/**`. Regeneration returns with the Rust extractor (#293); until
+> then, maintained by hand — one file per resource group, one row per (path,
+> method). Requests/responses follow the house envelope
 > and conventions: [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
 219 routes across 23 groups.

@@ -11,6 +11,14 @@
 // runs, and `--check` (wired into `bun run check`) fails CI when they diverge.
 // You cannot edit docs/api/** by hand and have it stick; that is the point.
 //
+// THE EXCEPTION, FOR NOW. The TS→Rust cutover (PR #292) deleted the TS route
+// tree this script extracted from, before the extractor was ported to the Rust
+// router table. docs/api/** is therefore FROZEN at the cutover: its Source
+// links point at api/src/routes/** (each module's header names the TS file it
+// ported), the files are maintained by hand, and both generate and --check
+// leave them alone until the Rust extractor lands (#293). The CLI reference
+// still generates and checks normally.
+//
 // WHAT IS EXACT vs HEURISTIC. Path literals, methods, auth guards, parseBody
 // field tables, audit/SSE markers and literal status codes are read from the
 // route source (see extractors below). The Returns column is a heuristic — the
@@ -30,7 +38,7 @@
 // about a route lives with the route or nowhere.
 
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
-import { join, resolve, relative } from 'node:path'
+import { join, resolve, relative, basename } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const ROUTES_DIR = join(ROOT, 'ui/src/routes/api')
@@ -664,9 +672,19 @@ function leafSection(prefix, leaf) {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
-const routes = walkRoutes(ROUTES_DIR)
-  .map(extractRoute)
-  .sort((a, b) => a.path.localeCompare(b.path) || a.file.localeCompare(b.file))
+// The frozen reference. The cutover left only the four permanent TS residents
+// in the routes dir; when nothing else remains there is nothing to extract,
+// and regenerating would clobber the frozen reference down to a four-row husk.
+// Both modes skip docs/api/** entirely; the CLI reference still generates.
+const RESIDENT_ROUTE_FILES = new Set(['admin.update.ts', 'apps.$app.$.ts', 'healthz.ts', 'mcp.gw.$server.ts'])
+const frozen =
+  !existsSync(ROUTES_DIR) || walkRoutes(ROUTES_DIR).every((f) => RESIDENT_ROUTE_FILES.has(basename(f)))
+
+const routes = frozen
+  ? []
+  : walkRoutes(ROUTES_DIR)
+      .map(extractRoute)
+      .sort((a, b) => a.path.localeCompare(b.path) || a.file.localeCompare(b.file))
 
 // apps.$app.$ — one dispatch row, not five method rows: everything about the
 // app-server gateway contract lives in the SDK doc.
@@ -687,16 +705,20 @@ if (routes.some((r) => r.path === APPS_DISPATCH)) {
 
 // `$param` renders as `{param}`; trailing `$` as `*` — but sort by raw path.
 const outputs = new Map()
-for (const [g, rs] of Object.entries(groupRoutes)) outputs.set(join(ROOT, `docs/api/${g}.md`), renderGroup(g, rs))
-outputs.set(join(ROOT, 'docs/api/README.md'), renderApiIndex(groupRoutes))
+if (!frozen) {
+  for (const [g, rs] of Object.entries(groupRoutes)) outputs.set(join(ROOT, `docs/api/${g}.md`), renderGroup(g, rs))
+  outputs.set(join(ROOT, 'docs/api/README.md'), renderApiIndex(groupRoutes))
+}
 outputs.set(join(ROOT, 'docs/CLI-REFERENCE.md'), await renderCliReference())
 
 // ── Write or check ──────────────────────────────────────────────────────────
 
 const problems = []
 const onDisk = new Set()
-for (const e of readdirSync(join(ROOT, 'docs/api'), { withFileTypes: true })) {
-  if (e.isFile() && e.name.endsWith('.md')) onDisk.add(join(ROOT, 'docs/api', e.name))
+if (!frozen) {
+  for (const e of readdirSync(join(ROOT, 'docs/api'), { withFileTypes: true })) {
+    if (e.isFile() && e.name.endsWith('.md')) onDisk.add(join(ROOT, 'docs/api', e.name))
+  }
 }
 
 for (const [file, content] of outputs) {
@@ -732,4 +754,10 @@ for (const r of routes) {
     if (m.auth.startsWith('unknown(')) console.warn(`gen-docs: ${r.file} ${m.method} uses an unrecognized guard → ${m.auth} (add it to KNOWN_REQUEST_TAKERS/authClass in scripts/gen-docs.mjs)`)
   }
 }
-console.log(`gen-docs: ${routes.length} routes (${methodRows} method rows) → ${outputs.size} generated files${CHECK ? ', all current' : ''}`)
+if (frozen) {
+  console.log('gen-docs: docs/api/** frozen at the TS→Rust cutover (PR #292) — the TS route tree is gone;')
+  console.log('  the reference is maintained by hand until the Rust extractor lands (#293).')
+  console.log(`gen-docs: CLI reference → docs/CLI-REFERENCE.md${CHECK ? ', current' : ' (written)'}`)
+} else {
+  console.log(`gen-docs: ${routes.length} routes (${methodRows} method rows) → ${outputs.size} generated files${CHECK ? ', all current' : ''}`)
+}

@@ -91,13 +91,10 @@ fn real_edges(pg: sqlx::PgPool, rt: RealtimeDeps) -> RealEdges {
 ///
 /// This is the handoff assembly the codebase's comments kept promising: it is
 /// what the Rust scheduler's `run-reclaim` job drives reclaimed runs through,
-/// and what work_dispatch's `dispatch_deps` returns once the schedule is this
-/// process's (`TALARIA_SCHEDULER=rust`). During coexistence nothing in Rust
-/// drives, so the stub's loud refusal was the honest edge; from the flip on,
-/// a driven run that parks a question must actually park it.
-///
-/// Nothing here is reached before the flip: the job that consumes it arms
-/// with `start_scheduler`, and the flip is the only caller of that.
+/// and what work_dispatch's `dispatch_deps` returns — unconditionally, since
+/// the cutover deleted the TS sweep that the coexistence-era stub once
+/// deferred to (its loud refusal was the honest edge while nothing in Rust
+/// drove). A driven run that parks a question actually parks it.
 pub fn real_run_deps(
     pg: sqlx::PgPool,
     redis: redis::aio::ConnectionManager,

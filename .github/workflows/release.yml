@@ -11,6 +11,11 @@
 #                       moving tag from the rc tip — a dispatch cannot invent a version,
 #                       only a tag carries one)
 #
+#   Every publish also builds the API PACKAGE (ghcr.io/outcrop-labs/talaria-api,
+#   same channel tags plus an immutable sha-<sha12>) and pins that sha into the
+#   app image — the api never compiles inside an image build. api-package.yml
+#   owns that story.
+#
 # WHY GIT IS THE AUTHORITY AND THE package.json FILES ARE NOT. Every version
 #   field in this repo says "0.1.0" decoratively and nothing reads them; the
 #   TAG is the version. The workflow never edits a file to release — there is
@@ -170,9 +175,21 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.ref }}
 
+  # The api binary this run's image will carry, compiled once here and pinned
+  # by sha — never compiled inside the image build. Called, not copied, so
+  # the package a release pins is built by the same jobs that push the `main`
+  # package (that file's header tells the whole story). Needs ci: a package
+  # tag must not move for a commit whose checks failed.
+  api-package:
+    needs: [resolve, ci]
+    uses: ./.github/workflows/api-package.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+      tags: ${{ needs.resolve.outputs.tags }}
+
   publish:
     name: build + push ${{ needs.resolve.outputs.version }}
-    needs: [resolve, ci]
+    needs: [resolve, ci, api-package]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -210,6 +227,7 @@ jobs:
             version="rc-$(git rev-parse HEAD | cut -c1-12)"
           fi
           args=(--platform linux/amd64
+                --build-arg "TALARIA_API_IMAGE=${{ needs.api-package.outputs.image }}"
                 --build-arg "VERSION=$version"
                 --build-arg "REVISION=$(git rev-parse HEAD)"
                 --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
