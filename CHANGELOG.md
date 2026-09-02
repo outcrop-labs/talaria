@@ -130,6 +130,15 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   sweep on one latent nullability fix — the inbox undo read mapped a
   nullable `outcome` column into a non-Option type, which now tolerates a
   completed-without-outcome row instead of 500ing the undo.
+- **Devboxes are no longer API-dark on arrival.** The box compose's
+  `environment: PATH:` mirrored the node base image's PATH — but a compose
+  override *replaces*, and the devbox image prepends `~/.cargo/bin`: with
+  cargo off PATH, `talaria dev`'s api sidecar skipped itself (non-fatally, by
+  design) and every fresh box served a UI whose every `/api/*` call failed.
+  The override now mirrors the devbox image's PATH — cargo restored, plus the
+  sbin directories the abbreviated form had also dropped — so the sidecar
+  raises the Rust api on in-box loopback as intended.
+
 - **`list_boards` no longer 500s for agents — the port's one never-executed
   query.** The agent listing's `select distinct` sorted on `b.updated_at`,
   but the boards port had replaced the raw timestamps with epoch-ms
