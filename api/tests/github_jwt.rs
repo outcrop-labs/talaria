@@ -41,6 +41,25 @@ fn rust_signs_the_pinned_bytes() {
     }
 }
 
+/// The label GitHub actually ships. App keys download from GitHub as
+/// traditional `-----BEGIN RSA PRIVATE KEY-----` (SEC1) PEMs; the fixture is
+/// PKCS#8, so a parser that reads only PKCS#8 passes this suite and fails
+/// every real key at runtime. This companion fixture is the SAME key in the
+/// traditional label (converted once, frozen with the same law as the JSON),
+/// and it must sign the SAME bytes — only the PEM label differs.
+#[test]
+fn the_label_github_ships_signs_the_same_bytes() {
+    let f: Fixture = serde_json::from_str(FIXTURE).expect("fixture parses");
+    let case = &f.cases[0];
+    let traditional = include_str!("fixtures/github-jwt-traditional.pem");
+    let jwt =
+        app_jwt_at(&case.app_id, traditional, case.now_secs).expect("the traditional label parses");
+    assert_eq!(
+        jwt, case.jwt,
+        "same key, same bytes — only the PEM label differs"
+    );
+}
+
 #[test]
 fn header_and_payload_are_the_pinned_literals() {
     let f: Fixture = serde_json::from_str(FIXTURE).expect("fixture parses");
