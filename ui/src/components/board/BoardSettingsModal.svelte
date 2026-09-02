@@ -28,6 +28,9 @@
 
   let tab = $state<Tab>('general')
   const isOwner = $derived(board.role === 'owner')
+  // The Agents tab renders read-only for viewers and carries the access
+  // request queue for editors — the policy write itself stays owner/editor.
+  const canEdit = $derived(board.role === 'owner' || board.role === 'editor')
 
   const tabs: Tab[] = ['general', 'statuses', 'labels', 'people', 'agents']
 </script>
@@ -53,5 +56,5 @@
   {#if tab === 'statuses'}<StatusesTab {board} />{/if}
   {#if tab === 'labels'}<LabelsTab {board} />{/if}
   {#if tab === 'people'}<PeopleTab {board} />{/if}
-  {#if tab === 'agents'}<AgentsTab {board} />{/if}
+  {#if tab === 'agents'}<AgentsTab {board} {canEdit} />{/if}
 </Modal>
