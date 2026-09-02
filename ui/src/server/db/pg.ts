@@ -47,6 +47,12 @@ export function getSql(): Sql {
 // inserting mid-array trips the checksum check and the app refuses to boot.
 // Each entry runs exactly once per database; DML here is a one-shot backfill,
 // not a rule that re-asserts itself on every start.
+//
+// This array is THE migration channel — schema changes AND one-time data
+// operations alike ship here as an appended statement and apply themselves at
+// the next boot. Running psql by hand on a customer database is never part of
+// a release: a repair that lived only in a shell history did not ship, and the
+// next fresh install will not have it.
 const MIGRATIONS: string[] = [
   `create table if not exists users (
      id uuid primary key default gen_random_uuid(),
