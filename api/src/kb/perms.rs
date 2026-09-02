@@ -209,10 +209,25 @@ pub fn can_edit_agent(agent_model: &str, grants: &[EditorGrant]) -> bool {
         .any(|g| g.principal_type == "agent" && g.principal_id == agent_model && g.role == "editor")
 }
 
-/// Can this agent (by model) read the item? Org/public visibility, or any grant
-/// (viewer or editor) on a private item. Mirrors can_read for humans.
-pub fn can_read_agent(item: &Guarded, agent_model: &str, grants: &[EditorGrant]) -> bool {
+/// Can this agent (by model) read the item? Org/public visibility, any grant
+/// (viewer or editor) on a private item — or, when the caller is a personal
+/// assistant, its OWNER's own read reach. That last arm is not new reach: the
+/// brain already retrieves the owner's private collection for their assistant
+/// (retrieval binds the assistant to the owner), so the file plane 403-ing the
+/// same doc was two planes disagreeing about one promise —
+/// docs/user/personal-assistant.md says "it reads your private work". The arm
+/// is `is_owner` mirrored (an ownerless item still needs a grant), and it
+/// grants READ ONLY: `can_edit_agent` below stays grant-only, deliberately.
+pub fn can_read_agent(
+    item: &Guarded,
+    agent_model: &str,
+    owner_user_id: Option<&str>,
+    grants: &[EditorGrant],
+) -> bool {
     if item.visibility != "private" {
+        return true;
+    }
+    if is_owner(item, owner_user_id, None) {
         return true;
     }
     grants
@@ -362,7 +377,7 @@ mod tests {
         // only the editor list gives them WRITE.
         let mut item = guarded("org", Some("u-1"));
         item.edit_policy = "org".into();
-        assert!(can_read_agent(&item, "opus", &[]));
+        assert!(can_read_agent(&item, "opus", None, &[]));
         assert!(!can_edit_agent("opus", &[]));
         assert!(can_edit_agent("opus", &[grant("agent", "opus", "editor")]));
         assert!(!can_edit_agent("opus", &[grant("agent", "opus", "viewer")]));
@@ -376,13 +391,31 @@ mod tests {
     #[test]
     fn agent_reads_follow_visibility_like_human_reads() {
         let private = guarded("private", Some("u-1"));
-        assert!(!can_read_agent(&private, "opus", &[]));
+        assert!(!can_read_agent(&private, "opus", None, &[]));
         assert!(can_read_agent(
             &private,
             "opus",
+            None,
             &[grant("agent", "opus", "viewer")]
         ));
         let public = guarded("public", Some("u-1"));
-        assert!(can_read_agent(&public, "opus", &[]));
+        assert!(can_read_agent(&public, "opus", None, &[]));
+    }
+
+    #[test]
+    fn an_owners_assistant_reads_their_private_items_and_only_theirs() {
+        // The inherited-permissions promise, in the plane that 403'd it: a
+        // personal assistant reads what its owner reads. The owner arm is a
+        // mirror of is_owner — the OWNER's id, never the agent's.
+        let private = guarded("private", Some("u-1"));
+        assert!(can_read_agent(&private, "opus", Some("u-1"), &[]));
+        // Another human's private item stays closed, owner or no owner.
+        assert!(!can_read_agent(&private, "opus", Some("u-2"), &[]));
+        // An ownerless (agent-created) private item has no human whose reach
+        // could be inherited — grants remain the only door.
+        let orphan = guarded("private", None);
+        assert!(!can_read_agent(&orphan, "opus", Some("u-1"), &[]));
+        // And the arm buys READ, never edit — that stays grant-only.
+        assert!(!can_edit_agent("opus", &[]));
     }
 }

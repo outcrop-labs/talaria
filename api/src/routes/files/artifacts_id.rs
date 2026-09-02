@@ -1,8 +1,9 @@
 // /api/artifacts/{id}. One artifact: read/edit gated by its audience,
 // sharing owner-only, agents (by key) only edit content when granted the
-// Editor role. The PUT is the plane's whole state machine — content edits,
-// sharing, official curation and brain routing all land here, in this
-// order.
+// Editor role — a personal assistant READS its owner's artifacts the way it
+// reads their docs (can_read_agent's owner arm), and edit stays grant-only.
+// The PUT is the plane's whole state machine — content edits, sharing,
+// official curation and brain routing all land here, in this order.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -89,13 +90,24 @@ pub async fn get(
             return thrown_internal_error();
         }
     };
-    // Agents (over MCP) read org/public artifacts + ones granted to them.
+    // Agents (over MCP) read org/public artifacts, ones granted to them, and —
+    // for a personal assistant — its owner's own (can_read_agent's owner arm).
     let reader = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     if let Some(reader) = reader {
-        if !can_read_agent(&guarded(&artifact), &reader.model, &editors) {
+        let owner =
+            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(reader.clone()))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("[artifacts] owner resolve failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        if !can_read_agent(&guarded(&artifact), &reader.model, owner.as_deref(), &editors) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         return Json(json!({ "artifact": artifact, "editors": editors_json(&editors) }))

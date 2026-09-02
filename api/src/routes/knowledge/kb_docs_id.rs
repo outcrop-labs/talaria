@@ -1,9 +1,13 @@
 // /api/kb/docs/{id}. One KB doc. Read/edit gated by the doc's EFFECTIVE
 // audience — inherited from its folder unless customized. Sharing changes are
 // owner-only; routing owner-only;
-// officializing needs kb.official. Agents (by key) only edit content when
-// they authored the doc, hold an editor grant, or are an elevated assistant
-// on non-private material — and never touch sharing, officialness or routing.
+// officializing needs kb.official. Agents (by key) read org/public, granted
+// private, and — when a personal assistant — their owner's private docs
+// (can_read_agent's owner arm: the brain already serves those, so the file
+// plane refusing them was two planes disagreeing). Agents only edit content
+// when they authored the doc, hold an editor grant, or are an elevated
+// assistant on non-private material — and never touch sharing, officialness
+// or routing.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -69,13 +73,24 @@ pub async fn get(
             return thrown_internal_error();
         }
     };
-    // Agents (over MCP) read by effective audience: org/public, or a grant.
+    // Agents (over MCP) read by effective audience: org/public, a grant — or,
+    // for a personal assistant, its owner's own read reach (can_read_agent).
     let reader = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     if let Some(reader) = reader {
-        if !can_read_agent(&eff.perms, &reader.model, &eff.grants) {
+        let owner =
+            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(reader.clone()))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("[kb] owner resolve failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        if !can_read_agent(&eff.perms, &reader.model, owner.as_deref(), &eff.grants) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         return Json(

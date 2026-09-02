@@ -1,8 +1,9 @@
 // /api/kb/spaces/{id}/docs. A space's doc tree. GET → doc metadata list
-// (agents gate on agent space-access, then per-doc audience; humans gate on
-// the folder, then inherited docs show and customized ones filter). POST →
-// new doc (agent docs are drafts owned by the assistant's principal; humans
-// create where they can read).
+// (agents gate on agent space-access — org/public, a grant, or a personal
+// assistant's owner's own reach — then per-doc audience on the same terms;
+// humans gate on the folder, then inherited docs show and customized ones
+// filter). POST → new doc (agent docs are drafts owned by the assistant's
+// principal; humans create where they can read).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -62,7 +63,22 @@ pub async fn get(
         }
     };
     if let Some(caller) = caller {
-        if !can_read_agent(&guarded_of(&space), &caller.model, &space_editors) {
+        let owner =
+            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("[kb] owner resolve failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        if !can_read_agent(
+            &guarded_of(&space),
+            &caller.model,
+            owner.as_deref(),
+            &space_editors,
+        ) {
             return Json(json!({ "docs": [] })).into_response();
         }
         let granted = match granted_item_ids_for_agent(&state.pg, "doc", &caller.model).await {
@@ -74,7 +90,11 @@ pub async fn get(
         };
         let docs: Vec<_> = docs
             .into_iter()
-            .filter(|d| d.perms_inherited || granted.contains(&d.id) || doc_readable_by_agent(d))
+            .filter(|d| {
+                d.perms_inherited
+                    || granted.contains(&d.id)
+                    || doc_readable_by_agent(d, owner.as_deref())
+            })
             .collect();
         return Json(json!({ "docs": docs })).into_response();
     }
@@ -124,10 +144,12 @@ pub async fn get(
     Json(json!({ "docs": docs })).into_response()
 }
 
-/// can_read_agent on a doc META row (no grants in hand — the granted-set
-/// check beside it covers the grant half).
-fn doc_readable_by_agent(d: &crate::kb::KbDocMeta) -> bool {
+/// can_read_agent's non-grant halves on a doc META row (no grants in hand —
+/// the granted-set check beside it covers the grant half): org/public, or a
+/// private doc the assistant's OWNER owns — the inherited-read arm.
+fn doc_readable_by_agent(d: &crate::kb::KbDocMeta, owner_user_id: Option<&str>) -> bool {
     d.visibility != "private"
+        || (owner_user_id.is_some() && d.owner_user_id.as_deref() == owner_user_id)
 }
 
 pub async fn post(
@@ -175,16 +197,12 @@ pub async fn post(
                 return thrown_internal_error();
             }
         };
-        let readable = match (&space, list_editors(&state.pg, ITEM_SPACE, &id).await) {
-            (Some(s), Ok(editors)) => can_read_agent(&guarded_of(s), &model, &editors),
-            _ => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        };
-        if !readable {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
-        }
         // A personal assistant's doc belongs to its owner — otherwise the
         // human could never re-share what their assistant wrote for them.
         // Asked with the CALLER — owner-proxying needs proven identity.
+        // Resolved once here because the READ gate below needs it too (the
+        // owner's own reach is read reach, and this POST only writes where
+        // its GET already shows docs).
         let owner =
             match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await
             {
@@ -194,6 +212,15 @@ pub async fn post(
                     return thrown_internal_error();
                 }
             };
+        let readable = match (&space, list_editors(&state.pg, ITEM_SPACE, &id).await) {
+            (Some(s), Ok(editors)) => {
+                can_read_agent(&guarded_of(s), &model, owner.as_deref(), &editors)
+            }
+            _ => return house_error(StatusCode::FORBIDDEN, "forbidden"),
+        };
+        if !readable {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
         let doc = match create_doc(
             &state.pg,
             &NewDoc {

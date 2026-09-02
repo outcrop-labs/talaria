@@ -2638,11 +2638,13 @@ mod tests {
         assert!(crate::kb::perms::can_read_agent(
             &private,
             "gregasaurus-personal",
+            None,
             &grants
         ));
         assert!(!crate::kb::perms::can_read_agent(
             &private,
             "leo-engineering",
+            None,
             &grants
         ));
     }
