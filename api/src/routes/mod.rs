@@ -1,222 +1,32 @@
 // Route handlers, and THE router — built here (not in main.rs) so integration
 // tests drive the exact same stack the process serves.
 
+pub mod account;
 pub mod activity;
-pub mod admin_apps;
-pub mod admin_domains;
-pub mod admin_email;
-pub mod admin_encryption;
-pub mod admin_google_client;
-pub mod admin_guardrails;
-pub mod admin_instance;
-pub mod admin_invites;
-pub mod admin_judge;
-pub mod admin_model_fitness;
-pub mod admin_model_roles;
-pub mod admin_outreach;
-pub mod admin_password_accounts;
-pub mod admin_permissions;
-pub mod admin_platform_agents;
-pub mod admin_rag;
-pub mod admin_search;
-pub mod admin_secrets;
-pub mod admin_settings;
-pub mod admin_storage;
-pub mod admin_users;
-pub mod admin_workspace_secrets;
-pub mod agent_gap;
-pub mod agent_media_model;
-pub mod agent_media_model_save;
-pub mod agent_message_user;
-pub mod agent_problem;
-pub mod agent_role_templates;
+pub mod admin;
 pub mod agents;
-pub mod agents_id_heartbeat;
-pub mod agents_register;
-pub mod alerts;
 pub mod apps;
-pub mod artifact_folders;
-pub mod artifact_folders_id;
-pub mod artifacts;
-pub mod artifacts_for;
-pub mod artifacts_id;
-pub mod artifacts_id_export_google;
-pub mod artifacts_id_links;
-pub mod artifacts_public_slug;
-pub mod artifacts_public_slug_download;
-pub mod auth_claim;
-pub mod auth_google;
-pub mod auth_google_callback;
-pub mod auth_logout;
-pub mod auth_password;
-pub mod auth_providers;
-pub mod auth_session;
 pub mod boards;
-pub mod boards_id;
-pub mod boards_id_agents;
-pub mod boards_id_events;
-pub mod boards_id_labels;
-pub mod boards_id_members;
-pub mod boards_id_statuses;
-pub mod boards_id_tasks;
-pub mod boards_id_templates;
-pub mod boards_id_views;
 pub mod brief;
-pub mod brief_delegate;
-pub mod brief_item;
-pub mod brief_read;
-pub mod brief_reply;
-pub mod channels;
-pub mod channels_id;
-pub mod channels_id_agents;
-pub mod channels_id_conclude;
-pub mod channels_id_events;
-pub mod channels_id_members;
-pub mod channels_id_messages;
-pub mod channels_id_messages_msgid;
-pub mod channels_id_messages_msgid_reactions;
-pub mod channels_id_plan;
-pub mod channels_id_read;
-pub mod chat;
-pub mod conversations;
-pub mod conversations_id;
-pub mod cost;
-pub mod dms;
+pub mod comms;
+pub mod files;
 pub mod fleet;
-pub mod fleet_agents_id_control;
-pub mod fleet_agents_id_crons;
-pub mod fleet_agents_id_crons_jobid;
-pub mod fleet_agents_id_secrets;
-pub mod fleet_containers;
-pub mod fleet_create;
-pub mod fleet_crons;
-pub mod fleet_defs;
-pub mod fleet_defs_id;
-pub mod fleet_defs_id_edit;
-pub mod fleet_defs_id_mcp;
-pub mod fleet_defs_id_versions;
-pub mod fleet_endpoints;
-pub mod fleet_endpoints_id;
-pub mod fleet_endpoints_id_available;
-pub mod fleet_federate;
-pub mod fleet_hires;
-pub mod fleet_reconcile;
-pub mod fleet_render;
-pub mod gaps;
-pub mod gaps_id;
-pub mod health;
-pub mod history;
-pub mod home;
-pub mod inbox_focus;
-pub mod inbox_focus_actions;
-pub mod inbox_focus_command;
-pub mod inbox_focus_conversations;
-pub mod inbox_focus_conversations_id;
-pub mod inbox_focus_state;
-pub mod inbox_focus_summary;
-pub mod inference;
-pub mod integrations_google;
-pub mod integrations_google_agent_calendar;
-pub mod integrations_google_agent_drive;
-pub mod integrations_google_agent_gmail;
-pub mod integrations_google_agent_gmail_id;
-pub mod integrations_google_agent_gmail_labels;
-pub mod integrations_google_agent_gmail_organize;
-pub mod integrations_google_calendar_events;
-pub mod integrations_google_callback;
-pub mod integrations_google_connect;
-pub mod integrations_google_drive_files;
-pub mod integrations_google_drive_import;
-pub mod integrations_google_gmail_messages;
-pub mod integrations_google_gmail_send;
-pub mod integrations_google_org;
-pub mod integrations_google_org_callback;
-pub mod integrations_google_org_connect;
-pub mod integrations_google_org_health;
-pub mod integrations_google_org_provision;
-pub mod integrations_google_pending;
-pub mod integrations_google_pending_id;
-pub mod join;
-pub mod kb_comments_id;
-pub mod kb_docs_id;
-pub mod kb_docs_id_backlinks;
-pub mod kb_docs_id_comments;
-pub mod kb_docs_id_live;
-pub mod kb_docs_id_move;
-pub mod kb_public;
-pub mod kb_public_space;
-pub mod kb_search;
-pub mod kb_spaces;
-pub mod kb_spaces_id;
-pub mod kb_spaces_id_docs;
-pub mod keys;
-pub mod keys_id;
-pub mod llm_chat;
-pub mod llm_models;
+pub mod inbox;
+pub mod integrations;
+pub mod knowledge;
+pub mod llm;
 pub mod mcp;
-pub mod mcp_gw_server;
-pub mod mcp_icon;
-pub mod mcp_library;
-pub mod mcp_oauth_callback;
-pub mod mcp_oauth_start;
-pub mod mcp_servers;
-pub mod mcp_servers_id;
-pub mod mcp_test;
-pub mod me;
-pub mod me_assistant;
-pub mod me_events;
-pub mod me_mcp;
-pub mod memory_id;
 pub mod models;
-pub mod models_efforts;
-pub mod muse;
-pub mod notifications;
-pub mod plans_id_doc;
-pub mod plans_id_draft;
-pub mod plans_id_members;
-pub mod rag_collections;
-pub mod rag_collections_id;
-pub mod rag_search;
+pub mod plans;
 pub mod research;
-pub mod research_id;
-pub mod research_id_conversation;
-pub mod research_id_decide;
-pub mod research_id_members;
-pub mod runs_events;
-pub mod search;
 pub mod secrets;
-pub mod secrets_folders;
-pub mod secrets_git_credential;
-pub mod secrets_relay;
-pub mod secrets_reveal;
-pub mod secrets_share;
-pub mod skills;
-pub mod skills_owner_name;
-pub mod tasks_id;
-pub mod tasks_id_comments;
-pub mod tasks_id_dependencies;
-pub mod tasks_id_review;
-pub mod tasks_id_usage;
-pub mod tasks_id_watchers;
+pub mod system;
+pub mod tasks;
 pub mod teams;
-pub mod teams_id;
-pub mod teams_id_members;
-pub mod templates;
-pub mod templates_id;
-pub mod uploads;
-pub mod uploads_id;
-pub mod users;
-pub mod vision_describe;
-pub mod well_known_talaria_instance;
 pub mod workbench;
-pub mod workbench_flow;
-pub mod workbench_github;
-pub mod workbench_harnesses;
-pub mod workbench_jobs;
-pub mod workbench_repo_requests;
-pub mod workbench_repos_agent_id;
-pub mod workflows;
-pub mod workflows_id;
+
+// One dir per subsystem (the docs/api group of the same name is the map).
+// Handler paths below are group-qualified — the table names the system.
 
 use crate::state::AppState;
 use axum::Router;
@@ -260,226 +70,227 @@ pub fn router(state: AppState) -> Router {
     let timed = Router::new()
         .route(
             "/api/healthz",
-            get(health::get).fallback(|| async { method_not_allowed("GET") }),
+            get(system::health::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/llm/v1/models",
-            get(llm_models::get).fallback(|| async { method_not_allowed("GET") }),
+            get(llm::llm_models::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/auth/session",
-            get(auth_session::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::auth_session::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/auth/logout",
-            post(auth_logout::post).fallback(|| async { method_not_allowed("POST") }),
+            post(account::auth_logout::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/auth/password",
-            post(auth_password::post).fallback(|| async { method_not_allowed("POST") }),
+            post(account::auth_password::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/auth/providers",
-            get(auth_providers::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::auth_providers::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/auth/claim",
-            post(auth_claim::post).fallback(|| async { method_not_allowed("POST") }),
+            post(account::auth_claim::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/auth/google",
-            get(auth_google::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::auth_google::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/auth/google/callback",
-            get(auth_google_callback::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::auth_google_callback::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/users",
-            get(users::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::users::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agents",
-            get(agents::get).fallback(|| async { method_not_allowed("GET") }),
+            get(agents::agents::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // The fleet-plane pair agents themselves call (MC-compatible):
         // register with the org key, then heartbeat for assigned work.
         .route(
             "/api/agents/register",
-            post(agents_register::post).fallback(|| async { method_not_allowed("POST") }),
+            post(agents::agents_register::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agents/{id}/heartbeat",
-            get(agents_id_heartbeat::get).fallback(|| async { method_not_allowed("GET") }),
+            get(agents::agents_id_heartbeat::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/apps",
-            get(apps::get).fallback(|| async { method_not_allowed("GET") }),
+            get(apps::apps::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/activity",
-            get(activity::get).fallback(|| async { method_not_allowed("GET") }),
+            get(activity::activity::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/models",
-            get(models::get).fallback(|| async { method_not_allowed("GET") }),
+            get(models::models::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/models/efforts",
-            get(models_efforts::get).fallback(|| async { method_not_allowed("GET") }),
+            get(models::models_efforts::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/cost",
-            get(cost::get).fallback(|| async { method_not_allowed("GET") }),
+            get(activity::cost::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/keys",
-            get(keys::get)
-                .post(keys::post)
+            get(models::keys::get)
+                .post(models::keys::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/boards",
-            get(boards::get)
-                .post(boards::post)
+            get(boards::boards::get)
+                .post(boards::boards::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/boards/{id}",
-            axum::routing::patch(boards_id::patch)
-                .delete(boards_id::delete)
+            axum::routing::patch(boards::boards_id::patch)
+                .delete(boards::boards_id::delete)
                 .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
         )
         .route(
             "/api/boards/{id}/members",
-            get(boards_id_members::get)
-                .post(boards_id_members::post)
-                .delete(boards_id_members::delete)
+            get(boards::boards_id_members::get)
+                .post(boards::boards_id_members::post)
+                .delete(boards::boards_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
         .route(
             "/api/boards/{id}/labels",
-            get(boards_id_labels::get)
-                .post(boards_id_labels::post)
-                .put(boards_id_labels::put)
-                .delete(boards_id_labels::delete)
+            get(boards::boards_id_labels::get)
+                .post(boards::boards_id_labels::post)
+                .put(boards::boards_id_labels::put)
+                .delete(boards::boards_id_labels::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
             "/api/boards/{id}/statuses",
-            get(boards_id_statuses::get)
-                .post(boards_id_statuses::post)
-                .put(boards_id_statuses::put)
-                .delete(boards_id_statuses::delete)
+            get(boards::boards_id_statuses::get)
+                .post(boards::boards_id_statuses::post)
+                .put(boards::boards_id_statuses::put)
+                .delete(boards::boards_id_statuses::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
             "/api/boards/{id}/tasks",
-            get(boards_id_tasks::get)
-                .post(boards_id_tasks::post)
+            get(boards::boards_id_tasks::get)
+                .post(boards::boards_id_tasks::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/boards/{id}/agents",
-            get(boards_id_agents::get)
-                .put(boards_id_agents::put)
+            get(boards::boards_id_agents::get)
+                .put(boards::boards_id_agents::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/boards/{id}/templates",
-            get(boards_id_templates::get)
-                .put(boards_id_templates::put)
+            get(boards::boards_id_templates::get)
+                .put(boards::boards_id_templates::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/boards/{id}/views",
-            get(boards_id_views::get)
-                .post(boards_id_views::post)
-                .put(boards_id_views::put)
-                .delete(boards_id_views::delete)
+            get(boards::boards_id_views::get)
+                .post(boards::boards_id_views::post)
+                .put(boards::boards_id_views::put)
+                .delete(boards::boards_id_views::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
             "/api/boards/{id}/events",
-            get(boards_id_events::get).fallback(|| async { method_not_allowed("GET") }),
+            get(boards::boards_id_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/tasks/{id}",
-            get(tasks_id::get)
-                .put(tasks_id::put)
-                .delete(tasks_id::delete)
+            get(tasks::tasks_id::get)
+                .put(tasks::tasks_id::put)
+                .delete(tasks::tasks_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/tasks/{id}/comments",
-            get(tasks_id_comments::get)
-                .post(tasks_id_comments::post)
+            get(tasks::tasks_id_comments::get)
+                .post(tasks::tasks_id_comments::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/tasks/{id}/dependencies",
-            axum::routing::post(tasks_id_dependencies::post)
-                .delete(tasks_id_dependencies::delete)
+            axum::routing::post(tasks::tasks_id_dependencies::post)
+                .delete(tasks::tasks_id_dependencies::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/tasks/{id}/review",
-            axum::routing::post(tasks_id_review::post)
+            axum::routing::post(tasks::tasks_id_review::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/tasks/{id}/usage",
-            get(tasks_id_usage::get)
-                .post(tasks_id_usage::post)
+            get(tasks::tasks_id_usage::get)
+                .post(tasks::tasks_id_usage::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/tasks/{id}/watchers",
-            axum::routing::post(tasks_id_watchers::post)
-                .delete(tasks_id_watchers::delete)
+            axum::routing::post(tasks::tasks_id_watchers::post)
+                .delete(tasks::tasks_id_watchers::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/keys/{id}",
-            axum::routing::delete(keys_id::delete)
-                .put(keys_id::put)
+            axum::routing::delete(models::keys_id::delete)
+                .put(models::keys_id::put)
                 .fallback(|| async { method_not_allowed("DELETE, PUT") }),
         )
         .route(
             "/api/teams",
-            get(teams::get)
-                .post(teams::post)
+            get(teams::teams::get)
+                .post(teams::teams::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/teams/{id}",
-            axum::routing::patch(teams_id::patch)
-                .delete(teams_id::delete)
+            axum::routing::patch(teams::teams_id::patch)
+                .delete(teams::teams_id::delete)
                 .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
         )
         .route(
             "/api/teams/{id}/members",
-            get(teams_id_members::get)
-                .post(teams_id_members::post)
-                .delete(teams_id_members::delete)
+            get(teams::teams_id_members::get)
+                .post(teams::teams_id_members::post)
+                .delete(teams::teams_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
         .route(
             "/api/workflows",
-            get(workflows::get)
-                .post(workflows::post)
+            get(tasks::workflows::get)
+                .post(tasks::workflows::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/notifications",
-            get(notifications::get)
-                .put(notifications::put)
-                .patch(notifications::patch)
+            get(activity::notifications::get)
+                .put(activity::notifications::put)
+                .patch(activity::notifications::patch)
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
         )
         .route(
             "/api/history",
-            get(history::get).fallback(|| async { method_not_allowed("GET") }),
+            get(activity::history::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // The comms plane: channels/relays/DMs and their messages (with edit,
         // delete, reactions, threads, read cursors), membership, fleet-agent
@@ -487,167 +298,170 @@ pub fn router(state: AppState) -> Router {
         // ({id}/events) rides the streaming stack below, like every stream.
         .route(
             "/api/channels",
-            get(channels::get)
-                .post(channels::post)
+            get(comms::channels::get)
+                .post(comms::channels::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/channels/{id}",
-            get(channels_id::get)
-                .put(channels_id::put)
-                .delete(channels_id::delete)
+            get(comms::channels_id::get)
+                .put(comms::channels_id::put)
+                .delete(comms::channels_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/channels/{id}/agents",
-            post(channels_id_agents::post)
-                .delete(channels_id_agents::delete)
+            post(comms::channels_id_agents::post)
+                .delete(comms::channels_id_agents::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/channels/{id}/conclude",
-            post(channels_id_conclude::post).fallback(|| async { method_not_allowed("POST") }),
+            post(comms::channels_id_conclude::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/channels/{id}/members",
-            post(channels_id_members::post)
-                .delete(channels_id_members::delete)
+            post(comms::channels_id_members::post)
+                .delete(comms::channels_id_members::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/channels/{id}/messages",
-            get(channels_id_messages::get)
-                .post(channels_id_messages::post)
+            get(comms::channels_id_messages::get)
+                .post(comms::channels_id_messages::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/channels/{id}/messages/{msgId}",
-            axum::routing::patch(channels_id_messages_msgid::patch)
-                .delete(channels_id_messages_msgid::delete)
+            axum::routing::patch(comms::channels_id_messages_msgid::patch)
+                .delete(comms::channels_id_messages_msgid::delete)
                 .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
         )
         .route(
             "/api/channels/{id}/messages/{msgId}/reactions",
-            post(channels_id_messages_msgid_reactions::post)
+            post(comms::channels_id_messages_msgid_reactions::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/channels/{id}/read",
-            post(channels_id_read::post).fallback(|| async { method_not_allowed("POST") }),
+            post(comms::channels_id_read::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/channels/{id}/plan",
-            get(channels_id_plan::get)
-                .post(channels_id_plan::post)
-                .patch(channels_id_plan::patch)
-                .delete(channels_id_plan::delete)
+            get(comms::channels_id_plan::get)
+                .post(comms::channels_id_plan::post)
+                .patch(comms::channels_id_plan::patch)
+                .delete(comms::channels_id_plan::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
         )
         .route(
             "/api/chat",
-            post(chat::post).fallback(|| async { method_not_allowed("POST") }),
+            post(comms::chat::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/conversations",
-            get(conversations::get).fallback(|| async { method_not_allowed("GET") }),
+            get(comms::conversations::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/conversations/{id}",
-            get(conversations_id::get)
-                .patch(conversations_id::patch)
+            get(comms::conversations_id::get)
+                .patch(comms::conversations_id::patch)
                 .fallback(|| async { method_not_allowed("GET, PATCH") }),
         )
         .route(
             "/api/dms",
-            post(dms::post).fallback(|| async { method_not_allowed("POST") }),
+            post(comms::dms::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The Inbox focus family (queue, summary, state, actions, the
         // segmented conversations). The SSE command route lives in the
         // streaming stack below.
         .route(
             "/api/inbox/focus",
-            get(inbox_focus::get).fallback(|| async { method_not_allowed("GET") }),
+            get(inbox::inbox_focus::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/inbox/focus/summary",
-            get(inbox_focus_summary::get).fallback(|| async { method_not_allowed("GET") }),
+            get(inbox::inbox_focus_summary::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/inbox/focus/state",
-            put(inbox_focus_state::put).fallback(|| async { method_not_allowed("PUT") }),
+            put(inbox::inbox_focus_state::put).fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
             "/api/inbox/focus/actions",
-            post(inbox_focus_actions::post).fallback(|| async { method_not_allowed("POST") }),
+            post(inbox::inbox_focus_actions::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/inbox/focus/conversations",
-            get(inbox_focus_conversations::get)
-                .post(inbox_focus_conversations::post)
+            get(inbox::inbox_focus_conversations::get)
+                .post(inbox::inbox_focus_conversations::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/inbox/focus/conversations/{id}",
-            get(inbox_focus_conversations_id::get)
-                .delete(inbox_focus_conversations_id::delete)
+            get(inbox::inbox_focus_conversations_id::get)
+                .delete(inbox::inbox_focus_conversations_id::delete)
                 .fallback(|| async { method_not_allowed("GET, DELETE") }),
         )
         // The brief family — the assistant's morning document, its read
         // cursor, the owner's verdict on a line, and the delegation trio.
         .route(
             "/api/brief",
-            get(brief::get).fallback(|| async { method_not_allowed("GET") }),
+            get(brief::brief::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/brief/delegate",
-            get(brief_delegate::get)
-                .post(brief_delegate::post)
+            get(brief::brief_delegate::get)
+                .post(brief::brief_delegate::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/brief/item",
-            post(brief_item::post).fallback(|| async { method_not_allowed("POST") }),
+            post(brief::brief_item::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/brief/read",
-            post(brief_read::post).fallback(|| async { method_not_allowed("POST") }),
+            post(brief::brief_read::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/brief/reply",
-            post(brief_reply::post).fallback(|| async { method_not_allowed("POST") }),
+            post(brief::brief_reply::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The secrets family — the sealed vault's six surfaces: the working
         // secrets a person saves and reads back, their folders, the one
         // reveal verb, sharing, the one-shot relay, and git's own way in.
         .route(
             "/api/secrets",
-            get(secrets::get)
-                .post(secrets::post)
-                .patch(secrets::patch)
-                .delete(secrets::delete)
+            get(secrets::secrets::get)
+                .post(secrets::secrets::post)
+                .patch(secrets::secrets::patch)
+                .delete(secrets::secrets::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
         )
         .route(
             "/api/secrets/folders",
-            get(secrets_folders::get)
-                .post(secrets_folders::post)
+            get(secrets::secrets_folders::get)
+                .post(secrets::secrets_folders::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/secrets/git-credential",
-            post(secrets_git_credential::post).fallback(|| async { method_not_allowed("POST") }),
+            post(secrets::secrets_git_credential::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/secrets/relay",
-            post(secrets_relay::post).fallback(|| async { method_not_allowed("POST") }),
+            post(secrets::secrets_relay::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/secrets/reveal",
-            post(secrets_reveal::post).fallback(|| async { method_not_allowed("POST") }),
+            post(secrets::secrets_reveal::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/secrets/share",
-            post(secrets_share::post).fallback(|| async { method_not_allowed("POST") }),
+            post(secrets::secrets_share::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The integrations/google family — the personal AND org Google planes:
         // connect/callback pairs, the org targets + provisioning + health, the
@@ -656,317 +470,323 @@ pub fn router(state: AppState) -> Router {
         // and as the agent acting for its owner or the org.
         .route(
             "/api/integrations/google",
-            get(integrations_google::get)
-                .delete(integrations_google::delete)
+            get(integrations::integrations_google::get)
+                .delete(integrations::integrations_google::delete)
                 .fallback(|| async { method_not_allowed("GET, DELETE") }),
         )
         .route(
             "/api/integrations/google/connect",
-            get(integrations_google_connect::get).fallback(|| async { method_not_allowed("GET") }),
+            get(integrations::integrations_google_connect::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/callback",
-            get(integrations_google_callback::get).fallback(|| async { method_not_allowed("GET") }),
+            get(integrations::integrations_google_callback::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/org",
-            get(integrations_google_org::get)
-                .put(integrations_google_org::put)
-                .delete(integrations_google_org::delete)
+            get(integrations::integrations_google_org::get)
+                .put(integrations::integrations_google_org::put)
+                .delete(integrations::integrations_google_org::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/integrations/google/org/connect",
-            get(integrations_google_org_connect::get)
+            get(integrations::integrations_google_org_connect::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/org/callback",
-            get(integrations_google_org_callback::get)
+            get(integrations::integrations_google_org_callback::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/org/health",
-            get(integrations_google_org_health::get)
+            get(integrations::integrations_google_org_health::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/org/provision",
-            get(integrations_google_org_provision::get)
-                .post(integrations_google_org_provision::post)
+            get(integrations::integrations_google_org_provision::get)
+                .post(integrations::integrations_google_org_provision::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/integrations/google/pending",
-            get(integrations_google_pending::get).fallback(|| async { method_not_allowed("GET") }),
+            get(integrations::integrations_google_pending::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/pending/{id}",
-            post(integrations_google_pending_id::post)
+            post(integrations::integrations_google_pending_id::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/integrations/google/calendar/events",
-            get(integrations_google_calendar_events::get)
-                .post(integrations_google_calendar_events::post)
+            get(integrations::integrations_google_calendar_events::get)
+                .post(integrations::integrations_google_calendar_events::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/integrations/google/drive/files",
-            get(integrations_google_drive_files::get)
+            get(integrations::integrations_google_drive_files::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/drive/import",
-            post(integrations_google_drive_import::post)
+            post(integrations::integrations_google_drive_import::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/integrations/google/gmail/messages",
-            get(integrations_google_gmail_messages::get)
+            get(integrations::integrations_google_gmail_messages::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/gmail/send",
-            post(integrations_google_gmail_send::post)
+            post(integrations::integrations_google_gmail_send::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/integrations/google/agent/calendar",
-            get(integrations_google_agent_calendar::get)
-                .post(integrations_google_agent_calendar::post)
+            get(integrations::integrations_google_agent_calendar::get)
+                .post(integrations::integrations_google_agent_calendar::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/integrations/google/agent/drive",
-            get(integrations_google_agent_drive::get)
+            get(integrations::integrations_google_agent_drive::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/integrations/google/agent/gmail",
-            get(integrations_google_agent_gmail::get)
-                .post(integrations_google_agent_gmail::post)
+            get(integrations::integrations_google_agent_gmail::get)
+                .post(integrations::integrations_google_agent_gmail::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/integrations/google/agent/gmail/labels",
-            get(integrations_google_agent_gmail_labels::get)
-                .post(integrations_google_agent_gmail_labels::post)
+            get(integrations::integrations_google_agent_gmail_labels::get)
+                .post(integrations::integrations_google_agent_gmail_labels::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/integrations/google/agent/gmail/organize",
-            post(integrations_google_agent_gmail_organize::post)
+            post(integrations::integrations_google_agent_gmail_organize::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/integrations/google/agent/gmail/{id}",
-            get(integrations_google_agent_gmail_id::get)
+            get(integrations::integrations_google_agent_gmail_id::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/plans/{id}/draft",
-            get(plans_id_draft::get)
-                .post(plans_id_draft::post)
-                .patch(plans_id_draft::patch)
-                .delete(plans_id_draft::delete)
+            get(plans::plans_id_draft::get)
+                .post(plans::plans_id_draft::post)
+                .patch(plans::plans_id_draft::patch)
+                .delete(plans::plans_id_draft::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
         )
         .route(
             "/api/research",
-            get(research::get)
-                .post(research::post)
+            get(research::research::get)
+                .post(research::research::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/research/{id}",
-            get(research_id::get)
-                .delete(research_id::delete)
+            get(research::research_id::get)
+                .delete(research::research_id::delete)
                 .fallback(|| async { method_not_allowed("GET, DELETE") }),
         )
         .route(
             "/api/research/{id}/members",
-            get(research_id_members::get)
-                .post(research_id_members::post)
-                .delete(research_id_members::delete)
+            get(research::research_id_members::get)
+                .post(research::research_id_members::post)
+                .delete(research::research_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
         .route(
             "/api/research/{id}/conversation",
-            post(research_id_conversation::post).fallback(|| async { method_not_allowed("POST") }),
+            post(research::research_id_conversation::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/research/{id}/decide",
-            post(research_id_decide::post).fallback(|| async { method_not_allowed("POST") }),
+            post(research::research_id_decide::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me",
-            get(me::get)
-                .put(me::put)
+            get(account::me::get)
+                .put(account::me::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workflows/{id}",
-            put(workflows_id::put)
-                .delete(workflows_id::delete)
+            put(tasks::workflows_id::put)
+                .delete(tasks::workflows_id::delete)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
             "/api/agent-role-templates",
-            get(agent_role_templates::get)
-                .put(agent_role_templates::put)
-                .delete(agent_role_templates::delete)
+            get(agents::agent_role_templates::get)
+                .put(agents::agent_role_templates::put)
+                .delete(agents::agent_role_templates::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/admin/password-accounts",
-            get(admin_password_accounts::get)
-                .post(admin_password_accounts::post)
-                .put(admin_password_accounts::put)
-                .delete(admin_password_accounts::delete)
+            get(admin::admin_password_accounts::get)
+                .post(admin::admin_password_accounts::post)
+                .put(admin::admin_password_accounts::put)
+                .delete(admin::admin_password_accounts::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
             "/api/admin/google-client",
-            get(admin_google_client::get)
-                .put(admin_google_client::put)
-                .delete(admin_google_client::delete)
+            get(admin::admin_google_client::get)
+                .put(admin::admin_google_client::put)
+                .delete(admin::admin_google_client::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/admin/google-client/login",
-            put(admin_google_client::put_login).fallback(|| async { method_not_allowed("PUT") }),
+            put(admin::admin_google_client::put_login)
+                .fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
             "/api/admin/instance",
-            get(admin_instance::get)
-                .put(admin_instance::put)
-                .post(admin_instance::post)
+            get(admin::admin_instance::get)
+                .put(admin::admin_instance::put)
+                .post(admin::admin_instance::post)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
         )
         .route(
             "/api/admin/apps",
-            get(admin_apps::get)
-                .put(admin_apps::put)
-                .post(admin_apps::post)
-                .delete(admin_apps::delete)
+            get(admin::admin_apps::get)
+                .put(admin::admin_apps::put)
+                .post(admin::admin_apps::post)
+                .delete(admin::admin_apps::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
         .route(
             "/api/admin/domains",
-            get(admin_domains::get)
-                .post(admin_domains::post)
-                .delete(admin_domains::delete)
+            get(admin::admin_domains::get)
+                .post(admin::admin_domains::post)
+                .delete(admin::admin_domains::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
         .route(
             "/api/admin/email",
-            get(admin_email::get)
-                .put(admin_email::put)
-                .post(admin_email::post)
+            get(admin::admin_email::get)
+                .put(admin::admin_email::put)
+                .post(admin::admin_email::post)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
         )
         .route(
             "/api/admin/encryption",
-            get(admin_encryption::get)
-                .post(admin_encryption::post)
+            get(admin::admin_encryption::get)
+                .post(admin::admin_encryption::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/admin/guardrails",
-            get(admin_guardrails::get)
-                .put(admin_guardrails::put)
+            get(admin::admin_guardrails::get)
+                .put(admin::admin_guardrails::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/invites",
-            get(admin_invites::get)
-                .post(admin_invites::post)
-                .delete(admin_invites::delete)
+            get(admin::admin_invites::get)
+                .post(admin::admin_invites::post)
+                .delete(admin::admin_invites::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
         .route(
             "/api/admin/judge",
-            get(admin_judge::get)
-                .put(admin_judge::put)
+            get(admin::admin_judge::get)
+                .put(admin::admin_judge::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         // The fitness plane — the probe/eval/adversarial battery over the
         // gateway's models, its run engine, and its archive.
         .route(
             "/api/admin/model-fitness",
-            get(admin_model_fitness::get)
-                .post(admin_model_fitness::post)
+            get(admin::admin_model_fitness::get)
+                .post(admin::admin_model_fitness::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/admin/outreach",
-            get(admin_outreach::get)
-                .put(admin_outreach::put)
+            get(admin::admin_outreach::get)
+                .put(admin::admin_outreach::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/platform-agents",
-            get(admin_platform_agents::get)
-                .put(admin_platform_agents::put)
+            get(admin::admin_platform_agents::get)
+                .put(admin::admin_platform_agents::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/search",
-            get(admin_search::get)
-                .put(admin_search::put)
+            get(admin::admin_search::get)
+                .put(admin::admin_search::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/secrets",
-            get(admin_secrets::get)
-                .delete(admin_secrets::delete)
+            get(admin::admin_secrets::get)
+                .delete(admin::admin_secrets::delete)
                 .fallback(|| async { method_not_allowed("GET, DELETE") }),
         )
         .route(
             "/api/admin/settings",
-            get(admin_settings::get)
-                .put(admin_settings::put)
+            get(admin::admin_settings::get)
+                .put(admin::admin_settings::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/storage",
-            get(admin_storage::get)
-                .put(admin_storage::put)
-                .post(admin_storage::post)
+            get(admin::admin_storage::get)
+                .put(admin::admin_storage::put)
+                .post(admin::admin_storage::post)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
         )
         .route(
             "/api/admin/users",
-            get(admin_users::get)
-                .put(admin_users::put)
+            get(admin::admin_users::get)
+                .put(admin::admin_users::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/workspace-secrets",
-            get(admin_workspace_secrets::get)
-                .post(admin_workspace_secrets::post)
+            get(admin::admin_workspace_secrets::get)
+                .post(admin::admin_workspace_secrets::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/admin/permissions",
-            get(admin_permissions::get)
-                .put(admin_permissions::put)
+            get(admin::admin_permissions::get)
+                .put(admin::admin_permissions::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/admin/model-roles",
-            get(admin_model_roles::get)
-                .put(admin_model_roles::put)
+            get(admin::admin_model_roles::get)
+                .put(admin::admin_model_roles::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         // The retrieval console — the route that kicks the rag-backfill and
         // rag-reindex runs and reads their projections.
         .route(
             "/api/admin/rag",
-            get(admin_rag::get)
-                .put(admin_rag::put)
-                .post(admin_rag::post)
+            get(admin::admin_rag::get)
+                .put(admin::admin_rag::put)
+                .post(admin::admin_rag::post)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
         )
         // The rag family proper: the collection registry (list/create, then
@@ -975,8 +795,8 @@ pub fn router(state: AppState) -> Router {
         // what the search resolves principals against.
         .route(
             "/api/rag/collections",
-            get(rag_collections::get)
-                .post(rag_collections::post)
+            get(knowledge::rag_collections::get)
+                .post(knowledge::rag_collections::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         // The knowledgebase plane: folders (spaces), their doc trees, the
@@ -985,67 +805,69 @@ pub fn router(state: AppState) -> Router {
         // reads. One family under /api/kb — the whole tree crossed together.
         .route(
             "/api/kb/spaces",
-            get(kb_spaces::get)
-                .post(kb_spaces::post)
+            get(knowledge::kb_spaces::get)
+                .post(knowledge::kb_spaces::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/kb/spaces/{id}",
-            get(kb_spaces_id::get)
-                .put(kb_spaces_id::put)
-                .delete(kb_spaces_id::delete)
+            get(knowledge::kb_spaces_id::get)
+                .put(knowledge::kb_spaces_id::put)
+                .delete(knowledge::kb_spaces_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/kb/spaces/{id}/docs",
-            get(kb_spaces_id_docs::get)
-                .post(kb_spaces_id_docs::post)
+            get(knowledge::kb_spaces_id_docs::get)
+                .post(knowledge::kb_spaces_id_docs::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/kb/docs/{id}",
-            get(kb_docs_id::get)
-                .put(kb_docs_id::put)
-                .delete(kb_docs_id::delete)
+            get(knowledge::kb_docs_id::get)
+                .put(knowledge::kb_docs_id::put)
+                .delete(knowledge::kb_docs_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/kb/docs/{id}/comments",
-            get(kb_docs_id_comments::get)
-                .post(kb_docs_id_comments::post)
+            get(knowledge::kb_docs_id_comments::get)
+                .post(knowledge::kb_docs_id_comments::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/kb/docs/{id}/backlinks",
-            get(kb_docs_id_backlinks::get).fallback(|| async { method_not_allowed("GET") }),
+            get(knowledge::kb_docs_id_backlinks::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/kb/docs/{id}/move",
-            post(kb_docs_id_move::post).fallback(|| async { method_not_allowed("POST") }),
+            post(knowledge::kb_docs_id_move::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/kb/docs/{id}/live",
-            get(kb_docs_id_live::get)
-                .put(kb_docs_id_live::put)
+            get(knowledge::kb_docs_id_live::get)
+                .put(knowledge::kb_docs_id_live::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/kb/comments/{id}",
-            patch(kb_comments_id::patch)
-                .delete(kb_comments_id::delete)
+            patch(knowledge::kb_comments_id::patch)
+                .delete(knowledge::kb_comments_id::delete)
                 .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
         )
         .route(
             "/api/kb/search",
-            get(kb_search::get).fallback(|| async { method_not_allowed("GET") }),
+            get(knowledge::kb_search::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/kb/public/space/{slug}",
-            get(kb_public_space::get).fallback(|| async { method_not_allowed("GET") }),
+            get(knowledge::kb_public_space::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/kb/public/{slug}",
-            get(kb_public::get).fallback(|| async { method_not_allowed("GET") }),
+            get(knowledge::kb_public::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // The artifacts plane — the Files surface. The list/create pair, one
         // artifact's whole state machine (sharing, official curation, brain
@@ -1056,71 +878,71 @@ pub fn router(state: AppState) -> Router {
         // cover '/api/artifact-folders') are separate proxy entries.
         .route(
             "/api/artifacts",
-            get(artifacts::get)
-                .post(artifacts::post)
+            get(files::artifacts::get)
+                .post(files::artifacts::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/artifacts/for",
-            get(artifacts_for::get).fallback(|| async { method_not_allowed("GET") }),
+            get(files::artifacts_for::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/artifacts/public/{slug}",
-            get(artifacts_public_slug::get).fallback(|| async { method_not_allowed("GET") }),
+            get(files::artifacts_public_slug::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/artifacts/public/{slug}/download",
-            get(artifacts_public_slug_download::get)
+            get(files::artifacts_public_slug_download::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/artifacts/{id}",
-            get(artifacts_id::get)
-                .put(artifacts_id::put)
-                .delete(artifacts_id::delete)
+            get(files::artifacts_id::get)
+                .put(files::artifacts_id::put)
+                .delete(files::artifacts_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/artifacts/{id}/links",
-            post(artifacts_id_links::post)
-                .delete(artifacts_id_links::delete)
+            post(files::artifacts_id_links::post)
+                .delete(files::artifacts_id_links::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/artifacts/{id}/export/google",
-            post(artifacts_id_export_google::post)
+            post(files::artifacts_id_export_google::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/artifact-folders",
-            get(artifact_folders::get)
-                .post(artifact_folders::post)
+            get(files::artifact_folders::get)
+                .post(files::artifact_folders::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/artifact-folders/{id}",
-            get(artifact_folders_id::get)
-                .put(artifact_folders_id::put)
-                .delete(artifact_folders_id::delete)
+            get(files::artifact_folders_id::get)
+                .put(files::artifact_folders_id::put)
+                .delete(files::artifact_folders_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/uploads",
-            post(uploads::post).fallback(|| async { method_not_allowed("POST") }),
+            post(files::uploads::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/uploads/{id}",
-            get(uploads_id::get).fallback(|| async { method_not_allowed("GET") }),
+            get(files::uploads_id::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/rag/collections/{id}",
-            axum::routing::delete(rag_collections_id::delete)
-                .put(rag_collections_id::put)
+            axum::routing::delete(knowledge::rag_collections_id::delete)
+                .put(knowledge::rag_collections_id::put)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
             "/api/rag/search",
-            post(rag_search::post).fallback(|| async { method_not_allowed("POST") }),
+            post(knowledge::rag_search::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The fleet family. The hire lifecycle (create + the hire queue),
         // the read plane (overview, containers, defs, endpoints, crons), the
@@ -1129,81 +951,83 @@ pub fn router(state: AppState) -> Router {
         // agents call themselves (register + heartbeat, registered above).
         .route(
             "/api/fleet/create",
-            post(fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/hires",
-            get(fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
+            get(fleet::fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet",
-            get(fleet::get).fallback(|| async { method_not_allowed("GET") }),
+            get(fleet::fleet::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet/containers",
-            get(fleet_containers::get).fallback(|| async { method_not_allowed("GET") }),
+            get(fleet::fleet_containers::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet/render",
-            post(fleet_render::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_render::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/reconcile",
-            post(fleet_reconcile::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_reconcile::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/federate",
-            post(fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/defs",
-            get(fleet_defs::get).fallback(|| async { method_not_allowed("GET") }),
+            get(fleet::fleet_defs::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet/endpoints",
-            get(fleet_endpoints::get)
-                .post(fleet_endpoints::post)
+            get(fleet::fleet_endpoints::get)
+                .post(fleet::fleet_endpoints::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/fleet/endpoints/{id}",
-            axum::routing::put(fleet_endpoints_id::put)
-                .delete(fleet_endpoints_id::delete)
+            axum::routing::put(fleet::fleet_endpoints_id::put)
+                .delete(fleet::fleet_endpoints_id::delete)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
             "/api/fleet/endpoints/{id}/available",
-            get(fleet_endpoints_id_available::get).fallback(|| async { method_not_allowed("GET") }),
+            get(fleet::fleet_endpoints_id_available::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet/crons",
-            get(fleet_crons::get)
-                .post(fleet_crons::post)
+            get(fleet::fleet_crons::get)
+                .post(fleet::fleet_crons::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/fleet/agents/{id}/crons",
-            get(fleet_agents_id_crons::get)
-                .post(fleet_agents_id_crons::post)
+            get(fleet::fleet_agents_id_crons::get)
+                .post(fleet::fleet_agents_id_crons::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/fleet/agents/{id}/crons/{jobId}",
-            axum::routing::delete(fleet_agents_id_crons_jobid::delete)
-                .put(fleet_agents_id_crons_jobid::put)
-                .post(fleet_agents_id_crons_jobid::post)
+            axum::routing::delete(fleet::fleet_agents_id_crons_jobid::delete)
+                .put(fleet::fleet_agents_id_crons_jobid::put)
+                .post(fleet::fleet_agents_id_crons_jobid::post)
                 .fallback(|| async { method_not_allowed("POST, PUT, DELETE") }),
         )
         .route(
             "/api/fleet/agents/{id}/secrets",
-            get(fleet_agents_id_secrets::get)
-                .put(fleet_agents_id_secrets::put)
-                .delete(fleet_agents_id_secrets::delete)
+            get(fleet::fleet_agents_id_secrets::get)
+                .put(fleet::fleet_agents_id_secrets::put)
+                .delete(fleet::fleet_agents_id_secrets::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/fleet/agents/{id}/control",
-            post(fleet_agents_id_control::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_agents_id_control::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         // The workbench family — the agent sandbox plane: the profile
         // registry (env masked for members, infra fields admin-only), the
@@ -1214,46 +1038,46 @@ pub fn router(state: AppState) -> Router {
         // -creation approval queue, and the per-agent repo grants.
         .route(
             "/api/workbench",
-            get(workbench::get)
-                .put(workbench::put)
+            get(workbench::workbench::get)
+                .put(workbench::workbench::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workbench/flow",
-            get(workbench_flow::get)
-                .put(workbench_flow::put)
+            get(workbench::workbench_flow::get)
+                .put(workbench::workbench_flow::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workbench/github",
-            get(workbench_github::get)
-                .put(workbench_github::put)
-                .delete(workbench_github::delete)
+            get(workbench::workbench_github::get)
+                .put(workbench::workbench_github::put)
+                .delete(workbench::workbench_github::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/workbench/harnesses",
-            get(workbench_harnesses::get)
-                .put(workbench_harnesses::put)
-                .delete(workbench_harnesses::delete)
+            get(workbench::workbench_harnesses::get)
+                .put(workbench::workbench_harnesses::put)
+                .delete(workbench::workbench_harnesses::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
             "/api/workbench/jobs",
-            get(workbench_jobs::get)
-                .put(workbench_jobs::put)
+            get(workbench::workbench_jobs::get)
+                .put(workbench::workbench_jobs::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workbench/repo-requests",
-            get(workbench_repo_requests::get)
-                .put(workbench_repo_requests::put)
+            get(workbench::workbench_repo_requests::get)
+                .put(workbench::workbench_repo_requests::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workbench/repos/{agentId}",
-            get(workbench_repos_agent_id::get)
-                .put(workbench_repos_agent_id::put)
+            get(workbench::workbench_repos_agent_id::get)
+                .put(workbench::workbench_repos_agent_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         // The MCP family — the registry plane: the roster read (agent wire +
@@ -1264,49 +1088,49 @@ pub fn router(state: AppState) -> Router {
         // identity is bound into the single-use state row).
         .route(
             "/api/mcp",
-            get(mcp::get).fallback(|| async { method_not_allowed("GET") }),
+            get(mcp::mcp::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/mcp/servers",
-            get(mcp_servers::get)
-                .post(mcp_servers::post)
+            get(mcp::mcp_servers::get)
+                .post(mcp::mcp_servers::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/mcp/servers/{id}",
-            put(mcp_servers_id::put)
-                .delete(mcp_servers_id::delete)
+            put(mcp::mcp_servers_id::put)
+                .delete(mcp::mcp_servers_id::delete)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
             "/api/me/mcp",
-            get(me_mcp::get)
-                .put(me_mcp::put)
+            get(account::me_mcp::get)
+                .put(account::me_mcp::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/fleet/defs/{id}/mcp",
-            post(fleet_defs_id_mcp::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_defs_id_mcp::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/mcp/library",
-            get(mcp_library::get).fallback(|| async { method_not_allowed("GET") }),
+            get(mcp::mcp_library::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/mcp/icon",
-            get(mcp_icon::get).fallback(|| async { method_not_allowed("GET") }),
+            get(mcp::mcp_icon::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/mcp/test",
-            post(mcp_test::post).fallback(|| async { method_not_allowed("POST") }),
+            post(mcp::mcp_test::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/mcp/oauth/start",
-            get(mcp_oauth_start::get).fallback(|| async { method_not_allowed("GET") }),
+            get(mcp::mcp_oauth_start::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/mcp/oauth/callback",
-            get(mcp_oauth_callback::get).fallback(|| async { method_not_allowed("GET") }),
+            get(mcp::mcp_oauth_callback::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .fallback(api_not_found)
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -1324,7 +1148,7 @@ pub fn router(state: AppState) -> Router {
     let streaming = Router::new()
         .route(
             "/api/llm/v1/chat/completions",
-            post(llm_chat::post).fallback(|| async { method_not_allowed("POST") }),
+            post(llm::llm_chat::post).fallback(|| async { method_not_allowed("POST") }),
         )
         // The two SSE attach points (realtime.ts's streams). Same stack as
         // chat: a watch stream's legitimate lifetime is the client's, not a
@@ -1332,16 +1156,16 @@ pub fn router(state: AppState) -> Router {
         // minute.
         .route(
             "/api/runs/{id}/events",
-            get(runs_events::get).fallback(|| async { method_not_allowed("GET") }),
+            get(agents::runs_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/me/events",
-            get(me_events::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::me_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // A channel's live events — the multiplayer-chat SSE stream.
         .route(
             "/api/channels/{id}/events",
-            get(channels_id_events::get).fallback(|| async { method_not_allowed("GET") }),
+            get(comms::channels_id_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // The MCP gateway — both verbs. A tools/call may legitimately hold
         // for the upstream's own 120s timeout, and the GET is a streamable-
@@ -1349,8 +1173,8 @@ pub fn router(state: AppState) -> Router {
         // belongs under the 30s layer.
         .route(
             "/api/mcp/gw/{server}",
-            post(mcp_gw_server::post)
-                .get(mcp_gw_server::get)
+            post(mcp::mcp_gw_server::post)
+                .get(mcp::mcp_gw_server::get)
                 .fallback(|| async { method_not_allowed("POST, GET") }),
         )
         // The Inbox panel's command run — named SSE events for one assistant
@@ -1358,74 +1182,77 @@ pub fn router(state: AppState) -> Router {
         // model's, and the Inbox lock rides inside the stream task.
         .route(
             "/api/inbox/focus/command",
-            post(inbox_focus_command::post).fallback(|| async { method_not_allowed("POST") }),
+            post(inbox::inbox_focus_command::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         // ── The remaining singles (R23) ────────────────────────────────────
         // The instance identity beacon, the derived-alerts read, and the
         // Studio's Suggested queue with its status verb.
         .route(
             "/api/well-known/talaria-instance",
-            get(well_known_talaria_instance::get).fallback(|| async { method_not_allowed("GET") }),
+            get(system::well_known_talaria_instance::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/alerts",
-            get(alerts::get).fallback(|| async { method_not_allowed("GET") }),
+            get(activity::alerts::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/gaps",
-            get(gaps::get).fallback(|| async { method_not_allowed("GET") }),
+            get(agents::gaps::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/gaps/{id}",
-            axum::routing::put(gaps_id::put).fallback(|| async { method_not_allowed("PUT") }),
+            axum::routing::put(agents::gaps_id::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
         )
         // Home/Today, and the public /join invite lookup (dual-counter rate
         // limited, same shape as login).
         .route(
             "/api/home",
-            get(home::get).fallback(|| async { method_not_allowed("GET") }),
+            get(activity::home::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/join",
-            get(join::get).fallback(|| async { method_not_allowed("GET") }),
+            get(account::join::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // The agent-memory surface (admin or the assistant's owner), the
         // live web-search door both agents and sessions reach, and the
         // org's template library with its one-template verbs.
         .route(
             "/api/memory/{id}",
-            get(memory_id::get)
-                .put(memory_id::put)
+            get(knowledge::memory_id::get)
+                .put(knowledge::memory_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/search",
-            post(search::post).fallback(|| async { method_not_allowed("POST") }),
+            post(knowledge::search::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/templates",
-            get(templates::get)
-                .post(templates::post)
+            get(knowledge::templates::get)
+                .post(knowledge::templates::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/templates/{id}",
-            axum::routing::put(templates_id::put)
-                .delete(templates_id::delete)
+            axum::routing::put(knowledge::templates_id::put)
+                .delete(knowledge::templates_id::delete)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         // The org's skill library: the owner index with edit flags, and the
         // one-skill verbs (rename/copy/move ride POST).
         .route(
             "/api/skills",
-            get(skills::get).fallback(|| async { method_not_allowed("GET") }),
+            get(agents::skills::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/skills/{owner}/{name}",
-            get(skills_owner_name::get)
-                .put(skills_owner_name::put)
-                .post(skills_owner_name::post)
-                .delete(skills_owner_name::delete)
+            get(agents::skills_owner_name::get)
+                .put(agents::skills_owner_name::put)
+                .post(agents::skills_owner_name::post)
+                .delete(agents::skills_owner_name::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
         // The agent surface: media reads/writes scoped by model, the two
@@ -1433,75 +1260,77 @@ pub fn router(state: AppState) -> Router {
         // message-user door.
         .route(
             "/api/agent-media/{model}",
-            get(agent_media_model::get).fallback(|| async { method_not_allowed("GET") }),
+            get(files::agent_media_model::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agent-media/{model}/save",
-            post(agent_media_model_save::post).fallback(|| async { method_not_allowed("POST") }),
+            post(files::agent_media_model_save::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/gap",
-            post(agent_gap::post).fallback(|| async { method_not_allowed("POST") }),
+            post(agents::agent_gap::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/problem",
-            post(agent_problem::post).fallback(|| async { method_not_allowed("POST") }),
+            post(agents::agent_problem::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/message-user",
-            post(agent_message_user::post).fallback(|| async { method_not_allowed("POST") }),
+            post(agents::agent_message_user::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         // The Muse, the image describer, the personal assistant, and the
         // local-inference observability plane.
         .route(
             "/api/muse",
-            post(muse::post).fallback(|| async { method_not_allowed("POST") }),
+            post(agents::muse::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/vision/describe",
-            post(vision_describe::post).fallback(|| async { method_not_allowed("POST") }),
+            post(agents::vision_describe::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me/assistant",
-            get(me_assistant::get)
-                .post(me_assistant::post)
-                .patch(me_assistant::patch)
+            get(account::me_assistant::get)
+                .post(account::me_assistant::post)
+                .patch(account::me_assistant::patch)
                 .fallback(|| async { method_not_allowed("GET, POST, PATCH") }),
         )
         .route(
             "/api/inference",
-            get(inference::get).fallback(|| async { method_not_allowed("GET") }),
+            get(models::inference::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // Multiplayer plans: the living document and the member roster.
         .route(
             "/api/plans/{id}/doc",
-            get(plans_id_doc::get)
-                .post(plans_id_doc::post)
+            get(plans::plans_id_doc::get)
+                .post(plans::plans_id_doc::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/plans/{id}/members",
-            get(plans_id_members::get)
-                .post(plans_id_members::post)
-                .put(plans_id_members::put)
-                .delete(plans_id_members::delete)
+            get(plans::plans_id_members::get)
+                .post(plans::plans_id_members::post)
+                .put(plans::plans_id_members::put)
+                .delete(plans::plans_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         // The fleet defs detail trio: identity PATCH, the versioned edit,
         // and the version history.
         .route(
             "/api/fleet/defs/{id}",
-            axum::routing::patch(fleet_defs_id::patch)
+            axum::routing::patch(fleet::fleet_defs_id::patch)
                 .fallback(|| async { method_not_allowed("PATCH") }),
         )
         .route(
             "/api/fleet/defs/{id}/edit",
-            post(fleet_defs_id_edit::post).fallback(|| async { method_not_allowed("POST") }),
+            post(fleet::fleet_defs_id_edit::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/defs/{id}/versions",
-            get(fleet_defs_id_versions::get)
-                .post(fleet_defs_id_versions::post)
+            get(fleet::fleet_defs_id_versions::get)
+                .post(fleet::fleet_defs_id_versions::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

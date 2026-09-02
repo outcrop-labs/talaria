@@ -75,7 +75,7 @@ use crate::capability_reach::{Reach, ReachVia};
 use crate::fitness::evals::{EvalCaseScore, EvalSweep, HarnessScore};
 use crate::harness::registry::{RegisteredHarness, platform_agent_of};
 use crate::harness_model::{ModelSpec, ResolveEdges, resolve_harness_model_with};
-use crate::model_roles::MODEL_ROLES;
+use crate::model::roles::MODEL_ROLES;
 use crate::platform_agents::PLATFORM_AGENTS;
 
 /// The three words the fitness matrix renders, plus the two a cell can carry
@@ -377,7 +377,7 @@ impl ResolveEdges for RefusingEdges {
         &'a self,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<Vec<crate::model_access::GatewayModel>, sqlx::Error>>
+            dyn Future<Output = Result<Vec<crate::model::access::GatewayModel>, sqlx::Error>>
                 + Send
                 + 'a,
         >,

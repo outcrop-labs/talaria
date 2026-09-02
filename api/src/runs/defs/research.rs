@@ -89,9 +89,9 @@ use crate::harness::run::{
     RunContext, RunLedger, capability_keys_for, real_deps as harness_real_deps, run_harness,
 };
 use crate::harness::transport::LedgerSource;
-use crate::kb_perms::{EditorGrant, set_editors};
-use crate::model_access::gateway_models;
-use crate::model_roles::resolve_role_model;
+use crate::kb::perms::{EditorGrant, set_editors};
+use crate::model::access::gateway_models;
+use crate::model::roles::resolve_role_model;
 use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::{index_activity, index_personal};

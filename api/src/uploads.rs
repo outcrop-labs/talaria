@@ -533,7 +533,7 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
             continue;
         };
         if let Ok(effective) = crate::kb::effective_doc_perms(pg, &doc).await
-            && crate::kb_perms::can_read(&effective.perms, Some(user_id), who, &effective.grants)
+            && crate::kb::perms::can_read(&effective.perms, Some(user_id), who, &effective.grants)
         {
             return true;
         }

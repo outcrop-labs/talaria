@@ -33,7 +33,7 @@
 
 ## `/api/agent-role-templates`
 
-Source: [`api/src/routes/agent_role_templates.rs`](../../api/src/routes/agent_role_templates.rs)
+Source: [`api/src/routes/agents/agent_role_templates.rs`](../../api/src/routes/agents/agent_role_templates.rs)
 
 > Agent role templates — the business roles a new agent can start from.
 > GET   → built-ins + the org's own (anyone who may create an agent needs it).
@@ -59,7 +59,7 @@ Source: [`api/src/routes/agent_role_templates.rs`](../../api/src/routes/agent_ro
 
 ## `/api/agent/gap`
 
-Source: [`api/src/routes/agent_gap.rs`](../../api/src/routes/agent_gap.rs)
+Source: [`api/src/routes/agents/agent_gap.rs`](../../api/src/routes/agents/agent_gap.rs)
 
 > POST — an agent reports a capability gap (the honesty loop). Deduped by
 > work-shape server-side: repeats bump seen_count, never re-notify. Lands in
@@ -80,7 +80,7 @@ Source: [`api/src/routes/agent_gap.rs`](../../api/src/routes/agent_gap.rs)
 
 ## `/api/agent/message-user`
 
-Source: [`api/src/routes/agent_message_user.rs`](../../api/src/routes/agent_message_user.rs)
+Source: [`api/src/routes/agents/agent_message_user.rs`](../../api/src/routes/agents/agent_message_user.rs)
 
 > POST (agent key) → an agent starts or continues a direct conversation with
 > a human teammate. The message lands as a normal turn in their chat with
@@ -100,7 +100,7 @@ Source: [`api/src/routes/agent_message_user.rs`](../../api/src/routes/agent_mess
 
 ## `/api/agent/problem`
 
-Source: [`api/src/routes/agent_problem.rs`](../../api/src/routes/agent_problem.rs)
+Source: [`api/src/routes/agents/agent_problem.rs`](../../api/src/routes/agents/agent_problem.rs)
 
 > POST (agent key) → an agent hit something broken it shouldn't explain to a
 > normal person. Talaria elevates it: the admins who may hear it get an alert
@@ -123,7 +123,7 @@ Source: [`api/src/routes/agent_problem.rs`](../../api/src/routes/agent_problem.r
 
 ## `/api/agents`
 
-Source: [`api/src/routes/agents.rs`](../../api/src/routes/agents.rs)
+Source: [`api/src/routes/agents/agents.rs`](../../api/src/routes/agents/agents.rs)
 
 > GET /api/agents → the fleet the current user may use (definition-backed
 > agents with their model tiers, filtered by per-agent access). Auth-gated.
@@ -134,7 +134,7 @@ Source: [`api/src/routes/agents.rs`](../../api/src/routes/agents.rs)
 
 ## `/api/agents/{id}/heartbeat`
 
-Source: [`api/src/routes/agents_id_heartbeat.rs`](../../api/src/routes/agents_id_heartbeat.rs)
+Source: [`api/src/routes/agents/agents_id_heartbeat.rs`](../../api/src/routes/agents/agents_id_heartbeat.rs)
 
 > GET /api/agents/:id/heartbeat — refresh last_seen and return the agent's
 > assigned work (tasks assigned to it, across boards). MC-compatible.
@@ -145,7 +145,7 @@ Source: [`api/src/routes/agents_id_heartbeat.rs`](../../api/src/routes/agents_id
 
 ## `/api/agents/register`
 
-Source: [`api/src/routes/agents_register.rs`](../../api/src/routes/agents_register.rs)
+Source: [`api/src/routes/agents/agents_register.rs`](../../api/src/routes/agents/agents_register.rs)
 
 > POST /api/agents/register — an agent registers with Talaria (MC-compatible
 > contract, so the existing plugin works repointed). Agent-key auth.
@@ -165,7 +165,7 @@ Source: [`api/src/routes/agents_register.rs`](../../api/src/routes/agents_regist
 
 ## `/api/gaps`
 
-Source: [`api/src/routes/gaps.rs`](../../api/src/routes/gaps.rs)
+Source: [`api/src/routes/agents/gaps.rs`](../../api/src/routes/agents/gaps.rs)
 
 > The Studio's Suggested queue: capability gaps agents have reported, ranked
 > by how often the work-shape recurs. Any member reads (the queue is what
@@ -177,7 +177,7 @@ Source: [`api/src/routes/gaps.rs`](../../api/src/routes/gaps.rs)
 
 ## `/api/gaps/{id}`
 
-Source: [`api/src/routes/gaps_id.rs`](../../api/src/routes/gaps_id.rs)
+Source: [`api/src/routes/agents/gaps_id.rs`](../../api/src/routes/agents/gaps_id.rs)
 
 > One capability gap: PUT status (open | dismissed | resolved) — agents.manage.
 > Dismissed shapes that keep recurring reopen automatically; resolved sticks.
@@ -194,7 +194,7 @@ Source: [`api/src/routes/gaps_id.rs`](../../api/src/routes/gaps_id.rs)
 
 ## `/api/muse`
 
-Source: [`api/src/routes/muse.rs`](../../api/src/routes/muse.rs)
+Source: [`api/src/routes/agents/muse.rs`](../../api/src/routes/agents/muse.rs)
 
 > POST → a validated JSON draft (cron / agent / ticket / skillForm /
 > templateForm) or a streamed document.
@@ -218,7 +218,7 @@ Source: [`api/src/routes/muse.rs`](../../api/src/routes/muse.rs)
 
 ## `/api/runs/{id}/events`
 
-Source: [`api/src/routes/runs_events.rs`](../../api/src/routes/runs_events.rs)
+Source: [`api/src/routes/agents/runs_events.rs`](../../api/src/routes/agents/runs_events.rs)
 
 > GET /api/runs/:id/events → SSE stream of one run's live transitions (state,
 > phase, terminal error). Auth-gated by the run's read ACL. This is what makes
@@ -232,7 +232,7 @@ Source: [`api/src/routes/runs_events.rs`](../../api/src/routes/runs_events.rs)
 
 ## `/api/skills`
 
-Source: [`api/src/routes/skills.rs`](../../api/src/routes/skills.rs)
+Source: [`api/src/routes/agents/skills.rs`](../../api/src/routes/agents/skills.rs)
 
 > Skills across the fleet: shared + per-agent, straight from the mounts the
 > agents actually read. Any member reads (the library grounds the Studio and
@@ -246,7 +246,7 @@ Source: [`api/src/routes/skills.rs`](../../api/src/routes/skills.rs)
 
 ## `/api/skills/{owner}/{name}`
 
-Source: [`api/src/routes/skills_owner_name.rs`](../../api/src/routes/skills_owner_name.rs)
+Source: [`api/src/routes/agents/skills_owner_name.rs`](../../api/src/routes/agents/skills_owner_name.rs)
 
 > One skill's SKILL.md. GET → content + file list (any member — the library
 > is org work material). PUT → save (creates the skill if new). DELETE →
@@ -292,7 +292,7 @@ Source: [`api/src/routes/skills_owner_name.rs`](../../api/src/routes/skills_owne
 
 ## `/api/vision/describe`
 
-Source: [`api/src/routes/vision_describe.rs`](../../api/src/routes/vision_describe.rs)
+Source: [`api/src/routes/agents/vision_describe.rs`](../../api/src/routes/agents/vision_describe.rs)
 
 > READ AN IMAGE ON BEHALF OF A MODEL THAT CANNOT — the endpoint behind the
 > `describe_image` tool.

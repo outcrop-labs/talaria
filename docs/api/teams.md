@@ -21,7 +21,7 @@
 
 ## `/api/teams`
 
-Source: [`api/src/routes/teams.rs`](../../api/src/routes/teams.rs)
+Source: [`api/src/routes/teams/teams.rs`](../../api/src/routes/teams/teams.rs)
 
 > GET → the user's teams (humans, or a personal assistant acting as its owner).
 > POST { name } → create a team (user becomes owner; humans only).
@@ -39,7 +39,7 @@ Source: [`api/src/routes/teams.rs`](../../api/src/routes/teams.rs)
 
 ## `/api/teams/{id}`
 
-Source: [`api/src/routes/teams_id.rs`](../../api/src/routes/teams_id.rs)
+Source: [`api/src/routes/teams/teams_id.rs`](../../api/src/routes/teams/teams_id.rs)
 
 > PATCH { name } → rename the team (owner). DELETE → delete it (owner); the
 > member rows cascade and its boards survive as personal boards (team_id is
@@ -59,7 +59,7 @@ Source: [`api/src/routes/teams_id.rs`](../../api/src/routes/teams_id.rs)
 
 ## `/api/teams/{id}/members`
 
-Source: [`api/src/routes/teams_id_members.rs`](../../api/src/routes/teams_id_members.rs)
+Source: [`api/src/routes/teams/teams_id_members.rs`](../../api/src/routes/teams/teams_id_members.rs)
 
 > GET → members (any member). POST { email, role } → add (owner). DELETE { userId } → remove (owner).
 

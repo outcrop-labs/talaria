@@ -26,7 +26,7 @@
 
 ## `/api/mcp`
 
-Source: [`api/src/routes/mcp.rs`](../../api/src/routes/mcp.rs)
+Source: [`api/src/routes/mcp/mcp.rs`](../../api/src/routes/mcp/mcp.rs)
 
 > MCP servers per agent: the agent's own config version PLUS the org
 > registry's assignments (rendered in at deploy — marked 'managed' here so
@@ -55,7 +55,7 @@ Source: [`ui/src/routes/api/mcp.gw.$server.ts`](../../ui/src/routes/api/mcp.gw.$
 
 ## `/api/mcp/icon`
 
-Source: [`api/src/routes/mcp_icon.rs`](../../api/src/routes/mcp_icon.rs)
+Source: [`api/src/routes/mcp/mcp_icon.rs`](../../api/src/routes/mcp/mcp_icon.rs)
 
 > FALLBACK marketplace icons: the publisher's favicon, proxied + cached
 > server-side (warmed in bulk when library pages are served). Registry-
@@ -67,7 +67,7 @@ Source: [`api/src/routes/mcp_icon.rs`](../../api/src/routes/mcp_icon.rs)
 
 ## `/api/mcp/library`
 
-Source: [`api/src/routes/mcp_library.rs`](../../api/src/routes/mcp_library.rs)
+Source: [`api/src/routes/mcp/mcp_library.rs`](../../api/src/routes/mcp/mcp_library.rs)
 
 > GET ?q= → the MCP server library (the official registry, live, filtered to
 > remote-capable servers). Backs the Add-server picker.
@@ -78,7 +78,7 @@ Source: [`api/src/routes/mcp_library.rs`](../../api/src/routes/mcp_library.rs)
 
 ## `/api/mcp/oauth/callback`
 
-Source: [`api/src/routes/mcp_oauth_callback.rs`](../../api/src/routes/mcp_oauth_callback.rs)
+Source: [`api/src/routes/mcp/mcp_oauth_callback.rs`](../../api/src/routes/mcp/mcp_oauth_callback.rs)
 
 > The OAuth redirect target. No session requirement — identity was bound to
 > the state row when the flow started; the state is single-use and expiring.
@@ -89,7 +89,7 @@ Source: [`api/src/routes/mcp_oauth_callback.rs`](../../api/src/routes/mcp_oauth_
 
 ## `/api/mcp/oauth/start`
 
-Source: [`api/src/routes/mcp_oauth_start.rs`](../../api/src/routes/mcp_oauth_start.rs)
+Source: [`api/src/routes/mcp/mcp_oauth_start.rs`](../../api/src/routes/mcp/mcp_oauth_start.rs)
 
 > GET ?server=<id>&scope=org|me → 302 into the provider's authorization page.
 > scope=org (one shared connection) needs agents.manage; scope=me connects
@@ -101,7 +101,7 @@ Source: [`api/src/routes/mcp_oauth_start.rs`](../../api/src/routes/mcp_oauth_sta
 
 ## `/api/mcp/servers`
 
-Source: [`api/src/routes/mcp_servers.rs`](../../api/src/routes/mcp_servers.rs)
+Source: [`api/src/routes/mcp/mcp_servers.rs`](../../api/src/routes/mcp/mcp_servers.rs)
 
 > The org MCP registry. GET → servers + their assignments + user access
 > (admin/agents.manage view). POST → register a server. Every mutation
@@ -128,7 +128,7 @@ Source: [`api/src/routes/mcp_servers.rs`](../../api/src/routes/mcp_servers.rs)
 
 ## `/api/mcp/servers/{id}`
 
-Source: [`api/src/routes/mcp_servers_id.rs`](../../api/src/routes/mcp_servers_id.rs)
+Source: [`api/src/routes/mcp/mcp_servers_id.rs`](../../api/src/routes/mcp/mcp_servers_id.rs)
 
 > One registry server: PUT patches config / assignment / user access / tool
 > refresh in one idempotent surface; DELETE unregisters (assignments, user
@@ -159,7 +159,7 @@ Source: [`api/src/routes/mcp_servers_id.rs`](../../api/src/routes/mcp_servers_id
 
 ## `/api/mcp/test`
 
-Source: [`api/src/routes/mcp_test.rs`](../../api/src/routes/mcp_test.rs)
+Source: [`api/src/routes/mcp/mcp_test.rs`](../../api/src/routes/mcp/mcp_test.rs)
 
 > POST → probe an MCP server's reachability + auth state (admin only; it makes
 > an outbound request to an admin-supplied URL).

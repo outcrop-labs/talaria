@@ -12,8 +12,8 @@
 use serde_json::Value;
 
 use crate::artifacts::{artifact_to_markdown, get_artifact};
+use crate::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
 use crate::kb::{effective_doc_perms, get_doc};
-use crate::kb_perms::{ITEM_ARTIFACT, can_read, list_editors};
 
 /// A ref as the request names it (refs.ts MessageRef).
 #[derive(Debug, Clone)]

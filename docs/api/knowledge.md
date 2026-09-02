@@ -47,7 +47,7 @@
 
 ## `/api/kb/comments/{id}`
 
-Source: [`api/src/routes/kb_comments_id.rs`](../../api/src/routes/kb_comments_id.rs)
+Source: [`api/src/routes/knowledge/kb_comments_id.rs`](../../api/src/routes/knowledge/kb_comments_id.rs)
 
 > One comment. PATCH { resolved } → resolve/unresolve its thread (author,
 > thread starter, or doc owner). DELETE → remove your own comment.
@@ -65,7 +65,7 @@ Source: [`api/src/routes/kb_comments_id.rs`](../../api/src/routes/kb_comments_id
 
 ## `/api/kb/docs/{id}`
 
-Source: [`api/src/routes/kb_docs_id.rs`](../../api/src/routes/kb_docs_id.rs)
+Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledge/kb_docs_id.rs)
 
 > One KB doc. Read/edit are gated by the doc's EFFECTIVE audience — inherited
 > from its folder unless the doc has been customized. Sharing changes are
@@ -95,7 +95,7 @@ Source: [`api/src/routes/kb_docs_id.rs`](../../api/src/routes/kb_docs_id.rs)
 
 ## `/api/kb/docs/{id}/backlinks`
 
-Source: [`api/src/routes/kb_docs_id_backlinks.rs`](../../api/src/routes/kb_docs_id_backlinks.rs)
+Source: [`api/src/routes/knowledge/kb_docs_id_backlinks.rs`](../../api/src/routes/knowledge/kb_docs_id_backlinks.rs)
 
 > Docs that link to this one ("linked from"). Editor links point at
 > /knowledge/<id>, so backlinks fall out of a substring match. Gated by the
@@ -107,7 +107,7 @@ Source: [`api/src/routes/kb_docs_id_backlinks.rs`](../../api/src/routes/kb_docs_
 
 ## `/api/kb/docs/{id}/comments`
 
-Source: [`api/src/routes/kb_docs_id_comments.rs`](../../api/src/routes/kb_docs_id_comments.rs)
+Source: [`api/src/routes/knowledge/kb_docs_id_comments.rs`](../../api/src/routes/knowledge/kb_docs_id_comments.rs)
 
 > Doc comment threads. GET → all comments (client assembles threads).
 > POST { content, parentId?, quote? } → comment/reply. Read access to the doc
@@ -128,7 +128,7 @@ Source: [`api/src/routes/kb_docs_id_comments.rs`](../../api/src/routes/kb_docs_i
 
 ## `/api/kb/docs/{id}/live`
 
-Source: [`api/src/routes/kb_docs_id_live.rs`](../../api/src/routes/kb_docs_id_live.rs)
+Source: [`api/src/routes/knowledge/kb_docs_id_live.rs`](../../api/src/routes/knowledge/kb_docs_id_live.rs)
 
 > Doc presence (the multiplayer layer's heartbeat). PUT { mode } → I'm here,
 > viewing or editing. GET → who's here right now, with their mode — the doc
@@ -147,7 +147,7 @@ Source: [`api/src/routes/kb_docs_id_live.rs`](../../api/src/routes/kb_docs_id_li
 
 ## `/api/kb/docs/{id}/move`
 
-Source: [`api/src/routes/kb_docs_id_move.rs`](../../api/src/routes/kb_docs_id_move.rs)
+Source: [`api/src/routes/knowledge/kb_docs_id_move.rs`](../../api/src/routes/knowledge/kb_docs_id_move.rs)
 
 > Reparent / reorder a doc in the sidebar tree. Rejects cycles server-side.
 > Moving a doc is an edit of it, so it takes the same gate the PUT does —
@@ -167,7 +167,7 @@ Source: [`api/src/routes/kb_docs_id_move.rs`](../../api/src/routes/kb_docs_id_mo
 
 ## `/api/kb/public/{slug}`
 
-Source: [`api/src/routes/kb_public.rs`](../../api/src/routes/kb_public.rs)
+Source: [`api/src/routes/knowledge/kb_public.rs`](../../api/src/routes/knowledge/kb_public.rs)
 
 > Public doc read — no auth. Only docs with visibility 'public' resolve.
 
@@ -177,7 +177,7 @@ Source: [`api/src/routes/kb_public.rs`](../../api/src/routes/kb_public.rs)
 
 ## `/api/kb/public/space/{slug}`
 
-Source: [`api/src/routes/kb_public_space.rs`](../../api/src/routes/kb_public_space.rs)
+Source: [`api/src/routes/knowledge/kb_public_space.rs`](../../api/src/routes/knowledge/kb_public_space.rs)
 
 > Public folder read — no auth. Only spaces with visibility 'public' resolve;
 > returns the folder's name + overview (its body), like a public doc.
@@ -188,7 +188,7 @@ Source: [`api/src/routes/kb_public_space.rs`](../../api/src/routes/kb_public_spa
 
 ## `/api/kb/search`
 
-Source: [`api/src/routes/kb_search.rs`](../../api/src/routes/kb_search.rs)
+Source: [`api/src/routes/knowledge/kb_search.rs`](../../api/src/routes/knowledge/kb_search.rs)
 
 > Full-text search across the knowledgebase (docs the caller can read).
 
@@ -198,7 +198,7 @@ Source: [`api/src/routes/kb_search.rs`](../../api/src/routes/kb_search.rs)
 
 ## `/api/kb/spaces`
 
-Source: [`api/src/routes/kb_spaces.rs`](../../api/src/routes/kb_spaces.rs)
+Source: [`api/src/routes/knowledge/kb_spaces.rs`](../../api/src/routes/knowledge/kb_spaces.rs)
 
 > KB spaces (any member). GET → all. POST → create.
 
@@ -217,7 +217,7 @@ Source: [`api/src/routes/kb_spaces.rs`](../../api/src/routes/kb_spaces.rs)
 
 ## `/api/kb/spaces/{id}`
 
-Source: [`api/src/routes/kb_spaces_id.rs`](../../api/src/routes/kb_spaces_id.rs)
+Source: [`api/src/routes/knowledge/kb_spaces_id.rs`](../../api/src/routes/knowledge/kb_spaces_id.rs)
 
 > One KB folder (space). Same permission model as docs: read gated by
 > visibility, writes by the edit policy + editor grants, sharing owner-only.
@@ -242,7 +242,7 @@ Source: [`api/src/routes/kb_spaces_id.rs`](../../api/src/routes/kb_spaces_id.rs)
 
 ## `/api/kb/spaces/{id}/docs`
 
-Source: [`api/src/routes/kb_spaces_id_docs.rs`](../../api/src/routes/kb_spaces_id_docs.rs)
+Source: [`api/src/routes/knowledge/kb_spaces_id_docs.rs`](../../api/src/routes/knowledge/kb_spaces_id_docs.rs)
 
 > A space's docs (tree). GET → doc metadata list. POST → new doc.
 
@@ -262,7 +262,7 @@ Source: [`api/src/routes/kb_spaces_id_docs.rs`](../../api/src/routes/kb_spaces_i
 
 ## `/api/memory/{id}`
 
-Source: [`api/src/routes/memory_id.rs`](../../api/src/routes/memory_id.rs)
+Source: [`api/src/routes/knowledge/memory_id.rs`](../../api/src/routes/knowledge/memory_id.rs)
 
 > One managed agent's MEMORY.md, read/written through its running container.
 > Writes: admin, or the owner of a personal assistant for its own memory.
@@ -280,7 +280,7 @@ Source: [`api/src/routes/memory_id.rs`](../../api/src/routes/memory_id.rs)
 
 ## `/api/rag/collections`
 
-Source: [`api/src/routes/rag_collections.rs`](../../api/src/routes/rag_collections.rs)
+Source: [`api/src/routes/knowledge/rag_collections.rs`](../../api/src/routes/knowledge/rag_collections.rs)
 
 > The RAG collection registry (admin). GET → all collections + bindings (the two
 > auto ones are ensured first). POST → spin up a new custom collection.
@@ -300,7 +300,7 @@ Source: [`api/src/routes/rag_collections.rs`](../../api/src/routes/rag_collectio
 
 ## `/api/rag/collections/{id}`
 
-Source: [`api/src/routes/rag_collections_id.rs`](../../api/src/routes/rag_collections_id.rs)
+Source: [`api/src/routes/knowledge/rag_collections_id.rs`](../../api/src/routes/knowledge/rag_collections_id.rs)
 
 > One collection (admin). PUT → set its access bindings. DELETE → drop it (auto
 > collections are protected).
@@ -318,7 +318,7 @@ Source: [`api/src/routes/rag_collections_id.rs`](../../api/src/routes/rag_collec
 
 ## `/api/rag/search`
 
-Source: [`api/src/routes/rag_search.rs`](../../api/src/routes/rag_search.rs)
+Source: [`api/src/routes/knowledge/rag_search.rs`](../../api/src/routes/knowledge/rag_search.rs)
 
 > Ranked retrieval across the caller's accessible collections. Works for a
 > signed-in user (their bindings) OR a fleet agent (agent-key + x-agent-name →
@@ -339,7 +339,7 @@ Source: [`api/src/routes/rag_search.rs`](../../api/src/routes/rag_search.rs)
 
 ## `/api/search`
 
-Source: [`api/src/routes/search.rs`](../../api/src/routes/search.rs)
+Source: [`api/src/routes/knowledge/search.rs`](../../api/src/routes/knowledge/search.rs)
 
 > LIVE WEB SEARCH — the endpoint behind the `web_search` MCP tool, and the one
 > place an agent or a signed-in user reaches this deployment's search.
@@ -360,7 +360,7 @@ Source: [`api/src/routes/search.rs`](../../api/src/routes/search.rs)
 
 ## `/api/templates`
 
-Source: [`api/src/routes/templates.rs`](../../api/src/routes/templates.rs)
+Source: [`api/src/routes/knowledge/templates.rs`](../../api/src/routes/knowledge/templates.rs)
 
 > The org's template library (ticket + plan formats). GET → all (any member —
 > the library grounds pickers everywhere). POST → create (any member, like
@@ -382,7 +382,7 @@ Source: [`api/src/routes/templates.rs`](../../api/src/routes/templates.rs)
 
 ## `/api/templates/{id}`
 
-Source: [`api/src/routes/templates_id.rs`](../../api/src/routes/templates_id.rs)
+Source: [`api/src/routes/knowledge/templates_id.rs`](../../api/src/routes/knowledge/templates_id.rs)
 
 > One template: PUT → edit (kind is immutable — retire and recreate instead),
 > DELETE → remove (bindings cascade/null out; consumers fall through the chain).

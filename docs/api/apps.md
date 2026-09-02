@@ -16,7 +16,7 @@
 
 ## `/api/apps`
 
-Source: [`api/src/routes/apps.rs`](../../api/src/routes/apps.rs)
+Source: [`api/src/routes/apps/apps.rs`](../../api/src/routes/apps/apps.rs)
 
 > The signed-in view of installed apps: ENABLED apps only, manifest data the
 > client needs to draw nav items, routes, and settings tabs. Per-user view

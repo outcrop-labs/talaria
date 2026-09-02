@@ -20,7 +20,7 @@
 
 ## `/api/llm/v1/chat/completions`
 
-Source: [`api/src/routes/llm_chat.rs`](../../api/src/routes/llm_chat.rs)
+Source: [`api/src/routes/llm/llm_chat.rs`](../../api/src/routes/llm/llm_chat.rs)
 
 > OpenAI-compatible chat completions — the wire external tools speak.
 > Auth is a personal gateway API key (Bearer), not a session.
@@ -31,7 +31,7 @@ Source: [`api/src/routes/llm_chat.rs`](../../api/src/routes/llm_chat.rs)
 
 ## `/api/llm/v1/models`
 
-Source: [`api/src/routes/llm_models.rs`](../../api/src/routes/llm_models.rs)
+Source: [`api/src/routes/llm/llm_models.rs`](../../api/src/routes/llm/llm_models.rs)
 
 > OpenAI-compatible model list for the Talaria LLM gateway. External tools
 > point at base_url http://<talaria>/api/llm/v1 with a minted tlk_ key.

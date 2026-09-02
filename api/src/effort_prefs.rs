@@ -81,7 +81,7 @@ pub async fn set_effort_pref(
 /// preference. Never fails — this exists to improve a turn, not to gate one.
 pub async fn slot_effort_for_model(pg: &PgPool, slot: &str, model: &str) -> Option<String> {
     let stored = get_effort_prefs(pg).await.get(slot)?.as_str()?.to_string();
-    let levels = crate::model_efforts::efforts_for_model(pg, model).await;
+    let levels = crate::model::efforts::efforts_for_model(pg, model).await;
     levels.contains(&stored).then_some(stored)
 }
 

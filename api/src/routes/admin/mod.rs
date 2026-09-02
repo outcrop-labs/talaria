@@ -1,0 +1,23 @@
+// The admin console surface.
+pub mod admin_apps;
+pub mod admin_domains;
+pub mod admin_email;
+pub mod admin_encryption;
+pub mod admin_google_client;
+pub mod admin_guardrails;
+pub mod admin_instance;
+pub mod admin_invites;
+pub mod admin_judge;
+pub mod admin_model_fitness;
+pub mod admin_model_roles;
+pub mod admin_outreach;
+pub mod admin_password_accounts;
+pub mod admin_permissions;
+pub mod admin_platform_agents;
+pub mod admin_rag;
+pub mod admin_search;
+pub mod admin_secrets;
+pub mod admin_settings;
+pub mod admin_storage;
+pub mod admin_users;
+pub mod admin_workspace_secrets;

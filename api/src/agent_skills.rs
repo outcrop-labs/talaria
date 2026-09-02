@@ -17,7 +17,6 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 use sqlx::PgPool;
 
-use crate::fleet_layout;
 use crate::internal_history::snapshot;
 use crate::state::AppState;
 
@@ -35,12 +34,12 @@ fn name_ok(name: &str) -> bool {
 
 /// The shared root every agent in the fleet mounts at /opt/skills.
 pub fn shared_skill_root() -> PathBuf {
-    fleet_layout::fleet_dir().join("skills")
+    crate::fleet::layout::fleet_dir().join("skills")
 }
 
 /// An agent's own root, mounted at /opt/dept-skills.
 pub fn agent_skill_root(slug: &str) -> PathBuf {
-    fleet_layout::fleet_dir()
+    crate::fleet::layout::fleet_dir()
         .join("agents")
         .join(slug)
         .join("skills")
@@ -616,7 +615,7 @@ mod tests {
 
     #[test]
     fn the_two_roots_match_the_container_mounts() {
-        let fleet = fleet_layout::fleet_dir();
+        let fleet = crate::fleet::layout::fleet_dir();
         assert_eq!(shared_skill_root(), fleet.join("skills"));
         assert_eq!(
             agent_skill_root("analyst"),

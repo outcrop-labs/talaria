@@ -31,7 +31,7 @@
 
 ## `/api/auth/claim`
 
-Source: [`api/src/routes/auth_claim.rs`](../../api/src/routes/auth_claim.rs)
+Source: [`api/src/routes/account/auth_claim.rs`](../../api/src/routes/account/auth_claim.rs)
 
 > POST /api/auth/claim { email, password, name? } → the FIRST admin.
 >
@@ -53,7 +53,7 @@ Source: [`api/src/routes/auth_claim.rs`](../../api/src/routes/auth_claim.rs)
 
 ## `/api/auth/google`
 
-Source: [`api/src/routes/auth_google.rs`](../../api/src/routes/auth_google.rs)
+Source: [`api/src/routes/account/auth_google.rs`](../../api/src/routes/account/auth_google.rs)
 
 > GET /api/auth/google → begin the OAuth dance: set a signed state cookie and
 > 302 to Google's consent screen.
@@ -64,7 +64,7 @@ Source: [`api/src/routes/auth_google.rs`](../../api/src/routes/auth_google.rs)
 
 ## `/api/auth/google/callback`
 
-Source: [`api/src/routes/auth_google_callback.rs`](../../api/src/routes/auth_google_callback.rs)
+Source: [`api/src/routes/account/auth_google_callback.rs`](../../api/src/routes/account/auth_google_callback.rs)
 
 > GET /api/auth/google/callback → verify state, exchange the code, mint the
 > session, and land on the cockpit.
@@ -75,7 +75,7 @@ Source: [`api/src/routes/auth_google_callback.rs`](../../api/src/routes/auth_goo
 
 ## `/api/auth/logout`
 
-Source: [`api/src/routes/auth_logout.rs`](../../api/src/routes/auth_logout.rs)
+Source: [`api/src/routes/account/auth_logout.rs`](../../api/src/routes/account/auth_logout.rs)
 
 > POST /api/auth/logout → delete the Redis session + clear the cookie.
 
@@ -85,7 +85,7 @@ Source: [`api/src/routes/auth_logout.rs`](../../api/src/routes/auth_logout.rs)
 
 ## `/api/auth/password`
 
-Source: [`api/src/routes/auth_password.rs`](../../api/src/routes/auth_password.rs)
+Source: [`api/src/routes/account/auth_password.rs`](../../api/src/routes/account/auth_password.rs)
 
 > POST /api/auth/password { username, password } → sets the session cookie.
 > Credentials live in user_password_credentials (Admin → People); the provider
@@ -105,7 +105,7 @@ Source: [`api/src/routes/auth_password.rs`](../../api/src/routes/auth_password.r
 
 ## `/api/auth/providers`
 
-Source: [`api/src/routes/auth_providers.rs`](../../api/src/routes/auth_providers.rs)
+Source: [`api/src/routes/account/auth_providers.rs`](../../api/src/routes/account/auth_providers.rs)
 
 > GET /api/auth/providers → the providers the login screen should render, and
 > whether the instance is still UNCLAIMED. Everything is computed live:
@@ -119,7 +119,7 @@ Source: [`api/src/routes/auth_providers.rs`](../../api/src/routes/auth_providers
 
 ## `/api/auth/session`
 
-Source: [`api/src/routes/auth_session.rs`](../../api/src/routes/auth_session.rs)
+Source: [`api/src/routes/account/auth_session.rs`](../../api/src/routes/account/auth_session.rs)
 
 > GET /api/auth/session → the current user + their denied views + effective
 > permissions (read from the DB each time, so an admin's access change
@@ -131,7 +131,7 @@ Source: [`api/src/routes/auth_session.rs`](../../api/src/routes/auth_session.rs)
 
 ## `/api/join`
 
-Source: [`api/src/routes/join.rs`](../../api/src/routes/join.rs)
+Source: [`api/src/routes/account/join.rs`](../../api/src/routes/account/join.rs)
 
 > Public invite lookup for the /join page: token → who's invited, by whom,
 > to which org. Rate-limited; expired/revoked/accepted tokens read as gone.
@@ -142,7 +142,7 @@ Source: [`api/src/routes/join.rs`](../../api/src/routes/join.rs)
 
 ## `/api/me`
 
-Source: [`api/src/routes/me.rs`](../../api/src/routes/me.rs)
+Source: [`api/src/routes/account/me.rs`](../../api/src/routes/account/me.rs)
 
 > The signed-in user's profile. GET → preferences (preferred model, preferred
 > effort, timezone). PUT { name?, preferredModel?, preferredEffort?,
@@ -161,7 +161,7 @@ Body schema `z.object({ name: z.string().min(1).max(80).optional(), preferredMod
 
 ## `/api/me/assistant`
 
-Source: [`api/src/routes/me_assistant.rs`](../../api/src/routes/me_assistant.rs)
+Source: [`api/src/routes/account/me_assistant.rs`](../../api/src/routes/account/me_assistant.rs)
 
 > The signed-in user's personal assistant. GET → theirs (or null), with
 > personality + live status. POST → create + start one, optionally named/
@@ -189,7 +189,7 @@ Body schema `z.object({ name: Name.optional(), handle: Handle.optional(), person
 
 ## `/api/me/events`
 
-Source: [`api/src/routes/me_events.rs`](../../api/src/routes/me_events.rs)
+Source: [`api/src/routes/account/me_events.rs`](../../api/src/routes/account/me_events.rs)
 
 > GET /api/me/events → SSE stream of THIS person's own firehose: their runs
 > changing state, their notifications landing, their brief being appended to.
@@ -203,7 +203,7 @@ Source: [`api/src/routes/me_events.rs`](../../api/src/routes/me_events.rs)
 
 ## `/api/me/mcp`
 
-Source: [`api/src/routes/me_mcp.rs`](../../api/src/routes/me_mcp.rs)
+Source: [`api/src/routes/account/me_mcp.rs`](../../api/src/routes/account/me_mcp.rs)
 
 > Connected accounts (Settings → Connections): per-user MCP servers and
 > whether YOU have connected yours. PUT { serverId, headers } connects
@@ -225,7 +225,7 @@ Source: [`api/src/routes/me_mcp.rs`](../../api/src/routes/me_mcp.rs)
 
 ## `/api/users`
 
-Source: [`api/src/routes/users.rs`](../../api/src/routes/users.rs)
+Source: [`api/src/routes/account/users.rs`](../../api/src/routes/account/users.rs)
 
 > GET /api/users → everyone who has signed in (id, email, name). Powers the
 > people pickers (board sharing, teams, channels). Any signed-in user — and

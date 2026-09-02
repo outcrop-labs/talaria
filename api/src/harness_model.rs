@@ -14,10 +14,10 @@
 // A deleted model can never silently break a subsystem — the harness falls to
 // the next step instead.
 
-use crate::model_access::{
+use crate::model::access::{
     GatewayModel, gateway_models, member_model_allowlist, model_allowed_for,
 };
-use crate::model_roles::resolve_role_model;
+use crate::model::roles::resolve_role_model;
 use crate::platform_agents::platform_agent_model;
 use crate::users::{get_preferred_model, get_user_role};
 use sqlx::PgPool;

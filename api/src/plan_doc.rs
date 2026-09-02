@@ -21,7 +21,7 @@ use crate::fleet::describe_agent;
 use crate::harness::defs::plan_doc::{PlanDocInput, plan_doc_harness, plan_doc_regression};
 use crate::harness::run::{HarnessError, RunContext, RunLedger, run_harness};
 use crate::harness::transport::LedgerSource;
-use crate::kb_perms::{EditorGrant, can_read, list_editors, set_editors};
+use crate::kb::perms::{EditorGrant, can_read, list_editors, set_editors};
 use crate::mentions::{Mentionee, notify_mentions};
 use crate::notify::NotifyDeps;
 use crate::state::AppState;

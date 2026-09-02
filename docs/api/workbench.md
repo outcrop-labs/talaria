@@ -30,7 +30,7 @@
 
 ## `/api/workbench`
 
-Source: [`api/src/routes/workbench.rs`](../../api/src/routes/workbench.rs)
+Source: [`api/src/routes/workbench/workbench.rs`](../../api/src/routes/workbench/workbench.rs)
 
 > Workbench profiles — the role-agnostic sandbox registry ('dev' seeded;
 > designer/data/etc ride the same table). GET → any member (the Studio and
@@ -58,7 +58,7 @@ Source: [`api/src/routes/workbench.rs`](../../api/src/routes/workbench.rs)
 
 ## `/api/workbench/flow`
 
-Source: [`api/src/routes/workbench_flow.rs`](../../api/src/routes/workbench_flow.rs)
+Source: [`api/src/routes/workbench/workbench_flow.rs`](../../api/src/routes/workbench/workbench_flow.rs)
 
 > Per-repo git flow (PR base + optional testing branch). GET → configured
 > flows + the reachable pool; PUT → set one repo's flow. agents.manage.
@@ -78,7 +78,7 @@ Source: [`api/src/routes/workbench_flow.rs`](../../api/src/routes/workbench_flow
 
 ## `/api/workbench/github`
 
-Source: [`api/src/routes/workbench_github.rs`](../../api/src/routes/workbench_github.rs)
+Source: [`api/src/routes/workbench/workbench_github.rs`](../../api/src/routes/workbench/workbench_github.rs)
 
 > The Workbench's GitHub connection. Deliberately requireAdmin (not
 > agents.manage): this holds ORG CREDENTIALS (PAT / App private key) — a
@@ -103,7 +103,7 @@ Source: [`api/src/routes/workbench_github.rs`](../../api/src/routes/workbench_gi
 
 ## `/api/workbench/harnesses`
 
-Source: [`api/src/routes/workbench_harnesses.rs`](../../api/src/routes/workbench_harnesses.rs)
+Source: [`api/src/routes/workbench/workbench_harnesses.rs`](../../api/src/routes/workbench/workbench_harnesses.rs)
 
 > The harness registry. GET → merged definitions with sources (any member —
 > grounds the per-agent dropdowns). PUT → register/replace a CUSTOM
@@ -135,7 +135,7 @@ Source: [`api/src/routes/workbench_harnesses.rs`](../../api/src/routes/workbench
 
 ## `/api/workbench/jobs`
 
-Source: [`api/src/routes/workbench_jobs.rs`](../../api/src/routes/workbench_jobs.rs)
+Source: [`api/src/routes/workbench/workbench_jobs.rs`](../../api/src/routes/workbench/workbench_jobs.rs)
 
 > Workbench jobs from the human side. GET ?taskId= → the ticket's jobs (board
 > members — this is how the plan-approval gate and PR links surface on the
@@ -157,7 +157,7 @@ Source: [`api/src/routes/workbench_jobs.rs`](../../api/src/routes/workbench_jobs
 
 ## `/api/workbench/repo-requests`
 
-Source: [`api/src/routes/workbench_repo_requests.rs`](../../api/src/routes/workbench_repo_requests.rs)
+Source: [`api/src/routes/workbench/workbench_repo_requests.rs`](../../api/src/routes/workbench/workbench_repo_requests.rs)
 
 > Agent repo-creation requests. GET → pending queue; PUT → approve (creates
 > the repo via the App, auto-grants it to the requester) or reject. Admin —
@@ -177,7 +177,7 @@ Source: [`api/src/routes/workbench_repo_requests.rs`](../../api/src/routes/workb
 
 ## `/api/workbench/repos/{agentId}`
 
-Source: [`api/src/routes/workbench_repos_agent_id.rs`](../../api/src/routes/workbench_repos_agent_id.rs)
+Source: [`api/src/routes/workbench/workbench_repos_agent_id.rs`](../../api/src/routes/workbench/workbench_repos_agent_id.rs)
 
 > Per-agent workbench repo grants — explicit, like MCP assignment. GET →
 > the connection's reachable pool + this agent's grants; PUT → replace the

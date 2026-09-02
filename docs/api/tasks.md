@@ -30,7 +30,7 @@
 
 ## `/api/tasks/{id}`
 
-Source: [`api/src/routes/tasks_id.rs`](../../api/src/routes/tasks_id.rs)
+Source: [`api/src/routes/tasks/tasks_id.rs`](../../api/src/routes/tasks/tasks_id.rs)
 
 > One ticket. GET → full detail (task, comments, attachments, refs,
 > workflows). PUT → update; agents may triage but cannot self-assign or
@@ -68,7 +68,7 @@ Source: [`api/src/routes/tasks_id.rs`](../../api/src/routes/tasks_id.rs)
 
 ## `/api/tasks/{id}/comments`
 
-Source: [`api/src/routes/tasks_id_comments.rs`](../../api/src/routes/tasks_id_comments.rs)
+Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks/tasks_id_comments.rs)
 
 > GET → a task's comments (board member or board-allowed agent).
 > POST → add a comment (member or agent).
@@ -87,7 +87,7 @@ Source: [`api/src/routes/tasks_id_comments.rs`](../../api/src/routes/tasks_id_co
 
 ## `/api/tasks/{id}/dependencies`
 
-Source: [`api/src/routes/tasks_id_dependencies.rs`](../../api/src/routes/tasks_id_dependencies.rs)
+Source: [`api/src/routes/tasks/tasks_id_dependencies.rs`](../../api/src/routes/tasks/tasks_id_dependencies.rs)
 
 > POST { dependsOnId } → this ticket is blocked by another. DELETE → remove.
 > Editors or board-allowed agents may add (part of triage); removal is human-only.
@@ -112,7 +112,7 @@ Source: [`api/src/routes/tasks_id_dependencies.rs`](../../api/src/routes/tasks_i
 
 ## `/api/tasks/{id}/review`
 
-Source: [`api/src/routes/tasks_id_review.rs`](../../api/src/routes/tasks_id_review.rs)
+Source: [`api/src/routes/tasks/tasks_id_review.rs`](../../api/src/routes/tasks/tasks_id_review.rs)
 
 > POST /api/tasks/:id/review — the human quality gate. Approve moves the task to
 > the board's done column; reject sends it back to the board's first working
@@ -131,7 +131,7 @@ Source: [`api/src/routes/tasks_id_review.rs`](../../api/src/routes/tasks_id_revi
 
 ## `/api/tasks/{id}/usage`
 
-Source: [`api/src/routes/tasks_id_usage.rs`](../../api/src/routes/tasks_id_usage.rs)
+Source: [`api/src/routes/tasks/tasks_id_usage.rs`](../../api/src/routes/tasks/tasks_id_usage.rs)
 
 > Per-ticket token spend. POST (agents, via MCP log_usage): report tokens
 > burned working this ticket — attributed to the agent's serving endpoint and
@@ -153,7 +153,7 @@ Source: [`api/src/routes/tasks_id_usage.rs`](../../api/src/routes/tasks_id_usage
 
 ## `/api/tasks/{id}/watchers`
 
-Source: [`api/src/routes/tasks_id_watchers.rs`](../../api/src/routes/tasks_id_watchers.rs)
+Source: [`api/src/routes/tasks/tasks_id_watchers.rs`](../../api/src/routes/tasks/tasks_id_watchers.rs)
 
 > POST { watcher } → follow. DELETE { watcher } → unfollow.
 >
@@ -180,7 +180,7 @@ Source: [`api/src/routes/tasks_id_watchers.rs`](../../api/src/routes/tasks_id_wa
 
 ## `/api/workflows`
 
-Source: [`api/src/routes/workflows.rs`](../../api/src/routes/workflows.rs)
+Source: [`api/src/routes/tasks/workflows.rs`](../../api/src/routes/tasks/workflows.rs)
 
 > Task workflows — match rules classify tickets; the payload (bound Hermes
 > skills + declared toolkits) rides with dispatched/picked-up work. GET → all (any
@@ -203,7 +203,7 @@ Source: [`api/src/routes/workflows.rs`](../../api/src/routes/workflows.rs)
 
 ## `/api/workflows/{id}`
 
-Source: [`api/src/routes/workflows_id.rs`](../../api/src/routes/workflows_id.rs)
+Source: [`api/src/routes/tasks/workflows_id.rs`](../../api/src/routes/tasks/workflows_id.rs)
 
 > One task workflow: PUT patch, DELETE remove — both agents.manage.
 

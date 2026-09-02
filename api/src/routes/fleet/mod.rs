@@ -1,0 +1,21 @@
+// The agent fleet: defs, versions, crons, secrets, containers, hires, render/reconcile.
+pub mod fleet;
+pub mod fleet_agents_id_control;
+pub mod fleet_agents_id_crons;
+pub mod fleet_agents_id_crons_jobid;
+pub mod fleet_agents_id_secrets;
+pub mod fleet_containers;
+pub mod fleet_create;
+pub mod fleet_crons;
+pub mod fleet_defs;
+pub mod fleet_defs_id;
+pub mod fleet_defs_id_edit;
+pub mod fleet_defs_id_mcp;
+pub mod fleet_defs_id_versions;
+pub mod fleet_endpoints;
+pub mod fleet_endpoints_id;
+pub mod fleet_endpoints_id_available;
+pub mod fleet_federate;
+pub mod fleet_hires;
+pub mod fleet_reconcile;
+pub mod fleet_render;

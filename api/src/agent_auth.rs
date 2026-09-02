@@ -470,7 +470,7 @@ fn warn_legacy(model: &str) {
 pub fn legacy_usage() -> Vec<LegacySighting> {
     let seen = LEGACY_SEEN.lock().expect("legacy sightings");
     let mut out: Vec<LegacySighting> = seen.values().cloned().collect();
-    out.sort_by(|a, b| crate::model_access::collating_cmp(&a.model, &b.model));
+    out.sort_by(|a, b| crate::model::access::collating_cmp(&a.model, &b.model));
     out
 }
 

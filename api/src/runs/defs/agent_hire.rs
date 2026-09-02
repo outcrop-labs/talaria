@@ -27,7 +27,7 @@
 // idempotent by nature (they rewrite/re-up the same files).
 //
 // THE REAL DEPS ARE THE FLEET WRITE PLANE, and every edge of it has crossed:
-// createAgent (fleet_create::create_or_resume), writeSkill, renderFleet,
+// createAgent (crate::fleet::create::create_or_resume), writeSkill, renderFleet,
 // fleetUp/waitHealthy. `real_agent_hire_deps` wires them below, and
 // `jobs.rs`'s `try_arm` arms the step and touches the getter in the same
 // slice the flip's kind guard stops naming agent-hire as missing — an
@@ -315,9 +315,9 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
             Arc::new(move |input: AgentHireInput| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let created = crate::fleet_create::create_or_resume(
+                    let created = crate::fleet::create::create_or_resume(
                         &pg,
-                        &crate::fleet_create::CreateAgentInput {
+                        &crate::fleet::create::CreateAgentInput {
                             slug: input.slug,
                             department: input.department,
                             display_name: input.display_name,
@@ -402,7 +402,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                     // post-arm failure surfaces through the render's own error
                     // path rather than a poisoned closure.
                     let sb = st.secretbox().await.unwrap_or_default();
-                    let out = crate::fleet_render::render_fleet(&st.pg, &sb, None).await?;
+                    let out = crate::fleet::render::render_fleet(&st.pg, &sb, None).await?;
                     Ok(RenderOutcome {
                         warnings: out.warnings,
                     })
@@ -416,7 +416,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                 Box::pin(async move {
                     // fleetUp answers with the compose service it brought up;
                     // the run doesn't read it — the promise IS the effect.
-                    crate::fleet_docker::fleet_up(&pg, &department)
+                    crate::fleet::docker::fleet_up(&pg, &department)
                         .await
                         .map(|_| ())
                 })
@@ -429,7 +429,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                 Box::pin(async move {
                     // TS's default window: two minutes, enough for a cold
                     // pull's healthcheck to settle.
-                    crate::fleet_docker::wait_healthy(&pg, &department, 120_000).await
+                    crate::fleet::docker::wait_healthy(&pg, &department, 120_000).await
                 })
             })
         },

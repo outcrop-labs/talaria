@@ -20,7 +20,7 @@
 
 ## `/api/brief`
 
-Source: [`api/src/routes/brief.rs`](../../api/src/routes/brief.rs)
+Source: [`api/src/routes/brief/brief.rs`](../../api/src/routes/brief/brief.rs)
 
 > The caller's daily brief — the assistant-assembled digest of what needs
 > them. GET sweeps-if-due, then returns the current brief.
@@ -31,7 +31,7 @@ Source: [`api/src/routes/brief.rs`](../../api/src/routes/brief.rs)
 
 ## `/api/brief/delegate`
 
-Source: [`api/src/routes/brief_delegate.rs`](../../api/src/routes/brief_delegate.rs)
+Source: [`api/src/routes/brief/brief_delegate.rs`](../../api/src/routes/brief/brief_delegate.rs)
 
 > Grant or revoke the assistant's reply-without-asking privilege, org-wide
 > (null) or for one channel. Owner-only by construction: not a Perm, and no
@@ -51,7 +51,7 @@ Source: [`api/src/routes/brief_delegate.rs`](../../api/src/routes/brief_delegate
 
 ## `/api/brief/item`
 
-Source: [`api/src/routes/brief_item.rs`](../../api/src/routes/brief_item.rs)
+Source: [`api/src/routes/brief/brief_item.rs`](../../api/src/routes/brief/brief_item.rs)
 
 > Check off, dismiss, or restore one brief item. The reader's timezone
 > rides along so the change lands on the brief they are looking at.
@@ -70,7 +70,7 @@ Source: [`api/src/routes/brief_item.rs`](../../api/src/routes/brief_item.rs)
 
 ## `/api/brief/read`
 
-Source: [`api/src/routes/brief_read.rs`](../../api/src/routes/brief_read.rs)
+Source: [`api/src/routes/brief/brief_read.rs`](../../api/src/routes/brief/brief_read.rs)
 
 > Move the brief reader's cursor — the only mutation this surface exposes.
 
@@ -87,7 +87,7 @@ Source: [`api/src/routes/brief_read.rs`](../../api/src/routes/brief_read.rs)
 
 ## `/api/brief/reply`
 
-Source: [`api/src/routes/brief_reply.rs`](../../api/src/routes/brief_reply.rs)
+Source: [`api/src/routes/brief/brief_reply.rs`](../../api/src/routes/brief/brief_reply.rs)
 
 > Approve or reject a reply the assistant drafted — send it, or discard it.
 

@@ -952,7 +952,7 @@ pub struct SweepStart {
 pub struct SurfaceDeps {
     /// The gateway catalog: every callable id, bare and endpoint-qualified.
     pub models: Arc<
-        dyn Fn() -> BoxFut<Result<Vec<crate::model_access::GatewayModel>, String>> + Send + Sync,
+        dyn Fn() -> BoxFut<Result<Vec<crate::model::access::GatewayModel>, String>> + Send + Sync,
     >,
     /// Where a model id CAN land, with prices. Used for the estimate only.
     pub routing: Arc<
@@ -1139,7 +1139,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move || {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::model_access::gateway_models(&pg)
+                    crate::model::access::gateway_models(&pg)
                         .await
                         .map_err(|e| e.to_string())
                 })
@@ -1643,11 +1643,11 @@ pub fn supplied_by(
 /// in either case it is the one that named its endpoint.
 pub fn canonical_index(
     index: &FitnessIndex,
-    catalog: &[crate::model_access::GatewayModel],
+    catalog: &[crate::model::access::GatewayModel],
 ) -> FitnessIndex {
     let mut out: FitnessIndex = FitnessIndex::new();
     for (model, entry) in index {
-        let id = crate::model_access::canonical_model_id(model, catalog);
+        let id = crate::model::access::canonical_model_id(model, catalog);
         // `entry.model` KEEPS THE STORED SPELLING while the KEY becomes the
         // canonical one, and the distinction is load-bearing rather than tidy.
         // Re-keying the index moves where the page LOOKS a model up; it does
@@ -3047,7 +3047,7 @@ pub async fn read_index_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String
     // `canonical_index` on raw values — same two passes, same comment.
     let mut out = serde_json::Map::new();
     for (model, entry) in &stored {
-        let id = crate::model_access::canonical_model_id(model, &catalog);
+        let id = crate::model::access::canonical_model_id(model, &catalog);
         if id == *model || !out.contains_key(&id) {
             out.insert(id, entry.clone());
         }
@@ -3976,7 +3976,7 @@ mod tests {
     use crate::harness::run::BoxFut;
     use crate::harness::schema::Schema;
     use crate::harness_model::ModelSpec;
-    use crate::model_access::GatewayModel;
+    use crate::model::access::GatewayModel;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::{Arc, LazyLock, Mutex};

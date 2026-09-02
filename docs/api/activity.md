@@ -22,7 +22,7 @@
 
 ## `/api/activity`
 
-Source: [`api/src/routes/activity.rs`](../../api/src/routes/activity.rs)
+Source: [`api/src/routes/activity/activity.rs`](../../api/src/routes/activity/activity.rs)
 
 > The merged workspace activity feed, scoped to the requesting user.
 
@@ -32,7 +32,7 @@ Source: [`api/src/routes/activity.rs`](../../api/src/routes/activity.rs)
 
 ## `/api/alerts`
 
-Source: [`api/src/routes/alerts.rs`](../../api/src/routes/alerts.rs)
+Source: [`api/src/routes/activity/alerts.rs`](../../api/src/routes/activity/alerts.rs)
 
 > Derived system alerts (no persistence) for the requesting user.
 
@@ -42,7 +42,7 @@ Source: [`api/src/routes/alerts.rs`](../../api/src/routes/alerts.rs)
 
 ## `/api/cost`
 
-Source: [`api/src/routes/cost.rs`](../../api/src/routes/cost.rs)
+Source: [`api/src/routes/activity/cost.rs`](../../api/src/routes/activity/cost.rs)
 
 > GET /api/cost → the token ledger overview (totals, per-agent, per-day).
 > Org-wide financials: admins + people granted the Observability view.
@@ -53,7 +53,7 @@ Source: [`api/src/routes/cost.rs`](../../api/src/routes/cost.rs)
 
 ## `/api/history`
 
-Source: [`api/src/routes/history.rs`](../../api/src/routes/history.rs)
+Source: [`api/src/routes/activity/history.rs`](../../api/src/routes/activity/history.rs)
 
 > Version history for agent internals (one API over two stores), KB docs,
 > artifacts, and agent-def versions. GET lists; ?id= returns one revision.
@@ -64,7 +64,7 @@ Source: [`api/src/routes/history.rs`](../../api/src/routes/history.rs)
 
 ## `/api/home`
 
-Source: [`api/src/routes/home.rs`](../../api/src/routes/home.rs)
+Source: [`api/src/routes/activity/home.rs`](../../api/src/routes/activity/home.rs)
 
 > The Home/Today summary for the signed-in user.
 
@@ -74,7 +74,7 @@ Source: [`api/src/routes/home.rs`](../../api/src/routes/home.rs)
 
 ## `/api/notifications`
 
-Source: [`api/src/routes/notifications.rs`](../../api/src/routes/notifications.rs)
+Source: [`api/src/routes/activity/notifications.rs`](../../api/src/routes/activity/notifications.rs)
 
 > The caller's notifications: list, unread count, mark-read, and their
 > settings. Delivery-channel config is admin-gated.

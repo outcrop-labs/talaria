@@ -111,7 +111,7 @@ use crate::harness::transport::{
     offers_tool_definitions, persona_probe_turn,
 };
 use crate::harness_model::ModelSpec;
-use crate::model_catalog::advertised_window;
+use crate::model::catalog::advertised_window;
 use crate::persona::persona_capability_keys;
 use crate::price_oracle::TokPrice;
 use crate::safe_fetch::{SafeFetch, safe_fetch};

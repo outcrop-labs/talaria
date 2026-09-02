@@ -1899,7 +1899,7 @@ use crate::harness::transport::{
     ToolCall, ToolDefinition, ToolPolicy, TransportKind, TransportReply, TransportRequest,
     gateway_tools_refusal, gateway_transport, tool_call_id_of, tool_policy_of,
 };
-use crate::mcp_registry::call_mcp_tool;
+use crate::mcp::registry::call_mcp_tool;
 use crate::native_search::{harvest_sources, native_search_body};
 use crate::search::real_deps;
 use crate::state::AppState;

@@ -16,10 +16,9 @@ use crate::agent_defs::{
     AgentDefRow, ConfigEdits, ModelTarget, add_version_if_changed, apply_config_edits,
     list_versions,
 };
-use crate::fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
-use crate::fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
-use crate::fleet_layout;
-use crate::fleet_render::render_fleet;
+use crate::fleet::create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
+use crate::fleet::docker::{container_status, fleet_restart, fleet_up, wait_healthy};
+use crate::fleet::render::render_fleet;
 use crate::kb::sync_user_private_docs;
 use crate::retrieval::collections::ensure_personal_collection;
 use crate::retrieval::{embed, qdrant};
@@ -440,8 +439,12 @@ async fn rename_agent_slug(
     let new_model = format!("{new_slug}-{}", def.department);
     ensure_agent_key(new_slug).await?;
     // Created agents keep their skills under fleet/agents/<slug>/ — carry them.
-    let from = fleet_layout::fleet_dir().join("agents").join(&def.slug);
-    let to = fleet_layout::fleet_dir().join("agents").join(new_slug);
+    let from = crate::fleet::layout::fleet_dir()
+        .join("agents")
+        .join(&def.slug);
+    let to = crate::fleet::layout::fleet_dir()
+        .join("agents")
+        .join(new_slug);
     let _ = tokio::fs::rename(&from, &to).await;
     for (sql, bind) in [
         (
