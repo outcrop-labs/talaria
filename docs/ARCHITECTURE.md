@@ -117,12 +117,18 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
 
 - **Postgres — no ORM.** The api issues sqlx runtime queries; the TS residents' slice uses
   `postgres.js` tagged-template `sql` fragments.
-- **Schema migrations, append-only by contract.** Ownership is sqlx's: the TS `MIGRATIONS`
-  array in `db/pg.ts` is FROZEN — it still applies (lazily on first query, once per
-  statement ever, under an advisory lock) but never grows — and new migrations are sqlx's
-  (`api/src/db.rs`: the same per-statement sha256 bookkeeping, the same advisory lock,
-  each statement committing with its own bookkeeping row). An entry's index is its
-  identity; inserting mid-array trips a checksum and the boot refuses. Bring the
+- **Schema migrations, append-only by contract.** One channel: the TS `MIGRATIONS` array in
+  `db/pg.ts` owns every schema change AND every one-time data operation — schema changes
+  and one-shot repairs alike ship as appended statements and apply themselves at the next
+  boot (eagerly in server-entry, before the api spawns; lazily on first query as backstop),
+  once per statement ever, under advisory lock `8_314_207`, each statement committing with
+  its own sha256 bookkeeping row. An entry's index is its identity; inserting mid-array or
+  editing an applied statement trips a checksum and the boot refuses. The Rust api owns
+  zero DDL by law (`api/src/db.rs`). CI replays the whole array against a scratch
+  postgres:16 and diffs the result against the committed schema snapshot
+  (`migrations.yml`; `ui/src/server/db/schema.snapshot.sql`), and the invariant check
+  demands a `-- deliberate:` marker on any statement that can destroy or rewrite data.
+  Running psql by hand on a customer database is never part of a release. Bring the
   containers up before the app.
 - **Wire numerics arrive as strings** (`numeric`, `int8`) — read them through `PgNumeric` /
   `pgNum`, don't `Number()` blind.

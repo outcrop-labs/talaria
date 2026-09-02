@@ -370,8 +370,23 @@ Updates are a redeploy — `docker compose ... up -d --build`,
 `bun talaria deploy update` on a checkout host (it pulls with `--ff-only`
 first and prints each command it runs), or an API call
 through the orchestrator. Migrations run as the server boots (expect a minute
-of downtime on schema changes; the health
-check covers the window).
+of downtime on schema changes; the health check covers the window — a FAILED
+pass reports `migrations: !ok` on `/api/healthz` and flips the container
+unhealthy, instead of a green container whose table queries all 500).
+
+**There is no manual post-deploy step, ever.** Every schema change and every
+one-time data operation (a backfill, a watermark reset, a repair) ships as an
+appended statement in the `MIGRATIONS` array (`ui/src/server/db/pg.ts`) and
+applies itself on the next boot, exactly once per database, under an advisory
+lock. A fix that lived only in someone's shell history did not ship: the next
+fresh install won't have it. Two gates keep a bad migration out: CI
+(`migrations.yml`) replays the whole array against a scratch
+`postgres:16-alpine` and diffs the resulting schema against the committed
+snapshot (`ui/src/server/db/schema.snapshot.sql` — regenerate with
+`cd ui && bun run migrations:snapshot`; the diff in the PR is the schema
+change, in review form), and the invariant check refuses any statement that
+can destroy or rewrite data (drop table, truncate, unscoped delete/update, …)
+unless it carries an inline `-- deliberate: <why>` comment.
 
 Installing an app from the marketplace clones it into
 `/var/lib/talaria/apps/`, but apps *compile into the image* at build time

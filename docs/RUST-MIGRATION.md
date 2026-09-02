@@ -42,15 +42,19 @@ toolchain (`docker/devbox.Dockerfile`, pinned like `api/rust-toolchain.toml`).
 
 ## The rules
 
-1. **sqlx owns the schema.** Migrations are append-only, sha256-checksummed
-   per statement under advisory lock `8_314_207`, committed with their
-   bookkeeping row in one per-statement transaction; the `schema_migrations`
-   shape predates the api (integer id + checksum of the whitespace-collapsed
-   statement, applied per-STATEMENT) and is kept so pre-port databases keep
-   booting. Growth-only: a different checksum at an applied id refuses to boot,
-   and that refusal is the guard working. Runtime queries only — no `query!`
-   macros: every devbox has its own database, and compile-time checking would
-   couple the build to one schema.
+1. **The schema is owned by the TS `MIGRATIONS` array — the api issues no DDL.**
+   Migrations are append-only, sha256-checksummed per statement under advisory
+   lock `8_314_207`, committed with their bookkeeping row in one per-statement
+   transaction; the `schema_migrations` shape predates the api (integer id +
+   checksum of the whitespace-collapsed statement, applied per-STATEMENT) and
+   is kept so pre-port databases keep booting. Growth-only: a different
+   checksum at an applied id refuses to boot, and that refusal is the guard
+   working. (An earlier revision of this rule said the array was frozen and
+   sqlx would own new migrations — that was never implemented; the array
+   stayed live through the cutover and remains the single channel for schema
+   changes and one-time data operations alike. See `api/src/db.rs`.) Runtime
+   queries only — no `query!` macros: every devbox has its own database, and
+   compile-time checking would couple the build to one schema.
 2. **One origin, no fallback.** The api serves a prefix or nothing: if it is
    down, the hop answers 502 `upstream unreachable`. Silent fallback is the
    failure mode this shape refuses.
