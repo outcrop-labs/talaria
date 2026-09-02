@@ -79,6 +79,13 @@ AUTH_SECRET=${rand(32)}
 # can decrypt data seeded from this one.
 TALARIA_SECRET_KEY=${rand(32)}
 
+# The Rust api — the backend since the cutover. The app proxies every /api/*
+# request to this loopback address; \`talaria dev\` and the production
+# server-entry bring the api up there themselves. (The proxy assumes this
+# default even unset — set this only to move the target; \`off\` stands the
+# hop down entirely.)
+TALARIA_RUST_API_URL=http://127.0.0.1:5274
+
 # Sign-in: a fresh install has no users. The first visit to the app offers the
 # claim screen — the account you create there becomes the admin, and further
 # accounts are managed in the app (Admin → People).

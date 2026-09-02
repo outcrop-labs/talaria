@@ -67,10 +67,12 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
 
   const port = ctx.env.TALARIA_API_PORT ?? '5274'
   const url = `http://127.0.0.1:${port}`
-  if (!envValue(uiEnv, 'TALARIA_RUST_API_URL')) {
-    ctx.log.warn(
-      `TALARIA_RUST_API_URL is not set in ui/.env — the app will not proxy to the Rust api on :${port}.`,
-    )
+  // The proxy defaults to exactly this loopback address, but lift the env
+  // anyway when nothing else names it (the shell first, then ui/.env — the
+  // S3 lift's precedence) so a custom TALARIA_API_PORT reaches the vite
+  // child, and so `talaria dev` never depends on the default being right.
+  if (!ctx.env.TALARIA_RUST_API_URL && !envValue(uiEnv, 'TALARIA_RUST_API_URL')) {
+    ctx.env.TALARIA_RUST_API_URL = url
   }
 
   if (await probe(url) !== null) {

@@ -1,34 +1,36 @@
 # The Rust port
 
-The API is moving from TypeScript to Rust: `ui/src/server` + `ui/src/routes/api`
-(~80k LOC, 219 routes) port in dependency order to the `api/` crate (axum, sqlx,
-redis-rs, hand-rolled reqwest clients), until the TS API is deleted. The scope is
-the BACKEND and nothing else — the SvelteKit server keeps serving the SPA, its
-pages and their routing exactly as it does today; the port ends with Rust owning
-every `/api/*` route, SSE and the scheduler, not with a rewrite of the product
-and not with Rust hosting the UI.
+The API moved from TypeScript to Rust: `ui/src/server` + `ui/src/routes/api`
+(~80k LOC, 219 routes) ported in dependency order to the `api/` crate (axum,
+sqlx, redis-rs, hand-rolled reqwest clients), until the TS API was deleted.
+The scope was the BACKEND and nothing else — the SvelteKit server keeps
+serving the SPA, its pages and their routing exactly as it did before; the port
+ended with Rust owning every `/api/*` route, SSE and the scheduler, not with a
+rewrite of the product and not with Rust hosting the UI.
 
-This is a **wholesale port, not a strangler-fig forever**: nothing is live and
-there are no clients, which is the one window where the whole backend can change
-shape. The coexistence proxy below exists so the app keeps working while the port
-grinds — at cutover the TS API route table behind it is deleted, but the hop
-itself is the end-state architecture, not scaffolding: the SvelteKit server stays
-the one public origin and hands `/api/*` to Rust on loopback, which is what
-keeps the cookies same-origin (rule 7).
+This was a **wholesale port, not a strangler-fig forever**: nothing was live and
+there were no clients, which was the one window where the whole backend could
+change shape. The coexistence proxy below existed so the app kept working while
+the port ground on — at cutover the TS API route table behind it was deleted,
+but the hop itself is the end-state architecture, not scaffolding: the
+SvelteKit server stays the one public origin and hands `/api/*` to Rust on
+loopback, which is what keeps the cookies same-origin (rule 7).
 
 ## Where it stands
 
-Merged to main 2026-09-01 (`7a9497f3`, PR #290). **216 of 219 TS route files
-serve from Rust** in any proxied environment; the three residents are
-permanent (`admin/update`, the rule-10 app dispatch, `healthz`). The parity
-battery — 370 route pairs diffed byte-for-byte against the TS oracle on the
-shared dev DB — closed with every pair either byte-identical or recorded
-under divergences below. The scheduler flip is armed in dev
-(`TALARIA_SCHEDULER=rust`): the whole job table runs from `api/src/jobs.rs`
-while TS's `startScheduler` stands down. Schema ownership is sqlx's (batch 4);
-the TS `MIGRATIONS` array is frozen. What remains is the cutover row below —
-deleting the TS API — and `update-check`'s apply half, which waits on the
-two-artifact restart topology.
+**The port is done and the cutover has landed** (2026-09-01, `c12fed52`,
+PR #292; the port itself merged as `7a9497f3`, PR #290). The TS route table is
+deleted — 216 route files came down — and the Rust api owns every `/api/*`
+route outright. Four residents stay TS, permanent by rule: `admin/update`,
+the rule-10 app dispatch (`/api/apps/…` and the app-MCP gateway branch),
+and `healthz`. The parity battery — 370 route pairs diffed byte-for-byte
+against the TS oracle on the shared dev DB before each side came down —
+closed with every pair either byte-identical or recorded under divergences
+below. The scheduler arms from the api by default (the coexistence-era
+`TALARIA_SCHEDULER=rust` handoff value is retired and reads as unset); schema
+ownership is sqlx's (batch 4), and the TS `MIGRATIONS` array is frozen.
+What remains is `update-check`'s apply half, which waits on the two-artifact
+restart topology (its HOLD is documented at the top of `api/src/jobs.rs`).
 
 When this page and the source disagree, the source wins.
 
@@ -99,22 +101,29 @@ runtimes at once, not just the one being edited.
    coexists with (never replaces) the TS default. Rule 2's
    one-runtime-per-group governs the host's routes, never app-owned code.
 
-## How coexistence works
+## How coexistence worked
 
 `ui/src/server/rust-proxy.ts` is the switch. A compiled `PREFIXES` list, checked
 at the top of `app.ts`'s handler before the route table: a request under a
-migrated prefix is forwarded to `TALARIA_RUST_API_URL` (loopback `:5274` in dev),
-response bodies streamed through. Unset env — the default — forwards nothing:
-every route is served by TS, byte-identical to before the port existed. An
-`EXACT` list sits beside the prefixes for whole-path migrations — a route whose
-sub-paths still belong to TS (`/api/agents` next to `register`/`heartbeat`,
-`/api/apps` next to the app-server gateway) migrates by exact pathname, or the
-prefix would strand those sub-routes on a Rust 404.
+migrated prefix was forwarded to `TALARIA_RUST_API_URL` (loopback `:5274` in
+dev), response bodies streamed through. Unset env — the coexistence-era
+default — forwarded nothing: every route was served by TS, byte-identical to
+before the port existed. An `EXACT` list sat beside the prefixes for whole-path
+migrations — a route whose sub-paths still belonged to TS (`/api/agents` next
+to `register`/`heartbeat`, `/api/apps` next to the app-server gateway)
+migrated by exact pathname, or the prefix would strand those sub-routes on a
+Rust 404. Both lists left with the cutover; what remains of the switch is the
+permanent hop.
 
 Flipping a group was two edits: the prefix joined `PREFIXES`, and `ui/.env` set
 `TALARIA_RUST_API_URL` (see `ui/.env.example` for the block). The cutover has
 since deleted the far side: `PREFIXES` is `/api` itself and the hop is
-permanent. In dev, `talaria dev` starts the Rust api as a sidecar by default
+permanent — and assumed: unset env hops to the loopback default
+(`http://127.0.0.1:5274`, the same port `talaria dev` and server-entry bind
+their api to), so first spin-up — dev or prod — proxies the moment an api is
+listening; only the literal `off` stands the boundary down (the coexistence
+posture of unset-forwards-nothing died with the TS routes it was protecting:
+post-cutover it served nothing but 404s). In dev, `talaria dev` starts the Rust api as a sidecar by default
 (`cargo run` in `api/`, adopting an instance already on the port, signals
 forwarded, readiness polled without blocking the app; `TALARIA_API=off` opts
 out); a devbox carries the whole toolchain
