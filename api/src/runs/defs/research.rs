@@ -471,7 +471,33 @@ pub struct WriteReportArgs {
     pub body: String,
     pub owner_user_id: Option<String>,
     pub agent_label: String,
+    /// The run's agent (fleet model id) — granted viewer on a personal
+    /// report so the agent that wrote it can read it back.
+    pub agent_model: String,
     pub member_ids: Vec<String>,
+}
+
+/// The editor grants a personal report lands with: everyone shared on the
+/// run as editors, and the agent that ran it as a viewer. The toolkit's own
+/// instructions tell that agent to read the report back with get_document,
+/// and the brain already scopes a personal report to "them + their
+/// assistant" — these grants are what make the artifacts plane agree with
+/// both. (The pre-port TS behaved the same way and had the same gap.)
+fn personal_report_grants(member_ids: &[String], agent_model: &str) -> Vec<EditorGrant> {
+    let mut grants: Vec<EditorGrant> = member_ids
+        .iter()
+        .map(|id| EditorGrant {
+            principal_type: "user".into(),
+            principal_id: id.clone(),
+            role: "editor".into(),
+        })
+        .collect();
+    grants.push(EditorGrant {
+        principal_type: "agent".into(),
+        principal_id: agent_model.to_string(),
+        role: "viewer".into(),
+    });
+    grants
 }
 
 pub struct IndexArgs {
@@ -1010,22 +1036,14 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-                if args.owner_user_id.is_some() && !args.member_ids.is_empty() {
+                if args.owner_user_id.is_some() {
                     // A report that is saved must not fail its run because a
                     // share could not land.
                     let _ = set_editors(
                         &pg,
                         "artifact",
                         &args.artifact_id,
-                        &args
-                            .member_ids
-                            .iter()
-                            .map(|id| EditorGrant {
-                                principal_type: "user".into(),
-                                principal_id: id.clone(),
-                                role: "editor".into(),
-                            })
-                            .collect::<Vec<_>>(),
+                        &personal_report_grants(&args.member_ids, &args.agent_model),
                     )
                     .await;
                 }
@@ -1514,6 +1532,7 @@ async fn advance(
                 body: report.body.clone(),
                 owner_user_id: input.owner_user_id.clone(),
                 agent_label: (deps.agent_label)(&input.agent_model),
+                agent_model: input.agent_model.clone(),
                 member_ids,
             })
             .await?;
@@ -2578,5 +2597,43 @@ mod tests {
         .await;
         assert!(res.is_err());
         assert!(w.lock().unwrap().failed.is_empty());
+    }
+
+    // ── Report grants ─────────────────────────────────────────────────────
+
+    #[test]
+    fn a_personal_report_grants_its_members_and_its_agent() {
+        let grants = personal_report_grants(&["u-1".into()], "gregasaurus-personal");
+        assert_eq!(grants.len(), 2, "the shared member and the run's agent");
+        assert_eq!(grants[0].principal_type, "user");
+        assert_eq!(grants[0].principal_id, "u-1");
+        assert_eq!(grants[0].role, "editor");
+        assert_eq!(grants[1].principal_type, "agent");
+        assert_eq!(grants[1].principal_id, "gregasaurus-personal");
+        assert_eq!(grants[1].role, "viewer");
+    }
+
+    #[test]
+    fn an_unshared_personal_report_is_still_readable_by_its_agent() {
+        // The gate's own vocabulary, so the grant and the gate cannot drift:
+        // a private report with these grants opens for the run's agent and
+        // for no other.
+        let grants = personal_report_grants(&[], "gregasaurus-personal");
+        let private = crate::kb::perms::Guarded {
+            owner_user_id: None,
+            created_by: None,
+            visibility: "private".into(),
+            edit_policy: "editors".into(),
+        };
+        assert!(crate::kb::perms::can_read_agent(
+            &private,
+            "gregasaurus-personal",
+            &grants
+        ));
+        assert!(!crate::kb::perms::can_read_agent(
+            &private,
+            "leo-engineering",
+            &grants
+        ));
     }
 }

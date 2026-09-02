@@ -685,13 +685,18 @@ pub async fn list_boards_for_agent(
     model: &str,
 ) -> Result<Vec<AgentBoard>, sqlx::Error> {
     let rows: Vec<AgentBoardRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        // DISTINCT requires every ORDER BY expression in the select list — so
+        // the timestamps leave as named columns and the sort uses the names,
+        // not b.updated_at (the port's epoch expressions replaced the raw
+        // column and left this ordering illegal; Postgres refused the whole
+        // statement, and no agent call ever listed boards).
         "select distinct b.id::text, b.name, b.owner_id::text, b.team_id::text, t.name, \
-                (trunc(extract(epoch from b.created_at) * 1000))::bigint, \
-                (trunc(extract(epoch from b.updated_at) * 1000))::bigint, \
-                (trunc(extract(epoch from b.archived_at) * 1000))::bigint \
+                (trunc(extract(epoch from b.created_at) * 1000))::bigint as created_ms, \
+                (trunc(extract(epoch from b.updated_at) * 1000))::bigint as updated_ms, \
+                (trunc(extract(epoch from b.archived_at) * 1000))::bigint as archived_ms \
          from boards b left join teams t on t.id = b.team_id \
          where {} \
-         order by b.updated_at desc",
+         order by updated_ms desc",
         agent_board_policy_sql("$1"),
     )))
     .bind(model)
