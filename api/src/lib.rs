@@ -106,7 +106,7 @@ pub mod templates;
 pub mod titler;
 pub mod tz;
 pub mod uploads;
-mod users;
+pub mod users;
 pub mod vision;
 pub mod web_search;
 pub mod work_dispatch;

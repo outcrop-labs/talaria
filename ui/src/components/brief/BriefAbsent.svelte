@@ -34,7 +34,10 @@
   <!-- The only one of the three with an action, because it is the only one the
        person can do anything about. A brief is written by YOUR assistant and by
        no other model — see the note in api/src/daily_brief — so without one
-       there is nothing to wait for. -->
+       there is nothing to wait for. The action opens Settings → Assistant —
+       the wizard's real home, reachable by every member — not /agents, a
+       Manage view members are denied (the route gate bounces them right
+       back here). -->
   <EmptyState
     icon={sparkle}
     title="You don’t have a personal assistant yet"
@@ -70,5 +73,5 @@
   </div>
 {/snippet}
 {#snippet setup()}
-  <Button size="sm" variant="outline" onclick={() => void navigate('/agents')}>Set up your assistant</Button>
+  <Button size="sm" variant="outline" onclick={() => void navigate('/settings/:tab', { params: { tab: 'assistant' } })}>Set up your assistant</Button>
 {/snippet}

@@ -2264,6 +2264,352 @@ const MIGRATIONS: string[] = [
   // was never covered by this constraint in the first place.
   `alter table plan_drafts drop constraint if exists plan_drafts_conversation_id_fkey`,
 
+  // ── MERGE THE FORKED USERS (Google sign-in on a claimed email) ───────────
+  // A sign-in used to resolve people by sub alone, and subs are per-door
+  // (google:<subject> vs password:<email>) — so a Google login for an email
+  // that already had a row forked a second users row and the person kept two
+  // identities: their admin powers on one, their Google sessions on the
+  // other. Sign-in links by email now (users.rs link_by_email); this
+  // statement merges the rows the old behavior already forked, at boot,
+  // before the api starts. One survivor per lower(email) group — admin
+  // first, then lowest id — takes over everything pointing at its
+  // duplicates, and the duplicate rows are deleted. Everything runs inside
+  // ONE statement on purpose: each element of this array is its own
+  // transaction, and a merge split across elements could die half-done with
+  // no way to re-run the first half. A second boot finds no groups and
+  // no-ops.
+  //
+  // Deliberately untouched: audit_log.actor, tasks.assigned_to/created_by,
+  // channel_messages.author and the other email/name-keyed text columns
+  // (history, keyed by what humans read); channels.dm_key (rewriting a
+  // merged DM's key could collide with the survivor's own DM channel on
+  // channels_dm_key_idx — channel_members is re-pointed, so the history
+  // stays visible). The survivor KEEPS its sub: password login reads it off
+  // the row, and the next Google sign-in moves it via link_by_email — this
+  // statement never guesses which door the person will use next. Membership
+  // rows the survivor already holds win; the duplicate's colliding row dies
+  // in the final cascade. Live sessions of merged-away rows age out
+  // (Redis, 7-day TTL); those people sign in once more and land on the
+  // survivor.
+  `with
+     grp as (
+       select id,
+              lower(email)                                          as email_key,
+              row_number() over (partition by lower(email)
+                                 order by (role = 'admin') desc, id) as rn,
+              count(*)     over (partition by lower(email))          as n
+       from users
+       where email is not null and email <> ''
+     ),
+     pairs as (
+       select g.id as dup_id, s.id as survivor_id
+       from grp g
+       join grp s on s.email_key = g.email_key and s.rn = 1
+       where g.rn > 1 and s.n > 1
+     ),
+
+     conversations_rp as (
+       update conversations c set user_id = p.survivor_id
+       from pairs p where c.user_id = p.dup_id
+     ),
+     boards_rp as (
+       update boards b set owner_id = p.survivor_id
+       from pairs p where b.owner_id = p.dup_id
+     ),
+     notifications_rp as (
+       update notifications n set user_id = p.survivor_id
+       from pairs p where n.user_id = p.dup_id
+     ),
+     llm_api_keys_rp as (
+       update llm_api_keys k set user_id = p.survivor_id
+       from pairs p where k.user_id = p.dup_id
+     ),
+     rag_collections_rp as (
+       update rag_collections r set owner_user_id = p.survivor_id
+       from pairs p where r.owner_user_id = p.dup_id
+     ),
+     outreach_rp as (
+       update outreach_events e set user_id = p.survivor_id
+       from pairs p where e.user_id = p.dup_id
+     ),
+     inbox_decisions_rp as (
+       update inbox_decisions d set user_id = p.survivor_id
+       from pairs p where d.user_id = p.dup_id
+     ),
+     runs_rp as (
+       update runs r set owner_user_id = p.survivor_id
+       from pairs p where r.owner_user_id = p.dup_id
+     ),
+     secret_folders_rp as (
+       update secret_folders f set owner_user_id = p.survivor_id
+       from pairs p where f.owner_user_id = p.dup_id
+     ),
+     agent_defs_rp as (
+       update agent_defs d set owner_user_id = p.survivor_id
+       from pairs p where d.owner_user_id = p.dup_id
+     ),
+
+     teams_rp as (
+       update teams t set created_by = p.survivor_id
+       from pairs p where t.created_by = p.dup_id
+     ),
+     invites_rp as (
+       update invites i set accepted_user_id = p.survivor_id
+       from pairs p where i.accepted_user_id = p.dup_id
+     ),
+     channels_rp as (
+       update channels c set created_by = p.survivor_id
+       from pairs p where c.created_by = p.dup_id
+     ),
+     uploads_rp as (
+       update uploads u set uploaded_by = p.survivor_id
+       from pairs p where u.uploaded_by = p.dup_id
+     ),
+     kb_comments_rp as (
+       update kb_comments c set author_user_id = p.survivor_id
+       from pairs p where c.author_user_id = p.dup_id
+     ),
+     kb_docs_rp as (
+       update kb_docs d set owner_user_id = p.survivor_id
+       from pairs p where d.owner_user_id = p.dup_id
+     ),
+     kb_spaces_rp as (
+       update kb_spaces s set owner_user_id = p.survivor_id
+       from pairs p where s.owner_user_id = p.dup_id
+     ),
+     artifacts_rp as (
+       update artifacts a set owner_user_id = p.survivor_id
+       from pairs p where a.owner_user_id = p.dup_id
+     ),
+     artifact_folders_rp as (
+       update artifact_folders f set owner_user_id = p.survivor_id
+       from pairs p where f.owner_user_id = p.dup_id
+     ),
+     google_org_conn_rp as (
+       update google_org_connection g set connected_by = p.survivor_id
+       from pairs p where g.connected_by = p.dup_id
+     ),
+     google_pending_owner_rp as (
+       update google_pending_actions a set owner_user_id = p.survivor_id
+       from pairs p where a.owner_user_id = p.dup_id
+     ),
+     google_pending_decided_rp as (
+       update google_pending_actions a set decided_by = p.survivor_id
+       from pairs p where a.decided_by = p.dup_id
+     ),
+     messages_rp as (
+       update messages m set author_user_id = p.survivor_id
+       from pairs p where m.author_user_id = p.dup_id
+     ),
+     research_runs_rp as (
+       update research_runs r set owner_user_id = p.survivor_id
+       from pairs p where r.owner_user_id = p.dup_id
+     ),
+     workspace_secrets_rp as (
+       update workspace_secrets s set owner_user_id = p.survivor_id
+       from pairs p where s.owner_user_id = p.dup_id
+     ),
+     drafts_rp as (
+       update assistant_reply_drafts d set user_id = p.survivor_id
+       from pairs p where d.user_id = p.dup_id
+     ),
+     drafts_decided_rp as (
+       update assistant_reply_drafts d set decided_by = p.survivor_id
+       from pairs p where d.decided_by = p.dup_id
+     ),
+     plan_drafts_rp as (
+       update plan_drafts d set created_by = p.survivor_id
+       from pairs p where d.created_by = p.dup_id
+     ),
+
+     user_agent_access_rp as (
+       update user_agent_access a set user_id = p.survivor_id
+       from pairs p
+       where a.user_id = p.dup_id
+         and not exists (select 1 from user_agent_access x
+                         where x.user_id = p.survivor_id
+                           and x.agent_model = a.agent_model)
+     ),
+     team_members_rp as (
+       update team_members m set user_id = p.survivor_id
+       from pairs p
+       where m.user_id = p.dup_id
+         and not exists (select 1 from team_members x
+                         where x.user_id = p.survivor_id
+                           and x.team_id = m.team_id)
+     ),
+     board_members_rp as (
+       update board_members m set user_id = p.survivor_id
+       from pairs p
+       where m.user_id = p.dup_id
+         and not exists (select 1 from board_members x
+                         where x.user_id = p.survivor_id
+                           and x.board_id = m.board_id)
+     ),
+     mcp_user_access_rp as (
+       update mcp_user_access a set user_id = p.survivor_id
+       from pairs p
+       where a.user_id = p.dup_id
+         and not exists (select 1 from mcp_user_access x
+                         where x.user_id = p.survivor_id
+                           and x.server_id = a.server_id)
+     ),
+     mcp_user_credentials_rp as (
+       update mcp_user_credentials c set user_id = p.survivor_id
+       from pairs p
+       where c.user_id = p.dup_id
+         and not exists (select 1 from mcp_user_credentials x
+                         where x.user_id = p.survivor_id
+                           and x.server_id = c.server_id)
+     ),
+     user_permissions_rp as (
+       update user_permissions u set user_id = p.survivor_id
+       from pairs p
+       where u.user_id = p.dup_id
+         and not exists (select 1 from user_permissions x
+                         where x.user_id = p.survivor_id
+                           and x.perm = u.perm)
+     ),
+     channel_members_rp as (
+       update channel_members m set user_id = p.survivor_id
+       from pairs p
+       where m.user_id = p.dup_id
+         and not exists (select 1 from channel_members x
+                         where x.user_id = p.survivor_id
+                           and x.channel_id = m.channel_id)
+     ),
+     conversation_members_rp as (
+       update conversation_members m set user_id = p.survivor_id
+       from pairs p
+       where m.user_id = p.dup_id
+         and not exists (select 1 from conversation_members x
+                         where x.user_id = p.survivor_id
+                           and x.conversation_id = m.conversation_id)
+     ),
+     research_members_rp as (
+       update research_members m set user_id = p.survivor_id
+       from pairs p
+       where m.user_id = p.dup_id
+         and not exists (select 1 from research_members x
+                         where x.user_id = p.survivor_id
+                           and x.run_id = m.run_id)
+     ),
+     inbox_focus_state_rp as (
+       update inbox_focus_state f set user_id = p.survivor_id
+       from pairs p
+       where f.user_id = p.dup_id
+         and not exists (select 1 from inbox_focus_state x
+                         where x.user_id = p.survivor_id
+                           and x.source_type = f.source_type
+                           and x.source_id = f.source_id)
+     ),
+     secret_readers_rp as (
+       update workspace_secret_readers r set user_id = p.survivor_id
+       from pairs p
+       where r.user_id = p.dup_id
+         and not exists (select 1 from workspace_secret_readers x
+                         where x.user_id = p.survivor_id
+                           and x.secret_id = r.secret_id)
+     ),
+     folder_readers_rp as (
+       update secret_folder_readers r set user_id = p.survivor_id
+       from pairs p
+       where r.user_id = p.dup_id
+         and not exists (select 1 from secret_folder_readers x
+                         where x.user_id = p.survivor_id
+                           and x.folder_id = r.folder_id)
+     ),
+     daily_briefs_rp as (
+       update daily_briefs b set user_id = p.survivor_id
+       from pairs p
+       where b.user_id = p.dup_id
+         and not exists (select 1 from daily_briefs x
+                         where x.user_id = p.survivor_id
+                           and x.brief_date = b.brief_date)
+     ),
+     grants_thread_rp as (
+       update assistant_reply_grants g set user_id = p.survivor_id
+       from pairs p
+       where g.user_id = p.dup_id
+         and g.channel_id is not null
+         and g.revoked_at is null
+         and not exists (select 1 from assistant_reply_grants x
+                         where x.user_id = p.survivor_id
+                           and x.channel_id = g.channel_id
+                           and x.revoked_at is null)
+     ),
+     grants_standing_rp as (
+       update assistant_reply_grants g set user_id = p.survivor_id
+       from pairs p
+       where g.user_id = p.dup_id
+         and g.channel_id is null
+         and g.revoked_at is null
+         and not exists (select 1 from assistant_reply_grants x
+                         where x.user_id = p.survivor_id
+                           and x.channel_id is null
+                           and x.revoked_at is null)
+     ),
+     grants_revoked_rp as (
+       update assistant_reply_grants g set user_id = p.survivor_id
+       from pairs p
+       where g.user_id = p.dup_id
+         and g.revoked_at is not null
+     ),
+
+     google_conn_dupe as (
+       delete from google_connections c using pairs p
+       where c.user_id = p.dup_id
+         and exists (select 1 from google_connections x
+                     where x.user_id = p.survivor_id)
+     ),
+     google_conn_rp as (
+       update google_connections c set user_id = p.survivor_id
+       from pairs p
+       where c.user_id = p.dup_id
+         and not exists (select 1 from google_connections x
+                         where x.user_id = p.survivor_id)
+     ),
+     password_creds_dupe as (
+       delete from user_password_credentials c using pairs p
+       where c.user_id = p.dup_id
+         and exists (select 1 from user_password_credentials x
+                     where x.user_id = p.survivor_id)
+     ),
+     password_creds_rp as (
+       update user_password_credentials c set user_id = p.survivor_id
+       from pairs p
+       where c.user_id = p.dup_id
+         and not exists (select 1 from user_password_credentials x
+                         where x.user_id = p.survivor_id)
+     ),
+
+     kb_editors_rp as (
+       update kb_editors e set principal_id = p.survivor_id::text
+       from pairs p
+       where e.principal_type = 'user'
+         and e.principal_id = p.dup_id::text
+         and not exists (select 1 from kb_editors x
+                         where x.item_type = e.item_type
+                           and x.item_id = e.item_id
+                           and x.principal_type = 'user'
+                           and x.principal_id = p.survivor_id::text)
+     ),
+     rag_access_rp as (
+       update rag_collection_access a set principal_id = p.survivor_id::text
+       from pairs p
+       where a.principal_type = 'user'
+         and a.principal_id = p.dup_id::text
+         and not exists (select 1 from rag_collection_access x
+                         where x.collection_id = a.collection_id
+                           and x.principal_type = 'user'
+                           and x.principal_id = p.survivor_id::text)
+     ),
+
+     gone as (
+       delete from users u using pairs p where u.id = p.dup_id returning u.id
+     )
+   select count(*) as merged_rows from gone`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
