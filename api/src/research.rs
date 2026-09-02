@@ -288,21 +288,51 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
     }
 }
 
-/// Runs a viewer may see: their own, ones shared with them, and org runs
-/// (no owner — general agents researching for the org). None viewer (a
-/// general agent) sees org runs only.
+/// A run an org agent started FOR THE ORG — org-readable, ambient-indexed,
+/// anyone signed-in's to open — even though the attribution ladder stamps the
+/// human it answers as the run's `owner_user_id`. DERIVED FROM THE ROW, never
+/// a serialized flag: `requested_by` equals the model exactly when the AGENT
+/// started the run (a human start carries their email/name there), and the
+/// agent_defs test says that agent is a general one (ownerless) rather than
+/// somebody's personal assistant. Both halves are already on every existing
+/// row, so a run in flight at deploy resolves as correctly as one started
+/// after it — the reason a defaulted input flag was rejected here.
+pub const ORG_AGENT_RUN: &str = "research_runs.requested_by = research_runs.agent_model \
+     and exists(select 1 from agent_defs d \
+                where d.model = research_runs.agent_model and d.owner_user_id is null)";
+
+/// The same test, one run at a time, for the run driver's report edges — the
+/// list and role queries inline the fragment; the driver's deps closure holds
+/// this. A missing row answers false, which reads as "personal": a run whose
+/// record is gone writes no more reports anyway.
+pub async fn is_org_agent_run(pg: &PgPool, run_id: &str) -> Result<bool, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is ORG_AGENT_RUN, this module's own
+    // predicate — no caller text reaches the statement.
+    let sql = format!("select ({ORG_AGENT_RUN}) from research_runs where id = $1::uuid");
+    let row: Option<(bool,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(run_id)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(|(v,)| v).unwrap_or(false))
+}
+
+/// Runs a viewer may see: their own, ones shared with them, and org runs —
+/// an org agent's research, whoever the ladder stamped as its owner, plus the
+/// ownerless runs that predate the ladder. None viewer (a general agent) sees
+/// org runs only.
 pub async fn list_research_runs(
     pg: &PgPool,
     viewer_user_id: Option<&str>,
     limit: i64,
 ) -> Result<Vec<ResearchRun>, sqlx::Error> {
     if let Some(viewer) = viewer_user_id {
-        let sql = projection_sql(
-            "where research_runs.owner_user_id is null or research_runs.owner_user_id = $1::uuid \
+        let sql = projection_sql(&format!(
+            "where research_runs.owner_user_id is null or ({ORG_AGENT_RUN}) \
+             or research_runs.owner_user_id = $1::uuid \
              or exists(select 1 from research_members rm \
                        where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
-             order by research_runs.created_at desc limit $2",
-        );
+             order by research_runs.created_at desc limit $2"
+        ));
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(viewer)
             .bind(limit)
@@ -310,10 +340,10 @@ pub async fn list_research_runs(
             .await?;
         Ok(rows.iter().map(row_of).collect())
     } else {
-        let sql = projection_sql(
-            "where research_runs.owner_user_id is null \
-             order by research_runs.created_at desc limit $1",
-        );
+        let sql = projection_sql(&format!(
+            "where research_runs.owner_user_id is null or ({ORG_AGENT_RUN}) \
+             order by research_runs.created_at desc limit $1"
+        ));
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(limit)
             .fetch_all(pg)
@@ -330,20 +360,24 @@ pub async fn research_role(
     viewer_user_id: Option<&str>,
     run_id: &str,
 ) -> Result<Option<&'static str>, sqlx::Error> {
-    let row: Option<(Option<String>, bool)> = sqlx::query_as(
-        "select owner_user_id::text, \
-                exists(select 1 from research_members rm \
-                       where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
-         from research_runs where id = $2::uuid",
-    )
+    let row: Option<(Option<String>, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(
+        format!(
+            "select owner_user_id::text, \
+                    exists(select 1 from research_members rm \
+                           where rm.run_id = research_runs.id and rm.user_id = $1::uuid), \
+                    ({ORG_AGENT_RUN}) as org_agent_run \
+             from research_runs where id = $2::uuid",
+        )
+        .as_str(),
+    ))
     .bind(viewer_user_id)
     .bind(run_id)
     .fetch_optional(pg)
     .await?;
-    let Some((owner, member)) = row else {
+    let Some((owner, member, org_agent_run)) = row else {
         return Ok(None);
     };
-    if owner.is_none() {
+    if owner.is_none() || org_agent_run {
         return Ok(Some("member")); // org run — anyone signed in
     }
     if viewer_user_id.is_some_and(|v| owner.as_deref() == Some(v)) {

@@ -1,7 +1,11 @@
 // /api/research.
 // GET → recent runs scoped to the viewer + the mode catalog. POST { question,
 // mode?, agentModel? } → start a run. Humans and agents both start research;
-// an agent researches AS ITSELF, pinned to its own model.
+// an agent researches AS ITSELF, pinned to its own model. An agent-started
+// run carries the attribution ladder's user as its owner — the PA's owner,
+// the chatting human mid-chat, the hirer otherwise — while an org agent's run
+// stays org-readable however owned (org-ness is derived from the row
+// downstream, never from the owner's presence).
 
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::body::{as_object, optional_string_member, parse, string_member};
@@ -114,10 +118,16 @@ pub async fn post(
         Err(resp) => return resp,
     };
     let (agent_model, owner_user_id, requested_by) = if let Some(caller) = caller.as_ref() {
-        // An agent researches in its own field; its owner (for a personal
-        // assistant) is the one the notification reaches.
-        let owner = match crate::users::assistant_owner_for(
+        // The ladder, not the PA-only resolve: the run's owner is a STAMP —
+        // the PA's owner, the human an org agent is answering mid-chat, the
+        // hirer for crons and standalone calls. Reach is NOT this value (an
+        // org agent's run stays org-readable however owned; the driver
+        // derives that from the row), and the finished-run notification below
+        // reaches this owner — for a chat-attributed run, the person who
+        // asked.
+        let owner = match crate::attribution::responsible_user_for(
             &state.pg,
+            state.redis().await.ok(),
             &AgentSubject::Caller(caller.clone()),
         )
         .await
