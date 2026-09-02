@@ -2,8 +2,8 @@
 // in one shape, with the person who owes the answer attached.
 //
 // WHY THIS FILE EXISTS
-//   "Approvals" is not one queue in Talaria. It is five, and they were written
-//   at five different times by five different features:
+//   "Approvals" is not one queue in Talaria. It is six, and they were written
+//   at six different times by six different features:
 //
 //     google_action    google_pending_actions — an agent drafted something that
 //                      LEAVES the building (an email, an invite).
@@ -17,6 +17,9 @@
 //                      question its own step cannot answer and PARKED. The
 //                      first kind with no table of its own: the run IS the
 //                      record, and the question is a column on it.
+//     board_access     board_agent_requests — a personal assistant asked to be
+//                      let onto a board its owner cannot see, and self-service
+//                      is not available to it for exactly that reason.
 //
 //   Each of those has its own table, its own surface and its own idea of who
 //   decides. None of them had an idea of how OLD it was, which is the whole
@@ -26,7 +29,7 @@
 //   So this module answers one question — "what is waiting on a human, since
 //   when, and on WHICH human" — for the digest (which counts them) and the
 //   escalation job (which ages them). Neither should know four table shapes,
-//   and neither should be the place a fifth approval kind gets forgotten: add
+//   and neither should be the place a new approval kind gets forgotten: add
 //   it HERE and both surfaces pick it up.
 //
 // THE DISCLOSURE RULE — read this before adding a kind
@@ -81,7 +84,7 @@ use sqlx::PgPool;
 
 const LOG: &str = "[approvals]";
 
-/// The five queues. Serialized as its snake_case strings (`google_action`, …),
+/// The six queues. Serialized as its snake_case strings (`google_action`, …),
 /// which is what the announce marks' failed-kind log lines and the digest's
 /// counters are written in terms of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -92,6 +95,7 @@ pub enum ApprovalKind {
     TicketReview,
     RepoRequest,
     RunDecision,
+    BoardAccess,
 }
 
 impl ApprovalKind {
@@ -102,6 +106,7 @@ impl ApprovalKind {
             ApprovalKind::TicketReview => "ticket_review",
             ApprovalKind::RepoRequest => "repo_request",
             ApprovalKind::RunDecision => "run_decision",
+            ApprovalKind::BoardAccess => "board_access",
         }
     }
 }
@@ -118,7 +123,7 @@ pub struct Disclosure {
     pub fact: Vec<String>,
 }
 
-/// The census row — the same shape for all five kinds, so the digest and the
+/// The census row — the same shape for all six kinds, so the digest and the
 /// SLA are looking at exactly what the decision route authorizes against.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -472,6 +477,72 @@ async fn repo_request_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sql
         .collect())
 }
 
+/// One open `board_agent_requests` row, in column order — the agent's display
+/// name and the requester's user id are nullable (the def may have been
+/// deleted; the requester may have been), the epoch-ms tail is created_at.
+type BoardAccessRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    i64,
+);
+
+/// Open board-access requests: a personal assistant met a board its owner
+/// cannot see, and the one-step grant is not available to it for exactly that
+/// reason — the request is the path around that hole.
+///
+/// The authority is the board's EDITORS because the decision route enforces
+/// `can_edit`: they are the same people who could have typed the model into
+/// the policy by hand, and the approve verb is only a shorter spelling of
+/// that. `owner_user_ids` is empty BY CONSTRUCTION, not by omission: the one
+/// person named on the request is the agent's owner, who cannot see the board
+/// and so is never a subset of the authority — naming them would be the
+/// widening this file exists to prevent.
+async fn board_access_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
+    let rows: Vec<BoardAccessRow> = sqlx::query_as(
+        "select r.id::text, r.board_id::text, r.agent_model, d.display_name, b.name, \
+                r.reason, (trunc(extract(epoch from r.created_at) * 1000))::bigint \
+         from board_agent_requests r \
+         join boards b on b.id = r.board_id \
+         left join agent_defs d on d.model = r.agent_model \
+         where r.status = 'open'",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, board_id, agent_model, display_name, board_name, reason, created_ms)| {
+            let agent = display_name.unwrap_or_else(|| agent_model.clone());
+            let detail = {
+                let trimmed = reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
+                match trimmed {
+                    Some(r) => clamp_text(r, 240),
+                    None => format!(
+                        "{agent} needs access to a board its owner cannot see; approving adds it \
+                         to the board's agent allow-list."
+                    ),
+                }
+            };
+            PendingApproval {
+                kind: ApprovalKind::BoardAccess,
+                key: format!("board_access:{board_id}:{agent_model}"),
+                id: id.clone(),
+                title: format!("{agent} asked to join the board \"{board_name}\""),
+                detail,
+                href: format!("/boards/{board_id}"),
+                waiting_since: epoch_ms_to_iso(created_ms),
+                owner_user_ids: Vec::new(),
+                authority: Authority::Board {
+                    board_id: board_id.clone(),
+                },
+            }
+        })
+        .collect())
+}
+
 /// ONE description of what a parked run is as an approval — the census reader
 /// below and the decide route's authorization check both go through this
 /// function, because the only correct way to answer "may this person decide
@@ -612,7 +683,7 @@ async fn run_decision_approvals(
 
 /// Every pending approval in the workspace, oldest first.
 ///
-/// One kind failing must not hide the other four — an escalation sweep that
+/// One kind failing must not hide the other five — an escalation sweep that
 /// reports nothing because one table was locked is the silence this whole
 /// module is about. Each kind is settled independently — the contract is
 /// the independence; a rejection is logged and recorded in `failed_kinds` so the
@@ -627,9 +698,9 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
     let mut failed_kinds = Vec::new();
     // The newest source is also the one most likely to fail on a tree that has
     // not migrated yet (no `runs` table at all), which is precisely what
-    // `failed_kinds` is for: a workspace mid-deploy still gets its other four
+    // `failed_kinds` is for: a workspace mid-deploy still gets its other five
     // queues, and the sweep knows not to prune marks it could not see.
-    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 5] = [
+    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 6] = [
         (
             ApprovalKind::GoogleAction,
             google_action_approvals(pg).await,
@@ -643,6 +714,10 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
             ticket_review_approvals(pg).await,
         ),
         (ApprovalKind::RepoRequest, repo_request_approvals(pg).await),
+        (
+            ApprovalKind::BoardAccess,
+            board_access_approvals(pg).await,
+        ),
         (
             ApprovalKind::RunDecision,
             run_decision_approvals(pg, definition_for).await,
@@ -1024,7 +1099,7 @@ async fn prune_announced(
 
 /// What a content-free message may say an approval IS. Fixed per kind and
 /// never `approval.title` — the recipient is being told the workspace has
-/// something stuck in it, not what is in it. A fifth kind gets its
+/// something stuck in it, not what is in it. A new kind gets its
 /// content-free name in the same file it gets its authority.
 pub fn kind_label(kind: ApprovalKind) -> &'static str {
     match kind {
@@ -1035,6 +1110,7 @@ pub fn kind_label(kind: ApprovalKind) -> &'static str {
         ApprovalKind::RunDecision => {
             "a long-running job parked on a question only a person can answer"
         }
+        ApprovalKind::BoardAccess => "a board a personal assistant asked to join",
     }
 }
 
@@ -1068,7 +1144,7 @@ fn fact_body(approval: &PendingApproval, reached: usize) -> String {
 }
 
 /// Does first contact go to the whole audience, or only to the named? Declared
-/// per kind so a fifth kind cannot be added without answering it.
+/// per kind so a new kind cannot be added without answering it.
 ///
 /// `ticket_review` is the one that narrows. Its audience is every EDITOR of
 /// the board, and a ticket entering review is not a rare event — it is the
@@ -1103,6 +1179,11 @@ fn announce_to_named_only(kind: ApprovalKind) -> bool {
         // migration, which are exactly the runs whose questions nobody
         // currently hears at all.
         ApprovalKind::RunDecision => false,
+        // Rare by construction (a personal assistant meeting a board its
+        // owner cannot see) and never has a named owner — the one person
+        // attached to the request is the owner who CANNOT see the board.
+        // Narrowing to the named would silence every one of them.
+        ApprovalKind::BoardAccess => false,
     }
 }
 

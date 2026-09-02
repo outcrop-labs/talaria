@@ -568,19 +568,24 @@ pub async fn set_board_agent_config(
 /// allow-list — one row, deliberately never `set_board_agent_config`, whose
 /// delete-all-then-insert would race a concurrent editor's save. A repeat
 /// add is a no-op (`on conflict do nothing`), matching how the config
-/// writer inserts its own rows.
-pub async fn add_board_agent_row(
-    pg: &PgPool,
+/// writer inserts its own rows. Executor-generic so the request-decide route
+/// can run it inside the same transaction that closes the request — the
+/// grant and the state change commit together or not at all.
+pub async fn add_board_agent_row<'e, E>(
+    executor: E,
     board_id: &str,
     agent_model: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query(
         "insert into board_agents (board_id, agent_model) values ($1::uuid, $2) \
          on conflict do nothing",
     )
     .bind(board_id)
     .bind(agent_model)
-    .execute(pg)
+    .execute(executor)
     .await?;
     Ok(())
 }

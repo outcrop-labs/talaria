@@ -195,6 +195,19 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
+            "/api/boards/{id}/agents/self",
+            post(boards::boards_id_agents::post_self)
+                .delete(boards::boards_id_agents::delete_self)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/agent-requests",
+            get(boards::boards_id_agent_requests::get)
+                .post(boards::boards_id_agent_requests::post)
+                .put(boards::boards_id_agent_requests::put)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
+        )
+        .route(
             "/api/boards/{id}/templates",
             get(boards::boards_id_templates::get)
                 .put(boards::boards_id_templates::put)

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-10 routes.
+11 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -15,8 +15,13 @@
 | [`/api/boards`](#apiboards) | POST | `session` + `perm:boards.create` |
 | [`/api/boards/{id}`](#apiboardsid) | PATCH | `dual` |
 | [`/api/boards/{id}`](#apiboardsid) | DELETE | `session` |
+| [`/api/boards/{id}/agent-requests`](#apiboardsidagent-requests) | GET | `dual` |
+| [`/api/boards/{id}/agent-requests`](#apiboardsidagent-requests) | POST | `dual` |
+| [`/api/boards/{id}/agent-requests`](#apiboardsidagent-requests) | PUT | `dual` |
 | [`/api/boards/{id}/agents`](#apiboardsidagents) | GET | `session` |
+| [`/api/boards/{id}/agents`](#apiboardsidagents) | POST | `agent` |
 | [`/api/boards/{id}/agents`](#apiboardsidagents) | PUT | `dual` |
+| [`/api/boards/{id}/agents`](#apiboardsidagents) | DELETE | `agent` |
 | [`/api/boards/{id}/events`](#apiboardsidevents) | GET | `session` |
 | [`/api/boards/{id}/labels`](#apiboardsidlabels) | GET | `session` |
 | [`/api/boards/{id}/labels`](#apiboardsidlabels) | POST | `session` |
@@ -85,6 +90,37 @@ Source: [`api/src/routes/boards/boards_id.rs`](../../api/src/routes/boards/board
 | `teamId` | `uuid? nullable` |  |
 | `teamName` | `string? nullable(120)` |  |
 
+## `/api/boards/{id}/agent-requests`
+
+Source: [`api/src/routes/boards/boards_id_agent_requests.rs`](../../api/src/routes/boards/boards_id_agent_requests.rs)
+
+> /api/boards/{id}/agent-requests. The request half of board access for a
+> personal assistant whose owner CANNOT read the board — self-service
+> (`POST …/agents/self`) is deliberately not available to it, so this is the
+> path around that hole.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `dual` | — | `{requests}` | 200, 401, 403 | — |
+| POST | `dual` | [body](#post-apiboardsidagent-requests-body) | `…` | 200, 400, 403, 404 | audit |
+| PUT | `dual` | [body](#put-apiboardsidagent-requests-body) | `{ok, agentModel, status}` | 200, 400, 401, 403, 404 | audit |
+
+### POST `/api/boards/{id}/agent-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `reason` | `string?(500)` |  |
+| `agentModel` | `string?(200)` |  |
+| `agentModel` | `string(1, 200)` |  |
+
+### PUT `/api/boards/{id}/agent-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `agentModel` | `string(1, 200)` |  |
+| `action` | `enum(approve|reject)` |  |
+
 ## `/api/boards/{id}/agents`
 
 Source: [`api/src/routes/boards/boards_id_agents.rs`](../../api/src/routes/boards/boards_id_agents.rs)
@@ -98,7 +134,9 @@ Source: [`api/src/routes/boards/boards_id_agents.rs`](../../api/src/routes/board
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 403 | — |
-| PUT | `dual` | [body](#put-apiboardsidagents-body) | `…` | 200, 400, 401, 403 | — |
+| POST | `agent` | — | `…` | 200, 403, 404 | audit |
+| PUT | `dual` | [body](#put-apiboardsidagents-body) | `{allowAll, models}` | 200, 400, 401, 403 | audit |
+| DELETE | `agent` | — | `…` | 200, 403, 404 | audit |
 
 ### PUT `/api/boards/{id}/agents` body
 

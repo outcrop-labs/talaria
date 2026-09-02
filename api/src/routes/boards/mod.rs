@@ -1,6 +1,7 @@
 // Boards, their members/labels/statuses/views, and per-board agents and events.
 pub mod boards;
 pub mod boards_id;
+pub mod boards_id_agent_requests;
 pub mod boards_id_agents;
 pub mod boards_id_events;
 pub mod boards_id_labels;
