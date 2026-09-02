@@ -1250,8 +1250,8 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
         // The agent surface: media reads/writes scoped by model, the two
-        // honesty-loop reports (gap, problem), and the plain-language
-        // message-user door.
+        // honesty-loop reports (gap, problem), the plain-language
+        // message-user door, and the self-introspection probe.
         .route(
             "/api/agent-media/{model}",
             get(files::agent_media_model::get).fallback(|| async { method_not_allowed("GET") }),
@@ -1260,6 +1260,10 @@ pub fn router(state: AppState) -> Router {
             "/api/agent-media/{model}/save",
             post(files::agent_media_model_save::post)
                 .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agent/whoami",
+            get(agents::agent_whoami::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agent/gap",

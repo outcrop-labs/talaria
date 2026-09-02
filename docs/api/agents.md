@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-14 routes.
+15 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -17,6 +17,7 @@
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
+| [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
@@ -120,6 +121,20 @@ Source: [`api/src/routes/agents/agent_problem.rs`](../../api/src/routes/agents/a
 | `details` | `string?(20000)` |  |
 | `context` | `string?(500)` | what the agent was trying to do |
 | `taskId` | `uuid?` | the ticket the agent was working when it broke |
+
+## `/api/agent/whoami`
+
+Source: [`api/src/routes/agents/agent_whoami.rs`](../../api/src/routes/agents/agent_whoami.rs)
+
+> /api/agent/whoami. GET (agent key) → who is calling and what it may touch.
+>
+> THE ROUTE AN AGENT PROBES WITH. Before this, the only way an agent could
+> learn its own reach was to try a verb and read the 403 — Gregosaurus's
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `{boardId, boardName, status, createdAt}` | 200 | — |
 
 ## `/api/agents`
 

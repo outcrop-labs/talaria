@@ -174,6 +174,15 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             needs_google: false,
         },
         SandboxTool {
+            name: "whoami",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Boards,
+            description: "Who you are and what you may touch: identity (personal assistant? whose? elevated?), every board you can work on with WHY you can see it (policy = the board's agent allow-list, owner = your owner's own access, elevated = org-wide), your channels and MCP servers, the guardrails that will refuse you, and any access requests still pending. Cheap and read-only — call this FIRST rather than probing verbs to learn what 403s.",
+            parameters: json!({ "type": "object", "properties": {}, "required": [] }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
             name: "list_tickets",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
@@ -801,6 +810,52 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: true,
             needs_google: false,
         },
+        // ── Self-service board access (personal assistants only) ──────────────
+        // whoami's answer, turned into its three actions. join/leave manage
+        // the ONE row that is the assistant's own; request is the path for
+        // boards the owner cannot see, where an editor decides.
+        SandboxTool {
+            name: "join_board",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Governance,
+            description: "One-step grant: add yourself to a board's agent allow-list. Works exactly when your owner can already read the board (whoami lists those as why: \"owner\"). If it 403s, your owner cannot read the board — call request_board_access instead. A repeat join is a no-op, not an error.",
+            parameters: json!({
+                "type": "object",
+                "properties": { "boardId": str_schema("Board id (from whoami or list_boards)") },
+                "required": ["boardId"],
+            }),
+            assistant_only: true,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "leave_board",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Governance,
+            description: "Remove yourself from a board's agent allow-list — only your own row, never the rest of the policy (board editors keep that). A repeat leave is a no-op, not an error.",
+            parameters: json!({
+                "type": "object",
+                "properties": { "boardId": str_schema("Board id") },
+                "required": ["boardId"],
+            }),
+            assistant_only: true,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "request_board_access",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Governance,
+            description: "Ask a board's editors to add you — the path for boards your owner cannot read (join_board 403s there, by design). Filing again while a request is open is a no-op that answers alreadyPending: true; whoami's pendingRequests shows where each one stands. The editors decide; nobody is notified again by re-filing.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "boardId": str_schema("Board id — you cannot list boards your owner cannot see, so take this from a person pasting the board link (/boards/<id>)"),
+                    "reason": str_schema("One sentence the editors read when deciding — what you would do there"),
+                },
+                "required": ["boardId"],
+            }),
+            assistant_only: true,
+            needs_google: false,
+        },
     ]
 });
 
@@ -1238,12 +1293,12 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_carries_fifty_one_distinct_tools() {
-        // Fifty-one of the toolkit's fifty-one registrations, and a name that
+    fn the_catalog_carries_fifty_five_distinct_tools() {
+        // Fifty-five of the toolkit's fifty-five registrations, and a name that
         // appeared twice would shadow itself in `tools_named` and hand a harness
         // the wrong entry.
-        assert_eq!(TALARIA_TOOLS.len(), 51);
+        assert_eq!(TALARIA_TOOLS.len(), 55);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 51);
+        assert_eq!(names.len(), 55);
     }
 }

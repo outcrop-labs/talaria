@@ -218,6 +218,19 @@ fn from_clause(q: &str) -> Option<&str> {
 
 // ── The backends ─────────────────────────────────────────────────────────────
 
+/// The refusal sentences `whoami` states up front, hand-mirrored from the
+/// route's own list (`routes/agents/agent_whoami.rs` — a route module is not
+/// a dependency a benchmark's simulator should take). The sandbox enforces
+/// every one of these itself; if the route's list changes, this follows or
+/// whoami teaches agents rules the fleet no longer holds.
+const GUARDRAILS: [&str; 5] = [
+    "agents cannot assign tickets — assignment is a human call",
+    "agents cannot take a ticket out of review — a person signs it off",
+    "agents cannot change a closed ticket",
+    "agents cannot work an archived ticket — a person restores it first",
+    "deleting boards, tickets or members is a human-only route",
+];
+
 /// Every backend. A `&Value` of arguments (the parsed call body), a mutable
 /// world, and either a JSON result or the refusal a model reads. Names are
 /// matched in catalog order — the group dividers mirror `talaria_tools.rs`.
@@ -227,6 +240,54 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "list_boards" => Ok(json!({ "boards": w.boards.iter()
             .map(|b| json!({ "id": b.id, "name": b.name, "team": b.team }))
             .collect::<Vec<_>>() })),
+
+        // The introspection route's answer, composed from the world the way
+        // /api/agent/whoami composes it from the database: identity, the
+        // boards listing with a WHY per row (owner = the owner's own
+        // membership, policy = the board's allow-list naming this agent),
+        // the guardrails, and the requests still open. No elevation arm —
+        // the sandbox stages the two identities production actually
+        // distinguishes, and "elevated" is not one of them.
+        "whoami" => {
+            let owner = w.assistant_for.clone();
+            let mut seen = std::collections::HashSet::new();
+            let mut boards: Vec<Value> = Vec::new();
+            if let Some(owner) = &owner {
+                for b in w.boards.iter().filter(|b| b.members.iter().any(|m| m.email == *owner)) {
+                    seen.insert(b.id.clone());
+                    let role = b
+                        .members
+                        .iter()
+                        .find(|m| m.email == *owner)
+                        .map(|m| m.role.clone());
+                    boards.push(json!({ "id": b.id, "name": b.name, "why": "owner", "role": role }));
+                }
+            }
+            for b in w.boards.iter().filter(|b| b.agents.iter().any(|m| m == &w.agent)) {
+                if !seen.insert(b.id.clone()) {
+                    continue;
+                }
+                boards.push(json!({ "id": b.id, "name": b.name, "why": "policy", "role": null }));
+            }
+            Ok(json!({
+                "agent": {
+                    "model": w.agent,
+                    "personal": owner.is_some(),
+                    "owner": owner,
+                    "elevated": false,
+                },
+                "boards": boards,
+                "pendingRequests": w
+                    .board_requests_filed
+                    .iter()
+                    .map(|b| json!({ "boardId": b, "status": "open" }))
+                    .collect::<Vec<_>>(),
+                "guardrails": GUARDRAILS,
+                "selfService": {
+                    "join": "join_board", "leave": "leave_board", "request": "request_board_access",
+                },
+            }))
+        }
 
         "list_tickets" => {
             let board_id = board_of(w, &a["boardId"])?.id.clone();
@@ -1149,6 +1210,66 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true, "agents": w.boards[board_idx].agents }))
         }
 
+        // ── Self-service board access ────────────────────────────────────────
+        // The one-step grant and its two companions, gated exactly as the
+        // /agents/self and /agent-requests routes gate them: personal
+        // assistants only, join bounded by the owner's READ reach (any board
+        // role, not edit rank), request the path for boards the owner cannot
+        // see. Removal narrows only the caller's own row, so it carries no
+        // owner gate at all.
+
+        "join_board" => {
+            let owner = assistant_only(w, "join_board")?.to_string();
+            let board = board_of(w, &a["boardId"])?;
+            if !board.members.iter().any(|m| m.email == owner) {
+                return Err(refuse(format!(
+                    "join_board returns 403 — your owner cannot read \"{}\", so this is the request_board_access path",
+                    board.name
+                )));
+            }
+            let idx = w
+                .boards
+                .iter()
+                .position(|b| b.id == board.id)
+                .expect("board_of found it");
+            if !w.boards[idx].agents.contains(&w.agent) {
+                w.boards[idx].agents.push(w.agent.clone());
+            }
+            Ok(json!({ "ok": true, "agents": w.boards[idx].agents }))
+        }
+
+        "leave_board" => {
+            assistant_only(w, "leave_board")?;
+            let board = board_of(w, &a["boardId"])?;
+            let idx = w
+                .boards
+                .iter()
+                .position(|b| b.id == board.id)
+                .expect("board_of found it");
+            w.boards[idx].agents.retain(|x| *x != w.agent);
+            Ok(json!({ "ok": true, "agents": w.boards[idx].agents }))
+        }
+
+        "request_board_access" => {
+            let owner = assistant_only(w, "request_board_access")?.to_string();
+            let board = board_of(w, &a["boardId"])?;
+            // Production refuses the request where join would work — the
+            // self-serve route is the answer there, not an editor queue.
+            if board.members.iter().any(|m| m.email == owner) {
+                return Err(refuse(format!(
+                    "request_board_access returns 403 — your owner can already read \"{}\", so join_board works here",
+                    board.name
+                )));
+            }
+            // Deduplicating by design (a partial unique index in production):
+            // a re-file while open is a no-op that says so.
+            if w.board_requests_filed.contains(&board.id) {
+                return Ok(json!({ "ok": true, "alreadyPending": true }));
+            }
+            w.board_requests_filed.push(board.id.clone());
+            Ok(json!({ "ok": true, "alreadyPending": false }))
+        }
+
         // A name that reached dispatch without a backend. Unreachable while the
         // catalog and this table agree (`backed_tool_names` asserts it); kept
         // so the sentence is produced here rather than panicking three frames
@@ -1177,6 +1298,7 @@ fn live_index(w: &SandboxWorld, id: &Value) -> Result<usize, ToolRefusal> {
 pub const BACKED_TOOLS: &[&str] = &[
     // ── Boards & tickets ─────────────────────────────────────────────────
     "list_boards",
+    "whoami",
     "list_tickets",
     "get_ticket",
     "fetch_attachment",
@@ -1233,6 +1355,10 @@ pub const BACKED_TOOLS: &[&str] = &[
     "add_board_member",
     "remove_board_member",
     "set_board_agents",
+    // ── Self-service board access ────────────────────────────────────────
+    "join_board",
+    "leave_board",
+    "request_board_access",
 ];
 
 pub fn backed_tool_names() -> Vec<&'static str> {
@@ -2112,6 +2238,151 @@ mod tests {
         assert_eq!(s.world.boards[0].agents, vec!["nova-analyst".to_string()]);
     }
 
+    // ── self-service board access ────────────────────────────────────────────
+
+    #[test]
+    fn whoami_answers_identity_and_a_why_per_board() {
+        // The default world's general agent: both boards allow-list it, so
+        // every row is policy; identity says not personal.
+        let mut s = sb();
+        let r = s.dispatch("whoami", "{}");
+        assert!(!r.is_error, "{}", r.text);
+        assert!(r.text.contains("\"personal\":false"));
+        assert_eq!(r.text.matches("\"why\":\"policy\"").count(), 2);
+        assert!(r.text.contains("cannot assign tickets"));
+
+        // Priya's assistant: b-platform is priya's own (why "owner", with her
+        // role), b-helpdesk only allow-lists the agent (why "policy").
+        let mut s = Sandbox::new(SandboxOptions {
+            world: serde_json::json!({ "assistantFor": "priya@example.com" }),
+            ..SandboxOptions::default()
+        });
+        let r = s.dispatch("whoami", "{}");
+        assert!(r.text.contains("\"personal\":true"));
+        assert!(r.text.contains("\"why\":\"owner\""));
+        assert!(r.text.matches("\"why\":\"policy\"").count() == 1);
+        let platform = s
+            .world
+            .boards
+            .iter()
+            .find(|b| b.id == "b-platform")
+            .expect("base world carries b-platform");
+        let role = platform
+            .members
+            .iter()
+            .find(|m| m.email == "priya@example.com")
+            .expect("priya is on b-platform")
+            .role
+            .clone();
+        assert!(r.text.contains(&format!("\"role\":\"{role}\"")));
+    }
+
+    #[test]
+    fn join_board_grants_where_the_owner_reads_and_refuses_where_they_cannot() {
+        // A board the owner can read but that does not allow-list the agent:
+        // the exact situation the one-step grant exists for.
+        let mut s = Sandbox::new(SandboxOptions {
+            world: serde_json::json!({
+                "assistantFor": "priya@example.com",
+                "boards": [
+                    { "id": "b-mine", "name": "Mine", "ownerEmail": "priya@example.com",
+                      "members": [ { "email": "priya@example.com", "role": "owner" } ],
+                      "agents": [] },
+                    { "id": "b-danas", "name": "Danas", "ownerEmail": "dana@example.com",
+                      "members": [ { "email": "dana@example.com", "role": "owner" } ],
+                      "agents": [] },
+                ],
+            }),
+            ..SandboxOptions::default()
+        });
+        let joined = s.dispatch("join_board", r#"{"boardId":"b-mine"}"#);
+        assert!(!joined.is_error, "{}", joined.text);
+        assert!(joined.text.contains("engineer-engineering"));
+        // A repeat join is a no-op, not an error, and not a second row.
+        let again = s.dispatch("join_board", r#"{"boardId":"b-mine"}"#);
+        assert!(!again.is_error, "{}", again.text);
+        assert_eq!(s.world.boards[0].agents.len(), 1);
+        // b-danas: priya cannot read it, so the refusal names the request
+        // path — the model's next move, not a dead end.
+        let refused = s.dispatch("join_board", r#"{"boardId":"b-danas"}"#);
+        assert!(
+            refused.text.contains("request_board_access"),
+            "{}",
+            refused.text
+        );
+    }
+
+    #[test]
+    fn leave_board_removes_only_its_own_row() {
+        let mut s = Sandbox::new(SandboxOptions {
+            world: serde_json::json!({
+                "assistantFor": "priya@example.com",
+                "boards": [
+                    { "id": "b-mine", "name": "Mine", "ownerEmail": "priya@example.com",
+                      "members": [ { "email": "priya@example.com", "role": "owner" } ],
+                      "agents": ["engineer-engineering", "nova-analyst"] },
+                ],
+            }),
+            ..SandboxOptions::default()
+        });
+        let left = s.dispatch("leave_board", r#"{"boardId":"b-mine"}"#);
+        assert!(!left.is_error, "{}", left.text);
+        assert!(!s.world.boards[0].agents.contains(&"engineer-engineering".to_string()));
+        // The editor-granted row survives — only the caller's own row goes.
+        assert!(s.world.boards[0].agents.contains(&"nova-analyst".to_string()));
+        // A repeat leave is a no-op.
+        let again = s.dispatch("leave_board", r#"{"boardId":"b-mine"}"#);
+        assert!(!again.is_error, "{}", again.text);
+    }
+
+    #[test]
+    fn request_board_access_files_once_then_answers_already_pending() {
+        // b-helpdesk is dana's and priya cannot read it: the request path.
+        let mut s = Sandbox::new(SandboxOptions {
+            world: serde_json::json!({ "assistantFor": "priya@example.com" }),
+            ..SandboxOptions::default()
+        });
+        let filed = s.dispatch(
+            "request_board_access",
+            r#"{"boardId":"b-helpdesk","reason":"triage helpdesk tickets"}"#,
+        );
+        assert!(!filed.is_error, "{}", filed.text);
+        assert!(filed.text.contains("\"alreadyPending\":false"));
+        let repeat = s.dispatch(
+            "request_board_access",
+            r#"{"boardId":"b-helpdesk","reason":"triage helpdesk tickets"}"#,
+        );
+        assert!(repeat.text.contains("\"alreadyPending\":true"), "{}", repeat.text);
+        // whoami carries where the request stands, so the agent stops asking
+        // people and starts watching its own answer.
+        let r = s.dispatch("whoami", "{}");
+        assert!(r.text.contains("b-helpdesk"), "{}", r.text);
+
+        // Where join works, the request route refuses — an editor queue is
+        // not a detour around the self-serve verb.
+        let refused = s.dispatch(
+            "request_board_access",
+            r#"{"boardId":"b-platform","reason":""}"#,
+        );
+        assert!(refused.text.contains("join_board"), "{}", refused.text);
+    }
+
+    #[test]
+    fn the_self_service_verbs_refuse_a_general_org_agent() {
+        // Both /agents/self verbs and the agent branch of the request route
+        // resolve an owner first; a general agent has none, and production
+        // answers 403 for it — not a silent fallthrough.
+        let mut s = sb();
+        for tool in ["join_board", "leave_board", "request_board_access"] {
+            let r = s.dispatch(tool, r#"{"boardId":"b-platform"}"#);
+            assert!(
+                r.text.contains("personal assistants only"),
+                "{tool}: {}",
+                r.text
+            );
+        }
+    }
+
     // ── catalog ↔ backends ───────────────────────────────────────────────────
 
     #[test]
@@ -2131,7 +2402,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            51,
+            55,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

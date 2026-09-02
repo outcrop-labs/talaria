@@ -206,10 +206,12 @@ fn warn_once(key: &str, line: &str) {
 ///
 /// ⚠ This resolution is also mcp/'s fleet-wide auth oracle: the MCP toolkit
 /// (HTTP mode) holds no DB, so it verifies a connecting agent's credential by
-/// issuing an authenticated GET /api/users and reading the status code — this
-/// function is what answers. Narrowing that route (admin-only, session-only,
-/// moved, renamed) takes the fleet toolkit dark with no error pointing there;
-/// repoint TALARIA_MCP_VERIFY_PATH first. See mcp/README.md § Authentication.
+/// issuing an authenticated GET /api/agent/whoami and reading the status code
+/// — this function is what answers it. Narrowing that route (admin-only,
+/// session-only, moved, renamed) takes the fleet toolkit dark with no error
+/// pointing there; repoint TALARIA_MCP_VERIFY_PATH first. See mcp/README.md §
+/// Authentication. (The oracle lived on GET /api/users until the purpose-built
+/// route existed.)
 pub async fn agent_caller(
     pg: &PgPool,
     headers: &HeaderMap,

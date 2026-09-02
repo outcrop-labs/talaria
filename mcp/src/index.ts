@@ -275,6 +275,71 @@ server.registerTool(
   async () => ok(await api('GET', '/api/boards')),
 )
 
+// ── Self-knowledge ───────────────────────────────────────────────────────────
+// The Gregosaurus finding: an agent discovered its own reach by probing verbs
+// and reading 403s. whoami answers the question; the join/leave/request trio
+// are the actions its answer points at.
+
+server.registerTool(
+  'whoami',
+  {
+    description:
+      'Who you are and what you may touch: identity (personal assistant? whose? elevated?), every board you can work on with WHY you can see it (policy = the board\'s agent allow-list, owner = your owner\'s own access, elevated = org-wide), your channels and MCP servers, the guardrails that will refuse you, and any access requests still pending. Cheap and read-only — call this FIRST rather than probing verbs to learn what 403s.',
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/agent/whoami')),
+)
+
+server.registerTool(
+  'join_board',
+  {
+    description:
+      'One-step grant: add yourself to a board\'s agent allow-list. Works exactly when your owner can already read the board (whoami lists those as why: "owner"). If it 403s, your owner cannot read the board — call request_board_access instead. A repeat join is a no-op, not an error.',
+    inputSchema: {
+      boardId: z.string().describe('Board id (from whoami or list_boards)'),
+    },
+  },
+  async ({ boardId }) =>
+    ok(await api('POST', `/api/boards/${encodeURIComponent(boardId)}/agents/self`)),
+)
+
+server.registerTool(
+  'leave_board',
+  {
+    description:
+      'Remove yourself from a board\'s agent allow-list — only your own row, never the rest of the policy (board editors keep that). A repeat leave is a no-op, not an error.',
+    inputSchema: {
+      boardId: z.string().describe('Board id'),
+    },
+  },
+  async ({ boardId }) =>
+    ok(await api('DELETE', `/api/boards/${encodeURIComponent(boardId)}/agents/self`)),
+)
+
+server.registerTool(
+  'request_board_access',
+  {
+    description:
+      'Ask a board\'s editors to add you — the path for boards your owner cannot read (join_board 403s there, by design). Filing again while a request is open is a no-op that answers alreadyPending: true; whoami\'s pendingRequests shows where each one stands. The editors decide; nobody is notified again by re-filing.',
+    inputSchema: {
+      boardId: z.string().describe(
+        'Board id — you cannot list boards your owner cannot see, so take this from a person pasting the board link (/boards/<id>)',
+      ),
+      reason: z.string().max(500).optional().describe(
+        'One sentence the editors read when deciding — what you would do there',
+      ),
+    },
+  },
+  async ({ boardId, reason }) =>
+    ok(
+      await api(
+        'POST',
+        `/api/boards/${encodeURIComponent(boardId)}/agent-requests`,
+        reason ? { reason } : {},
+      ),
+    ),
+)
+
 server.registerTool(
   'list_tickets',
   {
@@ -1103,22 +1168,22 @@ if (HTTP_PORT) {
   const seen = new Map<string, { ok: boolean; status: number; at: number }>()
 
   /** The Talaria route this process authenticates against — see the coupling
-   *  warning on `verify`. The env var is the escape hatch: it repoints the probe
-   *  without a release, which is what makes narrowing `/api/users` a survivable
-   *  change instead of a fleet-wide outage. */
-  const VERIFY_PATH = (process.env.TALARIA_MCP_VERIFY_PATH ?? '/api/users').trim()
+   *  warning on `verify`. The default is the PURPOSE-BUILT probe
+   *  (`/api/agent/whoami`); the env var remains the escape hatch that repoints
+   *  the probe without a release. */
+  const VERIFY_PATH = (process.env.TALARIA_MCP_VERIFY_PATH ?? '/api/agent/whoami').trim()
 
   // Said at BOOT, not only after the outage. The failure mode of this coupling
   // is that nobody knew it existed: the probe route gets narrowed for a good
   // product reason, the fleet's toolkit goes dark, and the error an operator
-  // reads is "tools/list 401" with nothing pointing at a permissions change in
-  // a people directory. One line in the startup log means the sentence "the
-  // toolkit authenticates against GET /api/users" is already in the operator's
-  // scrollback when they go looking. Only when the default is in use — an
-  // operator who set the env var has read this.
+  // reads is "tools/list 401" with nothing pointing at the route change. One
+  // line in the startup log means the sentence "the toolkit authenticates
+  // against GET /api/agent/whoami" is already in the operator's scrollback
+  // when they go looking. Only when the default is in use — an operator who
+  // set the env var has read this.
   if (!process.env.TALARIA_MCP_VERIFY_PATH) {
     console.error(
-      `talaria-mcp: authenticating every agent against GET ${BASE}${VERIFY_PATH} — a PRODUCT route serving as this toolkit's authentication oracle. Narrowing it (admin-only, session-only, moved, renamed) takes the fleet toolkit dark fleet-wide; set TALARIA_MCP_VERIFY_PATH to another agent-authenticated GET first. See mcp/README.md § "Authentication — and the route it depends on".`,
+      `talaria-mcp: authenticating every agent against GET ${BASE}${VERIFY_PATH} — the agent self-introspection route, which exists to be this toolkit's authentication oracle. It must stay agent-credential GET, cheap, 401/403 (never 404/405) on a bad credential; breaking that contract takes the fleet toolkit dark fleet-wide. See mcp/README.md § "Authentication — and the route it depends on".`,
     )
   }
 
@@ -1136,28 +1201,27 @@ if (HTTP_PORT) {
    *                  caller is not a verified one, and every tool this process
    *                  exposes is broken anyway while Talaria is down.
    *
-   *  ⚠ LOAD-BEARING COUPLING. Using a product route as the probe makes it an
-   *  AUTHENTICATION ORACLE for the entire toolkit: narrow `/api/users` to
-   *  admins or to session auth and every agent's `initialize`/`tools/list`
-   *  starts 401ing, which takes the fleet toolkit dark with no error that
-   *  points at the cause. `/api/users` was chosen because its agent branch is
-   *  nothing but `agent_caller()` — the same resolution a tool call hits — but
-   *  the contract it has to keep is narrow: agent-credential auth, GET, cheap,
-   *  401/403 (not 404) on a bad credential.
+   *  ⚠ LOAD-BEARING COUPLING. The probe route is an AUTHENTICATION ORACLE for
+   *  the entire toolkit: narrow it to admins or session auth and every
+   *  agent's `initialize`/`tools/list` starts 401ing, which takes the fleet
+   *  toolkit dark with no error that points at the cause. The default is now
+   *  the PURPOSE-BUILT probe (`/api/agent/whoami`, whose only jobs are agent
+   *  self-introspection and this), but the contract it has to keep is
+   *  unchanged and narrow: agent-credential auth, GET, cheap, 401/403 (not
+   *  404) on a bad credential.
    *
    *  THE CONTRACT IS WRITTEN AT BOTH ENDS, and "the other end" means three
    *  files, because the person who breaks this is not reading this one:
    *    · mcp/README.md § "Authentication — and the route it depends on"
    *    · api/src/agent_auth.rs (`agent_caller`) — the resolution the probe
    *      exercises
-   *    · api/src/routes/account/users.rs — THE ROUTE ITSELF, the file someone
-   *      edits when they decide the people directory should be admin-only. A
-   *      warning that lives one module away from the edit does not get read;
-   *      that route carries the oracle note beside its handler.
-   *  The durable fix is a purpose-built probe (`GET /api/agent/whoami`: auth,
-   *  no payload, nothing a product decision would ever want to narrow) pointed
-   *  at with TALARIA_MCP_VERIFY_PATH. Until then, repoint with that env var
-   *  rather than editing this. */
+   *    · api/src/routes/agents/agent_whoami.rs — THE ROUTE ITSELF, the
+   *      purpose-built probe. Its header carries the oracle note beside the
+   *      handler, so a warning lives one module away from any edit.
+   *  Before the purpose-built route existed the probe borrowed `/api/users`,
+   *  a product route one permissions decision away from darkening the fleet —
+   *  narrowing it for good product reasons had already happened once.
+   */
   const verify = async (agent: string, key: string): Promise<{ ok: boolean; status: number }> => {
     // Talaria's own service-to-service calls (the MCP gateway's catalog
     // refresh, the admin connection test) present the org-wide fleet key this
