@@ -106,7 +106,7 @@ pub async fn get_org_access_token(
         .map_err(|e| TokenError::Other(format!("google org access token seal: {e}")))?;
     let _ = sqlx::query(
         "update google_org_connection \
-         set access_token_enc = $2, access_expires_at = $3::timestamptz, updated_at = now() \
+         set access_token_enc = $1, access_expires_at = $2::timestamptz, updated_at = now() \
          where id = 1",
     )
     .bind(sealed)
@@ -239,7 +239,7 @@ pub async fn set_org_targets(pg: &PgPool, patch: &OrgTargetsPatch) -> Result<(),
     };
     if let Some(drive_folder_id) = patch.drive_folder_id.clone() {
         sqlx::query(
-            "update google_org_connection set drive_folder_id = $2, updated_at = now() where id = 1",
+            "update google_org_connection set drive_folder_id = $1, updated_at = now() where id = 1",
         )
         .bind(norm(drive_folder_id))
         .execute(pg)
@@ -247,7 +247,7 @@ pub async fn set_org_targets(pg: &PgPool, patch: &OrgTargetsPatch) -> Result<(),
     }
     if let Some(calendar_id) = patch.calendar_id.clone() {
         sqlx::query(
-            "update google_org_connection set calendar_id = $2, updated_at = now() where id = 1",
+            "update google_org_connection set calendar_id = $1, updated_at = now() where id = 1",
         )
         .bind(norm(calendar_id))
         .execute(pg)
@@ -255,7 +255,7 @@ pub async fn set_org_targets(pg: &PgPool, patch: &OrgTargetsPatch) -> Result<(),
     }
     if let Some(send_as) = patch.send_as.clone() {
         sqlx::query(
-            "update google_org_connection set send_as = $2, updated_at = now() where id = 1",
+            "update google_org_connection set send_as = $1, updated_at = now() where id = 1",
         )
         .bind(norm(send_as))
         .execute(pg)
@@ -267,7 +267,7 @@ pub async fn set_org_targets(pg: &PgPool, patch: &OrgTargetsPatch) -> Result<(),
 /// Record the provisioned Shared Drive (null clears).
 pub async fn set_org_shared_drive(pg: &PgPool, id: Option<&str>) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "update google_org_connection set shared_drive_id = $2, updated_at = now() where id = 1",
+        "update google_org_connection set shared_drive_id = $1, updated_at = now() where id = 1",
     )
     .bind(id)
     .execute(pg)

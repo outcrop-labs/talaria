@@ -1166,18 +1166,16 @@ pub async fn set_channel_message_guard(
     let guard = serde_json::to_value(findings).unwrap_or(Value::Array(Vec::new()));
     match redacted_content {
         Some(content) => {
-            sqlx::query("update channel_messages set guard = $3, content = $4 where id = $1::uuid")
+            sqlx::query("update channel_messages set guard = $2, content = $3 where id = $1::uuid")
                 .bind(message_id)
-                .bind(channel_id)
                 .bind(&guard)
                 .bind(content)
                 .execute(&deps.pg)
                 .await?;
         }
         None => {
-            sqlx::query("update channel_messages set guard = $3 where id = $1::uuid")
+            sqlx::query("update channel_messages set guard = $2 where id = $1::uuid")
                 .bind(message_id)
-                .bind(channel_id)
                 .bind(&guard)
                 .execute(&deps.pg)
                 .await?;
@@ -1205,7 +1203,7 @@ pub async fn update_channel_message(
     content: &str,
     status: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("update channel_messages set content = $3, status = $4 where id = $1::uuid")
+    sqlx::query("update channel_messages set content = $2, status = $3 where id = $1::uuid")
         .bind(message_id)
         .bind(content)
         .bind(status)
