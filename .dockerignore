@@ -17,10 +17,10 @@ node_modules
 **/dist
 **/coverage
 
-# Rust build output — the root Dockerfile's `COPY . .` build stage would
-# otherwise ship a devbox's compiled artifacts into the image layer. The Rust
-# build stage (docs/RUST-MIGRATION.md, prod-cutover phase) compiles from
-# source and needs no target/ from the context.
+# Rust build output — a devbox's compiled artifacts never enter a context.
+# The api compiles exactly once, in CI (api/package.Dockerfile, published by
+# api-package.yml); the root Dockerfile doesn't compile it at all, it
+# consumes the published package image.
 api/target
 
 # Instance state — never bake a machine's data or credentials into a layer.

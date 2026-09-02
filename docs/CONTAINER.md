@@ -30,6 +30,29 @@ line (`DOCKER_GID`, `TALARIA_STATE_DIR`, `TALARIA_HTTP_PORT`, …) belongs in a
 silently re-interpolates the defaults, republishing the default port and
 remounting the default state dir on a running instance.
 
+## The api binary arrives pre-built
+
+The image build compiles the UI and the toolkit (bun, in the `build` stage)
+but never the Rust api. That binary is published as its own package image —
+`ghcr.io/outcrop-labs/talaria-api`, built in CI on every api-touching push
+to main (`api/package.Dockerfile` is its build) — and the Dockerfile consumes
+it with a plain `COPY --from`. So nothing that builds the app image, this
+host included, needs a Rust toolchain, a C compiler, or the minutes the TLS
+stack takes to compile; `docker build .` stays docker-and-network only.
+
+The default package tag is `main`, which tracks the source a checkout build
+happens against (the same ref Dokploy builds). Release builds pin the exact
+`sha-<sha12>`-tagged package they were built with, so a published image
+names the api bits it carries.
+
+Changed `api/` yourself? Build the package locally and point the app build at
+it — the compile stays out of the app image either way:
+
+```bash
+docker build --network=host -f api/package.Dockerfile -t talaria-api:local .
+docker build --build-arg TALARIA_API_IMAGE=talaria-api:local .
+```
+
 ## The `talaria` CLI (optional convenience)
 
 Every command in this doc is plain docker compose on purpose — no lock-in,
@@ -377,6 +400,11 @@ channel this repo publishes lands on `ghcr.io/outcrop-labs/talaria`.
 
 Pin anything you care about to the dated/versioned column — the moving tags
 are pointers, rewritten by design.
+
+The api binary rides inside these images but is also its own package,
+`ghcr.io/outcrop-labs/talaria-api`, carrying the same channel tags plus an
+immutable `sha-<sha12>` per commit — that sha tag is what a release build
+actually consumes (see [The api binary arrives pre-built](#the-api-binary-arrives-pre-built)).
 
 Running one is an override file layered on the base compose (the base stays
 checkout-build; this never edits it):
