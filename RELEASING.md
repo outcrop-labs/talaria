@@ -93,11 +93,13 @@ release's app-image build is actually pinned to.
 
 ## One-time setup notes
 
-- **The api package needs bootstrapping.** When `api-package.yml` first
-  lands, run it once by hand (Actions → api-package → Run workflow) so the
-  `main` + sha tags exist — until then a checkout build has no default
-  package to consume. Then flip it public like the app image below; the two
-  packages are set up identically.
+- **The api package is bootstrapped (2026-09-01, the cutover merge).** The
+  merge push itself ran the first build (it touched `api/**`), so the `main`
+  + sha tags existed from day one, and the package was born **public** — the
+  org's package default — verified by anonymous pulls of both tags. A fresh
+  environment replaying this setup: dispatch the workflow once by hand if
+  the first push doesn't touch `api/**`, and check visibility like the app
+  image below.
 - **GHCR visibility.** The first push creates the package **private**.
   Flip it: github.com/outcrop-labs/talaria → Packages → talaria → Package
   settings → Change visibility → Public. Until then, pulls need
