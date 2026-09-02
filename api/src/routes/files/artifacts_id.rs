@@ -207,13 +207,14 @@ pub async fn put(
         }
         actor = actor_of(&user);
         // `canGovern`, not `isOwner` — the same rule kb/docs/{id} already
-        // uses, and the reason canGovern exists. An org agent's artifact is
-        // OWNERLESS on purpose, so strict ownership left every workspace file
-        // an orphan whose sharing literally nobody could change: the owner
-        // check could never pass, and the surface offered a Share dialog that
-        // always 403'd. canGovern hands those to admins and to whoever may
-        // use the agent that wrote them, while human-owned artifacts stay
-        // owner-only exactly as before.
+        // uses, and the reason canGovern exists. Attribution stamps a human
+        // owner on what an agent makes, but it cannot promise one: an
+        // untraceable caller (or output from before attribution) is ownerless,
+        // and strict ownership would leave those files orphans whose sharing
+        // literally nobody could change. canGovern hands the ownerless to
+        // admins and to whoever may use the agent that wrote them, while
+        // owned artifacts — agent-made or not — are owner-only, their
+        // owners' to govern.
         owner = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
             Ok(v) => v,
             Err(e) => {
