@@ -157,7 +157,7 @@ pub async fn post(
             // Spin down + drop from the fleet. Container removed; the state
             // volume and the version history stay (re-hire with 'unretire').
             if sqlx::query(
-                "update agent_defs set enabled = false, updated_at = now() where id = $1",
+                "update agent_defs set enabled = false, updated_at = now() where id = $1::uuid",
             )
             .bind(&def.id)
             .execute(&state.pg)
@@ -201,11 +201,13 @@ pub async fn post(
         "unretire" => {
             // Re-hire: re-enable, re-render (manifest + compose pick it back
             // up), and start the managed container from its preserved volume.
-            if sqlx::query("update agent_defs set enabled = true, updated_at = now() where id = $1")
-                .bind(&def.id)
-                .execute(&state.pg)
-                .await
-                .is_err()
+            if sqlx::query(
+                "update agent_defs set enabled = true, updated_at = now() where id = $1::uuid",
+            )
+            .bind(&def.id)
+            .execute(&state.pg)
+            .await
+            .is_err()
             {
                 return catch(String::new());
             }

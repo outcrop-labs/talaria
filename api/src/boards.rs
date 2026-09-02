@@ -365,7 +365,7 @@ pub async fn set_board_team(
             return Ok(Err("unknown team".into()));
         }
     }
-    sqlx::query("update boards set team_id = $1, updated_at = now() where id = $2::uuid")
+    sqlx::query("update boards set team_id = $1::uuid, updated_at = now() where id = $2::uuid")
         .bind(team_id)
         .bind(board_id)
         .execute(pg)
