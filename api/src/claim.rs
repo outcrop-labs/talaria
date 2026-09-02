@@ -38,8 +38,9 @@ pub async fn instance_claimable(pg: &PgPool) -> Result<bool, sqlx::Error> {
 /// stores its credential in the same transaction (an admin the password
 /// cannot sign back in as is not a claim, it is a lockout). Returns None when
 /// the race was lost — someone claimed between the caller's check and this
-/// call. An identity that already exists as a member is promoted (they were
-/// admitted once already; claiming is just the promotion).
+/// call. An identity that already exists as a member is promoted — as is a
+/// member who already holds the claim's email (same person, another door):
+/// the row is upgraded in place, never forked.
 pub async fn claim_admin(
     pg: &PgPool,
     identity: &Identity,
@@ -60,26 +61,36 @@ pub async fn claim_admin(
         return Ok(None);
     }
 
-    let claimed: ClaimedAdmin = sqlx::query_as(
-        "insert into users (sub, email, name, picture, role, last_seen_at) \
-         values ($1, $2, $3, $4, 'admin', now()) \
-         on conflict (sub) do update set \
-           email = excluded.email, \
-           name = case \
-             when users.name is null or users.name = '' or users.name = users.email then excluded.name \
-             else users.name \
-           end, \
-           picture = excluded.picture, \
-           role = 'admin', \
-           last_seen_at = now() \
-         returning id::text, sub, email, name, picture, role",
-    )
-    .bind(&identity.sub)
-    .bind(&identity.email)
-    .bind(&identity.name)
-    .bind(&identity.picture)
-    .fetch_one(&mut *tx)
-    .await?;
+    // A member already holding the claim's email is the claimant arriving by
+    // another door — link and promote that row rather than forking an admin
+    // beside it. (The link's admin-first ordering is moot under the lock —
+    // no admin exists yet — and is kept only so every same-email resolution
+    // picks the same survivor.)
+    let claimed: ClaimedAdmin = match crate::users::link_by_email(&mut *tx, identity, true).await? {
+        Some(claimed) => claimed,
+        None => {
+            sqlx::query_as(
+                "insert into users (sub, email, name, picture, role, last_seen_at) \
+                 values ($1, $2, $3, $4, 'admin', now()) \
+                 on conflict (sub) do update set \
+                   email = excluded.email, \
+                   name = case \
+                     when users.name is null or users.name = '' or users.name = users.email then excluded.name \
+                     else users.name \
+                   end, \
+                   picture = excluded.picture, \
+                   role = 'admin', \
+                   last_seen_at = now() \
+                 returning id::text, sub, email, name, picture, role",
+            )
+            .bind(&identity.sub)
+            .bind(&identity.email)
+            .bind(&identity.name)
+            .bind(&identity.picture)
+            .fetch_one(&mut *tx)
+            .await?
+        }
+    };
     if let Some(hash) = password_hash {
         sqlx::query(
             "insert into user_password_credentials (user_id, email, password_hash) \

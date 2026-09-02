@@ -20,9 +20,12 @@ pub struct Identity {
 
 /// Upsert the identity into `users`: a sign-in assigns 'member' to a
 /// brand-new sub and never touches an existing role — the first admin comes
-/// from the claim, every later one from Admin → People. Returns the row in
-/// select order (id, sub, email, name, picture, role) — the session user's
-/// input.
+/// from the claim, every later one from Admin → People. When the identity
+/// carries an email that already names a person (Google sign-in for a
+/// password-claimed address), the sign-in LINKS to that row — the email is
+/// the person, not the sub — so one human keeps one row whichever door they
+/// use. Returns the row in select order (id, sub, email, name, picture,
+/// role) — the session user's input.
 pub async fn upsert_user(
     pg: &PgPool,
     identity: &Identity,
@@ -37,31 +40,145 @@ pub async fn upsert_user(
     ),
     sqlx::Error,
 > {
-    let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, String)>(
-        "insert into users (sub, email, name, picture, role, last_seen_at) \
-         values ($1, $2, $3, $4, 'member', now()) \
-         on conflict (sub) do update set \
-           email = excluded.email, \
-           name = case \
-             when users.name is null or users.name = '' or users.name = users.email then excluded.name \
-             else users.name \
-           end, \
-           picture = excluded.picture, \
-           last_seen_at = now() \
-         returning id::text, sub, email, name, picture, role",
-    )
-    .bind(&identity.sub)
-    .bind(&identity.email)
-    .bind(&identity.name)
-    .bind(&identity.picture)
-    .fetch_one(pg)
-    .await?;
+    let row = match link_by_email(pg, identity, false).await? {
+        Some(row) => row,
+        None => {
+            sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, String)>(
+                "insert into users (sub, email, name, picture, role, last_seen_at) \
+                 values ($1, $2, $3, $4, 'member', now()) \
+                 on conflict (sub) do update set \
+                   email = excluded.email, \
+                   name = case \
+                     when users.name is null or users.name = '' or users.name = users.email then excluded.name \
+                     else users.name \
+                   end, \
+                   picture = excluded.picture, \
+                   last_seen_at = now() \
+                 returning id::text, sub, email, name, picture, role",
+            )
+            .bind(&identity.sub)
+            .bind(&identity.email)
+            .bind(&identity.name)
+            .bind(&identity.picture)
+            .fetch_one(pg)
+            .await?
+        }
+    };
     // Org-wide boards (the workspace Helpdesk) are everyone's by definition, so
     // a sign-in joins this user to any they lack. Never fatal — a user who
     // could not be joined still signs in; the next login retries.
     if let Err(e) = join_org_wide_boards(pg, &row.0).await {
         tracing::error!("[users] could not join {} to org-wide boards: {e}", row.0);
     }
+    Ok(row)
+}
+
+/// Link a sign-in identity to the person its email already names, taking over
+/// the row's sub so both doors lead to one row. `promote` also raises the row
+/// to admin — the claim's whole job — while a plain sign-in never touches
+/// role, exactly like the insert's on-conflict arm. Returns None when there
+/// is no email or no same-email row: a brand-new person.
+///
+/// The email is a safe link key because every provider here verifies it
+/// before we see it (Google refuses unverified addresses; a password account
+/// is minted by an admin) — the same trust `create_password_account` links
+/// on. An admin row wins over an earlier same-email member so a fork
+/// resolves toward the claimed person, matching the merge migration's
+/// survivor rule.
+///
+/// The sub takeover is guarded: when some OTHER row already holds the
+/// incoming sub — an unmerged fork from before this link existed — the found
+/// row keeps its own sub rather than tripping the unique constraint. The
+/// fork is the boot migration's to merge, not the sign-in's to guess at.
+/// (Two sign-ins racing the same brand-new sub can still collide once; the
+/// loser's error page retries clean.)
+pub async fn link_by_email<'e, E>(
+    exe: E,
+    identity: &Identity,
+    promote: bool,
+) -> Result<
+    Option<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    )>,
+    sqlx::Error,
+>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let email = identity
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty());
+    let Some(email) = email else {
+        return Ok(None);
+    };
+    // Identical except for the role line: promotion is the claim's one
+    // addition to a sign-in.
+    let sql = if promote {
+        "update users set \
+           sub = case \
+             when exists (select 1 from users o where o.sub = $1 and o.id <> users.id) then users.sub \
+             else $1 \
+           end, \
+           email = $2, \
+           name = case \
+             when users.name is null or users.name = '' or users.name = users.email then $3 \
+             else users.name \
+           end, \
+           picture = $4, \
+           role = 'admin', \
+           last_seen_at = now() \
+         where id = ( \
+           select id from users \
+           where lower(email) = lower($2) \
+           order by (role = 'admin') desc, id \
+           limit 1 \
+         ) \
+         returning id::text, sub, email, name, picture, role"
+    } else {
+        "update users set \
+           sub = case \
+             when exists (select 1 from users o where o.sub = $1 and o.id <> users.id) then users.sub \
+             else $1 \
+           end, \
+           email = $2, \
+           name = case \
+             when users.name is null or users.name = '' or users.name = users.email then $3 \
+             else users.name \
+           end, \
+           picture = $4, \
+           last_seen_at = now() \
+         where id = ( \
+           select id from users \
+           where lower(email) = lower($2) \
+           order by (role = 'admin') desc, id \
+           limit 1 \
+         ) \
+         returning id::text, sub, email, name, picture, role"
+    };
+    let row = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        ),
+    >(sql)
+    .bind(&identity.sub)
+    .bind(email)
+    .bind(&identity.name)
+    .bind(&identity.picture)
+    .fetch_optional(exe)
+    .await?;
     Ok(row)
 }
 
