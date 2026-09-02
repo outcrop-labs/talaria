@@ -1369,20 +1369,19 @@ fn open_brief_detached(deps: Arc<BriefDeps>, user: BriefUser, tz: Option<String>
 
 /// The person's most recent brief, when it is recent enough to still be "the
 /// current one" (48h staleness window). None otherwise.
-async fn load_recent_row(
+pub async fn load_recent_row(
     pg: &PgPool,
     user_id: &str,
     at_ms: i64,
 ) -> Result<Option<BriefRow>, sqlx::Error> {
-    // Cutoff computed here rather than as SQL `created_at - interval` — a
-    // parameterized timestamp does not participate in interval arithmetic
-    // without a cast, and a boundary computed in code is the same fact with
-    // no cast to get wrong.
+    // Cutoff computed here rather than as SQL `created_at - interval` — the
+    // boundary is the same fact either way, and in code it needs no interval
+    // arithmetic. It crosses the wire as text, so the bind carries the cast.
     let since = epoch_ms_to_iso(at_ms - 48 * 3_600_000);
     // AssertSqlSafe: the interpolation is ROW_COLS, this module's column list.
     let sql = format!(
         "select {ROW_COLS} from daily_briefs \
-         where user_id = $1::uuid and last_seq > 0 and created_at > $2 \
+         where user_id = $1::uuid and last_seq > 0 and created_at > $2::timestamptz \
          order by brief_date desc limit 1"
     );
     let row: Option<BriefRowTuple> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))

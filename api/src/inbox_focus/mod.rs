@@ -876,7 +876,10 @@ async fn undo_decision(
     user: &SessionUser,
     decision_id: &str,
 ) -> Result<Value, sqlx::Error> {
-    let decision: Option<(String, String, Option<String>, Value)> = sqlx::query_as(
+    // `outcome` is nullable on disk — every completed row today carries one,
+    // but a future writer that completes without deciding must cost this
+    // person an empty restore, not the whole undo read.
+    let decision: Option<(String, String, Option<String>, Option<Value>)> = sqlx::query_as(
         "select source_type, source_id, action_id, outcome \
          from inbox_decisions \
          where id = $1::uuid and user_id = $2::uuid and status = 'completed' \
@@ -893,7 +896,11 @@ async fn undo_decision(
     if action_id.as_deref() != Some("mark_read") {
         return Ok(stale_result("Undo is no longer available."));
     }
-    let outcome = outcome_value.as_object().cloned().unwrap_or_default();
+    let outcome = outcome_value
+        .as_ref()
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     let restored: bool;
     if source_type == "notification" {
         let after_read_at = outcome

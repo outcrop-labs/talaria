@@ -199,8 +199,10 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
     // Effective visibility, exactly as the live save path resolves it — a doc
     // inheriting from a private space must never reach the org brain.
     // AssertSqlSafe: the interpolated fragment is this crate's EFFECTIVE_DOC_SELECT.
+    // The watermark is ISO text and the window is timestamptz — the cast is
+    // what lets the sweep read anything at all.
     let doc_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "{EFFECTIVE_DOC_SELECT} where d.updated_at > $1"
+        "{EFFECTIVE_DOC_SELECT} where d.updated_at > $1::timestamptz"
     )))
     .bind(&watermark)
     .fetch_all(pg)
@@ -216,7 +218,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
         "select m.id::text, m.channel_id::text, m.author_type, m.author, m.content, c.name \
          from channel_messages m join channels c on c.id = m.channel_id \
          where m.status = 'complete' and m.content <> '' and c.kind <> 'dm' \
-           and m.created_at > $1",
+           and m.created_at > $1::timestamptz",
     )
     .bind(&watermark)
     .fetch_all(pg)
@@ -250,7 +252,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
 
     let tasks: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
         "select t.id::text, t.board_id::text, t.title, t.description \
-         from tasks t where t.archived_at is null and t.updated_at > $1",
+         from tasks t where t.archived_at is null and t.updated_at > $1::timestamptz",
     )
     .bind(&watermark)
     .fetch_all(pg)
@@ -289,7 +291,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
                 l.target_type, l.target_id::text \
          from artifacts a \
          left join artifact_links l on l.artifact_id = a.id and l.target_type in ('plan', 'research') \
-         where a.kind = 'doc' and a.body <> '' and a.updated_at > $1 and l.target_type is not null",
+         where a.kind = 'doc' and a.body <> '' and a.updated_at > $1::timestamptz and l.target_type is not null",
     )
     .bind(&watermark)
     .fetch_all(pg)
