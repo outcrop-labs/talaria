@@ -1,0 +1,80 @@
+# Migration replay — the one CI job with a database.
+#
+# WHAT THIS DOES
+#   On every pull request and every push to main, rc, or testing:
+#     - boots a scratch postgres:16-alpine (the exact image prod sidecars run)
+#     - replays the ENTIRE MIGRATIONS array against it from zero — proving a
+#       fresh database reaches the full schema, and that no statement in the
+#       array has a syntax error or bad column reference
+#     - runs the pass a second time and requires `applied: 0` (exactly-once,
+#       the same property boot relies on after a crash mid-pass)
+#     - pg_dump --schema-only inside that container and diffs it against the
+#       committed ui/src/server/db/schema.snapshot.sql — drift fails with the
+#       regen command, so every schema-touching PR carries the real schema
+#       diff as its review artifact
+#
+# WHY A SEPARATE FILE (not a job in ci.yml). ci.yml's contract is service-free
+#   and dependency-free, and release.yml runs its jobs via workflow_call as
+#   the publish gate — bolting a database onto that call would silently change
+#   what a publish costs and checks. This job is its own contract.
+#
+# WHY `docker run` INSTEAD OF jobs.services. The same container that serves
+#   the replay also runs pg_dump, so the dump tool can never skew from the
+#   server version — and readiness is pg_isready-polled by us, not raced by
+#   the runner. Prod is postgres:16-alpine; so is this.
+name: migrations
+
+on:
+  pull_request:
+  push:
+    branches: [main, rc, testing]
+
+concurrency:
+  group: migrations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - name: Start scratch postgres 16
+        run: |
+          docker run -d --name talaria-mig-pg \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55441:5432 postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg pg_isready -U talaria -q && echo "postgres ready" && exit 0
+            sleep 1
+          done
+          echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1
+
+      - name: Install
+        working-directory: ui
+        run: bun install --frozen-lockfile
+
+      - name: Replay the full migration array
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          # The pass ends by loading the secretbox, which demands a key even
+          # on a schema-only replay. Never a real one — this database dies
+          # with the job.
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: bun run migrations:check
+
+      - name: Replay again — nothing new may apply
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: |
+          out=$(bun run migrations:check)
+          echo "$out"
+          grep -q 'applied: 0' <<<"$out"
