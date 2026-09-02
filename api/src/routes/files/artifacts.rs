@@ -1,9 +1,12 @@
 // /api/artifacts. The artifact LIST
 // (what the Files browser opens on) and CREATE. Read is gated exactly like
-// the KB list beside it: org/public visible to all, private only to owner
-// and grants. Creation differs by caller: a PERSONAL assistant's output
-// belongs to its owner and starts private-to-them; a general agent's output
-// is workspace material and starts org-visible, ownerless.
+// the KB list beside it: org/public visible to all, private only to owner,
+// grants — and, for a personal assistant, its owner's own reach (the single-
+// artifact GET has always had that arm; the LIST now mirrors it). Creation
+// differs by caller: a PERSONAL assistant's output belongs to its owner and
+// starts private-to-them; a general agent's output is workspace material and
+// starts org-visible — stamped to the human the agent answers to (the
+// attribution ladder), so a person governs it instead of an allow-list.
 
 use axum::Json;
 use axum::extract::State;
@@ -24,7 +27,8 @@ use crate::body::{
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::describe_agent;
 use crate::kb::perms::{
-    EditorGrant, ITEM_ARTIFACT, can_read, granted_item_ids, granted_item_ids_for_agent, set_editors,
+    EditorGrant, ITEM_ARTIFACT, can_read, can_read_agent, granted_item_ids,
+    granted_item_ids_for_agent, set_editors,
 };
 use crate::session::{actor_of, require_perm, require_user, who_of};
 use crate::state::AppState;
@@ -74,7 +78,20 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Err(resp) => return resp,
     };
     if let Some(caller) = caller {
-        let name = caller.model;
+        let name = caller.model.clone();
+        // The LIST must answer the same question the single-artifact GET
+        // answers: a personal assistant reads its owner's private artifacts
+        // too. Without this arm the two planes disagreed — the GET opened
+        // what the browser's own listing never showed.
+        let owner =
+            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::error!("[artifacts] owner lookup failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
         let granted = match granted_item_ids_for_agent(&state.pg, ITEM_ARTIFACT, &name).await {
             Ok(g) => g,
             Err(e) => {
@@ -89,10 +106,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 return thrown_internal_error();
             }
         };
-        // Agents see org/public artifacts + ones they've been granted.
+        // Agents see org/public artifacts, ones they've been granted, and —
+        // for a personal assistant — the owner's own private ones. `&[]`
+        // grants here is right: the granted-set clause above already covers
+        // grants, so can_read_agent is asked only its owner arm.
         let artifacts: Vec<&Artifact> = artifacts
             .iter()
-            .filter(|a| a.visibility != "private" || granted.contains(&a.id))
+            .filter(|a| {
+                a.visibility != "private"
+                    || granted.contains(&a.id)
+                    || can_read_agent(&crate::artifacts::guarded(a), &name, owner.as_deref(), &[])
+            })
             .collect();
         return Json(json!({ "artifacts": artifacts })).into_response();
     }
@@ -151,14 +175,17 @@ pub async fn post(
     };
     if let Some(caller) = caller {
         let name = caller.model.clone();
-        // WHO the agent works for decides reach: a PERSONAL assistant's
-        // output belongs to its owner and stays private to them (they can
-        // share it; the assistant cannot make it org-wide). A general org
-        // agent's output is for the workspace — org-visible, ownerless.
-        // Ask with the CALLER: attaching output to a human's account is
-        // owner-proxying, so it needs a proven identity, not an asserted one.
+        // WHO the agent works for decides two things, deliberately two
+        // different answers. A PERSONAL assistant's output stays private to
+        // its owner (they can share it; the assistant cannot make it
+        // org-wide) — pa_owner drives that visibility branch below. The
+        // owner STAMP is the attribution ladder: a PA's owner, or the human
+        // an org agent is answering — a general org agent's output stays
+        // org-visible, but now belongs to a person who can govern it instead
+        // of an allow-list. Both asks need the CALLER: attaching output to a
+        // human's account is owner-proxying, proven identity only.
         let pa_owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await
+            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone())).await
             {
                 Ok(o) => o,
                 Err(e) => {
@@ -166,6 +193,19 @@ pub async fn post(
                     return thrown_internal_error();
                 }
             };
+        let responsible = match crate::attribution::responsible_user_for(
+            &state.pg,
+            state.redis().await.ok(),
+            &AgentSubject::Caller(caller),
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!("[artifacts] responsible-user lookup failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let folder_id = match body.folder.as_deref() {
             Some(f) if !f.is_empty() => named_root_folder(&state.pg, f, &name).await,
             _ => None,
@@ -182,7 +222,7 @@ pub async fn post(
             body.kind.as_deref(),
             body.title.as_deref(),
             &name,
-            pa_owner.as_deref(),
+            responsible.as_deref(),
             // Named folder (find-or-create) when the agent files deliberately;
             // its own cabinet otherwise.
             folder_id.or(cabinet).as_deref(),
