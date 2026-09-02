@@ -1,10 +1,10 @@
 # API reference — knowledge
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 19 routes.
@@ -19,8 +19,8 @@
 | [`/api/kb/docs/{id}/backlinks`](#apikbdocsidbacklinks) | GET | `session` |
 | [`/api/kb/docs/{id}/comments`](#apikbdocsidcomments) | GET | `session` |
 | [`/api/kb/docs/{id}/comments`](#apikbdocsidcomments) | POST | `session` |
-| [`/api/kb/docs/{id}/live`](#apikbdocsidlive) | PUT | `session` |
 | [`/api/kb/docs/{id}/live`](#apikbdocsidlive) | GET | `session` |
+| [`/api/kb/docs/{id}/live`](#apikbdocsidlive) | PUT | `session` |
 | [`/api/kb/docs/{id}/move`](#apikbdocsidmove) | POST | `session` + `perm:kb.edit` |
 | [`/api/kb/public/{slug}`](#apikbpublicslug) | GET | `public` |
 | [`/api/kb/public/space/{slug}`](#apikbpublicspaceslug) | GET | `public` |
@@ -49,27 +49,30 @@
 
 Source: [`api/src/routes/knowledge/kb_comments_id.rs`](../../api/src/routes/knowledge/kb_comments_id.rs)
 
-> One comment. PATCH { resolved } → resolve/unresolve its thread (author,
-> thread starter, or doc owner). DELETE → remove your own comment.
+> /api/kb/comments/{id}. One comment. PATCH { resolved } → resolve/unresolve
+> its thread (author, thread starter, or doc owner). DELETE → remove your own
+> comment.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PATCH | `session` | [body](#patch-apikbcommentsid-body) | `{ok}` | 200, 403 | — |
+| PATCH | `session` | [body](#patch-apikbcommentsid-body) | `{ok}` | 200, 400, 403 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
 ### PATCH `/api/kb/comments/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `resolved` | `z.boolean()` |  |
+| `resolved` | `bool` |  |
 
 ## `/api/kb/docs/{id}`
 
 Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledge/kb_docs_id.rs)
 
-> One KB doc. Read/edit are gated by the doc's EFFECTIVE audience — inherited
-> from its folder unless the doc has been customized. Sharing changes are
-> owner-only; agents (by key) only edit content when granted the Editor role.
+> /api/kb/docs/{id}. One KB doc. Read/edit gated by the doc's EFFECTIVE
+> audience — inherited from its folder unless customized. Sharing changes are
+> owner-only; routing owner-only;
+> officializing needs kb.official. Agents (by key) only edit content when
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -81,25 +84,25 @@ Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledg
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `title` | `z.string().max(200).optional()` |  |
-| `body` | `z.string().max(500_000).optional()` |  |
-| `icon` | `z.string().max(16).nullish()` |  |
-| `visibility` | `z.enum(['private', 'org', 'public']).optional()` |  |
-| `editPolicy` | `z.enum(['owner', 'org', 'restricted']).optional()` |  |
-| `editors` | `z.array(Editor).max(200).optional()` |  |
-| `permsInherited` | `z.boolean().optional()` |  |
-| `parentId` | `Uuid.nullish()` |  |
-| `official` | `z.boolean().optional()` |  |
-| `regenerateOkf` | `z.boolean().optional()` |  |
-| `ragRouting` | `z.string().max(60).optional()` |  |
+| `title` | `string?(200)` |  |
+| `body` | `string?(500000)` |  |
+| `icon` | `string? nullable(16)` |  |
+| `visibility` | `enum(private|org|public)?` |  |
+| `editPolicy` | `enum(owner|org|restricted)?` |  |
+| `permsInherited` | `bool?` |  |
+| `parentId` | `uuid? nullable` |  |
+| `official` | `bool?` |  |
+| `regenerateOkf` | `bool?` |  |
+| `ragRouting` | `string?(60)` |  |
 
 ## `/api/kb/docs/{id}/backlinks`
 
 Source: [`api/src/routes/knowledge/kb_docs_id_backlinks.rs`](../../api/src/routes/knowledge/kb_docs_id_backlinks.rs)
 
-> Docs that link to this one ("linked from"). Editor links point at
-> /knowledge/<id>, so backlinks fall out of a substring match. Gated by the
-> SAME per-doc ACL as reading the doc — backlink titles leak content.
+> /api/kb/docs/{id}/backlinks. Docs that link to this one ("linked from").
+> Editor links point at /knowledge/<id>, so backlinks fall out of a substring
+> match. Gated by the SAME per-doc ACL as reading the doc — backlink titles
+> leak content.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -109,67 +112,74 @@ Source: [`api/src/routes/knowledge/kb_docs_id_backlinks.rs`](../../api/src/route
 
 Source: [`api/src/routes/knowledge/kb_docs_id_comments.rs`](../../api/src/routes/knowledge/kb_docs_id_comments.rs)
 
-> Doc comment threads. GET → all comments (client assembles threads).
-> POST { content, parentId?, quote? } → comment/reply. Read access to the doc
-> is the gate for both — discussion is part of the document.
+> /api/kb/docs/{id}/comments. Doc comment threads. GET → all comments (client
+> assembles threads). POST { content, parentId?, quote? } → comment/reply.
+> Read access to the doc is the gate for both — discussion is part of the
+> document. 404-as-ACL: a doc you can't discuss doesn't exist as far as this
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{comments}` | 200, 404 | — |
-| POST | `session` | [body](#post-apikbdocsidcomments-body) | `…` | 200, 404 | — |
+| POST | `session` | [body](#post-apikbdocsidcomments-body) | `{comment}` | 200, 400, 404 | — |
 
 ### POST `/api/kb/docs/{id}/comments` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `content` | `z.string().trim().min(1).max(8_000)` |  |
-| `parentId` | `Uuid.nullish()` |  |
-| `quote` | `z.string().trim().max(500).nullish()` |  |
+| `content` | `string trimmed(1, 8000)` | content/quote are trim-then-validate members — the length bounds apply to the TRIMMED value, which is also what gets stored. |
+| `parentId` | `uuid?` |  |
+| `quote` | `string trimmed(0, 500)` |  |
 
 ## `/api/kb/docs/{id}/live`
 
 Source: [`api/src/routes/knowledge/kb_docs_id_live.rs`](../../api/src/routes/knowledge/kb_docs_id_live.rs)
 
-> Doc presence (the multiplayer layer's heartbeat). PUT { mode } → I'm here,
-> viewing or editing. GET → who's here right now, with their mode — the doc
-> header renders the avatar stack and the concurrent-edit warning from this.
+> /api/kb/docs/{id}/live. Doc presence (the multiplayer layer's heartbeat).
+> PUT { mode } → I'm here, viewing or editing. GET → who's here right now,
+> with their mode — the doc header renders the avatar stack and the
+> concurrent-edit warning from this. Redis keys kb:presence:<docId>:<userId>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` | [body](#put-apikbdocsidlive-body) | `{ok}` | 200, 404 | — |
 | GET | `session` | — | `{active}` | 200, 404 | — |
+| PUT | `session` | [body](#put-apikbdocsidlive-body) | `{ok}` | 200, 400, 404 | — |
 
 ### PUT `/api/kb/docs/{id}/live` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `mode` | `z.enum(['view', 'edit'])` |  |
+| `mode` | `enum(view|edit)` |  |
 
 ## `/api/kb/docs/{id}/move`
 
 Source: [`api/src/routes/knowledge/kb_docs_id_move.rs`](../../api/src/routes/knowledge/kb_docs_id_move.rs)
 
-> Reparent / reorder a doc in the sidebar tree. Rejects cycles server-side.
-> Moving a doc is an edit of it, so it takes the same gate the PUT does —
-> otherwise any signed-in member could reparent a private doc out of a folder
-> they can't even read. `moveDoc` itself only detects cycles and always has.
+> /api/kb/docs/{id}/move. Reparent / reorder a doc in the sidebar tree.
+> Rejects cycles server-side. Moving a doc is an edit of it, so it takes the
+> same gate the PUT does — otherwise any signed-in member could reparent a
+> private doc out of a folder they can't even read. `moveDoc` itself only
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:kb.edit` | [body](#post-apikbdocsidmove-body) | `…` | 200, 400, 403, 404 | audit |
+| POST | `session` + `perm:kb.edit` | [body](#post-apikbdocsidmove-body) | `{doc}` | 200, 400, 403, 404 | audit |
 
 ### POST `/api/kb/docs/{id}/move` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `parentId` | `Uuid.nullable()` |  |
-| `sort` | `z.number().int().default(0)` |  |
+| `parentId` | `uuid? nullable` |  |
+| `sort` | `number()` |  |
 
 ## `/api/kb/public/{slug}`
 
 Source: [`api/src/routes/knowledge/kb_public.rs`](../../api/src/routes/knowledge/kb_public.rs)
 
-> Public doc read — no auth. Only docs with visibility 'public' resolve.
+> /api/kb/public/{slug}. Public doc read — no auth. Only docs with visibility
+> 'public' resolve; the response body is title/body/updatedAt only (routing
+> and every other internal column stay off the public wire).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -179,8 +189,9 @@ Source: [`api/src/routes/knowledge/kb_public.rs`](../../api/src/routes/knowledge
 
 Source: [`api/src/routes/knowledge/kb_public_space.rs`](../../api/src/routes/knowledge/kb_public_space.rs)
 
-> Public folder read — no auth. Only spaces with visibility 'public' resolve;
-> returns the folder's name + overview (its body), like a public doc.
+> /api/kb/public/space/{slug}. Public folder read — no auth. Only spaces with
+> visibility 'public' resolve; returns the folder's name + overview (its
+> body), like a public doc.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -190,7 +201,10 @@ Source: [`api/src/routes/knowledge/kb_public_space.rs`](../../api/src/routes/kno
 
 Source: [`api/src/routes/knowledge/kb_search.rs`](../../api/src/routes/knowledge/kb_search.rs)
 
-> Full-text search across the knowledgebase (docs the caller can read).
+> /api/kb/search. Full-text search across the knowledgebase (docs the caller
+> can read). The engine (ranked union of docs + space overviews,
+> effective-visibility ACL filter, sentinel highlighting) lives in
+> kb::search_docs.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -200,90 +214,101 @@ Source: [`api/src/routes/knowledge/kb_search.rs`](../../api/src/routes/knowledge
 
 Source: [`api/src/routes/knowledge/kb_spaces.rs`](../../api/src/routes/knowledge/kb_spaces.rs)
 
-> KB spaces (any member). GET → all. POST → create.
+> /api/kb/spaces. KB spaces (any member). GET → all the caller can read
+> (agents over MCP see org/public + granted; humans see visibility-read +
+> granted). POST → create (agents find-or-create by name; humans need
+> kb.official).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200 | — |
-| POST | `dual` | [body](#post-apikbspaces-body) | `{space}` | 200 | audit |
+| GET | `dual` | — | `{spaces}` | 200 | — |
+| POST | `dual` | [body](#post-apikbspaces-body) | `{space}` | 200, 400 | audit |
 
 ### POST `/api/kb/spaces` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().min(1).max(80)` |  |
-| `description` | `z.string().max(400).optional()` |  |
-| `icon` | `z.string().max(8).optional()` |  |
+| `name` | `string(1, 80)` |  |
+| `description` | `string?(400)` |  |
+| `icon` | `string?(8)` |  |
 
 ## `/api/kb/spaces/{id}`
 
 Source: [`api/src/routes/knowledge/kb_spaces_id.rs`](../../api/src/routes/knowledge/kb_spaces_id.rs)
 
-> One KB folder (space). Same permission model as docs: read gated by
-> visibility, writes by the edit policy + editor grants, sharing owner-only.
+> /api/kb/spaces/{id}. One KB folder. Same permission model as docs: read
+> gated by visibility, writes by the edit policy + editor grants, sharing
+> owner-only (can_govern).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200, 403, 404 | — |
-| PUT | `session` | [body](#put-apikbspacesid-body) | `{space, editors}` | 200, 403, 404 | — |
+| GET | `session` | — | `{space, editors}` | 200, 403, 404 | — |
+| PUT | `session` | [body](#put-apikbspacesid-body) | `{space, editors}` | 200, 400, 403, 404 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403, 404 | audit |
 
 ### PUT `/api/kb/spaces/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().min(1).max(80).optional()` |  |
-| `description` | `z.string().max(400).nullish()` |  |
-| `icon` | `z.string().max(16).nullish()` |  |
-| `body` | `z.string().max(500_000).optional()` |  |
-| `visibility` | `z.enum(['private', 'org', 'public']).optional()` |  |
-| `editPolicy` | `z.enum(['owner', 'org', 'restricted']).optional()` |  |
-| `editors` | `z.array(Editor).max(200).optional()` |  |
+| `name` | `string(1, 80)` |  |
+| `description` | `string? nullable(400)` |  |
+| `icon` | `string? nullable(16)` |  |
+| `body` | `string?(500000)` |  |
+| `visibility` | `enum(private|org|public)?` |  |
+| `editPolicy` | `enum(owner|org|restricted)?` |  |
 
 ## `/api/kb/spaces/{id}/docs`
 
 Source: [`api/src/routes/knowledge/kb_spaces_id_docs.rs`](../../api/src/routes/knowledge/kb_spaces_id_docs.rs)
 
-> A space's docs (tree). GET → doc metadata list. POST → new doc.
+> /api/kb/spaces/{id}/docs. A space's doc tree. GET → doc metadata list
+> (agents gate on agent space-access, then per-doc audience; humans gate on
+> the folder, then inherited docs show and customized ones filter). POST →
+> new doc (agent docs are drafts owned by the assistant's principal; humans
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{docs}` | 200 | — |
-| POST | `dual` | [body](#post-apikbspacesiddocs-body) | `{doc}` | 200, 403, 404 | audit |
+| POST | `dual` | [body](#post-apikbspacesiddocs-body) | `{doc}` | 200, 400, 403, 404 | audit |
 
 ### POST `/api/kb/spaces/{id}/docs` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `title` | `z.string().max(200).optional()` |  |
-| `parentId` | `Uuid.nullish()` |  |
-| `kind` | `z.enum(['human', 'agent']).optional()` |  |
-| `body` | `z.string().max(500_000).optional()` |  |
+| `title` | `string?(200)` |  |
+| `parentId` | `uuid?` |  |
+| `kind` | `enum(human|agent)?` |  |
+| `body` | `string?(500000)` | Initial markdown body (the MCP create_kb_doc path sets it in one shot). |
 
 ## `/api/memory/{id}`
 
 Source: [`api/src/routes/knowledge/memory_id.rs`](../../api/src/routes/knowledge/memory_id.rs)
 
-> One managed agent's MEMORY.md, read/written through its running container.
-> Writes: admin, or the owner of a personal assistant for its own memory.
+> /api/memory/{id}. One managed agent's MEMORY.md, read/written through its
+> running container. Writes: admin, or the owner of a personal assistant for
+> its own memory.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200, 400, 403 | — |
+| GET | `session` | — | `{content, container}` | 200, 400, 403 | — |
 | PUT | `session` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400, 403 | — |
 
 ### PUT `/api/memory/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `content` | `z.string().max(2_000_000)` |  |
+| `content` | `string(0, 2000)` | content — required, max 2M; the empty string is legal (min 0: clearing a memory is a write). |
 
 ## `/api/rag/collections`
 
 Source: [`api/src/routes/knowledge/rag_collections.rs`](../../api/src/routes/knowledge/rag_collections.rs)
 
-> The RAG collection registry (admin). GET → all collections + bindings (the two
-> auto ones are ensured first). POST → spin up a new custom collection.
+> /api/rag/collections. The RAG collection registry. GET → every collection +
+> its access bindings (the two auto ones ensured first; members get the
+> picker shape with the binding matrix blanked — that matrix is admin
+> governance). POST → spin up a custom collection. The write is admin-only;
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -294,109 +319,111 @@ Source: [`api/src/routes/knowledge/rag_collections.rs`](../../api/src/routes/kno
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().min(2).max(80)` |  |
-| `description` | `z.string().max(500).optional()` |  |
-| `bindings` | `z.array(Binding).max(200).optional()` |  |
+| `name` | `string(2, 80)` |  |
+| `description` | `string?(500)` |  |
 
 ## `/api/rag/collections/{id}`
 
 Source: [`api/src/routes/knowledge/rag_collections_id.rs`](../../api/src/routes/knowledge/rag_collections_id.rs)
 
-> One collection (admin). PUT → set its access bindings. DELETE → drop it (auto
-> collections are protected).
+> /api/rag/collections/{id}. One collection, admin. PUT → replace its access
+> bindings wholesale; an unknown (but well-formed) id 404s. DELETE → drop it
+> (the two auto collections are protected); a missing id is a no-op delete —
+> it still answers ok, it still audits.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `admin` | [body](#put-apiragcollectionsid-body) | `{ok}` | 200, 404 | audit |
+| PUT | `admin` | [body](#put-apiragcollectionsid-body) | `{ok}` | 200, 400, 404 | audit |
 | DELETE | `admin` | — | `{ok}` | 200, 400 | audit |
 
 ### PUT `/api/rag/collections/{id}` body
 
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `bindings` | `z.array(z.object({ principalType: z.enum(['all', 'user', 'agent', 'team']), principalId: z.string().max(200).nullish() })).max(200)` |  |
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/rag/search`
 
 Source: [`api/src/routes/knowledge/rag_search.rs`](../../api/src/routes/knowledge/rag_search.rs)
 
-> Ranked retrieval across the caller's accessible collections. Works for a
-> signed-in user (their bindings) OR a fleet agent (agent-key + x-agent-name →
-> that agent's bindings). This is the endpoint the search_knowledge MCP tool
-> calls — retrieval as function-calling.
+> /api/rag/search. Ranked retrieval across the caller's accessible
+> collections, for EITHER caller shape: a signed-in user (their bindings) or
+> a fleet agent (agent key + x-agent-name → that agent's bindings). This is
+> the endpoint the search_knowledge MCP tool calls — retrieval as
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apiragsearch-body) | `…` | 200, 502 | — |
+| POST | `dual` | [body](#post-apiragsearch-body) | `{hits}` | 200, 400, 502 | — |
 
 ### POST `/api/rag/search` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `query` | `z.string().min(1).max(2000)` |  |
-| `limit` | `z.number().int().min(1).max(20).optional()` |  |
-| `collectionIds` | `z.array(Uuid).max(20).optional()` |  |
+| `query` | `string(1, 2000)` |  |
+| `limit` | `number?(1, 20)` |  |
+| `collectionIds` | `uuid[]?(20)` |  |
 
 ## `/api/search`
 
 Source: [`api/src/routes/knowledge/search.rs`](../../api/src/routes/knowledge/search.rs)
 
+> /api/search.
+>
 > LIVE WEB SEARCH — the endpoint behind the `web_search` MCP tool, and the one
 > place an agent or a signed-in user reaches this deployment's search.
->
-> IT ASKS `searchTheWeb`, NOT SEARXNG. This used to call the SearXNG client
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apisearch-body) | `{query, results, via}` | 200, 503 | — |
+| POST | `dual` | [body](#post-apisearch-body) | `{query, results, via}` | 200, 400, 503 | — |
 
 ### POST `/api/search` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `query` | `z.string().min(2).max(400)` |  |
-| `limit` | `z.number().int().min(1).max(25).optional()` |  |
+| `query` | `string(2, 400)` |  |
 
 ## `/api/templates`
 
 Source: [`api/src/routes/knowledge/templates.rs`](../../api/src/routes/knowledge/templates.rs)
 
-> The org's template library (ticket + plan formats). GET → all (any member —
-> the library grounds pickers everywhere). POST → create (any member, like
-> boards/channels; the skeletons are org-shared working material, not policy).
+> /api/templates. The org's template library (ticket + plan formats). GET →
+> all (any member — the library grounds pickers everywhere). POST → create
+> (needs templates.manage — the skeletons are org-wide starting points).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{templates}` | 200 | — |
-| POST | `session` + `perm:templates.manage` | [body](#post-apitemplates-body) | `…` | 200 | — |
+| POST | `session` + `perm:templates.manage` | [body](#post-apitemplates-body) | `{template}` | 200, 400 | — |
 
 ### POST `/api/templates` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().trim().min(1).max(120)` |  |
-| `kind` | `z.enum(['ticket', 'plan'])` |  |
-| `body` | `z.string().max(50_000).optional()` |  |
-| `guidance` | `z.string().max(10_000).optional()` |  |
+| `name` | `string trimmed(1, 120)` |  |
+| `kind` | `enum(ticket|plan)` |  |
+| `body` | `string?(50000)` |  |
+| `guidance` | `string?(10000)` |  |
 
 ## `/api/templates/{id}`
 
 Source: [`api/src/routes/knowledge/templates_id.rs`](../../api/src/routes/knowledge/templates_id.rs)
 
-> One template: PUT → edit (kind is immutable — retire and recreate instead),
-> DELETE → remove (bindings cascade/null out; consumers fall through the chain).
+> /api/templates/{id}. One template: PUT → edit (kind is immutable — retire
+> and recreate instead), DELETE → remove (bindings cascade/null out;
+> consumers fall through the chain).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` + `perm:templates.manage` | [body](#put-apitemplatesid-body) | `…` | 200, 404 | — |
+| PUT | `session` + `perm:templates.manage` | [body](#put-apitemplatesid-body) | `{template}` | 200, 400, 404 | — |
 | DELETE | `session` + `perm:templates.manage` | — | `{ok}` | 200, 404 | — |
 
 ### PUT `/api/templates/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().trim().min(1).max(120).optional()` |  |
-| `body` | `z.string().max(50_000).optional()` |  |
-| `guidance` | `z.string().max(10_000).optional()` |  |
+| `name` | `optional_trimmed` |  |
+| `body` | `string?(50000)` |  |
+| `guidance` | `string?(10000)` |  |
 

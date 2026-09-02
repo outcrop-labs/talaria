@@ -1,10 +1,10 @@
 # API reference — apps
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 2 routes.
@@ -18,14 +18,14 @@
 
 Source: [`api/src/routes/apps/apps.rs`](../../api/src/routes/apps/apps.rs)
 
-> The signed-in view of installed apps: ENABLED apps only, manifest data the
-> client needs to draw nav items, routes, and settings tabs. Per-user view
-> gating happens client-side off deniedViews (and server-side at the app API
-> gateway) — this list is not secret, it is the platform's own menu.
+> GET /api/apps. The signed-in view of installed apps: ENABLED apps only,
+> manifest data the client needs to draw nav items, routes, and settings tabs.
+> Per-user view gating happens client-side off deniedViews (and server-side at
+> the app API gateway) — this list is not secret, it is the platform's own menu.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{apps}` | 200 | — |
+| GET | `session` | — | `…` | 200 | — |
 
 ## `/api/apps/{app}/*`
 

@@ -1,10 +1,10 @@
 # API reference — inbox
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 7 routes.
@@ -25,7 +25,9 @@
 
 Source: [`api/src/routes/inbox/inbox_focus.rs`](../../api/src/routes/inbox/inbox_focus.rs)
 
-> The focus inbox queue — what the assistant has teed up for the caller.
+> /api/inbox/focus. GET → the focus inbox queue: what the assistant has
+> teed up for the caller. No options are taken (the queue defaults:
+> enrich, no snoozed) — the query string is ignored entirely.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -35,59 +37,64 @@ Source: [`api/src/routes/inbox/inbox_focus.rs`](../../api/src/routes/inbox/inbox
 
 Source: [`api/src/routes/inbox/inbox_focus_actions.rs`](../../api/src/routes/inbox/inbox_focus_actions.rs)
 
-> Execute a focus-inbox action: fire an action, confirm or cancel a
-> pending decision, undo the last one.
+> /api/inbox/focus/actions. POST → execute a focus-inbox action: fire an
+> action, confirm or cancel a pending decision, undo the last one. Every
+> button on a queue card funnels through this one entry, under the Inbox
+> lock; the timeline entry is attached before the lock drops so the
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apiinboxfocusactions-body) | `{status, message}` | 200, 409 + varies | — |
+| POST | `session` | [body](#post-apiinboxfocusactions-body) | `{status, message}` | 200, 400, 409, 422 | — |
 
 ### POST `/api/inbox/focus/actions` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `key` | `z.string().min(1).max(600).optional()` |  |
-| `actionId` | `z.string().min(1).max(100).optional()` |  |
-| `payload` | `z.unknown().optional()` |  |
-| `commandDecisionId` | `Uuid.optional()` |  |
-| `decisionId` | `Uuid.optional()` |  |
-| `confirmationToken` | `z.string().min(20).max(200).optional()` |  |
-| `cancelDecisionId` | `Uuid.optional()` |  |
-| `undoDecisionId` | `Uuid.optional()` |  |
+| `key` | `string?(600)` |  |
+| `actionId` | `string?(100)` |  |
+| `commandDecisionId` | `uuid?` |  |
+| `decisionId` | `uuid?` |  |
+| `confirmationToken` | `string(20, 200)` |  |
+| `cancelDecisionId` | `uuid?` |  |
+| `undoDecisionId` | `uuid?` |  |
 
 ## `/api/inbox/focus/command`
 
 Source: [`api/src/routes/inbox/inbox_focus_command.rs`](../../api/src/routes/inbox/inbox_focus_command.rs)
 
-> Run one instruction from the focus inbox panel through the assistant
-> (normal / fast / plan mode, optional model overrides).
+> /api/inbox/focus/command. POST → run one instruction from the focus inbox
+> panel through the assistant (normal / fast / plan mode, optional model
+> overrides), as an SSE stream of named events — conversation, status,
+> content, activity, done, error.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apiinboxfocuscommand-body) | `…` | 200, 409 | SSE |
+| POST | `session` | [body](#post-apiinboxfocuscommand-body) | `…` | 200, 400, 409 | SSE |
 
 ### POST `/api/inbox/focus/command` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `key` | `z.string().min(1).max(600).nullable().optional()` |  |
-| `surface` | `z.string().max(40).nullable().optional()` |  |
-| `instruction` | `z.string().trim().min(1).max(20_000)` |  |
-| `delegateModel` | `z.string().max(300).nullable().optional()` |  |
-| `responseModel` | `z.string().max(300).nullable().optional()` |  |
-| `mode` | `z.enum(['normal', 'fast', 'plan']).default('normal')` |  |
-| `conversationId` | `Uuid.nullable().optional()` |  |
-| `effort` | `z.string().max(24).nullable().optional()` |  |
-| `attachmentIds` | `z.array(Uuid).max(12).default([])` |  |
-| `refs` | `z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: Uuid, })).max(6).default([])` |  |
+| `key` | `string? nullish` |  |
+| `surface` | `string? nullish(40)` |  |
+| `instruction` | `string trimmed(1, 20000)` |  |
+| `delegateModel` | `string? nullish(300)` |  |
+| `responseModel` | `string? nullish(300)` |  |
+| `mode` | `enum(normal|fast|plan)?` |  |
+| `conversationId` | `uuid?` |  |
+| `effort` | `string? nullish(24)` |  |
+| `attachmentIds` | `uuid[]?(12)` |  |
 
 ## `/api/inbox/focus/conversations`
 
 Source: [`api/src/routes/inbox/inbox_focus_conversations.rs`](../../api/src/routes/inbox/inbox_focus_conversations.rs)
 
-> GET → the panel's chat picker. POST → start a fresh conversation instance.
-> Segmentation is the context strategy: a new instance is how old context is
-> shed, and it is the owner's choice to make (no budget imposes it).
+> /api/inbox/focus/conversations. GET → the panel's chat picker. POST →
+> start a fresh conversation instance. Segmentation is the context
+> strategy: a new instance is how old context is shed, and it is the
+> owner's choice to make (no budget imposes it).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -98,10 +105,10 @@ Source: [`api/src/routes/inbox/inbox_focus_conversations.rs`](../../api/src/rout
 
 Source: [`api/src/routes/inbox/inbox_focus_conversations_id.rs`](../../api/src/routes/inbox/inbox_focus_conversations_id.rs)
 
-> One conversation instance, by its path id. GET → its timeline page (cursor
-> paginates); DELETE → archive it. Both are scoped inside the module to the
-> caller's own inbox conversations, so an id from the picker can never touch
-> one of their ordinary chats. Archiving, not deleting: the messages and the
+> /api/inbox/focus/conversations/{id}. One conversation instance, by its
+> path id. GET → its timeline page (cursor paginates); DELETE → archive it.
+> Both are scoped inside the module to the caller's own inbox
+> conversations, so an id from the picker can never touch one of their
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -113,24 +120,33 @@ Source: [`api/src/routes/inbox/inbox_focus_conversations_id.rs`](../../api/src/r
 
 Source: [`api/src/routes/inbox/inbox_focus_state.rs`](../../api/src/routes/inbox/inbox_focus_state.rs)
 
-> Mark a focus item viewed, or snooze it until a time.
+> /api/inbox/focus/state. PUT → mark a focus item viewed, or snooze it
+> until a time. The lock is the whole route's: the state write and the
+> snooze's decision row are one Inbox action, and a second one mid-flight
+> is what the 409 refuses.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` | [body](#put-apiinboxfocusstate-body) | `{ok}` | 200, 409 | — |
+| PUT | `session` | [body](#put-apiinboxfocusstate-body) | `{ok}` | 200, 400, 409 | — |
 
 ### PUT `/api/inbox/focus/state` body
 
-Body schema `z.object({ sourceType: z.enum(FOCUS_SOURCE_TYPES), sourceId: z.string().min(1).max(500), snoozedUntil: z.string().datetime().nullable().opt…` is not an object literal in the route file — see the route source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `sourceType` | `enum(approval|task|channel|notification)` |  |
+| `sourceId` | `string(1, 500)` |  |
+| `snoozedUntil` | `datetime? nullable` |  |
+| `viewed` | `bool?` |  |
 
 ## `/api/inbox/focus/summary`
 
 Source: [`api/src/routes/inbox/inbox_focus_summary.rs`](../../api/src/routes/inbox/inbox_focus_summary.rs)
 
-> The one-screen summary of the caller's focus state — what's queued,
-> what's in flight, what needs a decision.
+> /api/inbox/focus/summary. GET → the one-screen summary of the caller's
+> focus state: how many items are queued (snoozed ones excluded), as
+> {count}.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200 | — |
+| GET | `session` | — | `{count}` | 200 | — |
 

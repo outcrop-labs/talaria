@@ -1,10 +1,10 @@
 # API reference — brief
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 5 routes.
@@ -22,83 +22,99 @@
 
 Source: [`api/src/routes/brief/brief.rs`](../../api/src/routes/brief/brief.rs)
 
-> The caller's daily brief — the assistant-assembled digest of what needs
-> them. GET sweeps-if-due, then returns the current brief.
+> /api/brief. GET → the caller's daily brief: the assistant-assembled digest of what
+> needs them. The read sweeps-if-due first, then answers with the document —
+> or with WHICH kind of nothing, because the three absences render
+> differently and collapsing them into one empty state is how a surface
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200 | — |
+| GET | `session` | — | `{absent, nextAt, agent}` | 200 | — |
 
 ## `/api/brief/delegate`
 
 Source: [`api/src/routes/brief/brief_delegate.rs`](../../api/src/routes/brief/brief_delegate.rs)
 
-> Grant or revoke the assistant's reply-without-asking privilege, org-wide
-> (null) or for one channel. Owner-only by construction: not a Perm, and no
-> route takes a user id — nobody can grant it on somebody else's behalf.
+> /api/brief/delegate. GET → the caller's live reply grants. POST
+> { channelId, granted } → grant
+> or revoke the assistant's reply-without-asking privilege, org-wide (null)
+> or for one channel.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{grants}` | 200 | — |
-| POST | `session` | [body](#post-apibriefdelegate-body) | `{revoked}` | 200, 403 | — |
+| POST | `session` | [body](#post-apibriefdelegate-body) | `{grant, sent}` | 200, 400, 403 | — |
 
 ### POST `/api/brief/delegate` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `channelId` | `Uuid.nullable()` |  |
-| `granted` | `z.boolean()` |  |
+| `channelId` | `uuid? nullable` | channelId must be PRESENT; null is the standing, org-wide grant. |
+| `granted` | `bool` |  |
 
 ## `/api/brief/item`
 
 Source: [`api/src/routes/brief/brief_item.rs`](../../api/src/routes/brief/brief_item.rs)
 
-> Check off, dismiss, or restore one brief item. The reader's timezone
-> rides along so the change lands on the brief they are looking at.
+> /api/brief/item. POST { sourceKey, action, tz } → check off, dismiss, or
+> restore one brief
+> line. The owner's own verdict on their own document — scoped to the
+> caller's brief inside `mark_brief_item`, so a key belonging to somebody
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apibriefitem-body) | `{ok}` | 200, 404 | — |
+| POST | `session` | [body](#post-apibriefitem-body) | `{ok}` | 200, 400, 404 | — |
 
 ### POST `/api/brief/item` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `sourceKey` | `z.string().min(1).max(200)` |  |
-| `action` | `z.enum(['check', 'dismiss', 'restore'])` |  |
-| `tz` | `z.string().max(64).nullable().optional()` |  |
+| `sourceKey` | `string(1, 200)` |  |
+| `action` | `enum(check|dismiss|restore)` |  |
+| `tz` | `string? nullish` | the helper answers the already-flattened Option (absent and null are the same thing to the engine, which takes `tz: Option<&str>`). |
 
 ## `/api/brief/read`
 
 Source: [`api/src/routes/brief/brief_read.rs`](../../api/src/routes/brief/brief_read.rs)
 
-> Move the brief reader's cursor — the only mutation this surface exposes.
+> /api/brief/read. POST { briefId, seq } → move the brief reader's cursor.
+> The ONLY mutation
+> this surface exposes — there is no edit, no dismiss and no delete, because
+> the document is append-only and every one of those would be a rewrite
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apibriefread-body) | `{ok}` | 200 | — |
+| POST | `session` | [body](#post-apibriefread-body) | `{ok}` | 200, 400 | — |
 
 ### POST `/api/brief/read` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `briefId` | `Uuid` |  |
-| `seq` | `z.number().int().min(0)` |  |
+| `briefId` | `uuid` |  |
+| `seq` | `number(0, 9007)` | seq: integer, min 0, no max below the safe-integer ceiling (2^53-1). read_seq is int8, so the whole safe range is storable — no int4 clamp. |
 
 ## `/api/brief/reply`
 
 Source: [`api/src/routes/brief/brief_reply.rs`](../../api/src/routes/brief/brief_reply.rs)
 
-> Approve or reject a reply the assistant drafted — send it, or discard it.
+> /api/brief/reply. POST { draftId, decision } → approve or reject a reply
+> the assistant
+> drafted: send it, or discard it.
+>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apibriefreply-body) | `{status}` | 200, 404, 409 + varies | — |
+| POST | `session` | [body](#post-apibriefreply-body) | `{status}` | 200, 400, 404, 409 | — |
 
 ### POST `/api/brief/reply` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `draftId` | `Uuid` |  |
-| `decision` | `z.enum(['approve', 'reject'])` |  |
+| `draftId` | `uuid` |  |
+| `decision` | `enum(approve|reject)` |  |
 

@@ -1,10 +1,10 @@
 # API reference — fleet
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 20 routes.
@@ -15,9 +15,9 @@
 | [`/api/fleet/agents/{id}/control`](#apifleetagentsidcontrol) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | POST | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | DELETE | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | POST | `session` + `perm:agents.manage` |
+| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | PUT | `session` + `perm:agents.manage` |
+| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | DELETE | `session` + `perm:agents.manage` |
 | [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | GET | `session` |
 | [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | PUT | `session` |
 | [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | DELETE | `session` |
@@ -45,7 +45,7 @@
 
 Source: [`api/src/routes/fleet/fleet.rs`](../../api/src/routes/fleet/fleet.rs)
 
-> GET /api/fleet → owned fleet ops data (agents + Talaria-native usage).
+> GET /api/fleet. Owned fleet ops data (agents + Talaria-native usage).
 > Ops-wide detail: admins + people granted the Observability view.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -56,78 +56,81 @@ Source: [`api/src/routes/fleet/fleet.rs`](../../api/src/routes/fleet/fleet.rs)
 
 Source: [`api/src/routes/fleet/fleet_agents_id_control.rs`](../../api/src/routes/fleet/fleet_agents_id_control.rs)
 
-> POST { action } → lifecycle control for one agent (admin; owners of a
-> personal assistant may up/stop/restart their own).
+> POST /api/fleet/agents/{id}/control. Lifecycle control for one agent
+> (admin; owners of a personal assistant may up/stop/restart their own).
 >   up | stop | restart   the managed service (renders first on `up`)
 >   roll                  zero-downtime replacement (admin) — detached
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcontrol-body) | `{ok, warming}` | 200, 400, 403, 404, 500 | audit |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 403, 404, 500 | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `z.enum(['up', 'stop', 'restart', 'roll', 'retire', 'unretire', 'delete'])` |  |
+| `action` | `enum(up|stop|restart|roll|retire|unretire|delete)` |  |
 
 ## `/api/fleet/agents/{id}/crons`
 
 Source: [`api/src/routes/fleet/fleet_agents_id_crons.rs`](../../api/src/routes/fleet/fleet_agents_id_crons.rs)
 
-> One agent's native Hermes cron jobs. GET → jobs (read from the container's
-> jobs.json). POST → create. Admin, or the owner of a personal assistant.
+> /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
+> jobs (read from the container's jobs.json). POST → create. Admin, or the
+> owner of a personal assistant.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `perm:agents.manage` | — | `{jobs}` | 200, 400, 403 | — |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcrons-body) | `{ok}` | 200, 400, 403 | audit |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400, 403 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().trim().min(1).max(80)` |  |
-| `schedule` | `z.string().trim().min(1).max(120)` |  |
-| `prompt` | `z.string().trim().min(1).max(20_000)` |  |
+| `name` | `string trimmed(1, 80)` |  |
+| `schedule` | `string trimmed(1, 120)` |  |
+| `prompt` | `string trimmed(1, 20000)` |  |
 
 ## `/api/fleet/agents/{id}/crons/{jobId}`
 
 Source: [`api/src/routes/fleet/fleet_agents_id_crons_jobid.rs`](../../api/src/routes/fleet/fleet_agents_id_crons_jobid.rs)
 
-> One cron job: DELETE → remove. POST { action } → pause | resume | run
-> ("run" queues it for the next scheduler tick, ≤60s). PUT { name? schedule?
-> prompt? } → edit in place. Admin or owner.
+> /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
+> { action } → pause | resume | run ("run" queues it for the next scheduler
+> tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
+> owner.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200, 400, 403 | audit |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 403 | audit |
 | POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 403 | audit |
-
-### PUT `/api/fleet/agents/{id}/crons/{jobId}` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `name` | `z.string().min(1).max(80).optional()` |  |
-| `schedule` | `z.string().min(1).max(120).optional()` |  |
-| `prompt` | `z.string().min(1).max(20_000).optional()` |  |
+| PUT | `session` + `perm:agents.manage` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 403 | audit |
+| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200, 400, 403 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons/{jobId}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `z.enum(['pause', 'resume', 'run'])` |  |
+| `action` | `enum(pause|resume|run)` |  |
+
+### PUT `/api/fleet/agents/{id}/crons/{jobId}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string?(80)` |  |
+| `schedule` | `string?(120)` |  |
+| `prompt` | `string?(20000)` |  |
 
 ## `/api/fleet/agents/{id}/secrets`
 
 Source: [`api/src/routes/fleet/fleet_agents_id_secrets.rs`](../../api/src/routes/fleet/fleet_agents_id_secrets.rs)
 
-> Per-agent secrets, write-only. GET → names + timestamps (never values).
-> PUT { name, value } → set/replace. DELETE { name } → remove. Admin, or the
-> owner of a personal assistant. Takes effect on the next start from Talaria.
-> Every write audits — secret NAMES only, never values.
+> /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
+> names + timestamps (never values). PUT { name, value } → set/replace.
+> DELETE { name } → remove. Admin, or the owner of a personal assistant.
+> Takes effect on the next start from Talaria. Every write audits — secret
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -139,20 +142,21 @@ Source: [`api/src/routes/fleet/fleet_agents_id_secrets.rs`](../../api/src/routes
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().trim().min(2).max(64)` |  |
-| `value` | `z.string().min(1).max(8192)` |  |
+| `name` | `string trimmed(2, 64)` |  |
+| `value` | `string(1, 8192)` | value is UNtrimmed — a leading space is a legal secret character. |
 
 ### DELETE `/api/fleet/agents/{id}/secrets` body
 
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `name` | `z.string().min(1).max(64)` |  |
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/fleet/containers`
 
 Source: [`api/src/routes/fleet/fleet_containers.rs`](../../api/src/routes/fleet/fleet_containers.rs)
 
-> GET → container reality per agent (the managed service), admin.
+> GET /api/fleet/containers. Container reality per agent (the managed
+> service), admin.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -162,58 +166,58 @@ Source: [`api/src/routes/fleet/fleet_containers.rs`](../../api/src/routes/fleet/
 
 Source: [`api/src/routes/fleet/fleet_create.rs`](../../api/src/routes/fleet/fleet_create.rs)
 
-> POST → start HIRING a new agent. The work — create the def, write v1 and
-> any starter skills, render the fleet, boot the container, wait out the
-> healthcheck — is a durable `agent-hire` run, not this request: a boot runs
-> to minutes on a cold pull, and a POST is a promise to stay on the line the
+> /api/fleet/create. POST → start HIRING a new agent. The work — create the
+> def, write v1 and any starter skills, render the fleet, boot the
+> container, wait out the healthcheck — is a durable `agent-hire` run, not
+> this request: a boot runs to minutes on a cold pull, and a POST is a
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetcreate-body) | `{ok, hire}` | 200, 409 | — |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetcreate-body) | `{ok, hire}` | 200, 400, 409, 500 | — |
 
 ### POST `/api/fleet/create` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `slug` | `z.string().min(2).max(30)` |  |
-| `department` | `z.string().min(2).max(40)` |  |
-| `displayName` | `z.string().min(1).max(60)` |  |
-| `role` | `z.string().max(80).nullish()` |  |
-| `templateId` | `Uuid.optional()` |  |
-| `soul` | `z.string().max(200_000).optional()` |  |
-| `skills` | `z.array(z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/), content: z.string().max(100_000) })).max(5).optional()` |  |
-| `start` | `z.boolean().optional()` |  |
+| `slug` | `string(2, 30)` |  |
+| `department` | `string(2, 40)` |  |
+| `displayName` | `string(1, 60)` |  |
+| `role` | `string? nullish(80)` |  |
+| `templateId` | `uuid?` |  |
+| `soul` | `string?(200000)` |  |
+| `start` | `bool?` |  |
 
 ## `/api/fleet/crons`
 
 Source: [`api/src/routes/fleet/fleet_crons.rs`](../../api/src/routes/fleet/fleet_crons.rs)
 
-> Fleet-wide crons (admin). GET → every managed agent's jobs (down containers
-> reported per-agent, not fatal). POST → create the same job across agents,
-> staggered per agent when the schedule is a fixed-minute cron expression.
+> /api/fleet/crons. Fleet-wide crons (admin). GET → every managed agent's
+> jobs (down containers reported per-agent, not fatal). POST → create the
+> same job across agents, staggered per agent when the schedule is a
+> fixed-minute cron expression.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{agents}` | 200 | — |
-| POST | `admin` | [body](#post-apifleetcrons-body) | `…` | 200 | audit |
+| POST | `admin` | [body](#post-apifleetcrons-body) | `{results}` | 200, 400 | audit |
 
 ### POST `/api/fleet/crons` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `agentIds` | `z.array(Uuid).min(1).max(64)` |  |
-| `name` | `z.string().trim().min(1).max(80)` |  |
-| `schedule` | `z.string().trim().min(1).max(120)` |  |
-| `prompt` | `z.string().trim().min(1).max(20_000)` |  |
-| `staggerMinutes` | `z.number().int().min(0).max(30).optional()` |  |
+| `agentIds` | `uuid[](64)` | agentIds: min(1).max(64) — the helper carries the max; the min (a fleet cron with no agents is nothing) is checked here. |
+| `name` | `string trimmed(1, 80)` |  |
+| `schedule` | `string trimmed(1, 120)` |  |
+| `prompt` | `string trimmed(1, 20000)` |  |
 
 ## `/api/fleet/defs`
 
 Source: [`api/src/routes/fleet/fleet_defs.rs`](../../api/src/routes/fleet/fleet_defs.rs)
 
-> The harness registry. GET → agent definitions (latest version inline) +
-> LLM endpoints. Admins only — the config surface includes infra layout.
+> GET /api/fleet/defs. The harness registry: agent definitions (latest
+> version inline) + LLM endpoints + brain routability. Admins only — the
+> config surface includes infra layout.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -223,149 +227,145 @@ Source: [`api/src/routes/fleet/fleet_defs.rs`](../../api/src/routes/fleet/fleet_
 
 Source: [`api/src/routes/fleet/fleet_defs_id.rs`](../../api/src/routes/fleet/fleet_defs_id.rs)
 
-> PATCH → editable agent identity metadata (role, display name). Not versioned
-> — this is identity, not config. Admin only.
+> /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
+> display name, send alias) plus the workbench and template binds. Not
+> versioned — this is identity, not config. Admin only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PATCH | `session` + `perm:agents.manage` | [body](#patch-apifleetdefsid-body) | `{ok}` | 200, 404 | audit |
+| PATCH | `session` + `perm:agents.manage` | [body](#patch-apifleetdefsid-body) | `{ok}` | 200, 400, 404 | audit |
 
 ### PATCH `/api/fleet/defs/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `role` | `z.string().max(80).nullish()` |  |
-| `displayName` | `z.string().min(1).max(80).optional()` |  |
-| `emailAlias` | `z.string().trim().max(320).refine((v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), 'not an email address').nullish()` |  |
-| `ticketTemplateId` | `Uuid.nullable().optional()` |  |
-| `planTemplateId` | `Uuid.nullable().optional()` |  |
-| `workbench` | `z.enum(['off', 'auto', 'on']).optional()` |  |
-| `workbenchProfile` | `z.string().max(40).nullable().optional()` |  |
-| `workbenchHarness` | `z.string().max(40).nullable().optional()` |  |
-| `workbenchModels` | `z.object({ light: z.string().max(200).nullable().optional(), standard: z.string().max(200).nullable().optional(), heavy: z.string().max(200…` |  |
+| `role` | `string? nullable(80)` |  |
+| `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
+| `planTemplateId` | `uuid? nullable` |  |
+| `workbench` | `enum(off|auto|on)?` |  |
+| `workbenchProfile` | `string? nullable(40)` |  |
+| `workbenchHarness` | `string? nullable(40)` |  |
 
 ## `/api/fleet/defs/{id}/edit`
 
 Source: [`api/src/routes/fleet/fleet_defs_id_edit.rs`](../../api/src/routes/fleet/fleet_defs_id_edit.rs)
 
-> POST → save an edit as a NEW immutable version (and optionally apply it to
-> the running managed container). Admin. This is "versioned agent internals":
-> nothing shifts silently — every change is a version you can diff and revert.
+> /api/fleet/defs/{id}/edit. POST → save an edit as a NEW immutable version
+> (and optionally apply it to the running managed container). Admin. This is
+> "versioned agent internals": nothing shifts silently — every change is a
+> version you can diff and revert.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidedit-body) | `{ok, applied, warning}` | 200, 400, 404 | audit |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `soul` | `z.string().max(200_000)` |  |
-| `main` | `Target` |  |
-| `aliases` | `z.array(Target.extend({ name: z.string().min(1).max(60) })).max(20)` |  |
-| `fallbacks` | `z.array(Target).max(10)` |  |
-| `note` | `z.string().max(300).optional()` |  |
-| `apply` | `z.boolean().optional()` |  |
+| `soul` | `string(0, 200000)` |  |
+| `main` | `target` |  |
+| `aliases` | `target_array` |  |
+| `fallbacks` | `target_array` |  |
+| `note` | `string?(300)` |  |
+| `apply` | `bool?` | Re-render + restart the managed container so the edit takes effect now. |
 
 ## `/api/fleet/defs/{id}/mcp`
 
 Source: [`api/src/routes/fleet/fleet_defs_id_mcp.rs`](../../api/src/routes/fleet/fleet_defs_id_mcp.rs)
 
-> POST → add/remove MCP servers on an agent as a NEW config version (same
-> versioned-internals contract as model edits), optionally applied live.
+> /api/fleet/defs/{id}/mcp. POST → add/remove MCP servers on an agent as a
+> NEW config version (same versioned-internals contract as model edits),
+> optionally applied live.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidmcp-body) | `{ok, applied, warning}` | 200, 400, 404 | audit |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidmcp-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `add` | `z.array(z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).max(60), url: z.string().url().max(300), timeout: z.number().int().posit…` |  |
-| `remove` | `z.array(z.string().max(60)).max(20).default([])` |  |
-| `apply` | `z.boolean().optional()` |  |
+| `apply` | `bool?` |  |
 
 ## `/api/fleet/defs/{id}/versions`
 
 Source: [`api/src/routes/fleet/fleet_defs_id_versions.rs`](../../api/src/routes/fleet/fleet_defs_id_versions.rs)
 
-> GET → an agent definition's full version history (admin).
-> POST { revertTo } → re-publish an old version's payload as a NEW version
-> (history is append-only; a revert is itself a tracked change).
+> /api/fleet/defs/{id}/versions. GET → an agent definition's full version
+> history (admin). POST { revertTo } → re-publish an old version's payload
+> as a NEW version (history is append-only; a revert is itself a tracked
+> change).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{versions}` | 200, 404 | — |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidversions-body) | `{ok}` | 200, 404 | — |
+| GET | `session` + `perm:agents.manage` | — | `{def, versions}` | 200, 404 | — |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidversions-body) | `{ok, version, created}` | 200, 400, 404 | — |
 
 ### POST `/api/fleet/defs/{id}/versions` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `revertTo` | `z.number().int().positive()` |  |
+| `revertTo` | `number()` | exclusive lower bound, so the folded helper's >= min cannot say it. |
 
 ## `/api/fleet/endpoints`
 
 Source: [`api/src/routes/fleet/fleet_endpoints.rs`](../../api/src/routes/fleet/fleet_endpoints.rs)
 
-> The model-backend registry (Models tab). GET → all endpoints. POST → add one.
+> /api/fleet/endpoints. The model-backend registry (Models tab). GET → all
+> endpoints. POST → add one.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{endpoints}` | 200 | — |
-| POST | `admin` | [body](#post-apifleetendpoints-body) | `{ok}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apifleetendpoints-body) | `{ok, id}` | 200, 400 | audit |
 
 ### POST `/api/fleet/endpoints` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().min(2).max(60)` |  |
-| `provider` | `z.string().min(2).max(40)` |  |
-| `baseUrl` | `z.string().url().max(300).nullish()` |  |
-| `class` | `z.enum(['local', 'cloud'])` |  |
-| `apiKeyEnv` | `z.string().regex(/^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/).max(80).nullish()` |  |
-| `apiKey` | `z.string().max(400).nullish()` |  |
-| `models` | `z.array(z.string().min(1).max(120)).max(100).optional()` |  |
-| `modelPrices` | `z.record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() })).optional()` |  |
+| `name` | `string(2, 60)` |  |
+| `provider` | `string(2, 40)` |  |
+| `baseUrl` | `url` |  |
+| `class` | `enum(local|cloud)` |  |
+| `apiKeyEnv` | `nullish_key_env` | Provider-key-shaped names only (see provider-catalog KEY_ENV_RE) — the catalog fetch sends this var's VALUE to the endpoint's base URL. |
+| `apiKey` | `string?(400)` | Raw provider API key — sealed (secretbox) server-side, never stored or returned in the clear. |
+| `models` | `string[]?(1, 120, 100)` |  |
 
 ## `/api/fleet/endpoints/{id}`
 
 Source: [`api/src/routes/fleet/fleet_endpoints_id.rs`](../../api/src/routes/fleet/fleet_endpoints_id.rs)
 
-> PUT → edit an endpoint (class, pricing, model catalog). Removing catalog
-> models that agents use returns 409 with the blast radius; retry with
-> force:true to cascade (agents get new versions with the tier stripped).
-> DELETE → remove the endpoint, same double-opt-in flow (?force=1).
+> /api/fleet/endpoints/{id}. PUT → edit an endpoint (class, pricing, model
+> catalog). Removing catalog models that agents use returns 409 with the
+> blast radius; retry with force:true to cascade (agents get new versions
+> with the tier stripped). DELETE → remove the endpoint, same double-opt-in
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `admin` | [body](#put-apifleetendpointsid-body) | `{needsForce, affected}` | 200, 400, 404, 409 | audit |
-| DELETE | `admin` | — | `{ok}` | 200, 400, 409 | audit |
+| DELETE | `admin` | — | `{needsForce, affected}` | 200, 400, 409 | audit |
 
 ### PUT `/api/fleet/endpoints/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `class` | `z.enum(['local', 'cloud']).optional()` |  |
-| `priceInPerMtok` | `z.number().nonnegative().nullish()` |  |
-| `priceOutPerMtok` | `z.number().nonnegative().nullish()` |  |
-| `models` | `z.array(z.string().min(1).max(120)).max(100).optional()` |  |
-| `modelPrices` | `z.record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() })).optional()` |  |
-| `modelEfforts` | `z.record(z.string().max(120), z.array(z.string().min(1).max(24)).min(1).max(12)).optional()` |  |
-| `requestDefaults` | `z.record(z.string().max(120), z.unknown()).optional()` |  |
-| `apiKey` | `z.string().max(400).nullish()` |  |
-| `force` | `z.boolean().optional()` |  |
+| `class` | `enum(local|cloud)?` |  |
+| `priceInPerMtok` | `nullish_nonneg` |  |
+| `priceOutPerMtok` | `nullish_nonneg` |  |
+| `models` | `string[]?(1, 120, 100)` |  |
+| `apiKey` | `string? nullable(400)` |  |
+| `force` | `bool?` |  |
 
 ## `/api/fleet/endpoints/{id}/available`
 
 Source: [`api/src/routes/fleet/fleet_endpoints_id_available.rs`](../../api/src/routes/fleet/fleet_endpoints_id_available.rs)
 
-> GET → what this provider actually offers right now (live /models call,
-> server-side, keys never leave the box). Admin.
+> GET /api/fleet/endpoints/{id}/available. What this provider actually
+> offers right now (live /models call, server-side, keys never leave the
+> box). Admin.
 >
-> THE CALL IS ALREADY BEING MADE, so it also refreshes the stored catalog: an
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -376,23 +376,30 @@ Source: [`api/src/routes/fleet/fleet_endpoints_id_available.rs`](../../api/src/r
 
 Source: [`api/src/routes/fleet/fleet_federate.rs`](../../api/src/routes/fleet/fleet_federate.rs)
 
-> POST → federate outside agents into Talaria: read a Hermes-format directory
-> and create each agent natively (Talaria def, fresh key + state volume, our
-> chassis, skills copied in). One-way and re-runnable. Admin.
+> POST /api/fleet/federate. Federate outside agents into Talaria: read a
+> Hermes-format directory and create each agent natively (Talaria def,
+> fresh key + state volume, our chassis, skills copied in). One-way and
+> re-runnable. Admin.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | [body](#post-apifleetfederate-body) | `…` | 200 | audit |
+| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400 | audit |
 
 ### POST `/api/fleet/federate` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dir` | `z.string().trim().min(1).max(500)` |  |
+| `dir` | `string trimmed(1, 500)` | trim, 1..500 — a server-side path to a Hermes-format directory (admin trust model). |
 
 ## `/api/fleet/hires`
 
 Source: [`api/src/routes/fleet/fleet_hires.rs`](../../api/src/routes/fleet/fleet_hires.rs)
+
+> GET /api/fleet/hires. What the roster shows while an agent-hire run
+> works: every live hire, plus the recently-finished ones long enough for
+> the surface to see the transition (and a failure's sentence) before the
+> row goes away.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -402,8 +409,9 @@ Source: [`api/src/routes/fleet/fleet_hires.rs`](../../api/src/routes/fleet/fleet
 
 Source: [`api/src/routes/fleet/fleet_reconcile.rs`](../../api/src/routes/fleet/fleet_reconcile.rs)
 
-> POST → render + start every enabled managed agent that isn't running. One
-> button to bring the fleet to desired state (drift, cold start). Admin.
+> POST /api/fleet/reconcile. Render + start every enabled managed agent
+> that isn't running. One button to bring the fleet to desired state
+> (drift, cold start). Admin.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -413,10 +421,11 @@ Source: [`api/src/routes/fleet/fleet_reconcile.rs`](../../api/src/routes/fleet/f
 
 Source: [`api/src/routes/fleet/fleet_render.rs`](../../api/src/routes/fleet/fleet_render.rs)
 
-> POST → render every managed agent's config + the fleet compose + the gateway
-> manifest (the bridge hot-reloads the manifest). Admin.
+> POST /api/fleet/render. Render every managed agent's config + the fleet
+> compose + the gateway manifest (the bridge hot-reloads the manifest).
+> Admin.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | — | `…` | 200, 500 | audit |
+| POST | `admin` | — | `{result}` | 200, 500 | audit |
 

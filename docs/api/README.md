@@ -1,11 +1,10 @@
 # API reference
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust
-> port replaced, then frozen: group files now point their Source links at
-> `api/src/routes/**`. Regeneration returns with the Rust extractor (#293); until
-> then, maintained by hand — one file per resource group, one row per (path,
-> method). Requests/responses follow the house envelope
-> and conventions: [API-CONVENTIONS.md](../API-CONVENTIONS.md).
+> **Generated** by `bun run docs:api` — do not edit by hand. One file per resource
+> group, one row per (path, method), extracted from the Rust router
+> (`api/src/routes/mod.rs`) and handler modules (`api/src/routes/**`).
+> Requests/responses follow the house envelope and conventions:
+> [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
 219 routes across 23 groups.
 
@@ -41,18 +40,18 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | class | meaning |
 | :--- | :--- |
 | `public` | no authentication |
-| `session` | any signed-in member (`requireUser`) |
-| `session` + `perm:x` | signed-in member holding permission `x` |
-| `session` + `view:p` | signed-in member granted view `p` |
-| `admin` | an admin session (`requireAdmin`) |
-| `agent` | an agent credential (`tak_` key, `requireAgent`/`agentCaller`) |
+| `session` | any signed-in member (`require_user`) |
+| `session` + `perm:x` | signed-in member holding permission `x` (`require_perm`) |
+| `session` + `view:p` | signed-in member granted view `p` (`require_view`) |
+| `admin` | an admin session (`require_admin`) |
+| `agent` | an agent credential (`tak_` key, `require_agent`/`agent_caller`) |
 | `dual` | session path and agent path both reach the handler |
-| `fleet` | internal fleet key (`fleetCaller`) |
-| `bearer-key` | a personal LLM-gateway API key (`authenticateKey`) |
+| `fleet` | internal fleet key (`fleet_caller`/`check_fleet_key`) |
+| `bearer-key` | a personal LLM-gateway API key (`authenticate_key`) |
 
 ---
 
 The **Returns** column everywhere in this reference is a heuristic: the top-level
-keys of the first success-shaped `json({…})` literal in the handler. `…` means the
+keys of the first success-shaped `json!({…})` literal in the handler. `…` means the
 shape is computed, not literal. Where a row matters to you, the source link at the
 top of its section is the truth.

@@ -1,10 +1,10 @@
 # API reference — secrets
 
-> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
-> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
-> header names the TS file it ported) or the permanent TS residents still serving.
-> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
-> The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
+> **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
+> and the handler modules under `api/src/routes/**` (the TS residents still serving
+> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
 6 routes.
@@ -26,94 +26,76 @@
 
 Source: [`api/src/routes/secrets/secrets.rs`](../../api/src/routes/secrets/secrets.rs)
 
-> The sealed-secrets vault. GET → the secrets the caller can see
-> (metadata only — values never leave the vault); POST → seal a new one.
+> /api/secrets.
+>
+> WORKING SECRETS — the ones a PERSON needs back. Not admin, and that is the
+> entire reason this exists: somebody wiring up a staging integration has a
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{secrets}` | 200 | — |
-| POST | `session` | [body](#post-apisecrets-body) | `{secret}` | 200, 500 | audit |
-| PATCH | `session` | [body](#patch-apisecrets-body) | `{secret}` | 200, 403 | audit |
-| DELETE | `session` | [body](#delete-apisecrets-body) | `{ok}` | 200, 403, 404 | audit |
+| POST | `session` | [body](#post-apisecrets-body) | `{secret}` | 200, 400, 500 | audit |
+| PATCH | `session` | [body](#patch-apisecrets-body) | `{secret}` | 200, 400, 403 | audit |
+| DELETE | `session` | [body](#delete-apisecrets-body) | `{ok}` | 200, 400, 403, 404 | audit |
 
 ### POST `/api/secrets` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `title` | `z.string().min(1).max(80)` |  |
-| `entries` | `z.array(Entry).min(1).max(20)` |  |
-| `note` | `z.string().max(400).nullish()` |  |
-| `folderId` | `Uuid.nullish()` |  |
-| `readers` | `z.array(Uuid).max(50).optional()` |  |
-| `grantTo` | `z.array(z.string().max(120)).max(50).optional()` |  |
-| `allowedHosts` | `z.array(z.string().max(253)).max(30).optional()` |  |
-| `expiresAt` | `z.string().max(40).nullish()` |  |
+| `title` | `string(1, 80)` |  |
+| `note` | `string? nullish(400)` |  |
+| `folderId` | `uuid?` |  |
+| `readers` | `uuid[]?(50)` |  |
+| `grantTo` | `string[]?(0, 120, 50)` |  |
+| `allowedHosts` | `string[]?(0, 253, 30)` |  |
+| `expiresAt` | `string? nullish(40)` |  |
+| `key` | `value` |  |
+| `label` | `string(1, 60)` |  |
+| `value` | `string(1, 20000)` |  |
 
 ### PATCH `/api/secrets` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().max(80)` |  |
-| `folderId` | `Uuid.nullable()` |  |
+| `name` | `string(0, 80)` | name is max-only; folderId is REQUIRED but may be null. |
+| `folderId` | `uuid? nullable` |  |
 
 ### DELETE `/api/secrets` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().max(80)` |  |
+| `name` | `string(0, 80)` |  |
 
 ## `/api/secrets/folders`
 
 Source: [`api/src/routes/secrets/secrets_folders.rs`](../../api/src/routes/secrets/secrets_folders.rs)
 
-> Secret folders: list / create / rename / delete. Folder membership
-> gates what GET /api/secrets shows.
+> /api/secrets/folders.
+>
+> The Secrets view's own organisation, not the Files browser's. Sharing a
+> folder is the point, not a bonus: a set somebody is actively working on
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{folders}` | 200 | — |
-| POST | `session` | [body](#post-apisecretsfolders-body) | `{folder}` | 200, 403 | audit |
+| POST | `session` | [body](#post-apisecretsfolders-body) | `{agentModel}` | 200, 400, 403 | audit |
 
-### POST `/api/secrets/folders` body — variant 1
+### POST `/api/secrets/folders` body
 
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('create')` |  |
-| `name` | `z.string().min(1).max(60)` |  |
-
-### POST `/api/secrets/folders` body — variant 2
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('rename')` |  |
-| `id` | `Uuid` |  |
-| `name` | `z.string().min(1).max(60)` |  |
-
-### POST `/api/secrets/folders` body — variant 3
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('delete')` |  |
-| `id` | `Uuid` |  |
-
-### POST `/api/secrets/folders` body — variant 4
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('share')` |  |
-| `id` | `Uuid` |  |
-| `on` | `z.boolean()` |  |
-| `userId` | `Uuid.optional()` |  |
-| `agentModel` | `z.string().max(120).optional()` |  |
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/secrets/git-credential`
 
 Source: [`api/src/routes/secrets/secrets_git_credential.rs`](../../api/src/routes/secrets/secrets_git_credential.rs)
 
-> THE SANDBOX'S WAY IN — where a handle could not otherwise reach.
+> /api/secrets/git-credential.
 >
-> A handle substitutes at the MCP gateway, which covers every tool call an agent
-> makes THROUGH Talaria. It does not cover the shell inside a workbench sandbox:
+> THE SANDBOX'S WAY IN — where a handle could not otherwise reach. A handle
+> substitutes at the MCP gateway, which covers every tool call an agent
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -124,96 +106,72 @@ Source: [`api/src/routes/secrets/secrets_git_credential.rs`](../../api/src/route
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `host` | `z.string().min(1).max(253)` |  |
-| `protocol` | `z.string().max(20).optional()` |  |
-| `path` | `z.string().max(400).optional()` |  |
+| `host` | `string(1, 253)` |  |
+| `protocol` | `string?(20)` |  |
+| `path` | `string?(400)` |  |
 
 ## `/api/secrets/relay`
 
 Source: [`api/src/routes/secrets/secrets_relay.rs`](../../api/src/routes/secrets/secrets_relay.rs)
 
-> HAND AN AGENT A CREDENTIAL, MID-CONVERSATION, WITHOUT PUTTING IT IN THE CHAT.
+> /api/secrets/relay.
 >
-> The paste this exists to prevent is the ordinary one: somebody needs their
-> agent to do a thing that takes a token, so they type the token into the
+> HAND AN AGENT A CREDENTIAL, MID-CONVERSATION, WITHOUT PUTTING IT IN THE
+> CHAT. The paste this exists to prevent is the ordinary one: somebody needs
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apisecretsrelay-body) | `{handle, name, label, expiresAt}` | 200, 403, 500 | audit |
+| POST | `session` | [body](#post-apisecretsrelay-body) | `{handle, name, label, expiresAt}` | 200, 400, 403, 500 | audit |
 
 ### POST `/api/secrets/relay` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `agentModel` | `z.string().min(1).max(120)` |  |
-| `label` | `z.string().min(1).max(60)` |  |
-| `value` | `z.string().min(1).max(20_000)` |  |
-| `note` | `z.string().max(400).nullish()` |  |
-| `allowedHosts` | `z.array(z.string().max(253)).max(10).optional()` |  |
+| `agentModel` | `string(1, 120)` |  |
+| `label` | `string(1, 60)` |  |
+| `value` | `string(1, 20000)` |  |
+| `note` | `string? nullish(400)` |  |
+| `allowedHosts` | `string[]?(0, 253, 10)` | Optional: pin the one-shot to the host it is for — the only bound that survives the agent being talked into spending it elsewhere. |
 
 ## `/api/secrets/reveal`
 
 Source: [`api/src/routes/secrets/secrets_reveal.rs`](../../api/src/routes/secrets/secrets_reveal.rs)
 
-> THE ONE ROUTE IN THIS FEATURE THAT RETURNS A CREDENTIAL.
+> /api/secrets/reveal.
 >
-> Everything else — the admin panel, the relay mint, the listing above — is
-> built so that a value has nowhere to come back through. This is the deliberate
+> THE ONE ROUTE IN THIS FEATURE THAT RETURNS A CREDENTIAL. Everything else
+> is built so a value has nowhere to come back through; this deliberate
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apisecretsreveal-body) | `{value}` | 200 | — |
+| POST | `session` | [body](#post-apisecretsreveal-body) | `{value}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/secrets/reveal` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `name` | `z.string().max(80)` |  |
-| `key` | `z.string().max(40)` |  |
+| `name` | `string(0, 80)` |  |
+| `key` | `string(0, 40)` |  |
 
 ## `/api/secrets/share`
 
 Source: [`api/src/routes/secrets/secrets_share.rs`](../../api/src/routes/secrets/secrets_share.rs)
 
-> Share a sealed secret with a person (share / unshare) or grant an
-> agent access to it (grant / revoke). Values stay sealed; shares gate
-> visibility.
+> /api/secrets/share.
+>
+> Sharing a working secret — and the two audiences mean two different
+> things. A PERSON gets a READER grant: they can reveal it, copy it, paste
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apisecretsshare-body) | `{secret}` | 200, 403, 404 | audit |
+| POST | `session` | [body](#post-apisecretsshare-body) | `…` | 200, 400, 403, 404 | audit |
 
-### POST `/api/secrets/share` body — variant 1
+### POST `/api/secrets/share` body
 
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('share')` |  |
-| `name` | `z.string().max(80)` |  |
-| `userId` | `Uuid` |  |
-
-### POST `/api/secrets/share` body — variant 2
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('unshare')` |  |
-| `name` | `z.string().max(80)` |  |
-| `userId` | `Uuid` |  |
-
-### POST `/api/secrets/share` body — variant 3
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('grant')` |  |
-| `name` | `z.string().max(80)` |  |
-| `agentModel` | `z.string().min(1).max(120)` |  |
-
-### POST `/api/secrets/share` body — variant 4
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.literal('revoke')` |  |
-| `name` | `z.string().max(80)` |  |
-| `agentModel` | `z.string().min(1).max(120)` |  |
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
