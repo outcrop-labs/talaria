@@ -18,6 +18,7 @@ pub mod alerts;
 pub mod approvals;
 pub mod apps;
 pub mod artifacts;
+pub mod attribution;
 pub mod audit;
 pub mod auth;
 pub mod auth_config;
