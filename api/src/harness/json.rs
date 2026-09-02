@@ -1,11 +1,11 @@
-// The ONE structured-output parser — the port of harness/json.ts. Every
-// place Talaria asks a model for JSON and reads it back comes through here.
+// The ONE structured-output parser. Every place Talaria asks a model for JSON
+// and reads it back comes through here.
 //
 // WHY THIS MODULE EXISTS
-//   Six different extractors grew up in the TS codebase, and three of them
-//   were the same non-solution: take everything from the first `{` to the
-//   last `}` and hand it to JSON.parse. That is not a JSON scanner. It is a
-//   substring, and it was verified by EXECUTION to fail on three shapes a
+//   Six different extractors once grew up across the call sites, and three of
+//   them were the same non-solution: take everything from the first `{` to
+//   the last `}` and parse the substring. That is not a JSON scanner. It is
+//   a substring, and it fails — verified by EXECUTION — on three shapes a
 //   14B model emits constantly:
 //
 //     1. a fenced object followed by prose that mentions a `{placeholder}`
@@ -31,13 +31,10 @@
 //
 //   Pure by construction: no DB, no gateway, no settings.
 //
-// THE ONE RECORDED DIVERGENCE: the parenthetical in "the JSON could not be
-// parsed (…)" is the STRICT parser's own error text, which on the TS side is
-// the runtime's prose — bun says "JSON Parse error: Unexpected token '}'",
-// node says something else again, and serde_json says a third thing. The
-// sentence's SHAPE (a short parse complaint inside the fixed prefix) is the
-// contract a model reads; the prose inside the parens was never stable
-// enough to be one, so serde_json's wording is accepted and the TS corpus
+// THE PARENTHETICAL in "the JSON could not be parsed (…)" is the STRICT
+// parser's own error text — serde_json's prose. The sentence's SHAPE (a short
+// parse complaint inside the fixed prefix) is the contract a model reads; the
+// prose inside the parens is not stable enough to be one, and the test corpus
 // does not pin it.
 
 use super::define::PreFn;
@@ -251,7 +248,7 @@ fn straighten_quotes(raw: &[char]) -> String {
     out
 }
 
-/// JS `/[\w$]/` — ASCII word characters plus the dollar sign.
+/// ASCII word characters plus the dollar sign.
 fn is_word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
@@ -325,8 +322,8 @@ pub fn relax_json(raw: &str) -> String {
         // "to Infinity and beyond" inside a string is untouched (handled by
         // the in_string arm), and `InfinityMode` outside one is an
         // identifier, not a literal.
-        // `String.startsWith` answers false when the candidate runs off the
-        // end; a slice here would panic — so bound it first.
+        // A candidate that runs off the end of the input is simply not a
+        // match; an unbounded slice here would panic — so bound it first.
         let literal = BARE_LITERALS.iter().find(|lit| {
             let end = i + lit.chars().count();
             end <= src.len()
@@ -362,7 +359,7 @@ impl ParseResult {
 /// if the value survives neither, the model has to be asked again — that is
 /// what `repair_prompt` is for, and it works far better than a third
 /// heuristic. The error string is the STRICT attempt's prose (see the module
-/// header for the recorded divergence).
+/// header).
 fn try_parse(span: &str) -> Result<Value, String> {
     match serde_json::from_str(span) {
         Ok(v) => Ok(v),
@@ -416,12 +413,12 @@ pub fn parse_json(text: &str, schema: &Schema, pre: Option<&PreFn>) -> ParseResu
                 continue;
             }
         };
-        // z.preprocess: the def's own restructure of the PARSED value before
+        // PreFn: the def's own restructure of the PARSED value before
         // validation — the one place a harness may repackage a correct answer
         // that arrived in the wrong envelope, because the alternative is a
         // repair turn spent telling a model to stop doing what the provider's
-        // strict-JSON mode obliges it to do. Runs per candidate span, exactly
-        // where zod runs it: after parse, before validate.
+        // strict-JSON mode obliges it to do. Runs per candidate span, after
+        // parse and before validate.
         let parsed = match pre {
             Some(f) => f(&parsed),
             None => parsed,
@@ -491,9 +488,8 @@ mod tests {
     /// The answer, then a bulleted explanation containing a brace.
     const OBJECT_THEN_BULLETS: &str = "{\"verdict\": \"revise\", \"summary\": \"No test covers the new branch.\"}\n\n- I checked the diff\n- The {issues} array is empty because nothing else stood out";
 
-    // The two strategies this module replaces (greedy regex,
-    // indexOf/lastIndexOf) are transcribed so "these used to fail" is an
-    // assertion, not a claim.
+    // The naive strategies (greedy regex, indexOf/lastIndexOf) sit here so
+    // "these fail" is an assertion, not a claim.
     fn legacy_greedy(text: &str) -> Option<Value> {
         let start = text.find('{')?;
         let end = text.rfind('}')?;

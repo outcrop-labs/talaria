@@ -1,5 +1,5 @@
-// Capability keys and effort defaults for a FLEET PERSONA — port of
-// harness/persona.ts. A persona ("assistant-operations") is not a catalog
+// Capability keys and effort defaults for a FLEET PERSONA.
+// A persona ("assistant-operations") is not a catalog
 // model: `routing_for` answers nothing for it. It is BACKED by real
 // endpoint:upstream targets recorded in its agent version's config, and this
 // module is that mapping — the pool a call on the persona could land on, and
@@ -418,7 +418,7 @@ mod tests {
                 }),
             ),
             // No main: the BASE id claims nothing (hasMain gates it), but the
-            // tier pass has no such gate in TS — an alias with a valid target
+            // tier pass has no such gate — an alias with a valid target
             // and a configured effort claims its tier id even when the agent's
             // main is unset or malformed.
             row(

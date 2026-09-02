@@ -1,13 +1,14 @@
 # How agents reach Talaria, and why that needed a firewall rule
 
-_Written 2026-08-17, after every managed agent spent a day healthy and toolless._
+Agents run in containers; the app runs on the host. Every call an agent makes
+back to Talaria crosses that boundary, and on a default-deny host it needs one
+firewall rule — which the preflight detects, prints, and verifies from where
+the agent stands.
 
-## The symptom
-
-Agents were green. Containers up, `/health` answering 200, roster clean. And not
-one of them could call a tool, or produce anything longer than a short reply.
-
-The only evidence was one line, logged once at startup, that nothing read:
+(First diagnosed 2026-08-17, when every managed agent spent a day healthy and
+toolless: containers green, `/health` answering 200, roster clean, and not one
+of them able to call a tool — the only evidence one unread startup line, which
+is the string to grep for when it happens again:)
 
 ```
 WARNING tools.mcp_tool: Failed to connect to MCP server 'talaria': CancelledError
@@ -36,17 +37,17 @@ as a connection error anyone would grep for.
 `ssh` kept working throughout, which made it look like the network was fine.
 It worked because the firewall had a rule for port 22 and none for 5273.
 
-## Why the existing alerting missed it
+## Why the alerting needed the preflight
 
-`alerts.ts` probes the toolkit at `127.0.0.1:5280`. It answered perfectly, all
-day, because **the app can always reach itself**.
+The alerts engine (`api/src/alerts.rs`) probes the toolkit at `127.0.0.1:5280`,
+and it answers perfectly — because **the app can always reach itself**.
 
 > Reachability is not a property of a service. It is a property of a path.
 
 Testing the agent's path requires standing where the agent stands.
-`server/fleet-preflight.ts` does that: it runs a throwaway container on the fleet
-network and asks *it*. That verdict is what the "Agents cannot reach Talaria"
-alert reports, and it runs when an agent is brought up.
+`api/src/fleet/preflight.rs` does that: it runs a throwaway container on the
+fleet network and asks *it*. That verdict is what the "Agents cannot reach
+Talaria" alert reports, and it runs when an agent is brought up.
 
 ## The immediate fix
 
@@ -84,10 +85,10 @@ and the chassis says so directly:
 > to the app's service DNS instead.
 
 **The obstacle is the docker socket.** Talaria manages the fleet by shelling out
-to `docker` (`fleet-docker.ts`) — it renders compose files, starts and stops
-containers, rolls slots. Containerising the app therefore means giving that
-container the docker socket, and `workbench.ts` refuses exactly that mount for
-exactly the right reason:
+to `docker` (`api/src/fleet/docker.rs`) — it renders compose files, starts and
+stops containers, rolls slots. Containerising the app therefore means giving
+that container the docker socket, and the workbench mount policy refuses
+exactly that mount for exactly the right reason:
 
 > The docker socket is host root by another name.
 
@@ -112,24 +113,21 @@ Today we are at (3), and the preflight is what makes it survivable. Anyone
 picking this up should read (1) as the target rather than assuming the firewall
 rule is the intended design.
 
-## What changed since (2026-08-25)
+## What the preflight checks
 
-Two quiet assumptions in the story above have since been fixed in code.
-
-**The preflight probes the whole path now.** It still stands where the agent
-stands, but it no longer asks only "can a container open a socket to the app":
-it checks the app port the rendered configs point at, the actual `/api/mcp/gw`
-target an agent's MCP client dials (it previously probed the toolkit's
-standalone listener on 5280, a path no agent takes), and whether the fleet
+It stands where the agent stands, and it asks more than "can a container open a
+socket to the app": it checks the app port the rendered configs point at, the
+actual `/api/mcp/gw` target an agent's MCP client dials, and whether the fleet
 network can resolve an external name, probed with the same resolvers the
 chassis gives agents. The all-clear reads "agents can reach the app, the
 toolkit, and the internet", and each failure names its own fix.
 
-**Agents carry explicit DNS.** Docker pins a network's DNS upstream when the
-network is created, and a host resolver mix that refuses docker subnets leaves
-every container green and offline. That is how the built-in browser shipped
-dead: the browser toolset fetches its engine from npm on first use, so with no
-external DNS it never installed, silently. The chassis now pins external
-resolvers per service (`AGENT_DNS_1` / `AGENT_DNS_2` in `fleet/.env`, defaults
-1.1.1.1 / 1.0.0.1), and the preflight's DNS probe turns a dead resolver into
-an alert.
+## Agents carry explicit DNS
+
+Docker pins a network's DNS upstream when the network is created, and a host
+resolver mix that refuses docker subnets leaves every container green and
+offline — the built-in browser shipped dead exactly this way once: it fetches
+its engine from npm on first use, so with no external DNS it never installed,
+silently. The chassis pins external resolvers per service (`AGENT_DNS_1` /
+`AGENT_DNS_2` in `fleet/.env`, defaults 1.1.1.1 / 1.0.0.1), and the
+preflight's DNS probe turns a dead resolver into an alert.

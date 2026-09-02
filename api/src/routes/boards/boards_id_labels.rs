@@ -1,9 +1,8 @@
-// /api/boards/{id}/labels — port of ui/src/routes/api/boards.$id.labels.ts.
-// Board labels: GET → the registry (any member); POST create, PUT rename/
-// recolor (a rename cascades into tickets), DELETE (strips off tickets) —
-// owner/editor. The throws the TS server functions make ('label name
-// required', 'no such label', 'unknown color') are caught by the route and
-// answered as 400s, which is why they ride as inner Results in labels.rs.
+// /api/boards/{id}/labels. Board labels: GET → the registry (any member);
+// POST create, PUT rename/recolor (a rename cascades into tickets), DELETE
+// (strips off tickets) — owner/editor. The label helpers' refusal sentences
+// ('label name required', 'no such label', 'unknown color') answer as 400s —
+// they ride as inner Results out of labels.rs for exactly that.
 
 use crate::boards::{board_role, can_edit};
 use crate::body::{

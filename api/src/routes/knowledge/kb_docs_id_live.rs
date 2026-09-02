@@ -1,8 +1,8 @@
-// /api/kb/docs/{id}/live — port of ui/src/routes/api/kb.docs.$id.live.ts.
-// Doc presence (the multiplayer layer's heartbeat). PUT { mode } → I'm here,
-// viewing or editing. GET → who's here right now, with their mode — the doc
-// header renders the avatar stack and the concurrent-edit warning from this.
-// Redis keys kb:presence:<docId>:<userId> EX 45; heartbeats land every ~25s.
+// /api/kb/docs/{id}/live. Doc presence (the multiplayer layer's heartbeat).
+// PUT { mode } → I'm here, viewing or editing. GET → who's here right now,
+// with their mode — the doc header renders the avatar stack and the
+// concurrent-edit warning from this. Redis keys kb:presence:<docId>:<userId>
+// EX 45; heartbeats land every ~25s.
 
 use axum::Json;
 use axum::extract::{Path, State};

@@ -1,6 +1,6 @@
 // The model-fitness plane: tier 1 probes, the tier 2 sweep, tier 3 adversarial
-// corpus, the verdict, and the surface the admin page reads. Port of
-// ui/src/server/fitness/* — the engine half of /api/admin/model-fitness.
+// corpus, the verdict, and the surface the admin page reads — the engine half
+// of /api/admin/model-fitness.
 
 pub mod adversarial;
 pub mod code_runner;
@@ -16,5 +16,5 @@ pub mod transcripts;
 pub mod value;
 
 // The store half of surface.rs (the record, the pricing derivations, the
-// endpoints' assembly) crosses with the routes that serve it, in this module's
+// endpoints' assembly) lives with the routes that serve it, in this module's
 // last commit.

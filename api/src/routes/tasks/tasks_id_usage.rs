@@ -1,8 +1,7 @@
-// /api/tasks/{id}/usage — port of ui/src/routes/api/tasks.$id.usage.ts.
-// Per-ticket token spend. POST (agents, via MCP log_usage): report tokens
-// burned working this ticket — attributed to the agent's serving endpoint
-// and priced like every other ledger row. GET: the rollup shown on the
-// ticket.
+// /api/tasks/{id}/usage. Per-ticket token spend. POST (agents, via MCP
+// log_usage): report tokens burned working this ticket — attributed to the
+// agent's serving endpoint and priced like every other ledger row. GET: the
+// rollup shown on the ticket.
 
 use crate::agent_auth::{AgentSubject, agent_caller, require_agent};
 use crate::boards::{board_allows_agent, board_role};
@@ -191,9 +190,8 @@ pub async fn post(
     };
     // A tier must be one of the agent's real alias names — reject typos and
     // routed-model ids loudly instead of silently recording an
-    // unattributable (and therefore unpriceable) row. TS's truthiness check
-    // also means an EMPTY string tier skips validation entirely and records
-    // as '' — preserved, not "fixed".
+    // unattributable (and therefore unpriceable) row. An EMPTY string tier
+    // skips validation entirely and records as '' — preserved, not "fixed".
     if let Some(t) = tier.as_deref().filter(|t| !t.is_empty()) {
         let routed = crate::fleet::routed_model_for(&state.pg, &name, Some(t)).await;
         let known = matches!(routed, Ok(Some(_)));

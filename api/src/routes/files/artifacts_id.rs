@@ -1,8 +1,8 @@
-// /api/artifacts/{id} — port of ui/src/routes/api/artifacts.$id.ts. One
-// artifact: read/edit gated by its audience, sharing owner-only, agents (by
-// key) only edit content when granted the Editor role. The PUT is the plane's
-// whole state machine — content edits, sharing, official curation and brain
-// routing all land here, in TS's exact order.
+// /api/artifacts/{id}. One artifact: read/edit gated by its audience,
+// sharing owner-only, agents (by key) only edit content when granted the
+// Editor role. The PUT is the plane's whole state machine — content edits,
+// sharing, official curation and brain routing all land here, in this
+// order.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -345,8 +345,8 @@ pub async fn put(
                 id.clone(),
             );
             tokio::spawn(async move {
-                // TS: targetsForArtifact().then(find plan → indexPlanDoc)
-                // .catch(() => {}) — the whole chain detached, errors swallowed.
+                // The find-plan → index chain is detached; its errors are
+                // swallowed.
                 if let Ok(targets) = targets_for_artifact(&pg, &id).await
                     && let Some((_, plan_id)) = targets.iter().find(|(tt, _)| tt == "plan")
                 {

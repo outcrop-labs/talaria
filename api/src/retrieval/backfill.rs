@@ -1,16 +1,13 @@
 // Retrieval health + repair. The indexing pipeline is fire-and-forget by
 // design (a write must never block on RAG), which means a dead Qdrant/TEI
-// fails SILENTLY — the brains just stop filling. The defenses live across
-// two files in TS: the health probe and the incremental sweep here
-// (retrieval/backfill.ts), the durable repair runs next door in
-// runs/defs/reindex.ts.
+// fails SILENTLY — the brains just stop filling. The defenses split across
+// two files: the health probe and the incremental sweep here, the durable
+// repair runs next door in runs/defs/reindex.rs.
 //
-// WHAT HAS CROSSED: `rag_health`, the read plane (`backfill_status`) the
-// admin rag route projects — the run row IS the truth now, not an
-// app_settings blob beside it — and the 15-minute sweep
-// (`sweepNewActivity`/`maybeRagSweep`), whose kick lives on the comms read
-// (/api/channels) that crossed with the channels family.
-// Port of ui/src/server/retrieval/backfill.ts.
+// The run row IS the truth: `backfill_status` projects it for the admin
+// rag route, not an app_settings blob beside it. The 15-minute sweep
+// (`sweep_new_activity`/`maybe_rag_sweep`) is kicked from the comms read
+// (/api/channels).
 
 use serde::Serialize;
 use serde_json::Value;
@@ -36,9 +33,9 @@ pub struct RagHealth {
 /// Probe both retrieval services (cheap, ~2s worst case). A probe that
 /// errors reads as DOWN — the fetch sense of `r.ok`, never an exception.
 pub async fn rag_health(qd: &QdrantDeps, ed: &EmbedDeps) -> RagHealth {
-    // Two probes, one budget each, in parallel — the TS Promise.all. The
-    // qdrant probe rides the same HttpFetch edge the client does so a test
-    // scripts it like any other call; `ok` is the fetch sense (2xx).
+    // Two probes, one budget each, in parallel. The qdrant probe rides the
+    // same HttpFetch edge the client does so a test scripts it like any
+    // other call; `ok` is the fetch sense (2xx).
     let qdrant_probe = (qd.fetch)(
         "GET",
         &format!("{}/collections", (qd.base)()),
@@ -56,9 +53,9 @@ pub async fn rag_health(qd: &QdrantDeps, ed: &EmbedDeps) -> RagHealth {
 
 // ── The backfill run's read shape ────────────────────────────────────────────
 
-/// THE READ SHAPE, unchanged: `components/admin/retrieval.ts` declares exactly
-/// these fields and polls while `state === 'running'`. The answer is a
-/// projection of the `runs` row rather than a second copy of the truth.
+/// THE READ SHAPE: the admin panel declares exactly these fields and polls
+/// while `state === 'running'`. The answer is a projection of the `runs`
+/// row rather than a second copy of the truth.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackfillStatus {
@@ -77,8 +74,7 @@ pub struct BackfillStatus {
 /// and off the CHECKPOINT while it runs, which are the same numbers a step
 /// apart — the driver persists the checkpoint before it takes the next step,
 /// so the panel's tally can lag by one page and can never overstate. The
-/// value passes through untouched: the keys are whatever the run wrote, and
-/// both runtimes write the same bytes.
+/// value passes through untouched: the keys are whatever the run wrote.
 fn counts_of(run: &KindRunView) -> Option<Value> {
     run.result
         .get("counts")
@@ -145,9 +141,8 @@ pub fn project_backfill_status(run: Option<&KindRunView>) -> BackfillStatus {
     }
 }
 
-/// A read the panel polls; a run row that cannot be read projects as idle
-/// (TS's `.catch(() => null)`), never as a 500 that would take the whole
-/// GET down with it.
+/// A read the panel polls; a run row that cannot be read projects as idle,
+/// never as a 500 that would take the whole GET down with it.
 pub async fn backfill_status(pg: &PgPool) -> BackfillStatus {
     project_backfill_status(
         latest_run_of_kind(pg, BACKFILL_KIND)
@@ -162,8 +157,7 @@ pub async fn backfill_status(pg: &PgPool) -> BackfillStatus {
 // Event-driven indexing is the primary path; this 15-minute sweep re-indexes
 // anything CREATED/UPDATED since the last high-water mark, so rows written
 // while the services were down get picked up when they return. Content hashes
-// make the overlap free. Crossed with the comms read that kicks it
-// (/api/channels) — the TS header's "crosses with its callers" note.
+// make the overlap free.
 
 /// The app_settings key holding the last sweep's high-water mark.
 const SWEEP_KEY: &str = "rag_sweep_watermark";
@@ -176,9 +170,8 @@ fn wall_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// `Option<String>` → JSON string-or-null, preserving the key when absent
-/// (the TS object literal keeps `null` valued keys, and the payload feeds the
-/// content hash).
+/// `Option<String>` → JSON string-or-null, preserving the key when absent —
+/// the payload feeds the content hash, so key presence must be stable.
 fn opt_json(v: &Option<String>) -> Value {
     match v {
         Some(s) => Value::String(s.clone()),
@@ -194,7 +187,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
     let watermark = crate::gateway::settings::get_setting(
         pg,
         SWEEP_KEY,
-        serde_json::json!("1970-01-01T00:00:00.000Z"), // new Date(0).toISOString()
+        serde_json::json!("1970-01-01T00:00:00.000Z"), // the epoch, ISO
     )
     .await
     .as_str()
@@ -315,10 +308,9 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
             continue;
         }
         let is_plan = target_type.as_deref() == Some("plan");
-        // The TS object literals keep null valued keys (`planId: a.targetId`
-        // with targetId null serializes `"planId":null`) — and the payload
-        // feeds the content hash, so presence must match or a TS-written point
-        // churns on its first Rust re-index.
+        // Null-valued keys stay present (`planId: null` when the link has no
+        // id) — the payload feeds the content hash, so presence must be
+        // stable or an indexed point churns on its next re-index.
         let mut payload = serde_json::Map::new();
         if is_plan {
             payload.insert("planId".into(), opt_json(target_id));
@@ -356,7 +348,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
 }
 
 /// Opportunistic scheduling: any comms/search read may kick a sweep, at most
-/// every 15 minutes, never blocking. Process-local, like the TS module boolean.
+/// every 15 minutes, never blocking. Process-local.
 static LAST_SWEEP_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 pub fn maybe_rag_sweep(state: crate::state::AppState) {

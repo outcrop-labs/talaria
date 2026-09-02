@@ -1,69 +1,64 @@
 // THE MUSE'S ELEVEN KINDS: five STRUCTURED (cron, agent, ticket, skillForm,
 // templateForm) and six PROSE (soul, personality, skill, memory, document,
-// template). Port of harness/defs/muse.ts, plus the streaming redactor that
-// lives at the bottom of that file.
+// template), plus the streaming redactor at the bottom.
 //
-// WHY THE TS FILE EXISTS (and this one mirrors it)
+// WHY THIS FILE EXISTS
 //   The Muse has eleven kinds. Six of them draft prose and stream
 //   token-by-token into an editor, which is the feature and stays exactly as
 //   it is — they are `muse_draft_harness` below, and the streaming route runs
 //   them through the runner. The other five demand JSON, and three of them
-//   (cron, agent, ticket) were parsed IN THE BROWSER until that file, by three
-//   greedy `/\{[\s\S]*\}/` regexes (audit 1.1) — the same non-scanner that was
-//   verified to fail on three shapes a 14B model emits constantly, running in
-//   the one place where no repair turn is possible, no guardrail can run (a
-//   drafted soul carrying a credential was neither flagged nor redacted —
-//   audit 1.5), nothing is recorded, and the failure is a `return null` that
-//   renders as a button that does nothing when you click it.
+//   (cron, agent, ticket) were once parsed at the click, by three greedy
+//   `/\{[\s\S]*\}/` regexes (audit 1.1) — the same non-scanner that was
+//   verified to fail on three shapes a 14B model emits constantly, in the one
+//   place where no repair turn is possible, no guardrail can run (a drafted
+//   soul carrying a credential was neither flagged nor redacted — audit 1.5),
+//   nothing is recorded, and the failure renders as a button that does
+//   nothing when you click it. Those five are harnesses now: schema,
+//   repair turn, guardrail, `harness_runs` row.
 //
-// WHAT MOVED HERE FROM THE CLIENT, AND WHY IT HAD TO
-//   `ident()` and the ticket field allowlist were the client's sanitization
-//   layer, and both are security-adjacent:
+// THE SANITIZATION LIVES WITH THE CONTRACT, AND IT HAS TO
+//   `ident()` and the ticket field allowlist are the security-adjacent half:
 //
 //     `ident()`  coerces a drafted handle/department/skill name into its
 //                identifier alphabet. A handle becomes a container name, a
 //                fleet model id (`<handle>-<department>`) and a mount key, so
 //                a model that answers `"handle": "../../etc"` must never reach
-//                the create endpoint with that string intact. Client-side
-//                coercion protects nothing — the endpoint is reachable without
-//                the client.
+//                the create endpoint with that string intact. Coercion in a
+//                caller protects nothing — the endpoint is reachable without
+//                the caller.
 //
 //     allowlist  closed objects strip unrecognized keys by default, which is
-//                exactly `parseTicketPatch`'s behavior and exactly what we
-//                want: a model that invents `"assignees"` gets it dropped
-//                rather than failing the whole patch. The `{ error }` escape
-//                hatch is part of the contract, not an afterthought — it is
-//                how the Muse says "that asks for something I cannot change".
+//                exactly what we want: a model that invents `"assignees"`
+//                gets it dropped rather than failing the whole patch. The
+//                `{ error }` escape hatch is part of the contract, not an
+//                afterthought — it is how the Muse says "that asks for
+//                something I cannot change".
 //
-// THE ZOD ORDER THIS PORT HAD TO FLATTEN
-//   The TS schemas are pipelines: object-parse → refine → transform → refine.
-//   The Rust contract layer has two hooks — `preprocess` (per candidate,
-//   BEFORE the schema) and `verify` (AFTER the schema) — and the mapping is a
-//   rule rather than a case-by-case judgment:
+// THE PREPROCESS/VERIFY SPLIT
+//   The contract layer has two hooks — `preprocess` (per candidate, BEFORE
+//   the schema) and `verify` (AFTER the schema) — and which work goes where
+//   is a rule rather than a case-by-case judgment:
 //
-//   · preprocess coerces ONLY what the TS object-parse would have ACCEPTED.
-//     Anything the object-parse would reject is returned UNTOUCHED, so the
-//     schema reports it with the probed zod sentence a repair turn can act
-//     on. (The near-miss this rule exists for: coercing a skill name that is
-//     one character over the max would have produced a PASS where TS's
-//     object-parse fails the whole record before the transform ever runs.)
+//   · preprocess coerces ONLY what a strict object-parse would have ACCEPTED.
+//     Anything an object-parse would reject is returned UNTOUCHED, so the
+//     schema reports it with its own sentence — a repair turn can act on a
+//     named issue, not on a silently coerced value. (The near-miss this rule
+//     exists for: coercing a skill name one character over the max would
+//     produce a PASS where the bound exists to fail.)
 //   · error-exclusivity reductions (`{error, …extra}` → `{error}`) are
 //     preprocess, the channel_plan envelope precedent.
-//   · completeness and relational checks are `verify`, carrying the TS
-//     refine's message VERBATIM — the repair sentence is behavior, and a
-//     model that has seen one spelling twice should see it a third time.
-//   · the transform's dead defaults (`guidance ?? ''`, `body ?? ''`) are dead
-//     here too: the refine ahead of them requires presence, so no schema
-//     default is declared — a default would make the absent field PRESENT and
-//     the completeness check would never fire.
+//   · completeness and relational checks are `verify`, carrying their
+//     message VERBATIM — the repair sentence is behavior, and a model that
+//     has seen one spelling twice should see it a third time.
+//   · dead defaults stay dead: the completeness check requires presence, so
+//     no schema default is declared — a default would make the absent field
+//     PRESENT and the completeness check would never fire.
 //
-// ONE ACCEPTED DIVERGENCE — the org anchor. TS's `buildMuseMessages` awaits
-// `orgProfile()` (a DB read) and appends one sentence; the Rust render is
-// sync and pure, so the org line travels IN THE INPUT as an adapter-supplied
-// `org: Option<String>` (the inbox_focus `allowed_focus_action_ids`
-// precedent — the caller supplies what the render must not fetch). The
-// anchor fires for agent/soul/personality when `org` is present and
-// non-empty, exactly TS's `if (org)` truthiness.
+// THE ORG ANCHOR — the render is sync and pure, so the org line travels IN
+// THE INPUT as an adapter-supplied `org: Option<String>` (the inbox_focus
+// `allowed_focus_action_ids` precedent — the caller supplies what the render
+// must not fetch). The anchor fires for agent/soul/personality when `org` is
+// present and non-empty.
 
 use std::sync::{Arc, LazyLock};
 
@@ -81,12 +76,11 @@ use crate::harness::schema::{Field, Schema};
 use crate::harness_model::{MUSE_CHAIN, ModelSpec};
 use crate::task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
 
-// ── the prompts (ui/src/server/muse.ts, verbatim) ───────────────────────────
+// ── the prompts ─────────────────────────────────────────────────────────────
 
 /// THE SHAPE OF A SOUL.md, STATED ONCE — shared by the agent designer and the
 /// soul editor so the two kinds cannot drift: a soul written by either is the
-/// same document. (It used to be stated only for `agent`, and `soul` — the
-/// kind whose entire job is writing one — never got it.)
+/// same document.
 const SOUL_SHAPE: &str = "a \"# <Name> — <Role>\" title as the very first line, then \"## Who you are\" (identity + mission), \"## Voice & personality\" (a distinct, likable working voice), and \"## How you work\".";
 
 const DOC_RULES: &str = "Return ONLY the complete revised document — no commentary, no preamble, no code fences. Start from the current version when one is given: keep what works, change what the request asks, never silently drop sections.";
@@ -139,8 +133,8 @@ impl MuseProseKind {
     }
 }
 
-/// `SYSTEM` — the per-kind prompt, verbatim from muse.ts. The ticket and form
-/// prompts state their closed world three times over, and that is deliberate
+/// `SYSTEM` — the per-kind prompt. The ticket and form prompts state their
+/// closed world three times over, and that is deliberate
 /// rather than sloppy: the boundary is named before the fields, the fields are
 /// named as the whole of the world, and the out-of-scope asks a user actually
 /// types are listed as CONCRETE NOUNS, because a small model matches
@@ -260,8 +254,7 @@ pub struct MuseTurn {
 }
 
 /// Everything a Muse call carries except the kind, which each harness owns —
-/// `MuseDraftInput` in muse.ts, plus the `org` line (see the header's one
-/// accepted divergence).
+/// the draft plus the `org` line (see the header).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MuseDraftInput {
     pub instruction: String,
@@ -274,8 +267,8 @@ pub struct MuseDraftInput {
     /// Prior muse turns in this session, for iterative refinement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<Vec<MuseTurn>>,
-    /// The org line TS's render fetched (orgProfile → orgLine). None or empty
-    /// means no anchor — TS's `.catch(() => null)` landing states.
+    /// The org anchor line the adapter fetched. None or empty means no
+    /// anchor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
 }
@@ -289,7 +282,8 @@ pub struct MuseProseInput {
     pub draft: MuseDraftInput,
 }
 
-/// `buildMuseMessages`. The org anchor names a place only where a place
+/// The one prompt builder for every kind. The org anchor names a place only
+/// where a place exists
 /// exists — `personality` is a paragraph and gets the instruction without the
 /// heading, because a clause that told a prose brief to name the business in
 /// `## Who you are` had four models opening with that exact heading and four
@@ -315,7 +309,7 @@ pub fn build_muse_messages(kind: MuseKind, input: &MuseDraftInput, widened: bool
             "\n\nOrganization: {org}. The agent is a member of this business's team — {anchor}; it never presents itself as belonging to an underlying platform, framework, or model vendor."
         ));
     }
-    // TS `if (input.context)` — an empty string is falsy and skips the clause.
+    // An empty context string adds no clause.
     if let Some(context) = input.context.as_deref().filter(|c| !c.is_empty()) {
         system.push_str(&format!("\n\nContext: {context}"));
     }
@@ -359,8 +353,8 @@ const GUARD_RULES: &[&str] = &["secret_leak", "pii_leak"];
 /// than "Agent" and writing a voice with some life in it.
 const TEMPERATURE: f64 = 0.4;
 
-/// `MUSE_MODEL` — audit 1.10's one spelling of the muse fallback chain, same
-/// chain as the distiller and the concluder. The user arrives via the RUN
+/// Audit 1.10's one spelling of the muse fallback chain, same chain as the
+/// distiller and the concluder. The user arrives via the RUN
 /// CONTEXT, not the def: the runner threads ctx's user into the resolve edge,
 /// which turns on the 'preferred' step and the member model allowlist for
 /// whoever owns the draft.
@@ -407,7 +401,8 @@ static INTERVAL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// A 5-field cron expression: fields of digits/`*`/`/`/`,`/`-` separated by
-/// whitespace. (JS `\w` and `\d` are ASCII; the Rust spellings say so.)
+/// whitespace. (The class is ASCII by spelling, so the match cannot widen to
+/// unicode.)
 static CRON_FIVE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9*/,-]+(?:\s+[A-Za-z0-9_*/,-]+){4}$").unwrap());
 
@@ -433,9 +428,9 @@ pub fn is_kebab(s: &str) -> bool {
     KEBAB.is_match(s)
 }
 
-/// EVERYTHING TRUE OF EVERY CRON DRAFT, stated once — the two fixtures this
-/// harness shipped with spelled these checks in two different orders and one
-/// of them omitted the prompt-length floor entirely.
+/// EVERYTHING TRUE OF EVERY CRON DRAFT, stated once — fixtures that each spell
+/// the shared checks differently are how a reply with an empty prompt passes
+/// one fixture and fails another.
 pub fn cron_problem(v: &CronDraft) -> Option<String> {
     if !is_kebab(&v.name) {
         return Some(format!("name \"{}\" is not kebab-case", v.name));
@@ -539,10 +534,10 @@ pub struct AgentDraft {
     pub skills: Vec<SkillPair>,
 }
 
-/// The identifier coercion that used to run in the browser, verbatim.
-/// Lowercase, drop everything outside the alphabet, drop leading non-letters,
-/// cap at 30 UTF-16 units. A handle becomes a container name and half of the
-/// fleet model id `<handle>-<department>`; a skill name becomes a file name.
+/// The identifier coercion: lowercase, drop everything outside the alphabet,
+/// drop leading non-letters, cap at 30 UTF-16 units. A handle becomes a
+/// container name and half of the fleet model id
+/// `<handle>-<department>`; a skill name becomes a file name.
 pub fn ident(v: &str, allow_dash: bool) -> String {
     let lowered: String = v
         .to_lowercase()
@@ -559,8 +554,8 @@ fn strip_edge_dashes(s: &str) -> String {
     no_lead.trim_end_matches('-').to_string()
 }
 
-/// The transform half of `MUSE_AGENT`, run as preprocess under the module
-/// rule: it derives ONLY what the TS object-parse would have accepted, and
+/// The derivation for the agent draft, run as preprocess under the module
+/// rule: it coerces ONLY what a strict object-parse would have accepted, and
 /// returns anything else untouched for the schema to sentence.
 ///
 /// What the object-parse demands: `name` and `soul` present and non-empty
@@ -570,8 +565,8 @@ fn derive_agent(v: &Value) -> Value {
     let Some(obj) = v.as_object() else {
         return v.clone();
     };
-    // Absent and null are the same landing state as TS's `??`; anything not a
-    // string is an object-parse rejection, so the candidate stays untouched.
+    // Absent and null land the same; anything not a string is an object-parse
+    // rejection, so the candidate stays untouched.
     let opt_string = |key: &str| -> Result<Option<String>, ()> {
         match obj.get(key) {
             None | Some(Value::Null) => Ok(None),
@@ -587,17 +582,17 @@ fn derive_agent(v: &Value) -> Value {
         opt_string("role"),
         skills_shape(obj.get("skills")),
     );
-    // Anything the TS object-parse would have rejected — a non-string member,
-    // a skills array holding a non-object — leaves the candidate untouched so
+    // Anything a strict object-parse would reject — a non-string member, a
+    // skills array holding a non-object — leaves the candidate untouched so
     // the schema sentences it.
     let (Ok(name), Ok(soul), Ok(handle), Ok(department), Ok(role), Ok(skills)) =
         (name, soul, handle, department, role, skills)
     else {
         return v.clone();
     };
-    // zod's `.trim()` overwrites the value the transform receives, so the
-    // transform sees TRIMMED name and soul — and only then the empty check,
-    // which the object-parse's min(1) has already made by here.
+    // Trim first, then the empty check — a whitespace-only name or soul stays
+    // untouched for the schema to sentence, and min(1) alone would have passed
+    // it.
     let (Some(name), Some(soul)) = (name, soul) else {
         return v.clone();
     };
@@ -606,19 +601,18 @@ fn derive_agent(v: &Value) -> Value {
     if name.is_empty() || soul.is_empty() {
         return v.clone();
     }
-    // The client's exact fallbacks: a missing handle derives from the name, a
-    // missing department from the handle, and a department that coerces to
-    // nothing falls back to the handle rather than to empty (an empty
-    // department would produce the fleet model id "handle-").
+    // The fallbacks: a missing handle derives from the name, a missing
+    // department from the handle, and a department that coerces to nothing
+    // falls back to the handle rather than to empty (an empty department would
+    // produce the fleet model id "handle-").
     let handle = ident(handle.as_deref().unwrap_or(&name), false);
     let department = {
         let d = ident(department.as_deref().unwrap_or(&handle), true);
         if d.is_empty() { handle.clone() } else { d }
     };
     // Both skill members OPTIONAL and filtered, not required and validated —
-    // the client's `.filter((s) => s?.name && s?.content)` preserved on
-    // purpose: a half-written skill costs the user that skill, not the whole
-    // agent design and a second full generation of the soul with it.
+    // deliberate: a half-written skill costs the user that skill, not the
+    // whole agent design and a second full generation of the soul with it.
     let skills: Vec<Value> = skills
         .map(|list| {
             list.iter()
@@ -648,8 +642,8 @@ fn derive_agent(v: &Value) -> Value {
 }
 
 /// `skills` must be absent, or an array of objects with optional-string
-/// members — anything else is an object-parse rejection, so the candidate
-/// stays untouched. The returned slice is the accepted raw array.
+/// members — anything else is a rejection, so the candidate stays untouched.
+/// The returned slice is the accepted raw array.
 fn skills_shape(v: Option<&Value>) -> Result<Option<&Vec<Value>>, ()> {
     match v {
         None | Some(Value::Null) => Ok(None),
@@ -767,11 +761,10 @@ pub fn muse_agent_harness() -> HarnessDefinition {
             schema: muse_agent_schema(),
             preprocess: Some(Arc::new(derive_agent)),
             repair: None,
-            // A one-character handle is not a usable agent id, and this is the
-            // check the client did by returning null. As a verify it becomes a
-            // REPAIR instruction: the model is told the field is wrong and
-            // gets one more turn, which is the whole point of the parse living
-            // on this side of the wire.
+            // A one-character handle is not a usable agent id. As a verify this
+            // is a REPAIR instruction: the model is told the field is wrong
+            // and gets one more turn, which is the whole point of the parse
+            // living on this side of the wire.
             verify: Some(Arc::new(
                 |value: &Value, _input: &Value, _ctx: &RenderContext| {
                     let handle = value.get("handle").and_then(Value::as_str).unwrap_or("");
@@ -818,12 +811,12 @@ pub fn muse_agent_harness() -> HarnessDefinition {
 
 // ── ticket ───────────────────────────────────────────────────────────────────
 
-/// The legal statuses a natural-language edit may set — `TASK_STATUSES`
+/// The legal statuses a natural-language edit may set — the task statuses
 /// WITHOUT the off-board pair, deliberately: 'failed' and 'cancelled' are
 /// terminal states nothing on the board may park work in, and a
-/// natural-language edit is not the place to acquire that power. (Rust's
-/// statuses.rs models board statuses as DB rows; the muse needs the flat key
-/// list, held here as TS's muse.ts holds its own copy.)
+/// natural-language edit is not the place to acquire that power.
+/// (statuses.rs models board statuses as DB rows; the muse needs the flat key
+/// list, held here as its own copy.)
 const MUSE_TASK_STATUSES: &[&str] = &[
     "inbox",
     "assigned",
@@ -833,7 +826,7 @@ const MUSE_TASK_STATUSES: &[&str] = &[
     "done",
 ];
 
-/// The drafted patch, tri-state where TS is: `None` = absent, `Some(None)` =
+/// The drafted patch, tri-state: `None` = absent, `Some(None)` =
 /// an explicit null (a CLEAR), `Some(Some(v))` = a value. `touched` counts a
 /// present null as touched — clearing a field is a change, not an omission.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -906,11 +899,10 @@ impl TicketPatch {
     }
 }
 
-/// The transform half of `MUSE_TICKET`: `parseTicketPatch` short-circuited on
-/// `error` and returned nothing else, and the two are genuinely exclusive — an
-/// answer that both refuses and edits is one nobody should half-apply. Under
-/// the module rule the reduction fires only for an error the object-parse
-/// would have accepted (a string, non-empty after trim); everything else
+/// The error-exclusivity reduction: `error` and any edit are genuinely
+/// exclusive — an answer that both refuses and edits is one nobody should
+/// half-apply. Under the module rule the reduction fires only for an error
+/// the object-parse accepts (a string, non-empty after trim); everything else
 /// stays untouched for the schema.
 fn ticket_exclusive(v: &Value) -> Value {
     let usable = v
@@ -927,12 +919,12 @@ fn muse_ticket_schema() -> Schema {
     fn enum_of(members: &[&str]) -> Schema {
         Schema::Enum(members.iter().map(|s| s.to_string()).collect())
     }
-    // EVERY BOUND BELOW IS THE ROUTE'S OWN, transcribed from the PATCH in
-    // routes/api/tasks.$id.ts, because a Muse patch goes STRAIGHT there when
-    // the user presses Apply. Wherever this schema was looser than that one,
-    // the harness recorded a held contract and the PUT then 400'd — and the
-    // command bar swallows that rejection, so the whole patch vanished with
-    // nothing shown. A named issue here buys a repair turn instead.
+    // EVERY BOUND BELOW IS THE WRITE PATH'S OWN, transcribed from the ticket
+    // PATCH (`routes/tasks/tasks_id.rs`), because a Muse patch goes STRAIGHT
+    // there when the user presses Apply. Wherever this schema was looser than
+    // that one, the harness recorded a held contract and the PUT then 400'd —
+    // and the command bar swallows that rejection, so the whole patch vanished
+    // with nothing shown. A named issue here buys a repair turn instead.
     Schema::Object(vec![
         Field::required(
             "error",
@@ -963,7 +955,7 @@ fn muse_ticket_schema() -> Schema {
                 max: 999.0,
             })),
         ),
-        // THE SAME SHAPE THE WRITE PATH ACCEPTES (`z.string().datetime()`,
+        // THE SAME SHAPE THE WRITE PATH ACCEPTES (`Schema::DateTime`,
         // character for character). As a bare string these were the one pair
         // of fields where the harness was LOOSER than the API: "due friday"
         // produced "2026-03-06" or "Friday", the harness recorded a held
@@ -993,9 +985,9 @@ fn muse_ticket_schema() -> Schema {
     ])
 }
 
-/// The clock the CALLER put in the prompt: `TicketMuseBar` sends
-/// `context: "now: <iso>"` and the prompt builder passes it through verbatim,
-/// so this reads back exactly the string the model was shown.
+/// The clock the CALLER put in the prompt: the caller sends
+/// `context: "now: <iso>"` and the prompt builder passes it through
+/// verbatim, so this reads back exactly the string the model was shown.
 static NOW_IN_CONTEXT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bnow:\s*(\S+)").unwrap());
 
@@ -1006,7 +998,7 @@ static NOW_IN_CONTEXT: LazyLock<Regex> =
 /// types into this bar lands inside a year of now.
 const STALE_CLOCK_MS: i64 = 365 * 24 * 60 * 60 * 1_000;
 
-/// THE HALF OF THE DATE CONTRACT A SCHEMA CANNOT STATE. `z.string().datetime()`
+/// THE HALF OF THE DATE CONTRACT A SCHEMA CANNOT STATE. The datetime schema
 /// says the value is a well-formed instant; whether it is the instant the user
 /// MEANT is a relation between the reply and the clock the prompt carried —
 /// and the anchor bug is the worse of the two, because a malformed date 400s
@@ -1023,7 +1015,7 @@ pub fn date_anchor_issue(patch: &TicketPatch, input: &Value) -> Option<String> {
     // No clock in the prompt means the model was never told what "friday" is
     // relative to, and grading it against a clock it never saw would be the
     // check being wrong rather than quiet. An UNPARSEABLE clock is the same
-    // disabled state (TS: Date.parse → NaN → return null).
+    // disabled state.
     let now = stated.as_deref().and_then(iso_ms)?;
     for field in ["dueDate", "startDate"] {
         let Some(iso) = patch.date_of(field) else {
@@ -1056,11 +1048,11 @@ impl TicketPatch {
     }
 }
 
-/// `Date.parse`'s practical subset, in ms: the zod datetime dialect PLUS the
-/// offsets and bare separators JS also accepts, because the STATED clock is
-/// caller-written and the replied one is schema-guaranteed. Any deviation is
-/// `None` — the caller's "unparseable → check disabled" landing state, the
-/// same direction TS's `Number.isFinite` gate lands.
+/// The practical subset of timestamp strings, in ms: the schema's datetime
+/// dialect PLUS the offsets and bare separators a caller may write, because
+/// the STATED clock is caller-written and the replied one is
+/// schema-guaranteed. Any deviation is `None` — the "unparseable → check
+/// disabled" landing state.
 fn iso_ms(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     let digit = |at: usize| b.get(at).is_some_and(|c| c.is_ascii_digit());
@@ -1091,7 +1083,7 @@ fn iso_ms(s: &str) -> Option<i64> {
     }
     let mut ms = days_from_civil(y, mo, d) * 86_400_000;
     if b.len() == 10 {
-        return Some(ms); // a bare date is UTC midnight, as in JS
+        return Some(ms); // a bare date is UTC midnight
     }
     // [T or t or space]HH:MM[:SS[.f]]
     if !matches!(b.get(10), Some(b'T') | Some(b't') | Some(b' ')) {
@@ -1134,7 +1126,7 @@ fn iso_ms(s: &str) -> Option<i64> {
     match b.get(i) {
         Some(b'Z') | Some(b'z') if i + 1 == b.len() => Some(ms),
         Some(sign @ (b'+' | b'-')) => {
-            // +HH:MM, +HHMM or +HH — the three offset spellings JS accepts.
+            // +HH:MM, +HHMM or +HH — the three offset spellings accepted.
             let rest = &b[i + 1..];
             if rest.iter().any(|&c| c != b':' && !c.is_ascii_digit()) {
                 return None;
@@ -1203,10 +1195,9 @@ pub fn muse_ticket_harness() -> HarnessDefinition {
             schema: muse_ticket_schema(),
             preprocess: Some(Arc::new(ticket_exclusive)),
             repair: None,
-            // The non-empty refine (an object with nothing in it is not a
-            // patch) and the date anchor, both with their TS messages
-            // verbatim so a repair turn spells them the way the model has
-            // seen them.
+            // The non-empty check (an object with nothing in it is not a
+            // patch) and the date anchor, both as repair sentences the model
+            // can act on.
             verify: Some(Arc::new(|value, input, _ctx| {
                 if value.as_object().is_none_or(|o| o.is_empty()) {
                     return Ok(Some(
@@ -1269,7 +1260,8 @@ pub struct SkillForm {
     pub error: Option<String>,
 }
 
-/// The write path's own directory-name regex (routes/api/skills.$owner.$name.ts).
+/// The write path's own directory-name regex
+/// (`routes/agents/skills_owner_name.rs`).
 static SKILL_NAME_DIR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9._-]*$").unwrap());
 
@@ -1333,16 +1325,15 @@ pub fn skill_form_problem(v: &SkillForm) -> Option<String> {
     None
 }
 
-/// The transform half of `MUSE_SKILL_FORM` under the module rule: coerce only
-/// what the object-parse + completeness refine would have accepted, leave the
-/// rest untouched for the schema and the verify.
+/// The skill-form coercion under the module rule: coerce only what the schema
+/// plus the completeness check would have accepted, leave the rest untouched
+/// for the schema and the verify.
 fn skill_form_preprocess(v: &Value) -> Value {
     let Some(obj) = v.as_object() else {
         return v.clone();
     };
-    // zod's `.trim()` overwrites the value the transform receives, so `name`
-    // and `content` arrive trimmed and the coercion runs on the trimmed
-    // string. An `error` that is empty after trim fails min(1) — untouched.
+    // `name` and `content` are trimmed before coercion runs. An `error` that
+    // is empty after trim fails min(1) — untouched.
     let error = match obj.get("error") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
@@ -1359,7 +1350,8 @@ fn skill_form_preprocess(v: &Value) -> Value {
         Some(_) => return v.clone(),
     };
     // Bounds are the schema's to sentence, not ours: a name one over the max
-    // must fail with zod's own message, not be quietly coerced into passing.
+    // must fail with the schema's own message, not be quietly coerced into
+    // passing.
     if matches!(&name, Some(n) if utf16_len(n) > 80) {
         return v.clone();
     }
@@ -1368,7 +1360,7 @@ fn skill_form_preprocess(v: &Value) -> Value {
     }
     // Error-exclusive, else the coerced complete record. A record with
     // neither an error nor both halves stays untouched so `verify` fires the
-    // completeness refine's own sentence on it.
+    // completeness sentence on it.
     if let Some(error) = error {
         json!({ "error": error })
     } else if let (Some(name), Some(content)) = (name, content) {
@@ -1388,9 +1380,10 @@ fn muse_skill_form_schema() -> Schema {
                 max: None,
             }),
         ),
-        // EVERY BOUND IS THE ROUTE'S OWN, transcribed from the skill write
-        // path: the name is the directory identifier (max 80), the content is
-        // the PUT's own max(500_000) with a floor the route does not have, on
+        // EVERY BOUND IS THE WRITE PATH'S OWN, transcribed from the skill
+        // write path: the name is the directory identifier (max 80), the
+        // content is the write path's own max(500_000) with a floor the write
+        // path does not have, on
         // purpose — the PUT would happily save an empty SKILL.md, but a record
         // with no document in it is not an answer this form should hand the
         // Save button, and it is the one thing a repair turn can still fix.
@@ -1424,7 +1417,7 @@ pub fn muse_skill_form_harness() -> HarnessDefinition {
             schema: muse_skill_form_schema(),
             preprocess: Some(Arc::new(skill_form_preprocess)),
             repair: None,
-            // The two post-transform refines, messages verbatim. The first is
+            // The two post-schema checks. The first is
             // the complete-record rule; the second is the coercion floor —
             // the name may be present but reduce to nothing once coerced
             // (`"name": "!"` parses as a complete record and is still no
@@ -1542,8 +1535,8 @@ fn template_form_preprocess(v: &Value) -> Value {
         Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
         Some(_) => return v.clone(),
     };
-    // `name` is trimmed by zod; `guidance` and `body` are NOT (the write path
-    // has no trim on them), so they pass through raw.
+    // `name` is trimmed; `guidance` and `body` are NOT (the write path has no
+    // trim on them), so they pass through raw.
     let name = match obj.get("name") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(s.trim().to_string()),
@@ -1559,8 +1552,9 @@ fn template_form_preprocess(v: &Value) -> Value {
     let (Ok(guidance), Ok(body)) = (raw_string("guidance"), raw_string("body")) else {
         return v.clone();
     };
-    // EVERY BOUND IS THE ROUTE'S OWN, transcribed from the template write
-    // path: name trim 1..=120, guidance ≤10_000, body ≤50_000. Neither the
+    // EVERY BOUND IS THE WRITE PATH'S OWN, transcribed from the template
+    // write path: name trim 1..=120, guidance ≤10_000, body ≤50_000. Neither
+    // the
     // guidance nor the body gets a lower bound, on purpose: a template with
     // an empty one is a state the write path accepts, and "return ALL THREE
     // fields" is presence, not content — "keep every field the request does
@@ -1574,10 +1568,9 @@ fn template_form_preprocess(v: &Value) -> Value {
     if matches!(&body, Some(b) if utf16_len(b) > 50_000) {
         return v.clone();
     }
-    // The transform's `guidance ?? ''` / `body ?? ''` are dead on success —
-    // the refine ahead of them requires presence — and stay dead here: a
-    // default would make the absent field PRESENT and the completeness check
-    // would never fire.
+    // No default for `guidance` or `body` — the completeness check requires
+    // presence, and a default would make the absent field PRESENT and the
+    // completeness check would never fire.
     if let Some(error) = error {
         json!({ "error": error })
     } else if let (Some(name), Some(guidance), Some(body)) = (name, guidance, body) {
@@ -1628,10 +1621,8 @@ pub fn muse_template_form_harness() -> HarnessDefinition {
             schema: muse_template_form_schema(),
             preprocess: Some(Arc::new(template_form_preprocess)),
             repair: None,
-            // The complete-record refine, message verbatim. TS declares no
-            // `verify` on this harness — the refine lives in its zod
-            // pipeline — and this closure is that refine, moved to the only
-            // hook that runs after the schema.
+            // The complete-record check, message verbatim, on the only hook
+            // that runs after the schema.
             verify: Some(Arc::new(
                 |value: &Value, _input: &Value, _ctx: &RenderContext| {
                     let form: TemplateForm =
@@ -1669,12 +1660,12 @@ pub fn muse_template_form_harness() -> HarnessDefinition {
 //
 // THE GUARD GAP THIS CLOSES (audit 1.5, the Muse row): these six draft the
 // documents an agent is MADE of — its SOUL.md, its personality brief, its
-// SKILL.md playbooks, its MEMORY.md — and they used to reach the gateway by
-// hand with no guardrail at all, which matters more here than anywhere else
-// the audit looked: a chat message carrying a credential is read once and
-// scrolls away, while a soul is a DURABLE document that gets rendered into an
-// agent's context on every single run. A leaked key in a drafted soul is a
-// leaked key in every future prompt that agent ever sends.
+// SKILL.md playbooks, its MEMORY.md — and when the audit looked, they reached
+// the gateway by hand with no guardrail at all, which matters more here than
+// anywhere else it looked: a chat message carrying a credential is read once
+// and scrolls away, while a soul is a DURABLE document that gets rendered
+// into an agent's context on every single run. A leaked key in a drafted soul
+// is a leaked key in every future prompt that agent ever sends.
 //
 // WHY ONE DEFINITION AND NOT SIX: the five structured kinds are five
 // harnesses because they are five contracts; the six prose kinds share all of
@@ -1762,7 +1753,7 @@ pub fn template_issue(v: &str) -> Option<String> {
         .collect();
     let wrong: Vec<usize> = levels.iter().copied().filter(|n| *n != 2).collect();
     if !wrong.is_empty() {
-        // The distinct wrong levels in first-seen order, as TS's Set spell.
+        // The distinct wrong levels in first-seen order.
         let mut seen: Vec<usize> = Vec::new();
         for n in &wrong {
             if !seen.contains(n) {
@@ -1859,8 +1850,9 @@ pub fn muse_draft_harness() -> HarnessDefinition {
 
 // ── streaming redaction ──────────────────────────────────────────────────────
 //
-// WHY A STREAM NEEDS ITS OWN REDACTOR: `streamMuse` accumulates every chunk
-// and hands the total back, and that total is what the user saves as a
+// WHY A STREAM NEEDS ITS OWN REDACTOR: the streaming route
+// (`routes/agents/muse.rs`) accumulates every chunk and hands the total back,
+// and that total is what the user saves as a
 // SOUL.md — there is no later copy to clean up. A credential is unredactable
 // the moment its characters are on the wire, so on this path "hasn't yet
 // relayed" has to mean a few characters of hold-back rather than a pass at
@@ -1898,9 +1890,9 @@ const TAIL_HOLD: usize = 48;
 static PRIVATE_KEY_BEGIN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----").unwrap());
 
-/// `redactSecrets` in production; a parameter so this module needs no
-/// database. (TS hands it `(text) => {text}`; the Rust redaction edge
-/// returns the text directly, so the closure's return is the text.)
+/// The production redactor, as a parameter so this module needs no database;
+/// the redaction edge returns the text directly, so the closure's return is
+/// the text.
 pub type RedactFn = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 /// THE BUFFER IS SPLIT IN TWO, and that is a performance property rather than
@@ -1944,14 +1936,12 @@ impl StreamRedactor {
     /// Take the next raw chunk; return the text that is safe to relay right
     /// now (frequently empty).
     ///
-    /// THE SCAN IS BYTE-WISE, a documented divergence: TS indexes the string
-    /// by UTF-16 unit, Rust scans bytes. A cut position is only ever ACCEPTED
-    /// at an ASCII whitespace byte, so every cut lands on a character
-    /// boundary and no relayed string is ever split mid-character. The one
-    /// behavioral difference is which unicode spaces count as whitespace for
-    /// the cut — TS's `/\s/` includes them, the byte scan does not — so a
-    /// cut TS would make after a U+00A0 is instead held back here: the
-    /// held-back side grows by a character and the relayed side never does.
+    /// THE SCAN IS BYTE-WISE. A cut position is only ever ACCEPTED at an
+    /// ASCII whitespace byte, so every cut lands on a character boundary and
+    /// no relayed string is ever split mid-character. The one consequence:
+    /// unicode spaces do not count as whitespace for the cut, so a cut after
+    /// one (a U+00A0, say) is instead held back — the held-back side grows by
+    /// a character and the relayed side never does.
     pub fn push(&mut self, chunk: &str) -> String {
         self.tail.push_str(chunk);
         let total = self.parts_len + self.tail.len();
@@ -2027,15 +2017,15 @@ impl StreamRedactor {
 
 // ── the fixture tables ───────────────────────────────────────────────────────
 //
-// One struct for all six harnesses, in research.rs's fixture idiom. TS checks
-// receive the TYPED value; the Rust runner stores a `Value`, so each check
-// deserializes its own typed view first — the same shapes the schemas build,
-// so a value that passed the contract always deserializes, and one that did
-// not gets a sentence saying so rather than a panic.
+// One struct for all six harnesses, in research.rs's fixture idiom. The
+// runner stores a `Value`, so each check deserializes its own typed view
+// first — the same shapes the schemas build, so a value that passed the
+// contract always deserializes, and one that did not gets a sentence saying
+// so rather than a panic.
 //
 // The checks are written as non-capturing closures (they coerce to the fn
-// pointer the struct holds) and reference only module constants — exactly the
-// TS shape, where each `check` closes over nothing but the module.
+// pointer the struct holds) and reference only module constants — each
+// `check` closes over nothing but the module.
 
 pub struct MuseFixture {
     pub name: &'static str,
@@ -2044,8 +2034,9 @@ pub struct MuseFixture {
     pub check: fn(&Value) -> Option<String>,
 }
 
-/// TS's `String(v)` spelling for the few check messages that interpolate an
-/// optional field: absent prints "undefined", null prints "null".
+/// The spelling for check messages that interpolate an optional field:
+/// absent prints "undefined", null prints "null" — the spelling these
+/// sentences have always carried.
 fn ts_str(v: &Option<String>) -> String {
     match v {
         None => "undefined".into(),
@@ -2069,7 +2060,7 @@ fn ts_opt(v: &Option<Option<String>>) -> String {
 /// wants and a table does not carry: the `Arc` erasure onto `CheckFn`, the
 /// band each fixture states, and the deliberate nothing that is `_ctx` —
 /// every Muse fixture is single-shot and nothing calls a tool, so a replay
-/// hands them the empty context, TS's `NO_TOOLS`.
+/// hands them the empty context.
 fn eval_cases(fixtures: Vec<MuseFixture>) -> Vec<EvalCase> {
     fixtures
         .into_iter()
@@ -2103,9 +2094,8 @@ static PLACEHOLDERISH: LazyLock<Regex> =
 static DOW_OR_FRI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)5|fri").unwrap());
 
 /// NINE FIXTURES, THREE BANDS. `cron_problem` is the shared shape assertion —
-/// the two originals spelled it in two different orders and one of them
-/// omitted the prompt-length floor entirely, so a reply with an empty prompt
-/// passed one fixture and failed the other.
+/// fixtures that each spell the shared checks differently are how a reply
+/// with an empty prompt passes one fixture and fails another.
 pub fn cron_fixtures() -> Vec<MuseFixture> {
     fn problem(v: &Value) -> Option<String> {
         let d: CronDraft = serde_json::from_value(v.clone()).ok()?;
@@ -2450,9 +2440,9 @@ pub fn agent_fixtures() -> Vec<MuseFixture> {
 /// measured against the time the prompt actually carried.
 const NOW: &str = "now: 2026-03-03T09:00:00.000Z";
 
-/// `DUE_FRIDAY` — the input the two-fields fixture runs with, spelled as its
-/// own literal (its current-ticket key order differs from `ticket()`'s, and
-/// the current string is part of what the model is shown).
+/// The input the two-fields fixture runs with, spelled as its own literal
+/// (its current-ticket key order differs from `ticket()`'s, and the current
+/// string is part of what the model is shown).
 fn due_friday_input() -> Value {
     json!({
         "instruction": "make it urgent and due friday",
@@ -2483,9 +2473,9 @@ static REFUSE_HALF_NAMES: LazyLock<Regex> =
 static MIGRATION_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)migration").unwrap());
 
 /// TWELVE FIXTURES, THREE BANDS — and this suite is the reason the banding
-/// exists at all: it shipped with TWO, so one failure was 50%, which made a
-/// single fixture decide the Utility and Muse verdicts for the whole model. A
-/// verdict that turns on one coin flip is not a verdict.
+/// exists at all: with two fixtures, one failure is 50%, and a single
+/// fixture deciding the Utility and Muse verdicts for the whole model is a
+/// verdict that turns on one coin flip.
 ///
 /// The shape of the suite follows the two ways this harness actually fails:
 /// it edits MORE than it was asked to, or it invents a patch for something
@@ -3557,9 +3547,9 @@ mod tests {
     // Nothing here touches a database, a gateway or a fleet: every edge the
     // runner has is injected. The `agent` kind is exercised through its
     // schema + preprocess rather than through the runner because its render
-    // reads the org profile — see the note on the divergence in the module
-    // header. Everything the client used to do lives in that pipeline now,
-    // so this is where the coercion has to be held still.
+    // reads the org line — see the note on the org anchor in the module
+    // header. The coercion lives in that pipeline, so this is where it has
+    // to be held still.
 
     async fn run(
         def: &HarnessDefinition,
@@ -3574,8 +3564,8 @@ mod tests {
         execute(&r.deps(), def, input, ctx, None).await
     }
 
-    // The def's verify hook, for the refines that live after the schema (the
-    // TS held them inside the zod pipeline; here they are repair sentences).
+    // The def's verify hook, for the checks that live after the schema —
+    // they run as repair sentences.
     fn verify_of(def: &HarnessDefinition) -> crate::harness::define::VerifyFn {
         let Output::Json {
             verify: Some(verify),
@@ -3613,11 +3603,10 @@ mod tests {
 
     #[tokio::test]
     async fn reads_the_draft_out_of_the_reply_shape_the_client_side_extractor_died_on() {
-        // Preamble, fenced object, then a sentence containing a brace. The
-        // greedy span ran from the first `{` to the `{daily}` in the trailing
-        // prose and threw, and `parseCronDraft` answered null: "could not turn
-        // that into a job", every time, on the same model that had just
-        // answered correctly.
+        // Preamble, fenced object, then a sentence containing a brace — the
+        // shape a greedy `/\{[\s\S]*\}/` span dies on: it runs from the first
+        // `{` to the `{daily}` in the trailing prose. The balanced scanner
+        // walks past it.
         let def = muse_cron_harness();
         let r = recorded_run(World {
             replies: replies(&[
@@ -3636,9 +3625,8 @@ mod tests {
     #[tokio::test]
     async fn repairs_a_draft_missing_a_field_instead_of_giving_up_on_the_click() {
         // The repair turn is the whole small-model story (audit 1.4), and
-        // this is the flow where its absence was most visible: nothing
-        // anywhere in the tree re-asked, so one dropped field cost the user
-        // the entire draft.
+        // without it one dropped field costs the user the entire draft — no
+        // second ask anywhere.
         let def = muse_cron_harness();
         let r = recorded_run(World {
             replies: replies(&[
@@ -3680,9 +3668,9 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_on_a_model_measured_unable_to_produce_json() {
-        // Muse used to degrade here — the form underneath is usable by hand,
-        // so a shortcut that declines to try seemed worse than one that
-        // sometimes misses. Under the narrowed fact this model does not
+        // The form underneath is usable by hand, so a shortcut that declines
+        // to try seems worse than one that sometimes misses. Under the
+        // narrowed fact this model does not
         // "sometimes miss": it returned no parseable object on any trial, so
         // the shortcut would miss every time and `on_failure: Null` leaves
         // the form exactly as it would have been. Refusing costs the user
@@ -3728,9 +3716,8 @@ mod tests {
 
     #[test]
     fn trims_and_treats_a_whitespace_only_field_as_absent_rather_than_present() {
-        // `parseCronDraft` tested `!j.name || !j.schedule || !j.prompt`, so a
-        // field of spaces failed the draft. Same outcome, now with a sentence
-        // the model can act on instead of a silent null.
+        // A field of spaces is absent, not present: same outcome as a missing
+        // field, now with a sentence the model can act on.
         let (out, issues) = parse_cron(json!({
             "name": "  inbox-brief \n", "schedule": "0 8 * * *", "prompt": "Do the thing."
         }));
@@ -3782,10 +3769,9 @@ mod tests {
 
     #[test]
     fn coerces_a_hostile_handle_into_the_identifier_alphabet() {
-        // THE reason this could not stay on the client. A handle becomes a
+        // THE reason the coercion lives server-side. A handle becomes a
         // container name and half of the fleet model id, and the create
-        // endpoint is reachable without the browser that used to sanitize
-        // this.
+        // endpoint is reachable without any sanitizing caller.
         let mut v = ok_agent();
         v["handle"] = json!("../../etc/passwd");
         v["department"] = json!("Release Eng!");
@@ -3815,8 +3801,8 @@ mod tests {
 
     #[test]
     fn fails_a_handle_too_short_to_be_an_agent_id_and_says_so_in_words_a_model_can_act_on() {
-        // The schema holds only the shape; the one-character floor is the
-        // client's old null-as-failure, restated as a repair sentence.
+        // The schema holds only the shape; the one-character floor is a
+        // repair sentence.
         let mut v = ok_agent();
         v["handle"] = json!("-");
         let (out, issues) = parse_agent(v.clone());
@@ -3919,9 +3905,8 @@ mod tests {
 
     #[test]
     fn drops_fields_outside_the_allowlist_instead_of_failing_the_patch() {
-        // zod strips unrecognized keys, which is exactly `parseTicketPatch`'s
-        // behavior: a model that helpfully invents `assignees` should lose
-        // the field, not the whole edit.
+        // Closed objects strip unrecognized keys: a model that helpfully
+        // invents `assignees` loses the field, not the whole edit.
         let (out, issues) = parse_ticket(json!({
             "priority": "urgent", "assignees": ["user:abc"], "boardId": "x"
         }));
@@ -3935,8 +3920,8 @@ mod tests {
 
     #[test]
     fn names_an_out_of_vocabulary_enum_so_the_repair_turn_can_fix_it() {
-        // `parseTicketPatch` accepted `priority: string` — any string at all —
-        // and "P1" travelled on toward the save path.
+        // An untyped priority would accept any string at all, and "P1" would
+        // travel on toward the save path.
         let (_, issues) = parse_ticket(json!({ "priority": "P1" }));
         assert!(
             matches!(issues[0].1, Issue::InvalidValue { .. }),
@@ -3969,7 +3954,7 @@ mod tests {
     #[test]
     fn rejects_an_empty_patch_which_is_not_an_answer() {
         // All-optional fields mean the schema alone would pass `{}` — the
-        // non-empty refine is the verify sentence the repair turn carries.
+        // non-empty check is the verify sentence the repair turn carries.
         let (out, issues) = parse_ticket(json!({}));
         assert!(issues.is_empty());
         let verify = verify_of(&muse_ticket_harness());
@@ -3996,10 +3981,10 @@ mod tests {
     #[test]
     fn holds_dates_to_the_shape_the_write_path_accepts_so_the_repair_turn_can_fire() {
         // "make it due friday" is the single likeliest thing anyone types
-        // into this bar, and every natural answer to it used to pass here and
-        // 400 at PUT /api/tasks/:id — where the bar has already cleared its
-        // preview, so the whole patch (including a perfectly good
-        // `priority`) vanished with nothing shown. A date in the wrong format
+        // into this bar, and a natural answer in the wrong shape must fail
+        // HERE rather than at the write — where the bar has already cleared
+        // its preview, so the whole patch (including a perfectly good
+        // `priority`) vanishes with nothing shown. A date in the wrong format
         // is exactly what one repair turn fixes.
         for d in [
             "2026-03-06",
@@ -4030,11 +4015,11 @@ mod tests {
 
     #[test]
     fn holds_every_other_field_to_the_route_bounds_too_for_the_same_reason() {
-        // The dates were not the only place this schema was looser than
-        // `Patch` in routes/api/tasks.$id.ts, and every gap has the identical
-        // shape: the harness records a held contract, the PUT 400s, and the
-        // command bar swallows it with the preview already cleared. A named
-        // issue buys a repair turn; a 400 buys nothing.
+        // The dates were not the only place this schema was looser than the
+        // ticket write path, and every gap has the identical shape: the
+        // harness records a held contract, the write 400s, and the command
+        // bar swallows it with the preview already cleared. A named issue
+        // buys a repair turn; a 400 buys nothing.
         assert!(!parse_ticket(json!({ "title": "   " })).1.is_empty());
         assert!(
             !parse_ticket(json!({ "title": "T".repeat(301) }))
@@ -4060,7 +4045,7 @@ mod tests {
         );
         let many: Vec<String> = (0..21).map(|i| format!("t{i}")).collect();
         assert!(!parse_ticket(json!({ "tags": many })).1.is_empty());
-        // And still accepts everything the route does.
+        // And still accepts everything the write path does.
         assert!(
             parse_ticket(json!({ "title": "Ship it", "estimatedHours": 8, "tags": ["launch"] }))
                 .1
@@ -4292,15 +4277,15 @@ mod tests {
 
     // ── the date anchor: what the schema cannot say ──────────────────────────
     //
-    // `z.string().datetime()` matches `Patch` in routes/api/tasks.$id.ts
-    // character for character, which is everything a module constant can say
-    // about a date — the schema is built at definition time and the ticket's
-    // clock arrives with the run. So the FORMAT bug is closed and the ANCHOR
-    // bug is not, and the anchor bug is the worse of the two: a malformed
-    // date at least 400s, while a well-formed one worked out from the
-    // model's own training cutoff is accepted by the route, written to the
-    // board, and shows up as a ticket that has been overdue for two years.
-    // Nothing errors anywhere.
+    // `Schema::DateTime` matches the ticket write path character for
+    // character, which is everything a module constant can say about a date —
+    // the schema is built at definition time and the ticket's clock arrives
+    // with the run. So the FORMAT bug is closed and the ANCHOR bug is not,
+    // and the anchor bug is the worse of the two: a malformed date at least
+    // 400s, while a well-formed one worked out from the model's own training
+    // cutoff is accepted by the write path, written to the board, and shows
+    // up as a ticket that has been overdue for two years. Nothing errors
+    // anywhere.
 
     const STALE: &str = "{\"priority\":\"urgent\",\"dueDate\":\"2024-03-08T17:00:00.000Z\"}";
     const RIGHT: &str = "{\"priority\":\"urgent\",\"dueDate\":\"2026-03-06T17:00:00.000Z\"}";
@@ -4424,12 +4409,11 @@ mod tests {
 
     #[test]
     fn every_suite_is_big_enough_that_one_failure_is_not_a_verdict() {
-        // WHAT THIS ACTUALLY ASSERTS is the shape the TS asserted with a
-        // count: nothing in a fixture reaches for a model — in Rust the check
-        // slot's TYPE is a plain function over a value, so that half is
-        // structural — and no suite is small enough that a single fixture
-        // decides a band. This suite shipped with two fixtures per kind, so
-        // one failure read as 50% and a verdict turned on one coin flip.
+        // WHAT THIS ACTUALLY ASSERTS: nothing in a fixture reaches for a
+        // model — the check slot's TYPE is a plain function over a value, so
+        // that half is structural — and no suite is small enough that a
+        // single fixture decides a band. At two fixtures per kind, one
+        // failure reads as 50% and a verdict turns on one coin flip.
         for table in [
             cron_fixtures(),
             agent_fixtures(),
@@ -4512,8 +4496,7 @@ mod tests {
         // The fixture grades against the clock its own input puts in the
         // prompt, and it calls `date_anchor_issue` to do it — one function,
         // so the offline score and `harness_runs.schema_valid` cannot come to
-        // disagree about one reply, which is the defect this whole round is
-        // about.
+        // disagree about one reply.
         let stale = json!({ "priority": "urgent", "dueDate": "2024-03-08T17:00:00.000Z" });
         assert!(
             (fixture_in(&ticket_fixtures(), "two fields, named").check)(&stale)
@@ -4639,8 +4622,8 @@ mod tests {
     async fn records_the_run_rather_than_the_value_when_the_model_returns_nothing() {
         // The failure the audit cared about is the invisible one. A draft
         // that comes back empty leaves the editor untouched
-        // (`on_failure: Null`) AND leaves a harness_runs row saying so, which
-        // is the whole difference from before.
+        // (`on_failure: Null`) AND leaves a harness_runs row saying so — the
+        // visible half of an otherwise invisible failure.
         let def = muse_draft_harness();
         let r = recorded_run(World {
             replies: replies(&[""]),
@@ -4707,7 +4690,7 @@ mod tests {
 
     #[test]
     fn the_template_line_count_lets_a_big_process_come_back_as_section_names() {
-        // THE CONTRADICTION THIS FIXTURES FIX. `SYSTEM.template` says both
+        // THE CONTRADICTION THIS FIXTURES FIX. The template prompt says both
         // "whole template under 25 lines" AND "if the request describes a big
         // process, capture it as section NAMES, not content". An incident
         // runbook needs five sections; five sections with a description line

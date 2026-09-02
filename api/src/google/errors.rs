@@ -1,7 +1,5 @@
-// google/errors.ts — the one mapping every Google service route answers
-// through. The engine halves speak `GoogleError` (TS speaks a thrown Error
-// with `name: 'GoogleNotConnected'`; the enum is the same distinction said
-// in the type instead of the name field), and this leaf turns one into the
+// google/errors — the one mapping every Google service route answers through.
+// The engine halves speak `GoogleError`, and this leaf turns one into the
 // consistent API response: `surface` names the product (Drive, Calendar,
 // Gmail, APIs) for the reconnect/unavailable sentences.
 
@@ -10,9 +8,8 @@ use axum::response::Response;
 
 use crate::error::house_error_msg;
 
-/// A Google service call's failure. `NotConnected` is requireToken's
-/// GoogleNotConnected throw — a state, not an outage. `Failed` carries the
-/// sentence Google sent (the log's only consumer).
+/// A Google service call's failure. `NotConnected` is a state, not an outage.
+/// `Failed` carries the sentence Google sent (the log's only consumer).
 #[derive(Debug)]
 pub enum GoogleError {
     NotConnected,
@@ -37,9 +34,9 @@ impl From<crate::google::connections::RequireError> for GoogleError {
     }
 }
 
-/// calendar.ts's error type reaching a googleFail boundary: its NotConnected
-/// is the same state googleFail answers, and its Failed sentence is the
-/// message the reconnect test reads.
+/// Calendar's error type at the google_fail boundary: its NotConnected is the
+/// same state google_fail answers, and its Failed sentence is the message the
+/// reconnect test reads.
 impl From<crate::google::calendar::CalendarError> for GoogleError {
     fn from(e: crate::google::calendar::CalendarError) -> Self {
         match e {
@@ -49,8 +46,9 @@ impl From<crate::google::calendar::CalendarError> for GoogleError {
     }
 }
 
-/// The scope-refusal test every surface shares (TS `/insufficient|ACCESS_TOKEN_SCOPE/i`
-/// over the message): Google says this in several wordings when the connection
+/// The scope-refusal test every surface shares (case-insensitive
+/// "insufficient" or "access_token_scope" in the message): Google says this in
+/// several wordings when the connection
 /// predates a scope the surface needs, and the fix is the same every time —
 /// one reconnect.
 pub fn reconnect_needed(message: &str) -> bool {
@@ -58,12 +56,12 @@ pub fn reconnect_needed(message: &str) -> bool {
     m.contains("insufficient") || m.contains("access_token_scope")
 }
 
-/// googleFail — the default mapping (502 code `google_error`).
+/// The default mapping (502 code `google_error`).
 pub fn google_fail(e: GoogleError, surface: &str) -> Response {
     google_fail_with(e, surface, "google_error")
 }
 
-/// googleFail with the 502's error code named by the caller: the calendar
+/// google_fail with the 502's error code named by the caller: the calendar
 /// route answers `calendar_error`, the drive routes `drive_error` /
 /// `import_failed` — same ladder, their own noun.
 pub fn google_fail_with(e: GoogleError, surface: &str, code: &'static str) -> Response {

@@ -1,6 +1,5 @@
 // GET /api/me/events → SSE stream of THIS person's own firehose: their runs
-// changing state, their notifications landing, their brief being appended to —
-// the port of ui/src/routes/api/me.events.ts.
+// changing state, their notifications landing, their brief being appended to.
 //
 // The per-device attach point. A run started on a laptop and parked on a
 // question at 11pm has to reach the phone, and it has to reach it without the

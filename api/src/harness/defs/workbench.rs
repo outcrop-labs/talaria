@@ -1,5 +1,4 @@
-// THE CODING HARNESSES — three of them, one per Workbench effort slot. Port
-// of harness/defs/workbench.ts.
+// THE CODING HARNESSES — three of them, one per Workbench effort slot.
 //
 // WHY THEY EXIST. `MODEL_ROLES` has carried `code-light`, `code-standard` and
 // `code-heavy` since the Workbench shipped, and the fitness matrix printed all
@@ -49,24 +48,21 @@
 // against the heavy slot would make the three columns incomparable, which is
 // the one thing a matrix must not be.
 //
-// THE DRY RUN CROSSED with the fitness plane's `EvalCase`/`DryRunDecl` slots;
-// only the EXECUTOR that replays it stays behind (see define.rs's header), and
-// this is the one def whose dry run is more than a turn count: the workspace
-// is the TASK — the fixture's own files, and the oracle that decides whether
-// the suite passes against what the model left. The oracles are wired into
-// that declaration rather than re-derived (they are pure functions of the
-// files); the numbers are preserved with it: a bench runs TWELVE turns, and
-// twelve has a history worth recording — six filed nine of one model's
-// workbench cases as OUR gap ("the turn budget ran out while the model was
-// still working"), ten still filed three across a twelve-model archive (p50
-// is 6 tool calls, p90 is 8, the tail reaches 13, and a model at the top of
-// that distribution is still editing when the loop stops), and twelve is the
-// turn ceiling, so the next honest move is a smaller task rather than a
-// bigger budget. A bench benches the FIVE sandbox tools (`list_files`,
-// `read_file`, `search`, `write_file`, `run_tests`) — and declares a WORKSPACE
-// rather than a Talaria world, which is why the sandbox itself
-// (fitness/toolbox/hermes-tools) crosses with the fitness plane and not with
-// this file.
+// THE DRY RUN IS MORE THAN A TURN COUNT: the workspace is the TASK — the
+// fixture's own files, and the oracle that decides whether the suite passes
+// against what the model left. The oracles are wired into that declaration
+// rather than re-derived (they are pure functions of the files); the numbers
+// are preserved with it: a bench runs TWELVE turns, and twelve has a history
+// worth recording — six filed nine of one model's workbench cases as OUR
+// gap ("the turn budget ran out while the model was still working"), ten
+// still filed three across a twelve-model archive (p50 is 6 tool calls, p90
+// is 8, the tail reaches 13, and a model at the top of that distribution is
+// still editing when the loop stops), and twelve is the turn ceiling, so the
+// next honest move is a smaller task rather than a bigger budget. A bench
+// benches the FIVE sandbox tools (`list_files`, `read_file`, `search`,
+// `write_file`, `run_tests`) — and declares a WORKSPACE rather than a
+// Talaria world, which is why the sandbox itself (fitness/toolbox) lives
+// with the fitness plane and not with this file.
 
 use std::sync::{Arc, OnceLock};
 
@@ -280,10 +276,9 @@ fn slug_oracle(files: &[WorkbenchFile]) -> Option<String> {
     if src.trim().is_empty() {
         return Some("src/slug.js is empty or missing".into());
     }
-    // The second two are the TS's own redundancy kept verbatim: a literal
+    // The last two alternatives are deliberately redundant: a literal
     // `̀-ͯ` in the source contains `u0300` as a substring, so the
-    // third test subsumes the second. Deleting it here would be a tidy-up
-    // that makes the port harder to diff against its source for no gain.
+    // third subsumes the second.
     let folds =
         slug_normalize().is_match(src) || src.contains("\\u0300-\\u036f") || src.contains("u0300");
     if !folds {
@@ -340,12 +335,11 @@ struct Task {
     fix_in: &'static str,
 }
 
-/// The workspace half of a workbench dry run, crossed ahead of the executor
-/// that reads it (see the header): the pristine files the run starts from,
-/// the oracle that scores what the model leaves behind, and the file a
-/// correct fix lands in — pristine must FAIL that oracle and a fix to
+/// The workspace half of a workbench dry run: the pristine files the run
+/// starts from, the oracle that scores what the model leaves behind, and the
+/// file a correct fix lands in — pristine must FAIL that oracle and a fix to
 /// exactly that path must PASS it, which is the consistency the fixtures
-/// lean on. The fitness plane wires this into the sandbox when it crosses.
+/// lean on.
 pub struct WorkbenchWorkspace {
     pub name: &'static str,
     pub fix_in: &'static str,
@@ -530,9 +524,8 @@ fn used_tools(value: &str, ctx: &CheckCtx) -> CheckResult {
 }
 
 /// FIXED: the bug is gone, judged by the task's own oracle against the files
-/// as the model left them (`ctx.failure` — the world half of the dry run,
-/// modeled on `CheckCtx`). Not "the diff matched": a real fix can be made in
-/// more than one place.
+/// as the model left them (`ctx.failure` — the world half of the dry run).
+/// Not "the diff matched": a real fix can be made in more than one place.
 fn check_suite_green(value: &str, ctx: &CheckCtx) -> CheckResult {
     let gate = used_tools(value, ctx);
     if gate != CheckResult::Pass {
@@ -571,21 +564,21 @@ fn check_read_before_replace(value: &str, ctx: &CheckCtx) -> CheckResult {
     }
     let mut blind: Vec<String> = Vec::new();
     for (at, w) in wrote {
-        // `String(w.args.path ?? '')`: absent and null are both the empty
-        // string, anything else is JS `String()` of it.
+        // `js_string` coercion: absent and null are both the empty string,
+        // anything else is `String()` of it.
         let path = match w.args.get("path") {
             None | Some(Value::Null) => String::new(),
             Some(v) => js_string(v),
         };
         // A `search` hit counts as having seen the file: it returns the
         // matching lines, which is how a developer actually locates a
-        // one-line fix. The read must name the SAME path — strict equality
-        // in the TS, so a string is a string and anything else is not.
+        // one-line fix. The read must name the SAME path — strict equality,
+        // so a string is a string and anything else is not.
         let seen = ctx.calls.iter().position(|c| {
             (c.tool == "read_file" && c.args.get("path") == Some(&Value::String(path.clone())))
                 || c.tool == "search"
         });
-        // By position rather than the TS's identity `indexOf`, which on two
+        // By position rather than a value-identity `indexOf`, which on two
         // identical write calls would hand the second one the first's index;
         // the question is whether a read preceded THIS write.
         if seen.is_none_or(|s| s > at) {
@@ -639,9 +632,8 @@ fn check_verified(value: &str, ctx: &CheckCtx) -> CheckResult {
     }
     // Running them BEFORE the last edit and not after is the same failure
     // wearing a green tick: the model verified a state it then changed. Both
-    // positions count errored calls too — the TS's `lastIndexOf` never
-    // filtered on `error`, and a refused write is still a write that
-    // happened.
+    // positions count errored calls too — a refused write is still a write
+    // that happened.
     let last_write = ctx.calls.iter().rposition(|c| c.tool == "write_file");
     let last_run = ctx.calls.iter().rposition(|c| c.tool == "run_tests");
     match (last_run, last_write) {
@@ -713,8 +705,8 @@ fn workbench_harness(
         id,
         label,
         // The effort is interpolated once, into the one sentence that names
-        // the job; the tasks and assertions are byte-identical across the
-        // three, which is what makes the columns comparable.
+        // the job; the tasks and assertions are identical across the three,
+        // which is what makes the columns comparable.
         Box::leak(format!("Drives a coding harness at {effort} effort: reads the repository, edits files, and runs the tests until they pass.").into_boxed_str()),
         // THE BINDING. The scorer runs the real resolver over this spec, so
         // naming the role here is what puts a verdict in the Workbench column
@@ -748,10 +740,9 @@ fn workbench_harness(
             ])
         }),
         Output::Text {
-            // `raw.trim() || null` — the empty reply is a failure the caller
-            // already knows how to hold: a workbench run that produced
-            // nothing leaves the branch untouched, which is the safe end
-            // state and the one the session loop already handles.
+            // An empty reply cleans to nothing — a workbench run that
+            // produced nothing leaves the branch untouched, which is the
+            // safe end state and the one the session loop already handles.
             clean: Some(Arc::new(|raw: &str| {
                 Ok((!raw.trim().is_empty()).then(|| Value::String(raw.trim().to_string())))
             })),
@@ -790,28 +781,22 @@ fn workbench_harness(
     // fixture's own files and the task's own oracle, which is why it is built
     // from the INPUT rather than held as a constant — the repository and the
     // oracle that decides whether its tests pass are properties of the case,
-    // not of the def. TWELVE TURNS, and the number's evidence is recorded in
-    // this file's header: six filed nine of one model's cases as OUR gap, ten
-    // still filed three across a twelve-model archive (p50 is 6 tool calls,
-    // p90 is 8, the tail reaches 13), and twelve is the turn ceiling — the last
-    // raise available without a cost decision, and if twelve still gaps the
-    // honest next move is a smaller task, not a bigger budget. No `tools` list
-    // beside it: a def that declares the workspace has the coding surface, and
-    // the five sandbox tools come with the surface rather than with the
-    // declaration.
+    // not of the def. TWELVE TURNS — the number and its evidence are recorded
+    // in this file's header. No `tools` list beside it: a def that declares
+    // the workspace has the coding surface, and the five sandbox tools come
+    // with the surface rather than with the declaration.
     d.dry_run = Some(DryRunDecl {
         tools: Vec::new(),
         max_turns: Some(12),
         world: None,
         credentials: None,
         workspace: Some(Arc::new(|input: &Value| {
-            // `input.files`, and the oracle found by
-            // `TASKS.find(t => t.input.task === input.task)?.oracle` — matched
-            // on the task string because the oracle is the task's own. A find
-            // that misses reads as the TS's `?? null` did: no oracle, so no
-            // failure the world can ever report. A value that is not one of
-            // this table's inputs cannot arrive from the fixture fold (each
-            // case's input IS a task's) and reads the same way here.
+            // The task's own files, and the oracle found by matching the
+            // task string — the oracle is the task's own. A find that misses
+            // reads as no oracle: no failure the world can ever report. A
+            // value that is not one of this table's inputs cannot arrive from
+            // the fixture fold (each case's input IS a task's) and reads the
+            // same way here.
             let task: WorkbenchTaskInput =
                 serde_json::from_value(input.clone()).unwrap_or(WorkbenchTaskInput {
                     task: String::new(),
@@ -849,17 +834,16 @@ fn workbench_harness(
             }
         })),
     });
-    // THE FIXTURE TABLE — the same nine fixtures on all three defs, exactly as
-    // the TS attached `TASKS.flatMap(fixturesFor)` to each of the three: the
+    // THE FIXTURE TABLE — the same nine fixtures on all three defs: the
     // efforts differ in what an admin SPENDS, not in what the job is, and a
     // suite that drifted between the columns would make them incomparable.
     // The names are built from the task table's own names, so they are leaked
     // into 'static — the same leak the job line above takes, for the same
     // reason: a definition is built once and lives for the process. The fold
-    // re-types the value the way every text def's does (the run's value is the
-    // trimmed reply, what the TS check received), and passes the CONTEXT
-    // through untouched — the calls, the world's failure and the exhausted
-    // flag are the whole assertion here.
+    // re-types the value the way every text def's does (the run's value is
+    // the trimmed reply), and passes the CONTEXT through untouched — the
+    // calls, the world's failure and the exhausted flag are the whole
+    // assertion here.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -944,8 +928,8 @@ mod tests {
 
     /// Run a task's own workspace through its oracle with some files
     /// replaced — which is how a real fix reaches it. Reads the pub
-    /// `workspaces()` the fitness plane will consume, so what is asserted
-    /// here is the same table the dry run will score against.
+    /// `workspaces()` table, so what is asserted here is the same table the
+    /// dry run's oracle lookup scores against.
     fn oracle_for(task_name: &str) -> impl Fn(&[(&str, &str)]) -> Option<String> + '_ {
         let task = workspaces()
             .into_iter()

@@ -1,6 +1,5 @@
-// GET /api/cost — port of ui/src/routes/api/cost.ts. The token ledger
-// overview (totals, per-agent, per-day). Org-wide financials: admins + people
-// granted the Observability view.
+// GET /api/cost. The token ledger overview (totals, per-agent, per-day).
+// Org-wide financials: admins + people granted the Observability view.
 
 use crate::error::thrown_internal_error;
 use crate::gateway::usage::cost_overview;
@@ -16,7 +15,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         return gate;
     }
     match cost_overview(&state.pg).await {
-        // No envelope — the overview object IS the body, like TS.
+        // No envelope — the overview object IS the body.
         Ok(overview) => Json(overview).into_response(),
         Err(e) => {
             tracing::error!("[cost] overview query failed: {e}");

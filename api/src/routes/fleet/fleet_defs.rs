@@ -1,6 +1,6 @@
-// GET /api/fleet/defs — port of ui/src/routes/api/fleet.defs.ts. The harness
-// registry: agent definitions (latest version inline) + LLM endpoints + brain
-// routability. Admins only — the config surface includes infra layout.
+// GET /api/fleet/defs. The harness registry: agent definitions (latest
+// version inline) + LLM endpoints + brain routability. Admins only — the
+// config surface includes infra layout.
 
 use crate::agent_defs::list_agent_defs_wire;
 use crate::brain_health::fleet_brain_health;

@@ -1,5 +1,4 @@
-// IMAGE UNDERSTANDING, SUPPLIED BY THE DEPLOYMENT. Port of
-// ui/src/server/vision.ts.
+// IMAGE UNDERSTANDING, SUPPLIED BY THE DEPLOYMENT.
 //
 // THE SHAPE OF THE PROBLEM. `vision` is a property of a MODEL, and most models
 // do not have it — including several that are otherwise the right choice for an
@@ -217,8 +216,8 @@ pub async fn describe_image(state: &AppState, image: &str, question: &str) -> De
             model: result.model,
             error: result.error,
         },
-        // TS's `describeImage` catch: a runner-level failure is a sentence for
-        // the transcript, not an exception for the caller to handle.
+        // A runner-level failure is a sentence for the transcript, not an
+        // exception for the caller to handle.
         Err(err) => Description {
             text: String::new(),
             model: None,

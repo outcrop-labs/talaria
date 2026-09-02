@@ -1,5 +1,4 @@
-// THE HARNESS'S OWN SCHEMA, PUT ON THE WIRE — the port of
-// harness/json-schema.ts.
+// THE HARNESS'S OWN SCHEMA, PUT ON THE WIRE.
 //
 // WHAT WAS WRONG. Every JSON harness declares a schema, and Talaria used it
 // in exactly one place: validation, AFTER the reply came back. What went OUT
@@ -29,16 +28,16 @@
 // and the validator remains the backstop for the relational half a schema
 // cannot state.
 //
-// THE RENDERER (`render`) IS PROBED, not imagined: zod's `z.toJSONSchema(
-// { io: 'input' })` was run over every shape the defs declare and its exact
-// documents — key order included — are reproduced and pinned in the tests.
-// (zod prepends a `$schema` document annotation at the root; the renderer
-// omits it because the ONLY consumers here are `for_wire`, which drops it,
-// and `prompt_shape`, which ignores it — the omission is invisible by
-// construction.) `io: 'input'` is itself load-bearing: a `.transform()` runs
-// AFTER parsing, so the shape the MODEL emits is the input side, and the
-// first TS draft that rendered the OUTPUT side rendered five of nine
-// harnesses as an empty schema that Anthropic rejects.
+// THE RENDERER (`render`) EMITS THE ZOD-SHAPED DOCUMENT — what zod's
+// `z.toJSONSchema({ io: 'input' })` produces for the equivalent declaration,
+// key order included, pinned assertion by assertion in the tests. (zod
+// prepends a `$schema` document annotation at the root; the renderer omits
+// it because the ONLY consumers here are `for_wire`, which drops it, and
+// `prompt_shape`, which ignores it — the omission is invisible by
+// construction.) The INPUT side is load-bearing: the schema describes the
+// value the MODEL emits, not what a transform makes of it afterwards —
+// rendering the output side instead collapses transformed harnesses into an
+// empty schema that Anthropic rejects.
 
 use super::schema::Schema;
 use serde_json::{Map, Value};
@@ -185,15 +184,14 @@ pub fn strict_eligible(node: &Value, depth: usize) -> bool {
 /// It keeps only the structural keywords (`WIRE_KEYWORDS`) and closes a
 /// fixed-key object that came out open.
 ///
-/// IT NEVER TOUCHES `required`, and an earlier draft of the TS file did.
-/// Strict mode wants every property listed there, so it is tempting to add
-/// the missing ones — but a property is missing from `required` because the
-/// harness declared it OPTIONAL, and forcing it would demand a value the
-/// model may not have. A schema with optional fields is simply not
-/// strict-eligible, and sending it non-strict is the correct, lossless
-/// answer.
+/// IT NEVER TOUCHES `required`. Strict mode wants every property listed
+/// there, so it is tempting to add the missing ones — but a property is
+/// missing from `required` because the harness declared it OPTIONAL, and
+/// forcing it would demand a value the model may not have. A schema with
+/// optional fields is simply not strict-eligible, and sending it non-strict
+/// is the correct, lossless answer.
 ///
-/// It likewise never closes an open MAP (`z.record` emits
+/// It likewise never closes an open MAP (`Schema::Record` emits
 /// `additionalProperties: { type: 'string' }` and MEANS it) — same rule: the
 /// wire mode adapts to the declared contract, never the other way round.
 fn for_wire(node: &Value, depth: usize) -> Value {
@@ -299,9 +297,9 @@ pub fn prompt_shape(schema: &Value, budget: usize) -> Option<String> {
             Some(Value::String(t)) if t == "object" => {
                 let props = obj.get("properties").and_then(|p| p.as_object());
                 let Some(props) = props.filter(|p| !p.is_empty()) else {
-                    // An open map — `z.record`. Say so rather than printing
-                    // `{}`, which reads as "an empty object" and is the
-                    // opposite of what it means.
+                    // An open map — `Schema::Record`. Say so rather than
+                    // printing `{}`, which reads as "an empty object" and is
+                    // the opposite of what it means.
                     return match obj.get("additionalProperties").filter(|v| is_object(v)) {
                         Some(value) => format!("{{\"<key>\": {}, …}}", render(value, depth + 1)),
                         None => "{…}".into(),
@@ -338,19 +336,18 @@ pub fn prompt_shape(schema: &Value, budget: usize) -> Option<String> {
     Some(shape)
 }
 
-// ── The renderer: Schema → the JSON Schema document zod would emit ──────────
+// ── The renderer: Schema → the zod-shaped JSON Schema document ──────────────
 
 /// Render a `Schema` as the JSON Schema document `z.toJSONSchema(
 /// { io: 'input' })` produces for the equivalent zod declaration — key order
 /// included, because the wire doc's byte shape follows from it under the
-/// preserve-order map. Probed against zod 4.3.6; every branch cites what the
-/// probe printed. See the module header for why `$schema` is omitted.
+/// preserve-order map. See the module header for why `$schema` is omitted.
 pub fn render(schema: &Schema) -> Value {
     let mut node = Map::new();
     match schema {
-        // z.unknown() renders as the empty document — "any value". The wire
-        // side's empty-schema check turns that into "send no schema", which
-        // is the answer Anthropic requires rather than a bug to soften.
+        // Schema::Unknown renders as the empty document — "any value". The
+        // wire side's empty-schema check turns that into "send no schema",
+        // which is the answer Anthropic requires rather than a bug to soften.
         Schema::Unknown => {}
         Schema::Str { min, max, .. } => {
             node.insert("type".into(), "string".into());
@@ -364,10 +361,10 @@ pub fn render(schema: &Schema) -> Value {
         Schema::Num => {
             node.insert("type".into(), "number".into());
         }
-        // Probe: zod emits `minimum`/`maximum` with whole numbers plain
-        // (0 and 999, not 0.0). On the wire `for_wire` drops them with every
-        // other validation-only keyword — the def-side validator is the
-        // contract; the wire doc is advisory.
+        // zod emits `minimum`/`maximum` with whole numbers plain (0 and
+        // 999, not 0.0). On the wire `for_wire` drops them with every other
+        // validation-only keyword — the def-side validator is the contract;
+        // the wire doc is advisory.
         Schema::BoundedNum { min, max } => {
             let as_num = |n: f64| {
                 if n.fract() == 0.0 && n.abs() < 9.2e18 {
@@ -436,7 +433,7 @@ pub fn render(schema: &Schema) -> Value {
                 Value::Array(branches.iter().map(render).collect()),
             );
         }
-        // Probe: a bare nullable string collapses to a type array
+        // A bare nullable string collapses to a type array
         // `["string","null"]`; anything with more than a bare type (enum,
         // array, object, bounds) renders as anyOf with a null member.
         Schema::Nullable(inner) => {
@@ -455,7 +452,7 @@ pub fn render(schema: &Schema) -> Value {
         // Optionality lives in the parent's required list; the node itself
         // renders as the inner shape.
         Schema::Optional(inner) => return render(inner),
-        // Probe: `.default(v)` puts `default` FIRST, before `type`.
+        // `.default(v)` puts `default` FIRST, before `type`.
         Schema::Defaulted(inner, default) => {
             node.insert("default".into(), default.clone());
             let rendered = render(inner);
@@ -570,9 +567,9 @@ mod tests {
 
     #[test]
     fn sends_an_open_keyed_map_non_strict_rather_than_closing_it() {
-        // blurb-writer: `z.record(z.string(), z.string())`, open by design
-        // because the keys are the caller's vendor ids. Strict would 400;
-        // closing it would rewrite the contract the harness declared.
+        // blurb-writer: an open string→string record, open by design because
+        // the keys are the caller's vendor ids. Strict would 400; closing it
+        // would rewrite the contract the harness declared.
         let wire =
             wire_schema_of("blurb-writer", &Schema::Record(Box::new(Schema::string()))).unwrap();
         assert!(!wire.strict);
@@ -603,10 +600,9 @@ mod tests {
 
     #[test]
     fn a_schema_that_cannot_express_itself_answers_none_not_an_empty_doc() {
-        // The TS side asks zod to render and catches a throw (z.custom); the
-        // Rust equivalent is the one shape that renders as the empty
-        // document — z.unknown(). Both land here: no response_format, prompt
-        // anchor only. Failing the run is the one wrong answer.
+        // The one shape that renders as the empty document — `Schema::Unknown`
+        // — lands here: no response_format, prompt anchor only. Failing the
+        // run is the one wrong answer.
         assert!(wire_schema_of("t", &Schema::Unknown).is_none());
     }
 
@@ -695,9 +691,9 @@ mod tests {
 
     #[test]
     fn the_muse_variants_render_as_zod_prints_them() {
-        // Probe: minimum/maximum carry whole numbers plain, a capped array
-        // keeps its items, a datetime is format-annotated — and on the wire
-        // the validation-only keywords drop, same as every other bound.
+        // minimum/maximum carry whole numbers plain, a capped array keeps
+        // its items, a datetime is format-annotated — and on the wire the
+        // validation-only keywords drop, same as every other bound.
         let rendered = super::render(&Schema::BoundedNum {
             min: 0.0,
             max: 999.0,
@@ -832,12 +828,13 @@ mod tests {
         assert_eq!(prompt_shape(&wire.schema, 600), None);
     }
 
-    // ── the renderer's probed documents ─────────────────────────────────────
+    // ── the renderer's pinned documents ─────────────────────────────────────
 
     #[test]
     fn the_renderer_matches_zods_documents_key_order_and_all() {
         use super::super::schema::Field;
-        // Every assertion is a `z.toJSONSchema({io:'input'})` probe output.
+        // Every assertion is the exact `z.toJSONSchema({io:'input'})`
+        // document, key order included.
         assert_eq!(render(&Schema::string()), json!({"type": "string"}));
         assert_eq!(
             render(&Schema::Str {
@@ -884,7 +881,7 @@ mod tests {
             )])),
             json!({"type": "object", "properties": {"tags": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}}, "required": ["tags"]})
         );
-        // `.default(v)` puts default FIRST — the probe's exact order.
+        // `.default(v)` puts default FIRST — exact order.
         assert_eq!(
             render(&Schema::Object(vec![Field::required(
                 "def",

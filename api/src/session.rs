@@ -1,11 +1,10 @@
-// Sessions — port of ui/src/server/auth/session.ts. Redis-backed, cookie-carried:
-// the cookie holds only an opaque id; the user record lives under `sess:<sid>`
-// with a TTL. Both runtimes share the store during the port, so a session
-// created by TS reads back here field-for-field and vice versa — the JSON shape
-// below is the contract, and field ORDER is part of it (TS createSession stores
-// `{...upsertUserRow, provider}` — id, sub, email, name, picture, role,
-// provider — and V8 re-emits parsed JSON in stored order; serde re-emits in
-// struct order, so the struct is declared in the stored order).
+// Sessions — Redis-backed, cookie-carried: the cookie holds only an opaque
+// id; the user record lives under `sess:<sid>` with a TTL. The JSON shape
+// below is the contract, and field ORDER is part of it: sessions in the store
+// carry id, sub, email, name, picture, role, provider in exactly that order,
+// and serde re-emits in struct order — so the struct is declared in the
+// stored order and a session written before reads of it change shape never
+// surprises a reader.
 
 use crate::state::AppState;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -27,16 +26,16 @@ pub struct SessionUser {
     pub name: Option<String>,
     pub picture: Option<String>,
     // 'admin' | 'member' — a bare string, not an enum: the value comes from
-    // the DB via TS and round-trips through Redis JSON untouched.
+    // the DB and round-trips through Redis JSON untouched.
     pub role: String,
     // 'google' | 'password'
     pub provider: String,
 }
 
 /// The user object the auth routes put in their JSON bodies
-/// (`{ok: true, user}` on login/claim) — the session user minus `provider`,
-/// in the TS select order. Login spreads `provider` into the SESSION record
-/// only; the response user is the bare row.
+/// (`{ok: true, user}` on login/claim) — the session user minus `provider`.
+/// `provider` lives in the SESSION record only; the response user is the
+/// bare row.
 #[derive(Debug, Serialize)]
 pub struct WireUser {
     pub id: String,
@@ -94,8 +93,7 @@ pub async fn get_session_user(
         .arg(key(&sid))
         .query_async(&mut conn)
         .await?;
-    // A value that fails to parse is a missing session (TS JSON.parse → catch
-    // → null), never a 500.
+    // A value that fails to parse is a missing session, never a 500.
     Ok(raw.and_then(|r| serde_json::from_str(&r).ok()))
 }
 
@@ -212,11 +210,10 @@ fn invalid(what: &'static str) -> redis::RedisError {
 
 // ── Cookie helpers ───────────────────────────────────────────────────────────
 
-/// Parse the request's Cookie header into name → value (last wins, like the
-/// TS object assignment). One decode failure skips that cookie — TS's
-/// decodeURIComponent would THROW and 500 the whole route over one malformed
-/// value; a skipped cookie degrades to "not present" instead, which is what
-/// the attacker-crafted case deserves anyway.
+/// Parse the request's Cookie header into name → value (last wins). One
+/// decode failure skips that cookie — a malformed value degrades to "not
+/// present" instead of failing the route, which is what the attacker-crafted
+/// case deserves anyway.
 pub fn parse_cookies(headers: &HeaderMap) -> Option<std::collections::HashMap<String, String>> {
     let header = headers.get(header::COOKIE)?.to_str().ok()?;
     let mut out = std::collections::HashMap::new();
@@ -233,8 +230,8 @@ pub fn parse_cookies(headers: &HeaderMap) -> Option<std::collections::HashMap<St
     Some(out)
 }
 
-/// decodeURIComponent, minus the throw: percent-decoded UTF-8, `+` untouched.
-/// None when the decodes don't land in valid UTF-8.
+/// Percent-decoded UTF-8, `+` untouched (component semantics, not query
+/// semantics). None when the decodes don't land in valid UTF-8.
 fn decode_uri_component(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -254,8 +251,7 @@ fn decode_uri_component(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// encodeURIComponent: everything but the unreserved set escapes, as %XX of
-/// the UTF-8 bytes.
+/// Everything but the unreserved set escapes, as %XX of the UTF-8 bytes.
 fn encode_uri_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {
@@ -344,21 +340,21 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Random URL-safe token for session ids / OAuth state (base64url, no pad —
-/// Node's randomBytes().toString('base64url') shape).
+/// Random URL-safe token for session ids / OAuth state — 32 bytes as
+/// base64url, no pad.
 pub fn random_token() -> String {
     let mut buf = [0u8; 32];
     getrandom::fill(&mut buf).expect("system rng");
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// The house 401 — requireUser's exact body.
+/// The house 401 — the exact body `require_user` returns.
 pub fn unauthorized() -> Response {
     crate::error::house_error(StatusCode::UNAUTHORIZED, "unauthorized")
 }
 
-/// Canonical audit-log actor for a session user (api-guard.ts actorOf):
-/// email, else name, else the id.
+/// Canonical audit-log actor for a session user: email, else name, else
+/// the id.
 pub fn actor_of(user: &SessionUser) -> String {
     user.email
         .clone()
@@ -366,20 +362,20 @@ pub fn actor_of(user: &SessionUser) -> String {
         .unwrap_or_else(|| user.id.clone())
 }
 
-/// The kb ACLs' author string (`user.email ?? user.name` in the kb routes):
-/// who the row's created_by falls back to for ownership. None when both are
-/// null — the ACLs treat that as "no author claim".
+/// The kb ACLs' author string: who the row's created_by falls back to for
+/// ownership — email, else name. None when both are null; the ACLs treat
+/// that as "no author claim".
 pub fn who_of(user: &SessionUser) -> Option<String> {
     user.email.clone().or_else(|| user.name.clone())
 }
 
-/// Who a request acts AS (users.ts ActingUser): the signed-in human — or, for
-/// a PERSONAL assistant calling with the fleet key, its owner (the
-/// identity-proxy model: your assistant manages your boards for you).
-/// General agents and legacy shared-key callers resolve to None; governance
-/// actions stay human(-proxied). A presented-and-REJECTED agent credential
-/// also resolves to None — TS's `instanceof Response` branch — so those
-/// callers see the plain 401, never agent-auth's refusal sentence.
+/// Who a request acts AS: the signed-in human — or, for a PERSONAL assistant
+/// calling with the fleet key, its owner (the identity-proxy model: your
+/// assistant manages your boards for you). General agents and legacy
+/// shared-key callers resolve to None; governance actions stay
+/// human(-proxied). A presented-and-REJECTED agent credential also resolves
+/// to None, so those callers see the plain 401, never agent-auth's refusal
+/// sentence.
 pub struct ActingUser {
     pub id: String,
     pub role: String,
@@ -450,8 +446,8 @@ pub async fn acting_user(
     }
 }
 
-/// Signed-in user or the 401 Response (the api-guard contract: return the
-/// gate when it is a Response).
+/// Signed-in user or the 401 Response — return the gate when it is a
+/// Response.
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {
     match get_session_user(state, headers).await {
         Ok(Some(user)) => Ok(user),
@@ -463,7 +459,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
     }
 }
 
-/// Admin or 401/403 (api-guard.ts requireAdmin).
+/// Admin or 401/403.
 pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {
     let user = require_user(state, headers).await?;
     if user.role != "admin" {
@@ -475,10 +471,10 @@ pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<Sess
     Ok(user)
 }
 
-/// Signed-in user whose view is NOT DENIED (api-guard.ts requireView).
-/// Denial-based, so a member sees a view by default and only a deniedViews
-/// entry (or a prefix of one — 'x' denies 'x/anything') takes it away;
-/// admins are exempt. The same resolution the nav and route gates use.
+/// Signed-in user whose view is NOT DENIED. Denial-based, so a member sees a
+/// view by default and only a deniedViews entry (or a prefix of one — 'x'
+/// denies 'x/anything') takes it away; admins are exempt. The same
+/// resolution the nav and route gates use.
 pub async fn require_view(
     state: &AppState,
     headers: &HeaderMap,
@@ -505,8 +501,8 @@ pub async fn require_view(
     Ok(user)
 }
 
-/// Route gate: session + permission in one call (api-guard.ts requirePerm,
-/// via permissions.ts). Returns the user, or a ready-to-return 401/403.
+/// Route gate: session + permission in one call. Returns the user, or a
+/// ready-to-return 401/403.
 pub async fn require_perm(
     state: &AppState,
     headers: &HeaderMap,
@@ -550,15 +546,15 @@ mod tests {
         assert_eq!(encode_uri_component("aZ9-_.!~*'()"), "aZ9-_.!~*'()");
         assert_eq!(encode_uri_component("a b/c"), "a%20b%2Fc");
         assert_eq!(encode_uri_component("ü"), "%C3%BC");
-        // decode is its inverse, and leaves '+' alone (decodeURIComponent,
-        // not decodeURIComponent-minus-query-semantics)
+        // decode is its inverse, and leaves '+' alone (component semantics,
+        // not query semantics)
         assert_eq!(decode_uri_component("a%20b%2Fc").as_deref(), Some("a b/c"));
         assert_eq!(decode_uri_component("a+b").as_deref(), Some("a+b"));
         assert_eq!(decode_uri_component("%C3%BC").as_deref(), Some("ü"));
-        // Invalid escapes: JS throws; we decline.
+        // Invalid escapes: decline rather than throw.
         assert_eq!(decode_uri_component("100%"), None);
         assert_eq!(decode_uri_component("%ZZ"), None);
-        // Broken UTF-8 after decode: JS throws; we decline.
+        // Broken UTF-8 after decode: decline rather than throw.
         assert_eq!(decode_uri_component("%FF"), None);
     }
 
@@ -617,8 +613,8 @@ mod tests {
             provider: "google".into(),
         };
         let j = serde_json::to_string(&u).unwrap();
-        // role BEFORE provider — the order TS's `{...user, provider}` spread
-        // stores, and therefore the order the SPA's parsed object carries.
+        // role BEFORE provider — the stored order, and the order the SPA's
+        // parsed object carries.
         assert!(j.starts_with(r#"{"id":"1","sub":"google:2","email":"a@b.c","name":null,"picture":null,"role":"member","provider":"google"}"#));
     }
 

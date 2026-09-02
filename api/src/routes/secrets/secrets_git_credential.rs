@@ -1,4 +1,4 @@
-// /api/secrets/git-credential — port of ui/src/routes/api/secrets.git-credential.ts.
+// /api/secrets/git-credential.
 //
 // THE SANDBOX'S WAY IN — where a handle could not otherwise reach. A handle
 // substitutes at the MCP gateway, which covers every tool call an agent

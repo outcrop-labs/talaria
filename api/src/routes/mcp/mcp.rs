@@ -1,4 +1,4 @@
-// /api/mcp — port of ui/src/routes/api/mcp.ts.
+// /api/mcp.
 // GET → MCP servers per agent: the agent's own config version PLUS the org
 // registry's assignments (rendered in at deploy — marked 'managed' here so
 // the agent UI reflects what the /mcp view attached). Non-admins get the

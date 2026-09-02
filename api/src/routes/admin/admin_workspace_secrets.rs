@@ -1,4 +1,4 @@
-// /api/admin/workspace-secrets — port of ui/src/routes/api/admin.workspace-secrets.ts.
+// /api/admin/workspace-secrets.
 //
 // WORKSPACE SECRETS — the credentials agents may USE without ever reading one.
 //
@@ -12,7 +12,7 @@
 // There is no GET that returns one, no echo on create, and no "reveal" verb —
 // not as a permission, not for an admin, not once. An endpoint that can return a
 // credential is an endpoint that will eventually return one to the wrong caller,
-// and the whole arrangement downstream (`secret-vault.ts`, `resolveHandles`)
+// and the whole arrangement downstream (gateway::vault, resolve_handles)
 // rests on the value existing in exactly two places: the sealed column, and the
 // outbound request that spends it.
 //
@@ -104,9 +104,9 @@ async fn folders_listing(pg: &sqlx::PgPool, user_id: &str) -> Response {
     }
 }
 
-/// The engine errors that reach the caller: TS wraps ONLY the create in a
-/// .catch (its message is a dup-name sentence the operator needs); every other
-/// action throws to the 500 boundary.
+/// The engine-error rule: ONLY the create surfaces the engine's own message
+/// (a dup-name sentence the operator needs) as a 400; every other action
+/// throws to the 500 boundary.
 fn internal(e: String, what: &str) -> Response {
     tracing::error!("[admin/workspace-secrets] {what} failed: {e}");
     thrown_internal_error()
@@ -127,17 +127,17 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Post = z.union of nine objects, each pinned by an `action` literal —
+    // POST is a union of nine shapes, each pinned by an `action` literal —
     // dispatch on the literal, then validate that branch's fields in schema
-    // order with zod's own messages. No `action` at all fails every branch
-    // of the union: the blanket 400, NEVER the delete arm.
+    // order. No `action` at all fails every branch: the blanket 400, NEVER
+    // the delete arm.
     let action = obj.get("action").and_then(Value::as_str);
 
     match action {
         // ── CREATE (rotation is a create — see the file header) ────────────
         Some("create") => {
-            // name: z.string().regex(..., 'lowercase letters, digits, - and
-            // _').max(40) — the regex sits before the max, like the entry key.
+            // name: the alphabet check ('lowercase letters, digits, - and _')
+            // sits before the max, like the entry key.
             let name = match string_value_member(obj, "name") {
                 Ok(n) => n,
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -193,7 +193,7 @@ pub async fn post(
                 Ok(e) => e,
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
             };
-            // z.number().int().min(1).max(1000).nullish()
+            // uses: int 1..1000, nullish.
             let uses = match nullable_number_member(obj, "uses", NumKind::Int, 1.0, 1000.0) {
                 Ok(u) => u.map(|f| f as i64),
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -211,8 +211,8 @@ pub async fn post(
             };
 
             // A failed secretbox is the create failing: the value cannot be
-            // sealed. The ADMIN create surfaces the engine's own message
-            // (unlike /api/secrets, which hides it) — TS .catch's 400.
+            // sealed. The ADMIN create surfaces the engine's own message as
+            // a 400 (unlike /api/secrets, which hides it).
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
                 Err(e) => {
@@ -459,9 +459,9 @@ pub async fn post(
                 Ok(n) => n,
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
             };
-            // folderId is REQUIRED but may be null (Uuid.nullable()) — absent
-            // fails the whole branch, and zod's union answers its blanket
-            // (probed: neither the uuid's nor the string's own words).
+            // folderId is REQUIRED but may be null — absent fails the whole
+            // branch and the blanket "Invalid input" answers (neither the
+            // uuid's nor the string's own words).
             let folder_id = match present_nullable_uuid_member(obj, "folderId") {
                 Ok(Some(f)) => f,
                 Ok(None) => return house_error(StatusCode::BAD_REQUEST, "Invalid input"),

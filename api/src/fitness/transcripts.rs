@@ -295,9 +295,9 @@ pub async fn clear_transcripts(pg: &PgPool, model: Option<&str>) -> Result<u64, 
 
 #[cfg(test)]
 mod tests {
-    // No TS test file exists for transcripts; the two pure pieces — the verdict
-    // vocabulary and the text cap — are load-bearing for every row written, so
-    // they are pinned here without a database.
+    // The two pure pieces — the verdict vocabulary and the text cap — are
+    // load-bearing for every row written, so they are pinned here without a
+    // database.
     use super::*;
     use crate::fitness::evals::TaskVerdict;
     use crate::harness::define::EvalBand;

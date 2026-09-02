@@ -1,5 +1,5 @@
-// /api/boards/{id}/tasks — port of ui/src/routes/api/boards.$id.tasks.ts.
-// GET → the board's tasks (any member, or a board-allowed agent; only humans
+// /api/boards/{id}/tasks. GET → the board's tasks (any member, or a
+// board-allowed agent; only humans
 // may ask for the archived tail). POST → create a card (owner/editor, or a
 // board-allowed agent → inbox). The create's guardrails ride in the library
 // (create_task); this file holds the actor resolution and the body.
@@ -271,10 +271,10 @@ pub async fn post(
         }
         Err(e) => return e.into_response(),
     };
-    // NOT YET CROSSED: TS indexes the new ticket into the ambient activity
-    // brain (indexTicket, detached) — that leg is the retrieval plane and
-    // crosses with batch 5. Until then a ticket created through Rust is
-    // absent from the board-scoped activity index until its next edit.
+    // No inline index on the create path: the new ticket reaches the
+    // activity brain through the opportunistic RAG sweep (maybe_rag_sweep,
+    // at most 15 min behind, keyed on updated_at), so search lags until it
+    // runs.
     //
     // A description born with an @mention notifies board members — same
     // contract as editing one in (tasks/{id} PUT). Template seeds carry no

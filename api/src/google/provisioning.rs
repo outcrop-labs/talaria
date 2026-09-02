@@ -1,4 +1,4 @@
-// google/provisioning.ts — org workspace provisioning: the one-click "make
+// google/provisioning — org workspace provisioning: the one-click "make
 // the shared Google workspace real" pass. Two containers, both created AS the
 // connected org account and shared with its Workspace domain so every person
 // there can reach them without anyone hand-configuring sharing in Google:
@@ -35,12 +35,12 @@ pub const ORG_CALENDAR_NAME: &str = "Talaria";
 pub const ORG_DRIVE_NAME: &str = "Talaria";
 
 // Full scopes, not the per-file/per-event ones — see ORG_CONNECT_SCOPES in
-// google_oauth.rs for why provisioning needs the wider grants.
+// google/oauth.rs for why provisioning needs the wider grants.
 const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar";
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
-/// One container's outcome (ProvisionResult) — the TS tagged shape, field
-/// order pinned: `{ok, state, id}` or `{ok, error, message}`.
+/// One container's outcome — a tagged shape, field order pinned:
+/// `{ok, state, id}` or `{ok, error, message}`.
 pub enum ProvisionResult {
     Ok {
         state: &'static str,
@@ -80,9 +80,9 @@ struct GoogleCallError {
     status: u16,
 }
 
-/// What the try-block can die of: a Google call (classified) or anything else
-/// (a targets write, a transport failure) — TS's catch treats both as
-/// `failed(surface, err)`.
+/// What the provision body can die of: a Google call (classified) or anything
+/// else (a targets write, a transport failure) — both land in
+/// `failed(surface, …)`.
 enum CallFail {
     Google(GoogleCallError),
     Other(String),
@@ -111,7 +111,7 @@ async fn err_text(res: reqwest::Response) -> String {
         .unwrap_or_else(|| format!("Google answered {status}."))
 }
 
-/// The Google error classes this pass distinguishes (classify). Scope/API
+/// The Google error classes this pass distinguishes. Scope/API
 /// messages become reconnect prompts even past the stored-scope preflight
 /// (Google can still refuse a granted scope per-admin); 403s mentioning
 /// shared drives mark the Shared-Drives-need-Workspace wall.
@@ -128,8 +128,8 @@ fn classify(err: &GoogleCallError) -> &'static str {
     {
         return "reconnect_needed";
     }
-    // /shared.?drives?|team.?drives?/i — the optional gap catches "shared
-    // drive", "shared drives", and the hyphenated spellings in one pattern.
+    // The `.?` gap catches "shared drive", "shared drives", and the
+    // hyphenated spellings in one pattern.
     if err.status == 403 {
         let re = regex::Regex::new("(?i)shared.?drives?|team.?drives?").expect("static regex");
         if re.is_match(&text) {
@@ -139,9 +139,10 @@ fn classify(err: &GoogleCallError) -> &'static str {
     "google_error"
 }
 
-/// preflight's answer: the pieces both provisions need, or the failure that
-/// says why not. `Err` is a THROW (a dead token read) — it escapes to
-/// provisionWorkspace's catch, not the outcome.
+/// Preflight's answer: the pieces both provisions need, or the failure that
+/// says why not. `Err` is a hard failure (a dead token read) — it escapes to
+/// provision_workspace, which maps it through thrown_outcome, not the
+/// outcome.
 enum Preflight {
     Ready {
         token: String,
@@ -288,8 +289,8 @@ async fn share_calendar_with_domain(token: &str, id: &str, domain: &str) -> Resu
 }
 
 /// Create (or re-use) the org calendar and share it with the Workspace
-/// domain. `Err` is a THROW (preflight's dead token read) — the caller maps
-/// it through thrown_outcome.
+/// domain. `Err` is preflight's dead token read — the caller maps it through
+/// thrown_outcome.
 pub async fn provision_org_calendar(
     pg: &PgPool,
     sb: &SecretBox,
@@ -517,8 +518,8 @@ pub async fn provision_shared_drive(
     }
 }
 
-/// A thrown Google call → its outcome (failed). The consumer-account wall gets
-/// the sentence an admin can act on; everything else keeps Google's words.
+/// A failed Google call → its outcome. The consumer-account wall gets the
+/// sentence an admin can act on; everything else keeps Google's words.
 fn failed(surface: &str, fail: CallFail) -> ProvisionResult {
     let (kind, message) = match fail {
         CallFail::Google(gerr) => {
@@ -548,9 +549,9 @@ fn failed(surface: &str, fail: CallFail) -> ProvisionResult {
     }
 }
 
-/// Run the requested provisions. Each runs and reports independently; a throw
-/// from one (a dead refresh token) becomes its failure outcome, not a lost
-/// sibling result.
+/// Run the requested provisions. Each runs and reports independently; a hard
+/// failure in one (a dead refresh token) becomes its failure outcome, not a
+/// lost sibling result.
 pub async fn provision_workspace(
     pg: &PgPool,
     sb: &SecretBox,
@@ -586,9 +587,9 @@ pub struct ProvisionWorkspaceResult {
     pub drive: Option<ProvisionResult>,
 }
 
-/// thrownOutcome — a preflight throw (the only throws left) becomes its
-/// failure outcome. `not_connected` for the GoogleNotConnected-shaped one,
-/// Google's words for everything else.
+/// A preflight hard failure (the only one that escapes) becomes its failure
+/// outcome: `not_connected` for the not-connected one, Google's words for
+/// everything else.
 fn thrown_outcome(err: &str) -> ProvisionResult {
     if err == "not_connected" {
         return ProvisionResult::Fail {
@@ -602,9 +603,9 @@ fn thrown_outcome(err: &str) -> ProvisionResult {
     }
 }
 
-/// Scope readiness for the Admin panel (provisioningReadiness): can this
-/// connection create each container, or does it need the one-time
-/// wider-scope reconnect? Wire order pinned, camelCase.
+/// Scope readiness for the Admin panel: can this connection create each
+/// container, or does it need the one-time wider-scope reconnect? Wire order
+/// pinned, camelCase.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningReadiness {

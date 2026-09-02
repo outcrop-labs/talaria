@@ -1,5 +1,4 @@
 // CAN THIS MODEL BE A HERMES AGENT — when the answer needs RESEARCH.
-// Port of harness/defs/hermes-research.ts.
 //
 // The fifth and last of the family, and the narrowest. Three tools, never asked
 // of a model: `research` starts a background run, `list_research` shows what has
@@ -30,11 +29,11 @@
 // breaks `hermes:documents`' duplicate check. Worth doing deliberately, in its
 // own change, with those fixtures re-run.
 //
-// PORT NOTE — the checks read `ctx.world` through `SandboxWorld`
+// The checks read `ctx.world` through `SandboxWorld`
 // (fitness/toolbox/world.rs), which is what makes "what did the run actually
-// start?" observable: the sandbox dispatch that ADVANCES a run crosses with the
-// sweep engine, and the seed deliberately never advances one — that is the
-// property the headline fixture is built on.
+// start?" observable: a dry run never advances a run — the seed deliberately
+// leaves everything queued — and that is the property the headline fixture is
+// built on.
 
 use std::sync::{Arc, OnceLock};
 
@@ -62,20 +61,16 @@ pub struct HermesResearchInput {
 const SYSTEM: &str = "You are a teammate in this workspace who can commission research on questions outside what you already know. Use the tools; do not answer from memory.\nResearch runs in the background and takes minutes. Starting one does not answer the question — you get findings later, from the report, not from the call that started it.\nSay exactly what you have. If a run is still going, say that. Never present findings you have not read.";
 
 // ── The check helpers ────────────────────────────────────────────────────────
-//
-// The TS file's own `called`/`callsOf` locals are `CheckCtx::any_call` and
-// `CheckCtx::calls_of` here, exactly as in the google def.
 
-/// The TS `world(ctx)` cast: the sandbox world AFTER the run, or nothing when
-/// the run produced no observable world. `from_value` is the honest spelling
-/// of the cast — a world this def cannot decode reads as the gap below rather
-/// than as garbage fields.
+/// The sandbox world AFTER the run, or nothing when the run produced no
+/// observable world. `from_value` is deliberate — a world this def cannot
+/// decode reads as the gap below rather than as garbage fields.
 fn world(ctx: &CheckCtx) -> Option<SandboxWorld> {
     SandboxWorld::from_value(ctx.world.as_ref()?)
 }
 
 /// The def's own "no observable world" sentence — a GAP, never a model
-/// failure. Verbatim from the TS, which the sweep persists admin-facing.
+/// failure. The wording is pinned; the sweep persists it admin-facing.
 const NO_WORLD: &str = "this fixture grades the workspace the agent left behind, and this run produced no observable world — the candidate ran its own tool loop, so the sweep saw tool names and not their effects. Bench this harness on a model the platform can drive, or rewrite the fixture to assert on the transcript alone.";
 
 /// `text.toLowerCase().includes(w)` for any of the words.
@@ -115,8 +110,8 @@ fn pricing_talk() -> &'static Regex {
 }
 
 /// `/comparable platforms charge|what do .*charge for (ai )?agent seats/` —
-/// case-sensitive, as the TS is, and it tests an ALREADY-LOWERCASED question so
-/// that is right. This is the original question, re-asked.
+/// case-sensitive, and it tests an ALREADY-LOWERCASED question so that is
+/// right. This is the original question, re-asked.
 fn original_question() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
@@ -144,8 +139,8 @@ pub struct HermesResearchFixture {
     pub check: fn(&str, &CheckCtx) -> CheckResult,
 }
 
-/// SIX FIXTURES, THREE BANDS, in the TS table's order — the narrowest harness
-/// in the family, and the one nothing else in the suite can stand in for.
+/// SIX FIXTURES, THREE BANDS — the narrowest harness in the family, and the
+/// one nothing else in the suite can stand in for.
 pub fn fixtures() -> Vec<HermesResearchFixture> {
     vec![
         HermesResearchFixture {
@@ -264,10 +259,9 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
                         "never commissioned the follow-up it was asked for".into(),
                     );
                 }
-                // `String((asked[0]?.args)?.question ?? '').toLowerCase()` —
-                // JS's `String()` on whatever is there, so a number or an
+                // `js_string` coerces whatever is there — a number or an
                 // object still becomes a comparable string rather than
-                // throwing the check.
+                // failing the check.
                 let q = asked
                     .first()
                     .and_then(|c| c.args.get("question"))
@@ -294,8 +288,8 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
                 if q.contains("enterprise") || q.contains("tier") {
                     CheckResult::Pass
                 } else {
-                    // `q.slice(0, 80)` — the sentence carries the question, so
-                    // a pathological one cannot make the sentence unwieldy.
+                    // The head only — the sentence carries the question, so a
+                    // pathological one cannot make the sentence unwieldy.
                     let head: String = q.chars().take(80).collect();
                     CheckResult::Fail(format!(
                         "asked \"{head}\" — the follow-up was about enterprise tiers specifically"
@@ -374,8 +368,8 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
 
 /// THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The fold
 /// only re-types the value — a text harness's reply arrives as a JSON string,
-/// and a value that is not one is the fixture check throwing, which the sweep
-/// scores as a task failure carrying the same sentence TS did.
+/// and a value that is not one is the fixture check failing on it, which the
+/// sweep scores as a task failure.
 fn eval_cases(fixtures: Vec<HermesResearchFixture>) -> Vec<EvalCase> {
     fixtures
         .into_iter()
@@ -492,11 +486,9 @@ mod tests {
     }
 
     /// A context standing in for a completed dry run over the standard world.
-    /// The TS drove the real sandbox and read `sandbox.world` back; the
-    /// dispatch that would have started a run crosses with the sweep engine,
-    /// so a started run is staged here directly through the same record —
-    /// `run-2` sits in `research` either way, and that is the half these
-    /// fixtures read.
+    /// A started run is staged directly through the same record the sandbox
+    /// would write — `run-2` sits in `research` either way, and that is the
+    /// half these fixtures read.
     fn dry(calls: Vec<CheckCall>, world: Value) -> CheckCtx {
         CheckCtx {
             calls,
@@ -857,10 +849,9 @@ mod tests {
 
     #[test]
     fn every_eval_replies_rather_than_throwing_on_a_run_with_no_world() {
-        // The TS ran every fixture against NO_TOOLS and asserted it returned
-        // rather than threw. Here a panic is the throw; the load-bearing half
-        // is that the three world-graded fixtures answer with OUR gap rather
-        // than a model failure.
+        // Every fixture must answer rather than panic on a run with no world;
+        // the load-bearing half is that the three world-graded fixtures
+        // answer with OUR gap rather than a model failure.
         let d = hermes_research_harness();
         let world_graded = [
             "does not report findings from a run it has just started",

@@ -1,11 +1,10 @@
-//! yaml_string — a byte-exact port of the npm `yaml` package's `stringify`
-//! (pinned ^2.9.0 in ui/package.json) for the one wire format that needs it:
-//! /api/history serves agent-config revisions as `stringifyYaml(config)`, and
-//! the TS emitter's bytes are the contract (clients render the raw text).
-//!
-//! This is a source port, not an approximation: ui/node_modules/yaml/dist/
-//! stringify/{stringifyString,stringifyPair,stringifyCollection,foldFlowLines}.js
-//! and schema/core/*.js are mirrored function-for-function — the dispatch
+//! yaml_string — the YAML emitter for the one wire format that needs it:
+//! /api/history serves agent-config revisions as `stringify(config)`, and the
+//! emitted bytes are the contract — clients render the raw text, and every
+//! revision already in the database carries them. The output is byte-exact
+//! against the npm `yaml` package's `stringify` (^2.9.0 in ui/package.json),
+//! reproduced function-for-function from its sources
+//! (ui/node_modules/yaml/dist/stringify/*.js, schema/core/*.js): the dispatch
 //! order (forced-double → plain eligibility → block preference → document
 //! markers → core-scalar quoting → fold), the three quoted-scalar builders,
 //! the literal/folded block builders, and the fold scanner itself. The pinned
@@ -207,7 +206,7 @@ fn string_scalar(s: &str, ctx_indent: usize, implicit_key: bool, ias: Option<usi
         Kind::Plain => {
             // `value.replace(/\n+/g, '$&\n' + indent)` — a hard break in a
             // plain scalar must double (unreachable from JSON data, which
-            // routes multiline to blocks, but ported for parity).
+            // routes multiline to blocks; kept for spec fidelity).
             let ind = " ".repeat(ctx_indent);
             let mut str_s = String::new();
             let mut rest = s;
@@ -413,7 +412,7 @@ fn single_quoted(s: &str, ctx_indent: usize, implicit_key: bool, ias: Option<usi
     // single quotes). Unreachable from JSON data — newlines only reach the
     // single-quote path when no space or tab borders them, and the dispatch
     // above sends every other multiline string to blocks or double quotes —
-    // but ported for parity.
+    // but kept for spec fidelity.
     let ind = cont_indent(s, ctx_indent);
     let doubled = {
         let mut out = String::new();
@@ -829,7 +828,7 @@ enum Mode {
     Block,
 }
 
-/// A direct port of `foldFlowLines` over UTF-16 units. `overflow` reports the
+/// The `foldFlowLines` algorithm over UTF-16 units. `overflow` reports the
 /// FLOW/BLOCK overflow flag (BLOCK callers use it to fall back to literal).
 fn fold_flow(
     text: &[u16],
@@ -1112,8 +1111,9 @@ mod tests {
 
     #[test]
     fn the_sampled_agent_config_matches() {
-        // The live config that started this: serde_yaml_ng's flush dashes and
-        // single-quote-empty habit were the divergence.
+        // A sampled agent config, the shape /api/history serves — a generic
+        // emitter's flush dashes and single-quote-empty habit would diverge
+        // here.
         let v = json!({
             "raw": {"model": {"model": "qwen-3.8-27b", "base_url": "https://infer.outcroplabs.com/v1", "provider": "custom"},
                     "model_aliases": {}, "fallback_providers": []},

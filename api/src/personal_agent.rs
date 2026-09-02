@@ -4,9 +4,9 @@
 // it, picks its handle, and writes its personality — no admin role needed; every
 // mutation here is scoped to `agent_defs.owner_user_id = user.id`.
 //
-// Port of ui/src/server/personal-agent.ts. `personality_of` and `owns_agent`
-// crossed early (/api/history borrows them); this file is the rest of the
-// engine — the read projection, the create flow, and the owner-scoped update.
+// `personality_of` and `owns_agent` are borrowed by /api/history; the rest is
+// the engine — the read projection, the create flow, and the owner-scoped
+// update.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -33,7 +33,7 @@ const PERSONA_END: &str = "<!-- /talaria:personality -->";
 /// The marked personality section of a soul, trimmed — null when the markers
 /// are absent, out of order, or bracket only whitespace. Version history
 /// serves this for `kind=personality`, so the null/empty distinction is the
-/// wire contract (`personalityOf(v.soul) ?? ''`).
+/// wire contract.
 pub fn personality_of(soul: &str) -> Option<String> {
     let m = soul.find(PERSONA_START)?;
     let e = soul.find(PERSONA_END)?;
@@ -191,7 +191,7 @@ pub async fn personal_agent_for(
 }
 
 /// slug + department derived from the user — BOTH must be unique per user,
-/// since the department names the container (agent-<department>). createAgent
+/// since the department names the container (agent-<department>). `create_agent`
 /// enforces slug uniqueness and errs on collision.
 fn personal_identity(email: Option<&str>, name: Option<&str>) -> (String, String) {
     let raw = email
@@ -408,8 +408,8 @@ pub async fn create_personal_agent(
         .ok_or_else(|| "assistant vanished during creation".to_string())
 }
 
-/// `void waitHealthy(dept).catch(() => {})` — the TS fire-and-forget with the
-/// default 120s budget. The Rust twin takes the timeout positionally.
+/// Fire-and-forget the health wait with the default 120s budget — creation
+/// returns without waiting on container health.
 fn wait_healthy_spawn(state: &AppState, department: &str) {
     let pg = state.pg.clone();
     let department = department.to_string();
@@ -595,7 +595,7 @@ pub async fn update_personal_agent(
                 .into_iter()
                 .filter_map(|v| serde_json::from_value(v).ok())
                 .collect();
-            // TS spreads `contextLength` only when truthy — null and 0 both
+            // `contextLength` rides only when truthy — null and 0 both
             // drop off the main target (ModelTarget's own serde rule).
             let mut main: ModelTarget =
                 serde_json::from_value(target.clone()).map_err(|e| e.to_string())?;
@@ -637,9 +637,8 @@ pub async fn update_personal_agent(
         .map_err(|e| e.to_string())?
         .1;
         if (created || rehandled) && managed && enabled {
-            // renderFleet() has NO catch in updatePersonalAgent — a render
-            // failure fails the whole PATCH (after the version row was
-            // written; that write stands, like the TS). Only the docker
+            // A render failure fails the whole PATCH — after
+            // the version row was written; that write stands. Only the docker
             // restart/up half is best-effort.
             let sb = state.secretbox().await.map_err(|e| e.to_string())?;
             render_fleet(pg, &sb, None).await?;
@@ -663,15 +662,14 @@ pub async fn update_personal_agent(
 
 /// Does this user own the agent (by slug or def id)? Used to open selected
 /// admin surfaces (skills, memory, start/stop) to an assistant's owner.
-/// Fail-closed: any error — e.g. a non-uuid defId — reads as no, exactly
-/// like the TS `catch { return false }` around the query.
+/// Fail-closed: any error — e.g. a non-uuid defId — reads as no.
 pub async fn owns_agent(
     pg: &PgPool,
     user_id: &str,
     slug: Option<&str>,
     def_id: Option<&str>,
 ) -> bool {
-    // JS truthiness in the ref: an empty slug falls through to the defId
+    // An empty slug falls through to the defId
     // branch, an empty defId queries nothing — neither is a lookup.
     let slug = slug.filter(|s| !s.is_empty());
     let def_id = def_id.filter(|s| !s.is_empty());
@@ -735,7 +733,7 @@ mod tests {
 
     #[test]
     fn personality_first_marker_pair_wins() {
-        // indexOf takes the FIRST occurrence of each marker — a second start
+        // The FIRST occurrence of each marker wins — a second start
         // marker inside the section is content, not a delimiter.
         let soul = "<!-- talaria:personality -->one<!-- talaria:personality -->two<!-- /talaria:personality -->";
         assert_eq!(

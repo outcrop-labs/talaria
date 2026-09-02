@@ -1,7 +1,6 @@
-// GET /api/auth/google — port of ui/src/routes/api/auth/google.ts. Begin the
-// OAuth dance: set the one-shot state cookie and 302 to Google's consent
-// screen. The state cookie is double-submit CSRF proof — random in, random
-// back, compared constant-time at the callback.
+// GET /api/auth/google. Begin the OAuth dance: set the one-shot state cookie
+// and 302 to Google's consent screen. The state cookie is double-submit CSRF
+// proof — random in, random back, compared constant-time at the callback.
 
 use crate::error::{house_error, thrown_internal_error};
 use crate::google::client::{google_login_enabled, resolve_google_client};

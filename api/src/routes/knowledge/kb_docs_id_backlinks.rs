@@ -1,7 +1,7 @@
-// /api/kb/docs/{id}/backlinks — port of ui/src/routes/api/kb.docs.$id.backlinks.ts.
-// Docs that link to this one ("linked from"). Editor links point at
-// /knowledge/<id>, so backlinks fall out of a substring match. Gated by the
-// SAME per-doc ACL as reading the doc — backlink titles leak content.
+// /api/kb/docs/{id}/backlinks. Docs that link to this one ("linked from").
+// Editor links point at /knowledge/<id>, so backlinks fall out of a substring
+// match. Gated by the SAME per-doc ACL as reading the doc — backlink titles
+// leak content.
 
 use axum::Json;
 use axum::extract::{Path, State};

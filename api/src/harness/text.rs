@@ -1,12 +1,12 @@
 // The one first-line extractor for TEXT harnesses, the way json.rs is the one
-// extractor for structured ones — the port of harness/text.ts.
+// extractor for structured ones.
 //
 // WHY THIS MODULE EXISTS
-//   `titler.ts` and `skill-summaries.ts` shipped the same eight lines — first
-//   non-empty line, strip leading `["'#*\s]`, strip trailing quotes — written
-//   twice with a one-character difference (the titler stripped a trailing `*`,
-//   the summarizer did not). Two copies of one contract is how the audit's six
-//   JSON extractors happened, and the port arrived with both copies intact.
+//   The titler and the skill summarizer once shipped the same eight lines —
+//   first non-empty line, strip leading `["'#*\s]`, strip trailing quotes —
+//   written twice with a one-character difference (the titler stripped a
+//   trailing `*`, the summarizer did not). Two copies of one contract is how
+//   drift happens; this module is the single spelling.
 //
 //   Executing them against realistic 7-14B replies found two shapes that store
 //   GARBAGE rather than failing, which is the worse of the two failure modes:
@@ -23,20 +23,18 @@
 //
 // PURE. No database, no gateway, no settings.
 //
-// THE PORT'S ONE MECHANICAL DIVERGENCE: `INLINE_MARKUP` in TS is a
-// backreference regex (`/(\*\*|__|`)(.+?)\1/g`), and this house's regex
-// crate has no backreferences — so the balanced-inline unwrap below is
-// hand-rolled to the same left-to-right, lazy-closest-closer, at-least-one-
-// inner-character contract the JS engine executes. The test corpus pins the
-// shapes that matter, including the partial-bold case the TS file was
-// written to fix.
+// NO BACKREFERENCES: the regex crate cannot express a balanced inline-markup
+// pattern (a `(\*\*|__|`)(.+?)\1` needs one), so the balanced-inline unwrap
+// below is hand-rolled to that contract — left to right, lazy-closest-closer,
+// at least one inner character. The test corpus pins the shapes that matter,
+// including the partial-bold case this module exists to fix.
 
 use regex::Regex;
 use std::sync::OnceLock;
 
 /// A line that is nothing but a code-fence delimiter (``` or ```bash). It is
-/// never the answer, and it was being stored AS the answer. JS `\w` is
-/// ASCII-only — spelled out so a unicode-aware `\w` cannot widen it.
+/// never the answer, and it was being stored AS the answer. The character
+/// class is ASCII-only, spelled out so a unicode-aware `\w` cannot widen it.
 fn fence_only() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"^\s*`{3,}[0-9A-Za-z_-]*\s*$").unwrap())
@@ -167,8 +165,8 @@ pub fn first_meaningful_line(raw: &str) -> Option<String> {
 mod tests {
     use super::first_meaningful_line as fml;
 
-    // The corpus is the TS file's, transcribed — each case was a STORED
-    // artifact once, which is why it is an assertion and not an anecdote.
+    // Each case in this corpus was a STORED artifact once, which is why it is
+    // an assertion and not an anecdote.
 
     #[test]
     fn takes_the_bare_answer_unchanged() {

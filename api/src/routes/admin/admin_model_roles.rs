@@ -1,7 +1,7 @@
-// /api/admin/model-roles — port of ui/src/routes/api/admin.model-roles.ts.
-// Model Roles — which model handles each activity class. GET → the catalog of
-// roles + current assignments + assignable models + fitness issues. PUT
-// { role, model|null } → assign (null = back to auto). Admins only.
+// /api/admin/model-roles. Model Roles — which model handles each activity
+// class. GET → the catalog of roles + current assignments + assignable
+// models + fitness issues. PUT { role, model|null } → assign (null = back
+// to auto). Admins only.
 //
 // `issues` is the audit-1.6 signal and it is ADVISORY on both verbs: a PUT that
 // creates one still succeeds, and answers with the issue it just created so the
@@ -9,10 +9,10 @@
 // this route in the business of overruling an admin on the strength of a probe,
 // which is a call the admin is better placed to make.
 //
-// No transaction, exactly as TS: the model write and the effort write are two
-// settings rows touched in sequence, and a refused effort (400) does NOT roll
-// the model write back — the assignment stands, the panel re-reads it, and the
-// admin sees both halves of what they did.
+// No transaction: the model write and the effort write are two settings rows
+// touched in sequence, and a refused effort (400) does NOT roll the model
+// write back — the assignment stands, the panel re-reads it, and the admin
+// sees both halves of what they did.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -47,8 +47,7 @@ const ROLES: [&str; 11] = [
     "reranker",
 ];
 
-/// The role catalog as the panel renders it — TS returns the MODEL_ROLES
-/// array itself, key order included.
+/// The role catalog as the panel renders it — key order included.
 fn role_specs() -> Vec<Value> {
     MODEL_ROLES
         .iter()
@@ -64,9 +63,8 @@ fn role_specs() -> Vec<Value> {
         .collect()
 }
 
-/// Object.fromEntries(MODEL_ROLES.map(r => [r.role, prefs[roleSlot(r.role)]
-/// ?? null])) — every role keyed in MODEL_ROLES order, absent/null preference
-/// both spelled null.
+/// Every role keyed in MODEL_ROLES order, absent/null preference both
+/// spelled null.
 async fn efforts_panel(pg: &PgPool) -> serde_json::Map<String, Value> {
     let prefs = get_effort_prefs(pg).await;
     let mut out = Map::new();
@@ -122,8 +120,8 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // zod's schema order: role, then model, then effort — an invalid role
-    // outranks an invalid model, which outranks an invalid effort.
+    // Schema order: role, then model, then effort — an invalid role outranks
+    // an invalid model, which outranks an invalid effort.
     let role = match enum_member(obj, "role", &ROLES) {
         Ok(r) => r,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

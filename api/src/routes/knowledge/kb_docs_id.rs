@@ -1,6 +1,6 @@
-// /api/kb/docs/{id} — port of ui/src/routes/api/kb.docs.$id.ts. One KB doc.
-// Read/edit gated by the doc's EFFECTIVE audience — inherited from its folder
-// unless customized. Sharing changes are owner-only; routing owner-only;
+// /api/kb/docs/{id}. One KB doc. Read/edit gated by the doc's EFFECTIVE
+// audience — inherited from its folder unless customized. Sharing changes are
+// owner-only; routing owner-only;
 // officializing needs kb.official. Agents (by key) only edit content when
 // they authored the doc, hold an editor grant, or are an elevated assistant
 // on non-private material — and never touch sharing, officialness or routing.
@@ -33,9 +33,9 @@ use crate::state::AppState;
 use super::kb_spaces_id::{editors_json, parse_editors};
 
 /// `{ ...doc, visibility, editPolicy, governs? }` — the GET/PUT response
-/// overlays. A spread keeps an overridden key at its ORIGINAL position (the
-/// struct's declaration order); a new key appends. preserve_order makes the
-/// serde_json Map behave exactly like the JS object.
+/// overlay. Overriding a key keeps it at its ORIGINAL position (the struct's
+/// declaration order); a new key appends. preserve_order keeps the serde_json
+/// Map insertion-ordered so the wire carries that key order.
 fn doc_overlay(doc: &crate::kb::KbDoc, eff: &Guarded, governs: Option<bool>) -> Value {
     let mut v = serde_json::to_value(doc).expect("KbDoc serializes");
     let obj = v.as_object_mut().expect("KbDoc serializes to an object");
@@ -279,8 +279,8 @@ pub async fn put(
     }
 
     if let Some(routing) = body.rag_routing.clone() {
-        // TS's catch: setDocRouting's own throw (the "unknown brain"
-        // sentence) IS the answer, at 400.
+        // set_doc_routing's own error (the "unknown brain" sentence) IS the
+        // answer, at 400.
         if let Err(msg) = set_doc_routing(
             &state.pg,
             &qdrant::real_deps(),

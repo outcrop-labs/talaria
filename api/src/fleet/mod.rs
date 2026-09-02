@@ -9,11 +9,10 @@ pub mod preflight;
 pub mod reconcile;
 pub mod render;
 
-// The fleet as AGENTS (not raw gateway models) — port of the read side of
-// ui/src/server/fleet-agents.ts + the access gate from users.ts that its one
-// route applies. The bridge's /v1/models includes one entry per tier
-// (`<base>-<alias>`), so consumers that mean "agents" must filter to
-// definition models and pick tiers up separately — that filtering lives here.
+// The fleet as AGENTS (not raw gateway models). The bridge's /v1/models
+// includes one entry per tier (`<base>-<alias>`), so consumers that mean
+// "agents" must filter to definition models and pick tiers up separately —
+// that filtering lives here, as does the per-agent access gate.
 
 use crate::users::personal_assistant_owners;
 use sqlx::PgPool;
@@ -27,9 +26,8 @@ pub struct AgentModel {
     pub role: String,
 }
 
-/// Split an agent id into its display halves: "<slug>-<role>"
-/// (gateway.ts describeAgent). An empty leading segment (a id like "-lead")
-/// keeps the WHOLE id as the label — JS's falsy '' falls to the `: id` arm.
+/// Split an agent id into its display halves: "<slug>-<role>". An empty
+/// leading segment (an id like "-lead") keeps the WHOLE id as the label.
 pub fn describe_agent(id: &str) -> AgentModel {
     let (first, rest) = match id.split_once('-') {
         Some((f, r)) => (f, r),
@@ -38,7 +36,7 @@ pub fn describe_agent(id: &str) -> AgentModel {
     let label = if first.is_empty() {
         id.to_string()
     } else {
-        // charAt(0).toUpperCase() — one code point; agent ids are ASCII.
+        // One code point uppercased; agent ids are ASCII.
         let mut c = first.chars();
         match c.next() {
             Some(h) => h.to_uppercase().collect::<String>() + c.as_str(),
@@ -48,7 +46,7 @@ pub fn describe_agent(id: &str) -> AgentModel {
     AgentModel {
         id: id.to_string(),
         label,
-        // rest.join(' ') — empty when the id has no dash at all.
+        // dashes become spaces; empty when the id has no dash at all.
         role: rest.replace('-', " "),
     }
 }
@@ -63,8 +61,8 @@ pub struct ManifestEntry {
     pub key: Option<String>,
 }
 
-/// readManifest: a missing or unparseable manifest is an EMPTY fleet, and says
-/// so — it never falls back to invented agents (gateway.ts).
+/// read_manifest: a missing or unparseable manifest is an EMPTY fleet, and
+/// says so — it never falls back to invented agents.
 pub async fn read_manifest() -> Vec<ManifestEntry> {
     let Ok(raw) =
         tokio::fs::read_to_string(crate::gateway::provider::fleet_dir().join("fleet.json")).await
@@ -75,7 +73,7 @@ pub async fn read_manifest() -> Vec<ManifestEntry> {
 }
 
 /// The fleet from the manifest — base models only; tier entries like
-/// "<base>-<alias>" are hidden from the picker (gateway.ts listAgents).
+/// "<base>-<alias>" are hidden from the picker.
 pub async fn list_agents() -> Vec<AgentModel> {
     let manifest = read_manifest().await;
     if manifest.is_empty() {
@@ -86,8 +84,8 @@ pub async fn list_agents() -> Vec<AgentModel> {
         Some(i) if i > 0 => ids.contains(&id[..i]),
         _ => false,
     };
-    // [...new Set(...)] in MANIFEST order — the picker's order is the
-    // manifest's order, first occurrence wins on a duplicate.
+    // Deduped, in MANIFEST order — the picker's order is the manifest's
+    // order, first occurrence wins on a duplicate.
     let mut seen = std::collections::HashSet::new();
     manifest
         .iter()
@@ -105,8 +103,8 @@ pub struct FleetAgentEntry {
     pub tiers: Vec<String>,
 }
 
-/// The agents that EXIST, which is a question only `agent_defs` can answer
-/// (fleet-agents.ts listFleetAgents). fleet/fleet.json is a render OUTPUT —
+/// The agents that EXIST, which is a question only `agent_defs` can answer.
+/// fleet/fleet.json is a render OUTPUT —
 /// the transport table of where each agent's gateway lives — not a roster:
 /// treating it as one meant a manifest left on disk resurrected agents the
 /// database no longer had. The filter is unconditional; an empty definition
@@ -121,8 +119,8 @@ pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx
     )
     .fetch_all(pg)
     .await?;
-    // config?.aliases?.map(a => a.name) ?? [] — a missing config, a config
-    // without aliases, and a non-array aliases all degrade to no tiers.
+    // A missing config, a config without aliases, and a non-array aliases
+    // all degrade to no tiers.
     let tiers_of = |config: &Option<serde_json::Value>| -> Vec<String> {
         config
             .as_ref()
@@ -154,8 +152,8 @@ pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx
         .collect())
 }
 
-/// Validate a tier for an agent; returns the routed gateway model id
-/// (fleet-agents.ts routedModelFor). No tier → the agent's main model id as-is;
+/// Validate a tier for an agent; returns the routed gateway model id. No tier
+/// → the agent's main model id as-is;
 /// a tier the agent does not declare → None (the caller rejects the typo
 /// loudly rather than recording an unattributable, unpriceable usage row).
 pub async fn routed_model_for(
@@ -176,7 +174,7 @@ pub async fn routed_model_for(
     Ok(Some(format!("{agent_model}-{tier}")))
 }
 
-// ── Per-agent access (users.ts allowedAgents / canUseAgent / usableAgentGate) ─
+// ── Per-agent access ─────────────────────────────────────────────────────────
 
 /// A member's agent access: 'all', or an explicit allow-list. No rows at all
 /// means 'all' — agent access is grant-NARROWING, not grant-by-default.
@@ -211,9 +209,8 @@ pub fn can_use_agent(access: &AgentAccess, model: &str) -> bool {
     }
 }
 
-/// The usable-agent predicate (users.ts usableAgentGate): a personal assistant
-/// is only ever visible to its owner, and everything else rides the member's
-/// access resolution.
+/// The usable-agent predicate: a personal assistant is only ever visible to
+/// its owner, and everything else rides the member's access resolution.
 pub async fn usable_agent_gate(
     pg: &PgPool,
     user_id: &str,
@@ -234,7 +231,7 @@ pub async fn usable_agent_gate(
     })
 }
 
-// ── The ops overview (fleet.ts getFleetOverview) ─────────────────────────────
+// ── The ops overview ─────────────────────────────────────────────────────────
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -266,8 +263,8 @@ pub struct FleetOverview {
     pub totals: FleetTotals,
 }
 
-/// Owned fleet ops data — agents + Talaria-native usage (getFleetOverview).
-/// Heartbeats are the ideal liveness signal, but most agents don't heartbeat
+/// Owned fleet ops data — agents + Talaria-native usage. Heartbeats are the
+/// ideal liveness signal, but most agents don't heartbeat
 /// to Talaria yet; container reality (the roster status dots' own source)
 /// fills the gap, so the "online" count can never disagree with the green
 /// dots on the agents page: running container ⇒ online (`idle` when the
@@ -281,8 +278,7 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
     let registry = crate::agents_registry::registry_by_name(pg, now).await?;
 
     // defs (enabled only) → container reality, keyed by the def's MODEL (the
-    // agent id). A defs read that fails reads as "no containers" (TS's
-    // `.catch(() => [])`).
+    // agent id). A defs read that fails reads as "no containers".
     let defs: Vec<(String, String)> =
         sqlx::query_as("select model, department from agent_defs where enabled")
             .fetch_all(pg)
@@ -335,7 +331,7 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
         .iter()
         .map(|a| {
             let reg = registry.get(&a.agent.id);
-            // reg?.status ?? 'offline'
+            // registry status, 'offline' when absent
             let reg_status = reg.map(|r| r.status.wire()).unwrap_or("offline");
             let status = if reg_status == "offline"
                 && container_up
@@ -401,7 +397,7 @@ mod tests {
         let b = describe_agent("solo");
         assert_eq!(b.label, "Solo");
         assert_eq!(b.role, "");
-        // Empty leading segment: JS's falsy '' falls to the whole id.
+        // Empty leading segment: the whole id becomes the label.
         let c = describe_agent("-lead");
         assert_eq!(c.label, "-lead");
         assert_eq!(c.role, "lead");

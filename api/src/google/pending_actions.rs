@@ -1,4 +1,4 @@
-// google/pending-actions.ts — confirm-sends: outbound Google actions an agent
+// google/pending-actions — confirm-sends: outbound Google actions an agent
 // drafted, held for approval. Reads and drafts are free; anything that leaves
 // the building (an email, a calendar invite) waits here until a human approves
 // — then it executes.
@@ -26,9 +26,8 @@ fn wall_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// One held outbound action (PendingAction). `created_ms` epoch — every caller
-/// renders it through `as_iso`, which is what postgres.js + `toISOString`
-/// produced in TS.
+/// One held outbound action. `created_ms` epoch — every caller renders it
+/// through `as_iso`, which is what the wire's `createdAt` is.
 #[derive(Debug, Clone)]
 pub struct PendingAction {
     pub id: String,
@@ -56,9 +55,9 @@ pub struct QueueAction<'a> {
     pub is_org: bool,
 }
 
-/// `queueAction` — an agent-drafted outbound action lands here, pending.
-/// `realtime` is the fan-out the announce rides; the announce itself is
-/// detached and silent (see the spawn below).
+/// An agent-drafted outbound action lands here, pending. `realtime` is the
+/// fan-out the announce rides; the announce itself is detached and silent
+/// (see the spawn below).
 pub async fn queue_action(
     pg: &PgPool,
     realtime: RealtimeDeps,
@@ -128,8 +127,8 @@ pub async fn queue_action(
     Ok(action)
 }
 
-/// A pending row as the route answers it — COLS' camelCase, createdAt the
-/// ISO instant postgres.js's Date went through JSON.stringify as.
+/// A pending row as the route answers it — camelCase, `createdAt` an ISO
+/// instant.
 pub fn pending_wire(a: &PendingAction) -> Value {
     json!({
         "id": a.id,
@@ -144,18 +143,17 @@ pub fn pending_wire(a: &PendingAction) -> Value {
     })
 }
 
-/// `listPending` — the actions a user should decide: their own personal ones,
-/// plus — for an admin — the org-scoped ones. Newest first.
+/// The actions a user should decide: their own personal ones, plus — for an
+/// admin — the org-scoped ones. Newest first.
 pub async fn list_pending(
     pg: &PgPool,
     user_id: &str,
     is_admin: bool,
 ) -> Result<Vec<PendingAction>, sqlx::Error> {
-    // TS splices the admin arm in as SQL TEXT (`${isAdmin ? sql`or is_org = true` : sql``}`)
-    // — for a member the clause VANISHES, it does not become `is_org = false`
+    // The admin arm must VANISH for a member, not become `is_org = false`
     // (which would match every other person's personal actions). The literal
     // query keeps sqlx's static-string contract; `$2 and …` gates the arm so a
-    // member's false bind short-circuits it to no rows, exactly like the
+    // member's false bind short-circuits it to no rows, exactly like an
     // absent clause.
     #[allow(clippy::type_complexity)] // the listing's own columns, one each
     let rows: Vec<(
@@ -208,18 +206,18 @@ pub async fn list_pending(
         .collect())
 }
 
-/// What a decision produced. `{status, message?}` — the TS return shape,
-/// message present only on the not-connected/failed statuses.
+/// What a decision produced. `{status, message?}` — message present only on
+/// the not-connected/failed statuses.
 #[derive(Debug, Clone)]
 pub struct DecideOutcome {
     pub status: String,
     pub message: Option<String>,
 }
 
-/// `decideAction` — approve → execute (as the owner, or the org for org
-/// actions), or reject → drop. `Err` is every path TS lets THROW (a DB error,
-/// a token read that failed rather than answered null); the caller's catch is
-/// the only thing that should see it.
+/// Approve → execute (as the owner, or the org for org actions), or reject →
+/// drop. `Err` is every hard failure (a DB error, a token read that failed
+/// rather than answered null); the caller's catch is the only thing that
+/// should see it.
 pub async fn decide_action(
     pg: &PgPool,
     sb: &SecretBox,
@@ -432,9 +430,9 @@ pub async fn decide_action(
     }
 }
 
-// ── Org agent addressing (aliasing.ts, the send-path half) ───────────────────
+// ── Org agent addressing (the send-path half) ─────────────────────────────────
 
-/// `agentAddressIdentity` — the agent's slug + stored alias override.
+/// The agent's slug + stored alias override.
 async fn agent_address_identity(
     pg: &PgPool,
     model: &str,
@@ -447,11 +445,11 @@ async fn agent_address_identity(
     Ok(row)
 }
 
-/// `orgAgentFromAddress` — the From address an org agent sends as: its alias
-/// override, else its derived plus-address of the org account
-/// (crate::google::org::get_org_email — plus-addresses hang off the org account, so
-/// no connection means no derived addresses; an override still wins). null
-/// when neither resolves — the caller falls back to the org sendAs target.
+/// The From address an org agent sends as: its alias override, else its
+/// derived plus-address of the org account (get_org_email — plus-addresses
+/// hang off the org account, so no connection means no derived addresses; an
+/// override still wins). null when neither resolves — the caller falls back
+/// to the org sendAs target.
 async fn org_agent_from_address(
     pg: &PgPool,
     agent_model: &str,
@@ -468,8 +466,8 @@ async fn org_agent_from_address(
     ))
 }
 
-/// aliasing.ts `plusTag` — a slug folded into a plus-address tag: lowercase,
-/// [a-z0-9-], single dashes, nothing else.
+/// A slug folded into a plus-address tag: lowercase, [a-z0-9-], single
+/// dashes, nothing else.
 fn plus_tag(slug: &str) -> String {
     let lower = slug.to_lowercase();
     let mut out = String::with_capacity(lower.len());
@@ -488,8 +486,8 @@ fn plus_tag(slug: &str) -> String {
     out
 }
 
-/// aliasing.ts `plusAddress` — the org account's plus-address for a tag. An
-/// org email that is ITSELF plus-addressed has its tag replaced, not stacked.
+/// The org account's plus-address for a tag. An org email that is ITSELF
+/// plus-addressed has its tag replaced, not stacked.
 fn plus_address(org_email: &str, tag: &str) -> Option<String> {
     let at = org_email.rfind('@')?;
     if at < 1 || at == org_email.len() - 1 {
@@ -504,10 +502,10 @@ fn plus_address(org_email: &str, tag: &str) -> Option<String> {
     Some(format!("{local}+{clean}@{domain}"))
 }
 
-/// aliasing.ts `agentFromAddress` — override, else derived plus-address, else
-/// null. Never called for personal assistants — they send as their owner's
-/// account, where no alias applies. Public for the provisioning read, which
-/// shows every org agent's effective address.
+/// Override, else derived plus-address, else null. Never called for personal
+/// assistants — they send as their owner's account, where no alias applies.
+/// Public for the provisioning read, which shows every org agent's effective
+/// address.
 pub fn agent_from_address(
     slug: &str,
     email_alias: Option<&str>,

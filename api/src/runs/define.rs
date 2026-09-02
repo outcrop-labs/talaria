@@ -1,19 +1,17 @@
 // THE run contract. A long action DECLARES how it makes one unit of progress;
 // it never owns its own durability, its own retry policy, its own "is this
 // still mine" check, or its own answer to "what happens when a person has to
-// decide something". Port of ui/src/server/runs/define.ts — pure by
-// construction: types, one registry, and two predicates. No database, no
-// Redis, no clock, so a definition can be written and the registry enumerated
-// without booting Talaria.
+// decide something". Pure by construction: types, one registry, and two
+// predicates. No database, no Redis, no clock, so a definition can be written
+// and the registry enumerated without booting Talaria.
 //
 // A RUN IS A SEQUENCE OF STEPS OVER A CHECKPOINT, and that is the whole
 // reason resume means anything. Resuming is re-entering `step` with the last
 // PERSISTED checkpoint — not replaying the run from zero.
 //
 // AT-LEAST-ONCE: say it out loud, because every author of a step has to hold
-// it. A reclaimed run RE-ENTERS `step`. The checklist for anyone porting real
-// work onto the runtime (from define.ts, where the person who needs it is the
-// person writing the step):
+// it. A reclaimed run RE-ENTERS `step`. The checklist for anyone writing a
+// step:
 //
 //   1. THE STEP THAT RAN AND DID NOT CHECKPOINT. The core case: everything
 //      the step did happens again. Split work so one step does ONE outward
@@ -51,8 +49,7 @@ use std::time::Duration;
 /// The approvals `Authority` — the same discriminator every "who may be told
 /// about this thing" question in the product answers with. A run whose
 /// audience was hand-rolled would be the fourth place that decides who may
-/// read a ticket's contents. (Ported from approvals.ts; the census and the
-/// announce machinery come with the rest of that module later in the batch.)
+/// read a ticket's contents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "by", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Authority {
@@ -96,7 +93,7 @@ pub struct RunRow {
     pub owner_user_id: Option<String>,
     /// What the run is ABOUT ('task', 'channel', 'conversation', 'research',
     /// 'board'). Free text on purpose — a check constraint here would make
-    /// every port a migration.
+    /// every new subject kind a migration.
     pub subject_type: Option<String>,
     pub subject_id: Option<String>,
     pub state: RunState,
@@ -197,7 +194,7 @@ pub enum StepResult {
         phase: Option<String>,
     },
     Done {
-        /// Value::Null for "no result" (TS `result?: unknown`).
+        /// Value::Null for "no result".
         result: Value,
     },
     /// PAUSE. The run parks in `awaiting`, an approval is filed under
@@ -211,10 +208,9 @@ pub enum StepResult {
     Retry { after: Duration, reason: String },
 }
 
-/// The Rust spelling of a THROWN STEP: TS's `step` signals failure by throwing
-/// and the driver files the message on an error row; here it returns `Err` and
-/// the driver does the same with the text. A step that merely wants to come
-/// back later returns `Retry`; `Err` is always terminal for this entry.
+/// A step signals failure by returning `Err`, and the driver files the text
+/// on an error row. A step that merely wants to come back later returns
+/// `Retry`; `Err` is always terminal for this entry.
 pub type StepError = String;
 
 /// The abort signal a step is given. Fired when the run exceeds
@@ -245,8 +241,8 @@ impl StepSignal {
 
     /// A second handle to the same abort channel — for a step that hands the
     /// signal to a helper (the backfill page checks it before every outward
-    /// call, the way TS threads `signal` into `indexPage`). Cloning the
-    /// receiver, not the shared one: each handle eats its own `changed()` mark.
+    /// call). Cloning the receiver, not the shared one: each handle eats its
+    /// own `changed()` mark.
     pub fn share(&self) -> StepSignal {
         StepSignal {
             rx: self.rx.clone(),
@@ -304,9 +300,9 @@ pub type StepFn = Arc<
 >;
 pub type AudienceFn = Arc<dyn Fn(&RunRow) -> Authority + Send + Sync>;
 
-/// The registry entry — TS's `RunDefinition<I, C>` with the type parameters
-/// erased. The driver learns the kind from a row and cannot know the input or
-/// checkpoint types at that point: the types are the STEP AUTHOR's guarantee
+/// The registry entry, type parameters erased. The driver learns the kind from
+/// a row and cannot know the input or checkpoint types at that point: the
+/// types are the STEP AUTHOR's guarantee
 /// about their own column, and the driver moves those columns without ever
 /// looking inside them.
 pub struct RunDefinition {
@@ -350,8 +346,9 @@ fn registry() -> &'static Mutex<HashMap<String, Arc<RunDefinition>>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Declare a run kind. Called at module load by the module that owns the
-/// work, so the definition lives next to the thing it drives.
+/// Declare a run kind. Called once per process by the module that owns the
+/// work — in practice from the definition getter's `get_or_init` — so the
+/// definition lives next to the thing it drives.
 pub fn register_run(def: RunDefinition) -> Arc<RunDefinition> {
     let arc = Arc::new(def);
     let mut reg = registry().lock().unwrap();
@@ -429,8 +426,9 @@ mod tests {
 
     #[test]
     fn the_decision_column_round_trips_the_ts_shape() {
-        // The exact JSON a TS-parked run stores in `runs.decision` — camelCase
-        // keys, optional fields omitted — must read and write back identically.
+        // The exact JSON a parked run stores in `runs.decision` — camelCase
+        // keys, optional fields omitted — must read and write back identically,
+        // including rows written by earlier deploys.
         let ts = r#"{"request":{"key":"cite","question":"Which source?","options":[{"id":"a","label":"A"}],"href":"/r/1"},"answer":{"key":"cite","optionId":"a","answeredBy":null,"answeredAt":"2026-08-29T00:00:00.000Z"}}"#;
         let d: RunDecision = serde_json::from_str(ts).unwrap();
         assert_eq!(d.request.key, "cite");

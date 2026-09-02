@@ -1,6 +1,5 @@
-// /api/integrations/google — port of ui/src/routes/api/integrations/google.ts.
-// This user's Google connection: status (never exposes tokens) and disconnect
-// (revoke + forget).
+// /api/integrations/google. This user's Google connection: status (never
+// exposes tokens) and disconnect (revoke + forget).
 
 use axum::Json;
 use axum::extract::State;
@@ -29,7 +28,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // `{available, ...status}` — the spread's field order spelled out.
+    // wire key order: available, then the status fields.
     Json(json!({
         "available": available,
         "connected": status.connected,

@@ -1,6 +1,5 @@
-// /api/admin/password-accounts — port of
-// ui/src/routes/api/admin.password-accounts.ts. The admin console's API for
-// DB-backed password accounts (Admin → People).
+// /api/admin/password-accounts. The admin console's API for DB-backed
+// password accounts (Admin → People).
 //   GET    → the account list.   POST → create an account.
 //   PUT    → set/reset a password. DELETE → remove the account (the person
 //   stays). Audit entries carry the email, never the password or its hash.

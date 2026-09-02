@@ -1,5 +1,5 @@
-// /api/boards/{id}/templates — port of ui/src/routes/api/boards.$id.templates.ts.
-// The ticket templates a board uses. GET → the bindings (any member); PUT
+// /api/boards/{id}/templates. The ticket templates a board uses. GET → the
+// bindings (any member); PUT
 // {templateIds, defaultId} → replace the set (owner/editor). defaultId must
 // be one of templateIds (null = no default); an empty templateIds clears the
 // board's bindings. No publish and no audit — a binding change is the board's
@@ -80,8 +80,8 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // TS's truthiness check verbatim: a null defaultId skips it, a real one
-    // must name a member of the set it travels with.
+    // a null defaultId skips the check; a real one must name a member of the
+    // set it travels with.
     if let Some(def) = &default_id
         && !template_ids.contains(def)
     {

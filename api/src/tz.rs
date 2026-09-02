@@ -1,7 +1,6 @@
-// The one true `localMoment` — port of ui/src/server/tz.ts, kept as its own
-// leaf for the same reason the TS file is: the brief's config and (next slice)
-// the digest both read zones through it, and sharing one copy must not drag
-// either module's graph into the other.
+// Local time in a named zone — the one `localMoment` both the brief's config
+// and the digest read through. Kept as its own leaf: sharing one copy must
+// not drag either module's graph into the other.
 
 use chrono::TimeZone;
 
@@ -62,14 +61,14 @@ fn read(zone: chrono_tz::Tz, at_ms: i64) -> LocalMoment {
     }
 }
 
-/// `Date.parse` for the calendar's clock shapes: RFC3339 with a `Z` or
-/// `±HH:MM` offset, and a bare `YYYY-MM-DD` (which `new Date` reads as UTC
-/// midnight — the all-day-event spelling). Anything else is None; callers
-/// treat unparseable the way TS treats NaN.
+/// The calendar's clock shapes: RFC3339 with a `Z` or `±HH:MM` offset, and a
+/// bare `YYYY-MM-DD` (read as UTC midnight — the all-day-event spelling, the
+/// way JS `new Date` reads it). Anything else is None; callers treat
+/// unparseable as absent.
 pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     if b.len() == 10 {
-        // Date-only: UTC midnight, exactly as `new Date('YYYY-MM-DD')`.
+        // Date-only: UTC midnight — the all-day-event spelling.
         return crate::agent_auth::iso_to_epoch_ms(&format!("{s}T00:00:00.000Z"));
     }
     // OFFSET FORMS FIRST: `iso_to_epoch_ms` accepts a `±HH:MM` tail but reads

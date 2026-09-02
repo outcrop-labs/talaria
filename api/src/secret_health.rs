@@ -1,8 +1,8 @@
 // The one answer to "what secrets does this instance hold, and can it still
-// read them?" — a port of ui/src/server/secret-health.ts. A VIEW over the
-// stores that already own each value, never a second store of its own.
+// read them?" — a VIEW over the stores that already own each value, never a
+// second store of its own.
 //
-// TWO RULES THIS FILE KEEPS (TS's, verbatim):
+// TWO RULES THIS FILE KEEPS:
 //   1. It never returns a plaintext secret. Not masked, not truncated — the
 //      shape has no field for one, so there is nowhere for one to leak.
 //   2. It never throws on an unhealthy instance. Every read here is a status
@@ -19,21 +19,20 @@ use std::collections::BTreeMap;
 /// Per-user rows: an admin sees that a user's connection exists, whose it is,
 /// when it was set, and whether it still decrypts — enough to recover the
 /// instance. NOT the granted scopes, the account it points at, or when it was
-/// last used (TS's USER_SCOPED_METADATA = false).
+/// last used.
 const USER_SCOPED_METADATA: bool = false;
 
 // ── Wire shape ───────────────────────────────────────────────────────────────
 // Hand-built serde_json rather than typed structs: field ORDER is the wire
-// order (TS object literals), and `owner`/`href`/`setAt`/… are OMITTED when
-// absent, not null.
+// order, and `owner`/`href`/`setAt`/… are OMITTED when absent, not null.
 
 fn row(fields: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
     serde_json::Value::Object(fields)
 }
 
-/// iso() — a timestamp column as node's toISOString(), or JSON null. The
-/// epoch-ms read + epoch_ms_to_iso pair is the house's byte-exact route (the
-/// ms is trunc'd, so the .SSS fraction always has three digits).
+/// A timestamp as an ISO string with millisecond precision, or JSON null.
+/// The epoch-ms read + epoch_ms_to_iso pair is the house's route (the ms is
+/// trunc'd, so the .SSS fraction always has three digits).
 fn opt_iso(ms: Option<i64>) -> serde_json::Value {
     match ms {
         Some(ms) => crate::agent_auth::epoch_ms_to_iso(ms).into(),
@@ -41,11 +40,10 @@ fn opt_iso(ms: Option<i64>) -> serde_json::Value {
     }
 }
 
-/// stateOf — one row's state from its ciphertext. `env_name` covers the
-/// provider-key case where the value is a variable name rather than a sealed
-/// value.
+/// One row's state from its ciphertext. `env_name` covers the provider-key
+/// case where the value is a variable name rather than a sealed value.
 fn state_of(sb: &SecretBox, cipher: Option<&str>, env_name: Option<&str>) -> &'static str {
-    // JS truthiness: an empty-string cipher is falsy, so the env check runs.
+    // An empty-string cipher counts as absent, so the env check runs.
     let cipher = cipher.filter(|c| !c.is_empty());
     match cipher {
         Some(c) => {
@@ -66,7 +64,7 @@ fn state_of(sb: &SecretBox, cipher: Option<&str>, env_name: Option<&str>) -> &'s
 }
 
 /// One row's state where an empty string means missing (the workspace entry
-/// case: `resolveHandles` empties the ciphertext once the last use is gone,
+/// case: handle resolution empties the ciphertext once the last use is gone,
 /// deliberately — a SPENT ONE-SHOT IS NOT BROKEN).
 fn state_of_entry(sb: &SecretBox, cipher: &str) -> &'static str {
     if cipher.is_empty() {
@@ -121,7 +119,7 @@ pub async fn secret_health(
                 state_of(sb, cipher.as_deref(), env_name.as_deref()).into(),
             );
             f.insert("scope".into(), "instance".into());
-            // setAt: iso(updatedAt) ?? iso(createdAt) — both null when both are.
+            // setAt prefers updated, falls back to created — null when both are.
             f.insert("setAt".into(), opt_iso(updated.or(created)));
             f.insert(
                 "clearable".into(),
@@ -693,7 +691,7 @@ pub async fn secret_health(
 #[derive(Debug, thiserror::Error)]
 pub enum ClearError {
     /// The id parsed to no store, or a setting path with an empty segment.
-    /// The route answers TS's 404 `unknown secret` for exactly this.
+    /// The route answers 404 `unknown secret` for exactly this.
     #[error("unknown secret id")]
     Unknown,
     /// A database failure — the route logs it and answers the generic 500;
@@ -790,8 +788,7 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
 
 /// The `setting:` arm — null the leaf, not delete the key: several of these
 /// configs read the key's presence and a missing key would fall back to a
-/// DEFAULT rather than to "unset". Read-modify-write under a row lock, like
-/// the TS transaction.
+/// DEFAULT rather than to "unset". Read-modify-write under a row lock.
 async fn clear_setting_leaf(pg: &PgPool, key: &str, dotted: &str) -> Result<bool, ClearError> {
     if key.is_empty() {
         return Err(ClearError::Unknown);

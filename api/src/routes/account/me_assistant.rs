@@ -1,9 +1,9 @@
-// /api/me/assistant — port of ui/src/routes/api/me.assistant.ts.
-// The signed-in user's personal assistant. GET → theirs (or null), with
-// personality + live status. POST → create + start one, optionally named/
-// personalized (idempotent: returns the existing one, re-enabling if retired).
-// PATCH → owner-scoped rename / personality edit. Any signed-in user; every
-// operation is keyed on agent_defs.owner_user_id, never on a client-sent id.
+// /api/me/assistant. The signed-in user's personal assistant. GET → theirs
+// (or null), with personality + live status. POST → create + start one,
+// optionally named/personalized (idempotent: returns the existing one,
+// re-enabling if retired). PATCH → owner-scoped rename / personality edit.
+// Any signed-in user; every operation is keyed on agent_defs.owner_user_id,
+// never on a client-sent id.
 
 use crate::body::{as_object, optional_max_string_member, parse, string_msg, zod_type_name};
 use crate::error::house_error;
@@ -19,8 +19,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-/// `Name = z.string().trim().min(1, …).max(60, …)` — trimmed, then the two
-/// named bounds.
+/// name — trimmed first, then the two named bounds: empty → "give it a
+/// name", over 60 chars → "keep the name under 60 characters".
 fn parse_name(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("name") {
         None => Ok(None),
@@ -38,8 +38,8 @@ fn parse_name(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, St
     }
 }
 
-/// `Handle = z.string().trim().regex(HANDLE_RE, …)` — the note is the whole
-/// message; length and alphabet both live in the regex.
+/// handle — trimmed, then checked against HANDLE_RE; the note is the whole
+/// message (length and alphabet both live in the regex).
 fn parse_handle(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("handle") {
         None => Ok(None),
@@ -54,8 +54,7 @@ fn parse_handle(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, 
     }
 }
 
-/// `model: z.string().trim().min(1).max(60).optional()` — trimmed, then the
-/// two default bounds.
+/// model — trimmed, then the two default bounds (min 1, max 60).
 fn parse_model(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("model") {
         None => Ok(None),
@@ -173,8 +172,8 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `.refine(b => Object.values(b).some(v => v !== undefined))` — parsed
-    // member keys first, then the at-least-one check.
+    // members parse first (each gets its own error), then the at-least-one
+    // check rejects an empty patch.
     if name.is_none() && handle.is_none() && personality.is_none() && model.is_none() {
         return house_error(StatusCode::BAD_REQUEST, "nothing to update");
     }

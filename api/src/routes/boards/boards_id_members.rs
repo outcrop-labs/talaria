@@ -1,5 +1,5 @@
-// /api/boards/{id}/members — port of ui/src/routes/api/boards.$id.members.ts.
-// GET → the member list. POST { email, role } → share; DELETE { userId |
+// /api/boards/{id}/members. GET → the member list. POST { email, role } →
+// share; DELETE { userId |
 // email } → unshare. Agents allowed on the board may READ membership (they
 // would mutate it blind otherwise); the writes stay identity-proxied — a
 // personal assistant acts as its owner alongside signed-in humans.
@@ -83,9 +83,8 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, id: &str) -> Respons
     Json(json!({ "members": members })).into_response()
 }
 
-/// The owner/editor-or-elevated gate the two writes share, in TS's spelling:
-/// `!canEdit(boardRole(...)) && !user.elevated` — an elevated assistant may
-/// share onto any board, but the identity is still its owner's.
+/// The owner/editor-or-elevated gate the two writes share — an elevated
+/// assistant may share onto any board, but the identity is still its owner's.
 async fn write_gate(state: &AppState, user: &ActingUser, id: &str) -> Option<Response> {
     match board_role(&state.pg, &user.id, id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => None,
@@ -123,8 +122,8 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.enum(['editor','viewer']).default('editor') — absent shares as an
-    // editor; present must name one of the two non-owner roles.
+    // role: absent shares as an editor; present must name one of the two
+    // non-owner roles.
     let role = match obj.get("role") {
         None => "editor".to_string(),
         Some(_) => match enum_member(obj, "role", &["editor", "viewer"]) {
@@ -178,8 +177,8 @@ pub async fn delete(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // Both members optional; the refine ('userId or email required') runs
-    // AFTER the field checks, exactly where zod puts it.
+    // Both members optional; the 'userId or email required' refine runs
+    // AFTER the field checks.
     let mut user_id = match optional_uuid_member(obj, "userId") {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -195,7 +194,7 @@ pub async fn delete(
         return house_error(StatusCode::BAD_REQUEST, "userId or email required");
     }
     // The email path resolves to an id here — no trim on this lookup (the
-    // share route trims; this one never did, and the difference is TS's).
+    // share route trims).
     if user_id.is_none()
         && let Some(email) = &email
     {

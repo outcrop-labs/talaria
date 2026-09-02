@@ -2,11 +2,11 @@
 // channel agent reads the transcript and drafts structured tickets; a human
 // reviews, edits, and creates them (into inbox — planning never assigns).
 //
-// Port of ui/src/server/channel-plan.ts. The prompt, the output schema and
+// The prompt, the output schema and
 // the coercion live in harness/defs/channel_plan.rs and run through
 // run_harness; what stays HERE is gathering the transcript, the template and
 // the workflow map, because those are database reads and a harness
-// definition must stay pure. Same division on both sides of the port.
+// definition must stay pure.
 
 use serde_json::json;
 
@@ -34,14 +34,13 @@ use crate::workflows::routing_context;
 /// run handed "engineer-engineering-opus" as its model with no tier misses
 /// BOTH lookups — the row lands on an agent that does not exist, with no
 /// endpoint class, which means no price. A plan drafted on a tier would
-/// quietly be free. (TS home: plan-doc.ts `planTier`; `sync_plan_doc`
-/// crosses in batch 5 and reuses this.)
+/// quietly be free.
 pub fn plan_tier(agent_model: &str, routed_model: &str) -> Option<String> {
     if routed_model == agent_model {
         return None;
     }
-    // `slice(agentModel.length + 1)` — out-of-range slices to '' in JS (no
-    // tier); `get` is the same answer without the panic.
+    // Out-of-range is no-tier, not a panic —
+    // `get` instead of a slicing index.
     routed_model
         .get(agent_model.len()..)
         .and_then(|rest| rest.strip_prefix('-'))
@@ -112,7 +111,7 @@ async fn plan_from_transcript(
 
     let input = ChannelPlanInput {
         transcript: transcript.to_string(),
-        // TS gates each on the TRIMMED value but interpolates the raw one —
+        // Gated on the TRIMMED value, carried raw —
         // whitespace-only context is no context.
         plan_doc: opts
             .plan_doc
@@ -192,7 +191,7 @@ impl DraftSource {
     }
 }
 
-/// The optional context a draft carries (planFromTranscript's `opts`).
+/// The optional context a draft carries.
 struct PlanOpts<'a> {
     /// The plan's living document — the authoritative source when present.
     plan_doc: Option<&'a str>,
@@ -256,7 +255,7 @@ pub async fn plan_from_conversation(
 ) -> Result<PlanOutcome, String> {
     let label = describe_agent(agent_model).label;
     // A degraded secretbox is a transcript whose file tail quietly isn't
-    // there — same posture as every TS read that catches per-file.
+    // there — per-file catch, not a failure.
     let sb = state.secretbox().await.unwrap_or_default();
     let msgs = prior_messages(&state.pg, &sb, conversation_id)
         .await
@@ -313,12 +312,12 @@ mod tests {
             Some("opus")
         );
         // The dash is required: a different agent is not a tier of this one,
-        // and slice(len + 1) in TS would swallow the '-' — only an exact
+        // and a slice-at-length would swallow the '-' — only an exact
         // prefix + '-' yields a name.
         assert_eq!(plan_tier("engineer", "engineroo"), None);
-        // An id that is exactly agent + '-' slices to '' in TS, and '' is
-        // falsy — no tier. strip_prefix returns Some("") here, so the empty
-        // filter at the call site is what keeps them saying the same thing.
+        // An id that is exactly agent + '-' slices to '' —
+        // no tier. strip_prefix returns Some("") here, so the empty
+        // filter at the call site is what keeps that answer.
         assert_eq!(plan_tier("engineer", "engineer-").as_deref(), Some(""));
     }
 }

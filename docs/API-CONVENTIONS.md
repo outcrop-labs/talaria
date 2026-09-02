@@ -1,29 +1,25 @@
 # API conventions — one dialect for every route
 
-The contract that keeps 214 routes predictable. Swept across the whole tree (2026-07); new routes
-follow it from day one. Routes live in `ui/src/routes/api/`. A route's path is the string in its
-`defineApi('…')` call — the filename is convention that mirrors it (`admin.model-fitness.ts`
-declares `defineApi('/api/admin/model-fitness')`). Server logic in `ui/src/server/`.
-
-File placement is also why `vitest.config.ts` excludes `src/routes/**`: every module under
-`routes/api/` that exports `Route` goes live — `mcp.test.ts` really serves `/api/mcp/test`, the
-glob has no test exclusion. **Nothing under `routes/` can be unit tested**, so a
-route parses the request, calls ONE function in `src/server/*`, and serializes the result. A decision
-that lives in a route is a decision with no test — `routes/api/admin.model-fitness.ts` carried ~920
-lines of them until they moved to `server/fitness/surface.ts`.
-
-The full per-route reference — path, method, auth class, body fields, statuses —
-is generated from the route sources: [`api/`](./api/README.md). Nothing here
-repeats it; this page is the dialect, that one is the dictionary.
-
-The dialect lives in one runtime: the Rust crate (`api/`) serves every
-`/api/*` route except the four permanent TS residents (healthz,
-`/api/admin/update`, the `/api/apps/` dispatch subtree, the app-MCP gateway),
-and it holds itself to this same dialect byte-for-byte — the 370-pair parity
-battery proved it against the TS oracle before the TS API was deleted (the
+The contract that keeps every `/api/*` route predictable, on both sides of the origin. The runtime of
+record is the Rust crate (`api/`): it serves every route except the four permanent TS residents
+(`healthz`, `/api/admin/update`, the `/api/apps/` dispatch subtree, the app-MCP gateway), and a new
+route lands as a Rust file under `api/src/routes/<group>/`, in this dialect, with its tests (the
 Rust-side authoring rules and the recorded divergences are
-[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A new route lands as a Rust route
-file, in this dialect, with its tests.
+[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)).
+
+The TS route dialect below still governs everything that writes a route the TS way — the four
+residents, and app servers through the host gateway. A resident route lives in `ui/src/routes/api/`;
+its path is the string in its `defineApi('…')` call, the filename is convention that mirrors it, and
+its server logic lives in `ui/src/server/`. Every module under `routes/api/` that exports `Route`
+goes live — the glob has no test exclusion and nothing under `routes/` can be unit tested, so a
+route parses the request, calls ONE function in `src/server/*`, and serializes the result. The api
+keeps the same division: its route files are thin, and the decisions live one dir deeper, where the
+unit tests reach them.
+
+The full per-route reference — path, method, auth class, body fields, statuses — is
+[`api/`](./api/README.md), frozen at the TS→Rust cutover and maintained by hand until its extractor
+moves to the Rust routes (#293). Nothing here repeats it; this page is the dialect, that one is the
+dictionary.
 
 ## Guards — `server/api-guard.ts`
 
@@ -83,9 +79,11 @@ reaching for `.legacy` on something that might be a bare model string.
 ## Agent writes that touch a ticket — import the predicate, never re-derive it
 
 Every agent patch that goes through `updateTask` inherits the HITL invariant automatically:
-`agentSafePatch` (`server/tasks.ts`) strips assignment/planning/archival, redirects terminal moves to
-the board's review column, and refuses the rest. **A route that goes through `updateTask` needs
-nothing else.**
+`agent_safe_patch` strips assignment/planning/archival, redirects terminal moves to
+the board's review column, and refuses the rest. The predicate lives once per runtime —
+`api/src/tasks.rs` for the routes, `server/tasks.ts`'s `agentSafePatch` for the TS plane (app
+servers, the MCP tool descriptions) — with the same four conditions. **A route that goes through
+`updateTask` needs nothing else.**
 
 A route that writes something *attached* to a ticket without going through `updateTask` — a usage
 row, a dependency edge, a gap report, a workbench plan comment or PR title — does not inherit it, and
@@ -222,7 +220,8 @@ if (body instanceof Response) return body
 ```
 
 Invalid input 400s with the FIRST zod issue as `error` — never a bare "bad request". Schemas cap
-string lengths and array sizes.
+string lengths and array sizes. The api's `body.rs` answers with the same first-issue sentences —
+they are wire contract, pinned by its tests.
 
 ## Shapes
 

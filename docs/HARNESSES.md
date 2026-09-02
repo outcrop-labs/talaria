@@ -4,70 +4,68 @@ Talaria has to be **decent on a 7-14B self-hosted model and excellent on a front
 admin has to be able to tell which, per role, from the UI. Everything in this document exists to make
 those two sentences compatible.
 
-Before the harness layer there were five ways to reach a model (`proxyChat`, `completeViaGateway`,
-`buildUpstream` + `fetchUpstream`, the `/api/llm` route, and one feature's private `requestJson*`
-pair), and every place that wanted structured output picked one and then wrote its own prompt, its
-own parser, its own fallback chain and its own failure behavior. The 2026-08-06 audit
-([`AUDIT-HARNESS-2026-08-06.md`](./history/AUDIT-HARNESS-2026-08-06.md)) counted what that arrangement had
-produced:
+The layer exists because a hand-rolled model call is easy to write and quietly wrong in its own
+particular way. The 2026-08-06 audit
+([`AUDIT-HARNESS-2026-08-06.md`](./history/AUDIT-HARNESS-2026-08-06.md)) found six structured-output
+extractors (three of which failed by execution on ordinary small-model output), six verbatim copies
+of the model-fallback chain, three of the highest-stakes model paths running with no guardrail at
+all, and zero retries on a malformed structured reply — every one of them a call site written by
+hand by somebody who had read the code around it. None of that hurts much on a frontier model,
+which is why it shipped. All of it hurts on a 14B local one. And the failure mode was never an
+error: it was a swallowed `null` at a fire-and-forget caller, so a bad model presented as a feature
+that quietly stopped working.
 
-- **six** structured-output extractors, three of which failed by execution on ordinary small-model
-  output (a fenced object followed by prose containing a `{placeholder}`; a preamble then two
-  objects; an object then a bulleted list with a brace in it);
-- **six** verbatim copies of the model-fallback chain, plus `'pl-main'` spelled out as a literal at
-  seven sites — on an install that never named an endpoint `pl-main`, those subsystems silently
-  no-op;
-- **three** of the highest-stakes model paths (agent work sessions, research synthesis, Muse
-  drafting) running with no guardrail at all, because guards were wired per call site;
-- **zero** retries on a malformed structured reply, anywhere.
-
-None of that hurts much on a frontier model, which is why it shipped. All of it hurts on a 14B local
-one. And the failure mode was never an error: it was a `return null` a fire-and-forget caller
-swallowed, so a bad model presented as a feature that quietly stopped working — a different silent
-behavior at each of the six sites (the judge escalated to a human, the blurb writer re-burned the
-same batch every ten minutes forever, Muse's buttons just did nothing).
-
-Every one of those is a property of the *arrangement*, not of any one site. So there is now one
-runner, and a harness declares rather than does.
+Every one of those is a property of the *arrangement*, not of any one site. So there is one runner,
+and a harness declares rather than does.
 
 ## What a harness is
 
 A **harness** is a declarative object: a prompt renderer, an output contract, a model policy, a
 failure policy, and a set of eval fixtures. It never chooses a transport, a model, a parser or a
-failure behavior — it *declares* them, and `runHarness` honors the declaration.
+failure behavior — it *declares* them, and `run_harness` honors the declaration.
 
 | File | What it owns |
 | --- | --- |
-| `server/harness/define.ts` | The contract. Types and one identity function — no DB, no gateway, no settings, so a definition can be built and enumerated without booting Talaria. |
-| `server/harness/run.ts` | `runHarness` / `runHarnessStreamed`. The only code that talks to a model. |
-| `server/harness/json.ts` | The one structured-output parser and the one repair wording. |
-| `server/harness/text.ts` | The one first-line extractor for text harnesses. |
-| `server/harness/model.ts` | The resolution chain, expressed once. |
-| `server/harness/capability.ts` | What a model can actually do, and who says so. |
-| `server/harness/transport.ts` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
-| `server/harness/registry.ts` | The 23 shipped harnesses, merged builtin < app-shipped < admin-custom. |
-| `server/harness/defs/*.ts` | The definitions themselves — 35 harnesses, 328 eval fixtures. |
-| `server/harness/recorded.ts` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
+| `api/src/harness/define.rs` | The contract. Types and one identity function — no DB, no gateway, no settings, so a definition can be built and enumerated without booting Talaria. |
+| `api/src/harness/run.rs` | `run_harness` / the streamed variant. The only code that talks to a model. |
+| `api/src/harness/json.rs` | The one structured-output parser and the one repair wording. |
+| `api/src/harness/text.rs` | The one first-line extractor for text harnesses. |
+| `api/src/harness_model.rs` | The resolution chain, expressed once. |
+| `api/src/capability.rs` | What a model can actually do, and who says so. |
+| `api/src/harness/transport.rs` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
+| `api/src/harness/registry.rs` | The builtin layer: 35 shipped harnesses (`DEFS` → `BUILTINS`). |
+| `api/src/harness/defs/*.rs` | The definitions themselves — one module per family, eval fixtures inline. |
+| `api/src/harness/recorded.rs` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 
-**One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a call to
-`proxyChat` / `completeViaGateway` / `buildUpstream` / `fetchUpstream` outside `server/harness/` and
-the two gateway modules that define them (`hand-written-harness`). Four census entries remain and
-none of them is debt: the public `/api/llm/v1/chat/completions` pass-through proxy, and three live
-persona conversations (`routes/api/chat.ts`, `chat-persist.ts`, `channel-replies.ts`) where the
-messages are the human's and there is no prompt of Talaria's to declare. A fifth match is a
-regression, not a backlog item.
+The TS twin of the layer (`ui/src/server/harness/`) is the **app-author plane**: `ui/sdk/server.ts`
+re-exports its types as `@talaria/sdk`'s server contract, and app-shipped harnesses are TS by the
+api's rule 10 — customer code, never port surface (the fitness consequence is a recorded divergence
+in [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A platform harness is written in Rust.
 
-If what you need is a runner *capability*, ask for it in `run.ts`. Five files once hand-wrote their
-own persona transport because the runner could not pass a model's own tools through, stream, carry
-ledger attribution or route a persona tier — and three of those five silently dropped `temperature`
-and `jsonMode` on the way, reintroducing the exact class of bug the layer exists to end. All four
-slots exist now (`def.tools`, `runHarnessStreamed`, `ctx.ledger`, `ctx.tier`) and all five shims are
-deleted.
+**One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a
+hand-written model call anywhere in `ui/src`; the census is at its floor, and the one entry left is
+`channel-replies.ts` — a live persona conversation where the messages are the human's and there is
+no prompt of Talaria's to declare. (The `/api/llm/v1` pass-through and `/api/chat` once carried
+census entries of their own; both serve from the api now.) In the api the same discipline is the
+architecture itself: `harness/run.rs` is the only module that talks to a model, and everything else
+reaches one through it. A new hand-written call is a regression, not a backlog item.
+
+If what you need is a runner *capability*, ask for it in `run.rs`. Five call sites once hand-wrote
+their own persona transport because the runner could not pass a model's own tools through, stream,
+carry ledger attribution or route a persona tier — and three of those five silently dropped
+`temperature` and json mode on the way, reintroducing the exact class of bug the layer exists to
+end. All four slots exist now (`def.tools`, the streamed runner, `ctx.ledger`, `ctx.tier`) and all
+five shims are deleted.
 
 ## What the runner does, in order
 
-```ts
-const result = await runHarness(titlerHarness, { kind: 'chat', text }, { caller: 'platform:titler' })
+```rust
+let result = run_harness(
+    state,
+    &titler_harness(),
+    &json!({ "kind": "chat", "text": text }),
+    RunContext { caller: "platform:titler".into(), ..RunContext::default() },
+).await?;
 ```
 
 1. **Resolve the model** from `def.model` — and record *which chain step won*, because a subsystem
@@ -96,24 +94,23 @@ escaped error.
 
 ## The contract, field by field
 
-The contract is `server/harness/define.ts`. The smallest harness in the product, abridged
-(`server/harness/defs/titler.ts`), is the shape of one:
+The contract is `api/src/harness/define.rs`. The smallest harness in the product, abridged
+(`api/src/harness/defs/titler.rs`), is the shape of one:
 
-```ts
-export const titlerHarness = defineHarness<TitlerInput, string>({
-  id: 'titler',
-  label: 'Titler',
-  job: 'Names things as they take shape: chats and plans after their first exchange, research runs from their question.',
-  requires: ['instruction-following'],
-  floor: { capabilities: [], refuseBelow: false, note: 'Runs on any model. …' },
-  model: { pin: 'titler' },
-  render: (input) => [{ role: 'system', content: PROMPT[input.kind] }, { role: 'user', content: clip(input.text) }],
-  output: { kind: 'text', clean: cleanTitle },
-  onFailure: 'null',
-  guard: { rules: ['secret_leak', 'pii_leak'], redact: true },
-  temperature: 0.3,
-  evals: [ /* … */ ],
-})
+```rust
+let mut d = define_harness(HarnessDefinition::new(
+    "titler",
+    "Titler",
+    "Names things as they take shape: chats and plans after their first exchange, research runs from their question.",
+    ModelSpec { pin: Some("titler"), role: None, chain: None, user_id: None },
+    render,                                  // three prompts, one per TitleKind
+    Output::Text { clean: Some(Arc::new(clean_title)), verify: None },
+    OnFailure::Null,
+));
+d.requires = vec!["instruction-following"];  // the fitness matrix's row — never blocks
+d.floor = RoleFloor::runs_anyway("Runs on any model. …");
+d.guard = Some(GuardDecl { rules: Some(vec!["secret_leak", "pii_leak"]), redact: true });
+d.evals = /* the fitness suite's row, inline */;
 ```
 
 ### `requires: Capability[]`
@@ -147,8 +144,8 @@ Two harnesses refuse today, and both are cases where degrading silently is worse
 `capabilities` is the non-negotiable **subset** of `requires`, and it must be **empty unless
 `refuseBelow` is true**. The runner only ever reads it when the harness refuses, so a populated list
 on a non-refusing floor is inert while reading to the next author as a hard requirement — which is
-how the port arrived with two spellings of "needs JSON, runs anyway". `registry.test.ts` enforces
-both rules.
+how two spellings of "needs JSON, runs anyway" shipped once, and why this is a rule now. The
+registry's unit tests (`api/src/harness/registry.rs`) enforce both.
 
 `note` is one sentence written for the admin choosing a model, not for the developer reading the
 file. It is shown next to the model picker and printed in the refusal.
@@ -186,20 +183,22 @@ model ids; that is what capabilities are for.
 
 `Message.content` is a string across the whole tree. That is a re-decided constraint, not an
 oversight: widening it to the OpenAI content-parts union would have to land in `Message`, both
-payload builders, `groundingTextOf`, `extractToolRecord`, `lastUserMessage`, `anchorJson`, both token
-estimates and 23 renders at once, and a half-widened union would report `[object Object]` into the
-ledger. The `vision` probe skips and says so, rather than recording a fact it could not measure.
+payload builders, the grounding and tool-record extractors, both token estimates and every render at
+once, and a half-widened union would stringify objects into the ledger. The `vision` probe skips and
+says so, rather than recording a fact it could not measure.
 
 ### `output` — text vs json, and `verify`
 
-```ts
-output: { kind: 'text'; clean?: (raw: string) => O | null; verify?: Verify<I, O> }
-      | { kind: 'json'; schema: z.ZodType<O>; repair?: number; verify?: Verify<I, O> }
+```rust
+Output::Text { clean: Option<CleanFn>, verify: Option<VerifyFn> }
+Output::Json { schema: Schema, preprocess: Option<PreFn>, repair: Option<u32>, verify: Option<VerifyFn> }
 ```
 
-`kind: 'json'` puts the runner in structured mode. `kind: 'text'` with no `clean` means `O` is
-`string` by construction; `clean` is where a text harness narrows and returns `null` to fail the
-contract. Unwrapping a reply the model wrapped is `firstMeaningfulLine` (`harness/text.ts`), shared by
+`Output::Json` puts the runner in structured mode; the schema is the zod-shaped DSL in
+`api/src/harness/schema.rs`, which collects issues in declaration order — the same sentences the
+repair turn quotes back to the model. `Output::Text` with no `clean` means the value is the string
+by construction; `clean` is where a text harness narrows, and a `None` out of it fails the contract.
+Unwrapping a reply the model wrapped is `first_meaningful_line` (`api/src/harness/text.rs`), shared by
 the titler and the summarizer — which shipped the same eight lines with a one-character difference,
 and between them stored a bare ` ``` `, a trailing `**` and a "Here's the summary:" lead-in as if
 those were answers. A `clean` should hold what is true of *its* output and nothing else.
@@ -236,7 +235,7 @@ whole audit is about. A caller that wants either of those on an unreachable mode
 sense for this output; `redact` strips credentials and PII out of the **value** the runner returns,
 for harnesses whose output is persisted.
 
-Two sharp edges, both locked by `registry.test.ts`:
+Two sharp edges, both locked by the registry's unit tests:
 
 - **A misspelled rule id disables every rule for that harness**, not one. `narrowGuardConfig` turns a
   rule on only when the harness names it, so a typo leaves a `guard` block in the file that reads as
@@ -265,7 +264,7 @@ only buy a longer name.
 
 `(input) => Grounding | null` — the turn's real tool record, from the harness's own input.
 `ungrounded_ref` ("cites a link/UUID that wasn't in any tool result") is the
-highest-value rule in `guardrails.ts` and it **could not fire from any harness**, by construction: a
+highest-value rule in `api/src/gateway/guard.rs` and it **could not fire from any harness**, by construction: a
 harness turn contains no tool messages, so the record the runner derives has no backing tools and the
 rule declined every time. Research's synthesis stage *is* handed the search hits and the numbered
 source registry — those are the tool results for that turn — and `ground` is how it says so.
@@ -279,7 +278,7 @@ move.
 ### The rest
 
 `temperature`, `tools` (`'none'` by default — enforced at the protocol level, not left to the prompt;
-`'own'` is for the three turns whose whole feature *is* the tool loop), `toolDefs` (tools this
+`'own'` is for the three turns whose whole feature *is* the tool loop), `tool_defs` (tools this
 harness offers the model, and a different question from `tools` — its only declarers today are the
 `tools` and `tool-select` probes, and a harness that declares it must resolve to a **gateway** model,
 because all three other transports refuse the call rather than answer a question the model was never
@@ -359,8 +358,9 @@ exists belongs to the caller, not to the contract.
 
 ## The capability model
 
-`server/harness/capability.ts` is the type Talaria never had, and two live bugs shared its absence as
-their root cause: role assignments were validated for *routability* and nothing else (so an admin
+The capability record (`api/src/capability.rs`) is a type the tree went years without, and two live
+bugs shared its absence as their root cause: role assignments were validated for *routability* and
+nothing else (so an admin
 could point `research-recon` at a model with no web search and get a confident, uncited brief), and
 the gateway's parameter learner would strip `response_format` on a 400 and let the call **succeed**,
 returning free prose to a caller that was about to run a JSON parser.
@@ -373,7 +373,7 @@ learned from one must never be credited to the other. Three writers, three prove
 | Source | Written by | Expires |
 | --- | --- | --- |
 | `probe` | The tier-1 probe suite — Talaria's own measurement. | Never; a probe fact stands until someone re-measures. |
-| `learned` | `llm-gateway.ts`, from what an upstream 400 said. Only ever `false`. | 30 days (`LEARNED_TTL_MS`) — the release valve on what was a one-way ratchet. |
+| `learned` | the gateway's parameter learner (`api/src/gateway/params.rs`), from what an upstream 400 said. Only ever `false`. | 30 days — the release valve on what was a one-way ratchet. |
 | `declared` | An admin, or a model catalog. | Never; it is a human's word until the human changes it. |
 
 ### Unknown is not false at the floor. Unknown does not widen.
@@ -414,8 +414,8 @@ call without advancing the round-robin cursor. So both questions are answered **
 capability counts as missing only if every member says missing, and counts as earned only if every
 member says earned.
 
-A fleet persona is not a catalog model — `routingFor` answers with no endpoints for one — so
-`harness/persona.ts` resolves the endpoint and upstream model behind it (its agent version's
+A fleet persona is not a catalog model — `routing_for` answers with no endpoints for one — so
+`api/src/persona.rs` resolves the endpoint and upstream model behind it (its agent version's
 `config.main`, or the alias for the tier being called) and the persona inherits that probe. Without
 it, `widened` was structurally always false on personas, which is exactly where the marquee widening
 case runs: the Inbox command harness runs on the owner's personal assistant.
@@ -425,136 +425,110 @@ case runs: the Inbox command harness runs on the owner's personal assistant.
 A worked example: a "release-notes" harness that turns a list of merged PR titles into a short
 changelog entry.
 
-**1. Write the definition** in `ui/src/server/harness/defs/release-notes.ts`. Keep it pure — types,
-prompts, a `clean`/`schema`, and fixtures. It must be importable without a database.
+**1. Write the definition** in `api/src/harness/defs/release_notes.rs`. Keep it pure — types,
+prompts, a `clean`/`schema`, and fixtures. It must be constructible without a database.
 
-```ts
-import { z } from 'zod'
-import { defineHarness } from '../define'
-
-export interface ReleaseNotesInput {
-  version: string
-  /** PR titles, newest first. */
-  changes: string[]
+```rust
+pub fn release_notes_harness() -> HarnessDefinition {
+    let mut d = define_harness(HarnessDefinition::new(
+        "release-notes",
+        "Release notes",
+        "Turns a list of merged changes into a short, user-facing changelog entry.",
+        // No pin: the default chain runs the Utility role, then the env
+        // default, then the first routable model. Add a `pin` when an admin
+        // should be able to assign this harness its own model (see below).
+        ModelSpec { pin: None, role: None, chain: None, user_id: None },
+        Arc::new(|input: &Value, _ctx: &RenderContext| {
+            let i: ReleaseNotesInput =
+                serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
+            Ok(vec![Message::user(prompt(&i))])   // the instruction + the version block
+        }),
+        Output::Json {
+            // The {headline, bullets} shape — harness/schema.rs's zod-shaped DSL.
+            schema: release_notes_schema(),
+            preprocess: None,
+            repair: None,          // the runner's default: one repair turn
+            // THE HALF THE SCHEMA CANNOT STATE: there can be no more bullets
+            // than there were changes, and each one has to share a distinctive
+            // word with one of them. Returns None when the value is usable, or
+            // one plain sentence naming the problem — written as an instruction
+            // to the MODEL, because it becomes one:
+            //   "you wrote 6 bullets for 4 changes - write at most one bullet per change"
+            verify: Some(Arc::new(release_notes_verify)),
+        },
+        // The caller already has a draft entry; Null means "keep it".
+        OnFailure::Null,
+    ));
+    // What the job leans on. Never blocks; this is the fitness matrix's row.
+    d.requires = vec!["json", "instruction-following"];
+    // No floor: a clumsy changelog is better than none, and the caller keeps
+    // whatever it had when the contract fails.
+    d.floor = RoleFloor::runs_anyway(
+        "Runs on any model. A weak one writes flatter bullets; nothing downstream parses them.",
+    );
+    // Named, not omitted: an omitted block runs EVERY enabled rule, and a
+    // changelog legitimately describes completed work, which is what
+    // zero_tool_claim matches.
+    d.guard = Some(GuardDecl { rules: Some(vec!["secret_leak", "pii_leak"]), redact: true });
+    d.evals = /* see the next section */;
+    d
 }
-
-const NOTES = z.object({
-  headline: z.string(),
-  bullets: z.array(z.string()).min(1).max(8),
-})
-export type ReleaseNotes = z.infer<typeof NOTES>
-
-export const releaseNotesHarness = defineHarness<ReleaseNotesInput, ReleaseNotes>({
-  id: 'release-notes',
-  label: 'Release notes',
-  job: 'Turns a list of merged changes into a short, user-facing changelog entry.',
-
-  // What the job leans on. Never blocks; this is the fitness matrix's row.
-  requires: ['json', 'instruction-following'],
-
-  // No floor: a clumsy changelog is better than none, and the caller keeps
-  // whatever it had when the contract fails.
-  floor: {
-    capabilities: [],
-    refuseBelow: false,
-    note: 'Runs on any model. A weak one writes flatter bullets; nothing downstream parses them.',
-  },
-
-  // No pin: the default chain runs the Utility role, then the env default, then
-  // the first routable model. Add a `pin` when an admin should be able to assign
-  // this harness its own model (see below).
-  model: {},
-
-  render: (input) => [
-    {
-      role: 'system',
-      content:
-        'Write a changelog entry from the merged changes below. One headline of at most 8 words, ' +
-        'then 1-8 bullets in the user\'s language, not the committer\'s. Do not invent changes.',
-    },
-    { role: 'user', content: `Version ${input.version}\n\n${input.changes.join('\n')}` },
-  ],
-
-  output: {
-    kind: 'json',
-    schema: NOTES,
-    // THE HALF THE SCHEMA CANNOT STATE: there can be no more bullets than there
-    // were changes, and each one has to share a distinctive word with one of
-    // them. Written as an instruction to the MODEL, because it becomes one.
-    verify: (value, input) => {
-      if (value.bullets.length > input.changes.length) {
-        return `you wrote ${value.bullets.length} bullets for ${input.changes.length} changes - write at most one bullet per change`
-      }
-      const words = (s: string) => new Set(s.toLowerCase().match(/[a-z]{5,}/g) ?? [])
-      const known = input.changes.map(words)
-      const invented = value.bullets.find((b) => {
-        const w = words(b)
-        return !known.some((k) => [...w].some((token) => k.has(token)))
-      })
-      return invented ? `"${invented}" is not one of the changes you were given - write only about the listed changes` : null
-    },
-  },
-
-  // The caller already has a draft entry; null means "keep it".
-  onFailure: 'null',
-
-  // Named, not omitted: an omitted block runs EVERY enabled rule, and a
-  // changelog legitimately describes completed work, which is what
-  // zero_tool_claim matches.
-  guard: { rules: ['secret_leak', 'pii_leak'], redact: true },
-  temperature: 0.2,
-
-  evals: [ /* see the next section */ ],
-})
 ```
 
-**2. Register it** in `server/harness/registry.ts`'s `BUILTINS`. This is the last step of a port, not
-a follow-up: a harness that is not in `BUILTINS` is invisible in the two ways that matter most — the
-fitness suite cannot replay its fixtures, so every assertion its author wrote is dead code, and the
-admin panel cannot show its floor. One phase of this project landed nine definitions with 32 fixtures
-between them and registered none of them.
+**2. Register it** in `api/src/harness/registry.rs` — the constructor joins the `DEFS` table that
+`BUILTINS` is built from. Registration is part of writing the harness, not a follow-up: a harness
+that is not in `DEFS` is invisible in the two ways that matter most — the fitness suite cannot
+replay its fixtures, so every assertion its author wrote is dead code, and the admin panel cannot
+show its floor. Definitions landing unregistered is the defect this rule exists because of.
 
 **3. Call it** from the feature, and handle the failure policy you declared:
 
-```ts
-const result = await runHarness(releaseNotesHarness, { version, changes }, { caller: 'platform:release-notes' })
-if (!result.value) return keepExistingDraft()   // onFailure: 'null' — the caller keeps what it had
+```rust
+let run = run_harness(
+    state,
+    &release_notes_harness(),
+    &json!({ "version": version, "changes": changes }),
+    RunContext { caller: "platform:release-notes".into(), ..RunContext::default() },
+)
+.await?;   // OnFailure::Null — a null value means the caller keeps the draft it had
 ```
 
-**4. Test it against recorded replies.** `server/harness/recorded.ts` runs any harness with no
+**4. Test it against recorded replies.** `api/src/harness/recorded.rs` runs any harness with no
 gateway, no fleet, no database and no clock — the transport is scripted, but the parser, the guard
 rules and the persona resolver are real, so an assertion about the runner stays an assertion about the
 runner. Include at least one reply in the shape a 14B model actually emits (a preamble, then the
 object), so the extractor and the repair turn are exercised rather than assumed.
 
-**5. Check the invariants.** `node scripts/check-invariants.mjs` and
-`cd ui && ./node_modules/.bin/vitest run`. `registry.test.ts` will fail the build if the harness names
-a guard rule that does not exist, leaves the guard block off, declares a floor it never enforces,
-refuses on a capability it does not require, spells the Utility fallback as `role: 'utility'`, widens
-without a note, or ships no eval fixtures.
+**5. Check the gates.** `bun run api:check` (fmt + clippy `-D warnings` + the crate's tests). The
+registry's unit tests fail the build if the harness names a guard rule that does not exist, leaves
+the guard block off, declares a floor it never enforces, refuses on a capability it does not
+require, spells the Utility fallback as its own `role`, widens without a note, or ships no eval
+fixtures.
 
 **Shipping one from an app** is the same contract in a different home: `apps/<slug>/harnesses/*.ts`,
 one harness per file, default-exported, loaded for enabled apps only and checked structurally before
-it joins the registry — a broken app is a logged skip, never an empty admin page. See
-[`docs/sdk/harnesses.md`](./sdk/harnesses.md). The third layer, admin-custom, is deliberately empty: a workbench harness is
+it joins the app host's registry — a broken app is a logged skip, never an empty admin page. The
+api's own registry cannot see them (rule 10); the fitness plane counts and excludes exactly that set
+(the recorded divergence). See [`docs/sdk/harnesses.md`](./sdk/harnesses.md). The third layer,
+admin-custom, is deliberately empty: a workbench harness is
 declarative and can live as a JSON row, but an activity harness carries code (`render`, `verify`,
 `check`), and Talaria does not run code out of a database row. What an admin *can* customize is the
 model each harness runs on.
 
 **If an admin should be able to assign this harness a model**, it needs a `PLATFORM_AGENTS` entry and
-`model.pin` pointing at it; `registry.test.ts` locks the harness↔platform-agent correspondence in both
+`model.pin` pointing at it; the registry's tests lock the harness↔platform-agent correspondence in both
 directions, including the two places the lists deliberately do not line up (harnesses whose model
 comes from the subject of the call have no pin; the judge has a platform agent but keeps its model in
 `judge_config` so the Guard panel and the Platform panel cannot disagree).
 
 ## How to write evals
 
-```ts
-export interface EvalCase<I, O> {
-  name: string
-  input: I
-  check: (value: O, ctx: EvalContext) => string | null
-  band?: 'easy' | 'standard' | 'hard'
+```rust
+pub struct EvalCase {
+    pub name: &'static str,
+    pub input: Value,        // the def's own typed input, as `render` will receive it
+    pub check: CheckFn,      // None passes; one line says what was wrong
+    pub band: EvalBand,      // Easy / Standard / Hard — Standard by default
 }
 ```
 
@@ -576,8 +550,8 @@ Rules of thumb, all of them learned the hard way:
 - **A one-sided fixture needs a floor.** Six fixtures across the summarizer, distiller, briefer and
   outreach once asserted only that the answer was not too long, not markdown, not a question and not a
   repeat of the input — every one of which is satisfied by saying almost nothing. Replaying the
-  literal string `{"nope": true}` through the whole registry scored six passes. `belowAnswerFloor`
-  (`define.ts`) is the fix: state how short is too short to be an answer at all, and — where the input
+  literal string `{"nope": true}` through the whole registry scored six passes. `below_answer_floor`
+  (`define.rs`) is the fix: state how short is too short to be an answer at all, and — where the input
   has an unmistakable subject — a **set** of alternative words the answer has to have engaged with. A
   set, never a phrase: a fixture only one wording can pass measures our prompt, not the model.
 - **Name the safety assertion.** `inbox-command`'s fixture asserting that the model never proposes an
@@ -594,7 +568,7 @@ Rules of thumb, all of them learned the hard way:
 ### Bands
 
 `band` splits a suite into `easy` / `standard` / `hard`, reported separately by the fitness suite
-(`HarnessScore.bandScores`). It defaults to `standard`.
+(`api/src/fitness/score.rs`). It defaults to `standard`.
 
 One flat pass rate cannot tell *competent, loses the hard edge cases* from *unreliable on the basics*,
 and those are different purchasing decisions: a 70% that is easy 100 / standard 100 / hard 20 is a
@@ -610,17 +584,17 @@ Harnesses declare `tools: 'own'` when the tool loop *is* the feature (`work-sess
 "did it *say* it triaged the ticket" is the wrong question; the failure that costs an org a week is a
 model that says so having called nothing.
 
-A harness declares `dryRun` and the fitness suite supplies the loop, against an isolated in-memory
-world (`server/fitness/toolbox/`):
+A harness declares `dry_run` and the fitness suite supplies the loop, against an isolated in-memory
+world (`api/src/fitness/toolbox/`):
 
 | Surface | Caller | Tools | World |
 | --- | --- | --- | --- |
-| `dryRun.tools` (`toolbox/talaria-tools.ts`) | **Hermes agents**, over MCP | Talaria's real MCP toolkit — all 44, names, descriptions **and argument names copied from `mcp/src/index.ts`** and locked by `talaria-tools.sync.test.ts` | boards, tickets, attachments, channels, teammates, the knowledgebase, documents, Google, research runs, board governance |
-| `dryRun.workspace` (`toolbox/hermes-tools.ts`) | **Hermes coding harnesses** (Claude Code, Codex, Aider …) | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
-| `def.toolDefs` (`toolbox/native-tools.ts`) | **native platform agents** — a harness in this repo, loop run in-process | whatever the harness puts on the request. Today: one web-search tool, supplied by the org's MCP registry | the live web, through the registered supplier |
+| `dry_run.tools` (`toolbox/talaria_tools.rs`) | **Hermes agents**, over MCP | Talaria's real MCP toolkit — every registered tool, names, descriptions **and argument names copied from `mcp/src/index.ts`** and locked by the sync test at the foot of that file | boards, tickets, attachments, channels, teammates, the knowledgebase, documents, Google, research runs, board governance |
+| `dry_run.workspace` (`toolbox/hermes_tools.rs`) | **Hermes coding harnesses** (Claude Code, Codex, Aider …) | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
+| `def.tool_defs` | **native platform agents** — a harness in this repo, loop run in-process | whatever the harness puts on the request. Today: one web-search tool, supplied by the org's MCP registry | the live web, through the registered supplier |
 
 **Know which surface a verdict is about.** The first two are the *Hermes* surface: a containerized
-persona holding forty-four workspace verbs, whose loop Talaria never sees. The third is what *Talaria
+persona holding the whole workspace toolkit, whose loop Talaria never sees. The third is what *Talaria
 itself* hands a model, and it is one tool long — that shortness is a finding, not a gap in the docs. A
 deployment can be good at one and useless at the other: a gateway that strips `tools` from a request
 kills every native harness and leaves every persona untouched, because the persona's loop never
@@ -631,13 +605,16 @@ single-shot harness's fixture receives, so a check reaching for `ctx.calls` sees
 
 ### Every tool must be simulated and exercised — enforced
 
-`scripts/check-invariants.mjs` fails the build when a tool registered in `mcp/src/index.ts` is not
+A tool registered in `mcp/src/index.ts` is not real to the fitness suite until it is
 
-1. **modelled** in `fitness/toolbox/talaria-tools.ts` (real description, real argument names),
-2. **backed** by a handler in `fitness/toolbox/sandbox.ts` over the in-memory world, and
-3. **exercised** by a sandbox test or a harness's `dryRun.tools` surface.
+1. **modelled** in `api/src/fitness/toolbox/talaria_tools.rs` (real description, real argument names),
+2. **backed** by a handler in `api/src/fitness/toolbox/sandbox.rs` over the in-memory world, and
+3. **exercised** by a sandbox test or a harness's `dry_run.tools` surface.
 
-This is not a style rule. The toolkit reached forty-four tools while the simulator modelled sixteen —
+The sync test at the foot of `talaria_tools.rs` reads `mcp/src/index.ts` and fails on drift in a
+name, a description or an argument name; the sandbox holds the handlers.
+
+This is not a style rule. The audit found the toolkit at forty-four tools with sixteen simulated —
 no single commit was wrong, and the result was twenty-eight verbs an org depends on with no simulated
 backend, no fixture, and a fitness page reporting confident scores over the third of the surface that
 happened to be covered. Eight of those sixteen also carried *invented argument names*
@@ -651,7 +628,7 @@ catching are a model reaching for a tool its identity does not carry, and a mode
 it was refused. A sandbox that only ever says yes measures nothing.
 
 **Offer the discovery tool with the reader.** `list_tickets` takes a `boardId` and `read_channel`
-takes a `channelId`; production 404s on a name. A `dryRun.tools` surface with the writer but not the
+takes a `channelId`; production 404s on a name. A `dry_run.tools` surface with the writer but not the
 lister makes a model guess an id and then scores the guess — our gap, charged to the model. This is
 the single most common way a fixture ends up measuring the harness instead of the candidate.
 
@@ -668,41 +645,39 @@ difference; a reader of the verdict should be able to.
 
 ## The fitness suite
 
-`server/fitness/` answers, per install: *for each role and each harness in my Talaria, is this model
+`api/src/fitness/` answers, per install: *for each role and each harness in my Talaria, is this model
 good enough, and where exactly does it break?* Three tiers, cheapest first, so a bad model is rejected
 in seconds rather than dollars. The surface is **Admin → Models → Fitness**
-(`routes/app/ModelsFitnessPanel.svelte` over `routes/api/admin.model-fitness.ts`). The route is
-plumbing — the admin gate, the query string, the zod body, the audit line, the status code — and
-holds no decisions: `fitness/surface.ts` orchestrates, archives and assembles every payload, because
-`vitest.config.ts` excludes `src/routes/**` and a decision that lives there cannot be tested.
+(`ui/src/routes/app/ModelsFitnessPanel.svelte` over `api/src/routes/admin/admin_model_fitness.rs`).
+The route is plumbing — the admin gate, the query string, the body validation, the audit line, the
+status code — and holds no decisions: `api/src/fitness/surface.rs` orchestrates, archives and
+assembles every payload, so every decision lives where the unit tests can reach it.
 
-### Tier 1 — probes (`fitness/probes.ts`)
+### Tier 1 — probes (`api/src/fitness/probes.rs`)
 
-Nine probes, **22 calls** on a gateway-served candidate (`estimateProbes` prices them before an admin
-presses anything). Five of those are the two tool probes, which skip on a fleet persona; the `vision`
-probe skips everywhere, so a persona candidate is 17. Cheap calls that establish model-level facts
-and write the capability record. This is the
+Ten probes on a gateway-served candidate, priced before an admin presses anything — cheap calls that
+establish model-level facts and write the capability record. The two tool probes skip on a fleet
+persona, and `vision` skips everywhere, so a persona candidate runs the cheaper set. This is the
 first production writer of `value: true`, and every verdict is asymmetric on purpose: **proof of
 presence may be a single verified observation; proof of absence has to come from a check that cannot
 fail for an unrelated reason.** Where neither is available the probe writes nothing, and an absent
 fact means unknown, which is already safe.
 
-Deterministic scoring only — a parse, a string equality, a clock, an HTTP GET, a `vm` run of
+Deterministic scoring only — a parse, a string equality, a clock, an HTTP GET, a scripted run of
 assertions. A probe that *errors* writes nothing at all: a transport down or a gateway restarting is a
-fact about the deployment, not about the model. Probes reach the model through `runHarness` with
-`ctx.model` pinned, with `missingCapabilities`/`capabilities` stubbed empty (a probe measures the
-model, not the record — otherwise one bad 400 could never be re-discovered) and with `recordRun` and
-`recordFindings` disabled (synthetic traffic must not move the production numbers it will be compared
-against).
+fact about the deployment, not about the model. Probes reach the model through `run_harness` with the
+model pinned, the capability record stubbed empty (a probe measures the model, not the record —
+otherwise one bad 400 could never be re-discovered) and run/finding recording disabled (synthetic
+traffic must not move the production numbers it will be compared against).
 
 `tools` and `tool-select` **skip** on a fleet persona, whose tool loop runs inside the agent container
 where Talaria can neither place its tools nor see the call. `vision` skips everywhere while
 `Message.content` is a string. A skip is never a `false`.
 
-### Tier 2 — harness conformance (`fitness/evals.ts`)
+### Tier 2 — harness conformance (`api/src/fitness/evals.rs`)
 
-Replay every registered harness's fixtures through `runHarness` with the candidate pinned. It is a
-driver, not a subsystem: `registry.ts` enumerates, `define.ts` supplies the fixtures, `run.ts` already
+Replay every registered harness's fixtures through `run_harness` with the candidate pinned. It is a
+driver, not a subsystem: `registry.rs` enumerates, `define.rs` supplies the fixtures, `run.rs` already
 takes a pin and a transport seam.
 
 Five numbers per harness — `contractRate` (held on the first attempt), `repairRate` (held at all,
@@ -711,8 +686,8 @@ the one that matters**: a model at 40% first-pass and 95% after one repair is us
 not, and nothing in Talaria could tell those apart before. That distinction is the entire argument for
 the repair turn.
 
-The sweep never re-derives "did the contract hold". It captures the literal `HarnessRunRow` the runner
-hands to `recordRun` and scores `row.schemaValid` — two spellings of that predicate is how the offline
+The sweep never re-derives "did the contract hold". It captures the literal run row the runner
+persists and scores its `schema_valid` — two spellings of that predicate is how the offline
 fixtures and the production column came to disagree in the first place. The fixture's `check` is scored
 separately as `taskScore`, and the two are allowed to disagree; the sweep counts the cases where they
 do.
@@ -721,11 +696,12 @@ do.
 judge's zod-plus-verify are both `true` and mean different things. It is aggregated per harness, which
 is the only reading that means anything.
 
-### Tier 3 — adversarial (`fitness/adversarial.ts`)
+### Tier 3 — adversarial (`api/src/fitness/adversarial.rs`)
 
-Opt-in and expensive. Provokes the four failure modes `guardrails.ts` already fires on in production —
+Opt-in and expensive. Provokes the four failure modes the guardrail registry
+(`api/src/gateway/guard.rs`) already fires on in production —
 zero-tool claims, ungrounded refs, fabricated outages, secret echoes — and scores every generation
-with `runGuardrails` over the shipped `RULES` registry. **No new detection logic, ever**, because
+with `run_guardrails` over that same shipped registry. **No new detection logic, ever**, because
 `guard_findings` is the observed half of the fitness page and this tier is the benched half; they can
 only be shown side by side if the same detector produced both. The honest caveat travels with it: the
 rules are lexical, so this tier measures *what the guard can see*, not what the model did.
@@ -742,23 +718,23 @@ fixtures change between runs cannot compare two models, and comparing two models
 requirement. The adversary must itself be a strong model, and the UI says so — a 7B red-teamer writes
 limp follow-ups and the candidate reports a safety record it did not earn.
 
-### Bands, per slot (`fitness/score.ts`)
+### Bands, per slot (`api/src/fitness/score.rs`)
 
 The verdict is **per slot, never one number for a model**. A slot is a thing an admin actually picks a
-model for, and Talaria has exactly two kinds: the 11 `MODEL_ROLES` assignments and the 9
-`PLATFORM_AGENTS` assignments. The harness→slot binding is *derived* — `rolesReaching` runs the real
+model for, and Talaria has exactly two kinds: the 11 `MODEL_ROLES` assignments and the
+`PLATFORM_AGENTS` assignments. The harness→slot binding is *derived* — `roles_reaching` runs the real
 resolution chain over instrumented dependencies and records which roles it asked for, rather than
 copying the step order into a file where it would become an eighth spelling of the same policy.
 
-A verdict is produced for **all twenty**; the matrix draws a **column for the fifteen a harness can
-reach** (`slotViews`). The five it drops are `unbound` for every model forever, and they were dead for
+A verdict is produced for **every slot**; the matrix draws a **column only for the ones a harness can
+reach**. The five it drops are `unbound` for every model forever, and they were dead for
 two different reasons that the one "reserved" chip flattened: four are reserved *roles* whose surfaces
 do not exist yet (vision, image-generation, embedding, reranker), and the fifth is the **briefer**,
 which is not reserved at all — it ships, it writes the daily brief every morning and follows it all
 day, and its model is fixed by design because a brief reads one person's own views and answers in
 their own assistant's voice. Its harnesses take their model from the subject of the call, so they are
-scored under `FitnessReport.unbound` and shown there in the model's report. Scoring is unchanged and
-`roleAssignmentIssues` still warns an admin who points a blind model at the reserved vision role.
+scored under the report's `unbound` bucket and shown there in the model's report. Scoring is unchanged
+and the role-assignment checks still warn an admin who points a blind model at the reserved vision role.
 
 `ready` / `workable` / `unfit`, plus `untested` (nothing measured this) and `unbound` (no harness
 reaches this slot — which must read as "no evidence", never as an empty green cell). `unfit` always
@@ -766,12 +742,12 @@ names the harness and, where a fixture failed, the fixture's own sentence verbat
 the **worst of its harnesses' bands**, decided per harness.
 
 `ready` requires positive evidence, and this is the one place the suite is deliberately stricter than
-`capability.ts`. "Unknown is not false" is a rule about *running*; a verdict exists to say what has
+`api/src/capability.rs`. "Unknown is not false" is a rule about *running*; a verdict exists to say what has
 been *measured*, so an unmeasured required capability, or a sweep with the guard switched off, caps a
 slot at `workable` with a reason naming the button to press. Neither ever pushes a slot to `unfit`:
 absence of evidence is not evidence of absence in that direction either.
 
-### Price against performance (`fitness/value.ts`)
+### Price against performance (`api/src/fitness/value.rs`)
 
 A band says whether a model *can* hold a slot. It does not say what holding it costs, and it weighs the
 harness a fleet runs four thousand times a day exactly like the one that runs on Sundays. So the Cost &
@@ -783,7 +759,7 @@ vector**:
   not comparable across models. Cost here is *what a day of your measured workload costs on this
   model*: production's own runs per harness (from `harness_runs` over the telemetry window) × the
   per-case tokens a sweep measured × that model's price.
-- **Performance** is not an average of contract rates. `score.ts` refuses to mint one and it is right —
+- **Performance** is not an average of contract rates. `score.rs` refuses to mint one and it is right —
   four harnesses' rates averaged into a scalar is a number with no referent. What has a referent is
   **coverage**: the share of your daily runs the model tested `ready` for, with the `workable`, `unfit`
   and never-measured shares beside it. Nothing is imputed.
@@ -831,23 +807,23 @@ by model (`model_fitness_runs`, `harness_eval_runs`). A second sweep of the *sam
 refused: two sweeps interleaving one checkpoint is what the original boolean was protecting against.
 Stop is per run, so dropping a hopeless candidate does not cost the other two.
 
-### One spelling per model (`canonicalModelId`)
+### One spelling per model
 
-`gatewayModels()` offers each model **once**, as `<endpoint>/<model>`. It used to offer both spellings,
+`gateway_models` (`api/src/me.rs`) offers each model **once**, as `<endpoint>/<model>`. It used to offer both spellings,
 which put `claude-opus-5` and `anthropic/claude-opus-5` on consecutive rows of every picker and of the
 matrix — one deployment, one capability key, two entries. The qualified form is canonical because it
-names *where* the model runs, which is the thing capability is measured about (`capabilityKey` is
+names *where* the model runs, which is the thing capability is measured about (`capability_key` is
 `endpoint:model`, never a bare name), and it reads correctly for both kinds of provider without a
 special case: a router gives `openrouter/deepseek/deepseek-v4-flash`, a direct vendor gives
 `anthropic/claude-opus-5`.
 
 A bare id survives only where it means something else — served by more than one endpoint it is the
 round-robin **pool**, a routing target no qualified id can express. Bare ids stay callable regardless:
-`routingFor` is untouched, so every stored assignment keeps working, and `canonicalModelId` maps a
+`routing_for` is untouched, so every stored assignment keeps working, and the canonical-id mapping maps a
 stored spelling onto the offered one so a role assignment and an archived report still line up with the
 row an admin is looking at.
 
-### Tested vs observed (`fitness/observed.ts`)
+### Tested vs observed (`api/src/fitness/observed.rs`)
 
 Two tables already carried production fitness signal and nobody was reading them as such:
 `harness_runs` (one row per harness exit) and `guard_findings` (one row per filed finding, with a
@@ -856,7 +832,7 @@ repair rate in production** — the thing no external benchmark can ever give yo
 alert, gated on a minimum sample (20 runs over a 30-day window by default), because three production
 runs is noise, not a divergence.
 
-The two populations are **not summed**, and `observed.test.ts` asserts it. They are the same events
+The two populations are **not summed**, and `observed.rs`'s unit tests assert it. They are the same events
 counted from different ends, and `guard_findings` is the broader one — the public gateway route, chat
 and channel replies file into it and none of them writes a `harness_runs` row, so it has no run
 denominator anywhere in the schema. Hence a **rate** from `harness_runs` alone (`findingsPerRun`, the

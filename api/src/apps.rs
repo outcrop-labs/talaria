@@ -1,8 +1,8 @@
-// Talaria apps — the ADMIN half of the registry (apps.ts after the read
-// plane, which lives in users.rs): enablement, runtime install from git, the
+// Talaria apps — the ADMIN half of the registry (the read
+// plane lives in users.rs): enablement, runtime install from git, the
 // marketplace catalog, and the app-data wipe. Apps are self-contained
 // codebases under apps/<slug>/ compiled INTO the deployment; their surfaces
-// and MCP dispatch are app runtime (TS by the port's rule 10) — this module
+// and MCP dispatch are app runtime, which stays TS (rule 10) — this module
 // owns the registry state around them.
 //
 //   enablement   admin-controlled set in app_settings; disabled apps have no
@@ -30,8 +30,8 @@ const CATALOG_URL_KEY: &str = "apps_catalog_url";
 const DEFAULT_CATALOG: &str =
     "https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json";
 
-/// The enabled set, sorted (enabledAppSlugs reads `[...cur].sort()`'s
-/// written form — the setting is always stored sorted).
+/// The enabled set, sorted —
+/// the setting is always stored sorted.
 pub async fn enabled_app_slugs(pg: &PgPool) -> Vec<String> {
     get_setting(pg, ENABLED_KEY, Value::Array(vec![]))
         .await
@@ -45,15 +45,14 @@ pub async fn enabled_app_slugs(pg: &PgPool) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Reconcile registry rows with the ENABLED apps that publish MCP tools
-/// (mcp-registry.ts syncAppMcpServers): upsert one row per app, drop rows
+/// Reconcile registry rows with the ENABLED apps that publish MCP tools:
+/// upsert one row per app, drop rows
 /// whose app went away — rolling the agents that carried them.
 ///
-/// The one deliberate deviation from TS: the cached `tools` column. TS reads
-/// it from the app's mcp.ts module (app runtime — rule 10); an update keeps
-/// the row's cache and an insert seeds `[]`, because the live authority for
-/// an app server's tool list is the TS dispatcher, which serves tools/list
-/// from the module on every call.
+/// The cached `tools` column is untouched here: the live authority for an
+/// app server's tool list is the TS dispatcher (app runtime — rule 10),
+/// which serves tools/list from the module on every call — so an update
+/// keeps the row's cache and an insert seeds `[]`.
 pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
     let want: Vec<_> = crate::users::enabled_apps(pg)
         .await
@@ -96,7 +95,7 @@ pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
     }
 }
 
-/// Flip one app's enablement (setAppEnabled). Enabling an app this build
+/// Flip one app's enablement. Enabling an app this build
 /// doesn't ship is an error — the set must name real code.
 pub async fn set_app_enabled(
     pg: &PgPool,
@@ -124,8 +123,7 @@ pub async fn set_app_enabled(
 }
 
 /// Apps present on disk but NOT in this build — installed after the last
-/// compile; the dev server picks them up on reload, prod needs a rebuild
-/// (pendingApps).
+/// compile; the dev server picks them up on reload, prod needs a rebuild.
 pub async fn pending_apps() -> Vec<String> {
     let built: std::collections::HashSet<String> =
         discovered_apps().into_iter().map(|a| a.slug).collect();
@@ -152,8 +150,8 @@ pub async fn pending_apps() -> Vec<String> {
     out
 }
 
-/// Install an app by shallow-cloning its git repo into apps/<slug>
-/// (installAppFromGit). The code becomes part of the NEXT build (dev picks
+/// Install an app by shallow-cloning its git repo into apps/<slug>.
+/// The code becomes part of the NEXT build (dev picks
 /// it up live) — and, like anything compiled into the deployment, runs fully
 /// trusted. The UI says so.
 pub async fn install_app_from_git(
@@ -235,7 +233,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Remove an app's codebase + enablement + install record (uninstallApp).
+/// Remove an app's codebase + enablement + install record.
 /// Data in the app store is wiped by the caller (it owns the confirm). Only
 /// touches dirs inside appsDir.
 pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<(), String> {
@@ -258,13 +256,13 @@ pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<()
     Ok(())
 }
 
-/// Where each installed app came from (installedSources): slug →
+/// Where each installed app came from: slug →
 /// { source, installedAt }.
 pub async fn installed_sources(pg: &PgPool) -> Value {
     get_setting(pg, INSTALLED_KEY, serde_json::json!({})).await
 }
 
-/// Wipe every document in one app's store (app-store.ts wipe) — the DELETE
+/// Wipe every document in one app's store — the DELETE
 /// confirm's data half.
 pub async fn wipe_app_data(pg: &PgPool, slug: &str) -> Result<u64, sqlx::Error> {
     sqlx::query("delete from app_data where app = $1")
@@ -284,7 +282,7 @@ pub async fn catalog_url(pg: &PgPool) -> String {
     }
 }
 
-/// Empty (or blank) resets to the default (setCatalogUrl's `|| DEFAULT`).
+/// Empty (or blank) resets to the default.
 pub async fn set_catalog_url(pg: &PgPool, url: Option<&str>) -> Result<(), String> {
     let v = match url.map(str::trim).filter(|u| !u.is_empty()) {
         Some(u) => Value::String(u.to_string()),
@@ -295,7 +293,7 @@ pub async fn set_catalog_url(pg: &PgPool, url: Option<&str>) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
-/// The marketplace feed (fetchCatalog). Unreachable/invalid → empty list
+/// The marketplace feed. Unreachable/invalid → empty list
 /// with the error, so the Discover tab can say why it's blank instead of
 /// pretending it's empty.
 pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
@@ -332,7 +330,7 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
     {
         let field = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
         // Admission: real slug, a name, an https repo. Everything else
-        // coerces to defaults like TS's String(x ?? d).
+        // coerces to defaults.
         let Some(slug) = field("slug").filter(|s| slug_ok(s)) else {
             continue;
         };
@@ -362,7 +360,7 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
             "official".into(),
             Value::Bool(a.get("official").and_then(Value::as_bool) == Some(true)),
         );
-        // version is OMITTED unless present (TS spreads only the truthy).
+        // version is OMITTED unless present and non-empty.
         if let Some(v) = field("version").filter(|v| !v.is_empty()) {
             obj.insert("version".into(), v.into());
         }

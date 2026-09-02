@@ -1,4 +1,4 @@
-// Zero-config pricing, ported from ui/src/server/price-oracle.ts: OpenRouter's
+// Zero-config pricing: OpenRouter's
 // public model catalog (no auth) carries per-token prices for essentially every
 // major model. Each cloud endpoint's catalog models — PLUS every model usage
 // has actually been attributed to on it — are matched against that catalog by
@@ -6,11 +6,11 @@
 // from user overrides (model_prices), which always win. Local endpoints are
 // skipped ($0 by definition).
 //
-// Three callers share one single-flight, exactly as in TS: the scheduled job
-// (registered against the scheduler; the flip is the only thing that arms it),
+// Three callers share one single-flight: the scheduled job
+// (registered against the scheduler; the boot wiring arms it),
 // the opportunistic `maybe_refresh_auto_prices` kick, and the
 // `nudge_auto_prices` cue a cloud usage row without a price fires — wired into
-// gateway::usage::record_usage, which had been carrying that debt as a note.
+// gateway::usage::record_usage.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -21,10 +21,9 @@ use sqlx::PgPool;
 
 use crate::scheduler::{JobName, JobSpec};
 
-/// 6h between successful refreshes. The cadence used to live inside
-/// `maybeRefreshAutoPrices` and only advanced when someone loaded /models — an
-/// instance nobody administered priced its usage against a catalog that never
-/// updated. The interval is unchanged; the scheduler owns it now.
+/// 6h between successful refreshes, owned by the scheduler so an instance
+/// nobody administers still re-prices — an on-load-only cadence never advances
+/// on a quiet install.
 pub const PRICE_REFRESH_EVERY_MS: u64 = 6 * 60 * 60 * 1000;
 /// Earliest of the registered jobs, and the only one that writes nothing a
 /// person sees — safe to run soon after boot so a fresh deploy prices
@@ -39,11 +38,11 @@ const RETRY_INTERVAL_MS: i64 = 10 * 60 * 1000;
 /// model, new alias) — 15min between nudges, and the failure backoff still
 /// applies.
 const NUDGE_INTERVAL_MS: i64 = 15 * 60 * 1000;
-/// The catalog fetch is bounded whole — send, status, and body (TS:
-/// `AbortSignal.timeout(15_000)`), not just the connect.
+/// The catalog fetch is bounded whole — send, status, and body,
+/// not just the connect.
 const FETCH_TIMEOUT_MS: u64 = 15_000;
 const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
-/// Per-mtok prices are stored rounded to 4 decimals (TS: `Number(x.toFixed(4))`).
+/// Per-mtok prices are stored rounded to 4 decimals.
 const PRICE_SCALE: f64 = 10_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,10 +134,9 @@ struct Catalog {
     by_suffix: HashMap<String, Vec<SuffixEntry>>,
 }
 
-/// TS `Number(x)` on the pricing fields: strings or numbers. Anything else —
-/// missing, objects — is NaN in TS and skipped here. (The one hair TS keeps
-/// that this drops: `Number("") === 0`; no catalog ships an empty price
-/// string, and skipping is the honest read of one that did.)
+/// The pricing fields arrive as strings or numbers. Anything else —
+/// missing, objects, an empty string — is skipped. (No catalog ships an empty
+/// price string, and skipping is the honest read of one that did.)
 fn tok_per_token(v: Option<&Value>) -> Option<f64> {
     match v {
         Some(Value::Number(n)) => n.as_f64(),
@@ -148,8 +146,9 @@ fn tok_per_token(v: Option<&Value>) -> Option<f64> {
 }
 
 /// Fold the raw OpenRouter `data` array into the lookup shapes. Per-token
-/// prices are scaled to per-mtok here, once. `m.id.split('/')`: the vendor is
-/// the FIRST segment, the suffix is the rest (or the whole id when bare).
+/// prices are scaled to per-mtok here, once. The vendor is
+/// the FIRST segment of the id, the suffix is the rest (or the whole id when
+/// bare).
 fn build_catalog(models: &[Value]) -> Catalog {
     let mut by_id = HashMap::new();
     let mut by_suffix: HashMap<String, Vec<SuffixEntry>> = HashMap::new();
@@ -197,7 +196,7 @@ fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<TokPrice
     unambiguous.then_some(first)
 }
 
-/// Pick a price for a model on a provider (TS's `match`). Vendor-prefixed ids
+/// Pick a price for a model on a provider. Vendor-prefixed ids
 /// match the full catalog id; bare ids match by suffix (exact vendor wins, else
 /// only an unambiguous candidate). Alias shapes (":free" variants, "-latest",
 /// trailing dates, "~" prefixes) fall back through id_candidates. None = no
@@ -258,12 +257,12 @@ pub struct RefreshCounts {
     pub endpoints: usize,
 }
 
-/// refreshAutoPrices — refresh auto_prices for every cloud endpoint. The
+/// Refresh auto_prices for every cloud endpoint. The
 /// second model set (usage-attributed) is what keeps costing honest: tier
 /// routing and aliases send usage to models nobody registered, and those rows
 /// must price too. Keys are the EXACT strings usage carries, so the costing
 /// join hits directly. Every cloud endpoint gets its write, priced or not —
-/// TS updates unconditionally, and an emptied catalog should clear stale
+/// an emptied catalog should clear stale
 /// prices.
 async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
     let catalog = fetch_catalog().await?;
@@ -336,9 +335,8 @@ static STAMPS: LazyLock<Mutex<Stamps>> = LazyLock::new(|| {
 
 /// The single-flight. Held across the whole pass — that is its job: a caller
 /// arriving mid-pass waits, then re-checks its throttle instead of fetching
-/// again, which is the Rust shape of TS's shared in-flight promise. The one
-/// divergence: TS's scheduled job riding a concurrent kick shares that
-/// promise's result; here it waits and refreshes again — at most one
+/// again. The scheduled job queuing behind a concurrent kick waits and
+/// refreshes again — at most one
 /// redundant catalog fetch per 6h window, never two at once.
 static FLIGHT: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -353,7 +351,7 @@ fn gate_open(s: &Stamps, now: i64, min_gap_ms: i64) -> bool {
     now - s.last_refresh >= min_gap_ms && now - s.last_attempt >= RETRY_INTERVAL_MS
 }
 
-/// refreshOnce — the single-flight every caller goes through, so the catalog
+/// The single-flight every caller goes through, so the catalog
 /// is never fetched twice at once. `min_gap_ms`: Some for the fire-and-forget
 /// callers (checked INSIDE the flight lock, so a caller that queued behind a
 /// finished pass doesn't fetch again); None for the scheduled job, whose
@@ -376,7 +374,7 @@ async fn refresh_once(
     Some(result)
 }
 
-/// maybeRefreshAutoPrices — fire-and-forget: at most every 6h after a success,
+/// Fire-and-forget: at most every 6h after a success,
 /// and no retry storm when offline (10min backoff between failed attempts).
 /// Call from hot read paths. Offline/unreachable → prices stay as they were.
 pub fn maybe_refresh_auto_prices(pg: &PgPool) {
@@ -386,7 +384,7 @@ pub fn maybe_refresh_auto_prices(pg: &PgPool) {
     });
 }
 
-/// nudgeAutoPrices — usage just landed on a cloud model with NO price:
+/// Usage just landed on a cloud model with NO price:
 /// refresh sooner than the 6h cadence (new model, new alias), but never
 /// storm.
 pub fn nudge_auto_prices(pg: &PgPool) {
@@ -396,9 +394,9 @@ pub fn nudge_auto_prices(pg: &PgPool) {
     });
 }
 
-/// The routes' `void refreshAutoPrices()` — an IMMEDIATE ungated refresh
-/// (TS's refreshAutoPrices has no gate; admin edits to the endpoints table
-/// want fresh auto-prices now, not at the next 6h tick). Fire-and-forget,
+/// An IMMEDIATE ungated refresh —
+/// admin edits to the endpoints table want fresh auto-prices now, not at the
+/// next 6h tick. Fire-and-forget,
 /// errors swallowed like the other kicks.
 pub fn kick_auto_prices(pg: &PgPool) {
     let pg = pg.clone();

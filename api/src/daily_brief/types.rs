@@ -1,13 +1,11 @@
-// The daily brief's wire shapes and the fold — ports of
-// ui/src/server/daily-brief-types.ts and ui/src/server/daily-brief-fold.ts.
+// The daily brief's wire shapes and the fold.
 //
-// The fold is PURE, and in its own module for the same two reasons as the TS
-// file: it is the one piece of the brief with no database, no clock and no
-// model in it, which makes it the piece worth testing directly — and the sweep
-// computes its diff against the FOLD rather than against a snapshot it wrote
-// earlier, so a bug here is a bug in change detection, not just in rendering.
-// The artifact mirror renders the same fold, which is the other reason it
-// cannot live in the core module.
+// The fold is PURE, and in its own module for two reasons: it is the one piece
+// of the brief with no database, no clock and no model in it, which makes it
+// the piece worth testing directly — and the sweep computes its diff against
+// the FOLD rather than against a snapshot it wrote earlier, so a bug here is a
+// bug in change detection, not just in rendering. The artifact mirror renders
+// the same fold, which is the other reason it cannot live in the core module.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -41,9 +39,9 @@ pub fn is_terminal(kind: &str) -> bool {
 /// needing the owner — supersedes the last; note the assistant narrating a
 /// batch of appends.
 ///
-/// `Serialize` is the WIRE shape (camelCase, declaration order — the same
-/// order the TS interface spells): one struct serves the log and the document,
-/// because the document is the log folded, not a projection of it.
+/// `Serialize` is the WIRE shape (camelCase, declaration order): one struct
+/// serves the log and the document, because the document is the log folded,
+/// not a projection of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BriefEntry {
@@ -95,9 +93,8 @@ pub struct NewEntry {
 }
 
 impl NewEntry {
-    /// The TS object literals build entries with `evidence` defaulted to `[]`
-    /// and `badge` to whatever the source computed (or null) — this is that
-    /// constructor, for the call sites that have neither.
+    /// Builds a narrative entry with `evidence` defaulted to `[]` and `badge`
+    /// to None — for the call sites that have neither.
     pub fn narrative(
         kind: &str,
         section: &str,
@@ -166,15 +163,14 @@ pub struct BriefUpdate {
 pub fn fold_entries(mut entries: Vec<BriefEntry>, read_seq: i64) -> Folded {
     // Postgres gives no ordering guarantee we have not asked for, and a fold
     // that trusted insertion order would report a resolved item as open the
-    // first time a query came back the other way round. (Rust's sort is stable
-    // like the TS spread-sort, so equal seqs keep arrival order.)
+    // first time a query came back the other way round. (Rust's sort is
+    // stable, so equal seqs keep arrival order.)
     entries.sort_by_key(|a| a.seq);
 
-    // TS holds lines in a Map keyed by source key, whose iteration order is
-    // first-insertion — i.e. by the first seq each key was seen at. A Vec of
-    // pairs keeps that order without an order-preserving map type; the update
-    // goes by position because a closure returning `&mut` into the captured
-    // vec cannot escape its own body.
+    // Lines keep first-insertion order — by the first seq each key was seen
+    // at. A Vec of pairs holds that order without an order-preserving map
+    // type; the update goes by position because a closure returning `&mut`
+    // into the captured vec cannot escape its own body.
     let mut lines: Vec<(String, BriefLine)> = Vec::new();
 
     for entry in &entries {
@@ -231,8 +227,8 @@ pub fn fold_entries(mut entries: Vec<BriefEntry>, read_seq: i64) -> Folded {
     let mut updates: Vec<BriefUpdate> = batches
         .into_iter()
         .map(|(_, group)| {
-            // `note?.body || note?.title || null`: the body, else the title,
-            // else nothing. An empty string falls through like a missing one.
+            // The note's body, else its title, else nothing — an empty body
+            // falls through like a missing one.
             let note = group
                 .iter()
                 .find(|e| e.kind == "note" && e.source_key.is_none());

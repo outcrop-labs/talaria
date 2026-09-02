@@ -1,8 +1,7 @@
-// /api/rag/collections/{id} — port of ui/src/routes/api/rag.collections.$id.ts.
-// One collection, admin. PUT → replace its access bindings wholesale.
-// DELETE → drop it (the two auto collections are protected). Neither verb
-// 404s a missing id: an unknown collection's bindings set is a no-op write,
-// and its delete is a no-op delete — both still answer ok, both still audit.
+// /api/rag/collections/{id}. One collection, admin. PUT → replace its access
+// bindings wholesale; an unknown (but well-formed) id 404s. DELETE → drop it
+// (the two auto collections are protected); a missing id is a no-op delete —
+// it still answers ok, it still audits.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -21,8 +20,8 @@ use crate::state::AppState;
 
 use super::rag_collections::parse_bindings;
 
-/// The one delete refusal TS answers as a 400; every other failure there is
-/// an unhandled throw to the platform's generic 500.
+/// The one delete refusal answered as a 400; every other failure falls to the
+/// generic 500.
 const AUTO_DELETE_REFUSAL: &str = "auto collections cannot be deleted";
 
 pub async fn put(
@@ -40,15 +39,15 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // REQUIRED here (no `.optional()` in this schema): absent bindings is
-    // zod's array message on undefined, not an empty set.
+    // bindings are REQUIRED on this route: absent yields the array message on
+    // "undefined", not an empty set.
     let bindings = match parse_bindings(obj.get("bindings")) {
         Ok(Some(v)) => v,
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, &array_msg("undefined")),
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // TS's parseBody runs before the SQL; a body that fails validation never
-    // reaches the id's uuid cast, so neither does the gate.
+    // Body validation runs before the id's uuid gate — an invalid body
+    // answers the validation error, never the uuid one.
     if let Some(gate) = crate::params::uuid_gate("rag-collections", "PUT", &id) {
         return gate;
     }

@@ -1,13 +1,10 @@
-// THE BRIEFER — the daily brief's three writes. Port of harness/defs/briefer.ts.
+// THE BRIEFER — the daily brief's three writes.
 //
-// WHY THIS FILE EXISTS (audit 1.5 grew it; the tabs removed theirs): the
-// console tabs used to carry their own per-scope briefing harnesses
-// (`briefer:brief`, `briefer:chat`) — an ephemeral summary per view, replaced
-// whenever the attention fingerprint moved. Those are GONE: the daily brief
-// is the one summary a person is given, and asking about it happens from the
-// brief's own chat. What remains here is the document that is appended to
-// rather than replaced — a different contract, which is why it was always a
-// different harness.
+// WHY THIS FILE EXISTS: the daily brief is the one summary a person is given,
+// and asking about it happens from the brief's own chat. What lives here is
+// the document that is appended to rather than replaced — a different
+// contract from an ephemeral per-view summary, which is why it is a different
+// harness.
 //
 // THE MODEL IS FIXED, AND IT IS THE ONLY HARNESS FAMILY IN THE PRODUCT THAT
 // IS. `PLATFORM_AGENTS.briefer` is the one entry with `assignable: false`,
@@ -93,10 +90,8 @@ fn invented_ref() -> &'static Regex {
 /// Sentences, roughly. Splitting on terminal punctuation is crude and it is
 /// enough: what is being graded is "did it write a paragraph or an essay",
 /// and the failure it catches (a nine-sentence lede) is not near the
-/// boundary. The TS splits on `(?<=[.!?])\s+` — a terminator followed by
-/// whitespace — which the regex crate cannot spell (no lookbehind), so this
-/// is the same cut by hand: count the runs of content separated by
-/// whitespace that follows a terminator, then the tail.
+/// boundary. The cut is made by hand — count the runs of content separated
+/// by whitespace that follows a terminator, then the tail.
 fn sentences(value: &str) -> usize {
     let mut count = 0usize;
     let mut has_content = false;
@@ -175,12 +170,10 @@ fn lede_prompt(input: &DailyLedeInput) -> String {
     format!("{head}{LEDE_RULES}{}\n\n{listed}", UNTRUSTED_INPUT)
 }
 
-/// WHAT IS TRUE OF EVERY LEDE, stated once.
-///
-/// The suite shipped with three fixtures that each spelled part of this in a
-/// different order, and `docs/HARNESSES.md` names exactly that as the way a
-/// suite comes to disagree with itself: which fixture you read decides what
-/// you believe about the model. Each case below now adds only the assertion
+/// WHAT IS TRUE OF EVERY LEDE, stated once. `docs/HARNESSES.md` names
+/// fixtures that each spell the shared rules in a different order as the way
+/// a suite comes to disagree with itself: which fixture you read decides
+/// what you believe about the model. Each case below adds only the assertion
 /// its own input makes checkable.
 ///
 /// `subjects` is a SET, never a phrase — a fixture only one wording can pass
@@ -342,7 +335,7 @@ pub struct AssistantReplyInput {
 ///   2. INVENTING. A date, a number, a decision that is nowhere in the
 ///      thread.
 ///   3. PERFORMING THE OWNER. Writing as though it were them. The message is
-///      posted under the assistant's own name (see daily-brief-delegation),
+///      posted under the assistant's own name (see daily_brief/delegation.rs),
 ///      so a reply written in the first person as the owner would contradict
 ///      its own byline.
 ///
@@ -1223,16 +1216,15 @@ pub fn reply_fixtures() -> Vec<BrieferFixture> {
     ]
 }
 
-// ── The fold onto the fitness plane ──────────────────────────────────────────
+// ── The fixture fold ─────────────────────────────────────────────────────────
 
-/// THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. One fold for
-/// all three defs, because all three tables share the shape: the fold only
-/// re-types the value — a text harness's reply arrives as a JSON string, and a
-/// value that is not one is the fixture check throwing, which the sweep scores
-/// as a task failure carrying the same sentence TS did. No dry run crosses for
-/// any of the three: the TS declares none, because none of these turns has a
-/// tool loop to replay — the briefer reads what the platform hands it and
-/// writes prose back.
+/// THE FIXTURE TABLE, as `EvalCase`s. One fold for all three defs, because
+/// all three tables share the shape: the fold only re-types the value — a
+/// text harness's reply arrives as a JSON string, and a value that is not
+/// one is the fixture check throwing, which the sweep scores as a task
+/// failure. None of the three declares a dry run: no briefer turn has a tool
+/// loop to replay — the briefer reads what the platform hands it and writes
+/// prose back.
 fn eval_cases(fixtures: Vec<BrieferFixture>) -> Vec<EvalCase> {
     fixtures
         .into_iter()
@@ -1324,12 +1316,13 @@ pub fn daily_brief_lede_harness() -> HarnessDefinition {
     );
     // Nothing refuses, and here that is a stronger statement than usual: the
     // items are appended to the page whether or not a model was reachable,
-    // and the caller's `fallbackLede` writes a counted sentence when one was
-    // not. A weaker model costs the owner synthesis, never content.
+    // and the caller's `fallback_lede` (daily_brief/mod.rs) writes a counted
+    // sentence when one was not. A weaker model costs the owner synthesis,
+    // never content.
     d.floor = RoleFloor::runs_anyway(
         "A smaller model writes a flatter opening; every item it summarizes is already listed underneath it on the page.",
     );
-    // The lede's ten, folded onto the fitness plane's `EvalCase`.
+    // The lede's ten, as `EvalCase`s.
     d.evals = eval_cases(lede_fixtures());
     d
 }
@@ -1430,13 +1423,13 @@ mod tests {
 
     // ── The fixture tables ───────────────────────────────────────────────────
     //
-    // The reason this suite exists in the TS is that three briefer fixtures
-    // once scored a PASS on the literal string `{"nope": true}` — every one
-    // of them an upper bound, and a fourteen-character non-answer satisfies
-    // every upper bound there is. The suites carry floors now, and floors are
-    // exactly the kind of assertion that rots quietly: nothing fails when one
-    // stops discriminating, because a fixture that always passes looks
-    // identical to a model that always succeeds.
+    // The reason these suites carry floors: three briefer fixtures once
+    // scored a PASS on the literal string `{"nope": true}` — every one of
+    // them an upper bound, and a fourteen-character non-answer satisfies
+    // every upper bound there is. Floors are exactly the kind of assertion
+    // that rots quietly: nothing fails when one stops discriminating, because
+    // a fixture that always passes looks identical to a model that always
+    // succeeds.
 
     #[test]
     fn every_suite_is_at_the_documented_size_and_spread() {

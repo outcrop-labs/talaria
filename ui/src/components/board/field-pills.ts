@@ -5,7 +5,7 @@
 // surface manipulates tickets identically. All pickers stop propagation —
 // the row/card click still opens the ticket.
 //
-// This module is the split's plain-TS home: shared types, the label palette,
+// This module is the plain-TS home: shared types, the label palette,
 // and the closed/overdue helpers. The pills themselves are the sibling
 // PascalCase .svelte components (StatusPill, PriorityPill, DuePill,
 // EstimatePill, AssigneesPill, LabelsPill, ColorPill, LabelChip).
@@ -79,10 +79,8 @@ export const STATUS_COLOR: Record<string, string> = {
  *  `done` key (boards that predate custom statuses) and the OFF-BOARD list,
  *  which is imported rather than spelled out — see `@/lib/task-const`.
  *
- *  THE ONE CLIENT-SIDE CLOSED PREDICATE. `routes/app/boards/Board.svelte`
- *  carried a byte-identical second copy inside `matchesDue`, so a board's
- *  overdue filter and its ticket pills could disagree about whether a ticket
- *  was closed. It imports this now. */
+ *  THE ONE CLIENT-SIDE CLOSED PREDICATE — pills and overdue filters both call
+ *  it, so no board can disagree with itself about what closed means. */
 export const isClosedStatus = (key: string, statuses?: BoardStatus[]): boolean =>
   statuses?.find((s) => s.key === key)?.category === 'done' || key === 'done' || isOffBoardStatus(key)
 
@@ -90,7 +88,7 @@ export const isOverdueTask = (t: Pick<Task, 'dueDate' | 'status'>, statuses?: Bo
   !!t.dueDate && new Date(t.dueDate).getTime() < Date.now() && !isClosedStatus(t.status, statuses)
 
 /** Colored-dot menu icon (the MenuIcon tuple form) — for entry arrays built
- *  in plain TS, where the React version could inline a <span>. */
+ *  in plain TS, where a component can't be inlined. */
 export const dotIcon = (color: string, cls = 'h-1.5 w-1.5 rounded-full'): MenuIcon => [
   ColorDot,
   { color, class: cls },

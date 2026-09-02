@@ -7,19 +7,17 @@
 // task WORKFLOWS ride along; the plugin heartbeat remains the pull-side
 // safety net.
 //
-// THE DRIVE POSTURE. This process enqueues the session and drives it —
-// insert, publish, and the detached drive, exactly as TS always did. The
-// coexistence-era alternative (row and publish with `start: false`, leaving
-// the drive to the TS sweep) left with that runtime in the cutover. The
-// shared-table shape stays: the runs table's DERIVED id means two
-// dispatchers racing one ticket still compute the same row id for the same
-// ticket+agent, so racing instances produce ONE session, never two.
+// THE DRIVE POSTURE. This process enqueues the session AND drives it —
+// insert, publish, detached drive, all here. The shared-table shape is what
+// makes that safe: the runs table's DERIVED id means two dispatchers racing
+// one ticket still compute the same row id for the same ticket+agent, so
+// racing instances produce ONE session, never two.
 //
-// THE CLAIM, which is what `liveSessions` was:
+// THE CLAIM:
 //   `session_run_id(task, agent, n)` is a DERIVED uuid, so two dispatchers
 //   racing the same ticket compute the same id and the primary key refuses
-//   the second — across instances and across RUNTIMES, which a `Set` never
-//   could. The walk over `n` is what keeps that claim from being permanent:
+//   the second — across instances, which a process-local set never could.
+//   The walk over `n` is what keeps that claim from being permanent:
 //   generation 0 is this pair's first session ever, and once it is FINISHED a
 //   ticket that legitimately comes back to the same agent needs somewhere to
 //   put the next one. So:
@@ -55,10 +53,8 @@ fn is_duplicate_key(e: &sqlx::Error) -> bool {
     e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505")
 }
 
-/// The task fields dispatch reads. `maybe_dispatch_ticket`'s TS signature
-/// takes the whole Task; it touches five fields, and naming exactly those
-/// keeps this side honest about what the push side actually depends on (the
-/// full row's port is tasks.rs's, and its Task converts into this).
+/// The task fields dispatch reads — exactly the five the push side depends
+/// on. The full row is tasks.rs's Task, which converts into this.
 pub struct DispatchTicket {
     pub id: String,
     pub board_id: String,
@@ -69,10 +65,7 @@ pub struct DispatchTicket {
 
 /// The dispatch assembly: the FULL real one, `real_run_deps`. A run that
 /// parks a question actually parks, because the driver that will park it is
-/// this process — the TS sweep the coexistence-era fallback deferred to
-/// never outlived the cutover. (That fallback was the real store, the real
-/// publish, and a `pause` that only warned at full volume; it left with the
-/// flip predicate.)
+/// this process.
 pub fn dispatch_deps(
     pg: PgPool,
     redis: redis::aio::ConnectionManager,
@@ -85,9 +78,8 @@ pub fn dispatch_deps(
 /// mutations; re-entry for the same ticket+agent is a no-op.
 ///
 /// IT DOES NOT WAIT FOR THE WORK. The session is a row before this function
-/// returns and a driver picks it up detached — this process's scheduler,
-/// which is the same contract the old `void dispatchTicketWork(...)` call
-/// sites already assumed, except that now the session survives them.
+/// returns and a driver picks it up detached — this process's scheduler. The
+/// callers fire-and-forget; the session outlives them.
 pub async fn dispatch_ticket_work(
     deps: &RunDeps,
     task: &DispatchTicket,
@@ -142,11 +134,7 @@ pub async fn dispatch_ticket_work(
             subject_id: Some(task.id.clone()),
             phase: Some(format!("queued for {agent_model}")),
             id: Some(id),
-            // This process drives what it enqueues — it is the only runtime,
-            // so there is no sweep to hand the row to (`start !== false` was
-            // TS's own spelling of the same thing; the coexistence bridge —
-            // row and publish only, the TS sweep takes the queued row — left
-            // with the cutover).
+            // This process drives what it enqueues — nothing else will.
             start: Some(true),
         };
         match enqueue(def, input, opts, deps).await {
@@ -175,10 +163,10 @@ pub async fn dispatch_ticket_work(
 /// Dispatch to every AGENT assignee when the ticket sits in an agent-start
 /// column. `only_agents` narrows to newly-added assignees on updates.
 ///
-/// THE PUSH-SIDE CHOKE POINT. Every caller — createTask, both of updateTask's
-/// branches, and anything added later — arrives here, and this checks ONE
+/// THE PUSH-SIDE CHOKE POINT. Every caller — task create, both branches of
+/// task update, and anything added later — arrives here, and this checks ONE
 /// thing about the column: is it somewhere work is actually picked up from?
-/// `pickupKeys`, not `agentStartKeys`: the raw flag is the REFUSAL set
+/// `pickup_keys`, not `agent_start_keys`: the raw flag is the REFUSAL set
 /// (entering any of those columns is assignment, which an agent may not do
 /// for itself), while this is a DESTINATION question — a review column
 /// carrying `agent_start` is not a pickup column, and dispatching into one
@@ -192,9 +180,8 @@ pub async fn dispatch_ticket_work(
 /// after a deploy, and the first thing every step does is put the same
 /// question to `agent_ticket_refusal` again.
 ///
-/// Fire-and-forget: the TS call sites attach `.catch(() => {})`, so nothing
-/// a dispatch failure can do may reach a caller. Errors are logged here
-/// rather than swallowed silently — same outcomes, louder when it matters.
+/// Fire-and-forget: nothing a dispatch failure can do may reach a caller.
+/// Errors are logged here rather than swallowed silently.
 pub async fn maybe_dispatch_ticket(
     pg: &PgPool,
     deps: &RunDeps,
@@ -464,14 +451,16 @@ mod tests {
         }
     }
 
-    // The walk touches get and insert only: under `start: false` nothing
-    // drives, so every driver-side store method is a panic that names itself.
+    // The walk touches get and insert only: the detached drive stops at
+    // NoDefinition (the fake's definition_for answers None) after one get,
+    // so every driver-side store method is a panic that names itself.
     fn unreachable_driven<'a, T>() -> BoxFuture<'a, T> {
         Box::pin(async { unreachable!("the dispatch walk drives nothing") })
     }
 
-    /// The lease edge is unreachable under `start: false`; a store-only fake
-    /// keeps the struct literal honest without a Redis server.
+    /// The lease edge is unreachable for the same reason — no definition, no
+    /// claim; a store-only fake keeps the struct literal honest without a
+    /// Redis server.
     struct NoLease;
     impl RunLease for NoLease {
         fn acquire<'a>(&'a self, _: &'a str, _: i64) -> BoxFuture<'a, LeaseClaim> {

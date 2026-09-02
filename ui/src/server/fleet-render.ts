@@ -3,17 +3,15 @@
 //   fleet/agents/<slug>/config.yaml   the agent's Hermes config (from the version)
 //   fleet/agents/<slug>/SOUL.md       the agent's soul
 //   fleet/docker-compose.yml          generated — one service per managed agent
-//   fleet/fleet.json                  the gateway-plane manifest (also written to
-//                                     stack/fleet.json, which the bridge watches)
+//   fleet/fleet.json                  the manifest the app reads to reach agents
 //
-// Generated services are derived from the source stack's resolved service block
-// (so the ~40 shared env vars and mounts stay faithful), with these changes:
+// Generated services are derived from the chassis service block (chassis.yml —
+// the shared env vars and mounts), with these changes:
 //   • config.yaml/SOUL.md bind mounts point at the rendered files
-//   • relative bind mounts become absolute paths into the source stack
-//   • named volumes become external references (ai_<name>) — state survives
-//   • networks → the external ai_default so the bridge/peers resolve the same
-//     DNS name; depends_on/build/ports dropped (deps run in the old project,
-//     the bridge reaches agents over the network, host ports retire)
+//   • imported agents' state volumes become external references (ai_<name>) —
+//     state survives; created agents get project-local volumes
+//   • networks → the external fleet network; depends_on/build/profiles dropped
+//     (the app reaches agents via stable loopback ports, or compose DNS names)
 import { createHash } from 'node:crypto'
 import { chmod, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -46,7 +44,7 @@ export const fleetProject = () => process.env.TALARIA_FLEET_PROJECT ?? 'talaria-
 /** The fleet's env file (agent keys + compose interpolation) — Talaria-owned. */
 export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
 /** The chassis every agent renders from: one service block + per-slug extras.
- *  Talaria-owned (extracted once at cutover from the legacy stack). */
+ *  Talaria-owned. */
 const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(), 'chassis.yml')
 
 /** fleet/.env must carry TALARIA_AGENT_KEY (the app's own hop to the toolkit
@@ -594,7 +592,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     delete svc.depends_on
     delete svc.profiles
     // Publish the persona gateway on a stable loopback port so the app reaches
-    // this agent directly (no bridge/multiplexer). Loopback-only; the HERMES key
+    // this agent directly. Loopback-only; the HERMES key
     // still gates it. Container-dial deployments skip publishing entirely — the
     // manifest below dials the compose service name, so the published port is
     // dead weight there, and every install sharing one docker host (second

@@ -1,4 +1,4 @@
-// /api/vision/describe — port of ui/src/routes/api/vision.describe.ts.
+// /api/vision/describe.
 //
 // READ AN IMAGE ON BEHALF OF A MODEL THAT CANNOT — the endpoint behind the
 // `describe_image` tool.

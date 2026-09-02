@@ -1,10 +1,7 @@
-// /api/home — port of ui/src/routes/api/home.ts.
-// GET → the Home/Today summary for the signed-in user.
+// /api/home. GET → the Home/Today summary for the signed-in user.
 //
-// The TS file carries a side-effect import of server/digest.ts (the job
-// registration handshake with the bun server entry). Rust has no module-load
-// side effects to lean on — the digest job registers in main.rs's scheduler
-// table with every other job, which is the honest version of the same trick.
+// The digest job registers in main.rs's scheduler table, not here — this
+// file is only the read.
 
 use crate::home::home_summary;
 use crate::session::require_user;

@@ -1,15 +1,13 @@
-// THE CITATION REGISTRY — one implementation, two hosts. Port of
-// ui/src/server/source-registry.ts.
+// THE CITATION REGISTRY — one implementation, two hosts.
 //
-// The in-process research pipeline (research.ts, batch 5's tail) and the
-// durable research run both renumber search hits onto one global source
+// The report-extension helpers (research.rs) and the durable research run
+// (runs/defs/research.rs) both renumber search hits onto one global source
 // list, and each carried a private copy of this type until the copies
 // diverged where it mattered: the run's `add` allocated `size + 1` where
 // the pipeline's allocates HIGHEST + 1, so a run seeded from a parent whose
 // source list carries a gap — size 3, highest [5] — handed [4] to a
 // brand-new URL and silently re-aimed a citation a human already read.
-// The TS side made this a shared leaf; the Rust side keeps it one so the
-// research run def (the next slice of this batch) has the same floor.
+// One shared leaf is the fix.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -39,9 +37,7 @@ pub static MARKER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[(\d{1,3})\]").expect("the marker grammar compiles"));
 
 /// One row of the registry, as the report's Sources section prints it and
-/// `research_sources` stores it (research.ts ResearchSource — the run's
-/// RegistrySource was this same shape under a second name, and the
-/// duplicate is gone on both sides of the port).
+/// `research_sources` stores it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResearchSource {
     pub idx: u64,
@@ -52,7 +48,7 @@ pub struct ResearchSource {
 
 /// A source as the search stages hand it over, before it has a number.
 /// Declared here rather than imported from either host so this stays the
-/// shared leaf (same reason as the TS module).
+/// shared leaf.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceSeed {
     pub url: String,
@@ -69,7 +65,7 @@ struct Seeded {
 
 /// The registry itself. Insertion order is `list()` order, so a HashMap
 /// would scramble the Sources section — this is an insertion-ordered map
-/// by hand (TS leaned on JS Map's insertion order for the same guarantee).
+/// by hand.
 #[derive(Default)]
 pub struct SourceRegistry {
     by_url: HashMap<String, Seeded>,

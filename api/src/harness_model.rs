@@ -1,7 +1,7 @@
-// THE model-resolution chain. Port of harness/model.ts. Every harness
-// resolves its model through here — this port's first consumer is the muse
-// chain (/api/models' `effective`), and the runs plane (batch 4) resolves
-// every harness through the same function.
+// THE model-resolution chain. Every harness
+// resolves its model through here — the muse chain (/api/models'
+// `effective`) and the runs plane both
+// resolve every harness through the same function.
 //
 // The chain exists because the same eight lines — the platform-agent pin,
 // then the Utility model role, then TALARIA_COPILOT_MODEL, then 'pl-main',
@@ -25,14 +25,13 @@ use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::OnceCell;
 
-/// THE RESOLUTION EDGES, as an argument rather than a global. The TS twin of
-/// this chain takes its whole dependency set that way (`resolveHarnessModelWith`),
-/// and the fitness binding pass is the reason it has to: `bind_slots` needs to
+/// THE RESOLUTION EDGES, as an argument rather than a global. The fitness
+/// binding pass is the reason it has to: `bind_slots` needs to
 /// know which ROLES a harness's chain consults, which is a question about the
 /// CHAIN, not about today's assignments — running the real chain against the
 /// database would answer a different question every time an admin moved a pin.
 /// So the chain runs over edges that record and refuse, and the set of roles it
-/// asked for is the answer. Nothing else in this port may restate the step
+/// asked for is the answer. Nothing else in the crate may restate the step
 /// order; that is finding 1.10's whole point.
 pub trait ResolveEdges: Send + Sync {
     fn pin_model<'a>(
@@ -153,12 +152,12 @@ const DEFAULT_CHAIN: [ModelChainStep; 5] = ["pin", "role", "utility", "env", "fi
 // it in the last-resort step reproduces today's behavior on that install
 // (pl-main beat the alphabetical scan) without making any install DEPEND on
 // the name: where it doesn't exist, the step still returns a real model
-// instead of nothing. This list is the ONLY place in this port allowed to
+// instead of nothing. This list is the ONLY place in the crate allowed to
 // spell it.
 const LAST_RESORT_PREFERENCE: [&str; 1] = ["pl-main"];
 
-/// TALARIA_COPILOT_MODEL, read late not at boot — same as the TS dep, which
-/// exists so a test never has to touch the environment.
+/// TALARIA_COPILOT_MODEL, read late not at boot — so
+/// a test never has to touch the environment.
 fn copilot_env_model() -> Option<String> {
     std::env::var("TALARIA_COPILOT_MODEL")
         .ok()
@@ -166,8 +165,7 @@ fn copilot_env_model() -> Option<String> {
 }
 
 /// One resolution's memoization state. A chain that falls through five steps
-/// must not fetch the catalog five times — the TS `once()` closures, spelled
-/// as cells instead of closures.
+/// must not fetch the catalog five times — once-cells, one per resolution.
 struct Chain<'a, E: ResolveEdges + ?Sized> {
     edges: &'a E,
     spec: &'a ModelSpec<'a>,
@@ -214,8 +212,7 @@ impl<'a, E: ResolveEdges + ?Sized> Chain<'a, E> {
         let computed = match self.spec.user_id {
             None => Gate::Open,
             Some(user_id) => {
-                // TS reads role, allowlist and catalog concurrently; the
-                // awaits are sequential here and the cell dedups repeats.
+                // Sequential awaits; the cell dedups repeats.
                 let role = self.edges.user_role(user_id).await?;
                 let allow = self.edges.member_allowlist().await;
                 let catalog = self.catalog().await?.to_vec();
@@ -251,9 +248,8 @@ impl<'a, E: ResolveEdges + ?Sized> Chain<'a, E> {
     }
 
     /// Does this model id land on an endpoint right now? RESOLVES — and so
-    /// advances the round-robin cursor — which is the TS `routes` dep's exact
-    /// behavior and intentional parity: this is the same call live traffic
-    /// makes. (Conversely 'pin' and 'role'/'utility' are validated INSIDE
+    /// advances the round-robin cursor — deliberately: this is the same call
+    /// live traffic makes. (Conversely 'pin' and 'role'/'utility' are validated INSIDE
     /// platform_agent_model/resolve_role_model, their documented contract, and
     /// are not re-checked here for the same cursor reason.)
     async fn routes(&self, model: &str) -> Result<bool, sqlx::Error> {
@@ -334,7 +330,7 @@ impl<'a, E: ResolveEdges + ?Sized> Chain<'a, E> {
 /// Null when the gateway serves nothing this spec can reach. Every step is
 /// validated with routing before it wins — the existing contract that a
 /// deleted model can never silently break a subsystem. A database failure
-/// propagates (TS throws to the same 500).
+/// propagates — the caller answers 500.
 pub async fn resolve_harness_model<'a>(
     pg: &'a PgPool,
     spec: &'a ModelSpec<'a>,
@@ -364,7 +360,7 @@ pub async fn resolve_harness_model_with<'a>(
 
 /// The Muse's model policy, declared once instead of written out (audit 1.10
 /// — this was one of the seven hand-copied spellings of the fallback chain).
-/// The ORDER is today's, preserved exactly, and it is not the default chain:
+/// The ORDER is deliberate and it is not the default chain:
 ///
 ///    pin        an admin-assigned Muse model (Models → Platform) is ORG
 ///               POLICY and wins over a personal preference.

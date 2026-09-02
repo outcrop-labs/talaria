@@ -1,4 +1,4 @@
-// /api/muse — port of ui/src/routes/api/muse.ts.
+// /api/muse.
 //
 // The Muse endpoint. ONE route, TWO answers, because the Muse does two
 // genuinely different things and used to pretend they were one:
@@ -169,7 +169,7 @@ pub async fn post(
         Ok(k) => k,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().trim().min(1).max(8_000)
+    // instruction: trimmed, then 1..8_000 (empty after trim is a 400).
     let instruction = match obj.get("instruction") {
         None => return house_error(StatusCode::BAD_REQUEST, &string_msg("undefined")),
         Some(v) => {
@@ -324,12 +324,12 @@ pub async fn post(
         )))
     });
 
-    // Deltas out through an UNBOUNDED channel, enqueued without backpressure —
-    // the TS `push` deliberately does not wait on `desiredSize`: a draft is
-    // bounded by the model's own output length, and holding the transport
-    // mid-stream to pace a browser would stall the guard pass and the metering
-    // behind it. The reader going away (closed tab, cancelled draft) is `gone`;
-    // enqueueing after that is a no-op rather than a failed harness run.
+    // Deltas out through an UNBOUNDED channel, enqueued without backpressure:
+    // a draft is bounded by the model's own output length, and holding the
+    // transport mid-stream to pace a browser would stall the guard pass and
+    // the metering behind it. The reader going away (closed tab, cancelled
+    // draft) is `gone`; enqueueing after that is a no-op rather than a failed
+    // harness run.
     let (btx, brx) = mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
     let relayed = Arc::new(AtomicBool::new(false));
     // Notify rather than a oneshot: `send` consumes a oneshot Sender, and a
@@ -346,10 +346,9 @@ pub async fn post(
         Arc::new(move |delta: &str| {
             relayed.store(true, Ordering::SeqCst);
             opened.notify_one();
-            // Outside strict mode this is the identity and the stream is
-            // byte-for-byte what it always was. In strict mode the redactor
-            // holds back the tail and cuts only where a secret pattern cannot
-            // straddle.
+            // Outside strict mode this is the identity — the stream passes
+            // through unchanged. In strict mode the redactor holds back the
+            // tail and cuts only where a secret pattern cannot straddle.
             let text = match redactor.as_ref() {
                 Some(r) => r.lock().expect("the redactor is not contended").push(delta),
                 None => delta.to_string(),
@@ -439,8 +438,8 @@ pub async fn post(
             brx,
             |mut rx| async move { rx.recv().await.map(|i| (i, rx)) },
         );
-    // Header order matches the oracle's wire, not its source: TS builds the
-    // response through a fetch Headers object, which iterates alphabetically.
+    // Header order on the wire is alphabetical — cache-control, then
+    // content-type, then x-muse-model.
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CACHE_CONTROL, "no-cache")

@@ -2,8 +2,6 @@
 // and "save to artifacts". Guardrails live HERE so every consumer gets them:
 // absolute paths inside /opt/data only (the agent's own volume, never the
 // host), image types only, size-capped, slot-aware container resolution.
-//
-// Port of ui/src/server/agent-media.ts.
 
 use sqlx::PgPool;
 
@@ -82,7 +80,7 @@ pub async fn read_agent_image(
                 return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
             }
             if out.stdout.len() > MAX_BYTES {
-                // node's maxBuffer kill, same refusal.
+                // over the cap — refused outright, like a failed read.
                 return Err("output exceeds maxBuffer".to_string());
             }
             Ok(out.stdout)

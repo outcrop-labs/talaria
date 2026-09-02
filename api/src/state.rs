@@ -17,14 +17,13 @@ pub struct AppState {
     /// Lazily-connected Redis. ConnectionManager reconnects on its own once
     /// established; the OnceCell covers the FIRST connection, so the process
     /// can boot while Redis is still coming up and healthz reports degraded
-    /// instead of the process dying (same posture as the TS side's lazy
-    /// getRedis()).
+    /// instead of the process dying.
     redis: Arc<OnceCell<ConnectionManager>>,
     /// Lazily-loaded secretbox keys. Nothing in the models slice needs a key;
     /// the chat relay unseals endpoint credentials through it. The RwLock
     /// inside the cell is for ROTATION (admin.encryption): the whole key set
     /// is swapped in one write after the re-encryption transaction commits —
-    /// secretbox.ts mutates its globals in place, which a OnceCell cannot.
+    /// a write a bare OnceCell cannot take.
     sb: Arc<OnceCell<RwLock<SecretBox>>>,
     started: Instant,
 }
@@ -40,7 +39,7 @@ impl AppState {
         }
     }
 
-    /// installSecretKey — swap in the rotated key set (admin.encryption).
+    /// Swap in the rotated key set (admin.encryption).
     /// Only ever called after the re-encryption transaction committed, and
     /// only with a box whose DEKs include every version that transaction
     /// resealed. The cell is necessarily initialized by then (rotation had to

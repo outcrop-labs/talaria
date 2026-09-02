@@ -1,7 +1,7 @@
-// /api/fleet/crons — port of ui/src/routes/api/fleet.crons.ts. Fleet-wide
-// crons (admin). GET → every managed agent's jobs (down containers reported
-// per-agent, not fatal). POST → create the same job across agents, staggered
-// per agent when the schedule is a fixed-minute cron expression.
+// /api/fleet/crons. Fleet-wide crons (admin). GET → every managed agent's
+// jobs (down containers reported per-agent, not fatal). POST → create the
+// same job across agents, staggered per agent when the schedule is a
+// fixed-minute cron expression.
 
 use crate::agent_crons::{create_fleet_crons, list_fleet_crons};
 use crate::audit::{AuditEntry, log_audit};
@@ -39,8 +39,8 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // agentIds: z.array(Uuid).min(1).max(64) — the helper carries the max;
-    // the min (a fleet cron with no agents is nothing) is checked here.
+    // agentIds: min(1).max(64) — the helper carries the max; the min (a
+    // fleet cron with no agents is nothing) is checked here.
     let agent_ids = match uuid_array_member(obj, "agentIds", 64) {
         Ok(ids) => ids,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -97,7 +97,7 @@ pub async fn post(
     Json(json!({ "results": results })).into_response()
 }
 
-/// `z.number().int().min(0).max(30).optional()` — optional int in [0, 30].
+/// staggerMinutes — optional int in [0, 30].
 fn stagger_minutes(obj: &serde_json::Map<String, Value>) -> Result<Option<i64>, String> {
     match obj.get("staggerMinutes") {
         None | Some(Value::Null) => Ok(None),
@@ -108,7 +108,7 @@ fn stagger_minutes(obj: &serde_json::Map<String, Value>) -> Result<Option<i64>, 
             }
             let v = f as i64;
             if !(0..=30).contains(&v) {
-                // zod prints the violated bound; both bounds are 0 and 30.
+                // the violated bound is what's printed; both bounds are 0 and 30.
                 return Err(crate::body::too_big_msg(30));
             }
             Ok(Some(v))

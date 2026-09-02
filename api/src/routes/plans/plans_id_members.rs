@@ -1,4 +1,4 @@
-// /api/plans/{id}/members — port of ui/src/routes/api/plans.$id.members.ts.
+// /api/plans/{id}/members.
 // Multiplayer plan membership + presence.
 //   GET    → { members, active } — any member; active = user ids seen in the
 //            last minute (Redis presence keys, 60s TTL).
@@ -42,10 +42,10 @@ fn members_json(members: &[crate::conversations::PlanMember]) -> Vec<Value> {
         .collect()
 }
 
-/// Keep the plan doc's editor grants in step with membership (syncDocGrant).
-/// A db failure here is a 500 in the TS (the call is awaited bare), not a
-/// silent skip — a share that granted the row but not the doc leaves the new
-/// collaborator able to see the plan and unable to open its document.
+/// Keep the plan doc's editor grants in step with membership. A db failure
+/// here is the route's 500, not a silent skip — a share that granted the row
+/// but not the doc leaves the new collaborator able to see the plan and
+/// unable to open its document.
 async fn sync_doc_grant(
     pg: &sqlx::PgPool,
     plan_id: &str,
@@ -189,8 +189,7 @@ pub async fn post(
                 return thrown_internal_error();
             }
         };
-    // `.catch(() => {})` — the notification is best-effort; the share itself
-    // already happened.
+    // the notification is best-effort — the share itself already happened.
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     let who = user
         .name
@@ -233,9 +232,9 @@ pub async fn delete(
     if let Some(gate) = uuid_gate("plans", "DELETE members", &id) {
         return gate;
     }
-    // TS reads the role BEFORE parsing the body — keep the order: the role
-    // read has no failure surface of its own, and the body's 400 comes ahead
-    // of the permission check.
+    // the role read precedes the body parse: the role read has no failure
+    // surface of its own, and the body's 400 comes ahead of the permission
+    // verdict.
     let role = match plan_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
         Err(e) => {

@@ -111,8 +111,8 @@ fn wrong(c: &EvalCaseScore) -> bool {
 /// verbatim up to the cut — a paraphrase here would destroy the signal, which is
 /// two models coming back with the SAME words.
 fn sentence_of(s: &str) -> String {
-    // 240 characters, measured the way the TS `slice` did: by unicode scalar,
-    // never splitting a surrogate pair the way a byte cut would.
+    // 240 characters, by unicode scalar, never splitting a surrogate pair the
+    // way a byte cut would.
     s.chars().take(240).collect()
 }
 
@@ -124,8 +124,7 @@ struct Accum {
 
 impl Accum {
     fn note(&mut self, reason: String, model: &str) {
-        // Appended, not deduped — the TS `set(reason, [...(get(reason) ?? []), run.model])`
-        // spells the same thing, and the count is the signal.
+        // Appended, not deduped — the count is the signal.
         if let Some((_, models)) = self.reason_map.iter_mut().find(|(r, _)| *r == reason) {
             models.push(model.to_string());
         } else {
@@ -273,8 +272,6 @@ pub fn summarize(runs: &[HealthInput<'_>]) -> HealthSummary {
 
 #[cfg(test)]
 mod tests {
-    // Ported one-for-one from health.test.ts (11 its).
-    //
     // THE ONE THING THIS FILE MUST NOT GET WRONG: calling a fixture ours when
     // it is the model's, or the model's when it is ours. Both are worse than
     // saying nothing — the first sends somebody to rewrite a working assertion,

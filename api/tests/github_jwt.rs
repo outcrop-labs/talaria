@@ -1,9 +1,9 @@
 // Cross-language GitHub app JWT vectors. The committed fixture is produced by
 // the TS side (scripts/gen-github-jwt-vectors.mjs, which runs github.ts's own
-// appJwtAt); this suite proves the Rust port signs the SAME bytes — header
+// appJwtAt); this suite proves the Rust api signs the SAME bytes — header
 // and payload literals, the iat-60/exp+540 offsets, base64url unpadded, and
 // the PKCS#1 v1.5 SHA-256 signature itself. If this fails after a change on
-// EITHER side, the port has drifted: fix the code, then regenerate with
+// EITHER side, the two have drifted: fix the code, then regenerate with
 // `bun run api:vectors`.
 
 use base64::Engine;

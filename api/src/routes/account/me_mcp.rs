@@ -1,9 +1,8 @@
-// /api/me/mcp — port of ui/src/routes/api/me.mcp.ts.
-// Connected accounts (Settings → Connections): per-user MCP servers and
-// whether YOU have connected yours. PUT { serverId, headers } connects
-// (headers sealed at rest — e.g. { Authorization: "Bearer <your token>" });
-// headers null disconnects. Your assistant only carries a per-user server
-// once you've connected, and it acts as YOU there.
+// /api/me/mcp. Connected accounts (Settings → Connections): per-user MCP
+// servers and whether YOU have connected yours. PUT { serverId, headers }
+// connects (headers sealed at rest — e.g. { Authorization: "Bearer <your
+// token>" }); headers null disconnects. Your assistant only carries a
+// per-user server once you've connected, and it acts as YOU there.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -86,8 +85,8 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `z.record(z.string(), z.string().max(4000)).nullable()` — null
-    // disconnects; the values are the user's own credentials for the server.
+    // headers — a string→string record (values ≤4000) or null to disconnect;
+    // the values are the user's own credentials for the server.
     let creds: Option<serde_json::Map<String, Value>> = match obj.get("headers") {
         Some(Value::Null) => None,
         None => return house_error(StatusCode::BAD_REQUEST, &string_msg("undefined")),

@@ -1,6 +1,5 @@
-// /api/admin/judge — port of ui/src/routes/api/admin.judge.ts. The
-// automated QA judge config (admin). GET → current + available models.
-// PUT → enable/disable + pick the judge model.
+// /api/admin/judge. The automated QA judge config (admin). GET → current +
+// available models. PUT → enable/disable + pick the judge model.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -21,8 +20,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         return gate;
     }
     let config = get_judge_config(&state.pg).await;
-    // gatewayModels().catch(() => []) — a gateway read failure is an empty
-    // model list, never a 500.
+    // A gateway read failure is an empty model list, never a 500.
     let models: Vec<String> = gateway_models(&state.pg)
         .await
         .unwrap_or_default()
@@ -46,9 +44,9 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ enabled: z.boolean(), model: z.string().max(200).nullish(),
-    //             mode: z.enum(['advisory','enforcing']).optional() }) — keys in
-    // schema order, each rejection in zod's own words.
+    // Keys in schema order, each rejection in the schema's own words:
+    // enabled (bool), model (string max 200, nullish), mode (enum
+    // advisory|enforcing, optional).
     let enabled = match boolean_member(obj, "enabled") {
         Ok(e) => e,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -58,10 +56,10 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let mode = match optional_enum_member(obj, "mode", &["advisory", "enforcing"]) {
-        Ok(m) => m.unwrap_or_else(|| "enforcing".to_string()), // body.mode ?? 'enforcing'
+        Ok(m) => m.unwrap_or_else(|| "enforcing".to_string()), // mode defaults to 'enforcing'
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `model?.trim() || null` — a blank string clears the pick.
+    // a blank model string clears the pick.
     let config = serde_json::json!({
         "enabled": enabled,
         "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),

@@ -1,10 +1,9 @@
-// /api/inbox/focus/conversations/{id} — port of
-// ui/src/routes/api/inbox.focus.conversations.$id.ts.
-// One conversation instance, by its path id. GET → its timeline page (cursor
-// paginates); DELETE → archive it. Both are scoped inside the module to the
-// caller's own inbox conversations, so an id from the picker can never touch
-// one of their ordinary chats. Archiving, not deleting: the messages and the
-// decision timeline are the owner's record of what their assistant did.
+// /api/inbox/focus/conversations/{id}. One conversation instance, by its
+// path id. GET → its timeline page (cursor paginates); DELETE → archive it.
+// Both are scoped inside the module to the caller's own inbox
+// conversations, so an id from the picker can never touch one of their
+// ordinary chats. Archiving, not deleting: the messages and the decision
+// timeline are the owner's record of what their assistant did.
 //
 // GET holds the assistant lock while it reads: the timeline must not be
 // served half-way through the assistant's own write to it.

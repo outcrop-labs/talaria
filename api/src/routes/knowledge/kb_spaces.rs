@@ -1,7 +1,7 @@
-// /api/kb/spaces — port of ui/src/routes/api/kb.spaces.ts. KB spaces (any
-// member). GET → all the caller can read (agents over MCP see org/public +
-// granted; humans see visibility-read + granted). POST → create (agents
-// find-or-create by name; humans need kb.official).
+// /api/kb/spaces. KB spaces (any member). GET → all the caller can read
+// (agents over MCP see org/public + granted; humans see visibility-read +
+// granted). POST → create (agents find-or-create by name; humans need
+// kb.official).
 
 use axum::Json;
 use axum::extract::State;
@@ -63,9 +63,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Err(gate) => return gate,
     };
     // Hide folders the caller can't read, but keep ones shared with them.
-    // canRead with no grant list: the granted-set check beside it is the grant
-    // half — exactly the TS shape (canRead takes grants the filter already
-    // accounted for).
+    // can_read runs with no grant list — it covers only the visibility half;
+    // the granted-set check beside it covers the grant half.
     let granted = match granted_item_ids(&state.pg, "space", &user.id).await {
         Ok(v) => v,
         Err(e) => {

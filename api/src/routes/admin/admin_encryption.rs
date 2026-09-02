@@ -1,8 +1,7 @@
-// /api/admin/encryption — port of ui/src/routes/api/admin.encryption.ts.
-// Encryption status + one-click key rotation. Rotating re-generates the
-// data key and re-encrypts every stored secret (provider keys, agent
-// secrets, OAuth tokens) in a single pass — one action, no per-secret
-// steps.
+// /api/admin/encryption. Encryption status + one-click key rotation.
+// Rotating re-generates the data key and re-encrypts every stored secret
+// (provider keys, agent secrets, OAuth tokens) in a single pass — one
+// action, no per-secret steps.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse};
@@ -58,9 +57,8 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     .into_response()
 }
 
-/// POST body: `.nullable()` — a bodyless POST is a plain rotation
-/// (parseBody turns an unreadable body into null), and `newRootSecret`
-//  carries the one probed message zod can produce here.
+/// The POST body is optional: a bodyless POST (or null) is a plain rotation;
+/// an object may carry `newRootSecret`.
 pub async fn post(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -79,8 +77,7 @@ pub async fn post(
                 Ok(o) => o,
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
             };
-            // z.string().min(16, '...').max(400).optional() — the custom min
-            // sentence, then zod's max words.
+            // min 16 (the custom sentence), max 400 (the standard one).
             if let Some(v) = o.get("newRootSecret") {
                 let Some(s) = v.as_str() else {
                     return house_error(

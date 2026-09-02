@@ -1,56 +1,45 @@
 // THE WORK-SESSION TURN — the highest-stakes model output in the product.
-// Port of harness/defs/work-session.ts.
 //
 // WHY THIS FILE EXISTS (audit 1.5)
 //   An agent's work-session turn is the reply that says a ticket is DONE. It
 //   moves a column, it ends a session, it is what a human reads when they sign
-//   the work off from review — and until this harness it ran through a bare
-//   `proxyChat` in work-dispatch.ts with NO GUARDRAIL AT ALL.
+//   the work off from review — and when the audit looked, it ran through a
+//   bare `proxy_chat` with NO GUARDRAIL AT ALL.
 //   `zero_tool_claim` ("claims a completed action, but no external tool ran
 //   this turn") was written for precisely this output and was the one output
 //   it never saw.
 //
 //   That gap was not a rule anybody switched off. Guardrails were wired PER
-//   CALL SITE, `guardCompletion` lives inside `completeViaGateway`, and the
-//   persona gateway has no equivalent — so every path that reached a model
-//   through `proxyChat` was unguarded by omission. This harness closes it for
-//   the one that matters most, because `parseAgentStream` already reports the
-//   persona's tool NAMES and names are exactly what `zero_tool_claim` needs.
+//   CALL SITE — the completion path had its own guard and the persona gateway
+//   had none — so every path that reached a model through `proxy_chat` was
+//   unguarded by omission. This harness closes it for the one that matters
+//   most, because the stream parser already reports the persona's tool NAMES
+//   and names are exactly what `zero_tool_claim` needs.
 //
 // WHAT IS AND IS NOT MODELLED HERE
 //   The TURN is the model contract: one prompt in, one reply out. The SESSION
 //   — the turn cap, the reconcile nudge, `sessionState`/`agentTicketRefusal`,
 //   the activity trail — is ticket-state orchestration and lives in the run
-//   kind (server/runs/defs/work-session.ts, which crosses with the scheduler
-//   slice of this batch; work-dispatch.ts keeps the push-side choke point and
-//   the dispatch). Nothing in this file knows what a ticket is, which is why
+//   kind (runs/defs/work_session.rs; the dispatch side keeps the push-side
+//   choke point). Nothing in this file knows what a ticket is, which is why
 //   it can be replayed against a candidate model.
 //
-// THE FITNESS PLANE'S TWO SLOTS CROSS HERE, with the dry-run executor that
-//   replays them still living on the fitness side (see define.rs's header):
-//   the fixture table folds onto `evals` and the dry run states its own
-//   numbers rather than re-deriving them — a bench runs TWELVE
-//   turns, which is `MAX_SESSION_TURNS` exactly (six measured a shorter
-//   session than the one an agent actually runs and then asked whether the
-//   ticket had been finished; both models swept failed exactly the two
-//   fixtures a session cut off mid-work fails), and benches EIGHTEEN of the
-//   persona's tools — the TS block comment says "these twelve" but the list
-//   under it has eighteen entries, and the LIST is what a dry run reads, so
-//   eighteen is what crosses: the seven readers and writers the procedure
+// THE DRY RUN STATES ITS OWN NUMBERS rather than re-deriving them: a bench
+//   runs TWELVE turns, which is `MAX_SESSION_TURNS` exactly (six measured a
+//   shorter session than the one an agent actually runs and then asked
+//   whether the ticket had been finished; both models swept failed exactly
+//   the two fixtures a session cut off mid-work fails), and benches EIGHTEEN
+//   of the persona's tools: the seven readers and writers the procedure
 //   names, `create_ticket` (deliberately present — see the side-finding
 //   fixture), the two escape hatches whose MISUSE is worth measuring, and the
 //   listers that come with the writers so a model is never made to guess an
-//   id the sandbox would accept. This is also the def whose fixtures forced
-//   `CheckCall`/`CheckCtx` out of outreach.rs and into define.rs's
-//   fixture-floor section: work-session's checks read `args.status`,
-//   `args.tags` and `calledBefore`, which the two-field record could not
-//   carry.
+//   id the sandbox would accept. `CheckCall`/`CheckCtx` carry what these
+//   checks read — `args.status`, `args.tags`, `called_before`.
 //
-// ONE CONSEQUENCE THE FITNESS SUITE HAS TO KNOW, stated in the TS and worth
-//   restating where the declaration lives: an eval replay of this harness
-//   ARMS the candidate model with the persona's real MCP tools (`tools: Own`
-//   below). A benched work session can move a real ticket. Replay it against
-//   a scratch agent, never a live one.
+// ONE CONSEQUENCE THE FITNESS SUITE HAS TO KNOW: an eval replay of this
+//   harness ARMS the candidate model with the persona's real MCP tools
+//   (`tools: Own` below). A benched work session can move a real ticket.
+//   Replay it against a scratch agent, never a live one.
 
 use std::sync::{Arc, OnceLock};
 
@@ -87,20 +76,18 @@ pub struct WorkSessionInput {
 /// The dispatch brief puts this sentence on TURN ONE and every later turn in
 /// that conversation inherits it; the continuation prompts then say only "end
 /// with your status line", because by then the model has been told what one
-/// is. A FIXTURE IS A STANDALONE CONVERSATION, and that is what broke the TS
-/// suite once already: the continuation fixtures carried "End with your
-/// status line" alone, so the benchmark asked for a convention it had never
-/// explained and then failed models for not emitting a literal DONE — the
-/// signature of our gap rather than theirs, since the session loop tests
-/// `/\b(DONE|BLOCKED)\b/i` against the last 200 characters and a model that
-/// was never told the token cannot produce it.
+/// is. A FIXTURE IS A STANDALONE CONVERSATION, and that is the trap this
+/// constant exists to close: a continuation prompt carrying "End with your
+/// status line" alone asks for a convention it never explained and then
+/// fails models for not emitting a literal DONE — the signature of our gap
+/// rather than theirs, since the session loop tests `/\b(DONE|BLOCKED)\b/i`
+/// against the last 200 characters and a model that was never told the token
+/// cannot produce it.
 ///
 /// So every fixture below carries what the model HAS IN CONTEXT at that point
 /// in production, which includes this. One constant, shared with
 /// `dispatch_prompt`, so the fixture and the brief cannot drift into asking
-/// for two different things. (The TS inlined the same sentence as a literal
-/// in `dispatchPrompt` and a const in the fixture block — identical bytes,
-/// two spellings waiting to drift; the port keeps one.)
+/// for two different things.
 pub const STATUS_LINE: &str = "End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).";
 
 // ── The fixture prompts ──────────────────────────────────────────────────────
@@ -207,15 +194,15 @@ fn context_first_fixture() -> String {
 
 // ── The status window ────────────────────────────────────────────────────────
 
-/// `value.slice(-200)` — the tail the session actually reads. The step's
-/// checkpoint carries a 200-char `lastTail` and tests DONE/BLOCKED against
-/// it, so a model that puts its verdict anywhere else keeps the session
-/// running past finished work. Asserting on the same window — and the same
-/// case rule — is the point: a fixture stricter than production reports a
-/// failure production would not have had, and a looser one passes a reply
-/// production will miss.
+/// The last 200 UTF-16 units — the tail the session actually reads. The
+/// step's checkpoint carries a 200-char `lastTail` and tests DONE/BLOCKED
+/// against it, so a model that puts its verdict anywhere else keeps the
+/// session running past finished work. Asserting on the same window — and
+/// the same case rule — is the point: a fixture stricter than production
+/// reports a failure production would not have had, and a looser one passes
+/// a reply production will miss.
 ///
-/// JS slices UTF-16 code units and can split a surrogate pair in half; this
+/// Production's `utf16_suffix` can split a surrogate pair in half; this
 /// walks whole `char`s, so a reply whose 200th unit falls inside an astral
 /// character keeps one character MORE than production's window would. The
 /// DONE/BLOCKED regexes are word-boundary ASCII, which a half-surrogate
@@ -292,9 +279,9 @@ pub struct DispatchPromptInput<'a> {
 }
 
 pub fn dispatch_prompt(input: &DispatchPromptInput) -> String {
-    // JS truthiness both ways: an empty board name renders no clause and an
+    // Truthiness both ways: an empty board name renders no clause and an
     // empty description renders no fence, so `""` and `None` are the same
-    // input here exactly as they were in the template literals.
+    // input here.
     let board = input
         .board_name
         .filter(|b| !b.is_empty())
@@ -326,7 +313,7 @@ pub fn dispatch_prompt(input: &DispatchPromptInput) -> String {
 
 // ── The behavioural half of the fixtures ─────────────────────────────────────
 
-/// `c.args.status === want` — the one argument half these checks read. The
+/// The one argument half these checks read — `args.status === want`. The
 /// sandbox records whatever the model passed, so a missing field, a null and
 /// a differently-cased string are all "no".
 fn arg_is(args: &Value, field: &str, want: &str) -> bool {
@@ -368,9 +355,9 @@ pub struct WorkSessionFixture {
     pub check: fn(&str, &CheckCtx) -> Option<String>,
 }
 
-/// TWELVE FIXTURES, THREE BANDS, in the TS table's order — and mostly
-/// behavioural: the failure that costs an org a week is a model that SAYS it
-/// triaged the ticket having called nothing, which prose alone cannot see.
+/// TWELVE FIXTURES, THREE BANDS — and mostly behavioural: the failure that
+/// costs an org a week is a model that SAYS it triaged the ticket having
+/// called nothing, which prose alone cannot see.
 pub fn fixtures() -> Vec<WorkSessionFixture> {
     vec![
         WorkSessionFixture {
@@ -752,19 +739,19 @@ pub fn work_session_harness() -> HarnessDefinition {
     // every agent in the fleet from a file none of their owners will ever
     // read. (Kept as this comment: the field's default IS none.)
     //
-    // THE TURN IS THE TOOL LOOP. This declaration is what the injected
-    // `sessionTransport` existed to say by hand: the runner's default
-    // transport sends `tools: []` / `tool_choice: 'none'`, which is right for
-    // every single-shot structured harness and fatal here — a work session
-    // that cannot call `get_ticket` cannot do work, and would then trip
-    // `zero_tool_claim` on every turn for having called no tool. The guard
-    // firing because the guard's own transport disarmed the agent.
+    // THE TURN IS THE TOOL LOOP. Declared rather than left to the default:
+    // the runner's default transport sends `tools: []` / `tool_choice:
+    // 'none'`, which is right for every single-shot structured harness and
+    // fatal here — a work session that cannot call `get_ticket` cannot do
+    // work, and would then trip `zero_tool_claim` on every turn for having
+    // called no tool. The guard firing because the guard's own transport
+    // disarmed the agent.
     d.tools = Some(ToolPolicy::Own);
-    // TEN MINUTES, against the persona gateway's two-minute default — this
-    // was `TURN_WAIT_MS` on the dispatch side, and it is what the run kind's
-    // `maxStepMs` (eleven minutes) is sized against. An agent restarting
-    // under a config propagation refuses connections for tens of seconds, and
-    // a fleet re-render mid-session must not kill the session.
+    // TEN MINUTES, against the persona gateway's two-minute default — the
+    // run kind's `max_step_ms` (eleven minutes) is sized against it. An
+    // agent restarting under a config propagation refuses connections for
+    // tens of seconds, and a fleet re-render mid-session must not kill the
+    // session.
     d.hold_ms = Some(600_000);
     // NO WIDENING, and the argument is that there is nothing to widen FROM.
     // The other widened harnesses have a genuinely narrow deterministic
@@ -782,7 +769,7 @@ pub fn work_session_harness() -> HarnessDefinition {
     // model grades a model anywhere in there. The fold only re-types the
     // value — a text harness's reply arrives as a JSON string, and a value
     // that is not one is the fixture check throwing, which the sweep scores
-    // as a task failure carrying the same sentence TS did.
+    // as a task failure carrying the same sentence.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -818,16 +805,14 @@ pub fn work_session_harness() -> HarnessDefinition {
     // lister makes a model guess an id and then scores the guess — our gap,
     // charged to the model.
     d.dry_run = Some(DryRunDecl {
-        // TWELVE, WHICH IS WHAT PRODUCTION GIVES IT. `MAX_SESSION_TURNS` on
-        // the dispatch side is twelve; benching the same job at six measured a
+        // TWELVE, WHICH IS WHAT PRODUCTION GIVES IT. `MAX_SESSION_TURNS` (the
+        // run kind) is twelve; benching the same job at six measured a
         // shorter session than the one an agent actually runs, and then asked
         // whether the ticket had been finished. Both models swept so far
         // failed "hands a finished ticket to review" and "ends with the status
         // line" — exactly the shape of a session cut off mid-work.
         max_turns: Some(12),
-        // EIGHTEEN, not the "these twelve" the TS's own block comment claims:
-        // the LIST is what a dry run reads, and the list under that comment
-        // has eighteen entries.
+        // EIGHTEEN — the working set the header spells out, listers included.
         tools: vec![
             "list_boards",
             // THE LAST TOOL IN THE TOOLKIT NEVER PUT IN FRONT OF A MODEL.
@@ -964,10 +949,10 @@ mod tests {
         assert!(!status_done().is_match(tail(&early)));
         // Case rule is production's: case-insensitive on a word boundary, so
         // "Done — fix landed" ends the session — and so, SHARP EDGE AND ALL,
-        // does "not done yet", because \b cannot see the negation and the TS
-        // regex has always matched it. The port keeps production's behaviour
-        // rather than quietly "fixing" it; what a boundary does exclude is a
-        // longer word: "abandoned" carries no DONE.
+        // does "not done yet", because \b cannot see the negation and the
+        // regex has always matched it. Kept deliberately rather than quietly
+        // "fixed"; what a boundary does exclude is a longer word:
+        // "abandoned" carries no DONE.
         assert!(status_done().is_match(tail("all steps green — Done.")));
         assert!(status_done().is_match(tail("not done yet, one test failing.")));
         assert!(!status_done().is_match(tail("the work was abandoned mid-flight.")));
@@ -1365,13 +1350,12 @@ mod tests {
         // the session records the reply and moves on — its step's phase is
         // literally "turn N answered".
         //
-        // `answered` stays FALSE, and that is the TS's own bookkeeping rather
-        // than a port gap: the runner sets it from the raw reply
-        // (`text.trim().length > 0`, run.ts) because it is the transport's
-        // fact — did the model produce prose — while "is the turn valid" is
-        // the contract's question, answered by `schema_valid`. The session
-        // deliberately consults only the second and spells the first
-        // "(no reply)" on the activity line.
+        // `answered` stays FALSE, and that is deliberate bookkeeping: the
+        // runner sets it from the raw reply (did the model produce prose —
+        // the transport's fact), while "is the turn valid" is the contract's
+        // question, answered by `schema_valid`. The session deliberately
+        // consults only the second and spells the first "(no reply)" on the
+        // activity line.
         assert!(!res.answered);
         assert!(res.schema_valid, "{:?}", res.error);
         assert_eq!(res.value, Some(Value::String(String::new())));

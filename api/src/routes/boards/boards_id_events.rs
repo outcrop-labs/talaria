@@ -1,8 +1,7 @@
-// /api/boards/{id}/events — port of ui/src/routes/api/boards.$id.events.ts.
-// SSE stream of this board's live events (task/comment changes), auth-gated
-// to board members. Powers multiplayer boards. The stream itself is
-// realtime's (board:<id> topic) and crossed with the publish plane; this
-// route is only the gate in front of it.
+// /api/boards/{id}/events. SSE stream of this board's live events
+// (task/comment changes), auth-gated to board members. Powers multiplayer
+// boards. The stream itself is realtime's (board:<id> topic, fed by the
+// publish plane); this route is only the gate in front of it.
 
 use crate::boards::board_role;
 use crate::error::{house_error, thrown_internal_error};

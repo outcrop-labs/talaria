@@ -1,8 +1,7 @@
-// /api/admin/apps — port of ui/src/routes/api/admin.apps.ts. App
-// administration. GET → installed apps (+ ?catalog=1 for the marketplace
-// feed). Reads are open to anyone granted the /apps Manage view; mutations
-// (enable/disable, install, uninstall, catalog source) stay admin-only —
-// installing an app adds CODE to the deployment.
+// /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
+// for the marketplace feed). Reads are open to anyone granted the /apps
+// Manage view; mutations (enable/disable, install, uninstall, catalog
+// source) stay admin-only — installing an app adds CODE to the deployment.
 
 use crate::apps::{
     catalog_url, enabled_app_slugs, fetch_catalog, install_app_from_git, installed_sources,
@@ -21,8 +20,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    // requireView(request, '/apps') — the one admin-family read that Manage
-    // holders share with admins.
+    // The one admin-family read that /apps Manage holders share with admins.
     if let Err(gate) = require_view(&state, &headers, "/apps").await {
         return gate;
     }
@@ -32,8 +30,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     let apps = discovered_apps()
         .into_iter()
         .map(|a| {
-            // {...a, enabled, source} — AppManifest's wire order, surfaces
-            // nested with only its truthy keys.
+            // wire order: the manifest's fields, then enabled + source;
+            // surfaces nested with only its truthy keys.
             let mut surfaces = serde_json::Map::new();
             if let Some(w) = &a.work {
                 surfaces.insert("work".into(), serde_json::json!(w));
@@ -87,7 +85,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     .into_response()
 }
 
-/// z.string().url() — any parseable URL.
+/// any parseable URL.
 fn url_ok(v: &str) -> bool {
     url::Url::parse(v).is_ok()
 }
@@ -114,12 +112,11 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.union([{ app: z.string().min(1), enabled: z.boolean() },
-    //           { catalogUrl: z.string().url().nullable() }]) — dispatched by
-    // key presence, which is how zod v4 chooses the branch whose issue it
-    // surfaces: `{"catalogUrl":"not a url"}` answers the URL branch's own
-    // sentence ("Invalid URL"), not the union's blanket. A body naming
-    // neither key fails both branches and gets the blanket.
+    // Two bodies on one PUT, dispatched by key presence: { app, enabled }
+    // toggles an app, { catalogUrl } (nullable) sets the source — a
+    // catalogUrl that is a string but not a URL answers the field's own
+    // sentence ("Invalid URL"). A body naming NEITHER key still takes the
+    // catalogUrl arm and resets the source to the default.
     if obj.contains_key("app") || obj.contains_key("enabled") {
         let app = match crate::body::string_member(obj, "app", 1, usize::MAX) {
             Ok(a) => a,
@@ -196,7 +193,7 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ installUrl: z.string().url(), slug: z.string().min(1).max(64).optional() })
+    // installUrl: a required URL; slug: optional override, 1..64 chars.
     let install_url = match obj.get("installUrl") {
         None => {
             return house_error(
@@ -261,7 +258,7 @@ pub async fn delete(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.object({ app: z.string().min(1), wipeData: z.boolean().optional() })
+    // app: required, min 1 char; wipeData: optional boolean.
     let app = match crate::body::string_member(obj, "app", 1, usize::MAX) {
         Ok(a) => a,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

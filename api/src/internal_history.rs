@@ -1,5 +1,4 @@
-// Version history for agent internals — port of
-// ui/src/server/internal-history.ts: the write half (snapshot) plus the
+// Version history for agent internals: the write half (snapshot) plus the
 // listing/recovery reads /api/history serves.
 //
 // A uniform snapshot store: every save appends an immutable revision, so any
@@ -11,8 +10,8 @@ use sqlx::PgPool;
 
 use crate::agent_auth::epoch_ms_to_iso;
 
-/// One revision summary (listHistory). Key order is the wire contract —
-/// the TS row's select order, not alphabetical.
+/// One revision summary. Key order is the wire contract — the select order
+/// below, not alphabetical.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Revision {
@@ -62,8 +61,7 @@ pub async fn list_history(
     owner_key: &str,
 ) -> Result<Vec<Revision>, sqlx::Error> {
     // `size` is PG length(content) — characters, not bytes — and createdAt
-    // rides the epoch-ms → ISO path (postgres.js hands TS a Date; json()
-    // stringifies it as toISOString).
+    // rides the epoch-ms → ISO path.
     let rows: Vec<(String, Option<String>, i64, i32)> = sqlx::query_as(
         "select id::text, created_by, (trunc(extract(epoch from created_at) * 1000))::bigint, \
              length(content) \

@@ -1,6 +1,5 @@
-// GET /api/fleet — port of ui/src/routes/api/fleet.ts. Owned fleet ops data
-// (agents + Talaria-native usage). Ops-wide detail: admins + people granted
-// the Observability view.
+// GET /api/fleet. Owned fleet ops data (agents + Talaria-native usage).
+// Ops-wide detail: admins + people granted the Observability view.
 
 use crate::error::thrown_internal_error;
 use crate::fleet::get_fleet_overview;

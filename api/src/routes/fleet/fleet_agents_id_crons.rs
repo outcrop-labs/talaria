@@ -1,7 +1,6 @@
-// /api/fleet/agents/{id}/crons — port of
-// ui/src/routes/api/fleet.agents.$id.crons.ts. One agent's native Hermes
-// cron jobs. GET → jobs (read from the container's jobs.json). POST →
-// create. Admin, or the owner of a personal assistant.
+// /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
+// jobs (read from the container's jobs.json). POST → create. Admin, or the
+// owner of a personal assistant.
 
 use crate::agent_crons::{create_cron_job, list_cron_jobs};
 use crate::audit::{AuditEntry, log_audit};
@@ -18,9 +17,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 /// The shared gate: admin via agents.manage, or the owner of a personal
-/// assistant. A permissions read that errors reads as NO (the TS await
-/// throws, which 500s — but every caller here wraps it the same way, and
-/// fail-closed is the family's posture).
+/// assistant. A permissions read that errors reads as NO — fail-closed is
+/// the family's posture.
 async fn gate(state: &AppState, user_id: &str, role: &str, id: &str) -> bool {
     match has_perm(&state.pg, user_id, role, "agents.manage").await {
         Ok(true) => true,
@@ -98,7 +96,7 @@ pub async fn post(
                 )
                 .await;
             });
-            // json({ ok: true, ...created }) — {id} spread after ok.
+            // wire shape — { ok, id }, id after ok.
             Json(json!({ "ok": true, "id": created })).into_response()
         }
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),

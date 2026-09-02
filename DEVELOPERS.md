@@ -124,7 +124,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | Doc | What it covers |
 |---|---|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How it works: the two planes, request lifecycle, auth stack, gateway, data, realtime, fleet, apps, MCP |
-| [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md) | The TS→Rust api port: the rules, the batches, recorded divergences, the cutover |
+| [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md) | The Rust api: the hop, the rules, the recorded wire divergences (the port's story lives in [`docs/history/rust-port.md`](./docs/history/rust-port.md)) |
 | [`docs/PRODUCT.md`](./docs/PRODUCT.md) | The product definition: problem, answer, surfaces, defensible differences |
 | [`ROADMAP.md`](./ROADMAP.md) | Status and milestones; [`CHANGELOG.md`](./CHANGELOG.md) is the living record |
 | [`docs/history/`](./docs/history/README.md) | Dated audits, plans, and superseded strategy — provenance, not current |

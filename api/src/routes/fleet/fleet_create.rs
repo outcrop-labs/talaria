@@ -1,10 +1,9 @@
-// /api/fleet/create — port of ui/src/routes/api/fleet.create.ts.
-// POST → start HIRING a new agent. The work — create the def, write v1 and
-// any starter skills, render the fleet, boot the container, wait out the
-// healthcheck — is a durable `agent-hire` run, not this request: a boot runs
-// to minutes on a cold pull, and a POST is a promise to stay on the line the
-// modal cannot keep. The answer is the hire row; the roster shows the phases
-// and the finished agent. Admin.
+// /api/fleet/create. POST → start HIRING a new agent. The work — create the
+// def, write v1 and any starter skills, render the fleet, boot the
+// container, wait out the healthcheck — is a durable `agent-hire` run, not
+// this request: a boot runs to minutes on a cold pull, and a POST is a
+// promise to stay on the line the modal cannot keep. The answer is the hire
+// row; the roster shows the phases and the finished agent. Admin.
 
 use crate::body::{
     array_msg, array_too_big_msg, as_object, object_msg, optional_boolean_member,
@@ -24,10 +23,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-/// A `z.string().max(n).nullish()` member: absent and present-null are both
-/// None (the route maps either to null in the run input anyway), a present
-/// string has NO floor — the empty string is legal and the trim below turns
-/// it into null.
+/// An optional max(n) member with null allowed: absent and present-null are
+/// both None (the route maps either to null in the run input anyway), a
+/// present string has NO floor — the empty string is legal and the trim
+/// below turns it into null.
 fn nullish_max_string_member(
     obj: &serde_json::Map<String, Value>,
     key: &str,
@@ -39,13 +38,13 @@ fn nullish_max_string_member(
     }
 }
 
-/// The skill-name check, zod 4's default message and all — `Invalid string:
-/// must match pattern /…/` (probed against the live schema, not composed).
+/// The skill-name check's error sentence, verbatim — `Invalid string: must
+/// match pattern /…/`.
 const SKILL_NAME_PATTERN: &str = "^[a-z0-9][a-z0-9._-]*$";
 
 fn skill_member(t: &serde_json::Map<String, Value>) -> Result<SkillSeed, String> {
     let name = string_of(t, "name")?;
-    // The regex is the name's ONLY bound (no length) — and a zod check fires
+    // The regex is the name's ONLY bound (no length) — and the checks fire
     // in declaration order, so the type gate runs before the pattern.
     static NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new("^[a-z0-9][a-z0-9._-]*$").expect("the skill-name pattern compiles")
@@ -62,7 +61,7 @@ fn skill_member(t: &serde_json::Map<String, Value>) -> Result<SkillSeed, String>
     Ok(SkillSeed { name, content })
 }
 
-/// A required member of a nested zod object: absent is the type error on
+/// A required member of a nested object: absent is the type error on
 /// undefined, present must be a string (no bounds of its own).
 fn string_of(t: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
     match t.get(key) {
@@ -75,7 +74,7 @@ fn string_of(t: &serde_json::Map<String, Value>, key: &str) -> Result<String, St
     }
 }
 
-/// TS's `x?.trim() || null` — trim, and an empty-after-trim is no value.
+/// Trim — an empty-after-trim is no value.
 fn trimmed(s: Option<&str>) -> Option<String> {
     s.map(str::trim)
         .filter(|v| !v.is_empty())
@@ -172,16 +171,16 @@ pub async fn post(
         );
     }
 
-    // Registration only, exactly like the TS route's def import: a process
-    // that enqueues a hire can also be the process a reclaim sweep asks to
-    // resume one. actorOf: email, else name, else the id.
+    // Registration only: a process that enqueues a hire can also be the
+    // process a reclaim sweep asks to resume one. actorOf: email, else
+    // name, else the id.
     let def = agent_hire_run();
     let actor = crate::session::actor_of(&user);
     let input = AgentHireInput {
         slug: body.slug.clone(),
         department: body.department,
         display_name: body.display_name,
-        // `role?.trim() || null` — an empty-after-trim role is no role.
+        // an empty-after-trim role is no role.
         role: trimmed(body.role.as_deref()),
         template_id: body.template_id,
         soul: trimmed(body.soul.as_deref()),

@@ -1,24 +1,22 @@
 // The QA judge, declared. The highest-stakes harness in the product: its
 // verdict moves a ticket, bounces work back to an agent, or pulls a human out
-// of whatever they were doing. Port of harness/defs/judge.ts.
+// of whatever they were doing.
 //
-// WHAT THIS REPLACES, and why it was the worst place in the tree to have it:
-//   the hand-written `judge.ts` reached the gateway by hand and read the
-//   verdict back with a brace-to-brace substring match. It fails on three
-//   shapes a 14B model emits constantly (a fenced object followed by prose
-//   containing a brace; a preamble then two objects; an object then a bulleted
-//   explanation) — and every one of those failures was an escalation, and in
-//   `enforcing` mode, the DEFAULT, every escalation notifies the board's
-//   editors. A judge model that could not be parsed was not an error: it was a
-//   notification storm that reads to an admin as the product being broken.
-//   The ported runner parses with the brace-balancing scanner and buys the
-//   repair turn nothing in this tree had before.
+// WHY PARSING IS LOAD-BEARING HERE. A judge's reply arrives from 14B-class
+//   models in shapes a naive brace-to-brace substring match fails on
+//   constantly: a fenced object followed by prose containing a brace; a
+//   preamble then two objects; an object then a bulleted explanation. The
+//   runner's brace-balancing scanner reads all three, and the declared schema
+//   buys a repair turn when even that fails. The effort is not cosmetic:
+//   every unparseable verdict is an escalation, and in `enforcing` mode, the
+//   DEFAULT, every escalation notifies the board's editors. A judge model
+//   that cannot be parsed is not an error — it is a notification storm that
+//   reads to an admin as the product being broken.
 //
-// WHAT SURVIVES UNCHANGED, deliberately:
-//   - the escalate-on-unparseable direction. `OnFailure::Escalate` is that
-//     decision moved from a catch block into the declaration. It is the safe
-//     direction: a verdict nobody could read must reach a person, never a
-//     silent pass.
+// THREE LOCKED DECISIONS:
+//   - escalate-on-unparseable. `OnFailure::Escalate` carries the decision in
+//     the declaration itself. It is the safe direction: a verdict nobody
+//     could read must reach a person, never a silent pass.
 //   - temperature 0. A gate that answers differently on a re-read is not a
 //     gate.
 //   - the pre-check evidence block. The gate-safe guard rules run over the
@@ -35,14 +33,13 @@
 // slot here would create the second source of truth that route exists to
 // prevent.
 //
-// THE TRANSFORM'S HOME. The TS schema was `RAW_VERDICT.transform(...)` —
-// clamps, not checks. They bound what gets PERSISTED and shown to a human,
-// not what the model may say, which is why they clamp rather than reject: a
-// model that writes a five-thousand-character assessment has still judged the
-// work, and failing its verdict over the length would escalate a ticket for a
-// formatting reason. The schema algebra is declarative by design, so the
-// clamps live in `narrow_verdict` — the one function the caller runs over the
-// validated value, which is the same place the TS transform sat.
+// THE CLAMPS' HOME. They are clamps, not checks: they bound what gets
+// PERSISTED and shown to a human, not what the model may say, which is why
+// they clamp rather than reject — a model that writes a five-thousand-character
+// assessment has still judged the work, and failing its verdict over the
+// length would escalate a ticket for a formatting reason. The schema algebra
+// is declarative by design, so the clamps live in `narrow_verdict` — the one
+// function the caller runs over the validated value.
 
 use std::sync::{Arc, OnceLock};
 
@@ -109,8 +106,8 @@ pub struct PreFinding {
 /// What the judge is shown. Everything here is assembled by the caller, which
 /// is what keeps this module free of the database: the judging job reads the
 /// ticket, resolves the template and runs the guard pre-pass, and this file
-/// decides how the model is told about them. camelCase on the wire — the TS
-/// def's declared JSON contract.
+/// decides how the model is told about them. camelCase on the wire
+/// (`preFindings`, `errorMessage`) — the JSON contract the judging job sends.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JudgeInput {
@@ -134,14 +131,13 @@ pub struct JudgeInput {
 const SUMMARY_MAX: usize = 4_000;
 const MAX_ISSUES: usize = 20;
 
-/// JS `String(x)` over an unknown issue member. The TS transform coerced with
-/// `String(i)` and a judge that escalates a whole ticket because one issue
-/// came back as a number would be a worse gate than the one it replaced, so
-/// the lenience is ported with it: `null` becomes `"null"` (a truthy string —
-/// kept, exactly as TS kept it), an object becomes `"[object Object]"`, an
-/// array joins like `Array.prototype.toString`.
-/// The transform's home: the validated verdict value, clamped to what gets
-/// persisted. See the module header for why these bound rather than reject.
+/// `String(x)` semantics over an unknown issue member. A judge that escalates
+/// a whole ticket because one issue came back as a number would be a worse
+/// gate, so the lenience is deliberate: `null` becomes the truthy string
+/// `"null"` (kept), an object becomes `"[object Object]"`, an array joins
+/// like `Array.prototype.toString`.
+/// Runs over the validated value, clamping to what gets persisted — see the
+/// module header for why these bound rather than reject.
 pub fn narrow_verdict(value: &Value) -> Result<JudgeVerdict, String> {
     #[derive(Deserialize)]
     struct RawVerdict {
@@ -159,7 +155,7 @@ pub fn narrow_verdict(value: &Value) -> Result<JudgeVerdict, String> {
             .unwrap_or_default()
             .iter()
             .map(js_string)
-            // `.filter(Boolean)` — only the empty string drops.
+            // Truthiness — only the empty string drops.
             .filter(|s| !s.is_empty())
             .take(MAX_ISSUES)
             .collect(),
@@ -196,7 +192,7 @@ Work the rubric in order, one section at a time, before you decide the verdict. 
 
 Weigh the strength of the evidence, not its volume: an outcome that names the files, the commands run and the results observed is verifiable; one that asserts completion in general terms is not, however long it is.";
 
-/// TS truthiness on the optional prose: `Some("")` is the falsy string and is
+/// Truthiness on the optional prose: `Some("")` is the falsy string and is
 /// skipped exactly like `None`.
 fn is_said(field: &Option<String>) -> bool {
     field.as_deref().is_some_and(|s| !s.is_empty())
@@ -352,8 +348,7 @@ fn did_not_pass_the_unasked_drop(value: &JudgeVerdict) -> Option<String> {
 /// TWELVE CASES, THREE BANDS. The five satisfied ones are the expensive half:
 /// a model that says "revise" to everything scores well on planted gaps and
 /// is useless, because in enforcing mode it bounces finished work back to an
-/// agent forever. The order is the TS table's order — easy shapes first, the
-/// ambiguous traps last.
+/// agent forever. Easy shapes first, the ambiguous traps last.
 pub fn fixtures() -> Vec<JudgeFixture> {
     fn satisfied(name: &'static str, band: EvalBand, input: JudgeInput) -> JudgeFixture {
         JudgeFixture {
@@ -413,19 +408,14 @@ pub fn fixtures() -> Vec<JudgeFixture> {
             },
         ),
         satisfied(
-            // THE OUTCOME NAMES ITS CHECKS, and the first version did not —
-            // which made this the most-failed fixture in the harness: glm-5.2,
-            // sonnet-5, kimi-k3 and muse-glimmer all answered "revise", all
-            // four for the same stated reason ("no verifiable evidence: no
-            // file paths, no diff, no test"). THEY WERE FOLLOWING THE PROMPT —
-            // it ends "prefer 'revise' over 'pass' when the outcome is vague,
-            // unverifiable, or skips a requirement", and the widened branch
-            // spells it out further. The old outcome asserted that the
-            // shortcut "still works" with no check named for either claim.
-            // WHAT IS STILL BEING MEASURED, unchanged: that a SHORT outcome
-            // can be a complete one — every other `satisfied:` fixture names
-            // its check (a passing suite, a route test, a query plan), and so
-            // does this one.
+            // THE OUTCOME NAMES ITS CHECKS. A "verified it works" with no
+            // check named earns "revise" under this prompt — it ends "prefer
+            // 'revise' over 'pass' when the outcome is vague, unverifiable,
+            // or skips a requirement" — so a satisfied outcome here names its
+            // greps and its test. WHAT IS BEING MEASURED: that a SHORT
+            // outcome can be a complete one — every other `satisfied:`
+            // fixture names its check (a passing suite, a route test, a query
+            // plan), and so does this one, briefly.
             "satisfied: a small ticket with a short but complete outcome",
             EvalBand::Easy,
             JudgeInput {
@@ -550,9 +540,8 @@ pub fn fixtures() -> Vec<JudgeFixture> {
 /// the small, fast, cheap model, and that is the exact model this floor
 /// exists to keep out of the gate. `env` (TALARIA_COPILOT_MODEL) is a
 /// general-purpose model by definition, and `first-routable` prefers
-/// 'pl-main', which reproduces what the hand-written judge did on the
-/// reference deployment without any install having to be named that way for
-/// judging to work at all (audit 1.7).
+/// 'pl-main', so judging works on a fresh install without anybody having to
+/// name a model for it.
 const CHAIN: [ModelChainStep; 2] = ["env", "first-routable"];
 
 pub fn judge_harness() -> HarnessDefinition {
@@ -569,9 +558,8 @@ pub fn judge_harness() -> HarnessDefinition {
         Arc::new(|input: &Value, ctx: &RenderContext| {
             let ji: JudgeInput =
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
-            // `${SYSTEM}\n${WIDENED}` — one blank line between, WIDENED
-            // carrying its own leading newline exactly as the TS constant
-            // does.
+            // One blank line between the two — WIDENED carries its own
+            // leading newline.
             let system = if ctx.widened {
                 format!("{SYSTEM}\n{WIDENED}")
             } else {
@@ -586,13 +574,13 @@ pub fn judge_harness() -> HarnessDefinition {
             // No envelope to unwrap: the verdict object IS the reply's top
             // level, and a wrapper around it is a repair turn.
             preprocess: None,
-            // RAW_VERDICT, not JUDGE_VERDICT: the clamps live in
+            // The raw verdict, not the clamped one: the clamps live in
             // `narrow_verdict` (see the module header). Lenient on purpose in
             // both directions — `issues` optional because a clean "pass" has
             // nothing to list and a model that omits the key is not wrong,
-            // members `unknown` because the transform coerces them. Everything
-            // the schema does NOT forgive — a verdict outside the enum, a
-            // missing summary — earns the repair turn.
+            // members `unknown` because `narrow_verdict` coerces them.
+            // Everything the schema does NOT forgive — a verdict outside the
+            // enum, a missing summary — earns the repair turn.
             schema: Schema::Object(vec![
                 Field::required(
                     "verdict",
@@ -604,8 +592,7 @@ pub fn judge_harness() -> HarnessDefinition {
                     Schema::optional(Schema::Array(Box::new(Schema::Unknown))),
                 ),
             ]),
-            // The runner's default: one repair turn — the round-trip nothing
-            // in this tree had before the port.
+            // The runner's default: one repair turn.
             repair: None,
             verify: None,
         },
@@ -663,14 +650,12 @@ pub fn judge_harness() -> HarnessDefinition {
 
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — twelve
     // labeled cases, scored by AGREEMENT with the label (see `fixtures`). The
-    // fold re-types the value exactly the way the TS runner handed its check
-    // the typed verdict: `narrow_verdict` is the transform's home, the clamps
-    // the TS schema ran before `check` ever saw the value, and anything else
-    // (a bare `from_value::<JudgeVerdict>`) would throw on the very lenience
-    // the contract promises — a numeric issue member is a string by the time
-    // either suite scores it. A value that will not narrow is the fixture
-    // check throwing, which the sweep scores as a task failure carrying the
-    // same sentence the TS sweep did.
+    // fold narrows the value rather than decoding it as a `JudgeVerdict`
+    // directly: the clamps run before the check ever sees the value, and a
+    // bare decode would reject the very lenience the contract promises — a
+    // numeric issue member is a string by the time any suite scores it. A
+    // value that will not narrow is the fixture check failing on it, which
+    // the sweep scores as a task failure.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -710,8 +695,7 @@ mod tests {
             "issues": ["no test", "", 5, null, ["nested", null]]
         }))
         .unwrap();
-        // 4_000 UTF-16 units, not bytes — the clamp is a JS `.slice` in TS
-        // and stays one here.
+        // 4_000 UTF-16 units, not bytes — the clamp is a UTF-16 slice.
         assert_eq!(v.summary.chars().count(), 4_000);
         assert_eq!(v.verdict, Verdict::Revise);
         // Coerced, empties dropped, order kept — a `null` member is the
@@ -797,7 +781,7 @@ mod tests {
 
     #[test]
     fn empty_optionals_are_skipped_and_a_missing_outcome_says_so() {
-        // `Some("")` is TS's falsy string: skipped like None.
+        // `Some("")` is the falsy string: skipped like None.
         let input = JudgeInput {
             title: "Small ticket".into(),
             description: Some(String::new()),
@@ -1058,9 +1042,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreadable_verdict_escalates_rather_than_passing() {
-        // The safe direction, moved from the TS catch block into the
-        // declaration: a verdict nobody could read must reach a person, never
-        // a silent pass. One repair turn, then the flag.
+        // The safe direction, carried by the declaration: a verdict nobody
+        // could read must reach a person, never a silent pass. One repair
+        // turn, then the flag.
         let def = judge_harness();
         let r = recorded_run(World {
             replies: replies(&[

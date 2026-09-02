@@ -1,11 +1,11 @@
-// /api/agent/problem — port of ui/src/routes/api/agent.problem.ts.
-// POST (agent key) → an agent hit something broken it shouldn't explain to a
-// normal person. Talaria elevates it: the admins who may hear it get an alert
-// notification, a Helpdesk ticket carries the technical details (board
-// find-or-created), and the agent gets plain-language confirmation to relay.
+// /api/agent/problem. POST (agent key) → an agent hit something broken it
+// shouldn't explain to a normal person. Talaria elevates it: the admins who
+// may hear it get an alert notification, a Helpdesk ticket carries the
+// technical details (board find-or-created), and the agent gets plain-language
+// confirmation to relay.
 //
 // THE ROUTE LEARNS WHICH TICKET THE AGENT WAS ON. `taskId` arrives from the
-// agent and is AUTHORISED exactly the way agent.gap.ts authorises its own —
+// agent and is AUTHORISED exactly the way /api/agent/gap authorises its own —
 // unknown and not-allowed refuse identically (a distinct 404 is a ticket
 // enumeration oracle), and a ticket a person has taken off the table refuses
 // too. Then the authority is `agentTextAuthority`, the same answer the
@@ -62,7 +62,7 @@ const TALARIA: &str = "Talaria";
 /// "Talaria"), join everyone who exists, and keep it open to every agent.
 /// That last part is also the UPGRADE path — a Helpdesk board created by the
 /// old code is found by name and claimed rather than left personal.
-/// Any failure inside reads as "no board" (the TS `.catch(() => null)`).
+/// Any failure inside reads as "no board".
 async fn helpdesk_board(pg: &sqlx::PgPool) -> Option<String> {
     let admin: Option<(String,)> = sqlx::query_as(
         "select id::text from users order by (role = 'admin') desc, created_at asc limit 1",
@@ -338,9 +338,9 @@ pub async fn post(
         }
     }
 
-    // `ticketNote.toLowerCase().includes('filed')` — note that BOTH possible
-    // ticket notes contain "filed", so the relay always says a ticket was
-    // filed. Faithful to the TS, quirk and all.
+    // both possible ticket notes contain "filed", so the contains-check is
+    // always true and the relay always says a ticket was filed — quirk kept
+    // as-is.
     let filed_word = if ticket_note.to_lowercase().contains("filed") {
         "helpdesk ticket was filed"
     } else {

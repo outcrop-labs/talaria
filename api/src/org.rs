@@ -2,10 +2,6 @@
 // app_settings; woven automatically into muse generation (new souls anchor to
 // the team) and into every RENDERED SOUL.md (existing agents too), so no agent
 // ever introduces itself as working for the underlying platform.
-//
-// Port of ui/src/server/org.ts. The three soul headers are the render-time
-// projection: the stored soul stays clean and the header updates when the org
-// settings do. setOrgProfile crosses with the org settings routes that own it.
 
 use serde_json::json;
 use sqlx::PgPool;
@@ -35,7 +31,7 @@ pub async fn org_profile(pg: &PgPool) -> OrgProfile {
     }
 }
 
-/// setOrgProfile — each present field is a trimmed write; absent fields
+/// Each present field is a trimmed write; absent fields
 /// stay. The org lives in every rendered soul, so the settings route that
 /// calls this also rolls the running fleet.
 pub async fn set_org_profile(pg: &PgPool, name: Option<&str>, about: Option<&str>) {

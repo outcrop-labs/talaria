@@ -1,4 +1,4 @@
-// inbox-focus-policy.ts — the inbox-coupled half. The prompts, surface map,
+// The Inbox focus policy — the inbox-coupled half. The prompts, surface map,
 // history cap and `validate_command_object` live with the harness def
 // (`harness/defs/inbox_focus.rs`); the brief-shared helpers (fingerprint, key,
 // task wording) live with the brief (`daily_brief/focus.rs`). What remains
@@ -12,15 +12,15 @@ use crate::daily_brief::focus::fingerprint;
 use crate::harness::defs::inbox_focus::FocusAction;
 use crate::inbox_focus::types::{AssistantBrief, RawFocusItem};
 
-// The TS policy module also owns these spellings; they are the brief's helpers
-// and are re-exported so the sources module names one path.
+// These spellings are the brief's helpers, re-exported so the sources module
+// names one path.
 pub use crate::daily_brief::focus::{
     ACTIONABLE_NOTIFICATION_KINDS, as_iso, key_of, nullable_iso, priority_for_bucket, task_bucket,
     task_question, task_recommendation, task_status_label,
 };
 
-/// `focusAction` — the one constructor every source builds its card actions
-/// through, so the two derived booleans can never disagree with the risk.
+/// The one constructor every source builds its card actions through, so the
+/// two derived booleans can never disagree with the risk.
 pub fn focus_action(
     id: &str,
     label: &str,
@@ -82,9 +82,9 @@ impl FocusProposalSource {
     }
 }
 
-/// `proposalSourceFor` — label a model's proposal from the proposal ITSELF
-/// (the action id it named vs the one the regexes matched) rather than from
-/// the runner's `widened` flag. `payload` is deliberately not compared.
+/// Label a model's proposal from the proposal ITSELF (the action id it named
+/// vs the one the regexes matched) rather than from the runner's `widened`
+/// flag. `payload` is deliberately not compared.
 pub fn proposal_source_for(
     from_delegate: bool,
     action_id: &str,
@@ -100,8 +100,8 @@ pub fn proposal_source_for(
     }
 }
 
-/// `proposalSourceOf` — read the source back off a persisted
-/// `inbox_decisions.proposal`. Unrecognized is `Unattributed`, never a guess.
+/// Read the source back off a persisted `inbox_decisions.proposal`.
+/// Unrecognized is `Unattributed`, never a guess.
 pub fn proposal_source_of(proposal: &Value) -> FocusProposalSource {
     proposal
         .as_object()
@@ -124,9 +124,8 @@ pub fn requires_human_confirmation(action: &FocusAction, source: FocusProposalSo
     )
 }
 
-/// `confirmationMissInvalidates` — a held token stops being valid when the
-/// proposal expired or the item moved underneath it. An unparseable expiry is
-/// the TS NaN case: expired.
+/// A held token stops being valid when the proposal expired or the item moved
+/// underneath it. An unparseable expiry reads as expired.
 pub fn confirmation_miss_invalidates(
     status: Option<&str>,
     expires_at: Option<&str>,
@@ -147,8 +146,8 @@ pub fn confirmation_miss_invalidates(
     expired || stored_fingerprint != Some(current_fingerprint)
 }
 
-/// `validBrief` — clamp the model's one-liner to what the card renders, and
-/// drop a recommendedActionId the card does not offer.
+/// Clamp the model's one-liner to what the card renders, and drop a
+/// recommendedActionId the card does not offer.
 pub fn valid_brief(value: Option<&Value>, actions: &[FocusAction]) -> Option<AssistantBrief> {
     let obj = value?.as_object()?;
     let question = obj.get("question")?.as_str()?;
@@ -163,9 +162,10 @@ pub fn valid_brief(value: Option<&Value>, actions: &[FocusAction]) -> Option<Ass
     })
 }
 
-/// `itemFingerprint` over the INBOX item shape (the brief's twin reads its own
-/// shape in daily_brief/focus.rs). `updatedAt` is deliberately excluded —
-/// see the TS comment for why churn without information loses.
+/// The fingerprint over the INBOX item shape (the brief's twin reads its own
+/// shape in daily_brief/focus.rs). `updatedAt` is deliberately excluded — a
+/// touch that changes nothing the card shows must not invalidate a held
+/// confirmation.
 fn item_fingerprint(item: &RawFocusItem) -> String {
     fingerprint(&json!({
         "sourceType": item.source_type,
@@ -178,14 +178,14 @@ fn item_fingerprint(item: &RawFocusItem) -> String {
     }))
 }
 
-/// `finalizeItem` — stamp the fingerprint once; every later comparison reads it.
+/// Stamp the fingerprint once; every later comparison reads it.
 pub fn finalize_item(mut item: RawFocusItem) -> RawFocusItem {
     item.source_fingerprint = item_fingerprint(&item);
     item
 }
 
-/// `dedupeItems` — a notification that merely points at a task or channel
-/// already in the set goes; then one entry per link. The brief's twin lives in
+/// A notification that merely points at a task or channel already in the
+/// set goes; then one entry per link. The brief's twin lives in
 /// daily_brief/focus.rs over its own item shape.
 pub fn dedupe_items(items: Vec<RawFocusItem>) -> Vec<RawFocusItem> {
     let task_ids: std::collections::HashSet<String> = items
@@ -230,14 +230,14 @@ pub fn dedupe_items(items: Vec<RawFocusItem>) -> Vec<RawFocusItem> {
         .collect()
 }
 
-/// `sortItems` — bucket, due-ness, explicit priority, age. Stable, like TS.
+/// Bucket, due-ness, explicit priority, age — a stable sort.
 pub fn sort_items(mut items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem> {
     let due_rank = |item: &RawFocusItem| -> i64 {
         let Some(raw) = item.due_at.as_deref() else {
             return 2;
         };
-        // An unparseable due date is NaN in TS; every comparison on it is
-        // false, landing it in "due, but not soon".
+        // An unparseable due date is NaN — every comparison on it is false,
+        // landing it in "due, but not soon".
         let Some(due) = crate::agent_auth::iso_to_epoch_ms(raw) else {
             return 1;
         };
@@ -249,7 +249,7 @@ pub fn sort_items(mut items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem
             "high" => 1,
             "medium" => 2,
             "low" => 3,
-            // TS ranks String(undefined) — an absent metadata.priority — at 4.
+            // An absent metadata.priority ranks at 4.
             _ => 4,
         }
     };
@@ -277,7 +277,7 @@ fn created_ms(item: &RawFocusItem) -> i64 {
 
 // ── The deterministic instruction match ──────────────────────────────────────
 
-/// `CommandProposal` — what a matched instruction authorizes.
+/// What a matched instruction authorizes.
 #[derive(Debug, Clone)]
 pub struct CommandProposal {
     pub action_id: String,
@@ -285,9 +285,9 @@ pub struct CommandProposal {
     pub payload: Option<Value>,
 }
 
-/// `deterministicProposal` — the owner's own words, matched exactly. A model
-/// that echoes the one id it was shown adds no authority to a typed "approve
-/// it", and no model at all is needed to hear one.
+/// The owner's own words, matched exactly. A model that echoes the one id it
+/// was shown adds no authority to a typed "approve it", and no model at all
+/// is needed to hear one.
 pub fn deterministic_proposal(item: &RawFocusItem, instruction: &str) -> Option<CommandProposal> {
     let lower = instruction.trim().to_lowercase();
     let available = |id: &str| item.actions.iter().any(|a| a.id == id);

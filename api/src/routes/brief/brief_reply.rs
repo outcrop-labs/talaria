@@ -1,5 +1,5 @@
-// /api/brief/reply — port of ui/src/routes/api/brief.reply.ts.
-// POST { draftId, decision } → approve or reject a reply the assistant
+// /api/brief/reply. POST { draftId, decision } → approve or reject a reply
+// the assistant
 // drafted: send it, or discard it.
 //
 // The one route in this feature that causes something to LEAVE — a message
@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// The POST body, TS's `Body` zod shape.
+/// The POST body: draftId (uuid) + decision (approve|reject).
 struct ReplyBody {
     draft_id: String,
     decision: String,

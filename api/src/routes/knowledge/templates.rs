@@ -1,8 +1,6 @@
-// /api/templates — port of ui/src/routes/api/templates.ts.
-// The org's template library (ticket + plan formats). GET → all (any member —
-// the library grounds pickers everywhere). POST → create (any member, like
-// boards/channels; the skeletons are org-shared working material, not
-// policy).
+// /api/templates. The org's template library (ticket + plan formats). GET →
+// all (any member — the library grounds pickers everywhere). POST → create
+// (needs templates.manage — the skeletons are org-wide starting points).
 
 use crate::body::{as_object, optional_max_string_member, parse, trimmed_string_member};
 use crate::error::{house_error, thrown_internal_error};

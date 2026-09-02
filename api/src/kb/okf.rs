@@ -6,11 +6,10 @@
 // on demotion. Agents read it through the doc API; humans peek via the OKF
 // chip in the doc header.
 //
-// Port of ui/src/server/kb-okf.ts. The prompt, the fallback chain, the tag
-// parse and the failure policy all live in the harness definition
-// (harness/defs/librarian.rs); what survives here is the only thing that was
-// ever this file's business: turning a summary into an OKF concept, storing
-// it, and the 15s debounce that collapses bursts.
+// The prompt, the fallback chain, the tag parse and the failure policy live
+// in the harness definition (harness/defs/librarian.rs); this file's
+// business is turning a summary into an OKF concept, storing it, and the 15s
+// debounce that collapses bursts.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -32,8 +31,8 @@ fn now_ms() -> i64 {
 }
 
 /// JSON.stringify for the two frontmatter values that may carry quotes or
-/// newlines: a JSON string is a valid YAML scalar, and the escaping is the
-/// same bytes TS emitted.
+/// newlines: a JSON string is a valid YAML scalar, and the escaping is
+/// exact.
 fn yaml_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
@@ -64,9 +63,9 @@ pub async fn generate_doc_okf(state: &AppState, doc_id: &str) -> Result<(), sqlx
         },
     )
     .await;
-    // FIRE AND FORGET, exactly as TS: a model hiccup, an install whose gateway
-    // serves nothing this harness can reach, and a reply with no usable body
-    // all arrive here — and the doc keeps the OKF it already had rather than
+    // FIRE AND FORGET: a model hiccup, an install whose gateway serves
+    // nothing this harness can reach, and a reply with no usable body all
+    // arrive here — and the doc keeps the OKF it already had rather than
     // losing it. `onFailure: 'null'` on the definition is the other half.
     let Ok(run) = run else { return Ok(()) };
     let Some(value) = run.value else {
@@ -92,9 +91,9 @@ pub async fn generate_doc_okf(state: &AppState, doc_id: &str) -> Result<(), sqlx
         .unwrap_or_else(|| doc.title.clone());
 
     // OKF concept per the spec: frontmatter (type/title/description/resource/
-    // tags + generated trust stamp + lifecycle) over a markdown body. updated_at
-    // is already the toISOString rendering, so re-rendering it through a Date
-    // (TS's `new Date(...).toISOString()`) is the identity on our own output.
+    // tags + generated trust stamp + lifecycle) over a markdown body.
+    // updated_at is already an ISO rendering, so re-rendering it through a
+    // date conversion is the identity on our own output.
     let now = epoch_ms_to_iso(now_ms());
     let mut lines: Vec<String> = vec![
         "---".into(),
@@ -127,10 +126,9 @@ pub async fn generate_doc_okf(state: &AppState, doc_id: &str) -> Result<(), sqlx
 }
 
 // ── Debounced autonomy: promotions/saves queue their doc; bursts collapse. ──
-// The generation counter is the one refinement over TS's Map-of-handles: a JS
-// timer's callback cannot interleave with queueDocOkf, but a Rust task can
-// wake between another task's lock and its remove — so a callback only clears
-// the slot when the slot is still its own.
+// The generation counter matters because a spawned task can wake between
+// another task's lock and its remove — a callback only clears the slot when
+// the slot is still its own.
 type Debounces = Mutex<HashMap<String, (u64, tokio::task::AbortHandle)>>;
 static TIMERS: LazyLock<Debounces> = LazyLock::new(|| Mutex::new(HashMap::new()));
 

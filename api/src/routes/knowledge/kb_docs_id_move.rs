@@ -1,9 +1,8 @@
-// /api/kb/docs/{id}/move — port of ui/src/routes/api/kb.docs.$id.move.ts.
-// Reparent / reorder a doc in the sidebar tree. Rejects cycles server-side.
-// Moving a doc is an edit of it, so it takes the same gate the PUT does —
-// otherwise any signed-in member could reparent a private doc out of a
-// folder they can't even read. `moveDoc` itself only detects cycles and
-// always has.
+// /api/kb/docs/{id}/move. Reparent / reorder a doc in the sidebar tree.
+// Rejects cycles server-side. Moving a doc is an edit of it, so it takes the
+// same gate the PUT does — otherwise any signed-in member could reparent a
+// private doc out of a folder they can't even read. `moveDoc` itself only
+// detects cycles and always has.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -60,7 +59,7 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.number().int().default(0) — absent is 0.
+    // sort — optional integer; absent is 0.
     let sort = match obj.get("sort") {
         None => 0i32,
         Some(_) => match number_member(obj, "sort", NumKind::Int, i32::MIN as f64, i32::MAX as f64)

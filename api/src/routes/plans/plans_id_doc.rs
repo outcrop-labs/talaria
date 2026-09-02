@@ -1,4 +1,4 @@
-// /api/plans/{id}/doc — port of ui/src/routes/api/plans.$id.doc.ts.
+// /api/plans/{id}/doc.
 // The plan's living document (a linked doc artifact). GET → find-or-create
 // it, seeded from the agent's plan template when one is bound. POST → the
 // plan's agent rewrites it from the conversation so far. Owner or plan
@@ -116,9 +116,8 @@ pub async fn post(
         Ok(t) => t,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `body.tier ? routedModelFor(agentModel, tier).catch(() => null) : null`
-    // `?? conv.agentModel` — an unknown tier falls back to the base agent
-    // rather than refusing the sync.
+    // an unknown tier falls back to the base agent rather than refusing
+    // the sync.
     let routed = match tier.as_deref().filter(|t| !t.is_empty()) {
         Some(t) => routed_model_for(&state.pg, &conv.agent_model, Some(t))
             .await

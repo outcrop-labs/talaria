@@ -13,7 +13,7 @@
 // building unless someone asks for it. Repeats — the seen_count bumps that
 // make a shape rank — say nothing at all.
 //
-// Port of ui/src/server/gaps.ts. The refusal ladder this module guards (the
+// The refusal ladder this module guards (the
 // THE RETRY argument) is behavior, not comment: `remember_ticket_refusal` and
 // `agent_text_authority` carry the correlation rule verbatim.
 
@@ -55,8 +55,8 @@ pub fn slug(v: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    // TS's `[^a-z0-9]+` → '-' collapses runs; the map above emits runs of '-'
-    // which this squeeze then collapses to match.
+    // JS `[^a-z0-9]+` → '-' collapses runs in one pass; the map above emits
+    // runs of '-', which this squeeze then collapses.
     let mut squeezed = String::with_capacity(folded.len());
     let mut prev_dash = false;
     for c in folded.chars() {
@@ -164,8 +164,8 @@ pub async fn agent_text_authority(
     .fetch_optional(pg)
     .await
     {
-        // No row at all (no memo has ever been written) is `rows[0]?.memo`
-        // → null in TS — a normal read, handled below, not an error path.
+        // No row at all (no memo has ever been written) reads as null — a
+        // normal read, handled below, not an error path.
         Ok(memo) => memo.flatten(),
         Err(e) => {
             tracing::error!(
@@ -191,7 +191,7 @@ pub async fn agent_text_authority(
             },
             None => Authority::Nobody,
         },
-        // Missing, malformed, or stale — TS's NaN comparison ladder all lands
+        // Missing, malformed, or stale — the NaN-comparison ladder all lands
         // here too.
         _ => Authority::Admin { on_board: None },
     }
@@ -205,7 +205,7 @@ pub struct ReportedGap {
     pub first: bool,
 }
 
-/// `reportGap` — the write. The agent's `missing`/`needs` go through the one
+/// The write. The agent's `missing`/`needs` go through the one
 /// door first (`capability-gap` surface: the likeliest of all the tools to
 /// quote a credential, and none of its outputs were scanned before), then the
 /// authority decides BOTH the row's board and the announcement's audience —
@@ -280,8 +280,8 @@ pub async fn report_gap(
     })
 }
 
-/// TS `.slice(0, n)` — by UTF-16 code units. Byte-identical for the ASCII
-/// these fields are validated as prose in, and char-boundary-safe here where
+/// JS `.slice(0, n)` semantics — the same result for the ASCII these fields
+/// are validated as prose in, and char-boundary-safe here where
 /// a plain `&s[..300]` could panic on a multibyte edge.
 fn char_take(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
@@ -421,7 +421,7 @@ impl From<GapRow> for CapabilityGap {
     }
 }
 
-/// `listGaps` — the Studio's Suggested queue, ranked by frequency then
+/// The Studio's Suggested queue, ranked by frequency then
 /// recency, capped at 100.
 pub async fn list_gaps(
     pg: &PgPool,
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn slug_matches_ts() {
-        // TS: trim, lower, [^a-z0-9]+ → '-', edge dashes off, 60 max, else
+        // trim, lower, [^a-z0-9]+ → '-', edge dashes off, 60 max, else
         // 'unclassified'.
         assert_eq!(slug("  Invoice Handling!! "), "invoice-handling");
         assert_eq!(slug("---"), "unclassified");

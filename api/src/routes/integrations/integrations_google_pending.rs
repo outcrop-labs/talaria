@@ -1,6 +1,5 @@
-// GET /api/integrations/google/pending — port of
-// ui/src/routes/api/integrations/google.pending.ts. The caller's
-// agent-drafted actions awaiting their approval (send email / create event).
+// GET /api/integrations/google/pending — the caller's agent-drafted actions
+// awaiting their approval (send email / create event).
 
 use axum::Json;
 use axum::extract::State;

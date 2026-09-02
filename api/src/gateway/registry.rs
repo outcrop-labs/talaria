@@ -1,5 +1,4 @@
-// Endpoint registry + model routing — port of listEndpoints (agent-defs.ts)
-// and routingFor/resolveRoute (llm-gateway.ts). The catalog shaping for
+// Endpoint registry + model routing. The catalog shaping for
 // /models lives in gateway/models.rs; this is the WRITE side's view: which
 // endpoint serves a model id, and how a bare pool round-robins.
 
@@ -7,9 +6,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-/// One `llm_endpoints` row, the columns the relay reads. TS's LlmEndpoint
-/// also carries pricing columns; pricing is computed SQL-side in spend_since,
-/// so the relay's view omits them.
+/// One `llm_endpoints` row, the columns the relay reads. Pricing is computed
+/// SQL-side in spend_since, so the relay's view omits those columns.
 #[derive(Debug, Clone)]
 pub struct LlmEndpoint {
     pub id: String,
@@ -26,7 +24,7 @@ pub struct LlmEndpoint {
     /// `llm_endpoints.price_in_per_mtok` / `price_out_per_mtok` — the flat
     /// $/MTok fallback when neither override names the model. Null when the
     /// endpoint was never priced; the fitness estimate reads them through
-    /// `price_of` exactly as the TS surface did.
+    /// `price_of`.
     pub price_in_per_mtok: Option<f64>,
     pub price_out_per_mtok: Option<f64>,
     /// `llm_endpoints.model_prices` — an admin's per-model overrides, keyed by
@@ -47,8 +45,8 @@ pub struct LlmEndpoint {
 }
 
 pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error> {
-    // Same order the TS query produces: local endpoints first, then name asc —
-    // round-robin pools and owned_by lists both depend on it.
+    // Local endpoints first, then name asc — round-robin pools and owned_by
+    // lists both depend on it.
     let rows = sqlx::query_as::<
         _,
         (
@@ -104,10 +102,10 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
                     models: models.0,
                     price_in_per_mtok,
                     price_out_per_mtok,
-                    // TS reads `ep.modelPrices ?? {}` at use — same here.
+                    // jsonb nulls ride as JSON null — a null column reads as
+                    // no overrides/defaults at use.
                     model_prices: model_prices.unwrap_or(serde_json::Value::Null),
                     auto_prices: auto_prices.unwrap_or(serde_json::Value::Null),
-                    // TS reads `ep.requestDefaults ?? {}` at use — same here.
                     request_defaults: request_defaults.unwrap_or(serde_json::Value::Null),
                     model_efforts: model_efforts.unwrap_or(serde_json::Value::Null),
                 }
@@ -116,14 +114,13 @@ pub async fn list_endpoints(pg: &PgPool) -> Result<Vec<LlmEndpoint>, sqlx::Error
         .collect())
 }
 
-// ── The registry's own control plane (agent-defs.ts endpoints CRUD) ─────────
+// ── The registry's own control plane (endpoints CRUD) ───────────────────────
 
-/// The wire shape of listEndpoints(): every column in the TS SELECT's order,
+/// The wire shape of the endpoints list: every column in the canonical order,
 /// jsonb passthroughs riding raw Values (the stored canonical order IS the
-/// wire order), and prices as STRINGS — postgres.js hands numerics through
-/// unparsed (arbitrary precision is the column's promise), so a stored 3
-/// reads "3" on the wire, not 3. ::text prints the stored digits verbatim,
-/// which is exactly that.
+/// wire order), and prices as STRINGS — arbitrary precision is the column's
+/// promise, so a stored 3 reads "3" on the wire, not 3. ::text prints the
+/// stored digits verbatim, which is exactly that.
 pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, sqlx::Error> {
     let rows: Vec<(
         String,
@@ -207,11 +204,9 @@ pub struct EndpointPatch {
     pub api_key: Option<String>,
 }
 
-/// updateEndpoint — one independent UPDATE per PRESENT field, exactly as TS
-/// sequences them. Two JS-truthiness traps are load-bearing: `if
-/// (patch.models)` skips an EMPTY array (clearing the catalog is not
-/// possible through this door), while the jsonb objects update even when
-/// empty ({}) because a JS object is always truthy.
+/// One independent UPDATE per PRESENT field. Two quirks are load-bearing:
+/// an EMPTY models array is skipped (clearing the catalog is not possible
+/// through this door), while the jsonb objects update even when empty ({}).
 pub async fn update_endpoint(
     pg: &PgPool,
     sb: &crate::secretbox::SecretBox,
@@ -219,7 +214,7 @@ pub async fn update_endpoint(
     patch: &EndpointPatch,
 ) -> Result<(), sqlx::Error> {
     if let Some(api_key) = &patch.api_key {
-        // patch.apiKey ? seal(trim) : null — '' and null both clear.
+        // '' and null both clear; anything else seals the trimmed value.
         let cipher = if api_key.trim().is_empty() {
             None
         } else {
@@ -291,7 +286,7 @@ pub async fn update_endpoint(
     Ok(())
 }
 
-/// createEndpoint — a user-defined endpoint (Models tab). Name must be fresh;
+/// Create a user-defined endpoint (Models tab). Name must be fresh;
 /// the caller maps a unique-violation to the friendly sentence.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_endpoint(
@@ -325,7 +320,7 @@ pub async fn create_endpoint(
     Ok(row.0)
 }
 
-/// ensureEndpoint — insert-if-absent (on conflict only provider/base_url
+/// Insert-if-absent (on conflict only provider/base_url
 /// refresh; class/key-env/context stay as first written). Federation and the
 /// import path use it to map outside model targets into the registry.
 pub async fn ensure_endpoint(
@@ -356,7 +351,7 @@ pub async fn ensure_endpoint(
     Ok(())
 }
 
-/// addEndpointModels — union new ids into the endpoint's model list, first
+/// Union new ids into the endpoint's model list, first
 /// occurrence order preserved-ish (jsonb_agg(distinct) inside one call).
 pub async fn add_endpoint_models(
     pg: &PgPool,
@@ -381,7 +376,7 @@ pub async fn add_endpoint_models(
     Ok(())
 }
 
-/// deleteEndpoint — refused while any ENABLED agent's CURRENT version targets
+/// Refused while any ENABLED agent's CURRENT version targets
 /// it (retired agents don't run; their history must not block).
 pub async fn delete_endpoint(pg: &PgPool, id: &str) -> Result<(bool, Vec<String>), sqlx::Error> {
     let name: Option<(String,)> =
@@ -422,7 +417,7 @@ pub struct ModelRouting {
 }
 
 /// Where a model id CAN go, without picking (and without advancing the
-/// round-robin cursor) — port of routingFor.
+/// round-robin cursor).
 pub async fn routing_for(pg: &PgPool, model: &str) -> Result<ModelRouting, sqlx::Error> {
     let eps = list_endpoints(pg).await?;
     // Endpoint-qualified: "<endpoint>/<rest>" (rest may itself contain "/").
@@ -449,8 +444,7 @@ pub async fn routing_for(pg: &PgPool, model: &str) -> Result<ModelRouting, sqlx:
     })
 }
 
-/// Round-robin cursor per bare model name (module-level; resets on restart —
-/// same lifetime as TS's module Map).
+/// Round-robin cursor per bare model name (module-level; resets on restart).
 fn rr() -> &'static Mutex<HashMap<String, usize>> {
     static RR: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
     RR.get_or_init(|| Mutex::new(HashMap::new()))
@@ -462,8 +456,8 @@ pub struct ResolvedRoute {
     pub upstream_model: String,
 }
 
-/// Resolve a requested model id to an endpoint + upstream model — port of
-/// resolveRoute. Ok(None) = nothing serves it.
+/// Resolve a requested model id to an endpoint + upstream model.
+/// Ok(None) = nothing serves it.
 pub async fn resolve_route(pg: &PgPool, model: &str) -> Result<Option<ResolvedRoute>, sqlx::Error> {
     let ModelRouting {
         endpoints,
@@ -490,7 +484,7 @@ mod tests {
     // is exercised by the live-DB tests (tests/llm_chat.rs).
     #[test]
     fn cursor_advances_modulo() {
-        // 3 endpoints, cursor 0,1,2,0 — mirrors (rr.get ?? 0) % len, i+1.
+        // 3 endpoints, cursor 0,1,2,0 — index = stored % len, then store i+1.
         for (cursor, len, want) in [(0usize, 3usize, 0usize), (1, 3, 1), (3, 3, 0), (7, 3, 1)] {
             assert_eq!(cursor % len, want);
         }

@@ -1,7 +1,6 @@
-// /api/keys — port of ui/src/routes/api/keys.ts. Personal API keys for the
-// Talaria LLM gateway. GET → my keys + whether I may mint. POST → mint one;
-// the secret is in THIS response only (never stored, never logged, never in
-// the audit entry).
+// /api/keys. Personal API keys for the Talaria LLM gateway. GET → my keys +
+// whether I may mint. POST → mint one; the secret is in THIS response only
+// (never stored, never logged, never in the audit entry).
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, string_member};

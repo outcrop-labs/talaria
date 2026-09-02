@@ -12,10 +12,9 @@
 // week. Every one of those has a live number somewhere in the process — the
 // work is bringing it to a person, not computing it.
 //
-// Port of ui/src/server/alerts.ts. The scheduler and outbox rows describe the
-// ANSWERING process's own memory, as in TS — on a multi-instance deployment
-// that is whichever instance answered, and under TS/Rust coexistence the two
-// genuinely differ (that is the documented divergence, not a bug).
+// The scheduler and outbox rows describe the
+// ANSWERING process's own memory — on a multi-instance deployment
+// that is whichever instance answered.
 
 use std::collections::HashMap;
 
@@ -90,13 +89,14 @@ pub async fn compute_alerts(state: &AppState, user_id: &str) -> Vec<Alert> {
     value
 }
 
-/// `n.toLocaleString('en-US')` via the crate's shared grouping helper.
+/// en-US grouping (1,234,567) via the crate's shared grouping helper.
 fn fmt(n: i64) -> String {
     group(n)
 }
 
-/// `Math.max(1, Math.round(ms / 60_000))` — the alert sentences' minute
-/// count. A hair under 90s still reads as "2" (Math.round), never 0.
+/// The alert sentences' minute count — rounded half-up, then clamped to >= 1
+/// by every caller. A hair under 90s still reads as "2"; a hair under 30s
+/// reads as "1", never 0.
 fn minutes(ms: i64) -> i64 {
     ((ms as f64) / 60_000.0).round() as i64
 }
@@ -553,7 +553,7 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         }
     }
 
-    // TS's Array#sort with a severity rank — stable, severity-first.
+    // Severity-rank sort — stable, severity-first.
     alerts.sort_by_key(|a| match a.severity {
         AlertSeverity::Critical => 0,
         AlertSeverity::Warning => 1,
@@ -564,8 +564,7 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
 
 /// Stuck-ticket hrefs are per-row paths, not literals. `sort_by_key` borrows
 /// the vec while comparing, so each Alert keeps its own leaked &'static str —
-/// at most twenty per read, freed never, exactly like TS hands out fresh
-/// strings nobody frees.
+/// at most twenty per read, freed never.
 fn leak(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }

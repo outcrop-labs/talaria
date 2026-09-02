@@ -1,4 +1,4 @@
-// /api/chat — port of ui/src/routes/api/chat.ts. POST { model,
+// /api/chat. POST { model,
 // conversationId?, content } → durable streaming chat: the turn is persisted
 // to Postgres (the server owns history) and the gateway stream is TEED — one
 // branch to the client as SSE with X-Conversation-Id / X-Message-Id, one
@@ -103,7 +103,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
     })
 }
 
-/// The queued-turn ack — key order is the TS literal's.
+/// The queued-turn ack — wire key order: `queued`, then `conversationId`.
 #[derive(serde::Serialize)]
 struct QueuedAck {
     queued: bool,
@@ -265,7 +265,7 @@ pub async fn post(
             .iter()
             .map(|c| serde_json::to_value(c).unwrap_or(Value::Null)),
     );
-    // titleFrom(content || attachments[0]?.filename || 'chat')
+    // the title falls back content → first attachment's filename → 'chat'
     let title = if !body.content.is_empty() {
         title_from(&body.content)
     } else {
@@ -575,8 +575,8 @@ pub async fn post(
     });
     Response::builder()
         .status(StatusCode::from_u16(upstream.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
-        // cache-control first — the TS oracle sends it above content-type on
-        // this route, and the wire order is part of the byte contract.
+        // cache-control first — it sits above content-type on the wire, and
+        // header order is part of the contract.
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONTENT_TYPE, upstream.content_type.clone())
         .header("x-conversation-id", conv_id.as_str())

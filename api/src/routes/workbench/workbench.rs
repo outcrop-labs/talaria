@@ -1,8 +1,8 @@
-// /api/workbench — port of ui/src/routes/api/workbench.ts. Workbench
-// profiles: the role-agnostic sandbox registry ('dev' seeded; designer/data
-// ride the same table). GET → any member (env values masked — they are the
-// documented home for scoped credentials); PUT → agents.manage, except the
-// infrastructure fields, which are admin-only.
+// /api/workbench. Workbench profiles: the role-agnostic sandbox registry
+// ('dev' seeded; designer/data ride the same table). GET → any member (env
+// values masked — they are the documented home for scoped credentials);
+// PUT → agents.manage, except the infrastructure fields, which are
+// admin-only.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -28,9 +28,9 @@ use crate::workbench::{
 /// The fields that render straight into the fleet's compose services.
 const INFRA_FIELDS: [&str; 2] = ["image", "mounts"];
 
-/// `z.record(z.string(), z.string().max(500)).optional()` — any keys, values
-/// capped. The value Map preserves the body's key order, which is the stored
-/// and answered order.
+/// An optional record of string → string (values capped) — any keys. The
+/// value Map preserves the body's key order, which is the stored and
+/// answered order.
 fn optional_env_member(
     obj: &Map<String, Value>,
     key: &str,
@@ -56,8 +56,8 @@ fn optional_env_member(
     }
 }
 
-/// `z.object({ departments: …, roles: … }).optional()` — both members
-/// optional string arrays (≤60 each, ≤20 items).
+/// An optional { departments, roles } object — both members optional
+/// string arrays (≤60 each, ≤20 items).
 fn optional_auto_attach_member(
     obj: &Map<String, Value>,
     key: &str,

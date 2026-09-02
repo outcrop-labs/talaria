@@ -1,8 +1,8 @@
-// /api/rag/search — port of ui/src/routes/api/rag.search.ts. Ranked
-// retrieval across the caller's accessible collections, for EITHER caller
-// shape: a signed-in user (their bindings) or a fleet agent (agent key +
-// x-agent-name → that agent's bindings). This is the endpoint the
-// search_knowledge MCP tool calls — retrieval as function-calling.
+// /api/rag/search. Ranked retrieval across the caller's accessible
+// collections, for EITHER caller shape: a signed-in user (their bindings) or
+// a fleet agent (agent key + x-agent-name → that agent's bindings). This is
+// the endpoint the search_knowledge MCP tool calls — retrieval as
+// function-calling.
 
 use axum::Json;
 use axum::extract::State;
@@ -82,8 +82,8 @@ pub async fn post(
         Ok(hits) => {
             Json(json!({ "hits": hits.iter().map(hit_json).collect::<Vec<_>>() })).into_response()
         }
-        // TS's catch carries the failure's own sentence at 502: retrieval is
-        // a gateway to someone else's index, and "unreachable" is the honest
+        // The failure's own sentence is carried at 502: retrieval is a
+        // gateway to someone else's index, and "unreachable" is the honest
         // status for a search that never ran.
         Err(msg) => house_error(StatusCode::BAD_GATEWAY, &msg),
     }

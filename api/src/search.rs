@@ -1,5 +1,4 @@
-// LIVE WEB SEARCH, SUPPLIED BY THE DEPLOYMENT. Port of ui/src/server/search.ts
-// (the hand-rolled client the migration plan chose over the 0.1.0 crate).
+// LIVE WEB SEARCH, SUPPLIED BY THE DEPLOYMENT.
 //
 // WHY TALARIA OWNS THIS RATHER THAN REGISTERING SOMEBODY'S MCP SERVER. The
 // capability model already knows how to route around a model that cannot
@@ -71,13 +70,12 @@ pub async fn search_url(pg: &PgPool) -> String {
     resolve_search_url(configured)
 }
 
-/// The precedence, pure. The env leg is resolved by `??`, not truthiness — an
-/// env var that is SET BUT EMPTY suppresses the setting read and falls straight
-/// to the default, exactly as `process.env.SEARXNG_URL ?? getSetting(...)` does
-/// (the caller only reaches the setting leg when the env var is UNSET). The
-/// default leg is `||`, so any empty resolution lands on the service name. ONE
-/// trailing slash comes off — `replace(/\/$/, '')` — not all of them, because
-/// that is the TS spelling and `http://host/` is the only shape operators type.
+/// The precedence, pure. The env leg beats the setting even when SET BUT
+/// EMPTY — the empty value suppresses the setting read and falls straight to
+/// the default; the caller only reaches the setting leg when the env var is
+/// UNSET. Any empty resolution lands on the service name. ONE trailing slash
+/// comes off, not all of them — `http://host/` is the only shape operators
+/// type, and `//` is a path.
 fn resolve_search_url(configured: Option<String>) -> String {
     let base = configured
         .filter(|s| !s.is_empty())
@@ -110,8 +108,8 @@ const MAX_LIMIT: usize = 25;
 /// outlives the turn that asked for it is a timeout charged to the model.
 const TIMEOUT_MS: Duration = Duration::from_millis(20_000);
 
-/// ONE SEARCH'S TWO INJECTED EDGES, the same seams search.test.ts drives: the
-/// HTTP call and the URL resolution. Both default to the real thing.
+/// ONE SEARCH'S TWO INJECTED EDGES: the HTTP call and the URL resolution.
+/// Both default to the real thing.
 #[derive(Clone)]
 pub struct SearchDeps {
     pub fetch: FetchFn,
@@ -158,9 +156,8 @@ pub fn real_deps() -> SearchDeps {
 /// "error sending request" is a dead end and "the search service did not
 /// answer" is not.
 ///
-/// `limit` stays an f64 until the clamp because the TS one is a JS number all
-/// the way to `slice(0, limit)`: a fractional 2.5 truncates to two results, and
-/// a negative clamps up to one rather than wrapping a usize.
+/// `limit` stays an f64 until the clamp: a fractional 2.5 truncates to two
+/// results, and a negative clamps up to one rather than wrapping a usize.
 pub async fn search_web(
     pg: &PgPool,
     query: &str,
@@ -176,8 +173,8 @@ pub async fn search_web(
         .max(1.0) as usize;
     let base = (deps.url)(pg.clone()).await;
 
-    // URLSearchParams: space is `+`, everything else percent-encoded — which is
-    // exactly `form_urlencoded`'s house style, so the request bytes match.
+    // Form encoding: space is `+`, everything else percent-encoded —
+    // `form_urlencoded`'s house style.
     let params = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("q", q)
         .append_pair("format", "json")
@@ -186,8 +183,7 @@ pub async fn search_web(
         Ok(r) => r,
         Err(msg) => {
             // The parenthetical is the transport's own message; the sentence
-            // around it is what the model reads. (Wording of the parenthetical
-            // is the one place Rust's error text differs from Node's.)
+            // around it is what the model reads.
             return Err(format!(
                 "the search service at {base} did not answer ({msg}). Tell whoever asked \
                  that live search is unavailable right now rather than answering from memory."
@@ -207,8 +203,7 @@ pub async fn search_web(
     if !(200..300).contains(&res.status) {
         return Err(format!("the search service answered {}", res.status));
     }
-    // A 200 whose body is not JSON is an empty answer, not a failure — the TS
-    // `.catch(() => null)` reads the same way.
+    // A 200 whose body is not JSON is an empty answer, not a failure.
     let body: Value = serde_json::from_str(&res.body).unwrap_or(Value::Null);
     Ok(results_from(&body).into_iter().take(limit).collect())
 }
@@ -328,8 +323,8 @@ mod tests {
             .expect("a lazy pool connects to nothing")
     }
 
-    /// search.test.ts's deps: a fixed URL and a scripted fetch, with every call
-    /// recorded so a test can say what the client actually asked for.
+    /// A fixed URL and a scripted fetch, with every call recorded so a test
+    /// can say what the client actually asked for.
     struct Scripted {
         reply: Result<FetchReply, String>,
         calls: Mutex<Vec<String>>,
@@ -439,7 +434,7 @@ mod tests {
             "a search needs a query"
         );
         assert!(s.calls.lock().unwrap().is_empty());
-        // 50 asks for ten; -3 and 2.5 clamp/truncate the TS way.
+        // 50 caps at 25; -3 clamps up to one; 2.5 truncates to two.
         let body = format!(
             r#"{{"results":[{}]}}"#,
             (0..25)
@@ -531,9 +526,9 @@ mod tests {
 
     #[test]
     fn url_resolution_defaults_blanks_and_strips_one_slash() {
-        // The env-empty case is the trap: set-but-empty is not nullish in TS, so
-        // it suppresses the setting — here that arrives as Some("") resolving to
-        // the default, which is the same observable behavior.
+        // The env-empty case is the trap: SET BUT EMPTY is not UNSET, so it
+        // suppresses the setting — Some("") resolves to the default, never to
+        // the setting leg.
         assert_eq!(
             resolve_search_url(Some("http://env.test".into())),
             "http://env.test"
@@ -542,8 +537,7 @@ mod tests {
             resolve_search_url(Some("http://env.test/".into())),
             "http://env.test"
         );
-        // ONE slash, not all of them: `//` is a path, and `replace(/\/$/, '')`
-        // takes only the last.
+        // ONE slash, not all of them: `//` is a path — only the last comes off.
         assert_eq!(
             resolve_search_url(Some("http://env.test//".into())),
             "http://env.test/"

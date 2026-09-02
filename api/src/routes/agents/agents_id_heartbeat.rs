@@ -1,7 +1,5 @@
-// GET /api/agents/{id}/heartbeat — port of
-// ui/src/routes/api/agents.$id.heartbeat.ts. Refresh last_seen and return
-// the agent's assigned work (tasks assigned to it, across boards).
-// MC-compatible.
+// GET /api/agents/{id}/heartbeat. Refresh last_seen and return the agent's
+// assigned work (tasks assigned to it, across boards). MC-compatible.
 
 use crate::agent_auth::fleet_caller;
 use crate::agents_registry::heartbeat_agent;
@@ -39,8 +37,7 @@ pub async fn get(
     // with a read first, decide, and only then heartbeat.
     //
     // The cast rides the parameter (`id = $1::uuid`), so a non-uuid :id is
-    // a Postgres error here — the same 500 the TS throw produces, not a
-    // quiet 404.
+    // a Postgres error here — a 500, not a quiet 404.
     let name: Option<String> =
         match sqlx::query_scalar("select name from fleet_agents where id = $1::uuid")
             .bind(&id)

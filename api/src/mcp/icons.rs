@@ -1,4 +1,4 @@
-// Marketplace icon cache — port of ui/src/server/mcp-icons.ts. Icons resolve
+// Marketplace icon cache. Icons resolve
 // server-side (declared icon URL, else the DuckDuckGo favicon CDN — fast —
 // else the site's own favicon) and are WARMED in bulk whenever a library page
 // is served, so cards paint from cache instead of fanning out cold fetches
@@ -23,7 +23,7 @@ use futures_util::future::BoxFuture;
 
 pub const ICON_CACHE_MS: i64 = 24 * 60 * 60 * 1000;
 pub const ICON_MAX_BYTES: u64 = 512 * 1024;
-/// TS's icon workers — same bound as the registry pool.
+/// Icon warm workers — same bound as the registry pool.
 const WARM_CONCURRENCY: usize = 6;
 
 /// The icon src (registry-declared) or the domain to favicon-proxy.
@@ -57,8 +57,8 @@ pub struct IconCache {
     cache: Mutex<HashMap<String, Entry>>,
 }
 
-/// ui/src/lib/icon-domain.ts — only public, dotted hostnames can plausibly
-/// serve a favicon. Internal endpoints — IP literals (the built-in toolkit's
+/// Only public, dotted hostnames can plausibly serve a favicon. Internal
+/// endpoints — IP literals (the built-in toolkit's
 /// local gateway), single-label hosts from pseudo-URLs like
 /// `talaria-workbench://core`, localhost and friends — would only ever 404 the
 /// icon proxy, so callers skip the request entirely.
@@ -200,8 +200,8 @@ impl IconCache {
     }
 }
 
-/// The production singleton: safe_fetch edge (5s timeout, 512KB cap — the
-/// TS fetchIcon bounds), wall clock.
+/// The production singleton: safe_fetch edge (5s timeout, 512KB cap), wall
+/// clock.
 pub fn icons() -> Arc<IconCache> {
     static ICONS: LazyLock<Arc<IconCache>> = LazyLock::new(|| {
         let fetch: FetchIcon = Arc::new(|url: &str| {

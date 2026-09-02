@@ -14,15 +14,16 @@
 // than erroring, and every tool call quietly does nothing.
 //
 // WHY THE EXISTING ALERT MISSED IT, which is the part worth internalising.
-// `alerts.ts` probes the toolkit at `127.0.0.1:5280` and it answered perfectly,
-// all day, because the APP can always reach it — the app is the thing listening.
+// The alerts surface probes the toolkit at `127.0.0.1:5280` and it answered
+// perfectly, all day, because the APP can always reach it — the app is the
+// thing listening.
 // Reachability is not a property of a service, it is a property of a PATH, and
 // the only way to test the agent's path is to stand where the agent stands.
 //
 // So this runs a throwaway container ON THE FLEET NETWORK and asks it. That is
 // expensive — a container start, ~1s — so it is deliberately NOT on the alerts
 // poll. It runs when the fleet changes (render, up) and its verdict is cached
-// for the alerts panel to read. Port of ui/src/server/fleet-preflight.ts.
+// for the alerts panel to read.
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -44,9 +45,9 @@ pub struct PreflightResult {
     pub at: String,
 }
 
-/// One CLI probe with execFile's contract: true only when the binary runs and
+/// One CLI probe: true only when the binary runs and
 /// exits zero. A timeout and a failure are the same answer to every caller
-/// here (`has`, `reaches`, `resolvesExternally` all degrade to "absent"),
+/// here (the reach and DNS probes all degrade to "absent"),
 /// which is why this is its own helper and not fleet_docker's `docker` —
 /// that one reports output and stderr; these only ever report WHETHER.
 async fn exec_ok(bin: &str, args: &[&str], timeout: Duration) -> bool {
@@ -69,10 +70,10 @@ async fn exec_ok(bin: &str, args: &[&str], timeout: Duration) -> bool {
 /// network, maybe behind a proxy with no published host port): every agent
 /// called tools fine while the preflight reported the app unreachable.
 ///
-/// TS keeps two identical fns (appTarget/mcpTarget) — they once probed
-/// different ports; agents moved to the gateway URL on the app port and both
-/// now derive from the same base. One definition here, over a pure core so
-/// the derivation is testable without owning the process env.
+/// One definition serves both the app and the toolkit targets — they once
+/// probed different ports; both are the gateway URL on the app port now. A
+/// pure core (target_of) keeps the derivation testable without owning the
+/// process env.
 fn agent_reach_target() -> Result<String, String> {
     target_of(&crate::fleet::layout::mcp_gw_base())
 }
@@ -212,12 +213,12 @@ pub async fn last_fleet_preflight(pg: &PgPool) -> Option<PreflightResult> {
 }
 
 /// Ask, from the fleet network, whether Talaria is reachable and the internet
-/// resolvable. Never throws: a docker that will not run is its own alert
-/// elsewhere, and a preflight that takes the caller down with it is worse than
-/// no preflight.
+/// resolvable. Never fails the caller: a docker that will not run is its own
+/// alert elsewhere, and a preflight that takes the caller down with it is
+/// worse than no preflight.
 pub async fn run_fleet_preflight(pg: &PgPool) -> PreflightResult {
-    // `new Date().toISOString()` — via the house epoch helper (this crate
-    // keeps no clock; time is read here, at the edge, exactly once).
+    // via the house epoch helper (this crate keeps no clock; time is read
+    // here, at the edge, exactly once).
     let at = crate::agent_auth::epoch_ms_to_iso(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -226,9 +227,8 @@ pub async fn run_fleet_preflight(pg: &PgPool) -> PreflightResult {
     );
     let result = match probe(&at).await {
         Ok(r) => r,
-        // The shape of the TS catch: name the failure, keep the target, and
-        // still write a verdict — an unreachable preflight is itself an answer
-        // somebody reads later.
+        // Name the failure, keep the target, and still write a verdict — an
+        // unreachable preflight is itself an answer somebody reads later.
         Err(e) => PreflightResult {
             ok: false,
             target: agent_reach_target().unwrap_or_else(|_| crate::fleet::layout::mcp_gw_base()),
@@ -324,7 +324,7 @@ mod tests {
             target_of("http://gw.internal.example").unwrap(),
             "gw.internal.example:80"
         );
-        // A malformed base is the TS `new URL` throw, not a guess.
+        // A malformed base errors, never guesses.
         assert_eq!(target_of("not a url").unwrap_err(), "Invalid URL");
     }
 

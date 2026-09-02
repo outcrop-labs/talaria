@@ -1,6 +1,6 @@
-// /api/dms — port of ui/src/routes/api/dms.ts. POST { userId } → find-or-
-// create the DM with that person (rides the channel machinery: same messages,
-// SSE feed, and composer as everything else).
+// /api/dms. POST { userId } → find-or-create the DM with that person (rides
+// the channel machinery: same messages, SSE feed, and composer as
+// everything else).
 
 use crate::body::{as_object, uuid_member};
 use crate::channels::ensure_dm;
@@ -35,8 +35,8 @@ pub async fn post(
         Ok(u) => u,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // ensureDm throws its user-facing message (DM with yourself, unknown
-    // user); the TS route answers it as a 400.
+    // ensure_dm's own user-facing message (DM with yourself, unknown user)
+    // answers as a 400.
     match ensure_dm(&state.pg, &user.id, &other).await {
         Ok(channel) => (StatusCode::OK, Json(DmEnvelope { channel })).into_response(),
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),

@@ -1,24 +1,24 @@
-// THE CODE PROBE'S EXECUTOR — port of the code-task half of fitness/probes.ts:
-// `CodeTask`, `CODE_TASKS`, `extractCode`, `sameValue`, `CODE_TIMEOUT_MS` and
-// `runCodeTask`. It lives in its own module rather than inside probes because
-// it is the one place in the whole fitness family that executes a program a
-// MODEL wrote, and that deserves a boundary you can name in one line.
+// THE CODE PROBE'S EXECUTOR — the code task, its extraction and its runner:
+// `CodeTask`, `CODE_TASKS`, `extract_code`, `same_value`, `CODE_TIMEOUT_MS`
+// and `run_code_task`. It lives in its own module rather than inside probes
+// because it is the one place in the whole fitness family that executes a
+// program a MODEL wrote, and that deserves a boundary you can name in one
+// line.
 //
-// node:vm BECOMES BOA. The TS runs the candidate in a fresh V8 context with a
-// wall-clock timeout; the Rust runs it in a fresh boa context — same contract,
-// narrower if anything: a new boa context holds the ECMAScript builtins and
+// BOA, IN A FRESH CONTEXT. The candidate runs in a fresh boa context, narrow
+// by construction: a new boa context holds the ECMAScript builtins and
 // nothing else, so there is no `require`, no `process`, no `fetch`, no timers,
 // and no host object is ever constructed for candidate code to reach. The
-// boundary stays the one the TS chose on purpose: arguments cross as a JSON
-// string and results come back as a JSON string, and the context holds nothing
-// but a stubbed `console`.
+// boundary is deliberate: arguments cross as a JSON string and results come
+// back as a JSON string, and the context holds nothing but a stubbed
+// `console`.
 //
-// THE TIMEOUT MOVES TO A THREAD, because boa has no wall-clock kill. The whole
+// THE TIMEOUT LIVES ON A THREAD, because boa has no wall-clock kill. The whole
 // task — definition plus every assertion — is evaluated inside one spawned
 // thread and the caller waits 250ms for its answer. A wrong `while (true) {}`
-// costs the same 250ms it costs in TS; the leaked thread is reaped shortly
-// after by the runtime limits below, so a run cannot shed unbounded threads
-// the way a run without limits could.
+// costs its 250ms and no more; the leaked thread is reaped shortly after by
+// the runtime limits below, so a run cannot shed unbounded threads the way a
+// run without limits could.
 //
 // THIS IS NOT A SECURITY SANDBOX and must never be described as one. It is here
 // because the alternative — grading code by asking another model whether it
@@ -119,9 +119,8 @@ pub fn extract_code(raw: &str) -> String {
     static FENCED: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?s)```(?:[a-zA-Z]*)\n(.*?)```").expect("a static regex compiles")
     });
-    // TS writes the keyword check as a look-ahead and deletes only the `export`
-    // prefix; the regex crate has no look-ahead, so the same match keeps its
-    // keyword tail as a capture instead — byte-identical output, no new engine.
+    // The keyword tail is a CAPTURE rather than a look-ahead (the regex crate
+    // has no look-ahead) — the output bytes are the same either way.
     static EXPORT: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?m)^[ \t]*export\s+((?:async\s+)?function\b|const\b|let\b|var\b)")
             .expect("a static regex compiles")
@@ -291,9 +290,9 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
         fn_ = task.fn_,
     );
     let reply = match eval_candidate(script) {
-        // `Failed` is the one branch whose sentence TS builds from the thrown
-        // error; every engine words its parse errors differently, so the shape
-        // is the contract, not the message text.
+        // `Failed` is the one branch whose sentence carries the thrown error;
+        // every engine words its parse errors differently, so the shape is the
+        // contract, not the message text.
         Ok(EvalOutcome::Reply(text)) => text,
         Ok(EvalOutcome::NotAString) => {
             return Some(format!("{}: the code did not produce a result", task.name));

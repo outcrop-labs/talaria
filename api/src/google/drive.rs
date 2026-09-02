@@ -1,9 +1,8 @@
-// Google Drive service — ui/src/server/google/drive.ts, whole: push a Talaria
-// artifact into the connected user's Drive as a native Google Doc / Sheet (or
-// an unconverted file), browse what's there, and pull a Drive file's content
-// back into a Talaria-artifact shape. Acts strictly as the connected identity
-// via its stored token (per-user or org), so Drive's own sharing rules govern
-// what lands where.
+// Google Drive service: push a Talaria artifact into the connected user's
+// Drive as a native Google Doc / Sheet (or an unconverted file), browse what's
+// there, and pull a Drive file's content back into a Talaria-artifact shape.
+// Acts strictly as the connected identity via its stored token (per-user or
+// org), so Drive's own sharing rules govern what lands where.
 
 use base64::Engine as _;
 use sqlx::PgPool;
@@ -25,7 +24,7 @@ const GOOGLE_SHEET: &str = "application/vnd.google-apps.spreadsheet";
 // Google's native (non-downloadable) types must be exported to a real format.
 const GOOGLE_NATIVE_PREFIX: &str = "application/vnd.google-apps";
 
-/// drive.ts DriveFile — the created file, in wire order.
+/// The created file, in wire order.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveFile {
@@ -38,9 +37,9 @@ pub struct DriveFile {
 /// The route's three friendly failures; anything else is `Failed` with the
 /// sentence Google sent (the log's only consumer).
 pub enum ExportError {
-    /// connections.ts requireToken's GoogleNotConnected throw.
+    /// No connection — the user hasn't connected Google.
     NotConnected,
-    /// mediaFor returned null — the artifact's kind has no Drive mapping.
+    /// media_for answered None — the artifact's kind has no Drive mapping.
     NotExportable,
     /// The Drive call itself failed.
     Failed(String),
@@ -59,8 +58,8 @@ fn sheet_to_csv(body: &str) -> String {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::Bool(b) => b.to_string(),
-            // String(v) on a JS object is "[object Object]"; these cells come
-            // from our own sheet editor and are never containers.
+            // container cells never occur — these grids come from our own
+            // sheet editor.
             other => other.to_string(),
         }
     };
@@ -92,8 +91,7 @@ struct MediaPart {
     base64: bool,
 }
 
-/// How each artifact kind maps onto a Drive upload (drive.ts mediaFor).
-/// None ⇒ not exportable.
+/// How each artifact kind maps onto a Drive upload. None ⇒ not exportable.
 async fn media_for(pg: &PgPool, sb: &SecretBox, a: &Artifact) -> Option<(String, MediaPart)> {
     match a.kind.as_str() {
         "doc" => Some((
@@ -124,7 +122,7 @@ async fn media_for(pg: &PgPool, sb: &SecretBox, a: &Artifact) -> Option<(String,
         // Upload the raw bytes unconverted, preserving the original type.
         "file" => {
             let storage_ref = a.storage_ref.clone()?;
-            // TS: getUpload(...)'s null (no row or lost blob) ⇒ not exportable.
+            // no row or lost blob ⇒ not exportable
             let (bytes, upload_mime, _) = match get_upload(pg, sb, &storage_ref).await {
                 Ok(Some(found)) => found,
                 _ => return None,
@@ -155,8 +153,8 @@ async fn media_for(pg: &PgPool, sb: &SecretBox, a: &Artifact) -> Option<(String,
 }
 
 /// The multipart/related body. The boundary is derived from the metadata JSON
-/// itself (TS does the same): deterministic for a given export, collision-safe
-/// against any body, and no RNG on the hot path.
+/// itself: deterministic for a given export, collision-safe against any body,
+/// and no RNG on the hot path.
 fn build_multipart(metadata_json: &str, media: &MediaPart) -> (Vec<u8>, String) {
     let hex: String = metadata_json
         .as_bytes()
@@ -185,8 +183,8 @@ fn build_multipart(metadata_json: &str, media: &MediaPart) -> (Vec<u8>, String) 
     (body, boundary)
 }
 
-/// The Drive file metadata — field order is the TS literal's (name, mimeType,
-/// parents?), which is also what the boundary hashes.
+/// The Drive file metadata — field order (name, mimeType, parents?) is also
+/// what the boundary hashes.
 #[derive(serde::Serialize)]
 struct DriveMetadata {
     name: String,
@@ -270,9 +268,8 @@ pub async fn export_artifact_with_token(
     })
 }
 
-/// Export an artifact into the given user's Drive (drive.ts
-/// exportArtifactToDrive): vend the per-user token or fail NotConnected —
-/// connections.ts requireToken's caller-friendly throw.
+/// Export an artifact into the given user's Drive: vend the per-user token
+/// or fail NotConnected.
 pub async fn export_artifact_to_drive(
     pg: &PgPool,
     sb: &SecretBox,
@@ -287,7 +284,7 @@ pub async fn export_artifact_to_drive(
     export_artifact_with_token(pg, sb, &token, artifact, None).await
 }
 
-// ── Browse + import (drive.ts listDriveFiles / importDriveFile) ──────────────
+// ── Browse + import ──────────────────────────────────────────────────────────
 
 /// One Drive listing row (DriveListEntry) — wire order pinned (id, name,
 /// mimeType, modifiedTime, iconLink, webViewLink, sizeBytes).
@@ -305,8 +302,8 @@ pub struct DriveListEntry {
 
 /// List/search Drive files using an already-resolved token (per-user or org).
 /// Excludes trashed + folders; a query filters by name substring. Parameter
-/// order is the TS URLSearchParams' (q, pageSize, orderBy, fields, spaces,
-/// supportsAllDrives, includeItemsFromAllDrives).
+/// order pinned: q, pageSize, orderBy, fields, spaces, supportsAllDrives,
+/// includeItemsFromAllDrives.
 pub async fn list_drive_files_with_token(
     token: &str,
     query: Option<&str>,
@@ -318,7 +315,7 @@ pub async fn list_drive_files_with_token(
     ];
     if let Some(q) = query.map(str::trim).filter(|q| !q.is_empty()) {
         // A quote or backslash inside the q-language would break out of the
-        // string literal — blank them, TS's /['\\]/g → ' '.
+        // string literal — blank them.
         clauses.push(format!("name contains '{}'", q.replace(['\'', '\\'], " ")));
     }
     let params = {
@@ -398,8 +395,8 @@ pub async fn list_drive_files_with_token(
 }
 
 /// List/search the user's Drive files (most-recent first). `query` matches
-/// names. The connection door is requireToken — its NotConnected is the
-/// GoogleNotConnected throw.
+/// names. The connection door is require_token — NotConnected means the user
+/// hasn't connected.
 pub async fn list_drive_files(
     pg: &PgPool,
     sb: &SecretBox,
@@ -414,8 +411,8 @@ pub async fn list_drive_files(
     list_drive_files_with_token(&token, query, page_size).await
 }
 
-/// Minimal CSV → grid parser (handles quotes, escaped quotes, CRLF) —
-/// csvToGrid, walked as a char-indexed state machine exactly as TS wrote it.
+/// Minimal CSV → grid parser (handles quotes, escaped quotes, CRLF), walked
+/// as a char-indexed state machine.
 fn csv_to_grid(csv: &str) -> Vec<Vec<String>> {
     let chars: Vec<char> = csv.chars().collect();
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -526,7 +523,7 @@ async fn export_google_bytes(
         .map_err(|e| GoogleError::Failed(format!("drive export body: {e}")))
 }
 
-/// Pull a Drive file's content into a Talaria-artifact shape (importDriveFile).
+/// Pull a Drive file's content into a Talaria-artifact shape.
 /// Google Docs → markdown doc, Sheets → grid sheet, every other native type →
 /// exported PDF stored as a file, a regular binary → downloaded file.
 pub async fn import_drive_file(
@@ -675,7 +672,7 @@ mod tests {
             ]
         );
         // A trailing newline is not an empty row; an unterminated quote ends at
-        // the body's edge like TS's loop exit.
+        // the body's edge.
         assert_eq!(
             csv_to_grid("a,b\n"),
             vec![vec!["a".to_string(), "b".to_string()]]
@@ -684,8 +681,8 @@ mod tests {
             csv_to_grid("\"unterminated"),
             vec![vec!["unterminated".to_string()]]
         );
-        // A mid-body blank line produces a row with one empty cell — TS pushes
-        // the (empty) cell unconditionally on the newline.
+        // A mid-body blank line produces a row with one empty cell — the
+        // (empty) cell is pushed unconditionally on the newline.
         assert_eq!(
             csv_to_grid("a\n\nb"),
             vec![

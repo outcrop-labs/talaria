@@ -1,6 +1,6 @@
-// POST /api/fleet/render — port of ui/src/routes/api/fleet.render.ts. Render
-// every managed agent's config + the fleet compose + the gateway manifest
-// (the bridge hot-reloads the manifest). Admin.
+// POST /api/fleet/render. Render every managed agent's config + the fleet
+// compose + the gateway manifest (the bridge hot-reloads the manifest).
+// Admin.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::error::{house_error, thrown_internal_error};
@@ -41,7 +41,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
                 )
                 .await;
             });
-            // json({ result }) — wrapped, keys in the interface's order.
+            // json({ result }) — wrapped, keys in order: agents, files, warnings.
             Json(json!({
                 "result": {
                     "agents": result.agents,
@@ -51,7 +51,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
             }))
             .into_response()
         }
-        // console.error + a house-shaped 500 sentence — not the throw shape.
+        // a house-shaped 500 sentence — the raw error never reaches the wire.
         Err(_) => house_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "render failed — see server logs",

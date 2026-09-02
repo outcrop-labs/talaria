@@ -1,4 +1,4 @@
-// /api/secrets/relay — port of ui/src/routes/api/secrets.relay.ts.
+// /api/secrets/relay.
 //
 // HAND AN AGENT A CREDENTIAL, MID-CONVERSATION, WITHOUT PUTTING IT IN THE
 // CHAT. The paste this exists to prevent is the ordinary one: somebody needs

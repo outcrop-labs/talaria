@@ -1,7 +1,7 @@
-// GET /api/auth/session — port of ui/src/routes/api/auth/session.ts. The
-// current user + their denied views + effective permissions, read from the DB
-// each time so an admin's access change applies without re-login. No session
-// is NOT an error here: {user: null, deniedViews: [], perms: []}.
+// GET /api/auth/session. The current user + their denied views + effective
+// permissions, read from the DB each time so an admin's access change applies
+// without re-login. No session is NOT an error here:
+// {user: null, deniedViews: [], perms: []}.
 
 use crate::error::thrown_internal_error;
 use crate::session::{SessionUser, get_session_user};
@@ -28,7 +28,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // TS runs the two reads in Promise.all; either failing 500s the route.
+    // Either read failing 500s the route.
     let (denied, perms) = match &user {
         Some(u) => {
             let denied = users::denied_views(&state.pg, &u.id, &u.role).await;

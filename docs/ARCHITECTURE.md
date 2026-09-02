@@ -6,13 +6,16 @@ files that hold the truth — when this page and the source disagree, the source
 
 ## The two planes
 
-Talaria is two processes, not an app plus an API host:
+Talaria is two server processes behind one origin, plus the fleet they render:
 
 ```
   browser ──► Talaria app (ui/, one process)
-              • SPA + HTTP API on the same origin (Vite + Svelte 5)
-              • Postgres + Redis, the LLM gateway, the MCP gateway,
-                the fleet renderer/orchestrator, the app host, the scheduler
+              • the SPA on the origin (Vite + Svelte 5), and the app host
+                    │ /api/* on loopback
+                    ▼
+              Rust api (api/, :5274)
+              • every /api/* route: Postgres + Redis, the LLM gateway,
+                the MCP gateway, the fleet renderer/orchestrator, the scheduler
                     │
      ┌──────────────┼───────────────────────────┐
      ▼              ▼                           ▼
@@ -22,10 +25,11 @@ Talaria is two processes, not an app plus an API host:
   one chassis)      server; no DB of its own
 ```
 
-**The app (`ui/`)** serves the client and the API from one origin. In dev, Vite's middleware
-loads the real server handler (`src/server/app.ts`) in-process with HMR (`vite.config.ts`).
-In prod, `server-entry.js` wraps the SSR-bundled handler in a Node server, serves the built
-client, owns the SSE pump, graceful shutdown, and boots the scheduler before `listen()`.
+**The app (`ui/`)** serves the client from one origin and forwards `/api/*` to the Rust
+api. In dev, Vite's middleware loads the real server handler (`src/server/app.ts`)
+in-process with HMR (`vite.config.ts`). In prod, `server-entry.js` wraps the SSR-bundled
+handler in a Node server, serves the built client, spawns or adopts the api, and owns
+graceful shutdown.
 
 **The MCP server (`mcp/`)** is the agent-facing protocol plane: a pure proxy on `:5280`
 whose every tool call becomes an HTTP call to the app with the agent's own credential. It
@@ -34,17 +38,17 @@ holds no database and no identity — it authenticates connecting agents by aski
 the warning). Two transports: stdio for one agent, streamable-HTTP for the whole fleet.
 
 **The Rust api (`api/`)** is the backend of record — every `/api/*` route except the
-four permanent TS residents serves from it (the TS API behind the proxy was deleted with
-the cutover, 2026-09-01): the app's TS handler forwards `/api` prefixes to it on loopback
-(`server/rust-proxy.ts` on `TALARIA_RUST_API_URL` — assumed, not opted into: unset hops
-to the loopback default `http://127.0.0.1:5274`, so a fresh checkout proxies the moment
-an api is listening; the literal `off` stands the hop down for tests and the one
-deliberately-unproxied posture). Production server-entry spawns or adopts the api on
+four permanent TS residents serves from it: the app's handler forwards `/api` to it on
+loopback (`server/rust-proxy.ts` on `TALARIA_RUST_API_URL` — assumed, not opted into:
+unset hops to the loopback default `http://127.0.0.1:5274`, so a fresh checkout proxies
+the moment an api is listening; the literal `off` stands the hop down for tests and the
+one deliberately-unproxied posture). Production server-entry spawns or adopts the api on
 exactly that port; dev runs it as a
 sidecar by default (`talaria dev`; `TALARIA_API=off` opts out). The four residents are
 permanent (`admin/update`, app dispatch, the app-MCP gateway, and `healthz`); the rules,
-the batch record, the recorded divergences and the port's whole story are
-[`docs/RUST-MIGRATION.md`](./RUST-MIGRATION.md).
+the hop, and the recorded divergences are
+[`docs/RUST-MIGRATION.md`](./RUST-MIGRATION.md) — the port's own story is
+[`docs/history/rust-port.md`](./history/rust-port.md).
 
 | Surface | Port | Notes |
 | :--- | :--- | :--- |
@@ -63,8 +67,8 @@ TEI embeddings, MinIO, SearXNG.
 1. **Entry.** Node request → `Request` → `server/app.ts`'s fetch handler (prod), or the same
    via `ssrLoadModule` (dev). The handler's first act is the proxy switch: a request under
    `/api` forwards to the Rust api on loopback (`rust-proxy.ts`, streamed through, no
-   fallback by design), and everything below this line describes the TS route table that
-   remains by design — the SPA shell and the four permanent residents.
+   fallback by design), and everything below this line describes only what stays in the
+   app — the SPA shell and the four permanent residents.
 2. **Route table.** `app.ts` globs `routes/api/**/*.ts`, requires a `Route` export, sorts by
    static-segment count (`/api/boards/mine` beats `/api/boards/$id`). 405 with an `allow`
    header on the wrong method; unknown paths fall through to the SPA shell.
@@ -111,14 +115,15 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
 
 ## Data
 
-- **Postgres via `postgres.js`** — no ORM. Tagged-template `sql` fragments everywhere.
-- **Schema migrations, append-only by contract.** Ownership handed to the Rust api with the
-  port's batch 4: the TS `MIGRATIONS` array in `db/pg.ts` is FROZEN — it still applies
-  (lazily on first query, once per statement ever, under an advisory lock) but never
-  grows — and new migrations are sqlx's (`api/src/db.rs`: the same per-statement sha256
-  bookkeeping, the same advisory lock, each statement committing with its own bookkeeping
-  row). An entry's index is its identity; inserting mid-array trips a checksum and the
-  boot refuses. Bring the containers up before the app.
+- **Postgres — no ORM.** The api issues sqlx runtime queries; the TS residents' slice uses
+  `postgres.js` tagged-template `sql` fragments.
+- **Schema migrations, append-only by contract.** Ownership is sqlx's: the TS `MIGRATIONS`
+  array in `db/pg.ts` is FROZEN — it still applies (lazily on first query, once per
+  statement ever, under an advisory lock) but never grows — and new migrations are sqlx's
+  (`api/src/db.rs`: the same per-statement sha256 bookkeeping, the same advisory lock,
+  each statement committing with its own bookkeeping row). An entry's index is its
+  identity; inserting mid-array trips a checksum and the boot refuses. Bring the
+  containers up before the app.
 - **Wire numerics arrive as strings** (`numeric`, `int8`) — read them through `PgNumeric` /
   `pgNum`, don't `Number()` blind.
 - **Redis** holds sessions, the realtime bus, scheduler leases, KB presence.

@@ -1,4 +1,4 @@
-// The plan's living document, server-side — port of ui/src/server/plan-doc.ts.
+// The plan's living document, server-side.
 // The document IS a `doc` artifact linked to the plan conversation
 // (artifact_links target_type='plan') — no separate model. This module
 // finds/creates that artifact, lets the plan's own agent rewrite it from the
@@ -29,15 +29,15 @@ use crate::templates::{ResolveContext, resolve_template, template_prompt};
 use crate::users::list_users;
 use crate::workflows::routing_context;
 
-/// The plan-mode harness, prepended to every plan-conversation turn
-/// (plan-doc.ts PLAN_MODE_PROMPT). Without it the agent treats a planning
+/// The plan-mode harness, prepended to every plan-conversation turn.
+/// Without it the agent treats a planning
 /// chat like any other request and starts CREATING things (tickets, docs) —
 /// planning must stay side-effect free.
 pub const PLAN_MODE_PROMPT: &str = "This is a PLANNING conversation on the Plan surface. Your job is to think and decide WITH the teammate: clarify the goal, surface options and risks, and converge on scope, steps, and owners. A living plan document sits beside this chat and is rewritten from the conversation after each of your turns, so put decisions and structure into your words here.
 Planning is side-effect free. Do NOT create or modify anything: no tickets, no documents or artifacts, no knowledge-base entries or spaces, no emails, calendar events, or channel posts. Reading is encouraged (search knowledge, read docs, list boards and tickets) to ground the plan in what actually exists.
 When the plan is settled, the teammate turns it into tickets with the \"Draft tickets\" control on this surface. If asked to create tickets or other work products here, point to that control instead of doing it yourself.";
 
-/// Routing awareness for plan surfaces (planRoutingBlock): the org's
+/// Routing awareness for plan surfaces: the org's
 /// workflow map, framed as a FINAL aside — never something that reshapes
 /// the plan itself. A read failure is no block at all.
 pub async fn plan_routing_block(pg: &sqlx::PgPool) -> String {
@@ -52,7 +52,7 @@ pub async fn plan_routing_block(pg: &sqlx::PgPool) -> String {
     )
 }
 
-/// Notify teammates a plan message @mentions (notifyPlanMentions) — only
+/// Notify teammates a plan message @mentions — only
 /// members who can actually READ the plan's document (owner-private plans
 /// mention silently until the doc is shared). Before the doc exists, the
 /// plan's own membership is the read boundary. Fire-and-forget friendly.
@@ -116,7 +116,7 @@ pub async fn notify_plan_mentions(
     .await;
 }
 
-/// The plan's linked doc artifact, if one exists yet (planDocFor).
+/// The plan's linked doc artifact, if one exists yet.
 pub async fn plan_doc_for(
     pg: &sqlx::PgPool,
     conversation_id: &str,
@@ -135,7 +135,7 @@ pub struct PlanOwner<'a> {
     pub label: &'a str,
 }
 
-/// Find-or-create the plan's document (ensurePlanDoc), seeded from the plan's
+/// Find-or-create the plan's document, seeded from the plan's
 /// template — the explicit per-plan pick if set, else the agent's bound plan
 /// template; the skeleton is the starting structure. Owned by the plan's
 /// owner. Collaborators already on the plan get editor grants on the doc the
@@ -232,15 +232,14 @@ pub fn plan_tier(agent_model: &str, routed_model: &str) -> Option<String> {
     }
     // `routed_model_for` only ever builds `{agent}-{tier}` or returns the
     // agent unchanged, so the prefix is guaranteed on every real input;
-    // strip_prefix is the same slice as the TS without its panic on a
-    // multi-byte boundary.
+    // strip_prefix is a safe slice — no panic on a multi-byte boundary.
     routed_model
         .strip_prefix(agent_model)
         .and_then(|rest| rest.strip_prefix('-'))
         .map(str::to_string)
 }
 
-/// Rewrite the plan document from the conversation (syncPlanDoc), via the
+/// Rewrite the plan document from the conversation, via the
 /// plan's own agent — persona gateway, metered like any chat turn. Returns
 /// the saved artifact.
 ///
@@ -388,7 +387,7 @@ pub async fn sync_plan_doc(
     .await
     .map_err(|e| e.to_string())?;
     let saved = saved.unwrap_or(doc);
-    // `.catch(() => {})` — the brain is a consumer, not the answer.
+    // Best-effort — the brain is a consumer, not the answer.
     let _ = index_plan_doc(
         &pg,
         &crate::retrieval::qdrant::real_deps(),

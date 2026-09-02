@@ -1,4 +1,4 @@
-// Agent replies in group channels — port of ui/src/server/channel-replies.ts.
+// Agent replies in group channels.
 // When a human's message @mentions a channel agent (by model id or friendly
 // label), that agent replies: the channel transcript is built as gateway
 // history, the completion streams, and it persists into the channel
@@ -7,7 +7,7 @@
 //
 // The other two exports are the post's fan-out: DM peer notifications (deduped
 // while one sits unread) and human @mention notifications. Both are fired
-// detached by the messages route, exactly as the TS routes fire them.
+// detached by the messages route.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -73,7 +73,7 @@ pub async fn notify_dm_message(
         if pending.is_some() {
             continue;
         }
-        // content.slice(0, 200) + '…' only past the bound — UTF-16 units.
+        // 200 UTF-16 units, '…' added only past the bound.
         let body = if crate::body::utf16_len(content) > 200 {
             format!("{}…", crate::body::truncate_utf16(content, 200))
         } else {
@@ -184,9 +184,8 @@ pub(crate) fn mentioned_agents(content: &str, channel_agents: &[String]) -> Vec<
 /// images become data-URL blocks a vision model can see (both scoped to the
 /// transcript tail — file bytes are re-read per reply).
 ///
-/// Infallible where the TS could throw only on infrastructure (`db()` itself):
-/// every per-file read inside already swallows its own failure, so there is no
-/// error arm left to port.
+/// Infallible: every per-file read inside swallows its own failure, so there
+/// is no error arm.
 async fn transcript_for(
     pg: &PgPool,
     sb: &SecretBox,
@@ -253,7 +252,8 @@ async fn transcript_for(
     turns
 }
 
-/// `!a.refType` in JS — absent, null, AND the empty string are all falsy.
+/// No refType: absent, null, AND the empty string all count —
+/// falsy semantics over the stored json.
 fn no_ref_type(a: &Value) -> bool {
     match a.get("refType") {
         None | Some(Value::Null) => true,
@@ -278,7 +278,7 @@ fn turn_value(text: &str, urls: &[String]) -> Value {
     json!({"role": "user", "content": parts})
 }
 
-/// The sentences the TS assembles by concatenation, in that order.
+/// The system prompt, assembled by concatenation, in that order.
 pub(crate) fn system_prompt(
     model: &str,
     channel_name: &str,
@@ -382,7 +382,7 @@ pub async fn trigger_agent_replies(
         let history = match history {
             Ok(h) => h,
             Err(e) => {
-                // The TS rejects here and the route's `.catch` swallows it —
+                // A failed transcript read stops the pass —
                 // later agents don't run either.
                 tracing::warn!("[channels] transcript read for reply failed: {e}");
                 return;
@@ -406,7 +406,7 @@ pub async fn trigger_agent_replies(
                 return;
             }
         };
-        // `void transcriptFor(...).then(...).catch(...)` — detached per agent,
+        // Detached per agent,
         // so several agents stream concurrently.
         let task_deps = deps.clone();
         let task_sb = sb.clone();
@@ -603,7 +603,6 @@ async fn stream_reply(
             // which reads notification bodies back into a model — beside a
             // channel row strict mode had just cleaned. The MCP post path in
             // the messages route orders these the same way.
-            // (guard-ordering.test.ts pins this order on the TS side.)
             if !content.is_empty() {
                 // BROADCAST. A channel reply reaches the whole room and the
                 // retrieval index behind it — an audience the source material
@@ -640,7 +639,7 @@ async fn stream_reply(
                 }
             }
             // An agent reply @mentioning a human notifies like a human message
-            // would. (`void ... .catch` — detached.)
+            // would. Detached.
             if !content.is_empty() {
                 let members = list_channel_members(&deps.pg, channel_id)
                     .await

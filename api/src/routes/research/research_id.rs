@@ -1,4 +1,4 @@
-// /api/research/{id} — port of ui/src/routes/api/research.$id.ts.
+// /api/research/{id}.
 // GET → one run + its citation registry (owner / shared member / org runs).
 // DELETE → owner/admin, cancelling the run first so the driver stops
 // spending on a report nobody will open.

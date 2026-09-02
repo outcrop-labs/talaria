@@ -1,5 +1,4 @@
-// THE LIVE CONSOLE, FOR THE TIERS THAT ARE NOT THE SWEEP. Port of
-// fitness/live-feed.ts.
+// THE LIVE CONSOLE, FOR THE TIERS THAT ARE NOT THE SWEEP.
 //
 // WHAT WAS MISSING. The fitness terminal is fed from `live_log(sweep.cases)`,
 // so it showed tier 2 and nothing else. Start a run with probes and adversarial
@@ -49,9 +48,8 @@ pub fn start_live_feed(model: &str) {
 /// is telemetry on the hot path of a paid run, and a feed that can break the
 /// thing it reports on is worse than no feed.
 pub fn note_live(model: &str, line: EvalLogLine) {
-    // A live console must never be able to fail a run. TS wraps the whole body
-    // in `try { … } catch {}`; Rust's equivalent for a lock that nobody holding
-    // it can poison from telemetry is to carry on without the line.
+    // A live console must never be able to fail a run: a lock nobody holding
+    // it can poison from telemetry is carried on without, line dropped.
     if let Ok(mut feeds) = feeds().lock() {
         let at = feeds.entry(model.to_string()).or_default();
         at.push(line);
@@ -97,8 +95,8 @@ mod tests {
     }
 
     /// Each test gets its own model key, because the feed is a process-wide
-    /// map and tests run in one process — the same reason TS's tests stub the
-    /// module map between cases.
+    /// map and tests run in one process — a shared key would leak lines
+    /// between cases.
     fn key(name: &str) -> String {
         format!("live-feed-test::{name}")
     }

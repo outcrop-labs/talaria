@@ -1,4 +1,4 @@
-// /api/channels/{id}/messages — port of ui/src/routes/api/channels.$id.messages.ts.
+// /api/channels/{id}/messages.
 // GET ?since=<seq>&thread=<id> → the channel's messages (members; agents in
 // the channel, elevated assistants any non-DM). POST { content } → post a
 // message; @mentioned channel agents reply, streamed into the channel.
@@ -43,8 +43,8 @@ pub async fn get(
                 .map(|(_, v)| v.into_owned())
         })
     };
-    // Number(searchParams.get('since') ?? -1) — Number trims and makes ''
-    // 0; anything unparseable is NaN, and only finite values survive.
+    // `since` coercion: trims, '' → 0, unparseable → NaN — and only finite
+    // values survive (NaN falls back to -1).
     let since = match query("since") {
         None => -1.0,
         Some(s) => {
@@ -143,10 +143,10 @@ async fn page(
             .await
             .map_err(|e| e.to_string()),
         None => {
-            // A fractional `since` reaches Postgres in the TS as text against
-            // an int4 comparison and dies uncaught ("invalid input syntax"),
-            // 500ing the route — the thread arm never sends it, so only this
-            // arm refuses. The floor is NOT the port; the failure is.
+            // A fractional `since` is refused here: sent on to Postgres it
+            // would die on the int4 comparison ("invalid input syntax") and
+            // 500 the route. The thread arm never passes one, so only this
+            // arm checks.
             if since.fract() != 0.0 {
                 return Err(format!(
                     "fractional since={since} dies on the int4 cast in the TS too"
@@ -159,8 +159,8 @@ async fn page(
     }
 }
 
-/// The POST body (zod, in schema order): content carries a default, the
-/// arrays are optional and capped, threadRootId is nullish.
+/// The POST body, in schema order: content carries a default, the arrays
+/// are optional and capped, threadRootId is nullish.
 struct PostBody {
     content: String,
     attachment_ids: Option<Vec<String>>,
@@ -169,9 +169,8 @@ struct PostBody {
 }
 
 fn validate_post(obj: &serde_json::Map<String, Value>) -> Result<PostBody, String> {
-    // z.string().max(20_000).default('') — absent takes the default; a
-    // present value (null included) must be a string within bounds, zod's
-    // own rule.
+    // content: max 20_000, default '' — absent takes the default; a present
+    // value (null included) must be a string within bounds.
     let content = match obj.get("content") {
         None => String::new(),
         Some(_) => string_member(obj, "content", 0, 20_000)?,
@@ -272,10 +271,10 @@ pub async fn post(
     let nm = channel_name(&state.pg, &id)
         .await
         .unwrap_or_else(|| "channel".into());
-    // `msg.content`, NOT `body.content`. The engine sends an agent's post
-    // through the agent-writes door, which in strict mode returns the
-    // REDACTED body — so the row in `channel_messages` is clean and these
-    // two copies of the same text were the raw one.
+    // `msg.content`, NOT `body.content`: the insert runs an agent's post
+    // through the agent-writes door (guard_agent_write), which in strict
+    // mode returns the REDACTED body — the row in `channel_messages` is
+    // clean, and `body.content` is the raw one.
     //
     // The index is the half that matters. Retrieval is read back INTO model
     // contexts, so an unredacted copy there is not merely a second place the
@@ -441,8 +440,8 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             .await
         {
             Ok(r) => r,
-            // The TS leaves this `await sql` uncaught: the route 500s here, after
-            // the insert and the detached triggers have already fired. Same shape.
+            // A failure here 500s the route after the insert and the
+            // detached triggers have already fired — the write stands.
             Err(e) => {
                 tracing::error!("[channels] kind read failed: {e}");
                 return thrown_internal_error();
@@ -489,8 +488,8 @@ async fn channel_name(pg: &sqlx::PgPool, id: &str) -> Option<String> {
         .flatten()
 }
 
-/// `void indexActivity({...}).catch(() => {})` — the ambient copy of a
-/// channel message, fire-and-forget.
+/// The ambient copy of a channel message, fire-and-forget — indexing
+/// errors are swallowed.
 fn index_channel_activity(
     pg: sqlx::PgPool,
     channel_id: &str,

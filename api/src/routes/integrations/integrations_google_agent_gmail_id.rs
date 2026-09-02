@@ -1,8 +1,7 @@
-// GET /api/integrations/google/agent/gmail/{id} — port of
-// ui/src/routes/api/integrations/google.agent.gmail.$id.ts. One FULL message
-// (headers + plain-text body) for the calling agent. The listing tool hands
-// out ids and snippets; this is the read an actual answer needs. Reads are
-// free (confirm-sends govern the outbound half only).
+// GET /api/integrations/google/agent/gmail/{id} — one FULL message (headers
+// + plain-text body) for the calling agent. The listing tool hands out ids
+// and snippets; this is the read an actual answer needs. Reads are free
+// (confirm-sends govern the outbound half only).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -57,7 +56,7 @@ pub async fn get(
     }
 }
 
-/// Date.now() — the one clock the agent mailbox reads.
+/// Epoch-ms clock — the one time the agent mailbox reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

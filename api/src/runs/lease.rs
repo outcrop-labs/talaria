@@ -1,7 +1,6 @@
 // The lease — the one mechanism in this tree for "exactly one process is
-// doing this right now", and the two POLICIES built on it. Port of
-// ui/src/server/runs/lease.ts, whole: the policies are genuinely different
-// and forcing one on both would break the scheduler.
+// doing this right now", and the two POLICIES built on it. The policies are
+// genuinely different and forcing one on both would break the scheduler.
 //
 // THE PRIMITIVE, and why every piece is load-bearing:
 // · SET NX PX      take the key only if nobody has it, and never hold it
@@ -38,8 +37,8 @@
 // proactive DM, which is unrecoverable). A run DEFERS: it must not proceed
 // unleased — two instances stepping one run is the one failure mode a
 // checkpoint cannot recover from — but it must not be marked failed either.
-// The cautionary tale is research.ts turning "the app restarted mid-run"
-// into `error: "run went stale"`, destroying a run that had lost nothing.
+// The cautionary tale: a run restarted mid-flight once became
+// `error: "run went stale"`, destroying a run that had lost nothing.
 // Hence `Unavailable`/`Blocked` rather than an error: a caller that ignores
 // the distinction gets no lease, and a caller that reads it knows the
 // difference between "someone else has this" and "I could not ask".
@@ -57,8 +56,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 /// The slice of a Redis client a lease needs — the trait exists so tests run
-/// with no Redis server. The real backend speaks the same Lua the TS side
-/// does, so live keys are shared correctly across runtimes.
+/// with no Redis server.
 pub trait LeaseBackend: Send {
     /// `SET key value NX PX ttl` — true when the key was taken.
     fn set_nx_px<'a>(
@@ -85,8 +83,8 @@ pub trait LeaseBackend: Send {
     fn get<'a>(&'a mut self, key: &'a str) -> BoxFuture<'a, Result<Option<String>, String>>;
 }
 
-/// The production backend: a cloned-able shared connection over the same
-/// Redis the TS process talks to, running the exact TS Lua for the CASes.
+/// The production backend: a cloneable shared connection to Redis, running
+/// the Lua CASes.
 pub struct RedisLeases {
     conn: redis::aio::ConnectionManager,
 }
@@ -264,7 +262,7 @@ pub enum LeaseHolder {
 // ── The primitive ─────────────────────────────────────────────────────────────
 
 /// A PX of 0 or less is an error to Redis; clamped here, once, rather than at
-/// four call sites. (TS also floors fractional ms; u64 has no fraction.)
+/// four call sites.
 pub fn clamp_ttl(ms: u64) -> u64 {
     ms.max(1)
 }
@@ -747,7 +745,7 @@ mod tests {
             lease_holder(&mut f, "talaria:sched:v1:job").await,
             Some(LeaseHolder::SelfHeld)
         ));
-        // A foreign holder (what a TS-process lease looks like from here).
+        // A foreign holder — another process's lease.
         f.map.insert(
             "talaria:sched:v1:other".into(),
             ("99999-abcd1234:theirs".into(), f.now_ms + 60_000),
@@ -851,9 +849,9 @@ mod tests {
 
     #[test]
     fn key_shapes_pin_the_wire_format() {
-        // The same format the TS process spells: a Rust lease and a TS lease
-        // contend for the SAME keys during coexistence, so the shape is
-        // load-bearing, not cosmetic.
+        // The key shape is load-bearing, not cosmetic: these keys live in
+        // Redis across processes and deploys, and one side mis-spelling the
+        // format would lease nothing at all.
         assert_eq!(
             lease_key("sched", "comms-decay"),
             "talaria:sched:v1:comms-decay"

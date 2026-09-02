@@ -1,4 +1,4 @@
-// /api/skills — port of ui/src/routes/api/skills.ts.
+// /api/skills.
 // Skills across the fleet: shared + per-agent, straight from the mounts the
 // agents actually read. Any member reads (the library grounds the Studio and
 // what agents will be told); each owner carries canEdit for THIS user —
@@ -28,8 +28,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // `{...o, canEdit}` — the engine's summary plus this user's write right,
-    // appended after the engine's own keys.
+    // each entry is the engine's summary plus this user's write right —
+    // canEdit appended after the engine's own keys.
     let mut with_edit: Vec<Value> = Vec::with_capacity(owners.len());
     for owner in owners {
         let can_edit = match can_edit_skills(&state.pg, &user.id, &user.role, &owner.owner).await {

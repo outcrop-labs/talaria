@@ -1,4 +1,4 @@
-// THE `runs` table, and nothing else. Port of ui/src/server/runs/store.ts.
+// THE `runs` table, and nothing else.
 //
 // Separated from the driver for one reason that is not tidiness: every write in
 // here is a COMPARE-AND-SET on `(id, lease_owner, state)`, and those predicates
@@ -15,10 +15,9 @@
 // row at each step boundary so it can stop BEFORE burning another step, but
 // even a driver that did not could not finish a cancelled run.
 //
-// The `RunStore` trait with a Postgres implementation is the port of the
-// TS interface's "overridable per call": the driver is written against
-// `dyn RunStore`, and its tests fake the whole thing with no database —
-// the same seam run.test.ts uses.
+// The `RunStore` trait keeps the store overridable per call: the driver is
+// written against `dyn RunStore`, and its tests fake the whole thing with no
+// database.
 
 use super::define::{DecisionAnswer, RunDecision, RunRow, RunState, is_terminal};
 use crate::agent_auth::epoch_ms_to_iso;
@@ -340,9 +339,8 @@ async fn get_pg(pg: &PgPool, id: &str) -> Result<Option<RunRow>, sqlx::Error> {
     row.map(|r| hydrate(&r)).transpose()
 }
 
-/// TS `error.slice(0, 4000)` clamps at 4000 UTF-16 units; Rust clamps at 4000
-/// BYTES on a char boundary — the standing surrogate divergence, and no run
-/// error is near either limit.
+/// Clamp run error text at 4000 BYTES on a char boundary — the cut lands
+/// before the boundary, never inside a character.
 fn clamp_error(error: &str) -> String {
     if error.len() <= 4000 {
         return error.to_string();
@@ -398,8 +396,8 @@ impl RunStore for PgRunStore {
             .fetch_one(&self.pg)
             .await
             .map_err(|e| {
-                // The TS impl names the kind on the no-row error; the insert
-                // failing carries the kind in its Postgres text, but a caller
+                // Name the kind on the error: the insert failing carries it in
+                // its Postgres text, but a caller
                 // staring at a bare constraint violation cannot tell which
                 // enqueue died. One sentence, same failure.
                 sqlx::Error::Protocol(format!("[runs] insert of {}: {e}", row.kind))
@@ -927,8 +925,7 @@ mod tests {
     #[test]
     fn the_error_clamp_lands_on_a_char_boundary() {
         // 4000 ASCII bytes pass through untouched; a multibyte char straddling
-        // the cut must not panic (the TS side slices UTF-16 units — the
-        // standing surrogate divergence, noted on clamp_error).
+        // the cut must not panic — the clamp lands on a char boundary.
         assert_eq!(clamp_error(&"x".repeat(4000)).len(), 4000);
         assert_eq!(clamp_error(&"x".repeat(4001)).len(), 4000);
 

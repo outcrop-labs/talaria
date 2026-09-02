@@ -4,7 +4,7 @@
 // policy); versioning reuses internal_versions (kind 'artifact'). Flat, so no
 // folder inheritance — an artifact carries its own audience.
 //
-// Port of ui/src/server/artifacts.ts — the whole plane: rows, folders, links,
+// The whole plane: rows, folders, links,
 // the official→KB mirror, public slugs, and the plan-doc activity index.
 
 use sqlx::PgPool;
@@ -12,8 +12,7 @@ use sqlx::PgPool;
 use crate::agent_auth::epoch_ms_to_iso;
 use crate::kb::perms::Guarded;
 
-/// An artifact (artifacts.ts Artifact) — full row shape, so batch 5 only adds
-/// functions, never fields.
+/// An artifact — the full row shape.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
@@ -125,7 +124,7 @@ impl From<ArtifactRow> for Artifact {
     }
 }
 
-/// The same columns for queries that join (artifacts.ts COLS_A): the table
+/// The same columns for queries that join: the table
 /// needs its alias, the row shape does not change.
 const COLS_A: &str = "a.id::text, a.kind, a.title, a.icon, a.body, a.content_type, a.storage_ref, \
                       a.visibility, a.edit_policy, a.public_slug, a.official, a.kb_doc_id::text, \
@@ -134,7 +133,7 @@ const COLS_A: &str = "a.id::text, a.kind, a.title, a.icon, a.body, a.content_typ
                       (trunc(extract(epoch from a.created_at) * 1000))::bigint as created_ms, \
                       (trunc(extract(epoch from a.updated_at) * 1000))::bigint as updated_ms";
 
-/// Every artifact linked to a target (artifacts.ts artifactsForTarget) — the
+/// Every artifact linked to a target — the
 /// join a plan surface walks to find its document, newest link first.
 pub async fn artifacts_for_target(
     pg: &PgPool,
@@ -156,12 +155,11 @@ pub async fn artifacts_for_target(
     Ok(rows.into_iter().map(Artifact::from).collect())
 }
 
-/// The plan's linked document (plan-doc.ts planDocFor): the first `doc`
+/// The plan's linked document: the first `doc`
 /// among the plan's linked artifacts. The document IS that artifact — there
-/// is no separate model — and the draft reads it as seed context. The rest
-/// of plan-doc.ts (ensure/sync/mentions) crosses with the chat family in
-/// batch 5; this read crosses now because the plan-draft transcript wants
-/// the document's current body beside the conversation.
+/// is no separate model — and the draft reads it as seed context: the
+/// plan-draft transcript wants the document's current body beside the
+/// conversation.
 pub async fn plan_doc_for(
     pg: &PgPool,
     conversation_id: &str,
@@ -192,7 +190,7 @@ pub async fn get_artifact(pg: &PgPool, id: &str) -> Result<Option<Artifact>, sql
     Ok(row.map(Artifact::from))
 }
 
-/// Every artifact, newest first (artifacts.ts listArtifacts) — the raw list;
+/// Every artifact, newest first — the raw list;
 /// every caller filters to what its viewer can read.
 pub async fn list_artifacts(pg: &PgPool) -> Result<Vec<Artifact>, sqlx::Error> {
     // AssertSqlSafe: the interpolation is this crate's COLS column list.
@@ -225,14 +223,9 @@ pub fn artifact_to_markdown(a: &Artifact) -> String {
     }
 }
 
-// ── The write half the brief's mirror exercises ───────────────────────────────
-//
-// Ported now because the mirror (daily-brief-artifact.ts) is a scheduled job
-// with no route in front of it. The rest of the write plane (icon, storage,
-// visibility + public slug, edit policy, delete) lands with the artifacts
-// routes in batch 5 and extends this file in place.
+// ── The write half ────────────────────────────────────────────────────────────
 
-/// createArtifact — kind/title carry their defaults ('doc', 'Untitled').
+/// Create — kind/title carry their defaults ('doc', 'Untitled').
 pub async fn create_artifact(
     pg: &PgPool,
     kind: Option<&str>,
@@ -259,7 +252,7 @@ pub async fn create_artifact(
 
 // ── Folders (organize artifacts into a nestable tree) ──────────────────────
 
-/// An artifact folder (artifacts.ts ArtifactFolder) — wire order.
+/// An artifact folder — wire order.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactFolder {
@@ -338,7 +331,7 @@ pub async fn get_folder(pg: &PgPool, id: &str) -> Result<Option<ArtifactFolder>,
     Ok(row.map(ArtifactFolder::from))
 }
 
-/// createFolder. `owner_user_id` is what separates a person's folder from the
+/// Create. `owner_user_id` is what separates a person's folder from the
 /// workspace's: a human making a folder owns it; the find-or-create path
 /// agents use passes nothing, so agent cabinets stay ownerless and org-visible
 /// — the workspace's, which is exactly what they are.
@@ -366,7 +359,7 @@ pub async fn create_folder(
     Ok(ArtifactFolder::from(row))
 }
 
-/// Rename / set icon / reparent / re-share a folder (updateFolder). Rejects
+/// Rename / set icon / reparent / re-share a folder. Rejects
 /// parent cycles with None — the route answers that as `invalid` at 400.
 pub async fn update_folder(
     pg: &PgPool,
@@ -446,7 +439,7 @@ pub async fn delete_folder(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// createFolder's ownerless org-visible shape — the one the agent cabinet path
+/// The ownerless org-visible create shape — the one the agent cabinet path
 /// uses (the workspace's).
 async fn create_org_folder(
     pg: &PgPool,
@@ -526,7 +519,7 @@ pub async fn agent_category_folder(
         .ok()
 }
 
-/// attachArtifact — link an artifact to anything. `on conflict do nothing` is
+/// Link an artifact to anything. `on conflict do nothing` is
 /// the idempotency handle research's two-reports guard leans on: the link is
 /// what makes a created artifact findable by the next entry, so it is written
 /// in the same breath as the create with nothing between (see the research
@@ -551,7 +544,7 @@ pub async fn attach_artifact(
     Ok(())
 }
 
-/// detachArtifact — remove one link.
+/// Detach — remove one link.
 pub async fn detach_artifact(
     pg: &PgPool,
     artifact_id: &str,
@@ -570,12 +563,11 @@ pub async fn detach_artifact(
     Ok(())
 }
 
-/// Set an artifact's RAG routing ('auto' | 'none' | a custom brain id) —
-/// setArtifactRouting. The caller applies the re-placement
+/// Set an artifact's RAG routing ('auto' | 'none' | a custom brain id).
+/// The caller applies the re-placement
 /// (retrieval::artifact_routing) — split to keep this module free of
 /// retrieval imports. A garbage brain id fails the uuid cast and answers with
-/// the PG sentence, exactly like the TS's untyped parameter against the uuid
-/// column; the route maps it to 400.
+/// the PG sentence; the route maps it to 400.
 pub async fn set_artifact_routing(
     pg: &PgPool,
     id: &str,
@@ -652,7 +644,7 @@ async fn ensure_artifacts_space(pg: &PgPool, actor: &str) -> Result<String, sqlx
     Ok(space.id)
 }
 
-/// setArtifactOfficial — official=true mirrors (or re-mirrors) the artifact
+/// official=true mirrors (or re-mirrors) the artifact
 /// into the Artifacts space as an official KB doc; false removes the mirror.
 pub async fn set_artifact_official(
     pg: &PgPool,
@@ -766,7 +758,7 @@ async fn remirror_if_official(pg: &PgPool, a: &Artifact, actor: &str) -> Result<
     Ok(())
 }
 
-/// indexPlanDoc (plan-doc.ts) — the artifact's retrievable copy, as the
+/// The artifact's retrievable copy, as the
 /// plan-doc activity flow: auto-routing only, payload keyed to the plan so
 /// the activity index's ACL can resolve reach.
 pub async fn index_plan_doc(
@@ -810,7 +802,7 @@ pub async fn index_plan_doc(
     Ok(())
 }
 
-/// The full saveArtifact patch. The double Option is TS's `!== undefined`:
+/// The full save patch. The double Option is the patch's tri-state:
 /// the outer layer says whether the field was in the patch at all, the inner
 /// whether it is null.
 #[derive(Default)]
@@ -827,7 +819,7 @@ pub struct SaveArtifactPatch<'a> {
     pub edit_policy: Option<&'a str>,
 }
 
-/// saveArtifact — every patch leg in the TS's write order (folder, title,
+/// Save — every patch leg in a fixed write order (folder, title,
 /// body, icon, storage, contentType, editPolicy, visibility), then the re-read,
 /// the version snapshot on a content change, and the official→KB re-mirror.
 pub async fn save_artifact(
@@ -930,13 +922,13 @@ pub async fn save_artifact(
             Some(actor),
         )
         .await;
-        // Keep the KB mirror fresh — TS's remirrorIfOfficial, .catch'd.
+        // Keep the KB mirror fresh — best-effort.
         let _ = remirror_if_official(pg, a, actor).await;
     }
     Ok(next)
 }
 
-/// deleteArtifact — the KB mirror dies with the artifact (its RAG copy goes
+/// Delete — the KB mirror dies with the artifact (its RAG copy goes
 /// via delete_doc's unindex), then the row.
 pub async fn delete_artifact(
     pg: &PgPool,
@@ -1064,7 +1056,7 @@ mod tests {
             sheet_to_markdown_table(r#"[["h1","h2"],["only-one","extra","dropped"]]"#),
             "| h1 | h2 |\n| --- | --- |\n| only-one | extra |"
         );
-        // A non-array row is an empty row (TS maps it to []).
+        // A non-array row is an empty row.
         assert_eq!(
             sheet_to_markdown_table(r#"[["h"],["x"],5]"#),
             "| h |\n| --- |\n| x |\n|  |"

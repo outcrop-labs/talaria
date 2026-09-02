@@ -1,12 +1,11 @@
-// The first-run claim — port of ui/src/server/auth/claim.ts. A fresh instance
-// has no admin and no env bootstrap: the first person through /claim
-// (password) or the first Google identity becomes the admin. Whoever deploys,
-// owns.
+// The first-run claim. A fresh instance has no admin and no env bootstrap:
+// the first person through /claim (password) or the first Google identity
+// becomes the admin. Whoever deploys, owns.
 
 use crate::users::Identity;
 use sqlx::PgPool;
 
-/// Distinct from MIGRATION_LOCK (8_314_207) in db/pg.ts. Transaction-scoped,
+/// Distinct from the schema migration lock (8_314_207). Transaction-scoped,
 /// so it holds exactly as long as the claim's user-upsert + credential insert
 /// take to commit — two simultaneous claims serialize, the loser sees the
 /// re-check below fail, and the caller surfaces that as a 409 (password) or

@@ -1,14 +1,14 @@
-// POST /api/llm/v1/chat/completions — port of
-// ui/src/routes/api/llm.v1.chat.completions.ts. OpenAI-compatible chat over
-// the org's model stack: streaming and non-streaming both relay, every call
-// metered into the ledger under the calling key's identity, every completion
-// through the confab guard (gateway/guard.rs).
+// POST /api/llm/v1/chat/completions. OpenAI-compatible chat over the org's
+// model stack: streaming and non-streaming both relay, every call metered
+// into the ledger under the calling key's identity, every completion through
+// the confab guard (gateway/guard.rs).
 //
-// The pipeline: bearer → authenticateKey → the key's own rpm brake → body
-// validation → resolveRoute → checkBudget (org + caller, key caps min-merged
-// under the admin's ceiling) → buildUpstream (defaults UNDER the client body,
-// secret-vault seal, learned-param pre-strip) → fetchUpstream (400
-// strip-and-retry ≤4, dev hostname fallback) → relay. Non-streaming reads,
+// The pipeline: bearer → authenticate_key → the key's own rpm brake → body
+// validation → resolve_route → check_budget (org + caller, key caps
+// min-merged under the admin's ceiling) → build_upstream (defaults UNDER the
+// client body, secret-vault seal, learned-param pre-strip) → fetch_upstream
+// (400 strip-and-retry ≤4, dev hostname fallback) → relay. Non-streaming
+// reads,
 // meters, relays — annotate/strict rewriting the body before it goes out;
 // streaming passes bytes through a metering Stream that scans SSE lines and
 // settles the ledger exactly once from wherever the stream ends — clean
@@ -50,9 +50,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// The TS route reads `request.json()` with no cap of its own; 25MB is a
-/// sanity ceiling for a chat body, and a body past it lands in the same 400
-/// as unparseable JSON (what a genuinely unreadable body produces there).
+/// 25MB is a sanity ceiling for a chat body — a body past it lands in the
+/// same 400 as unparseable JSON.
 const BODY_LIMIT: usize = 25 * 1024 * 1024;
 
 // The two Talaria-minted gateway credentials (fleet-brain owns both). Named
@@ -68,7 +67,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         .and_then(|v| v.to_str().ok());
     let identity = match bearer_secret(auth_header) {
         Some(secret) => authenticate_key(&state.pg, secret).await,
-        None => Ok(None), // no header: not even a lookup, like the TS path
+        None => Ok(None), // no header: not even a lookup
     };
     let id = match identity {
         Ok(Some(id)) => id,
@@ -123,8 +122,8 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         }
     }
 
-    // Any unreadable/unparseable body is the same 400 — TS's
-    // `request.json().catch(() => null)` collapses them all into one path.
+    // Any unreadable/unparseable body is the same 400 — both collapse into
+    // one path.
     let bytes = match axum::body::to_bytes(req.into_body(), BODY_LIMIT).await {
         Ok(b) => b,
         Err(_) => return openai_error(StatusCode::BAD_REQUEST, "model and messages are required"),
@@ -395,11 +394,11 @@ fn fixed_json_with_type(status: u16, body: &str, content_type: &str) -> Response
         .expect("static response builds")
 }
 
-/// TS's prompt-size figure: string content counts its UTF-16 length (JS
-/// `.length`), anything else counts its JSON serialization (`content ?? ''` —
-/// null and absent both serialize as `""`). serde_json orders object keys
-/// alphabetically where JS keeps insertion order, so the non-string arm can
-/// differ by a few chars on exotic bodies; it feeds only a chars/4 estimate.
+/// The prompt-size figure: string content counts its UTF-16 length, anything
+/// else counts its JSON serialization (null and absent both serialize as
+/// `""`). Key order in that serialization is alphabetical, so the non-string
+/// arm can wander a few chars on exotic bodies; it feeds only a chars/4
+/// estimate.
 fn prompt_chars_of(messages: &Value) -> usize {
     let Some(list) = messages.as_array() else {
         return 0;
@@ -415,8 +414,8 @@ fn prompt_chars_of(messages: &Value) -> usize {
         .sum()
 }
 
-/// The ledger write for one call — spawned, never awaited on the request path
-/// (TS: `void recordGatewayUsage(...).catch(() => {})`).
+/// The ledger write for one call — spawned, never awaited on the request
+/// path.
 #[derive(Clone)]
 struct Ledger {
     pg: sqlx::PgPool,
@@ -530,12 +529,12 @@ enum MeterMode {
 /// clean flush, a client hangup (this struct's Drop), or an upstream error
 /// frame. The provider bills a hung-up stream exactly the same, so the ledger
 /// books it too — exactly once, whichever fires first. Only the CLEAN end
-/// scans the pending tail (TS's flush); settle books, it does not scan.
+/// scans the pending tail; settle books, it does not scan.
 struct MeteredStream {
     inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
     /// Partial line BYTES across chunk boundaries — buffering bytes (not
     /// lossy-decoded text) keeps a multibyte character split across chunks
-    /// from degrading into U+FFFD, the way TextDecoder(stream:true) buffers.
+    /// from degrading into U+FFFD.
     buf: Vec<u8>,
     content: String,
     usage: Option<Value>,
@@ -556,14 +555,14 @@ struct MeteredStream {
     guard_spec: GuardSpec,
 }
 
-/// TS's isDone: a data: line whose payload is exactly [DONE].
+/// A data: line whose payload is exactly [DONE].
 fn line_is_done(line: &[u8]) -> bool {
     line.strip_prefix(b"data:")
         .is_some_and(|rest| String::from_utf8_lossy(rest).trim() == "[DONE]")
 }
 
-/// The caveat as one final delta chunk — byte-shaped like the TS literal
-/// (preserve_order keeps the key order `JSON.stringify` would emit).
+/// The caveat as one final delta chunk — the byte shape is the contract
+/// (preserve_order keeps the key order; pinned byte-for-byte below).
 fn guard_caveat_chunk(caveat: &str, model: &str) -> Bytes {
     let chunk = json!({
         "id": "talaria-guard",
@@ -621,8 +620,7 @@ impl MeteredStream {
         self.buf.extend_from_slice(chunk);
         while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
             // The drained line carries its own \n (and any \r before it);
-            // passthrough ignores it, annotate re-emits exactly those bytes —
-            // TS's `${line}\n` is the same bytes back.
+            // passthrough ignores it, annotate re-emits exactly those bytes.
             let line: Vec<u8> = self.buf.drain(..=i).collect();
             let body = &line[..line.len() - 1];
             self.scan_line(&String::from_utf8_lossy(body));
@@ -637,7 +635,7 @@ impl MeteredStream {
     }
 
     /// The clean-end tail: scanned, and in annotate mode re-emitted verbatim
-    /// (no newline added — TS enqueues `lineBuf` as-is).
+    /// — no newline added.
     fn flush_tail(&mut self) {
         if self.buf.is_empty() {
             return;
@@ -654,8 +652,8 @@ impl MeteredStream {
     }
 
     /// Book the ledger — once, from whichever end the stream comes to. The
-    /// pending line is NOT scanned here: TS's settle() books only, and a
-    /// cancelled or errored stream's partial tail was never a complete frame.
+    /// pending line is NOT scanned here: settle books only, and a cancelled
+    /// or errored stream's partial tail was never a complete frame.
     fn settle(&mut self) {
         if self.settled {
             return;
@@ -710,7 +708,7 @@ impl Stream for MeteredStream {
                     continue;
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    // TS's error frame runs neither flush nor cancel — the
+                    // An error frame runs neither flush nor cancel — the
                     // spend settles, the guard does not run.
                     this.errored = true;
                     this.settle();
@@ -864,7 +862,7 @@ mod tests {
         assert!(line_is_done(b"data: [DONE]\r")); // \r belongs to the line
         assert!(!line_is_done(b"data: {\"x\":1}"));
         assert!(!line_is_done(b": [DONE]"));
-        // The caveat chunk is byte-exact with the TS literal.
+        // The caveat chunk is byte-exact — the pinned bytes are the contract.
         let chunk = guard_caveat_chunk("\n\n--- caveat", "claude-3");
         assert_eq!(
             chunk,

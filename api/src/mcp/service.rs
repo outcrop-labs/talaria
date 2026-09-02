@@ -3,13 +3,10 @@
 // at (rendered by fleet_render). Self-supervising: ensure_mcp_service() is
 // called opportunistically (renders, comms reads); it probes first so dev
 // reloads and multiple entrypoints never double-spawn, and respawns on exit.
-// Port of ui/src/server/mcp-service.ts.
 //
-// ONE DIVERGENCE, named: TS spawns the child with `process.execPath` — the
-// JS runtime running the TS app, a fact the TS process carries and this one
-// does not. The child is a plain node script (`#!/usr/bin/env node`, engines
-// pin >= 20), so the runtime here is `node`, overridable with
-// TALARIA_JS_RUNTIME for installs that run everything under bun.
+// The child is a plain node script (`#!/usr/bin/env node`, engines pin
+// >= 20), so it spawns under `node`, overridable with TALARIA_JS_RUNTIME
+// for installs that run everything under bun.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -17,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::AsyncBufReadExt;
 
-/// The toolkit's HTTP port (mcp-service.ts MCP_PORT).
+/// The toolkit's HTTP port.
 pub fn mcp_port() -> u16 {
     std::env::var("TALARIA_MCP_PORT")
         .ok()
@@ -80,14 +77,14 @@ async fn reachable() -> bool {
     }
 }
 
-/// Which JS runtime spawns the child (see the header divergence note).
+/// Which JS runtime spawns the child (see the header note).
 fn js_runtime() -> String {
     std::env::var("TALARIA_JS_RUNTIME").unwrap_or_else(|_| "node".into())
 }
 
 /// The spawn itself, already past the guards. The debounce stamps HERE, only
 /// once the entry exists — a missing dist must not consume the 10s window, or
-/// the not-built error would print once and then never again (TS order).
+/// the not-built error would print once and then never again.
 /// stderr is piped through to the log (the child's own diagnostics are the
 /// only place its failures speak), and an exit is logged as the respawn
 /// promise it is.
@@ -166,8 +163,7 @@ pub fn ensure_mcp_service() {
     });
 }
 
-/// Drop guard: `starting` clears on every path out of the spawned task, the
-/// `finally` of the TS closure.
+/// Drop guard: `starting` clears on every path out of the spawned task.
 struct ResetStarting;
 
 impl Drop for ResetStarting {

@@ -1,6 +1,6 @@
-// /api/memory/{id} — port of ui/src/routes/api/memory.$id.ts.
-// One managed agent's MEMORY.md, read/written through its running container.
-// Writes: admin, or the owner of a personal assistant for its own memory.
+// /api/memory/{id}. One managed agent's MEMORY.md, read/written through its
+// running container. Writes: admin, or the owner of a personal assistant for
+// its own memory.
 
 use crate::agent_memory::{read_memory, write_memory};
 use crate::body::{as_object, parse, string_member};
@@ -58,8 +58,8 @@ pub async fn put(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().max(2_000_000) — required, and the empty string is legal
-    // (min 0: clearing a memory is a write).
+    // content — required, max 2M; the empty string is legal (min 0: clearing
+    // a memory is a write).
     let content = match string_member(obj, "content", 0, 2_000_000) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

@@ -1,12 +1,11 @@
 // Convenience indexers that target the auto collections by kind, so callers
 // (channel posts, KB doc saves, and so on) don't resolve collection ids
-// themselves. Port of ui/src/server/retrieval/sources.ts.
+// themselves.
 //
 // All fire-and-forget friendly — indexing must never block the write it
-// follows. The swallows match the TS exactly: the index/unindex legs are
-// `.catch(() => {})` in the TS and `let _ =` here, while the resolution
-// lookups (autoCollectionId & co.) PROPAGATE their errors — the surrounding
-// fire-and-forget belongs to the caller, not this module.
+// follows. The index/unindex legs swallow their errors (`let _ =`), while
+// the resolution lookups (auto_collection_id & co.) PROPAGATE theirs — the
+// surrounding fire-and-forget belongs to the caller, not this module.
 
 use serde_json::{Map, json};
 use sqlx::{PgPool, Row};
@@ -95,9 +94,9 @@ pub async fn index_org_kb(
 /// brain to owner + PA, and the payload says the same thing at item level, so
 /// a mis-bound brain still can't hand a private item to a stranger.
 ///
-/// Unlike its siblings the WHOLE body is swallowed (the TS wraps it all in one
-/// try/catch) — a user without a personal collection yet must never fail the
-/// write that triggered indexing.
+/// Unlike its siblings the WHOLE body is swallowed — a user without a
+/// personal collection yet must never fail the write that triggered
+/// indexing.
 pub async fn index_personal(
     pg: &PgPool,
     qd: &QdrantDeps,
@@ -193,8 +192,8 @@ pub struct KbDocSync {
     pub title: String,
     pub body: String,
     /// EFFECTIVE visibility — resolved through the doc's space when the doc
-    /// inherits (kb.effectiveDocPerms, or EFFECTIVE_DOC_SELECT for bulk
-    /// paths). Never the raw kb_docs.visibility column: perms_inherited
+    /// inherits (EFFECTIVE_DOC_SELECT below for bulk paths). Never the raw
+    /// kb_docs.visibility column: perms_inherited
     /// defaults true and visibility defaults 'org', so a doc sitting in a
     /// PRIVATE space reads 'org' raw — which is exactly how backfills used to
     /// push private docs into the org brain.
@@ -203,8 +202,8 @@ pub struct KbDocSync {
     pub owner_user_id: Option<String>,
 }
 
-/// Bulk-path counterpart to kb.effectiveDocPerms: selects kb_docs with their
-/// effective visibility folded in, for callers that sync many docs at once
+/// Bulk-path effective-visibility select: kb_docs with their effective
+/// visibility folded in, for callers that sync many docs at once
 /// (backfill, sweep, space resync) and can't afford a per-doc lookup. Append a
 /// `where` clause; the doc alias is `d`, the space `s`. (uuid columns are
 /// ::text-cast — the crate's standing convention; sqlx reads no uuid type.)
@@ -242,8 +241,7 @@ pub async fn sync_kb_doc(
         None => None,
     };
     // Per-doc routing wins over the space default: 'auto' | 'none' | <brain id>.
-    // A garbage routing value fails the uuid cast and rejects the sync — same
-    // posture as the TS, where the untyped parameter hits the uuid column.
+    // A garbage routing value fails the uuid cast and rejects the sync.
     let routing =
         sqlx::query_scalar::<_, String>("select rag_routing from kb_docs where id = $1::uuid")
             .bind(&doc.id)
@@ -291,9 +289,8 @@ pub async fn sync_kb_doc(
 
     // The item ACL rides with the doc into whichever brain it lands in, so the
     // document-scope filter can re-check it at query time. spaceId is present
-    // even when null (the TS spreads `spaceId: doc.spaceId ?? null`) — the
-    // payload feeds the content hash, so key presence must match or a doc
-    // written by the TS runtime would churn on the first Rust re-sync.
+    // even when null — the payload feeds the content hash, so key presence
+    // must be stable or an indexed doc churns on its next re-sync.
     let mut payload = Map::new();
     payload.insert("visibility".into(), json!(doc.visibility));
     payload.insert("ownerUserId".into(), json!(doc.owner_user_id));
@@ -405,8 +402,8 @@ pub async fn unindex_activity(
 }
 
 // ── Domain shapers ──────────────────────────────────────────────────────────
-// Tickets and comments are board-scoped (payload.boardId), so activityScope's
-// board filter already governs who can retrieve them.
+// Tickets and comments are board-scoped (payload.boardId), so the
+// activity_scope board filter already governs who can retrieve them.
 
 pub struct TicketSrc<'a> {
     pub id: &'a str,
@@ -450,7 +447,7 @@ pub fn comment_doc(c: &CommentSrc<'_>) -> IndexDoc {
     IndexDoc {
         source_type: "comment".into(),
         source_id: c.id.into(),
-        // The middle dot matters — the TS title is `${ref} · ${author}`.
+        // The middle dot is deliberate — the title is `${ref} · ${author}`.
         title: Some(format!(
             "{} · {}",
             c.ticket_ref.unwrap_or("Ticket"),

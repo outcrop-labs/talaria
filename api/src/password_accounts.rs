@@ -1,5 +1,4 @@
-// DB-backed password accounts — port of
-// ui/src/server/auth/password-accounts.ts: the login side (verify) and the
+// DB-backed password accounts: the login side (verify) and the
 // admin console's write side (create/set/remove/list — Admin → People). One
 // row per account in user_password_credentials: a scrypt hash (password.rs),
 // keyed by the unique lowercased email. Admission happened when an admin
@@ -10,7 +9,7 @@ use crate::agent_auth::epoch_ms_to_iso;
 use crate::password::{dummy_hash, hash_password, verify_password_hash};
 use sqlx::{PgPool, Row};
 
-/// The verified identity a login resolves to (LoginResult — provider fixed).
+/// The verified identity a login resolves to.
 pub struct LoginIdentity {
     pub sub: String,
     pub email: String,
@@ -80,7 +79,7 @@ pub async fn verify_password_login(
     });
     Ok(Some(LoginIdentity {
         sub,
-        name: name.or(Some(email.clone())), // row.name ?? row.email
+        name: name.or(Some(email.clone())), // name falls back to the email
         email,
         picture: None,
     }))
@@ -96,8 +95,8 @@ pub enum WriteRefusal {
     NotFound,
 }
 
-/// The admin list entry (PasswordAccount) — wire order pinned. Timestamps are
-/// epoch-ms → ISO, the shape every JS Date takes on the wire.
+/// The admin list entry — wire order pinned. Timestamps are
+/// epoch-ms → ISO.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordAccount {
@@ -143,7 +142,7 @@ pub async fn create_password_account(
     let user_id = match existing {
         Some((id,)) => id,
         None => {
-            // `input.name?.trim() || email` — a blank name falls back to the
+            // A blank name falls back to the
             // email as the display name.
             let display = name
                 .map(str::trim)
@@ -232,7 +231,7 @@ pub async fn set_password_account_password(
         }
         Err(e) => {
             // Someone else's account already holds this user's email as ITS
-            // login — the unique-email collision, TS's 23505.
+            // login — the unique-email collision, 23505.
             if e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505") {
                 return Ok(Err(WriteRefusal::EmailTaken));
             }

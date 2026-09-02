@@ -1,4 +1,4 @@
-// /api/channels/{id}/events — port of ui/src/routes/api/channels.$id.events.ts.
+// /api/channels/{id}/events.
 // SSE stream of the channel's live events (messages, membership),
 // auth-gated to members. Powers multiplayer chat. The stream itself is
 // realtime's (channel:<id> topic); this route is only the gate in front of it.

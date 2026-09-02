@@ -1,6 +1,5 @@
-// Minimal Qdrant client (REST) for Talaria's retrieval layer. Port of
-// ui/src/server/retrieval/qdrant.ts. We only need collection create, point
-// upsert/delete, and filtered search — no SDK.
+// Minimal Qdrant client (REST) for Talaria's retrieval layer: collection
+// create, point upsert/delete, and filtered search — no SDK.
 //
 // Two collection shapes coexist:
 //   legacy (v1) — one unnamed dense vector; dense-only search.
@@ -14,9 +13,8 @@ use serde_json::{Value, json};
 use super::HttpFetch;
 use crate::retrieval::sparse::SparseVector;
 
-/// The configured base, read per call like the TS arrow. One trailing slash
-/// stripped — the `replace(/\/$/, '')` — so `TALARIA_QDRANT_URL` may be typed
-/// with or without it.
+/// The configured base, read per call. One trailing slash stripped, so
+/// `TALARIA_QDRANT_URL` may be typed with or without it.
 fn qdrant_url() -> String {
     let raw =
         std::env::var("TALARIA_QDRANT_URL").unwrap_or_else(|_| "http://localhost:6333".into());
@@ -36,8 +34,8 @@ pub fn real_deps() -> QdrantDeps {
 }
 
 /// The host of a URL whose scheme is http(s) — None when there is no parseable
-/// scheme+host prefix. The TS regex (`^(https?)://([^/:]+)(:\d+)?`, UNANCHORED
-/// at the end) matches a prefix, so a base with a path still yields its host.
+/// scheme+host prefix. The parse matches a prefix (unanchored at the end),
+/// so a base with a path still yields its host.
 fn bare_host(url: &str) -> Option<&str> {
     let rest = url
         .strip_prefix("http://")
@@ -48,15 +46,14 @@ fn bare_host(url: &str) -> Option<&str> {
 
 /// Whether the docker-bare fallback applies: a single-label hostname — no
 /// dot, not localhost — is a docker network name that won't resolve from a
-/// host-side process. The TS retries those against 127.0.0.1:6333 (the
-/// published port on the host), NOT sticky: every call pays the check again.
+/// host-side process. Those retry against 127.0.0.1:6333 (the published
+/// port on the host), NOT sticky: every call pays the check again.
 fn is_docker_bare(url: &str) -> bool {
     bare_host(url).is_some_and(|h| !h.contains('.') && h != "localhost")
 }
 
 /// One reply, kept as raw text alongside the parsed JSON — the upsert error
-/// sentence quotes the body verbatim, and `ok` is the fetch sense (2xx), the
-/// one every TS caller branches on.
+/// sentence quotes the body verbatim, and `ok` is the fetch sense (2xx).
 pub struct QReply {
     pub ok: bool,
     pub status: u16,
@@ -91,8 +88,8 @@ async fn q(
         Err(err) => {
             // A docker-bare base failed to resolve from this process. Retry
             // the loopback publishing — the configured PORT is discarded,
-            // always 6333, exactly the TS spelling. If the retry also fails
-            // the ORIGINAL error is what the caller hears.
+            // always 6333. If the retry also fails the ORIGINAL error is
+            // what the caller hears.
             if is_docker_bare(&base) {
                 let retry = format!("http://127.0.0.1:6333{path}");
                 let (status, text) = (deps.fetch)(method, &retry, body, &[], 30_000).await?;
@@ -170,10 +167,9 @@ pub async fn collection_info(deps: &QdrantDeps, name: &str) -> Option<Collection
     if !r.ok {
         return None;
     }
-    // TS parses `r.json()` and would THROW on a malformed body, out of this
-    // function entirely; here a malformed body reads as absent data — this
-    // helper exists to answer "what is actually deployed", and an unparseable
-    // answer to that question is no answer. Recorded divergence.
+    // A malformed body reads as absent data — this helper exists to answer
+    // "what is actually deployed", and an unparseable answer to that
+    // question is no answer.
     let j = r.json.unwrap_or_else(|| json!({}));
     let params = j
         .get("result")
@@ -184,8 +180,8 @@ pub async fn collection_info(deps: &QdrantDeps, name: &str) -> Option<Collection
         .cloned()
         .unwrap_or_else(|| json!({}));
     // Named-vs-unnamed is decided by whether `vectors.size` is a number — a
-    // missing vectors block entirely reads as NAMED with no dense (the `?? {}`
-    // arm of the TS), which is what a half-created collection looks like.
+    // missing vectors block entirely reads as NAMED with no dense, which is
+    // what a half-created collection looks like.
     let named = !vectors.get("size").map(Value::is_number).unwrap_or(false);
     let dense_dim = if named {
         vectors
@@ -303,8 +299,7 @@ pub struct SearchHit {
 }
 
 /// Qdrant ids come back as whatever they were stored as — a uuid string here,
-/// but a number for collections other tools wrote. `String(h.id)` coerces in
-/// the TS; this is the same tolerance.
+/// but a number for collections other tools wrote; both coerce to string.
 fn id_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -458,7 +453,7 @@ mod tests {
 
     #[test]
     fn the_fallback_is_only_for_docker_bare_hosts() {
-        // The TS class is `https?` — https qualifies like http.
+        // Both schemes qualify — https like http.
         for url in [
             "http://qdrant",
             "https://qdrant",
@@ -646,7 +641,7 @@ mod tests {
                 .is_some()
         );
         // The empty arm: a missing vectors block reads as named, dimless,
-        // non-hybrid — the TS `?? {}` behavior.
+        // non-hybrid.
         assert!(json!({}).get("size").map(Value::is_number).is_none());
     }
 

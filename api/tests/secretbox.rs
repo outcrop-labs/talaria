@@ -1,9 +1,9 @@
 // Cross-language secretbox vectors. The committed fixture is produced by the
 // TS side (scripts/gen-secretbox-vectors.mjs, which runs secretbox.ts's own
-// deriveKek); this suite proves the Rust port opens what TS sealed and seals
+// deriveKek); this suite proves the Rust api opens what TS sealed and seals
 // what TS would — byte-for-byte, both directions, no runtime coupling between
 // the languages. If this file fails after a secretbox change on EITHER side,
-// the port has drifted: fix the code, then regenerate with `bun run api:vectors`.
+// the two have drifted: fix the code, then regenerate with `bun run api:vectors`.
 
 use base64::Engine;
 use std::collections::HashMap;
@@ -117,7 +117,8 @@ fn dek_wraps_reproduce_ts_bytes_both_directions() {
 
         // And the asymmetry, from the open side: opening the wrap yields the
         // STANDARD PADDED base64 STRING of the key, not the raw bytes
-        // (secretbox.ts wrapDek). A port that wrapped raw bytes fails here.
+        // (secretbox.ts wrapDek). An implementation that wrapped raw bytes
+        // fails here.
         let opened = sb.open(&d.wrapped).unwrap();
         assert_eq!(
             opened,

@@ -1,5 +1,5 @@
 // THE DISTILLER — what survives an idle agent DM after the scrollback goes
-// away. Port of harness/defs/distiller.ts.
+// away.
 //
 // This harness is load-bearing in a way none of the other leaf harnesses are.
 // A titler that fails leaves a chat with a boring name. This one runs on the
@@ -12,24 +12,20 @@
 // answer to a failed distillation is to leave the conversation alone and let
 // the next sweep try again.
 //
-// PORTED FROM comms-decay.ts (audit 1.10). The prompt, the temperature and
-// the user turn are the originals, unchanged. What went away was the
-// hand-copied model chain and the bare `if (!text.trim())` — the runner owns
-// both now. The chain is the muse chain (`MUSE_CHAIN`, its second spelt use
-// beside the Concluder): the Distiller's assigned model, else the owner's own
-// muse, with `user_id` arriving from the RUN CONTEXT to turn on the
-// 'preferred' step and the member model allowlist — the two of them are the
-// "user's own assistant" pair, and one spelling reorders both with it.
+// THE CHAIN AND THE EMPTY CHECK both belong to the runner, not this def.
+// The chain is the muse chain (`MUSE_CHAIN`, its second spelt use beside the
+// Concluder): the Distiller's assigned model, else the owner's own muse, with
+// `user_id` arriving from the RUN CONTEXT to turn on the 'preferred' step and
+// the member model allowlist — the two of them are the "user's own assistant"
+// pair, and one spelling reorders both with it.
 //
-// NINE FIXTURES, THREE BANDS — the TS header says "ten" the way workbench's
-// said "twelve" for eighteen tools; the list is what a sweep reads. They vary
-// the SHAPE of the conversation — one decision, a rejection, a reversal,
-// numbers, nothing at all — because those are the shapes that break a small
-// model differently, and because the two this file originally shipped with
-// both ran on the same transcript, so a model that happened to handle THAT
-// conversation scored 100% on the distiller.
+// NINE FIXTURES, THREE BANDS — the list is what a sweep reads. They vary the
+// SHAPE of the conversation — one decision, a rejection, a reversal, numbers,
+// nothing at all — because those are the shapes that break a small model
+// differently, and because two fixtures on the same transcript would let a
+// model that happens to handle THAT conversation score 100% on the distiller.
 //
-// THE FIXTURES' OWN CALIBRATION is the other thing worth carrying across:
+// THE FIXTURES' OWN CALIBRATION is the other thing worth knowing:
 // three of these checks shipped failing the best available answer (a recorded
 // reversal scored as the reversed decision; a "write less"-obeying
 // five-heading distillation scored as too long; a faithful paraphrase scored
@@ -65,8 +61,8 @@ pub struct DistillInput {
     pub transcript: String,
 }
 
-/// The original prompt, preserved verbatim. Three clauses do the real work
-/// and none of them are decoration:
+/// The narrow prompt. Three clauses do the real work and none of them are
+/// decoration:
 ///    "Skip pleasantries"     — the eval fixture below plants two and asserts
 ///                              they do not survive.
 ///    "Never invent"          — this text is indexed into a private brain and
@@ -100,13 +96,11 @@ Skip pleasantries and process chatter. Never invent anything. Reply with ONLY th
 ";
 
 // UNTRUSTED_INPUT is appended to BOTH prompts, concatenated rather than
-// folded into the literals, and the duplication in the TS is deliberate: two
-// independent strings, and `prompt-rules.test.ts` renders only the narrow
-// one — so a clause added to one passes that test while leaving the other
-// silent. Here both spellings run through the same const, so the hole the TS
-// comment guards against cannot re-open by deleting a "redundant" line; the
-// guard comment stays because the REASON is still true of anyone who splits
-// them again.
+// folded into the literals — two independent prompt strings, and a trust
+// clause edited into one literal leaves the other silent. Both spellings
+// here run through the same const, so the hole cannot open by deleting a
+// "redundant" line — only by splitting the two prompts apart again. The
+// guard stays because the REASON is still true of anyone who does.
 
 fn narrow_prompt() -> &'static str {
     static P: LazyLock<String> = LazyLock::new(|| format!("{NARROW}{UNTRUSTED_INPUT}"));
@@ -144,8 +138,7 @@ fn wide_prompt() -> &'static str {
 // thing it corrects. Long enough that the compression assertion is a real
 // ask and the selection assertion has something to select from.
 
-/// The DM shape, verbatim from the TS: turns separated by a BLANK line, one
-/// speaker per turn.
+/// The DM shape: turns separated by a BLANK line, one speaker per turn.
 fn dm(lines: &[&str]) -> String {
     lines.join("\n\n")
 }
@@ -1000,8 +993,8 @@ pub fn distiller_harness() -> HarnessDefinition {
         "distiller",
         "Distiller",
         "Condenses idle agent chats into their durable substance before they archive.",
-        // The chain comms-decay hand-wrote: the Distiller's assigned model,
-        // else the owner's own muse — the muse chain's second spelt use. One
+        // The muse chain — the Distiller's assigned model, else the owner's
+        // own muse, the chain's second spelt use beside the Concluder. One
         // spelling, referenced rather than copied, so an admin who reorders
         // the muse's resolution reorders every "the user's own assistant"
         // fallback with it. `user_id` comes from the RUN CONTEXT, not the
@@ -1030,10 +1023,8 @@ pub fn distiller_harness() -> HarnessDefinition {
                 )),
             ])
         }),
-        // Trim, and treat whitespace as nothing. `comms-decay.ts` used to
-        // spell this as `if (!text.trim()) return 'empty-distillation'`; the
-        // contract is the same one, stated where every other harness states
-        // it.
+        // Trim, and treat whitespace as nothing — the same contract every
+        // other text harness states here.
         Output::Text {
             clean: Some(Arc::new(|raw: &str| {
                 let t = raw.trim();
@@ -1080,15 +1071,13 @@ pub fn distiller_harness() -> HarnessDefinition {
     });
     d.temperature = Some(0.2);
 
-    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. These rows
-    // were typed for the fold when they crossed — `check` already takes the
-    // string AND the ctx, and one of them (`is shorter than the conversation it
-    // distills`) can report a GAP — so all the fold does is re-type the value:
-    // a text harness's reply arrives as a JSON string, and a value that is not
-    // one is the fixture check throwing, which the sweep scores as a task
-    // failure carrying the same sentence TS did. No `dry_run` — a distillation
-    // turn calls no tools, so a replay of these rows runs single-shot against
-    // the empty context.
+    // THE FIXTURE TABLE, as `EvalCase`s. `check` already takes the string AND
+    // the ctx, and one of them (`is shorter than the conversation it distills`)
+    // can report a GAP — so the fold only re-types the value: a text harness's
+    // reply arrives as a JSON string, and a value that is not one is the
+    // fixture check throwing, which the sweep scores as a task failure. No
+    // `dry_run` — a distillation turn calls no tools, so a replay of these
+    // rows runs single-shot against the empty context.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {

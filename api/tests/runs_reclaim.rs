@@ -1,27 +1,21 @@
 // The sweeper is exercised against an in-memory due query, an in-memory
 // definition registry and a fake driver, so nothing here touches Postgres or
 // Redis. Every edge is a field on `ReclaimDeps` — same pattern and same reason
-// as runs/run.test.ts and runs/decide.test.ts. The port of
-// ui/src/server/runs/reclaim.test.ts.
+// as runs_run.rs and runs_decide.rs.
 //
 // WHAT THESE TESTS ARE ACTUALLY FOR. The sweeper is the piece that makes
 // "survives a restart" true, and its two failure modes are opposites: it can
 // fail to wake a run whose driver died (durability silently does not happen),
 // or it can wake — or worse, FAIL — a run that is perfectly healthy. The second
-// is the one server/research.ts:352 ships today, and the `awaiting` case is the
-// sharpest version of it: a run parked on a person may sit for days, and a
-// sweeper that read "old and not moving" as "broken" would auto-fail every
-// paused run in the product.
+// is the failure the legacy research sweep shipped (see the reclaim.rs header),
+// and the `awaiting` case is the sharpest version of it: a run parked on a
+// person may sit for days, and a sweeper that read "old and not moving" as
+// "broken" would auto-fail every paused run in the product.
 //
-// TWO DELIBERATE DIVERGENCES from the TS file, both structural:
-//   · TS mocks the scheduler so importing the module does not register a real
-//     job, then asserts RECLAIM_JOB_SPEC's numbers. Rust has no module-load
-//     registration and no JobSpec yet (the scheduler crosses later in this
-//     batch), so the numbers are pinned as the constants the spec will be
-//     built from.
-//   · The give-up log line is asserted by the unit tests inside reclaim.rs,
-//     where the sentence-building is a pure function — TS spies on console
-//     instead, and there is no subscriber installed here to spy on.
+// The give-up log line is asserted by the unit tests inside reclaim.rs, where
+// the sentence-building is a pure function — no subscriber is installed here
+// to spy on. The assembled job spec (`reclaim_job_spec`) is pinned there too;
+// the constants it is built from are pinned below.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -92,7 +86,7 @@ fn row(id: &str) -> RunRow {
     }
 }
 
-/// The fake driver's canned result. TS's `stop(...)` helper.
+/// The fake driver's canned result.
 fn dr(run_id: &str, stop: DriveStop, state: Option<RunState>, error: Option<&str>) -> DriveResult {
     DriveResult {
         run_id: run_id.into(),
@@ -294,7 +288,7 @@ async fn never_drives_and_never_fails_a_run_parked_on_a_person_however_long_it_h
     // staleness in wall-clock time: parked a week ago, no lease, and it has
     // already spent every attempt it had. It is still perfectly healthy — it
     // is waiting for somebody to answer a question — and this is the exact row
-    // server/research.ts's sweep would mark
+    // the legacy research sweep would mark
     // `error: 'run went stale (app restarted mid-research?)'`.
     let mut r = row("run-1");
     r.state = RunState::Awaiting;
@@ -454,20 +448,16 @@ async fn clamps_a_nonsensical_limit_rather_than_asking_for_zero_rows() {
 
 #[test]
 fn declares_timings_the_scheduler_can_call_hung() {
-    // The JobSpec itself is assembled when the scheduler crosses (see the
-    // reclaim.rs header); these are the numbers it will be built from, so a
-    // change to any of them is a deliberate act that touches this test.
-    // TS adds `> 0` guards on maxRunMs and firstRunDelayMs; the exact-value
-    // pins below are those guards made stronger — the only way this test
-    // still passes with the bound gone is if somebody edited it on purpose.
+    // The assembled JobSpec (these numbers in their slots) is pinned by the
+    // unit tests in reclaim.rs; these exact-value pins make a change to any
+    // constant a deliberate act that touches this test — the only way it
+    // still passes with a bound gone is if somebody edited it on purpose.
     assert_eq!(RECLAIM_JOB, "run-reclaim");
     assert_eq!(RECLAIM_EVERY_MS, 30_000);
     assert_eq!(RECLAIM_MAX_RUN_MS, 60_000);
     assert_eq!(RECLAIM_FIRST_RUN_DELAY_MS, 20_000);
-    // Not perInstance: the input is a shared table, so the fleet does one
-    // sweep per interval rather than one per instance. In TS that is an
-    // absent field on the spec; here it will be an absent field on the Rust
-    // spec too — nothing to assert until the type exists to omit it on.
+    // Not per_instance: the input is a shared table, so the fleet does one
+    // sweep per interval rather than one per instance (pinned in reclaim.rs).
     assert_eq!(RECLAIM_LIMIT, 25);
 }
 

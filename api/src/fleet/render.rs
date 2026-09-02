@@ -1,9 +1,9 @@
-// renderFleet — regenerate everything the managed fleet runs on from the
+// render_fleet — regenerate everything the managed fleet runs on from the
 // database: each managed agent's config.yaml + SOUL.md + git credential helper
 // + gitconfig + secrets.env, the shared skills root, and the one compose file
 // + manifest that describe the whole fleet. Idempotent, re-run on any change;
 // Hermes re-reads config on mtime, so a render lands in running agents without
-// a restart. Port of ui/src/server/fleet-render.ts.
+// a restart.
 //
 // THIS MODULE carries the whole render: the DATA PLANE (the managed-agent
 // roster, the stable loopback port assignment, the chassis parse), the KEY
@@ -12,21 +12,19 @@
 // tree), and THE LOOP itself — per-agent config.yaml/SOUL.md/git helper, the
 // workbench overlay, the MCP pass-through, the compose emit, and the manifest.
 //
-// THE CHASSIS PARSE carries one documented YAML resolution divergence. TS
-// parses chassis.yml in YAML 1.1 — `mode: 0400` reads as OCTAL 256 — then
-// emits compose in 1.2, where 256 lands as the decimal literal `256`. This
-// parse (serde_yaml_ng, 1.2 resolution) keeps `0400` a STRING; the emitter
-// writes those bytes back; docker's own 1.1 reader re-reads them as octal
-// 256 — the same mode TS produces, via a different byte spelling. What this
-// does NOT carry is the 1.1 bool set (`on`/`off`/`yes`/`no` stay strings
-// here, became booleans in TS): a chassis that spelled a compose boolean as
-// `on` would render differently, and no compose idiom does.
+// THE CHASSIS PARSE carries one YAML resolution subtlety. chassis.yml may
+// spell file modes as `0400`; this parse (serde_yaml_ng, YAML 1.2 resolution)
+// keeps that a STRING, the compose emitter writes those bytes back, and
+// docker's own 1.1 reader re-reads them as octal 256 — the mode the file
+// always meant, via its original byte spelling. The 1.1 bool set
+// (`on`/`off`/`yes`/`no`) stays strings here too: a chassis that spelled a
+// compose boolean as `on` would render differently under a 1.1 parse, and no
+// compose idiom does.
 //
-// config.yaml — the agent-facing half — is the OTHER direction: TS EMITS it
-// with a YAML-1.1 writer because Hermes reads it with PyYAML 1.1, so the
-// hand-rolled emitter below quotes everything a 1.1 reader would re-resolve
-// (see the emitter's own header). The compose file is emitted with
-// serde_yaml_ng (1.2), matching TS's default `stringifyYaml`.
+// config.yaml — the agent-facing half — is the OTHER direction: Hermes reads
+// it with PyYAML (YAML 1.1), so the hand-rolled emitter below quotes
+// everything a 1.1 reader would re-resolve (see the emitter's own header).
+// The compose file is emitted with serde_yaml_ng (1.2).
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -198,8 +196,7 @@ pub struct NetworkDef {
 }
 
 /// The chassis every agent renders from: one service block + per-slug extras.
-/// Talaria-owned (extracted once at cutover from the legacy stack). Everything
-/// but the service block is optional.
+/// Talaria-owned. Everything but the service block is optional.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Chassis {
     /// The uniform service block — cloned per agent, then tailored.
@@ -221,7 +218,7 @@ pub struct Chassis {
 
 /// Parse the chassis YAML into the render's shapes. Pure — the file read (and
 /// its two operator-facing errors) lives in [`read_chassis`]. Merge keys
-/// (`<<:`) resolve here, matching TS's `parseYaml(text, { merge: true })`.
+/// (`<<:`) resolve here.
 pub fn parse_chassis(text: &str) -> Result<Chassis, String> {
     let mut yaml: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(text).map_err(|e| format!("chassis.yml is not YAML: {e}"))?;
@@ -258,8 +255,8 @@ pub async fn read_chassis() -> Result<Chassis, String> {
 // Anything else means any local account (or any workbench agent with a shell)
 // can impersonate the whole fleet, and re-rendering wouldn't fix it.
 
-/// Best-effort lock-down: file 0600, parent dir 0700. The `.catch(() => {})`
-/// of the TS chmods — a filesystem that refuses chmod still gets the render.
+/// Best-effort lock-down: file 0600, parent dir 0700. A filesystem that
+/// refuses chmod still gets the render.
 async fn lock_down_fleet_env(env_path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(meta) = tokio::fs::metadata(env_path).await {
@@ -296,8 +293,8 @@ async fn write_fleet_env(env_path: &Path, content: &str) -> Result<(), String> {
 }
 
 /// Replace the KEY= line if present — the replacement rides a closure, not the
-/// regex template engine, because a secret is never a `$`-pattern (TS spells
-/// the same care as `.replace(re, () => line)`). None means "append instead".
+/// regex template engine, because a secret is never a `$`-pattern. None means
+/// "append instead".
 fn replace_env_line(content: &str, name: &str, line: &str) -> Option<String> {
     let re =
         regex::Regex::new(&format!(r"(?m)^{}=.*$", regex::escape(name))).expect("env line pattern");
@@ -346,9 +343,9 @@ pub async fn ensure_fleet_env_key(pg: &PgPool) -> Result<(), String> {
     };
     need("TALARIA_AGENT_KEY", std::env::var("TALARIA_AGENT_KEY").ok());
     // Native-auth harness keys: any provider key a registry harness references
-    // must reach compose interpolation. The TS block is try/catch — a registry
-    // or DB that can't answer skips this provisioning without failing the
-    // render (the TALARIA_AGENT_KEY seeding above still holds).
+    // must reach compose interpolation. Best-effort — a registry or DB that
+    // can't answer skips this provisioning without failing the render (the
+    // TALARIA_AGENT_KEY seeding above still holds).
     let registry = async {
         let eps: Vec<(String, String)> = sqlx::query_as(
             "select provider, api_key_env from llm_endpoints where api_key_env is not null",
@@ -436,8 +433,7 @@ pub async fn ensure_agent_env_keys(
 // how canonical skills like talaria-toolkit reach every install.
 
 /// Content hash of a skill dir: sorted relative paths + file bytes, dotfiles
-/// excluded. (TS sorts names with localeCompare; skill dir names are ASCII,
-/// where that and byte order agree.)
+/// excluded. (Names sort in byte order; skill dir names are ASCII.)
 async fn skill_dir_hash(root: &Path) -> Result<String, String> {
     async fn walk(dir: &Path, rel: &str, h: &mut Sha256) -> Result<(), String> {
         let mut names: Vec<String> = Vec::new();
@@ -483,7 +479,7 @@ async fn skill_dir_hash(root: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Recursive dir copy (fs.cp recursive — file modes ride tokio's copy).
+/// Recursive dir copy (file modes ride tokio's copy).
 async fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dest)
         .await
@@ -614,15 +610,14 @@ pub async fn seed_shared_skills() -> Result<(), String> {
 // Hermes re-reads config.yaml with PyYAML, which resolves PLAIN scalars under
 // YAML 1.1 rules: `on`/`yes`/`off`/`no`/`y`/`n` are booleans, `~`/`null` are
 // nulls, `0400`/`1_000`/`0x1a` are ints, `1:30` is sexagesimal. serde_yaml_ng
-// emits YAML 1.2 — where none of those resolve specially, so it leaves such
-// strings UNQUOTED and PyYAML would silently change their types on read. TS
-// emits with `stringifyYaml(routed, { version: '1.1' })`; this is that, by
-// hand: a JSON-tree walker that quotes every scalar a 1.1 reader would
-// resolve to something other than the string it is.
+// emits YAML 1.2 — where none of those resolve specially, so it would leave
+// such strings UNQUOTED and PyYAML would silently change their types on read.
+// Hence this hand-rolled emitter: a JSON-tree walker that quotes every scalar
+// a 1.1 reader would resolve to something other than the string it is.
 //
 // (Block-seq indentation and scalar-quote-style choices are the emitter's
-// own; byte-identity with the TS file is not the contract — re-read equality
-// under a 1.1 parser is, and the round-trip test pins it.)
+// own; the contract is re-read equality under a 1.1 parser, which the
+// round-trip test pins.)
 
 fn yaml11_bool_like(s: &str) -> bool {
     matches!(
@@ -890,9 +885,9 @@ pub fn yaml11_emit(v: &Value) -> String {
 // ── The rendered soul ─────────────────────────────────────────────────────────
 
 /// SOUL.md: the standing headers, the coaching block, the secret-handle
-/// briefing, then the stored soul. `[soulHeader, coaching, handles]` filtered
-/// to non-empty and joined with blank lines — an agent with no coaching and no
-/// grants gets `header\n\nsoul`, nothing else.
+/// briefing, then the stored soul. The first three, filtered to non-empty and
+/// joined with blank lines — an agent with no coaching and no grants gets
+/// `header\n\nsoul`, nothing else.
 fn soul_md(soul_header: &str, coaching: &str, handles: &str, soul: &str) -> String {
     let parts = [soul_header, coaching, handles]
         .iter()
@@ -976,10 +971,10 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
 /// installation can reach.
 const GITCONFIG: &str = "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n";
 
-/// Best-effort executable bit for the credential helper. (TS's writeFile mode
-/// only stamps newly created files; this also repairs a helper that lost its
-/// bit — a non-executable helper IS a silent no-op, the exact failure the
-/// portability block above exists to prevent.)
+/// Best-effort executable bit for the credential helper. (The write's
+/// create-mode only stamps newly created files; this also repairs a helper
+/// that lost its bit — a non-executable helper IS a silent no-op, the exact
+/// failure the portability block above exists to prevent.)
 async fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o755);
@@ -1011,10 +1006,8 @@ pub struct RollOverlay<'a> {
     pub port: i64,
 }
 
-/// renderFleet — regenerate everything the managed fleet runs on. See the
-/// module header. The one TS step NOT here yet: `ensureMcpService()` (the
-/// talaria-mcp container supervisor, mcp-service.ts) crosses with the docker
-/// plane in the next batch; the render itself is complete without it.
+/// render_fleet — regenerate everything the managed fleet runs on. See the
+/// module header.
 pub async fn render_fleet(
     pg: &PgPool,
     sb: &SecretBox,
@@ -1092,8 +1085,8 @@ pub async fn render_fleet(
     .map_err(|e| e.to_string())?;
 
     // Read once, ahead of the loop: the harness registry and the endpoint env
-    // contract are the same rows for every agent (TS re-reads per agent; the
-    // data is read-only for the render's duration).
+    // contract are the same rows for every agent (the data is read-only for
+    // the render's duration).
     let harness_registry = list_harness_defs(pg)
         .await
         .map_err(|e| format!("harness registry: {e}"))?;
@@ -1149,8 +1142,8 @@ pub async fn render_fleet(
             _ => Map::new(),
         };
 
-        // (Cloned out and inserted back on the same key — position preserved —
-        // matching TS's `{...existing, talaria}` spread semantics exactly.)
+        // (Cloned out and inserted back on the same key — position preserved
+        // in the emitted config.yaml, an override rather than an append.)
         let mut mcp_servers = routed
             .get("mcp_servers")
             .and_then(Value::as_object)
@@ -1811,8 +1804,8 @@ service:
             json!("hermes:latest"),
             "inherited via <<"
         );
-        // serde's apply_merge replaces the key wholesale (last wins), same as
-        // the yaml package's merge resolution for a whole-key override.
+        // serde's apply_merge replaces the key wholesale (last wins) — a
+        // whole-key override, not a deep merge.
         assert_eq!(c.service["environment"]["B"], json!("2"));
     }
 
@@ -1897,7 +1890,7 @@ service:
         write_file(&root, ".seeds.json", b"other");
         let h3 = skill_dir_hash(&root).await.unwrap();
         assert_eq!(h2, h3);
-        // And the hash is the sha256 the TS dir hash computes: path, NUL, bytes.
+        // And the hash is sha256 over path, NUL, bytes.
         let mut expect = Sha256::new();
         expect.update(b"SKILL.md");
         expect.update(b"\0");

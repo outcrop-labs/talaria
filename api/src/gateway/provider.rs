@@ -1,7 +1,6 @@
-// Provider keys and catalogs — port of ui/src/server/provider-catalog.ts:
-// NATIVE_BASE, the env-name gate, resolveEndpointKey (sealed DB key first,
-// env/fleet-.env fallback), and the live model-catalog fetchers
-// (catalogModels) that fill the stored catalog the effort ladder reads.
+// Provider keys and catalogs: the native bases, the env-name gate, key
+// resolution (sealed DB key first, env/fleet-.env fallback), and the live
+// model-catalog fetchers that fill the stored catalog the effort ladder reads.
 
 use crate::state::AppState;
 use regex::Regex;
@@ -56,13 +55,13 @@ fn fleet_env_path() -> std::path::PathBuf {
 }
 
 /// Resolve a key from the server env or the fleet .env — values never leave
-/// the server. Port of resolveKey.
+/// the server.
 pub async fn resolve_key(env_var: Option<&str>) -> Option<String> {
     let env_var = env_var?;
     if !key_env_allowed(env_var) {
         return None;
     }
-    // TS truthiness: an env var set but EMPTY falls through to the fleet .env.
+    // An env var set but EMPTY falls through to the fleet .env.
     if let Ok(v) = std::env::var(env_var)
         && !v.is_empty()
     {
@@ -74,7 +73,7 @@ pub async fn resolve_key(env_var: Option<&str>) -> Option<String> {
     let prefix = format!("{env_var}=");
     let line = env.lines().find(|l| l.starts_with(&prefix))?;
     let v = line[prefix.len()..].trim().to_string();
-    // TS returns "" for a bare `FOO=` line — falsy there; here empty IS "no
+    // A bare `FOO=` line yields empty — and empty IS "no
     // key" at every call site.
     (!v.is_empty()).then_some(v)
 }
@@ -82,7 +81,7 @@ pub async fn resolve_key(env_var: Option<&str>) -> Option<String> {
 /// The provider's API key: the sealed key stored in the DB is the source of
 /// truth (encrypted at rest, entered via /models — never in a config file).
 /// An env var / fleet .env of the endpoint's api_key_env is a fallback for
-/// ops overrides and pre-migration deployments. Port of resolveEndpointKey.
+/// ops overrides and pre-migration deployments.
 pub async fn resolve_endpoint_key(
     state: &AppState,
     ep: &crate::gateway::registry::LlmEndpoint,
@@ -111,7 +110,7 @@ pub async fn resolve_endpoint_key(
 /// One-time migration: seal any provider key that still lives only in the env
 /// / fleet .env into the DB, so keys stop depending on config files.
 /// Idempotent — only touches endpoints with no sealed key yet. Safe to call
-/// on every boot (migrateEnvKeysToCipher). Answers how many keys it sealed.
+/// on every boot. Answers how many keys it sealed.
 pub async fn migrate_env_keys_to_cipher(state: &AppState) -> Result<usize, sqlx::Error> {
     let eps: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "select id::text, provider, api_key_env from llm_endpoints \
@@ -162,7 +161,7 @@ struct UsPoolCache {
 /// OpenRouter's live US provider pool for no-train routing: every provider
 /// whose datacenters include the US (or, when datacenters are unreported, is
 /// US-headquartered). Fetched fresh — never a maintained list — and cached
-/// briefly; a failed fetch serves the last good pool. Port of openrouterUsPool.
+/// briefly; a failed fetch serves the last good pool.
 pub async fn openrouter_us_pool() -> Option<Vec<String>> {
     const TTL_MS: u64 = 15 * 60_000;
     {
@@ -236,7 +235,7 @@ pub struct CatalogPricing {
 }
 
 /// ONE MODEL AS THE PROVIDER DESCRIBES IT — the fields every OpenAI-compatible
-/// catalog that publishes them agrees on, normalized (port of CatalogModel).
+/// catalog that publishes them agrees on, normalized.
 ///
 /// WHY THIS TYPE EXISTS AT ALL: `string[]` ids once threw away OpenRouter's
 /// `context_length`, `architecture.input_modalities`, `supported_parameters`
@@ -263,8 +262,8 @@ pub struct CatalogModel {
     pub pricing: Option<CatalogPricing>,
 }
 
-/// JS integral numbers stringify without a decimal (`1048576`, not
-/// `1048576.0`) — serialize the integral range as integers.
+/// Integral numbers serialize without a decimal (`1048576`, not
+/// `1048576.0`) — the integral range goes out as integers.
 fn number_json(n: f64) -> serde_json::Value {
     if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
         serde_json::Value::Number((n as i64).into())
@@ -377,9 +376,9 @@ fn str_list_json(list: Option<&[String]>) -> serde_json::Value {
     }
 }
 
-/// `num()`: a JS number where it is one, `Number(s)` where it is a string
-/// (trimmed; empty/whitespace → 0), null for everything else or non-finite.
-/// Hex strings diverge (Rust: null, JS: parsed) — no provider prices in hex.
+/// A JSON number where it is one; a numeric string parsed (trimmed;
+/// empty/whitespace → 0); null for everything else. Hex strings are null,
+/// not parsed — no provider prices in hex.
 fn js_num(v: &serde_json::Value) -> Option<f64> {
     match v {
         serde_json::Value::Number(n) => n.as_f64(),
@@ -395,7 +394,7 @@ fn js_num(v: &serde_json::Value) -> Option<f64> {
     }
 }
 
-/// `strings()`: an array whose every element is a string, else null. An empty
+/// An array whose every element is a string, else null. An empty
 /// array is a valid answer (explicitly no modalities), distinct from null.
 fn js_strings(v: &serde_json::Value) -> Option<Vec<String>> {
     let a = v.as_array()?;
@@ -430,11 +429,11 @@ fn window_of(m: &serde_json::Value) -> Option<f64> {
     best
 }
 
-/// `toCatalogModel`. `gemini` normalizes `models/`-prefixed ids to the bare id
+/// `gemini` normalizes `models/`-prefixed ids to the bare id
 /// its chat API is documented with.
 fn to_catalog_model(raw: &serde_json::Value, gemini: bool) -> Option<CatalogModel> {
-    // id ?? name — a present-but-empty id is a VALUE in TS, not nullish: the
-    // model is rejected without consulting name.
+    // id falls back to name only when absent/null — a present-but-empty id
+    // rejects the model without consulting name.
     let id = match raw.get("id") {
         Some(serde_json::Value::Null) | None => raw
             .get("name")
@@ -586,8 +585,8 @@ async fn fetch_models(
         for (k, v) in headers {
             req = req.header(k, v);
         }
-        // Transport failures surface as undici's bare rejection — this string
-        // rides the `available` route's note verbatim (byte-diff contract).
+        // Transport failures surface as undici-style bare messages — this
+        // string rides the `available` route's note verbatim (byte-stable).
         req.send()
             .await
             .map_err(|e| crate::mcp::registry::undici_message(&e))
@@ -603,7 +602,7 @@ async fn fetch_models(
 }
 
 /// The models a provider reports right now, WITH everything it says about
-/// them — port of catalogModels. Err carries the human message (logged inside
+/// them. Err carries the human message (logged inside
 /// the refresh result; a failed fetch keeps the old entry).
 pub async fn catalog_models(
     state: &AppState,
@@ -613,7 +612,7 @@ pub async fn catalog_models(
         Some(b) => b,
         None => return Err("no API base known for this provider".to_string()),
     };
-    // TS strips exactly ONE trailing slash.
+    // Strip exactly ONE trailing slash.
     let base = base.strip_suffix('/').unwrap_or(base);
     // Perplexity has no catalog API; its docs give ids and nothing else, so
     // every descriptive field is honestly absent rather than guessed at.
@@ -696,8 +695,8 @@ pub async fn catalog_models(
             let Some(m) = to_catalog_model(raw, gemini) else {
                 continue;
             };
-            // First entry wins, matching the old `new Set(ids)` dedupe: the
-            // provider's own ordering puts the canonical row first.
+            // First entry wins — the provider's own ordering puts the
+            // canonical row first.
             if seen.insert(m.id.clone()) {
                 out.push(m);
             }

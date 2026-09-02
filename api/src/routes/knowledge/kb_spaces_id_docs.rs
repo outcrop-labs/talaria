@@ -1,9 +1,8 @@
-// /api/kb/spaces/{id}/docs — port of ui/src/routes/api/kb.spaces.$id.docs.ts.
-// A space's doc tree. GET → doc metadata list (agents gate on agent
-// space-access, then per-doc audience; humans gate on the folder, then
-// inherited docs show and customized ones filter). POST → new doc (agent docs
-// are drafts owned by the assistant's principal; humans create where they can
-// read).
+// /api/kb/spaces/{id}/docs. A space's doc tree. GET → doc metadata list
+// (agents gate on agent space-access, then per-doc audience; humans gate on
+// the folder, then inherited docs show and customized ones filter). POST →
+// new doc (agent docs are drafts owned by the assistant's principal; humans
+// create where they can read).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -95,7 +94,7 @@ pub async fn get(
     }
     // Inherited docs are as visible as the (readable) folder, so they show.
     // Customized docs are filtered by their own audience (or an explicit
-    // grant) — canRead with no grant list, the same shape as the spaces
+    // grant) — can_read with no grant list, the same shape as the spaces
     // filter (the granted-set beside it is the grant half).
     let granted = match granted_item_ids(&state.pg, "doc", &user.id).await {
         Ok(v) => v,
@@ -125,8 +124,8 @@ pub async fn get(
     Json(json!({ "docs": docs })).into_response()
 }
 
-/// canReadAgent on a doc META row (no grants in hand — the granted-set check
-/// beside it covers the grant half, the agent tree's TS shape).
+/// can_read_agent on a doc META row (no grants in hand — the granted-set
+/// check beside it covers the grant half).
 fn doc_readable_by_agent(d: &crate::kb::KbDocMeta) -> bool {
     d.visibility != "private"
 }
@@ -238,8 +237,8 @@ pub async fn post(
     }
 
     // Humans create where they can read: the same gate the GET on this route
-    // uses, so a private space stays closed on write as well as on read. This
-    // was `requireUser` alone, which let any signed-in member drop a doc into
+    // uses, so a private space stays closed on write as well as on read —
+    // requiring only a session would let any signed-in member drop a doc into
     // someone else's private space.
     let user = match require_perm(&state, &headers, "kb.edit").await {
         Ok(u) => u,

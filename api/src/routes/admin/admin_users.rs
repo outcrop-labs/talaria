@@ -1,7 +1,7 @@
-// /api/admin/users — port of ui/src/routes/api/admin.users.ts. The people
-// console. GET → every user with role, agent allow-list, view denials.
-// PUT → the per-user levers, applied in TS's order (role first, the
-// assistant's elevation right behind it — a demotion collapses both).
+// /api/admin/users. The people console. GET → every user with role, agent
+// allow-list, view denials. PUT → the per-user levers, applied in order
+// (role first, the assistant's elevation right behind it — a demotion
+// collapses both).
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse};
@@ -32,9 +32,9 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     Json(serde_json::json!({ "users": users })).into_response()
 }
 
-/// The PUT body. `agentModels`/`deniedViews`/`allowedManageViews` are
-/// TRUTHINESS-gated in TS (an empty array still writes the empty set — the
-/// console's "clear everything" gesture); the booleans are !== undefined.
+/// The PUT body. `agentModels`/`deniedViews`/`allowedManageViews` and the
+/// booleans are presence-gated: an empty array still writes the empty set
+/// (the console's "clear everything" gesture).
 struct PutBody {
     user_id: String,
     role: Option<String>,
@@ -50,10 +50,9 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         array_msg, array_too_big_msg, optional_boolean_member, optional_enum_member, uuid_member,
         zod_type_name,
     };
-    // Keys in schema order; each rejection in zod's own words. The union's
-    // old blanket ("Invalid input") was a wire deviation: zod names the
-    // field's own failure, and a bad role was silently DROPPED here rather
-    // than refused — a 200 for a write that never happened.
+    // Keys in schema order; each rejection names the field's own failure —
+    // a bad role is REFUSED, never silently dropped into a 200 for a write
+    // that never happened.
     let user_id = uuid_member(obj, "userId")?;
     let role = optional_enum_member(obj, "role", &["admin", "member"])?;
     let string_array =
@@ -84,8 +83,8 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
     })
 }
 
-/// One array element of `z.string().max(n)` — the element-facing half of the
-/// string-array members, with zod's element messages.
+/// One string-array element (max n) — the element-facing half of the
+/// string-array members, with the schema's element messages.
 fn optional_max_string_member_value(v: &Value, max: usize) -> Result<String, String> {
     let s = v
         .as_str()
@@ -176,7 +175,7 @@ pub async fn put(
     if let Some(elevated) = body.assistant_elevated {
         if elevated {
             // Only an admin's assistant can be elevated — it inherits their
-            // standing. (TS's sentence carries a curly apostrophe.)
+            // standing. (The sentence carries a curly apostrophe.)
             let target = list_users_admin(&state.pg)
                 .await
                 .unwrap_or_default()
@@ -226,7 +225,7 @@ pub async fn put(
         .await;
     }
 
-    // Truthiness: an empty array still writes (the console's clear gesture).
+    // An empty array still writes — the console's clear gesture.
     if let Some(models) = &body.agent_models {
         if let Err(e) = set_user_agent_access(&state.pg, &body.user_id, models).await {
             tracing::error!("[admin/users] agent access write failed: {e}");

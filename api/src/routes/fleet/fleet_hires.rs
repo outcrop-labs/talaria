@@ -1,7 +1,7 @@
-// GET /api/fleet/hires — port of ui/src/routes/api/fleet.hires.ts. What the
-// roster shows while an agent-hire run works: every live hire, plus the
-// recently-finished ones long enough for the surface to see the transition
-// (and a failure's sentence) before the row goes away.
+// GET /api/fleet/hires. What the roster shows while an agent-hire run
+// works: every live hire, plus the recently-finished ones long enough for
+// the surface to see the transition (and a failure's sentence) before the
+// row goes away.
 //
 // The getter call is for REGISTRATION only: a process that lists hires can
 // also be the process a reclaim sweep asks to resume one, and a kind this
@@ -19,8 +19,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::Value;
 
-/// The hire as the roster reads it (fleet.hires.ts AgentHireView) — the fields
-/// in the map literal's order, camelCase on the wire.
+/// The hire as the roster reads it — fields in this order, camelCase on
+/// the wire.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentHireView {
@@ -82,9 +82,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     Json(HiresBody { hires }).into_response()
 }
 
-/// The TS map literal: each input field is `??`'d to its default, so a missing
-/// key reads as the default and never fails the list. A null phase reads as
-/// the empty string (plan-drafts' precedent).
+/// Each input field is `??`'d to its default — a missing key reads as the
+/// default and never fails the list. A null phase reads as the empty
+/// string (plan-drafts' precedent).
 fn hire_view(
     id: String,
     input: &Value,

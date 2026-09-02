@@ -1,4 +1,4 @@
-// /api/agent-media/{model} — port of ui/src/routes/api/agent-media.$model.ts.
+// /api/agent-media/{model}.
 // GET ?path=/opt/data/ → stream an image out of the agent's container, so
 // media agents produce ("MEDIA:<path>" in replies) renders inline in chat.
 // Access + path/type guardrails live in agent_media.rs.

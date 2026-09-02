@@ -1,4 +1,4 @@
-// /api/research/{id}/members — port of ui/src/routes/api/research.$id.members.ts.
+// /api/research/{id}/members.
 // Multiplayer research, mirroring plan membership. GET → members (any member).
 // POST { email } → share (owner only; grants the report, notifies). DELETE
 // { userId } → unshare (owner, or a collaborator leaving).
@@ -19,10 +19,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// Keep the report artifact's grants in step with run membership. The write
-/// side of `syncReportGrant`: a member of the run is an editor of the report
-/// it produced, from the moment the report exists (completion grants the
-/// members a report that lands later).
+/// Keep the report artifact's grants in step with run membership: a member
+/// of the run is an editor of the report it produced, from the moment the
+/// report exists (completion grants the members a report that lands later).
 async fn sync_report_grant(
     state: &AppState,
     run_id: &str,
@@ -134,8 +133,8 @@ pub async fn post(
         return thrown_internal_error();
     }
     if let Err(e) = sync_report_grant(&state, &id, &invited_id, true).await {
-        // The share landed; the grant sync is best-effort the way TS's
-        // fire-and-forget notification is. Completion re-grants members.
+        // The share landed; the grant sync is best-effort. Completion
+        // re-grants members.
         tracing::error!("[research] report grant sync on share failed: {e}");
     }
     let question: Option<(String,)> =
@@ -150,8 +149,8 @@ pub async fn post(
                 None
             }
         };
-    // The notification is fire-and-forget in TS (`void … .catch()`); a
-    // failure here is logged and the share still happened.
+    // The notification is fire-and-forget — a failure here is logged and
+    // the share still happened.
     let notify = crate::notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_notification(
         &notify,
@@ -195,8 +194,8 @@ pub async fn delete(
     if let Some(gate) = crate::params::uuid_gate("research", "DELETE members", &id) {
         return gate;
     }
-    // TS reads the role BEFORE parsing the body — kept, so a bad body from a
-    // stranger still answers 404 and never reveals the parse error first.
+    // The role read precedes the body parse, so a bad body from a stranger
+    // still answers 404 and never reveals the parse error first.
     let role = match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(r) => r,
         Err(e) => {

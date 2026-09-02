@@ -1,6 +1,5 @@
-// POST /api/integrations/google/drive/import { fileId } — port of
-// ui/src/routes/api/integrations/google.drive.import.ts. Pull a Drive file in
-// as a new artifact owned by the caller (Doc→doc, Sheet→sheet, else→file).
+// POST /api/integrations/google/drive/import { fileId } — pull a Drive file
+// in as a new artifact owned by the caller (Doc→doc, Sheet→sheet, else→file).
 
 use axum::Json;
 use axum::body::Bytes;
@@ -86,8 +85,8 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         tracing::error!("[drive/import] export record failed: {e}");
         return import_failed(GoogleError::Failed(e.to_string()));
     }
-    // `{...artifact, kind, title}` — the spread keeps its field order; the
-    // two overrides land on keys the artifact already carries.
+    // The wire artifact keeps its serialized field order; kind and title
+    // overwrite keys it already carries.
     let mut wire = serde_json::to_value(&artifact).unwrap_or(Value::Null);
     if let Some(obj) = wire.as_object_mut() {
         obj.insert("kind".into(), json!(content.kind));
@@ -126,7 +125,7 @@ fn import_failed(e: GoogleError) -> Response {
     }
 }
 
-/// Date.now() — the one clock the import reads.
+/// Epoch-ms clock — the one time the import reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

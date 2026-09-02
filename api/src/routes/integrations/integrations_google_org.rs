@@ -1,6 +1,5 @@
-// /api/integrations/google/org — port of
-// ui/src/routes/api/integrations/google.org.ts. The shared org Google
-// connection (admin-managed); general fleet agents act as this identity for
+// /api/integrations/google/org — the shared org Google connection
+// (admin-managed); general fleet agents act as this identity for
 // Drive/Docs/Calendar/Gmail. GET → status + targets · PUT → save build
 // targets · DELETE → disconnect.
 
@@ -34,8 +33,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             return thrown_internal_error();
         }
     };
-    // `{available, ...status}` — the spread's field order spelled out (targets
-    // embeds TargetsWire, whose declaration order IS the TS wire order).
+    // Wire key order: available, then the status fields, then targets (whose
+    // own key order is TargetsWire's declaration order).
     Json(json!({
         "available": available,
         "connected": status.connected,
@@ -57,9 +56,8 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().max(n).nullish() — the PATCH tri-state: absent = leave the
-    // column alone, null = clear it, a string = set it (blank clears too, in
-    // the engine's norm()).
+    // The PATCH tri-state: absent = leave the column alone, null = clear it,
+    // a string = set it (blank clears too, in the engine's norm()).
     let patch = OrgTargetsPatch {
         drive_folder_id: match read_target(obj, "driveFolderId", 200) {
             Ok(v) => v,

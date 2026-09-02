@@ -1,5 +1,5 @@
-// /api/boards/{id} — port of ui/src/routes/api/boards.$id.ts. PATCH { name?,
-// archived?, judgeMode?, teamId?, teamName? } → rename/archive/set the QA
+// /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName? }
+// → rename/archive/set the QA
 // judge mode (owner/editor); a team move is owner-only because it changes who
 // can see the board. DELETE → owner only. The identity here is ACTING user —
 // a personal assistant patches as its owner (the identity-proxy model), and
@@ -24,9 +24,10 @@ use serde_json::json;
 
 const JUDGE_MODES: &[&str] = &["inherit", "off", "advisory", "enforcing"];
 
-/// The validated Patch: each field Option<"present">, in zod's schema order —
+/// The validated Patch: each field Option<"present">, in schema order —
 /// name, archived, judgeMode, teamId, teamName — which is the order the
-/// messages answer in. teamId and teamName keep their present-null state:
+/// validation messages answer in. teamId and teamName keep their present-null
+/// state:
 /// "move to personal" (null) and "don't touch" (absent) are different
 /// requests, and the name arm feeds the id arm.
 #[derive(Debug)]
@@ -130,7 +131,7 @@ pub async fn patch(
         }
         match set_board_team(&state.pg, &id, target.as_deref()).await {
             Ok(Ok(())) => {}
-            // TS re-throws setBoardTeam's Error as the 400 body; 'unknown
+            // setBoardTeam's refusal is the 400 body verbatim; 'unknown
             // team' is its only in-practice message.
             Ok(Err(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
             Err(e) => {
@@ -139,8 +140,8 @@ pub async fn patch(
             }
         }
     }
-    // The remaining writes, in TS's order — each independent, each a 500 on
-    // failure.
+    // The remaining writes, in the schema's order — each independent, each a
+    // 500 on failure.
     if let Some(name) = &patch.name
         && let Err(e) = rename_board(&state.pg, &id, name).await
     {
@@ -189,11 +190,10 @@ pub async fn delete(
         tracing::error!("[boards] delete failed: {e}");
         return thrown_internal_error();
     }
-    // Purge the board's tickets + comments from the activity brain — the
-    // retrieval plane, batch 5. The TS leg is fire-and-forget with failures
-    // swallowed, so nothing here waits on it; until the plane crosses, the
-    // deleted board's activity rows linger unserviced (no workspace is live,
-    // and the board's own routes are gone with it).
+    // KNOWN GAP: this delete does not purge the board's tickets + comments
+    // from the activity brain. `purge_activity_by_field` exists and channel
+    // delete fires its channel analog, but nothing on this path calls it, so
+    // the deleted board's activity points linger in the index.
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -223,7 +223,7 @@ mod tests {
             patch(json!({ "judgeMode": 5 })).unwrap_err(),
             "Invalid option: expected one of \"inherit\"|\"off\"|\"advisory\"|\"enforcing\""
         );
-        // archived: null is NOT a boolean under .optional().
+        // archived: a present null is NOT a boolean — absent is the only skip.
         assert_eq!(
             patch(json!({ "archived": null })).unwrap_err(),
             "Invalid input: expected boolean, received null"

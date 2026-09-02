@@ -1,9 +1,8 @@
-// /api/mcp/library — port of ui/src/routes/api/mcp.library.ts.
+// /api/mcp/library.
 // GET ?q= → the MCP server library (the official registry, live, filtered to
 // remote-capable servers). Backs the Add-server picker. BOTH arms answer
-// `{servers}` — `featuredMcpLibrary()` returns `{ servers }` just like the
-// search (an earlier spelling of this route served the featured shelf as a
-// bare array, and the picker's `data.servers.length` crashed on it).
+// `{servers}` — featured shelf and search alike; the picker indexes
+// `data.servers`, never a bare array.
 
 use crate::mcp::library::{LibraryServer, library};
 use crate::session::require_perm;
@@ -14,11 +13,9 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-// The TS route carries a 502 catch for a registry that won't answer; the
-// Rust engine's first-load failure surfaces as an empty shelf instead of a
-// thrown error (refresh only replaces a cached shelf with a NON-empty one),
-// so the catch arm has no Rust counterpart to fire — noted rather than
-// manufactured.
+// No 502 arm here: a registry that won't answer surfaces as an empty shelf,
+// not a thrown error — refresh only replaces a cached shelf with a NON-empty
+// one — so there is no failure path to catch.
 
 #[derive(serde::Deserialize)]
 pub struct LibraryQuery {
@@ -61,7 +58,7 @@ pub async fn get(
         return Json(json!({ "servers": shelf.iter().map(server_wire).collect::<Vec<_>>() }))
             .into_response();
     }
-    // `url.searchParams.get('q') ?? ''` — absent and empty are the same query.
+    // absent and empty are the same query.
     let q = query.q.unwrap_or_default();
     let servers = lib.search(&q).await;
     Json(json!({ "servers": servers.iter().map(server_wire).collect::<Vec<_>>() })).into_response()

@@ -1,7 +1,6 @@
-// /api/integrations/google/agent/calendar — port of
-// ui/src/routes/api/integrations/google.agent.calendar.ts. Agent-facing
-// calendar: a personal assistant acts as its owner; a general fleet agent
-// acts on the shared ORG calendar.
+// /api/integrations/google/agent/calendar. Agent-facing calendar: a personal
+// assistant acts as its owner; a general fleet agent acts on the shared ORG
+// calendar.
 // GET  → read upcoming events (free)
 // POST → DRAFT an event; queued for approval (the owner, or an admin for org).
 
@@ -116,7 +115,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     };
     // The payload IS the validated draft, stored exactly as drafted and
     // executed as stored at approve time — optional members ride only when
-    // the request carried them (JSON.stringify drops undefined).
+    // the request carried them.
     let mut payload = serde_json::Map::new();
     payload.insert("summary".into(), json!(summary));
     if let Some(d) = &description {
@@ -166,7 +165,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .into_response()
 }
 
-/// Date.now() — the one clock the agent calendar surface reads.
+/// Epoch-ms clock — the one time the agent calendar surface reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -1,7 +1,6 @@
-// /api/kb/public/{slug} — port of ui/src/routes/api/kb.public.$slug.ts.
-// Public doc read — no auth. Only docs with visibility 'public' resolve; the
-// body of the response is title/body/updatedAt only (routing and every other
-// internal column stay off the public wire).
+// /api/kb/public/{slug}. Public doc read — no auth. Only docs with visibility
+// 'public' resolve; the response body is title/body/updatedAt only (routing
+// and every other internal column stay off the public wire).
 
 use axum::Json;
 use axum::extract::{Path, State};

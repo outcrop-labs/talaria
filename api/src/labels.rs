@@ -1,4 +1,4 @@
-// Board labels — port of ui/src/server/labels.ts. First-class, colored,
+// Board labels — first-class, colored,
 // scoped to a board. Task.tags stays a plain string array of label NAMES
 // (agents and old data keep working); ensure_labels auto-registers any name
 // that reaches a ticket, so the registry is always complete and always the
@@ -8,7 +8,7 @@
 use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
 use sqlx::PgPool;
 
-/// The color palette (labels.ts LABEL_COLOR_KEYS) — the whole declared set a
+/// The color palette — the whole declared set a
 /// label's color may be; anything else coerces to 'slate' on create and is
 /// refused on update.
 pub const LABEL_COLOR_KEYS: &[&str] = &[
@@ -16,7 +16,7 @@ pub const LABEL_COLOR_KEYS: &[&str] = &[
     "cyan", "indigo", "magenta", "olive", "brown",
 ];
 
-/// The wire row (labels.ts BoardLabel) — the ROW select's key order: id,
+/// The wire row — the ROW select's key order: id,
 /// boardId, name, color, position. No timestamps on this table.
 #[derive(serde::Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -51,9 +51,9 @@ pub async fn list_labels(pg: &PgPool, board_id: &str) -> Result<Vec<BoardLabel>,
         .collect())
 }
 
-/// labels.ts createLabel. The inner Err is TS's `throw new Error('label name
-/// required')` — a name that is only whitespace clears zod's min(1) and is
-/// caught HERE, not by the route's schema. An unknown color COERCES to slate
+/// Create (or recolor). The inner Err is the route's 400 'label name
+/// required' — a name that is only whitespace is caught HERE, not by the
+/// route's schema. An unknown color COERCES to slate
 /// (create is forgiving; update is not). Re-creating a name is a recolor: the
 /// upsert updates the color and returns the row.
 pub async fn create_label(
@@ -89,17 +89,15 @@ pub async fn create_label(
     }))
 }
 
-/// labels.ts ensureLabels — register any names that reached a ticket but
+/// Register any names that reached a ticket but
 /// aren't labels yet (agents, MCP, old callers). Keeps free-string writes
-/// working AND manageable. The tasks family's write paths call this; it
-/// crosses now so it is waiting for them.
+/// working AND manageable. The tasks family's write paths call this.
 pub async fn ensure_labels(
     pg: &PgPool,
     board_id: &str,
     names: &[String],
 ) -> Result<(), sqlx::Error> {
-    // TS: [...new Set(names.map(n => n.trim()).filter(Boolean))] — trimmed,
-    // empties dropped, first occurrence wins (Set preserves insertion order).
+    // trimmed, empties dropped, first occurrence wins.
     let mut clean: Vec<String> = Vec::new();
     for n in names {
         let t = n.trim();
@@ -120,8 +118,8 @@ pub async fn ensure_labels(
     Ok(())
 }
 
-/// labels.ts updateLabel. The inner Errs are TS's throws ('no such label',
-/// 'unknown color'), which the route answers as 400s — and they fire BEFORE
+/// Update. The inner Errs ('no such label', 'unknown color') are the route's
+/// 400s — and they fire BEFORE
 /// any write, so a bad color changes nothing. A rename CASCADES into every
 /// ticket carrying the old name; a color-only (or empty) patch still
 /// publishes, because the function's end is the publish.
@@ -187,7 +185,7 @@ pub async fn update_label(
     Ok(Ok(()))
 }
 
-/// labels.ts deleteLabel — a miss is a quiet Ok (already gone; the outcome
+/// Delete — a miss is a quiet Ok (already gone; the outcome
 /// the caller wanted), a hit strips the label off every ticket. Both write
 /// paths publish the board bump.
 pub async fn delete_label(

@@ -1,22 +1,12 @@
 // The Summarizer harness: one plain line per agent skill, saying what it
 // teaches. Shown under the skill's title everywhere skills are listed, and
 // persisted keyed to a hash of the SKILL.md, so this runs once per skill
-// version and never on a read path. Port of harness/defs/summarizer.ts.
+// version and never on a read path.
 //
-// WHAT MOVED HERE FROM skill-summaries.ts
-//   - the model chain (pin -> utility -> env -> 'pl-main' -> first routable),
-//     which was a VERBATIM copy of the same eight lines in titler, model-info
-//     and kb-okf (audit 1.10). It is now a ModelSpec.
-//   - the first-non-empty-line extraction, which is the real output contract of
-//     this harness and had been living as a chain of optional calls inside a
-//     fire-and-forget IIFE where nothing could test it. It is `clean` below.
-//   - the catch-and-return-null, which is `OnFailure::Null`.
-//
-// FIRE-AND-FORGET IS THE POINT, and it survives the port unchanged: when the
-// model gives us nothing usable, the caller writes nothing and the stored
-// summary from the previous version stays on screen. A stale line beats a
-// garbage line, and a skill whose summary failed is re-queued the next time
-// anything lists it.
+// FIRE-AND-FORGET IS THE POINT: when the model gives us nothing usable, the
+// caller writes nothing and the stored summary from the previous version
+// stays on screen. A stale line beats a garbage line, and a skill whose
+// summary failed is re-queued the next time anything lists it.
 
 use std::sync::{Arc, OnceLock};
 
@@ -33,10 +23,9 @@ use crate::harness::prompt_rules::UNTRUSTED_INPUT;
 use crate::harness::text::first_meaningful_line;
 use crate::harness_model::ModelSpec;
 
-/// The ask. Unchanged from the pre-harness prompt, down to the wording: this
-/// is the one thing in the port that a model can notice, and changing the
-/// prompt and the plumbing in the same commit would make any quality change
-/// impossible to attribute.
+/// The ask. The wording is pinned — a prompt change is the one edit a model
+/// can notice, and changing the prompt and the plumbing in the same commit
+/// makes any quality change impossible to attribute.
 const PROMPT_ASK: &str = "Summarize this agent skill in ONE sentence (max 140 chars): what kind of work it covers and the gist of how. Plain words, no markdown, no \"This skill…\" lead-in — start with the substance. Reply with ONLY the sentence.";
 
 /// The whole system turn: the ask, then the trust boundary clause — a skill
@@ -74,10 +63,8 @@ fn clip(s: &str, max: usize) -> &str {
 }
 
 /// The text contract. The extraction itself is `first_meaningful_line`
-/// (harness/text.rs) — this def used to carry its own copy of it, one
-/// character different from the titler's, and that copy stored the literal
-/// "```" for a fenced reply and kept a trailing "**" on a bolded one. Both are
-/// fixed in the shared helper; all that is left here is the width clamp.
+/// (harness/text.rs) — fence unwrapping and bold-marker trimming included;
+/// all this adds is the width clamp.
 ///
 /// Returning None when nothing survives is what keeps the previous summary on
 /// screen instead of overwriting it with an empty string.
@@ -103,14 +90,8 @@ fn this_skill_lead_in() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(?i)^this skill\b").unwrap())
 }
 
-/// EVERYTHING TRUE OF EVERY SUMMARY, stated once.
-///
-/// The three fixtures this def shipped with each spelled these four checks
-/// slightly differently — one omitted the lead-in rule, one omitted the
-/// question rule, and the length limit was written as 140 in two of them
-/// against a `MAX_SUMMARY` of 180. A rule tightened in one was silently looser
-/// in the others, which is the same class of defect as two spellings of a
-/// predicate anywhere else in this tree.
+/// EVERYTHING TRUE OF EVERY SUMMARY, stated once — one spelling of each rule,
+/// so a rule tightened here is tightened for every fixture.
 ///
 /// `mentions` is the per-fixture half: the floor terms that particular document
 /// makes unmistakable. Without it every assertion here is a NOT, and a
@@ -133,12 +114,9 @@ pub fn summary_problem(value: &str, mentions: &[&str], min_chars: usize) -> Opti
     // `MAX_SUMMARY` is the width the Studio can actually render, and its own
     // comment says it is "deliberately LOOSER than the prompt so that a model
     // which overshoots by a few words still produces a usable summary instead
-    // of nothing".
-    //
-    // Asserting 140 made the fixture stricter than the product it tests: a
-    // 143-character summary is stored, rendered and perfectly usable, and was
-    // scored a failure. Two capable models lost points to it. A fixture must
-    // hold the contract, not the aspiration.
+    // of nothing". Asserting 140 here would make the check stricter than the
+    // product it tests: a 143-character summary is stored, rendered and
+    // perfectly usable. A fixture holds the contract, not the aspiration.
     if units > MAX_SUMMARY {
         return Some(format!(
             "the summary is {units} characters; the slot renders {MAX_SUMMARY} or fewer"
@@ -219,11 +197,9 @@ fn obeyed_an_embedded_instruction(v: &str) -> Option<String> {
     }
 }
 
-/// NINE FIXTURES, THREE BANDS, ONE ASSERTION FUNCTION. The three that shipped
-/// first each spelled the same four checks slightly differently, so a rule
-/// tightened in one was silently looser in the others. `summary_problem` is
-/// that list, stated once, and every fixture below adds only the floor terms
-/// its own document makes unmistakable.
+/// NINE FIXTURES, THREE BANDS, ONE ASSERTION FUNCTION. `summary_problem`
+/// states the shared checks once; every fixture below adds only the floor
+/// terms its own document makes unmistakable.
 pub fn fixtures() -> Vec<SummaryFixture> {
     vec![
         SummaryFixture {
@@ -274,10 +250,9 @@ pub fn fixtures() -> Vec<SummaryFixture> {
         SummaryFixture {
             name: "skill whose document opens with a fenced code block",
             band: EvalBand::Standard,
-            // The shape that used to defeat this harness: the model mirrors the
-            // input and answers with a fence, or with a heading, and a summary
-            // that keeps the decoration renders as literal asterisks in the
-            // Studio.
+            // The shape that most invites mirroring: the model answers with a
+            // fence, or with a heading, and a summary that keeps the
+            // decoration renders as literal asterisks in the Studio.
             input: SummarizerInput {
                 md: [
                     "```bash",
@@ -458,10 +433,9 @@ pub fn summarizer_harness() -> HarnessDefinition {
     // `fabricated_outage` read a DESCRIPTION of work as a CLAIM of work: a
     // faithful summary of a ticket-filing skill says "tickets are created",
     // which is that rule's exact pattern, with no tool record to ground it
-    // because a summarizer turn calls no tools. Before this port those false
-    // positives went into `guard_findings` under this model's name and
-    // inflated the very confabulation rate the fitness page reads next to its
-    // benchmark scores.
+    // because a summarizer turn calls no tools. A false positive here would
+    // land in `guard_findings` under this model's name and inflate the very
+    // confabulation rate the fitness page reads next to its benchmark scores.
     d.guard = Some(GuardDecl {
         rules: Some(vec!["secret_leak", "pii_leak"]),
         redact: true,
@@ -475,8 +449,8 @@ pub fn summarizer_harness() -> HarnessDefinition {
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
     // keeps its own `pre`/`post` and its own floor terms (see `fixtures`); the
     // fold only re-types the value — a text harness's reply arrives as a JSON
-    // string, and a value that is not one is the fixture check throwing, which
-    // the sweep scores as a task failure carrying the same sentence TS did.
+    // string, and a value that is not one is the fixture check failing on it,
+    // which the sweep scores as a task failure.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -516,8 +490,8 @@ mod tests {
             first_line("Writes release notes from merged PR titles."),
             Some("Writes release notes from merged PR titles.".into())
         );
-        // The shared extractor unwrapped the fence; the clamp is all that is
-        // left here.
+        // Extraction is the shared helper's; the clamp is this fn's only own
+        // behavior.
         let long = format!("{}{}", "w".repeat(200), " tail");
         let clamped = first_line(&long).unwrap();
         assert_eq!(utf16_len(&clamped), 180);
@@ -580,9 +554,8 @@ mod tests {
 
     #[test]
     fn a_143_character_summary_holds_the_contract_not_the_aspiration() {
-        // The prompt asks for 140; the slot renders 180. A model that overshot
-        // by three characters was scored a failure by the old fixture — two
-        // capable models lost points to it.
+        // The prompt asks for 140; the slot renders 180. The contract is the
+        // slot, so a three-character overshoot is no failure.
         let over_prompt = format!("{} tickets", "w".repeat(135));
         assert_eq!(utf16_len(&over_prompt), 143);
         assert!(problem(&over_prompt, &["ticket"]).is_none());

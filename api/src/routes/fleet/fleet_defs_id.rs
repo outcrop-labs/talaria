@@ -1,7 +1,6 @@
-// /api/fleet/defs/{id} — port of ui/src/routes/api/fleet.defs.$id.ts.
-// PATCH → editable agent identity metadata (role, display name, send alias)
-// plus the workbench and template binds. Not versioned — this is identity,
-// not config. Admin only.
+// /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
+// display name, send alias) plus the workbench and template binds. Not
+// versioned — this is identity, not config. Admin only.
 
 use crate::agent_defs::{AgentMetaPatch, update_agent_meta};
 use crate::audit::{AuditEntry, log_audit};
@@ -21,8 +20,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
 
-/// `displayName: z.string().min(1).max(80).optional()` — optional only, so
-/// null is a type error like any other non-string.
+/// `displayName` — min(1).max(80), optional only, so null is a type error
+/// like any other non-string.
 fn parse_display_name(obj: &Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get("displayName") {
         None => Ok(None),
@@ -39,7 +38,7 @@ fn parse_display_name(obj: &Map<String, Value>) -> Result<Option<String>, String
     }
 }
 
-/// `emailAlias`: trimmed, ≤320, then a bare-address refine — Gmail rejects a
+/// `emailAlias`: trimmed, ≤320, then a bare-address check — Gmail rejects a
 /// From it doesn't own (which the send surfaces anyway), but a typo'd shape
 /// should never even save. Nullish: absent leaves the column, null derives
 /// the org account's plus-address for the slug.
@@ -66,7 +65,7 @@ fn parse_email_alias(obj: &Map<String, Value>) -> Result<Option<Option<String>>,
 }
 
 /// `workbenchModels`: three nullable-optional model picks, one per weight
-/// class. zod strips unknown keys, so the stored map carries only these
+/// class. Unknown keys are stripped — the stored map carries only these
 /// three, present ones only.
 fn parse_workbench_models(obj: &Map<String, Value>) -> Result<Option<Map<String, Value>>, String> {
     match obj.get("workbenchModels") {
@@ -147,9 +146,9 @@ pub async fn patch(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // getAgentDef — the columns this route touches (the workbench fallback
-    // below needs the stored value). TS parses the body BEFORE the lookup, so
-    // a bad body on an unknown id is the 400, not the 404.
+    // the def read — the columns this route touches (the workbench fallback
+    // below needs the stored value). The body parses BEFORE the lookup, so a
+    // bad body on an unknown id is the 400, not the 404.
     let def: Option<(String, String, String, Option<String>)> = match sqlx::query_as(
         "select id::text, model, display_name, workbench from agent_defs where id = $1::uuid",
     )
@@ -182,8 +181,8 @@ pub async fn patch(
         return thrown_internal_error();
     }
     if workbench.is_some() || workbench_profile.is_some() {
-        // `body.workbench ?? def.workbench ?? 'auto'` — a profile-only patch
-        // re-states the stored mode rather than defaulting it.
+        // workbench ?? stored ?? 'auto' — a profile-only patch re-states the
+        // stored mode rather than defaulting it.
         let wb = workbench.or(def_workbench).unwrap_or_else(|| "auto".into());
         if let Err(e) = set_agent_workbench(
             &state.pg,

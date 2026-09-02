@@ -1,4 +1,4 @@
-// /api/artifacts/public/{slug} — port of ui/src/routes/api/artifacts.public.$slug.ts.
+// /api/artifacts/public/{slug}.
 // Public artifact read — NO AUTH. Only artifacts set to 'public' resolve, and
 // the response is a deliberate subset: never the id, the owner, the folder,
 // the routing, or anything else the full artifact carries.

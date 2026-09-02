@@ -1,10 +1,8 @@
-// Channels — the port of ui/src/server/channels.ts, grown slice by slice.
-// The role read landed with the runs watch gate; the insert + agents listing
-// + main-flow read landed with the plan-draft and brief planes. The comms
-// family (R12) completes the file: the member/user listings with their wire
-// views, CRUD (create/DM/rename/archive/delete), membership and read cursors,
-// the agent access paths (elevation, owner-proxy), the message page with its
-// reaction/thread decoration, and the toggle/edit/delete/react row gates.
+// Channels — the comms family's row plane: the member/user listings with
+// their wire views, CRUD (create/DM/rename/archive/delete), membership and
+// read cursors, the agent access paths (elevation, owner-proxy), the message
+// page with its reaction/thread decoration, and the toggle/edit/delete/react
+// row gates.
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_write};
@@ -14,7 +12,7 @@ use crate::users::{assistant_owner_for, is_elevated_assistant};
 use serde_json::Value;
 use sqlx::PgPool;
 
-/// channels.ts isChannelId: exactly the hyphenated uuid shape, hex in either
+/// Exactly the hyphenated uuid shape, hex in either
 /// case. Hand-rolled rather than `Uuid::parse_str` because the crate's parser
 /// is WIDER than the regex — it also takes the braced, urn, and hyphen-less
 /// spellings, and those are not channel ids anywhere in this product.
@@ -33,7 +31,7 @@ pub fn is_channel_id(id: &str) -> bool {
         && b[24..36].iter().all(u8::is_ascii_hexdigit)
 }
 
-/// channels.ts channelRole: the caller's row in `channel_members`, or null.
+/// The caller's row in `channel_members`, or null.
 /// A non-uuid id is not a membership question, and handing it to Postgres is a
 /// 500 (`invalid input syntax for type uuid`) — answering null makes callers
 /// say forbidden instead, the honest answer for an id that cannot name a
@@ -58,11 +56,11 @@ pub async fn channel_role(
 
 // ── The channel wire views ────────────────────────────────────────────────────
 //
-// Three shapes leave the API, each the exact key set its TS select produces:
-// the member listing (role + unread + peer — listChannels), the agent
+// Three shapes leave the API, each an exact key set:
+// the member listing (role + unread + peer), the agent
 // listing (bare — no role, the agent has none), and a fresh create/DM
-// (role 'owner' appended after the spread). `peer` on the member view is an
-// ALWAYS-PRESENT nullable — TS sets it explicitly to null for non-DMs.
+// (role 'owner' appended last). `peer` on the member view is an
+// ALWAYS-PRESENT nullable — null for non-DMs.
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,8 +70,7 @@ pub struct ChannelPeer {
     pub email: Option<String>,
 }
 
-/// listChannels' row — `unreadCount` then `peer` last, the order the TS
-/// destructure-plus-spread leaves.
+/// The member-listing row — `unreadCount` then `peer` last.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberChannel {
@@ -100,7 +97,7 @@ pub struct AgentChannel {
     pub updated_at: String,
 }
 
-/// createChannel / ensureDm's return — the row plus `role` appended last.
+/// The create/DM return — the row plus `role` appended last.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedChannel {
@@ -278,7 +275,7 @@ pub async fn ensure_dm(
         return Err("cannot DM yourself".into());
     }
     let mut pair = [user_id, other_user_id];
-    pair.sort(); // JS default sort = code-unit order; uuids are ASCII lowercase
+    pair.sort(); // canonical order for the dm key; uuids are ASCII lowercase
     let dm_key = format!("{}:{}", pair[0], pair[1]);
     let existing: Option<(String, String, Option<String>, String, i64, i64)> = sqlx::query_as(
         "select id::text, name, topic, kind, \
@@ -353,7 +350,7 @@ pub async fn ensure_dm(
     })
 }
 
-/// Rename / set topic — SEPARATE statements in TS (each present field its own
+/// Rename / set topic — separate statements (each present field its own
 /// update), one publish after.
 pub async fn update_channel(
     deps: &NotifyDeps,
@@ -514,7 +511,7 @@ pub async fn remove_channel_member(
 }
 
 /// A channel's roster of agent models — empty for a non-uuid id rather than a
-/// database error, exactly as TS guards it (see `is_channel_id`).
+/// database error (see `is_channel_id`).
 pub async fn list_channel_agents(
     pg: &PgPool,
     channel_id: &str,
@@ -561,7 +558,7 @@ pub async fn list_channels_for_agent(
     }
     if let Some(owner) = assistant_owner_for(pg, subject).await? {
         // The owner's member view carries role/unread/peer the agent view
-        // doesn't — reduce to the bare columns the TS agent listing serves.
+        // doesn't — reduce to the bare columns the agent listing serves.
         return Ok(list_channels(pg, &owner)
             .await?
             .into_iter()
@@ -1250,8 +1247,8 @@ mod tests {
 
     #[test]
     fn member_view_serializes_in_the_ts_key_order() {
-        // id..updatedAt, unreadCount, then peer LAST (the spread-then-set
-        // order the TS destructure leaves), peer null for non-DMs.
+        // id..updatedAt, unreadCount, then peer LAST,
+        // peer null for non-DMs.
         let ch = MemberChannel {
             id: "c1".into(),
             name: "general".into(),

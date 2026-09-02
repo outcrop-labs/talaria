@@ -1,56 +1,46 @@
 // THE THREE RESEARCH HARNESSES: plan the queries, run a search, write the
-// report. Port of harness/defs/research.ts.
+// report.
 //
-// WHY THAT FILE EXISTS (audit 1.5 and 1.6, and this is where they meet).
-// `server/research.ts` reached a model THREE ways and none of them was
-// guarded:
+// WHY THIS FILE EXISTS (audit 1.5 and 1.6, and this is where they meet).
+// Research reaches a model THREE ways, and when audit 1.5/1.6 looked, none of
+// them was guarded: a direct completion against a sonar model, whose
+// `search_results` / `citations` are the run's whole product; the requesting
+// agent's own persona, used twice - once to plan queries, once to write the
+// document; and a structured-output query-list extractor, then a non-greedy
+// bracket match plus a line-based fallback.
 //
-//   searchStage     buildUpstream + fetchUpstream against a sonar model,
-//                   whose `search_results` / `citations` are the run's whole
-//                   product
-//   personaStage    proxyChat against the requesting agent's own persona,
-//                   used twice - once to plan queries, once to write the
-//                   document
-//   parseQueryList  a FOURTH structured-output extractor: a non-greedy
-//                   bracket match plus a line-based fallback
-//
-// The extractor is the one place in the tree that half-learned the lesson
-// `harness/json.rs` states in full - a non-greedy match plus a tolerant
-// fallback is closer to right than the four "first brace to last brace"
-// copies elsewhere - and it still had two ways to go wrong that the balanced
-// scanner does not: the non-greedy bracket match hits a `[2]` CITATION
-// MARKER in the model's preamble and reads it as the query list, and a
-// numbered list with no JSON in it at all took the line fallback silently,
+// The extractor half-learned the lesson `harness/json.rs` states in full - a
+// non-greedy match plus a tolerant fallback is closer to right than a "first
+// brace to last brace" copy - and it still had two ways to go wrong that the
+// balanced scanner does not: the non-greedy bracket match hits a `[2]`
+// CITATION MARKER in the model's preamble and reads it as the query list, and
+// a numbered list with no JSON in it at all took the line fallback silently,
 // so nothing anywhere recorded that the model had failed the contract. Both
-// are preserved in spirit and fixed in fact here: the schema REJECTS a
-// decorative `[2]` (the array wants STRINGS, and the PreFn leaves a
-// non-conforming candidate untouched), so the scanner walks on to the real
-// candidate, and the line fallback is `queries_from_lines` - a declared
-// salvage the ADAPTER runs after the `harness_runs` row has honestly
-// recorded the contract failure.
+// are fixed in fact here: the schema REJECTS a decorative `[2]` (the array
+// wants STRINGS, and the PreFn leaves a non-conforming candidate untouched),
+// so the scanner walks on to the real candidate, and the line fallback is
+// `queries_from_lines` - a declared salvage the ADAPTER runs after the
+// `harness_runs` row has honestly recorded the contract failure.
 //
 // The guard gap is the sharper half. A research report is persisted as a doc
 // artifact, shared with the run's members, and INDEXED INTO THE BRAIN, so
-// every future chat and plan can retrieve it. Until the TS port nothing
-// looked at it: not `secret_leak`, not `pii_leak`, and not `ungrounded_ref`,
-// which is the rule this path exists to exercise. WHERE THAT RULE ACTUALLY
-// RUNS: on the synthesis harness, through the runner. A harness turn carries
-// no tool messages, so the runner-derived tool record is empty and the rule
-// declines to fire on every OTHER harness by construction - the synthesis
-// stage is the one path in Talaria that genuinely HAS a tool record (the
-// search hits and their source list ARE the tool results), so it declares
-// `ground` and the runner supplies an honest record for it. The old
-// `guardSynthesis` hand-pass is gone: one pass, one findings row per
-// fabricated link, one place to look.
+// every future chat and plan can retrieve it - and it gets no pass from
+// `secret_leak`, `pii_leak`, or `ungrounded_ref`, which is the rule this path
+// exists to exercise. WHERE THAT RULE ACTUALLY RUNS: on the synthesis
+// harness, through the runner. A harness turn carries no tool messages, so
+// the runner-derived tool record is empty and the rule declines to fire on
+// every OTHER harness by construction - the synthesis stage is the one path
+// in Talaria that genuinely HAS a tool record (the search hits and their
+// source list ARE the tool results), so it declares `ground` and the runner
+// supplies an honest record for it. One pass, one findings row per
+// fabricated link, one place to look - no hand-built record off the books.
 //
-// THE TRANSPORTS CROSSED NEXT (below, §4), ahead of the run plane that drives
-// them - the research run definition and its domain stay TS until the runs
-// batch's research slice, so nothing on the Rust side calls these yet. They
-// crossed early because they are the leaves with the EDGES: the sonar-native
-// call and the tool-driven loop, their MCP/platform call doors
-// (mcp_registry.rs, capability_platform.rs), and their clients (search.rs,
-// web_search.rs, native_search.rs, source_registry.rs). The eleven transport
-// tests that grade the loop crossed with them, into the module's suite.
+// THE TRANSPORTS (below, §4) live here beside their harnesses - they are the
+// leaves with the EDGES: the sonar-native call and the tool-driven loop,
+// their MCP/platform call doors (mcp_registry.rs, capability_platform.rs),
+// and their clients (search.rs, web_search.rs, native_search.rs,
+// source_registry.rs), driven by the run definition in `runs/defs/research.rs`.
+// The eleven transport tests that grade the loop sit in this module's suite.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
@@ -71,8 +61,8 @@ use crate::harness_model::ModelSpec;
 // ── 1. The query planner ─────────────────────────────────────────────────────
 
 /// The depth budget the run was started at. Declared here rather than in
-/// `server/research.ts`'s Rust successor because that module will import this
-/// one; the run-kind input aliases it, so the two can never drift.
+/// `runs/defs/research.rs` because that module imports this one; the
+/// run-kind input aliases it, so the two can never drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResearchDepth {
@@ -114,8 +104,8 @@ pub struct QueryPlanInput {
 /// prompt asks for; the three object shapes are what a 7-14B model returns
 /// when it decides a list of strings ought to be a list of records.
 /// Accepting them is the difference between one round trip and two.
-/// `None` is a member the TS transform THREW on - which is a parse failure,
-/// which is what makes the scanner walk to the next candidate.
+/// `None` is a parse failure - which is what makes the scanner walk to the
+/// next candidate.
 fn text_of(item: &Value) -> Option<String> {
     match item {
         Value::String(s) => Some(s.trim().to_string()),
@@ -136,9 +126,8 @@ fn text_of(item: &Value) -> Option<String> {
 ///
 /// THE WHOLE `[2]` DEFENSE LIVES HERE. A non-conforming member anywhere in
 /// the list leaves the candidate UNTOUCHED for the schema to reject, so
-/// `parse_json` walks on - exactly the throw-then-walk the TS transform
-/// produced. Turning `[2]` (an array of one number) into `[]` here would
-/// silently answer "saturated" off a citation marker.
+/// `parse_json` walks on. Turning `[2]` (an array of one number) into `[]`
+/// here would silently answer "saturated" off a citation marker.
 fn normalize_query_list(v: &Value) -> Value {
     let items = match v {
         Value::Array(a) => Some(a.clone()),
@@ -193,22 +182,23 @@ pub fn clamp_queries(queries: &[String], max: usize) -> Vec<String> {
     out
 }
 
-/// THE LINE FALLBACK, carried over verbatim from `parseQueryList`.
+/// THE LINE FALLBACK.
 ///
 /// On a small model a numbered list is likelier than a JSON array, and the
-/// filters here are the tolerance that made the old extractor the best of
-/// the six: strip the bullet or the "1." off the front, strip a trailing
-/// quote, drop anything too short to be a query and anything that is a
-/// markdown heading. It is unchanged, including the 8-character floor.
+/// filters here are the tolerance that earns it: strip the bullet or the
+/// "1." off the front, strip a trailing quote, drop anything too short to be
+/// a query and anything that is a markdown heading - the 8-character floor
+/// included.
 ///
-/// What changed is WHERE it sits. It used to run inside the parser, so a
-/// model that never produced JSON looked exactly like one that did. Now the
-/// harness records the contract failure honestly (`schema_valid: false` on
-/// the `harness_runs` row, with the parser's own sentence in `error`) and
-/// the adapter salvages the run afterwards - and only when the guard found
-/// nothing in the reply, because these strings are sent onward to a search
-/// model and guardrails' cardinal invariant is that flagged content never
-/// re-enters a model's context.
+/// WHERE it sits is the point. It runs in the ADAPTER, never inside the
+/// parser: a salvage folded into the parser would make a model that never
+/// produced JSON look exactly like one that did. The harness records the
+/// contract failure honestly (`schema_valid: false` on the `harness_runs`
+/// row, with the parser's own sentence in `error`) and the adapter salvages
+/// the run afterwards - and only when the guard found nothing in the reply,
+/// because these strings are sent onward to a search model and guardrails'
+/// cardinal invariant is that flagged content never re-enters a model's
+/// context.
 pub fn queries_from_lines(raw: &str) -> Vec<String> {
     static LEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^[-*\d.\s"']+"#).unwrap());
     static TRAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["']$"#).unwrap());
@@ -218,7 +208,7 @@ pub fn queries_from_lines(raw: &str) -> Vec<String> {
             let s = TRAIL.replace(&s, "");
             s.trim().to_string()
         })
-        // TS `.length > 8` is UTF-16 units; keep it one measurement.
+        // The 8 counts UTF-16 units - the measurement the wire speaks.
         .filter(|l| utf16_len(l) > 8 && !l.starts_with('#'))
         .collect()
 }
@@ -430,11 +420,11 @@ pub fn queries_harness() -> HarnessDefinition {
         rules: Some(vec!["secret_leak", "pii_leak"]),
         redact: true,
     });
-    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. Each row
-    // keeps its own check (see `query_fixtures`); the fold only re-types the
-    // value - this def's answer arrives as a JSON array of strings, and a
-    // value that is not one is the fixture check throwing, which the sweep
-    // scores as a task failure carrying the same sentence the TS suite did.
+    // THE FIXTURE TABLE, as `EvalCase`s. Each row keeps its own check (see
+    // `query_fixtures`); the fold only re-types the value - this def's answer
+    // arrives as a JSON array of strings, and a value that is not one is the
+    // fixture check throwing, which the sweep scores as a task failure
+    // carrying the check's own sentence.
     d.evals = query_fixtures()
         .into_iter()
         .map(|f| {
@@ -567,9 +557,9 @@ pub fn search_harness() -> HarnessDefinition {
         "research-search",
         "Research search",
         "Runs one planned query against a search-capable model and brings back its findings with the sources attached.",
-        // Production pins per tier (`planSearch(mode)` resolves
-        // `research-recon` / `research-brief` / `research-expedition` and
-        // falls back to the mode's sonar preference list). That policy is
+        // Production pins per tier (`plan_search` in runs/defs/research.rs
+        // resolves `research-recon` / `research-brief` / `research-expedition`
+        // and falls back to the mode's sonar preference list). That policy is
         // MODE-DEPENDENT and therefore cannot live in a single ModelSpec at
         // all - declaring one role here would hand a recon or an expedition
         // the wrong tier's model. Empty chain instead. There is no sane
@@ -601,7 +591,7 @@ pub fn search_harness() -> HarnessDefinition {
         OnFailure::Throw,
     );
     d.requires = vec!["search"];
-    // THE DECLARATION THIS PORT EXISTS FOR (audit 1.6). `planSearch` resolves
+    // THE DECLARATION AUDIT 1.6 EXISTS FOR. `plan_search` resolves
     // an admin's `research-*` role assignment, and nothing anywhere notices
     // that the model it points at has no web search - which does not fail,
     // it answers fluently from training data, the parser finds no
@@ -650,8 +640,8 @@ pub fn search_harness() -> HarnessDefinition {
     });
     // THE FIXTURE TABLE, folded the same way (see `search_fixtures`): a text
     // harness's reply arrives as a JSON string, and a value that is not one is
-    // the fixture check throwing - scored, exactly as in TS, as a task failure
-    // carrying the same sentence.
+    // the fixture check throwing - scored as a task failure carrying the
+    // check's own sentence.
     d.evals = search_fixtures()
         .into_iter()
         .map(|f| {
@@ -726,7 +716,7 @@ fn synth_system(mode: ResearchDepth) -> String {
 /// reconcile the ones that disagree, rather than writing down whichever it
 /// read last. A small model asked for this produces a "Contradictions"
 /// heading with nothing under it, which is why it is gated. Carries its own
-/// leading newline exactly as the TS constant does.
+/// leading newline.
 const SYNTH_WIDENED: &str = "\nBefore you write, read every finding together and note where two sources disagree on a fact, a number or a date. Reconcile them in the document rather than silently choosing one: say what each source claims, cite both, and say which is better supported and why. Where the findings simply do not settle a point the question asked, say so plainly as an open question instead of filling the gap with general knowledge - an unsupported sentence is a defect even when it is true.";
 
 fn source_list(input: &SynthesisInput) -> String {
@@ -777,10 +767,9 @@ fn cited_markers(text: &str) -> Vec<u64> {
 
 /// EVERYTHING TRUE OF EVERY REPORT, stated once.
 ///
-/// The three fixtures this harness shipped with originally each checked a
-/// different subset - one asserted the title and the duplicate Sources
-/// section, another only the citation range, the third neither - so which
-/// one you read decided what you believed about the model. `allowed` is the
+/// Fixtures that each checked a different subset - one the title and the
+/// duplicate Sources section, another only the citation range, a third
+/// neither - are how a suite comes to disagree with itself. `allowed` is the
 /// per-fixture half: exactly the source indices this run's registry
 /// carries.
 fn report_problem(value: &str, allowed: &[u64]) -> Option<String> {
@@ -855,8 +844,8 @@ pub fn synthesis_harness() -> HarnessDefinition {
         // is this document, so an empty reply is not "keep what you had" -
         // there is nothing to keep. Throwing lands the message on
         // `research_runs.error`, which is the surface the user is already
-        // watching. Before the TS port an empty reply created an EMPTY
-        // ARTIFACT with a generated title and marked the run done.
+        // watching. The alternative is an EMPTY ARTIFACT with a generated
+        // title and a run marked done.
         OnFailure::Throw,
     );
     // 'long-context' is the honest ask: the findings run to tens of
@@ -907,10 +896,8 @@ pub fn synthesis_harness() -> HarnessDefinition {
         }))
     }));
     // `ungrounded_ref` IS in the list, and it fires - see `ground` above.
-    // The old TS workaround (server/research.ts running that one rule itself
-    // over a hand-built record) is deleted in spirit: one pass, one
-    // `guard_findings` row per fabricated link, and one place a reader has
-    // to look to know which rules police this document.
+    // One pass, one `guard_findings` row per fabricated link, and one place
+    // a reader has to look to know which rules police this document.
     //
     // `zero_tool_claim` and `fabricated_outage` stay out for the reason they
     // are out on the search harness: this document describes the world, not
@@ -1906,8 +1893,8 @@ use crate::state::AppState;
 use crate::web_search::results_from_payload;
 
 /// A source as the search stages hand it to the sink, before the registry
-/// numbers it (research.ts `SearchSource` — `title`/`snippet` are optional
-/// because the walker's `|| null` turns an empty string into absence).
+/// numbers it. `title`/`snippet` are optional because an empty string from
+/// the walker means absence, not a blank title.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchSource {
     pub url: String,
@@ -1948,9 +1935,8 @@ pub fn sources_from_payload(payload: &Value, cap: usize) -> Vec<SearchSource> {
         .collect()
 }
 
-// The loop budget and the three prompts. Verbatim from research.ts — every
-// sentence in them was paid for by a sweep fixture, so none of them is
-// wording to improve in passing.
+// The loop budget and the three prompts. Every sentence in them was paid for
+// by a sweep fixture — none of them is wording to improve in passing.
 
 const MAX_TOOL_ROUNDS: usize = 3;
 const MAX_TOOL_CALLS_PER_ROUND: usize = 3;
@@ -2018,7 +2004,7 @@ pub fn search_transport(state: AppState, run_id: String, sink: SearchSink) -> Tr
                         .collect(),
                 ),
             );
-            // `!== undefined` in TS: a temperature of 0.0 is sent.
+            // Presence, not truthiness: a temperature of 0.0 is sent.
             if let Some(t) = req.temperature {
                 body.insert("temperature".into(), serde_json::json!(t));
             }
@@ -2037,8 +2023,8 @@ pub fn search_transport(state: AppState, run_id: String, sink: SearchSink) -> Tr
                 .map_err(|_| "search stage 200: the reply body was not JSON".to_string())?;
 
             // METERED, DETACHED, SWALLOWED — the sources are the product; a
-            // metering write that cannot happen costs nothing. TS `if (j.usage)`
-            // is truthy: a present object counts, null does not.
+            // metering write that cannot happen costs nothing. `usage` counts
+            // when it is a present object, not when it is null.
             if let Some(u) = j.get("usage").filter(|u| !u.is_null()) {
                 let prompt = u.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(0);
                 let completion = u
@@ -2102,9 +2088,8 @@ pub struct ToolOutput {
     pub structured: Option<Value>,
 }
 
-/// The tool edge, injectable: `(server, tool, args)` → result. Mirrors the TS
-/// deps slot so the loop's tests drive the whole transport with no model and
-/// no server.
+/// The tool edge, injectable: `(server, tool, args)` → result, so the loop's
+/// tests drive the whole transport with no model and no server.
 pub type CallToolFn =
     Arc<dyn Fn(&str, &str, Map<String, Value>) -> BoxFut<Result<ToolOutput, String>> + Send + Sync>;
 
@@ -2231,9 +2216,9 @@ pub fn tool_search_transport(
                 }
 
                 // ONE ASSISTANT TURN WITH ALL ITS CALLS, replayed on the tool
-                // channel — never as prose a model can imitate (see the
-                // `deepseek-v4-flash` note in the TS suite: models that read a
-                // narrated call return the narration as their final answer).
+                // channel — never as prose a model can imitate (a model that
+                // reads a narrated call returns the narration as its final
+                // answer).
                 let used: Vec<ToolCall> = calls
                     .iter()
                     .take(MAX_TOOL_CALLS_PER_ROUND)
@@ -2247,11 +2232,8 @@ pub fn tool_search_transport(
                 });
                 for (index, c) in used.iter().enumerate() {
                     called += 1;
-                    // TS `JSON.parse(args) || {}` with a catch — unparseable
-                    // AND non-object both land on an empty map. (On a
-                    // primitive-JSON body TS's strict-mode `args.query = …`
-                    // would throw; the empty map is the useful reading of the
-                    // same intent, and the only one a tool can act on.)
+                    // Unparseable AND non-object both land on an empty map —
+                    // the only argument shape a tool can act on.
                     let mut args: Map<String, Value> = match serde_json::from_str::<Value>(&c.args)
                     {
                         Ok(Value::Object(m)) => m,
@@ -2282,7 +2264,7 @@ pub fn tool_search_transport(
                     };
                     // `structured ?? text`: a plain-string payload yields
                     // nothing from the walker (it descends objects and arrays
-                    // only) — mirrored, not fixed.
+                    // only).
                     let payload = out
                         .structured
                         .clone()
@@ -2427,10 +2409,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_citation_marker_in_the_preamble_is_not_the_list() {
-        // THE BUG THE TYPED ELEMENTS EXIST FOR. The old extractor's
-        // non-greedy bracket match read `[2]` — a citation marker in the
-        // model's preamble — as the query list and returned `["2"]` as a
-        // research plan. Here `[2]` is a valid JSON span the scanner finds
+        // THE BUG THE TYPED ELEMENTS EXIST FOR. A non-greedy bracket match
+        // reads `[2]` — a citation marker in the model's preamble — as the
+        // query list and returns `["2"]` as a research plan. Here `[2]` is
+        // a valid JSON span the scanner finds
         // FIRST: the PreFn leaves it untouched (a number is not a query
         // spelling), the string-typed array rejects it, and the scanner
         // walks on to the real object.
@@ -2503,11 +2485,11 @@ mod tests {
         assert!(res.schema_valid);
         assert_eq!(res.repairs, 1);
 
-        // A numbered list with no JSON anywhere: the old extractor
-        // salvaged this silently, so a model that never produced JSON
-        // looked exactly like one that did. Now the run row records the
-        // contract miss — value None, schema_valid false, raw preserved —
-        // and `queries_from_lines` is the ADAPTER's declared salvage.
+        // A numbered list with no JSON anywhere: a silent salvage here
+        // would make a model that never produced JSON look exactly like one
+        // that did. The run row records the contract miss — value None,
+        // schema_valid false, raw preserved — and `queries_from_lines` is
+        // the ADAPTER's declared salvage.
         let r = recorded_run(RecordedWorld {
             replies: replies(&["1. pg17 slot failover standby\n2. pg17 pg_createsubscriber"]),
             ..Default::default()
@@ -2580,9 +2562,8 @@ mod tests {
 
     #[test]
     fn the_line_fallback_reads_a_numbered_list() {
-        // Carried verbatim from the old extractor, including the tolerance:
-        // strip the bullet or the "1.", strip a trailing quote, drop the
-        // too-short line and the markdown heading.
+        // The tolerance, pinned: strip the bullet or the "1.", strip a
+        // trailing quote, drop the too-short line and the markdown heading.
         assert_eq!(
             queries_from_lines(
                 "# Angles\n1. \"pg17 logical slot failover\"\n- pg17 pg_createsubscriber\n2. short\n* replication slot survival on promotion"
@@ -2801,8 +2782,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_reply_throws_rather_than_making_an_empty_artifact() {
-        // Before the port, an empty synthesis reply created an empty doc
-        // with a generated title and marked the run done.
+        // An empty reply must not become an empty doc with a generated
+        // title and a run marked done.
         let r = recorded_run(synth_world(""));
         let err = run(synthesis_harness(), synth_pg17(), &r)
             .await
@@ -3087,11 +3068,11 @@ mod tests {
 
     #[test]
     fn each_def_carries_its_own_fixture_table() {
-        // The tables predate the fold - the sweep read them straight out of
-        // these fns - so a def that lost its `evals` assignment would still
-        // pass the census above and the registry's non-empty check would be
-        // the only thing left holding it. This is the tripwire: name, band
-        // and input all cross the fold unchanged, one row per fixture.
+        // The census above reads the tables, not the defs, so a def that
+        // lost its `evals` assignment would still pass it and the registry's
+        // non-empty check would be the only thing left holding it. This is
+        // the tripwire: name, band and input all land on the def unchanged,
+        // one row per fixture.
         let q = queries_harness();
         assert_eq!(q.evals.len(), query_fixtures().len());
         for (e, f) in q.evals.iter().zip(query_fixtures()) {
@@ -3110,8 +3091,8 @@ mod tests {
     }
 
     // ── the search transports ────────────────────────────────────────────────
-    // Ported from research.test.ts's `toolSearchTransport` suite, one for one,
-    // with the same scripted base/tool edges the TS deps slot provides.
+    // Scripted base and tool edges drive the whole transport — no model, no
+    // server, every wire shape asserted on the requests the loop sent.
 
     use crate::harness::transport::tool_wire_message;
 

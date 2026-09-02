@@ -7,22 +7,19 @@
 // Agents never get implicit edit rights: even under 'org' they must be named in
 // the editor list. That keeps automated edits deliberate.
 //
-// Port of ui/src/server/kb-perms.ts. The read half predates the rest (the refs
-// cone needed it in batch 3); the kb plane (batch 5) completed it in place —
-// one ACL table, never forked. The artifacts folder plane still reads these
-// same checks from TS until its batch.
+// One ACL table (kb_editors) serves every plane that reads these checks —
+// docs, spaces, artifact folders — never forked.
 
 use sqlx::PgPool;
 
-/// What a grant can hang off (`kb_editors.item_type`). `artifact-folder`
-/// joined the set when Files got shareable folders — the access model is
-/// identical, so it reuses the same table and the same checks rather than
-/// growing a second one.
+/// What a grant can hang off (`kb_editors.item_type`). The three share one
+/// access model, so they reuse the same table and these same checks rather
+/// than growing a second one.
 pub const ITEM_DOC: &str = "doc";
 pub const ITEM_SPACE: &str = "space";
 pub const ITEM_ARTIFACT: &str = "artifact";
 
-/// An explicit editor-list entry (kb-perms.ts EditorGrant). `role` is
+/// An explicit editor-list entry. `role` is
 /// 'viewer' | 'editor' — kept as the raw string; the table's enum is the
 /// authority and these flow through untouched.
 #[derive(Debug, Clone)]
@@ -64,11 +61,11 @@ pub async fn list_editors(
         .collect())
 }
 
-/// setEditors — replace an item's whole editor list in one transaction: delete,
-/// then upsert each grant. Research's write step is the caller that needs it
+/// Replace an item's whole editor list in one transaction: delete, then
+/// upsert each grant. Research's write step is the caller that needs it
 /// (sharing a run grants the members editor on the report doc — the only way
-/// anyone else sees a private run's artifact); the sharing surfaces themselves
-/// cross with the kb/artifacts planes in batch 5, extending this in place.
+/// anyone else sees a private run's artifact); the kb and artifacts sharing
+/// surfaces are its other callers.
 pub async fn set_editors(
     pg: &PgPool,
     item_type: &str,
@@ -114,8 +111,8 @@ pub fn is_owner(item: &Guarded, user_id: Option<&str>, author: Option<&str>) -> 
     author.is_some_and(|a| item.created_by.as_deref() == Some(a))
 }
 
-/// grantedItemIds — the set of item ids (of a type) a user has any grant on,
-/// for filtering lists (tree, folder list) so granted private items still show.
+/// The set of item ids (of a type) a user has any grant on, for filtering
+/// lists (tree, folder list) so granted private items still show.
 pub async fn granted_item_ids(
     pg: &PgPool,
     item_type: &str,

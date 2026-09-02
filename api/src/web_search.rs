@@ -1,36 +1,25 @@
 // HOW THIS DEPLOYMENT SEARCHES THE WEB — one answer, for every caller.
-// Port of ui/src/server/web-search.ts, WALKER HALF ONLY.
 //
-// THE INCONSISTENCY THE TS FILE ENDS. Talaria had two of them. `supplierFor`
-// (capability-reach) resolved search the way the whole capability model says it
-// should — the org's registered MCP servers first, Talaria's own SearXNG as the
-// floor underneath — and the fitness sweep and the research harness both used
-// it. Meanwhile `/api/search`, which is the endpoint behind the `web_search`
-// MCP tool, called `searchWeb` directly and was therefore nailed to SearXNG
-// forever.
+// THE PROBLEM THIS ENDS. Search is resolved the way the whole capability
+// model says it should be — the org's registered MCP servers first,
+// Talaria's own SearXNG as the floor underneath — and every caller goes
+// through that resolution: the `web_search` tool every agent reaches,
+// research, and the fitness sweep alike. Nobody is nailed to the
+// self-hosted instance while better keys sit registered — the working
+// agents are the last callers who should be stuck on it.
 //
-// That is backwards, and expensively so. `/api/search` is what every HERMES
-// AGENT reaches — the containerized personas doing real work for real people —
-// so an org that had gone and registered Exa or Tavily got it in their research
-// pipeline and in the fitness matrix, and their actual working agents kept
-// getting a self-hosted metasearch instance held together by mojeek and bing.
-// The callers who needed the good search were the ones who could not reach it.
+// SEARXNG IS THE FLOOR, NOT THE CEILING, and that is the whole design. A
+// fresh install with no keys and no registry has working web search on day
+// one. An org that registers a real provider upgrades every caller at once
+// — agents, research, the fitness sweep — with no code change and nothing
+// to migrate, because they all ask this file.
 //
-// SEARXNG IS THE FLOOR, NOT THE CEILING, and that is the whole design. A fresh
-// install with no keys and no registry has working web search on day one. An
-// org that registers a real provider upgrades every caller at once — agents,
-// research, the fitness sweep — with no code change and nothing to migrate,
-// because they all ask this file.
-//
-// WHAT CROSSES HERE is `resultsFromPayload`, the shape-agnostic walker that
-// normalises a registered tool's payload into `SearchResult`s. The resolver
-// AROUND it — `searchTheWeb`, which asks the capability model who supplies
-// search and routes to SearXNG or a registered server — is the `/api/search`
-// route's own logic and crosses with that route (batch 5), where its five
-// injected edges have a caller. Two readers import the walker until then: the
-// research search transport (a tool's `structured` payload) and the platform's
-// own `web_search` tool (SearXNG's own rows go through `search::results_from`
-// instead — its shape is known, so it is narrowed rather than walked).
+// THE WALKER (`results_from_payload`) normalises a registered tool's
+// payload into `SearchResult`s, shape-agnostically. The resolver AROUND it
+// (`search_the_web`, which asks the capability model who supplies search
+// and routes to SearXNG or a registered server) lives here too. SearXNG's
+// own rows go through `search::results_from` instead — its shape is known,
+// so it is narrowed rather than walked.
 
 use std::collections::HashSet;
 
@@ -94,9 +83,9 @@ pub fn results_from_payload(payload: &Value, engine: &str, cap: usize) -> Vec<Se
             && !seen.contains(&url)
         {
             seen.insert(url.clone());
-            // `title ?? url`: an EMPTY-STRING title stands (it is a string the
-            // server sent); only the absence of any of the three spellings
-            // falls back to the URL.
+            // An EMPTY-STRING title stands (it is a string the server sent);
+            // only the absence of any of the three spellings falls back to
+            // the URL.
             let title = first_string(o, &["title", "name", "heading"])
                 .unwrap_or(&url)
                 .to_string();
@@ -120,8 +109,8 @@ pub fn results_from_payload(payload: &Value, engine: &str, cap: usize) -> Vec<Se
     out
 }
 
-/// `^https?://i` — case-insensitive, so an upper-case scheme is still a web
-/// URL. `get(..n)` rather than slicing: a prefix cut mid-codepoint is a non-URL,
+/// Case-insensitive scheme check, so an upper-case scheme is still a web URL.
+/// `get(..n)` rather than slicing: a prefix cut mid-codepoint is a non-URL,
 /// not a panic.
 fn is_http_url(s: &str) -> bool {
     s.get(..7)
@@ -130,11 +119,11 @@ fn is_http_url(s: &str) -> bool {
             .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
 }
 
-// ── The resolver half (searchTheWeb) ─────────────────────────────────────────
+// ── The resolver half ───────────────────────────────────────────────────────
 //
-// The five injected edges TS's WebSearchDeps carried all have Rust twins now:
-// DbReach reads servers + providers + platform, `search::search_web` is the
-// SearXNG client, and `call_mcp_tool` speaks to a registered server.
+// The pieces it composes: DbReach reads servers + providers + platform,
+// `search::search_web` is the SearXNG client, and `call_mcp_tool` speaks to
+// a registered server.
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WebSearch {
@@ -286,7 +275,7 @@ mod tests {
             .collect();
         let got = results_from_payload(&Value::Array(rows), "tool", 12);
         assert_eq!(got.len(), 12);
-        // TS `snippet.slice(0, 600)` is UTF-16 units; the truncator is the same.
+        // The snippet clip counts UTF-16 units — 600 code units, not bytes.
         assert_eq!(got[0].snippet.len(), 600);
         assert!(got[0].snippet.chars().all(|c| c == 'x'));
     }

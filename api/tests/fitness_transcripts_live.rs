@@ -1,4 +1,4 @@
-//! Live probe for the silent transcript-archive failure: a Rust fitness sweep
+//! Live probe for the silent transcript-archive failure: a fitness sweep
 //! landed 338 cases in the report but filed zero `fitness_transcripts` rows,
 //! and `record_transcript` swallows per-case errors at debug level. This test
 //! makes the error visible. `#[ignore]` like the other live-DB tests — run

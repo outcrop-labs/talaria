@@ -1,5 +1,4 @@
-// /api/integrations/google/calendar/events — port of
-// ui/src/routes/api/integrations/google.calendar.events.ts.
+// /api/integrations/google/calendar/events.
 // GET  → upcoming events on the user's primary calendar
 // POST → create an event
 
@@ -61,8 +60,8 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     }
 }
 
-/// The CreateBody, as the engine's input (summary/description/location/start/
-/// end/allDay/attendees, zod's checks in order). Shared shape with the agent
+/// The create body as the engine's input (summary/description/location/start/
+/// end/allDay/attendees, checked in that order). Shared shape with the agent
 /// calendar draft — same schema, different consumer.
 fn draft(obj: &serde_json::Map<String, serde_json::Value>) -> Result<EventDraft, String> {
     Ok(EventDraft {
@@ -101,7 +100,7 @@ impl EventDraft {
     }
 }
 
-/// Date.now() — the one clock the calendar surface reads.
+/// Epoch-ms clock — the one time the calendar surface reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

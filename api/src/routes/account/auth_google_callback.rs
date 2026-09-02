@@ -1,8 +1,7 @@
-// GET /api/auth/google/callback — port of
-// ui/src/routes/api/auth/google.callback.ts. Verify the state cookie, exchange
-// the code, mint the session, and land on the cockpit. Every failure bounces
-// to /login with a machine-readable reason (the SPA renders each), extra
-// params riding along where a door can name what to change.
+// GET /api/auth/google/callback. Verify the state cookie, exchange the code,
+// mint the session, and land on the cockpit. Every failure bounces to /login
+// with a machine-readable reason (the SPA renders each), extra params riding
+// along where a door can name what to change.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::auth_config::{get_auth_config, is_email_allowed};
@@ -173,9 +172,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Err(e) => return internal(&e),
     };
     if invited && identity.email.is_some() {
-        // `void markInviteAccepted(...)` — fire-and-forget; a failed stamp
-        // must not fail the sign-in (the invite just stays "pending" and the
-        // next login re-stamps it).
+        // fire-and-forget — a failed stamp must not fail the sign-in (the
+        // invite just stays "pending" and the next login re-stamps it)
         let pg = state.pg.clone();
         let email = identity.email.clone().unwrap();
         let uid = row.0.clone();

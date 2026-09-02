@@ -1,6 +1,5 @@
-// GET /api/integrations/google/agent/drive?q= — port of
-// ui/src/routes/api/integrations/google.agent.drive.ts. Find files in the
-// Drive the calling agent acts for (its owner's, or the shared org Drive).
+// GET /api/integrations/google/agent/drive?q= — find files in the Drive the
+// calling agent acts for (its owner's, or the shared org Drive).
 // Read-only: finding and handing back a link. Creating files stays on
 // export_to_google_doc; nothing here writes.
 
@@ -38,8 +37,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             "No Google account is connected for this agent (its owner, or the org account).",
         );
     };
-    // `?? undefined` — only an ABSENT q is no filter; an empty one rides in
-    // (and the engine's trim makes it no filter either).
+    // Only an ABSENT q means no filter; an empty one rides in (and the
+    // engine's trim makes it no filter either).
     let q = query_pairs(uri.query()).get("q").cloned();
     match list_drive_files_with_token(&google.token, q.as_deref(), 25).await {
         Ok(files) => Json(json!({ "files": files })).into_response(),
@@ -47,7 +46,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     }
 }
 
-/// Date.now() — the one clock the agent Drive surface reads.
+/// Epoch-ms clock — the one time the agent Drive surface reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

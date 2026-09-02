@@ -1,7 +1,7 @@
-// WHAT THE PROVIDER ALREADY TOLD US ABOUT EACH MODEL, cached and read back —
-// port of model-catalog.ts (read half + the one refresh the effort backfill
-// needs). It is a CACHE, not a source of truth: provider.rs does the fetching
-// and stays the only thing that talks to a provider; this module decides how
+// WHAT THE PROVIDER ALREADY TOLD US ABOUT EACH MODEL, cached and read back
+// — the read half, plus the one refresh the effort backfill needs. It is a
+// CACHE, not a source of truth: provider.rs does the fetching and stays the
+// only thing that talks to a provider; this module decides how
 // long an answer is good for, where it lives, and what a capability reader
 // may conclude from it. A stale entry is served while a refresh is in flight,
 // and a failed refresh serves the last good answer — a catalog blip must not
@@ -18,9 +18,8 @@
 // capability.rs's cardinal rule (UNKNOWN IS NOT FALSE) keeps the model
 // running, and a probe is what turns unknown into a no.
 //
-// `advertised_window` and the full `refresh_catalogs` sweep port with the
-// probe suite and the admin refresh button (the surfaces that own them); the
-// effort ladder's needs stop at what is here.
+// The full refresh sweep lives with the admin refresh button (the surface
+// that owns it); the effort ladder's needs stop at what is here.
 
 use crate::capability::{CapabilityFact, capability_key, merge_capabilities};
 use crate::gateway::provider::CatalogModel;
@@ -46,8 +45,8 @@ pub const CATALOG_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 // ── Reading ──────────────────────────────────────────────────────────────────
 
-/// Everything known about one model id, across every endpoint that serves it
-/// — port of catalogEntriesFor. MORE THAN ONE ENTRY IS NORMAL and is why this
+/// Everything known about one model id, across every endpoint that serves
+/// it. MORE THAN ONE ENTRY IS NORMAL and is why this
 /// returns a list: a bare id can land on any endpoint in the pool, and the
 /// two can differ in exactly the way that matters (a quantized local build
 /// next to the vendor's own API). Callers reduce it themselves.
@@ -88,7 +87,7 @@ pub fn entries_in_store(store: &serde_json::Value, model: &str) -> Vec<(String, 
 }
 
 /// THE SMALLEST advertised window across the pool, or None when nothing
-/// advertises one — port of advertisedWindow. Same rule the probe suite
+/// advertises one. Same rule the probe suite
 /// already applied to the endpoint row; the difference is that this reads the
 /// number the provider published ABOUT THIS MODEL rather than one integer
 /// stamped on the endpoint. A claim has to hold for the worst member, so a
@@ -169,7 +168,7 @@ pub fn ordered_efforts(levels: &[String]) -> Vec<String> {
     out
 }
 
-/// THE EFFORT LEVELS A POOL AGREES ON — port of effortLevelsOf.
+/// THE EFFORT LEVELS A POOL AGREES ON.
 ///
 /// Same posture as a minimum window: a bare id (and a persona behind
 /// fallbacks) can land on any member of the pool, so a level is only offered
@@ -221,8 +220,8 @@ const PARAM_PROVES: [(&str, &str, &str); 4] = [
     ),
 ];
 
-/// WHAT A CATALOG ENTRY PROVES, and nothing more — port of
-/// capabilitiesFromCatalog. Pure, exported, and tested directly, because this
+/// WHAT A CATALOG ENTRY PROVES, and nothing more. Pure, exported, and
+/// tested directly, because this
 /// function is where the yes-only rule either holds or quietly stops holding.
 /// Every branch below pushes a `true` or pushes NOTHING. There is no path
 /// that writes `false`.
@@ -280,8 +279,8 @@ pub fn capabilities_from_catalog(m: &CatalogModel, at: &str) -> Vec<(String, Cap
     // model can still find a fact planted in the middle of that window.
     // Advertising 1M tokens and retrieving from 1M tokens are different
     // claims, and the gap between them is exactly what an admin is trying to
-    // find out. The window is not wasted — `advertised_window` (probe suite,
-    // later batch) serves it to the probe, which sizes the measurement.
+    // find out. The window is not wasted — `advertised_window` serves it to
+    // the probe, which sizes the measurement.
     facts
 }
 
@@ -295,8 +294,7 @@ pub struct RefreshResult {
     pub error: Option<String>,
 }
 
-/// Re-fetch one endpoint's catalog, store it, and declare what it proves —
-/// port of refreshEndpointCatalog.
+/// Re-fetch one endpoint's catalog, store it, and declare what it proves.
 ///
 /// A FAILED FETCH KEEPS THE OLD ENTRY. An endpoint that is briefly
 /// unreachable must not empty the picker or un-declare facts an admin is
@@ -320,8 +318,8 @@ pub async fn refresh_endpoint_catalog(
 }
 
 /// The `available` route's shape: the catalog was ALREADY fetched to answer
-/// the request, so the refresh reuses it (TS's `{ fetchCatalog: async () =>
-/// models }` override) — the provider is asked once, never twice.
+/// the request, so the refresh reuses it — the provider is asked once, never
+/// twice.
 pub async fn refresh_endpoint_catalog_with(
     state: &crate::state::AppState,
     ep: &LlmEndpoint,
@@ -337,13 +335,13 @@ pub async fn refresh_endpoint_catalog_with(
         "models": models.iter().map(CatalogModel::to_json).collect::<Vec<_>>(),
     });
     if let Some(obj) = store.as_object_mut() {
-        // Preserve-order insert: an existing key keeps its position (the TS
-        // spread's behavior), a new one appends.
+        // Preserve-order insert: an existing key keeps its position, a new
+        // one appends.
         obj.insert(ep.name.clone(), entry);
     }
     if set_setting(&state.pg, KEY, &store).await.is_err() {
-        // TS throws here and the caller decides; the fetch succeeded but the
-        // last good catalog stays until the next attempt.
+        // The store write failed; the fetch succeeded but the last good
+        // catalog stays until the next attempt.
         return RefreshResult {
             endpoint: ep.name.clone(),
             models: 0,

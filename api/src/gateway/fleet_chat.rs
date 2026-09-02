@@ -1,10 +1,9 @@
-// The fleet chat transport — proxyChat (gateway.ts) plus the agent SSE stream
-// parser (lib/sse-parse.ts), the pair the comms reply loop drives. Every
-// Hermes persona turn in the tree is sent from here to the agent's own
-// container, which then talks to a provider we do not control the request
-// assembly for — the door that matters most, because a persona holds workspace
-// context all day and is the agent most likely to have a credential in front
-// of it.
+// The fleet chat transport — proxy_chat plus the agent SSE stream parser, the
+// pair the comms reply loop drives. Every Hermes persona turn in the tree is
+// sent from here to the agent's own container, which then talks to a provider
+// we do not control the request assembly for — the door that matters most,
+// because a persona holds workspace context all day and is the agent most
+// likely to have a credential in front of it.
 //
 // WHY THIS IS NOT THE GATEWAY RELAY: the manifest entry IS the agent — a
 // container with its own local gateway at `url`. The registry relay
@@ -27,33 +26,31 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
-/// `AgentStreamParser`. `content_type` is what the upstream answered (the TS
-/// proxyChat's Response carries it through with a text/event-stream default —
-/// the chat route's own headers read it back).
+/// `AgentStreamParser`. `content_type` is what the upstream answered,
+/// defaulting to text/event-stream — the chat route's own headers read it
+/// back.
 pub struct ChatStream {
     pub status: u16,
     pub content_type: String,
     pub body: ByteStream,
-    /// `"mock"` / `"hold"` when this is a CANNED stream — the TS proxyChat's
-    /// CANNED_STREAM_HEADER. A canned stream is an outage wearing a 200: right
-    /// for a human chat window, indistinguishable from a model reply to
-    /// everything downstream of `ok()`. The persona transport reads this and
-    /// fails the call so the sentence can never be persisted as an agent's
-    /// work.
+    /// `"mock"` / `"hold"` when this is a CANNED stream. A canned stream is
+    /// an outage wearing a 200: right for a human chat window,
+    /// indistinguishable from a model reply to everything downstream of
+    /// `ok()`. The persona transport reads this and fails the call so the
+    /// sentence can never be persisted as an agent's work.
     pub canned: Option<&'static str>,
 }
 
 impl ChatStream {
-    /// TS `upstream.ok` — a 2xx answer is the stream the caller wants; every
-    /// other status is the reply, body and all, but not one to persist.
+    /// A 2xx answer is the stream the caller wants; every other status is
+    /// the reply, body and all, but not one to persist.
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
 }
 
-/// The chat plane's payload — `{model, messages}` plus the honored effort when
-/// one was picked (TS: `{ model, messages, ...(effort ? { reasoning_effort:
-/// effort } : {}) })`, key order and all).
+/// The chat plane's payload — `{model, messages}` plus `reasoning_effort`
+/// when one was honored, in that key order.
 pub fn chat_payload(model: &str, messages: &Value, effort: Option<&str>) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert("model".into(), json!(model));
@@ -64,20 +61,20 @@ pub fn chat_payload(model: &str, messages: &Value, effort: Option<&str>) -> Valu
     Value::Object(payload)
 }
 
-/// proxyChat: send one chat turn to the agent's container. Seals every
+/// Send one chat turn to the agent's container. Seals every
 /// message's content through a per-call vault (an image turn's text part is as
 /// credential-prone as any prose turn), retries while the agent's gateway is
 /// coming up (502/503/504, backoff capped at 5s), and never waits past two
 /// minutes — past the deadline the reply is the honest canned sentence, so
 /// history shows what happened rather than a silent failure.
 ///
-/// `payload` is the WHOLE request body the agent's gateway sees, spread like
-/// the TS `{ ...payload, stream: true, stream_options: … }` — a persona turn's
-/// `temperature`/`response_format` ride alongside model and messages, so the
+/// `payload` is the WHOLE request body the agent's gateway sees — the turn
+/// payload plus `stream: true` and `stream_options` — so a persona turn's
+/// `temperature`/`response_format` ride alongside model and messages, and the
 /// one mapping that decides them (`persona_payload`) is the only place they
 /// can be dropped. `messages` is the OpenAI history (system + turns, content
-/// string or parts). `wait_ms` is the hold window (TS `opts.waitMs`; None is
-/// the two-minute default).
+/// string or parts). `wait_ms` is the hold window; None is the two-minute
+/// default.
 pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
     let model = payload
         .get("model")
@@ -175,8 +172,7 @@ fn mock_reply(model: &str) -> String {
 }
 
 /// A canned SSE reply in OpenAI chunk format, one word per 35ms tick — the
-/// same cadence the TS canned stream types at. `canned` names WHICH outage
-/// this is, in the TS header's vocabulary.
+/// cadence the canned stream types at. `canned` names which outage this is.
 fn canned_chat_stream(text: &str, canned: &'static str) -> ChatStream {
     let words: Vec<String> = text.split(' ').map(|w| format!("{w} ")).collect();
     let body = futures_util::stream::iter(words)
@@ -199,11 +195,11 @@ fn canned_chat_stream(text: &str, canned: &'static str) -> ChatStream {
     }
 }
 
-// ── The stream parser (lib/sse-parse.ts parseAgentStream) ────────────────────
+// ── The stream parser ────────────────────────────────────────────────────────
 
 /// One parsed agent-stream event. The comms loop consumes content (the reply),
 /// usage (the ledger), and tool names (the guard's backing-tool record);
-/// reasoning crosses for the chat plane that renders it.
+/// reasoning feeds the chat plane that renders it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStreamEvent {
     Content {
@@ -236,9 +232,9 @@ pub enum AgentStreamEvent {
     },
 }
 
-/// sse-parse.ts ToolCall — the shape persisted into `messages.tools` and
-/// rendered beside the reply. `id` is absent (not null) when the frame carried
-/// none, exactly as JSON.stringify drops the undefined key.
+/// The shape persisted into `messages.tools` and rendered beside the reply.
+/// `id` is absent (not null) when the frame carried none —
+/// `skip_serializing_if` drops the None.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ToolCall {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,9 +244,9 @@ pub struct ToolCall {
     pub status: String, // 'running' | 'completed'
 }
 
-/// sse-parse.ts mergeTool — fold a tool event into a running list (dedupe by
-/// id when the frame names one, else by name among the still-running). A later
-/// frame never overwrites a good label with an empty one.
+/// Fold a tool event into a running list (dedupe by id when the frame names
+/// one, else by name among the still-running). A later frame never overwrites
+/// a good label with an empty one.
 pub fn merge_tool(
     tools: &[ToolCall],
     id: Option<&str>,
@@ -446,9 +442,8 @@ fn parse_tool_progress(payload: &str) -> Option<AgentStreamEvent> {
         }
     };
     let id = (!id.is_empty()).then_some(id);
-    // The status word lowercased through the same map the TS reads: anything
-    // unrecognized stays None (merge keeps the prior value; a push says
-    // 'running').
+    // The status word, lowercased: anything unrecognized stays None (merge
+    // keeps the prior value; a push says 'running').
     let s = str_of("status").to_lowercase();
     let status = match s.as_str() {
         "running" => Some("running".to_string()),

@@ -4,7 +4,7 @@
 // Two kinds live here:
 //   • CI-safe (no services — house rule): the missing/bogus-header 401 paths.
 //     These exit before any query: authenticate_key's tlk_ gate runs first,
-//     exactly as in TS, so no database is consulted.
+//     so no database is consulted.
 //   • #[ignore]d live-DB tests, run locally with `cargo test -- --ignored`
 //     against a real dev database (DATABASE_URL). Never in CI.
 
@@ -88,7 +88,7 @@ fn live_config() -> Option<Config> {
 }
 
 /// A tlk_-shaped secret nobody minted: exercises the real query and the
-/// miss → 401 path against the same rows TS would read.
+/// miss → 401 path against the live rows.
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn unknown_tlk_key_401s_via_a_real_query() {

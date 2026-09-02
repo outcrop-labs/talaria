@@ -1,5 +1,4 @@
-// Auth configuration from the environment — the read side of
-// ui/src/server/auth/config.ts that the Google login flow needs:
+// Auth configuration from the environment — what the Google login flow needs:
 //
 //   AUTH_PUBLIC_URL        external origin for OAuth redirect URIs (optional —
 //                          falls back to the request origin)
@@ -9,8 +8,7 @@
 // (The Google client credentials and the login toggle live in
 // google_client.rs — the Admin UI record with env fallback, not this file.)
 //
-// Read per request, like TS's getAuthConfig(): a config flip must not depend
-// on which process won the race at boot.
+// Read per request: a config flip must not depend on process boot order.
 
 /// The GOOGLE allow-list gate — applied to Google-resolved identities only. A
 /// password account was admitted by an admin (or the claim) when it was
@@ -37,8 +35,7 @@ fn list(var: &str) -> Vec<String> {
 
 pub fn get_auth_config() -> AuthConfig {
     AuthConfig {
-        // `.replace(/\/$/, '') || null` — one trailing slash falls away, an
-        // empty (or unset) value is null.
+        // one trailing slash falls away; an empty (or unset) value is None.
         public_url: std::env::var("AUTH_PUBLIC_URL")
             .ok()
             .map(|s| s.strip_suffix('/').unwrap_or(&s).to_string())
@@ -58,7 +55,7 @@ pub fn is_email_allowed(email: Option<&str>, cfg: &AuthConfig) -> bool {
     if cfg.allowed_emails.iter().any(|a| a == &e) {
         return true;
     }
-    // `e.split('@')[1] ?? ''` — the segment after the FIRST @.
+    // the segment after the FIRST @ — nth(1), not the last.
     let domain = e.split('@').nth(1).unwrap_or_default();
     cfg.allowed_domains.iter().any(|d| d == domain)
 }

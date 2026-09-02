@@ -1,7 +1,6 @@
 // Embeddings client — talks to the self-hosted TEI (text-embeddings-inference)
-// service. Port of ui/src/server/retrieval/embed.ts. Configurable URL; the
-// docker-hostname → localhost fallback lets it work whether Talaria runs on
-// the host (dev) or on ai_default (prod).
+// service. Configurable URL; the docker-hostname → localhost fallback lets it
+// work whether Talaria runs on the host (dev) or on ai_default (prod).
 
 use std::sync::{Arc, Mutex};
 
@@ -17,21 +16,20 @@ fn embed_url() -> String {
     raw.strip_suffix('/').unwrap_or(&raw).to_string()
 }
 
-/// THE STICKY BASE, process state exactly as the TS module holds it. The
-/// configured URL may be a docker-internal hostname that doesn't resolve from
-/// the host (dev). Resolving it FAILS SLOWLY — multi-second DNS timeouts — so
-/// remember which base actually answered and go straight there afterwards.
-/// Without this, every single embed call (search, indexing, health probes)
-/// paid the stall before falling back.
+/// THE STICKY BASE — process state. The configured URL may be a
+/// docker-internal hostname that doesn't resolve from the host (dev);
+/// resolving it FAILS SLOWLY — multi-second DNS timeouts — so remember which
+/// base actually answered and go straight there afterwards. Without this,
+/// every single embed call (search, indexing, health probes) paid the stall
+/// before falling back.
 ///
 /// The real edge shares ONE sticky across every `real_deps()` call (a
-/// process-wide LazyLock, the same lifetime the TS module global has); tests
-/// inject their own so they cannot fight over the process's memory of what
-/// answered.
+/// process-wide LazyLock); tests inject their own so they cannot fight over
+/// the process's memory of what answered.
 static REAL_STICKY: std::sync::LazyLock<Arc<Mutex<Option<String>>>> =
     std::sync::LazyLock::new(|| Arc::new(Mutex::new(None)));
 
-/// The probed dimension, cached for the process — TS `cachedDim`.
+/// The probed dimension, cached for the process.
 static REAL_DIM: std::sync::LazyLock<Arc<std::sync::atomic::AtomicUsize>> =
     std::sync::LazyLock::new(|| Arc::new(std::sync::atomic::AtomicUsize::new(0)));
 
@@ -51,9 +49,9 @@ pub fn real_deps() -> EmbedDeps {
     }
 }
 
-/// Whether the docker-bare fallback applies. The TS regex is ANCHORED here
-/// (`^(https?)://([^/:]+)(:\d+)?$` — unlike qdrant's), so a base carrying a
-/// path never falls back, and the port, when present, must be digits.
+/// Whether the docker-bare fallback applies. The parse is ANCHORED here
+/// (unlike qdrant's): a base carrying a path never falls back, and the
+/// port, when present, must be digits.
 fn is_docker_bare(base: &str) -> bool {
     let Some(rest) = base
         .strip_prefix("http://")
@@ -147,9 +145,9 @@ pub async fn embed(deps: &EmbedDeps, inputs: &[String]) -> Result<Vec<Vec<f64>>,
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
-/// The TS `[0]!` happily hands back `undefined` when the service returns an
-/// empty array; an explicit error is the useful reading — callers treat
-/// embed failure as "indexing didn't happen" either way.
+/// One text in, one vector out — an empty array back from the service is an
+/// explicit error rather than a silent nothing; callers treat embed failure
+/// as "indexing didn't happen" either way.
 pub async fn embed_one(deps: &EmbedDeps, text: &str) -> Result<Vec<f64>, String> {
     Ok(embed(deps, &[text.to_string()])
         .await?
@@ -248,7 +246,7 @@ mod tests {
             assert!(is_docker_bare(base), "{base}");
         }
         // The anchor: a path disqualifies; dotted hosts, loopback, and other
-        // schemes never fall back. A non-digit port fails the regex too.
+        // schemes never fall back. A non-digit port fails the parse too.
         for base in [
             "http://embeddings:80/x",
             "http://tei.internal:80",

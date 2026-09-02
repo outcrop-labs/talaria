@@ -1,4 +1,4 @@
-// /api/artifact-folders — port of ui/src/routes/api/artifact-folders.ts.
+// /api/artifact-folders.
 // Artifact folders. GET → the ones you can read. POST → create one you own.
 
 use axum::Json;
@@ -89,7 +89,7 @@ pub async fn post(
     };
     let parent = match body.parent_id {
         Some(Some(id)) => Some(id),
-        _ => None, // `body.parentId ?? null` — absent and explicit-null both
+        _ => None, // absent and explicit-null both → no parent
     };
     let folder = match create_folder(
         &state.pg,

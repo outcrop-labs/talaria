@@ -1,4 +1,4 @@
-// /api/secrets/share — port of ui/src/routes/api/secrets.share.ts.
+// /api/secrets/share.
 //
 // Sharing a working secret — and the two audiences mean two different
 // things. A PERSON gets a READER grant: they can reveal it, copy it, paste
@@ -28,9 +28,9 @@ use crate::workspace_secrets::{
     get_secret_doc, grant_secret, revoke_secret, share_secret_with, unshare_secret_from,
 };
 
-/// The union's four verbs. Same probed near-miss table as the folders body:
-/// the `action` literal picks the branch, a wrong JSON TYPE anywhere aborts
-/// to 'Invalid input', and a well-typed failure surfaces its field's
+/// The union's four action literals. Same near-miss table as the folders
+/// body: the `action` literal picks the branch, a wrong JSON TYPE anywhere
+/// aborts to 'Invalid input', and a well-typed failure surfaces its field's
 /// sentence in schema order (name's max before the id's format).
 #[derive(Debug)]
 enum SharePost {
@@ -115,8 +115,8 @@ pub async fn post(
         Err(gate) => return gate,
     };
     let parsed = parse(&body);
-    // A zod union flattens every failure — non-object bodies included — to the
-    // same two words.
+    // The body schema is a union, and a union flattens every failure —
+    // non-object bodies included — to the same two words.
     let obj = match parsed.as_object() {
         Some(o) => o,
         None => return house_error(StatusCode::BAD_REQUEST, "Invalid input"),

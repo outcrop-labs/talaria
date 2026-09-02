@@ -1,21 +1,12 @@
-// Tasks — the port of ui/src/server/tasks.ts. One ticket is a card on a
-// board with a ref, effort, a structured result, comments, activity,
-// watchers, dependencies and a quality-review approval gate; this file is
-// the whole engine under the routes — every read, every write, the
+// Tasks — the whole engine under the routes: every read, every write, the
 // activity cascade, the notification fan-out and both sides of the agent
-// authority question.
+// authority question. One ticket is a card on a board with a ref, effort, a
+// structured result, comments, activity, watchers, dependencies and a
+// quality-review approval gate.
 //
-// WHAT ALREADY LIVED HERE: the pieces earlier slices needed (the mixed
-// assignee helpers realtime and approvals read, `task_board_id`, and the
-// agent-write POLICY plane — the one predicate every gate, session and
-// heartbeat asks of a ticket). This slice grows the file to the whole
-// module: the CRUD, assignment and quality planes.
-//
-// TS's `BoardFacts` memo (board info + agent policy + status meta, one pass
-// per loop) is a per-pass CACHE, never an answer; the Rust port reads
-// through, and the boards it resolves twice per call are the queries the
-// cache existed to save. The same divergence is documented on
-// `agent_ticket_refusal`.
+// The TS plane keeps a twin of the authority half (`ui/src/server/tasks.ts` —
+// the spelling app servers and the MCP tool descriptions ask); the refusal
+// conditions must stay the same in both. See `agent_ticket_refusal`.
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_fields, guard_agent_write};
@@ -37,15 +28,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── The edges a ticket write touches beyond its own row ─────────────────────
 
-/// Everything tasks.ts reaches for past its own SQL: the board's realtime
+/// Everything a ticket write reaches for past its own SQL: the board's realtime
 /// topic, the notification fan-out, and the work-dispatch push. Clone-cheap
-/// (all Arcs and pools), so the fire-and-forget legs TS starts with `void …`
-/// can take a copy into their own task.
+/// (all Arcs and pools), so the detached fire-and-forget legs can take a copy
+/// into their own task.
 ///
 /// `dispatch` is Option because assembling the runs edge needs a live Redis
-/// connection and a route may be serving while Redis is down. None is TS's
-/// `void maybeDispatchTicket(…).catch(() => {})` posture: the ticket write
-/// survives, the push stands down.
+/// connection and a route may be serving while Redis is down. None stands the
+/// push down without failing the write: the ticket write survives.
 #[derive(Clone)]
 pub struct TaskDeps {
     pub pg: PgPool,
@@ -56,8 +46,8 @@ pub struct TaskDeps {
 
 impl TaskDeps {
     /// From the pieces a route handler holds. Realtime unreachable publishes
-    /// nothing, notification rows still land, dispatch stands down — each is
-    /// the TS failure posture for that edge.
+    /// nothing, notification rows still land, dispatch stands down — each edge
+    /// degrades alone, never fatally to the write.
     pub fn coexistence(pg: PgPool, redis: Option<redis::aio::ConnectionManager>) -> Self {
         let realtime = RealtimeDeps::publish_only(redis.clone());
         let notify = NotifyDeps::publishing(pg.clone(), redis.clone());
@@ -71,12 +61,12 @@ impl TaskDeps {
     }
 }
 
-/// tasks.ts's two throw shapes, kept apart because the route answers them
-/// differently: a plain `Error` is a refused write (400 — the request was
-/// well-formed but the board says no), `HumanApprovalRequired` is 403 (the
+/// The two refusal shapes, kept apart because the route answers them
+/// differently: a plain refusal is a refused write (400 — the request was
+/// well-formed but the board says no), approval-required is 403 (the
 /// write needs a person), and a database failure is 500.
 pub enum TaskError {
-    /// `throw new Error(sentence)` — the sentence is the product's refusal.
+    /// The sentence is the product's refusal.
     Refusal(String),
     /// HumanApprovalRequired — a write that needs a person.
     ApprovalRequired(String),
@@ -97,8 +87,8 @@ impl TaskError {
         }
     }
 
-    /// The status the route answers with — TS's `instanceof` branch, one
-    /// place, so a new error kind cannot inherit the wrong one.
+    /// The status the route answers with — decided in one place, so a new
+    /// error kind cannot inherit the wrong one.
     pub fn status(&self) -> StatusCode {
         match self {
             TaskError::Refusal(_) => StatusCode::BAD_REQUEST,
@@ -127,13 +117,13 @@ fn now_ms() -> i64 {
 // heartbeat/outreach `@>` predicates keep matching) and HUMANS as
 // `user:<uuid>`. Helpers below split the two worlds.
 
-/// tasks.ts isHumanAssignee.
+/// Does this assignee string name a human (`user:<uuid>`)?
 pub fn is_human_assignee(a: &str) -> bool {
     a.starts_with("user:")
 }
 
-/// tasks.ts humanAssigneeIds: the human half of a mixed assignees array, with
-/// the `user:` prefix stripped.
+/// The human half of a mixed assignees array, with the `user:` prefix
+/// stripped.
 pub fn human_assignee_ids(assignees: &[String]) -> Vec<String> {
     assignees
         .iter()
@@ -142,9 +132,8 @@ pub fn human_assignee_ids(assignees: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// tasks.ts agentAssignees: the agent half of a mixed assignees array, bare
-/// model ids unchanged — the strings the heartbeat's `@>` predicates and the
-/// dispatch walk match.
+/// The agent half of a mixed assignees array, bare model ids unchanged — the
+/// strings the heartbeat's `@>` predicates and the dispatch walk match.
 pub fn agent_assignees(assignees: &[String]) -> Vec<String> {
     assignees
         .iter()
@@ -155,11 +144,9 @@ pub fn agent_assignees(assignees: &[String]) -> Vec<String> {
 
 // ── The row and its select ───────────────────────────────────────────────────
 
-/// The ticket as every reader serves it (TS `Task`): TASK_SELECT's column
-/// list in order, camelCase on the wire. Timestamps are ISO strings —
-/// postgres.js parses timestamptz into Dates that JSON-serialize as
-/// toISOString(), so the Rust select fetches epoch-ms and shapes them here,
-/// the same contract boards.rs established.
+/// The ticket as every reader serves it: TASK_SELECT's column list in order,
+/// camelCase on the wire. Timestamps are ISO strings — the select fetches
+/// epoch-ms and shapes them here, the same contract boards.rs established.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -181,10 +168,9 @@ pub struct Task {
     pub tags: Vec<String>,
     pub attachments: serde_json::Value,
     pub time_spent_seconds: i64,
-    /// Human planning estimate; the `::float8` cast in the select is also
-    /// what makes the estimate-activity comparison numeric on this side —
-    /// postgres.js hands `numeric` back as a STRING, which is the entire
-    /// reason TS needs `pgNum` there and this port does not.
+    /// Human planning estimate; the `::float8` cast in the select is what
+    /// makes the estimate-activity comparison numeric — `numeric` never
+    /// reaches the wire as text.
     pub estimated_hours: Option<f64>,
     pub parent_id: Option<String>,
     pub comment_count: i32,
@@ -288,7 +274,7 @@ impl From<TaskRow> for Task {
 }
 
 /// The dispatch walk's view of a ticket, from the shape this module already
-/// holds (TS passes the same task object through).
+/// holds.
 pub fn dispatch_ticket_of(task: &Task) -> DispatchTicket {
     DispatchTicket {
         id: task.id.clone(),
@@ -313,9 +299,8 @@ const LINK_SELECT: &str = "select t.id::text as id, \
   case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as ticket_ref, \
   t.title, t.status from tasks t join boards b on b.id = t.board_id";
 
-/// tasks.ts getTask().boardId, and nothing else about the row — the watch
-/// gate and every publish-after-write call select exactly the one column
-/// they need.
+/// The board id, and nothing else about the row — the watch gate and every
+/// publish-after-write call select exactly the one column they need.
 pub async fn task_board_id(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(Option<String>,)> =
         sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
@@ -325,8 +310,8 @@ pub async fn task_board_id(pg: &PgPool, task_id: &str) -> Result<Option<String>,
     Ok(row.and_then(|(board_id,)| board_id))
 }
 
-/// tasks.ts listBoardTasks: a board's tickets, newest-update first; archived
-/// tickets only when the caller asks for them.
+/// A board's tickets, newest-update first; archived tickets only when the
+/// caller asks for them.
 pub async fn list_board_tasks(
     pg: &PgPool,
     board_id: &str,
@@ -338,7 +323,7 @@ pub async fn list_board_tasks(
         "t.board_id = $1::uuid and t.archived_at is null"
     };
     // AssertSqlSafe: the interpolation is this module's TASK_SELECT/where
-    // composition — the board id stays a bind, as TS's sql.unsafe($1) does.
+    // composition — the board id stays a bind.
     let sql = format!("{TASK_SELECT} where {where_clause} order by t.updated_at desc");
     let rows: Vec<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(board_id)
@@ -347,7 +332,7 @@ pub async fn list_board_tasks(
     Ok(rows.into_iter().map(Task::from).collect())
 }
 
-/// tasks.ts getTask — the one-ticket read every write re-reads through.
+/// The one-ticket read every write re-reads through.
 pub async fn get_task(pg: &PgPool, id: &str) -> Result<Option<Task>, sqlx::Error> {
     let sql = format!("{TASK_SELECT} where t.id = $1::uuid");
     let row: Option<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
@@ -357,9 +342,9 @@ pub async fn get_task(pg: &PgPool, id: &str) -> Result<Option<Task>, sqlx::Error
     Ok(row.map(Task::from))
 }
 
-/// tasks.ts getTaskFull: a ticket and everything hanging off it, read
-/// concurrently. `TaskUsage`/`JudgeReview` cross in their own modules; this
-/// is the only place they ride together.
+/// A ticket and everything hanging off it, read concurrently.
+/// `TaskUsage`/`JudgeReview` live in their own modules; this is the only
+/// place they ride together.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskFull {
@@ -402,8 +387,8 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
 
 // ── Notifications: who hears about a ticket ──────────────────────────────────
 
-/// The notification payload a ticket fan-out files (TS's inline object —
-/// kind, title, body, href).
+/// The notification payload a ticket fan-out files (kind, title, body,
+/// href).
 struct TaskNotification {
     kind: String,
     title: String,
@@ -411,9 +396,8 @@ struct TaskNotification {
     href: Option<String>,
 }
 
-/// tasks.ts notifyTaskUsers: file a notification for each user, deduped,
-/// never the actor. `addNotification`'s per-user `.catch(() => {})` keeps one
-/// person's failed row from costing the rest theirs — logged here, never
+/// File a notification for each user, deduped, never the actor. One
+/// person's failed row never costs the rest theirs — logged here, never
 /// propagated.
 async fn notify_task_users(
     notify: &NotifyDeps,
@@ -458,9 +442,9 @@ async fn notify_task_users(
     }
 }
 
-/// tasks.ts ticketAudience: everyone who may be TOLD about an event on this
-/// ticket — the people watching it and the humans assigned to it, each
-/// confirmed against the board AS IT STANDS NOW.
+/// Everyone who may be TOLD about an event on this ticket — the people
+/// watching it and the humans assigned to it, each confirmed against the
+/// board AS IT STANDS NOW.
 ///
 /// ASKED AT FAN-OUT TIME, NOT TRUSTED FROM THE WRITE. Both halves are
 /// validated when they are written (`invalid_assignee` on the ticket write
@@ -491,8 +475,8 @@ async fn ticket_audience(
 
 // ── Sub-task structure ───────────────────────────────────────────────────────
 
-/// tasks.ts assertValidParent: one level deep, same board, no self-cycle.
-/// Every sentence is the product's refusal, not a validation error.
+/// One level deep, same board, no self-cycle. Every sentence is the
+/// product's refusal, not a validation error.
 pub async fn assert_valid_parent(
     pg: &PgPool,
     task_id: Option<&str>,
@@ -538,8 +522,8 @@ pub async fn assert_valid_parent(
 
 // ── Create ───────────────────────────────────────────────────────────────────
 
-/// tasks.ts createTask's input — the route's validated body, minimally
-/// typed. Optional strings are ISO timestamps; `estimated_hours` is numeric.
+/// The create input — the route's validated body, minimally typed. Optional
+/// strings are ISO timestamps; `estimated_hours` is numeric.
 pub struct NewTask<'a> {
     pub board_id: &'a str,
     pub title: &'a str,
@@ -591,7 +575,7 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     if !input.tags.is_empty() {
         ensure_labels(pg, input.board_id, input.tags).await?;
     }
-    // THE ONE DOOR, for the fourth write path (agent-writes.ts).
+    // THE ONE DOOR for agent-authored text on the create path.
     // `create_ticket` is an MCP tool and its title and description are
     // agent-authored text on its way to a human — and, through
     // `indexTicket`, on its way back into another agent's context.
@@ -667,7 +651,7 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
         return Err(TaskError::Db(sqlx::Error::RowNotFound));
     };
     // Born assigned into an agent-start column → push the work to the
-    // agents. Detached, as in TS: the row is the record, the push is a
+    // agents. Detached: the row is the record, the push is a
     // delivery.
     spawn_dispatch(deps, task.clone(), None);
     {
@@ -711,8 +695,8 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
 // agent write whether it arrives over PUT /api/tasks/:id or from a future
 // tool.
 
-/// tasks.ts TaskActor. `Platform` is Talaria itself (the QA judge, dispatch)
-/// — trusted like a human, and named as itself in the activity log.
+/// `Platform` is Talaria itself (the QA judge, dispatch) — trusted like a
+/// human, and named as itself in the activity log.
 #[derive(Debug, Clone)]
 pub struct TaskActor {
     pub kind: TaskActorKind,
@@ -764,16 +748,16 @@ const BLOCKED_STATUS: &str = "blocked";
 // REASON rather than a boolean so the refusal is the same sentence wherever
 // the write arrived, and a new caller cannot invent a vaguer one.
 
-/// The ticket shape the predicate needs (TS AgentWriteTarget). `get_task`
-/// returns it; so does the row the heartbeat query selects.
+/// The ticket shape the predicate needs. `get_task` returns it; so does the
+/// row the heartbeat query selects.
 pub struct AgentWriteTarget {
     pub board_id: String,
     pub status: String,
     pub archived_at: Option<String>,
 }
 
-/// What the agent is trying to do (TS AgentIntent). The two verbs differ in
-/// EXACTLY one clause, which is why they are one function and not two:
+/// What the agent is trying to do. The two verbs differ in EXACTLY one
+/// clause, which is why they are one function and not two:
 /// · `Write`   — change the ticket, or hang a record off it (status, fields,
 ///               dependency edges, spend rows, workbench jobs).
 /// · `Comment` — say something on it. A CLOSED ticket still takes comments:
@@ -785,8 +769,10 @@ pub enum AgentIntent {
     Comment,
 }
 
-/// Why an agent may not act on this ticket, or None when it may (TS
-/// agentTicketRefusal).
+/// Why an agent may not act on this ticket, or None when it may. The TS
+/// plane carries its own spelling of this predicate (`agentTicketRefusal`
+/// in `ui/src/server/tasks.ts` — what app servers and the MCP tool
+/// descriptions ask); the stop conditions must stay the same in both.
 ///
 /// FOUR STOP CONDITIONS, in the order a person would ask them:
 /// · the BOARD does not allow this agent — revoked, never granted, or the
@@ -807,9 +793,9 @@ pub enum AgentIntent {
 /// an agent that can see the board can read the ticket, because reading
 /// changes nothing.
 ///
-/// TS's `facts` argument is a per-pass CACHE, never an answer; the Rust port
-/// reads through, and the one board it resolves twice per call is a query the
-/// cache existed to save.
+/// The TS twin takes an optional per-pass `boardFacts()` cache for loops;
+/// this side reads through — the boards it resolves twice per call are the
+/// queries the cache existed to save.
 pub async fn agent_ticket_refusal(
     pg: &PgPool,
     task: &AgentWriteTarget,
@@ -872,13 +858,12 @@ fn warn_board_config(board_id: &str, line: &str) {
     tracing::warn!("[tasks] {line}");
 }
 
-/// tasks.ts boardLabel: board name for a diagnostic, falling back to the id.
-/// Error paths only.
+/// Board name for a diagnostic, falling back to the id. Error paths only.
 async fn board_label(pg: &PgPool, board_id: &str) -> Result<String, sqlx::Error> {
     Ok(board_info(pg, board_id).await?.label)
 }
 
-/// tasks.ts handoffTarget — where an agent's terminal move actually lands.
+/// Where an agent's terminal move actually lands.
 ///
 /// THE COERCION MUST NOT INVENT A DESTINATION. The destination is CHECKED,
 /// not assumed: a real review-category column, not a done column, not an
@@ -937,11 +922,11 @@ async fn handoff_target(pg: &PgPool, cur: &Task, meta: &StatusMeta) -> TaskResul
 
 // ── Update ───────────────────────────────────────────────────────────────────
 
-/// tasks.ts TaskPatch. The tri-state fields (`Option<Option<T>>`) keep TS's
-/// three meanings apart: absent (None — don't touch), present-null
-/// (Some(None) — clear it), and a value (Some(Some(v))). Several of the
-/// activity lines below exist precisely because "cleared" used to be
-/// indistinguishable from "untouched".
+/// The tri-state fields (`Option<Option<T>>`) keep three meanings apart:
+/// absent (None — don't touch), present-null (Some(None) — clear it), and a
+/// value (Some(Some(v))). Several of the activity lines below exist
+/// precisely because "cleared" used to be indistinguishable from
+/// "untouched".
 #[derive(Debug, Default)]
 pub struct TaskPatch {
     pub title: Option<String>,
@@ -976,8 +961,7 @@ pub struct TaskPatch {
     pub status_note: Option<String>,
 }
 
-/// TS `pick(v, fallback)`: undefined → fallback, everything else (null
-/// included) → the value.
+/// Absent → fallback, everything else (null included) → the value.
 fn pick<T: Clone>(v: &Option<Option<T>>, fallback: Option<T>) -> Option<T> {
     match v {
         None => fallback,
@@ -985,9 +969,9 @@ fn pick<T: Clone>(v: &Option<Option<T>>, fallback: Option<T>) -> Option<T> {
     }
 }
 
-/// tasks.ts agentSafePatch — the patch an agent is actually allowed to
-/// apply: assignment, planning and archival stripped; terminal moves
-/// redirected to the board's review catch. Throws (as TaskError) where a
+/// The patch an agent is actually allowed to apply: assignment, planning
+/// and archival stripped; terminal moves redirected to the board's review
+/// catch. Throws (as TaskError) where a
 /// weaker form would be a lie — assigning, reopening, taking work back out
 /// of review — instead of quietly doing something else. The clauses below
 /// are the whole invariant: a person assigns, a person signs off, a person
@@ -1001,8 +985,8 @@ async fn agent_safe_patch(
 ) -> TaskResult<TaskPatch> {
     // ── PRESENCE, NOT TRUTHINESS ───────────────────────────────────────────
     // Every guard below asks `patch.status.is_some()`, never the string's
-    // truth. `status: ''` is a legal JSON value and a falsy one, and the
-    // TS guards that asked `patch.status && …` skipped the lot on it;
+    // truth. `status: ''` is a legal JSON value and a falsy one, and a guard
+    // written as a truthiness check (`patch.status && …`) skips the lot on it;
     // update_task rejects a status that is not a column on the board before
     // this function runs (so '' dies at the door, from any caller, agent or
     // not), and the route's schema carries min(1); this module states
@@ -1091,9 +1075,9 @@ async fn agent_safe_patch(
     Ok(patch)
 }
 
-/// tasks.ts updateTask. THE write path: one UPDATE, then the activity
-/// cascade, then the fan-outs. Returns the re-read task, or None when the id
-/// names nothing (the route's 404).
+/// THE write path: one UPDATE, then the activity cascade, then the
+/// fan-outs. Returns the re-read task, or None when the id names nothing
+/// (the route's 404).
 pub async fn update_task(
     deps: &TaskDeps,
     id: &str,
@@ -1142,7 +1126,7 @@ pub async fn update_task(
                 "\"{s}\" is not a status on this board"
             )));
         }
-        // THE ONE DOOR, for the fifth write path (agent-writes.ts).
+        // THE ONE DOOR for agent-authored text on the update path.
         // `triage_ticket` and `report_outcome` are MCP tools, so every
         // string below is a tool argument — model output that never touched
         // a harness. `indexTicket` re-indexes title+description on every
@@ -1306,9 +1290,8 @@ pub async fn update_task(
         // Watchers + assigned humans hear about status moves (never the
         // actor), and `ticket_audience` re-reads board membership for both
         // halves at this moment — see its doc for why the write-time checks
-        // are not enough. The audience read is awaited (TS awaits
-        // ticketAudience before the void); the notification writes are
-        // detached.
+        // are not enough. The audience read is awaited; the notification
+        // writes are detached.
         let audience = ticket_audience(pg, id, &cur.board_id, &assignees).await?;
         {
             let notify = deps.notify.clone();
@@ -1417,9 +1400,8 @@ pub async fn update_task(
     }
     // `estimatedHours: 0` is a real estimate and a FALSY one — it used to be
     // stored as 0 and reported as "estimate cleared". None is the clear.
-    // TS compares through `pgNum` because the row carries a string; the
-    // Rust select casts numeric to float8 at the boundary, so this is the
-    // same comparison a layer lower.
+    // The select casts numeric to float8 at the boundary, so the comparison
+    // is numeric end to end.
     if patch.estimated_hours.is_some() && next_estimated_hours != cur.estimated_hours {
         let what = if let Some(h) = next_estimated_hours {
             format!("estimate → {h}h")
@@ -1502,10 +1484,9 @@ pub async fn update_task(
         log_activity(pg, id, &who.id, "tags", &what).await?;
     }
     // Length told you nothing about a 1-for-1 swap: replacing the evidence on
-    // a ticket in review was invisible. Compare the LIST. (serde_json
-    // compares Values structurally where TS compares JSON.stringify text —
-    // the verdicts differ only when key ORDER alone differs, which no chip's
-    // meaning rides on.)
+    // a ticket in review was invisible. Compare the LIST. (The comparison is
+    // structural, so key order alone never reads as a change — no chip's
+    // meaning rides on it.)
     if patch.attachments.is_some() && attachments != cur.attachments {
         let cur_len = cur.attachments.as_array().map(|a| a.len()).unwrap_or(0);
         let new_len = attachments.as_array().map(|a| a.len()).unwrap_or(0);
@@ -1532,7 +1513,7 @@ pub async fn update_task(
 
 /// The detached dispatch leg shared by the three writers that can hand an
 /// agent work (create hands the task it already holds; the update/review
-/// paths re-read fresh, exactly as TS does inside its void IIFE).
+/// paths re-read fresh).
 fn spawn_dispatch(deps: &TaskDeps, task: Task, only_agents: Option<Vec<String>>) {
     let Some(dispatch) = deps.dispatch.clone() else {
         return;
@@ -1550,7 +1531,7 @@ fn spawn_dispatch_id(deps: &TaskDeps, id: String, only_agents: Option<Vec<String
     };
     let pg = deps.pg.clone();
     tokio::spawn(async move {
-        // TS re-reads the ticket inside the detached block: the push decides
+        // The ticket is re-read inside the detached block: the push decides
         // on the row as it stands now, not the caller's stale copy.
         if let Ok(Some(fresh)) = get_task(&pg, &id).await {
             maybe_dispatch_ticket(
@@ -1564,8 +1545,8 @@ fn spawn_dispatch_id(deps: &TaskDeps, id: String, only_agents: Option<Vec<String
     });
 }
 
-/// tasks.ts deleteTask. Hard delete — comments, watchers, activity and
-/// dependencies ride the foreign keys.
+/// Hard delete — comments, watchers, activity and dependencies ride the
+/// foreign keys.
 pub async fn delete_task(deps: &TaskDeps, id: &str) -> Result<(), sqlx::Error> {
     let board_id = task_board_id(&deps.pg, id).await?;
     sqlx::query("delete from tasks where id = $1::uuid")
@@ -1588,7 +1569,7 @@ pub async fn delete_task(deps: &TaskDeps, id: &str) -> Result<(), sqlx::Error> {
 
 // ── Comments ─────────────────────────────────────────────────────────────────
 
-/// TS TaskComment.
+/// A ticket comment, camelCase on the wire.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskComment {
@@ -1624,8 +1605,8 @@ pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment
     Ok(rows.into_iter().map(comment_of).collect())
 }
 
-/// tasks.ts addComment — THE comment write, and therefore the place the
-/// guard on agent-authored comments lives. `mcp comment` reaches here as a
+/// THE comment write, and therefore the place the guard on agent-authored
+/// comments lives. `mcp comment` reaches here as a
 /// tool ARGUMENT — model output that never touched a harness and, until
 /// this call existed, never touched a guard either. `guard_agent_write`
 /// decides whether this author is an agent at all (a person's comment is
@@ -1975,8 +1956,8 @@ fn completed_at_for(meta: &StatusMeta, status: &str, previous: Option<&str>) -> 
     }
 }
 
-/// tasks.ts completeQualityReview — the reviewer's sign-off, moving the
-/// ticket out of review in the same transaction that records the review.
+/// The reviewer's sign-off, moving the ticket out of review in the same
+/// transaction that records the review.
 /// None when the ticket is gone or no longer sitting in review (the
 /// CAS-where makes the second a race resolving to nothing).
 pub async fn complete_quality_review(
@@ -2292,8 +2273,8 @@ pub struct AssignedWork {
     pub workflows: Vec<crate::workflows::WorkflowDelivery>,
 }
 
-/// tasks.ts assignedWork — work assigned to an agent (by name), across all
-/// boards, for the heartbeat.
+/// Work assigned to an agent (by name), across all boards, for the
+/// heartbeat.
 ///
 /// THE PULL SIDE ASKS THE SAME QUESTIONS THE WRITE SIDE ASKS. Both of them,
 /// and neither in its own words. The history of this one query is the whole

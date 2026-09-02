@@ -5,19 +5,19 @@
 // authenticates, how it's invoked (structured output first), how it
 // serves/consumes MCP, and what a driving agent should understand about it.
 //
-// Port of the REGISTRY READ of ui/src/server/workbench-harnesses.ts: the
-// builtin definitions, the merged registry (builtin < admin-custom, by slug),
-// and the auth-derived fullEnv the render interpolates into containers. Two
-// layers of the TS registry are out of scope by construction and named here:
-//   • app-shipped (apps/<slug>/harness.ts) — a compiled TS module the Rust
-//     process cannot load; no repo app ships one today, and app-published
-//     surfaces carry the same boundary in mcp_registry (loud error at
-//     dispatch, never a silent miss). When the app runtime crosses, its
-//     harnesses join this registry.
-//   • renderMcpConfig / format:'custom' — admin JSON can't carry functions in
-//     TS either, so 'custom' is app-shipped-only and unreachable from the
-//     layers this port serves.
-// The admin upsert/delete and the effort→model chain cross here with the
+// This registry answers the builtin definitions, the merged registry
+// (builtin < admin-custom, by slug), and the auth-derived fullEnv the render
+// interpolates into containers. Two layers stay out of scope by construction
+// and are named here:
+//   • app-shipped (apps/<slug>/harness.ts) — app modules stay TS/node, a
+//     compiled module this process cannot load; no repo app ships one today,
+//     and app-published surfaces carry the same boundary in mcp_registry
+//     (loud error at dispatch, never a silent miss). When the app runtime
+//     crosses, its harnesses join this registry.
+//   • renderMcpConfig / format:'custom' — admin JSON can't carry functions,
+//     so 'custom' is app-shipped-only and unreachable from the layers this
+//     registry serves.
+// The admin upsert/delete and the effort→model chain serve the
 // /api/workbench/harnesses routes and the workbench MCP's start_job.
 
 use serde::Deserialize;
@@ -151,10 +151,9 @@ pub enum HarnessSource {
 #[derive(Debug, Clone)]
 pub struct ResolvedHarness {
     pub def: WorkbenchHarnessDef,
-    /// The definition as THIS registry answers it — the TS literal's own key
-    /// order (each builtin spells its fields differently; JSON.stringify
-    /// prints the literal, not the interface), which is why it is carried
-    /// rather than re-derived from the struct.
+    /// The definition as THIS registry answers it — the wire's own key order
+    /// (each builtin spells its fields differently), which is why it is
+    /// carried rather than re-derived from the struct.
     pub wire_def: Value,
     pub source: HarnessSource,
     /// Full container env: auth-derived + definition env.
@@ -162,8 +161,8 @@ pub struct ResolvedHarness {
 }
 
 impl ResolvedHarness {
-    /// resolveDef's spread: the definition, then `source`, then `fullEnv`
-    /// appended after the definition's own keys.
+    /// The definition, then `source`, then `fullEnv` appended after the
+    /// definition's own keys.
     pub fn wire(&self) -> Value {
         let source = match self.source {
             HarnessSource::Builtin => "builtin",
@@ -248,9 +247,8 @@ pub async fn list_harness_defs(pg: &PgPool) -> Result<Vec<ResolvedHarness>, sqlx
     }
     // Admin-custom definitions (declarative only — no code runs from these):
     // invoke + guide are the contract; a row missing either is skipped, not
-    // fatal, matching TS's silent `if (def.invoke && def.guide)`. The stored
-    // definition rides as-is (its own key order), with the row's slug
-    // overriding in place.
+    // fatal. The stored definition rides as-is (its own key order), with the
+    // row's slug overriding in place.
     let rows: Vec<(String, Value)> =
         sqlx::query_as("select slug, definition from workbench_harness_defs where enabled")
             .fetch_all(pg)
@@ -275,7 +273,7 @@ pub async fn list_harness_defs(pg: &PgPool) -> Result<Vec<ResolvedHarness>, sqlx
 }
 
 /// Admin-custom definitions (declarative only — no code runs from these).
-/// The stored JSON is the zod-parsed body, which zod emits in SCHEMA shape
+/// The stored JSON is the route's parsed body, re-emitted in SCHEMA shape
 /// order — the same order for every custom row, absent keys dropped.
 pub async fn upsert_custom_harness(
     pg: &PgPool,
@@ -310,11 +308,11 @@ pub fn harness_model_arg(h: &WorkbenchHarnessDef, model: &str) -> String {
     format!("{}{}", h.model_prefix.as_deref().unwrap_or(""), model)
 }
 
-/// The four builtin definitions, as the TS literals spell them — one json!
-/// per harness because JSON.stringify prints each literal's OWN key order,
-/// and they differ (opencode carries env+modelPrefix early; claude-code
-/// interleaves mcpServe before probe). The struct is derived from these, so
-/// there is exactly one place a builtin is spelled.
+/// The four builtin definitions — one json! per harness because each wire
+/// carries its OWN key order, and they differ (opencode carries
+/// env+modelPrefix early; claude-code interleaves mcpServe before probe).
+/// The struct is derived from these, so there is exactly one place a builtin
+/// is spelled.
 fn builtin_wires() -> Vec<Value> {
     vec![
         serde_json::json!({
@@ -365,8 +363,8 @@ fn builtin_wires() -> Vec<Value> {
 
 /// Effort → model: per-agent override first, then the global roles with a
 /// fall-down chain so unset slots never strand work. A DB failure inside the
-/// chain is TS's thrown error — the caller surfaces it as a thrown tool
-/// error, not a resolved null.
+/// chain propagates — the caller surfaces it as a thrown tool error, not a
+/// resolved null.
 pub async fn effort_model(
     pg: &PgPool,
     effort: &str,
@@ -424,7 +422,7 @@ pub async fn effort_model(
 
 /// All three resolved at once — start_job hands the agent the full map so it
 /// sees its options in effort terms, never raw catalog spelunking. Object
-/// key order is the TS literal's: light, standard, heavy.
+/// key order is fixed: light, standard, heavy.
 pub async fn effort_models(
     pg: &PgPool,
     overrides: Option<&Map<String, Value>>,
@@ -523,9 +521,9 @@ mod tests {
 
     #[test]
     fn the_builtin_wires_spell_the_ts_literals_key_order() {
-        // JSON.stringify prints each TS literal's OWN key order, and the
-        // harnesses route answers with these wires — so the orders are the
-        // contract. One assertion per builtin, keys in the literal's order.
+        // The harnesses route answers with these wires, so each wire's key
+        // order is the contract. One assertion per builtin, keys in the
+        // wire's order.
         let wires = builtin_wires();
         fn keys(v: &Value) -> Vec<&str> {
             v.as_object()

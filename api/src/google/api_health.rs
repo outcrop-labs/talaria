@@ -1,13 +1,13 @@
-// google/api-health.ts — is the Google side actually usable? OAuth consent
+// Google API health — is the Google side actually usable? OAuth consent
 // succeeds even when the project's APIs are disabled — Google only checks at
 // call time — so a freshly connected org account still 403s on the first Drive
 // export / Calendar read / Gmail fetch until someone flips the three library
 // switches in Google Cloud Console. This module makes that checkable on demand
 // from the Admin UI instead of discovering it one broken surface at a time.
 //
-// GOOGLE_API_LIBRARY itself lives client-side (@/lib/google-apis — the Admin
-// UI renders it as setup instructions); the server half is mirrored here
-// because @/server must not reach a browser bundle in EITHER language.
+// GOOGLE_API_LIBRARY itself lives client-side (ui/src/lib/google-apis.ts — the
+// Admin UI renders it as setup instructions); the server keeps this mirror
+// because the API must not import from a browser bundle.
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -25,7 +25,7 @@ struct LibraryEntry {
     probe_url: &'static str,
 }
 
-/// The library (lib/google-apis.ts GOOGLE_API_LIBRARY) joined with each
+/// The library (the client-side table mirrored above) joined with each
 /// service's probe — one cheapest-possible authenticated call per service,
 /// chosen to stay inside the scopes WORKSPACE_SCOPES already grants (no extra
 /// consent to test).
@@ -99,9 +99,8 @@ fn is_disabled(status: u16, body: &Value) -> bool {
 }
 
 /// Probe one service with an already-resolved org token. A transport-level
-/// failure is an `Err` — TS's fetch would reject straight out of
-/// probeOrgGoogleApis and fail the whole health call, not report one service
-/// as red.
+/// failure is an `Err` — it fails the whole health call rather than reporting
+/// one service as red.
 async fn probe(entry: &LibraryEntry, token: &str) -> Result<GoogleApiHealth, String> {
     let res = http()
         .get(entry.probe_url)
@@ -153,10 +152,10 @@ async fn probe(entry: &LibraryEntry, token: &str) -> Result<GoogleApiHealth, Str
     })
 }
 
-/// Probe all three services with the org connection's access token. An
-/// `Err(NotConnected)` is the dead-org-connection throw (GoogleNotConnected) —
-/// the route maps it to a reconnect prompt; `Err(Failed)` is the token read
-/// itself blowing up (InvalidGrant etc.).
+/// Probe all three services with the org connection's access token.
+/// `Err(NotConnected)` means the org connection is dead — the route maps it
+/// to a reconnect prompt; `Err(Failed)` is the token read itself blowing up
+/// (InvalidGrant etc.).
 pub async fn probe_org_google_apis(
     pg: &PgPool,
     sb: &SecretBox,
@@ -168,9 +167,9 @@ pub async fn probe_org_google_apis(
     let Some(token) = token else {
         return Err(crate::google::errors::GoogleError::NotConnected);
     };
-    // TS's Promise.all over the library — three sequential probes cost three
-    // Google round-trips (+300ms) for nothing; join_all keeps the library's
-    // order and surfaces the first failure, as Promise.all does.
+    // Probes run concurrently — three sequential Google round-trips cost
+    // +300ms for nothing; join_all keeps the library's order and surfaces the
+    // first failure.
     let out: Vec<GoogleApiHealth> =
         futures_util::future::join_all(GOOGLE_API_LIBRARY.iter().map(|entry| probe(entry, &token)))
             .await

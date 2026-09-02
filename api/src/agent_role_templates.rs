@@ -1,4 +1,4 @@
-// AGENT ROLE TEMPLATES — port of ui/src/server/agent-role-templates.ts. The
+// AGENT ROLE TEMPLATES — the
 // starting point for a new agent, expressed as a BUSINESS ROLE rather than a
 // person. Two sources, one list: the hand-written built-ins below (versioned
 // with the product), and the org's own `agent_role_templates` rows. An org
@@ -8,7 +8,7 @@
 
 use sqlx::PgPool;
 
-/// One template (RoleTemplate) — wire order pinned by the SPA's picker.
+/// One template — wire order pinned by the SPA's picker.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleTemplate {
@@ -218,8 +218,8 @@ pub struct OwnTemplate {
 }
 
 /// Built-ins plus the org's own, with the org's version of a slug winning.
-/// The sort is the DB's (`order by name asc`) — same collation on both sides
-/// of the port, so no order divergence to record.
+/// The org's rows sort in the DB's collation (`order by name asc`); the
+/// unshadowed built-ins follow in shipped order.
 pub async fn list_role_templates(pg: &PgPool) -> Result<Vec<serde_json::Value>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
         "select slug, name, role, department, description, soul \
@@ -346,8 +346,7 @@ mod tests {
         let t = built_in_role_templates();
         assert_eq!(t.len(), 8);
         // The header em-dash, the marketing soul's own em-dashes, and the
-        // description's typographic apostrophe — all byte-checked against the
-        // TS literals.
+        // description's typographic apostrophe — all byte-checked.
         let marketing = &t[4];
         assert_eq!(marketing.slug, "marketing");
         assert_eq!(

@@ -1,7 +1,7 @@
-// /api/fleet/defs/{id}/edit — port of ui/src/routes/api/fleet.defs.$id.edit.ts.
-// POST → save an edit as a NEW immutable version (and optionally apply it to
-// the running managed container). Admin. This is "versioned agent internals":
-// nothing shifts silently — every change is a version you can diff and revert.
+// /api/fleet/defs/{id}/edit. POST → save an edit as a NEW immutable version
+// (and optionally apply it to the running managed container). Admin. This is
+// "versioned agent internals": nothing shifts silently — every change is a
+// version you can diff and revert.
 
 use crate::agent_defs::{
     AliasTarget, ConfigEdits, ModelTarget, NewVersion, add_version_if_changed, apply_config_edits,
@@ -38,8 +38,8 @@ fn parse_target(m: &Map<String, Value>) -> Result<ModelTarget, String> {
         None => None,
         Some(Value::Null) => return Err("Invalid input: expected number, received null".into()),
         Some(_) => {
-            // `.int().positive()` — the bound is exclusive, which the folded
-            // helper's >= min cannot say.
+            // the bound is exclusive (>0), which the folded helper's
+            // >= min cannot say.
             let n =
                 nullable_number_member(m, "contextLength", NumKind::Int, f64::MIN, f64::INFINITY)?
                     .ok_or("unreachable: present non-null read above")?;
@@ -82,8 +82,8 @@ fn target_member(obj: &Map<String, Value>, key: &str) -> Result<ModelTarget, Str
     parse_target(m)
 }
 
-/// A required array of Targets (`aliases` adds the tier `name`). Items run
-/// zod's order — each member, then the array's own length bound.
+/// A required array of Targets (`aliases` adds the tier `name`). Items
+/// validate in order — each member, then the array's own length bound.
 fn target_array<T>(
     obj: &Map<String, Value>,
     key: &str,
@@ -213,8 +213,7 @@ pub async fn post(
         }
         let live: Option<Vec<String>> = match catalog_models(&state, ep).await {
             Ok(catalog) => Some(catalog.into_iter().map(|m| m.id).collect()),
-            // `.catch(() => null)` — an unreachable catalog is "cannot vouch",
-            // not an error.
+            // an unreachable catalog is "cannot vouch", not an error.
             Err(_) => None,
         };
         if live
@@ -244,9 +243,8 @@ pub async fn post(
         }
     }
 
-    // applyConfigEdits' refusal ("cannot edit what has no models" and
-    // friends) is the catch's 400 in the TS; the version write beneath it is
-    // a db error → 500.
+    // apply_config_edits' refusal ("cannot edit what has no models" and
+    // friends) is the 400; the version write beneath it is a db error → 500.
     let edits = ConfigEdits {
         main,
         aliases,

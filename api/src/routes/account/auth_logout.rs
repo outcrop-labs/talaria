@@ -1,5 +1,4 @@
-// POST /api/auth/logout — port of ui/src/routes/api/auth/logout.ts. Delete
-// the Redis session and clear the cookie.
+// POST /api/auth/logout. Delete the Redis session and clear the cookie.
 
 use crate::error::thrown_internal_error;
 use crate::session::{clear_session_cookie, destroy_session, json_with_cookies};

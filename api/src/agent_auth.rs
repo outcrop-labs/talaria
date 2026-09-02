@@ -1,6 +1,6 @@
-// Agent-caller authentication — port of ui/src/server/agent-auth.ts. An
-// agent presents ITS OWN credential: a `tak_` secret minted per agent_defs
-// row, sha256-stored in agent_keys. Identity is resolved FROM THE
+// Agent-caller authentication. An agent presents ITS OWN credential: a
+// `tak_` secret minted per agent_defs row, sha256-stored in agent_keys.
+// Identity is resolved FROM THE
 // CREDENTIAL — x-agent-name is a cross-check that can narrow access but
 // never grant it.
 //
@@ -42,8 +42,8 @@ pub struct AgentCaller {
 }
 
 /// An agent identified either by a resolved caller (carries proof) or by a
-/// bare model string from a surface that hasn't been threaded yet
-/// (agent-auth.ts AgentSubject). Privilege checks take this and consult
+/// bare model string from a surface that hasn't been threaded yet. Privilege
+/// checks take this and consult
 /// `legacy`; a plain string is treated as proven, which is safe because a
 /// legacy caller can never present a privileged name.
 #[derive(Debug, Clone)]
@@ -69,7 +69,7 @@ pub fn subject_proven(subject: &AgentSubject) -> bool {
 }
 
 /// Ready-to-return refusal for a surface that acts as a HUMAN (Google, owner
-/// proxying) when the caller is legacy (agent-auth.ts refuseLegacy). Says
+/// proxying) when the caller is legacy. Says
 /// what is wrong AND what to do — a bare 403 here reads as a broken
 /// integration rather than a migration step.
 pub fn refuse_legacy(caller: &AgentCaller, what: &str) -> Option<Response> {
@@ -88,8 +88,8 @@ pub fn refuse_legacy(caller: &AgentCaller, what: &str) -> Option<Response> {
 
 // ── Minting ──────────────────────────────────────────────────────────────────
 
-/// Issue a fresh credential for an agent, invalidating any previous one
-/// (agent-auth.ts rotateAgentApiKey). The plaintext is returned here and never
+/// Issue a fresh credential for an agent, invalidating any previous one.
+/// The plaintext is returned here and never
 /// again: the row keeps a sha256 (auth never decrypts) and a sealed copy (a
 /// wiped fleet/.env is recoverable).
 pub async fn rotate_agent_api_key(
@@ -118,8 +118,8 @@ pub async fn rotate_agent_api_key(
     Ok(secret)
 }
 
-/// The agent's credential, minting one on first use (agent-auth.ts
-/// ensureAgentApiKey). Stable across renders — re-minting on every render
+/// The agent's credential, minting one on first use. Stable across renders
+/// — re-minting on every render
 /// would lock out every running container.
 pub async fn ensure_agent_api_key(
     pg: &PgPool,
@@ -133,18 +133,16 @@ pub async fn ensure_agent_api_key(
             .await
             .map_err(|e| format!("agent key read failed: {e}"))?;
     match existing {
-        // The BARE secretbox message, like agent-auth.ts's `open(existing.keyEnc)`
-        // — the wrapper sentence here used to reach /api/me/assistant PATCH's
-        // 400 body with a prefix the oracle never says.
+        // The BARE secretbox message, no wrapper sentence — /api/me/assistant
+        // PATCH's 400 body carries it verbatim.
         Some((key_enc,)) => sb.open(&key_enc).map_err(|e| e.to_string()),
         None => rotate_agent_api_key(pg, sb, agent_id).await,
     }
 }
 
 /// The credential as presented: x-api-key first, else a `Bearer ` prefix.
-/// (Case-sensitive single-space `Bearer ` with a trim — exactly
-/// agent-auth.ts's startsWith, NOT the gateway route's case-insensitive
-/// regex.)
+/// (Case-sensitive single-space `Bearer ` with a trim — a plain
+/// strip_prefix, NOT the gateway route's case-insensitive match.)
 pub fn presented(headers: &HeaderMap) -> Option<String> {
     if let Some(x) = headers
         .get("x-api-key")
@@ -178,8 +176,8 @@ fn eq(a: &str, b: &str) -> bool {
     crate::session::constant_time_eq(a.as_bytes(), b.as_bytes())
 }
 
-/// Repeat on a slow cadence rather than once per process (15 min, the TS
-/// WARN_EVERY_MS) — a single line from whenever the server started can't
+/// Repeat on a slow cadence rather than once per process (15 min) — a
+/// single line from whenever the server started can't
 /// answer "is this still happening?".
 fn warn_once(key: &str, line: &str) {
     static LAST: LazyLock<Mutex<HashMap<String, Instant>>> =
@@ -212,8 +210,7 @@ pub async fn agent_caller(
     resolve(pg, headers, true).await
 }
 
-/// The calling agent or a ready-to-return 401/403, for agent-only routes
-/// (agent-auth.ts requireAgent).
+/// The calling agent or a ready-to-return 401/403, for agent-only routes.
 pub async fn require_agent(pg: &PgPool, headers: &HeaderMap) -> Result<AgentCaller, Response> {
     match agent_caller(pg, headers).await {
         Ok(Some(caller)) => Ok(caller),
@@ -223,13 +220,12 @@ pub async fn require_agent(pg: &PgPool, headers: &HeaderMap) -> Result<AgentCall
 }
 
 /// Identity for the FLEET-PLANE endpoints whose subject is in the URL
-/// (register, heartbeat — agent-auth.ts fleetCaller). Same validation as
-/// `agent_caller`, except a legacy caller that sent no x-agent-name resolves
-/// with an EMPTY model instead of a 400: the pre-per-key plugin doesn't send
-/// the header, and the subject is the URL anyway. A caller we CAN name must
-/// still match the subject — that is what stops agent A reading agent B's
-/// work. (TS hands back `{ model: null }` for the unnamed shape; here the
-/// same caller arrives with `model: ""`.)
+/// (register, heartbeat). Same validation as `agent_caller`, except a legacy
+/// caller that sent no x-agent-name resolves with an EMPTY model instead of
+/// a 400: the pre-per-key plugin doesn't send the header, and the subject is
+/// the URL anyway. A caller we CAN name must still match the subject — that
+/// is what stops agent A reading agent B's work. The unnamed shape arrives
+/// as `model: ""`.
 pub async fn fleet_caller(
     pg: &PgPool,
     headers: &HeaderMap,
@@ -238,7 +234,7 @@ pub async fn fleet_caller(
 }
 
 /// Any credential the fleet holds — a per-agent one, or the org-wide key
-/// while the window is open (agent-auth.ts checkFleetKey). For the
+/// while the window is open. For the
 /// fleet-plane endpoints that carry their subject in the URL and so need no
 /// caller identity. Retirement is `agent_defs.enabled = false` and it does
 /// NOT delete the agent_keys row, so the join onto agent_defs is what makes
@@ -421,13 +417,12 @@ async fn resolve(
 }
 
 // ── The migration bookkeeping ────────────────────────────────────────────────
-// Who is still presenting the shared key, in THIS process (agent-auth.ts
-// legacySeen). Deduped for the log but kept as data, because "has every agent
-// moved over yet?" is the question that decides when
-// TALARIA_AGENT_KEY_LEGACY=off is safe — and a one-shot console.warn an
-// operator scrolled past can't answer it. Process-local by design in TS, and
-// the port keeps that property: during coexistence each runtime counts its
-// own servings, and the admin surface that reads this notes it.
+// Who is still presenting the shared key, in THIS process. Deduped for the
+// log but kept as data, because "has every agent moved over yet?" is the
+// question that decides when TALARIA_AGENT_KEY_LEGACY=off is safe — and a
+// one-shot warn an operator scrolled past can't answer it. Process-local by
+// design: it counts this process's own servings, and the admin surface that
+// reads this says so.
 
 /// Wire shape (camelCase — the admin instance route serves these verbatim).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -465,8 +460,8 @@ fn warn_legacy(model: &str) {
     );
 }
 
-/// Shared-key sightings since this process started, model-sorted —
-/// `localeCompare`'s order, via the shared collating comparator.
+/// Shared-key sightings since this process started, model-sorted via the
+/// shared collating comparator (the order every model list uses).
 pub fn legacy_usage() -> Vec<LegacySighting> {
     let seen = LEGACY_SEEN.lock().expect("legacy sightings");
     let mut out: Vec<LegacySighting> = seen.values().cloned().collect();
@@ -474,7 +469,7 @@ pub fn legacy_usage() -> Vec<LegacySighting> {
     out
 }
 
-/// Wall-clock epoch millis — `Date.now()`, for the sighting timestamps.
+/// Wall-clock epoch millis, for the sighting timestamps.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -482,8 +477,9 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// `new Date(ms).toISOString()`: `YYYY-MM-DDTHH:MM:SS.sssZ`, always UTC.
-/// Civil-from-days (Hinnant's algorithm) — no clock crate in this house.
+/// Epoch millis as `YYYY-MM-DDTHH:MM:SS.sssZ`, always UTC — the spelling
+/// every stored `at` uses. Civil-from-days (Hinnant's algorithm) — no clock
+/// crate in this house.
 pub fn epoch_ms_to_iso(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let millis = ms.rem_euclid(1000);
@@ -517,8 +513,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// The inverse of `epoch_ms_to_iso`: `Date.parse` for the ONE shape this
-/// system stores — `toISOString()` output, `YYYY-MM-DDTHH:MM:SS(.sss)?Z`.
+/// The inverse of `epoch_ms_to_iso`: parses the ONE shape this system
+/// stores — `YYYY-MM-DDTHH:MM:SS(.sss)?Z`, always UTC.
 /// Anything else is None, and every caller wants exactly that: a stored `at`
 /// that no longer parses is expired, not eternal.
 pub fn iso_to_epoch_ms(s: &str) -> Option<i64> {
@@ -601,12 +597,11 @@ pub struct LegacyMigrationStatus {
     pub legacy_seen: Vec<LegacySighting>,
 }
 
-/// The migration answer, from the data rather than from memory
-/// (agent-auth.ts legacyMigrationStatus): agent_keys.last_used_at is written
-/// on every per-agent authentication, so an agent that has one has proved it
-/// is running on its own secret. Timestamps cross the wire as epoch millis
-/// (sqlx here carries no timestamptz decoder by design) and format through
-/// the same `toISOString` the TS side uses.
+/// The migration answer, from the data rather than from memory:
+/// agent_keys.last_used_at is written on every per-agent authentication,
+/// so an agent that has one has proved it is running on its own secret.
+/// Timestamps cross the wire as epoch millis (sqlx here carries no
+/// timestamptz decoder by design) and format through `epoch_ms_to_iso`.
 pub async fn legacy_migration_status(pg: &PgPool) -> Result<LegacyMigrationStatus, sqlx::Error> {
     let rows: Vec<(String, bool, Option<i64>)> = sqlx::query_as(
         "select d.model, k.agent_id is not null, (extract(epoch from k.last_used_at) * 1000)::bigint \
@@ -637,8 +632,8 @@ pub async fn legacy_migration_status(pg: &PgPool) -> Result<LegacyMigrationStatu
     })
 }
 
-/// One operator-readable line, or None when there is nothing to say
-/// (agent-auth.ts legacyMigrationWarning). Rendered into the fleet render's
+/// One operator-readable line, or None when there is nothing to say.
+/// Rendered into the fleet render's
 /// warnings (where an admin actually looks) and logged. This is the guard for
 /// the migration order — flipping the flag before the fleet is rolled is a
 /// total outage, and nothing else says so.
@@ -669,7 +664,7 @@ mod tests {
     #[test]
     fn iso_formatter_is_to_iso_string() {
         assert_eq!(epoch_ms_to_iso(0), "1970-01-01T00:00:00.000Z");
-        // Arbitrary instants, pinned against node's own toISOString.
+        // Arbitrary instants, exact-string pins.
         assert_eq!(
             epoch_ms_to_iso(1_796_970_954_478),
             "2026-12-11T06:35:54.478Z"
@@ -703,7 +698,7 @@ mod tests {
         ] {
             assert_eq!(iso_to_epoch_ms(&epoch_ms_to_iso(ms)), Some(ms), "{ms}");
         }
-        // The other spellings Date.parse tolerates that our writers never emit.
+        // A fractionless spelling our writers never emit still parses.
         assert_eq!(
             iso_to_epoch_ms("2026-08-29T07:00:00Z"),
             Some(1_787_986_800_000)

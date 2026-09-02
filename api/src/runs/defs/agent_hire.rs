@@ -1,6 +1,5 @@
 // THE AGENT-HIRE RUN — "create an agent" as durable work, on the same runtime
-// research and plan-drafts already run on. Port of
-// ui/src/server/runs/defs/agent-hire.ts.
+// research, plan-drafts, work sessions and retrieval repairs run on.
 //
 // WHY A RUN AT ALL, when the route used to do this synchronously in one POST:
 // hiring is not a row write, it is a BOOT — render the fleet config, `docker
@@ -26,13 +25,12 @@
 // back the existing def: the work is done, not failed. `render` and `boot` are
 // idempotent by nature (they rewrite/re-up the same files).
 //
-// THE REAL DEPS ARE THE FLEET WRITE PLANE, and every edge of it has crossed:
-// createAgent (crate::fleet::create::create_or_resume), writeSkill, renderFleet,
+// THE REAL DEPS ARE THE FLEET WRITE PLANE: createAgent
+// (crate::fleet::create::create_or_resume), writeSkill, renderFleet,
 // fleetUp/waitHealthy. `real_agent_hire_deps` wires them below, and
-// `jobs.rs`'s `try_arm` arms the step and touches the getter in the same
-// slice the flip's kind guard stops naming agent-hire as missing — an
-// armed-in-name-only def would let the flip arm while a hire cannot run,
-// which is the same hole the kind guard exists to plug.
+// `jobs.rs`'s `try_arm` arms the step and touches the getter together — an
+// armed-in-name-only def would let the boot census pass while a hire cannot
+// run, which is the same hole the kind guard exists to plug.
 
 use std::sync::{Arc, OnceLock};
 
@@ -46,8 +44,7 @@ use crate::runs::define::{
 
 pub const AGENT_HIRE_KIND: &str = "agent-hire";
 
-/// Everything the modal sends, camelCase as the row's input column holds it
-/// (agent-hire.ts AgentHireInput).
+/// Everything the modal sends, camelCase as the row's input column holds it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentHireInput {
@@ -115,10 +112,9 @@ pub struct AgentHireResult {
     pub warnings: Vec<String>,
 }
 
-/// What the create dep hands back — the def row as the step uses it. TS hands
-/// the whole AgentDef back; the step reads four fields and the checkpoint
-/// keeps one, and naming them here keeps the seam honest about what the
-/// machine actually depends on.
+/// What the create dep hands back — the def row as the step uses it. The
+/// step reads four fields and the checkpoint keeps one, and naming them here
+/// keeps the seam honest about what the machine actually depends on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HiredDef {
     pub id: String,
@@ -146,8 +142,8 @@ pub type CreateFn =
     Arc<dyn Fn(AgentHireInput) -> BoxFuture<'static, Result<HiredDef, StepError>> + Send + Sync>;
 pub type WriteSkillsFn =
     Arc<dyn Fn(String, Vec<SkillSeed>, String) -> BoxFuture<'static, ()> + Send + Sync>;
-/// TS's audit is fire-and-forget (`void logAudit(...)` — logAudit itself
-/// swallows insert failures), so the seam is synchronous and infallible.
+/// The audit is fire-and-forget (log_audit itself swallows insert failures),
+/// so the seam is synchronous and infallible.
 pub type AuditFn = Arc<dyn Fn(&HiredDef, &str) + Send + Sync>;
 pub type RenderFn =
     Arc<dyn Fn() -> BoxFuture<'static, Result<RenderOutcome, StepError>> + Send + Sync>;
@@ -295,19 +291,19 @@ pub async fn agent_hire_step(
     Ok(StepResult::Done { result })
 }
 
-/// The real step deps, armed with the fleet write plane: the Rust driver does
-/// not exist until the flip arms it, so the deps sit empty until the boot
-/// wiring (which owns the AppState) installs them. An unarmed step is the
-/// loud refusal below — reached only by a driver armed before its deps.
+/// The real step deps, armed with the fleet write plane. They need the
+/// AppState, which the boot wiring owns, so they are installed separately
+/// from registration; an unarmed step is the loud refusal below — reached
+/// only by a driver armed before its deps, which is a wiring bug.
 static ARMED_DEPS: OnceLock<AgentHireDeps> = OnceLock::new();
 
 pub fn arm_agent_hire_step(deps: AgentHireDeps) {
     let _ = ARMED_DEPS.set(deps);
 }
 
-/// The real deps over the fleet write plane — TS's REAL_AGENT_HIRE_DEPS. Each
-/// closure owns its own clone of the state: registration captures, never
-/// invokes, and a run may drive minutes after the arm.
+/// The real deps over the fleet write plane. Each closure owns its own clone
+/// of the state: arming captures, never invokes, and a run may drive minutes
+/// after the arm.
 pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
     AgentHireDeps {
         create: {
@@ -342,9 +338,8 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
             Arc::new(move |slug: String, skills: Vec<SkillSeed>, actor: String| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    // TS writes each skill `.catch(() => {})` — a starter
-                    // skill that fails to land is lost quietly, never a
-                    // failed hire.
+                    // A starter skill that fails to land is lost quietly,
+                    // never a failed hire.
                     for s in skills {
                         let _ = crate::agent_skills::write_skill(
                             &pg,
@@ -361,9 +356,8 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
         audit: {
             let pg = state.pg.clone();
             Arc::new(move |def: &HiredDef, actor: &str| {
-                // TS fires and forgets (`void logAudit(...)`; logAudit itself
-                // swallows insert failures). The spawn is that void; the
-                // swallow is log_audit's own.
+                // Fire-and-forget: log_audit itself swallows insert failures
+                // — the spawn only detaches the write from the step.
                 let pg = pg.clone();
                 let (id, label, slug, department, actor) = (
                     def.id.clone(),
@@ -427,8 +421,8 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
             Arc::new(move |department: String| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    // TS's default window: two minutes, enough for a cold
-                    // pull's healthcheck to settle.
+                    // Two minutes — enough for a cold pull's healthcheck to
+                    // settle.
                     crate::fleet::docker::wait_healthy(&pg, &department, 120_000).await
                 })
             })
@@ -436,12 +430,11 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
     }
 }
 
-/// The registered definition, exactly once per process — TS registers at
-/// module load; the Rust equivalent is the first call. The callers are
-/// `jobs.rs`'s `try_arm` (the boot list) and the fleet routes (a process that
-/// lists or enqueues hires can also be the process a reclaim sweep asks to
-/// resume one, and a kind that route never registered would be a run nothing
-/// can drive).
+/// The registered definition, exactly once per process — registered on the
+/// first call. The callers are `jobs.rs`'s `try_arm` (the boot list) and the
+/// fleet routes (a process that lists or enqueues hires can also be the
+/// process a reclaim sweep asks to resume one, and a kind that route never
+/// registered would be a run nothing can drive).
 pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
     static DEF: OnceLock<Arc<RunDefinition>> = OnceLock::new();
     DEF.get_or_init(|| {
@@ -468,7 +461,7 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
             // filed as an error, not retried, because it is probably still
             // running.
             max_step_ms: 10 * 60_000,
-            // TS sets no override — the default three.
+            // No override — the default three.
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     })
@@ -476,19 +469,19 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
 
 #[cfg(test)]
 mod tests {
-    // The definition's contract, driven with fake deps the way agent-hire's
-    // own TS suite drives them — no database, no docker, no clock. What is
-    // under test is the stage machine: the checkpoint is the only state, each
-    // stage is entered from the checkpoint the previous one wrote, and a hire
-    // that did not ask to start never touches the container.
+    // The definition's contract, driven with fake deps — no database, no
+    // docker, no clock. What is under test is the stage machine: the
+    // checkpoint is the only state, each stage is entered from the checkpoint
+    // the previous one wrote, and a hire that did not ask to start never
+    // touches the container.
     //
     // NOTE: these tests drive `agent_hire_step` directly and never call
     // `agent_hire_run()` — the getter REGISTERS the kind in the process-wide
-    // registry, and jobs.rs's `the_flip_refuses_to_arm_without_the_whole_kind_
-    // table` touches the getters itself to mirror a real boot. A test here
-    // registering the kind would not break that assertion (the census test is
-    // self-contained), but it would put the registry's state at the mercy of
-    // test scheduling for nothing: the machine under test is right here.
+    // registry, and jobs.rs's kind-census test touches the getters itself to
+    // mirror a real boot. A test here registering the kind would not break
+    // that assertion (the census test is self-contained), but it would put
+    // the registry's state at the mercy of test scheduling for nothing: the
+    // machine under test is right here.
     use super::*;
     use crate::runs::define::{RunState, StepSignal};
     use std::sync::Mutex;
@@ -693,8 +686,8 @@ mod tests {
         let b = agent_hire_step(ctx(&input(false), Some(cp_of_from(checkpoint))), &deps)
             .await
             .unwrap();
-        // `healthy` is absent, not false — TS's `undefined` key, dropped by
-        // JSON.stringify, is the shape the roster's result reader expects.
+        // `healthy` is absent, not false — the absent key is the shape the
+        // roster's result reader expects.
         let StepResult::Done { result } = b else {
             panic!("expected done without booting")
         };
@@ -765,8 +758,8 @@ mod tests {
     #[tokio::test]
     async fn a_corrupt_mid_stage_checkpoint_re_runs_create_as_a_read() {
         // render/boot without a defId is a corrupt row; the machine restarts
-        // at create, whose already-exists path makes that a read. The TS
-        // machine has the branch and no test for it — this pins the recovery.
+        // at create, whose already-exists path makes that a read. This pins
+        // the recovery.
         let (calls, deps) = recording();
 
         let res = agent_hire_step(

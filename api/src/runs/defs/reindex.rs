@@ -1,22 +1,17 @@
-// THE TWO RETRIEVAL REPAIR RUNS, on the durable runtime. These are the last
-// two kinds the flip's census waits on — with them, every kind TS's
-// runs/boot.ts imports has a definition here and the scheduler handover is
-// armable. Port of ui/src/server/runs/defs/reindex.ts.
+// THE TWO RETRIEVAL REPAIR RUNS, on the durable runtime: rag-backfill and
+// rag-reindex, the repair pair the admin rag route starts.
 //
-// WHAT THEY REPLACE, and it is the same bug twice:
+// WHAT THEY REPLACE, and it is the same bug twice: the pre-run implementation
+// was an in-process flag plus a status blob in `app_settings`, driven by a
+// bare `void fn()`. A deploy in the middle of either sweep leaves
+// state:'running' in that blob FOREVER — nothing is driving it, nothing will
+// ever notice, and the admin panel polls a row that will never change again.
+// The only way out is to press the button a second time, which starts the
+// whole thing from zero.
 //
-//   retrieval/backfill.ts   `let backfillRunning = false` plus a status blob in
-//   retrieval/migrate.ts    `app_settings`, driven by a bare `void fn()`. A
-//                           deploy in the middle of either one leaves
-//                           state:'running' in that blob FOREVER — nothing is
-//                           driving it, nothing will ever notice, and the admin
-//                           panel polls a row that will never change again. The
-//                           only way out is to press the button a second time,
-//                           which starts the whole thing from zero.
-//
-// So the status blob is gone and the `runs` row is the source of truth. The
-// shapes the panel reads (`BackfillStatus`, `ReindexStatus`) stay TS for now —
-// they are projections of this row and cross with the admin rag route.
+// So the status blob is gone and the `runs` row is the source of truth; the
+// shapes the panel reads (`BackfillStatus`, `ReindexStatus`) are projections
+// of this row, built in the admin rag route.
 //
 // ── WHAT ONE STEP IS ─────────────────────────────────────────────────────────
 //
@@ -162,9 +157,9 @@ fn next_source(source: BackfillSource) -> Option<BackfillSource> {
 
 /// The per-source tally the admin panel prints. Carried in the checkpoint
 /// rather than recomputed, because "how much did this backfill actually
-/// index" is not derivable from a cursor. BTreeMap so a checkpoint's bytes are
-/// the same from any process — TS's insertion order was walk order, and the
-/// walk order is fixed.
+/// index" is not derivable from a cursor. BTreeMap so a checkpoint's bytes
+/// are the same from any process — the walk order is fixed, so the byte
+/// order can be too.
 pub type Counts = BTreeMap<String, i64>;
 
 fn bump(counts: &mut Counts, key: &str) {
@@ -205,8 +200,7 @@ pub struct Page {
     pub counts: Counts,
 }
 
-/// A `json!` object as the payload Map (preserve_order keeps insertion order —
-/// the shape TS's object literals wrote into the column).
+/// A `json!` object as the payload Map (preserve_order keeps insertion order).
 fn obj(v: Value) -> serde_json::Map<String, Value> {
     match v {
         Value::Object(m) => m,
@@ -224,9 +218,8 @@ fn obj(v: Value) -> serde_json::Map<String, Value> {
 /// after another instance took the run is the doubled side effect this
 /// runtime exists to prevent.
 ///
-/// The SELECTs themselves propagate failures (TS's `await sql` throws too);
-/// every INDEX call is `let _ =` (TS's `.catch(() => {})`) — one bad document
-/// must not cost a page.
+/// The SELECTs themselves propagate failures; every INDEX call is `let _ =` —
+/// one bad document must not cost a page.
 async fn index_page(
     pg: &PgPool,
     qd: &QdrantDeps,
@@ -486,7 +479,7 @@ async fn index_page(
                     return Ok(page(false, &last, &counts));
                 }
                 let id = r.try_get::<String, _>("id").unwrap_or_default();
-                // TS's `m.title || 'Untitled'`: null and '' both fall through.
+                // Null and '' both fall through to "Untitled".
                 let title = r
                     .try_get::<Option<String>, _>("title")
                     .unwrap_or(None)
@@ -676,9 +669,8 @@ pub enum BackfillProgress {
 pub struct BackfillDeps {
     pub health: Arc<dyn Fn() -> BoxFuture<'static, RagHealth> + Send + Sync>,
     /// The page dep takes an OWNED signal handle: the real page checks it
-    /// before every outward call (the way TS threads `signal` into
-    /// `indexPage`), so it needs a live receiver of its own, not a borrow of
-    /// the step's.
+    /// before every outward call, so it needs a live receiver of its own,
+    /// not a borrow of the step's.
     pub page: PageFn,
 }
 
@@ -786,8 +778,8 @@ pub async fn step_backfill_run(
 
 // ── The reindex checkpoint and run ───────────────────────────────────────────
 
-/// The same two words `ReindexStatus.phase` has always used, because the
-/// admin panel prints them and the run row is where they come from.
+/// The same two words `ReindexStatus.phase` uses, because the admin panel
+/// prints them and the run row is where they come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReindexPhase {
@@ -805,7 +797,7 @@ pub struct ReindexCheckpoint {
     pub rebuilt: Vec<String>,
     /// The dimension the rebuild committed to, kept so the phase line can say
     /// it and so a resumed rebuild cannot silently switch models mid-run.
-    /// camelCase on the wire (`embedDim`), as TS's column holds it.
+    /// camelCase on the wire (`embedDim`).
     pub embed_dim: Option<i64>,
     /// Null until the rebuild is finished.
     pub backfill: Option<BackfillCheckpoint>,
@@ -992,10 +984,10 @@ pub async fn step_reindex(
 
 // ── Registration, arming, real deps ──────────────────────────────────────────
 
-/// The real step deps. The Rust driver does not exist until the flip arms it,
-/// so the deps sit empty until the boot wiring (which owns the AppState)
-/// installs them; an unarmed step is the loud refusal in the getter — reached
-/// only by a driver armed before its deps.
+/// The real step deps. They need the AppState, which the boot wiring owns, so
+/// they are installed separately from registration; an unarmed step is the
+/// loud refusal in the getter — reached only by a driver armed before its
+/// deps, which is a wiring bug.
 static ARMED_BACKFILL: OnceLock<BackfillDeps> = OnceLock::new();
 static ARMED_REINDEX: OnceLock<ReindexDeps> = OnceLock::new();
 
@@ -1076,10 +1068,10 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
                 let pg = pg.clone();
                 Box::pin(async move {
                     let qd = crate::retrieval::qdrant::real_deps();
-                    // delete_collection swallows its own failure in both
-                    // runtimes (a collection that never existed is fine to
-                    // rebuild over); the ensure that follows is the one that
-                    // can fail the step.
+                    // delete_collection swallows its own failure (a
+                    // collection that never existed is fine to rebuild over);
+                    // the ensure that follows is the one that can fail the
+                    // step.
                     delete_collection(&qd, &col.qdrant_name).await;
                     ensure_hybrid_collection(&qd, &col.qdrant_name, dim).await?;
                     // Old point ids went with the collection; drop the
@@ -1102,22 +1094,20 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
                 })
             })
         },
-        // The upgrade-status cache drop. The 60s cache crossed with the
-        // admin rag route and lives in retrieval/migrate.rs now — one per
-        // process, exactly like TS's module state — so this process's run
-        // drops this process's cache after every collection it rebuilds: a
-        // cached "needs reindex" surviving the rebuild that fixed it is an
-        // alarm that trains people to ignore alarms.
+        // The upgrade-status cache drop. The 60s cache is per-process (it
+        // lives in retrieval/migrate.rs), so this process's run drops this
+        // process's cache after every collection it rebuilds: a cached
+        // "needs reindex" surviving the rebuild that fixed it is an alarm
+        // that trains people to ignore alarms.
         invalidate: Arc::new(crate::retrieval::migrate::invalidate_upgrade_status),
         backfill: real_backfill_deps(state.clone()),
     }
 }
 
-/// The registered backfill definition, exactly once per process — TS
-/// registers at module load; the Rust equivalent is the first call. The
-/// callers are `jobs.rs`'s `try_arm` (the boot list) and the admin rag route
-/// (a process that can start a backfill can also be the process a reclaim
-/// sweep asks to resume one).
+/// The registered backfill definition, exactly once per process — registered
+/// on the first call. The callers are `jobs.rs`'s `try_arm` (the boot list)
+/// and the admin rag route (a process that can start a backfill can also be
+/// the process a reclaim sweep asks to resume one).
 pub fn backfill_run() -> &'static Arc<RunDefinition> {
     static DEF: OnceLock<Arc<RunDefinition>> = OnceLock::new();
     DEF.get_or_init(|| {
@@ -1199,9 +1189,9 @@ async fn start_once(
             Ok(())
         }
         Ok(None) => {
-            // The enqueue bridge every crossed start verb uses: insert and
-            // publish while TS owns the sweep (so its sweep drives the row),
-            // drive inline once Rust does.
+            // Insert, publish and start driving immediately — the inline
+            // drive gets the row moving now, and the reclaim sweep takes
+            // over if this process dies mid-flight.
             let redis = state.redis().await.map_err(|e| {
                 format!("the run could not be enqueued: redis is unavailable ({e})")
             })?;
@@ -1228,8 +1218,8 @@ async fn start_once(
     }
 }
 
-/// The admin verbs the admin rag route calls (that route crosses next; the
-/// verbs live here beside their definitions, as they do in TS).
+/// The admin verbs the admin rag route calls — the verbs live here beside
+/// their definitions.
 pub async fn start_backfill(state: &AppState) -> Result<(), String> {
     start_once(state, BACKFILL_KIND, backfill_run()).await
 }
@@ -1240,14 +1230,14 @@ pub async fn start_reindex(state: &AppState) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    // The paging and rebuild state machines, driven with fake deps the way
-    // reindex's own TS suite drives them — no Postgres, no Qdrant, no
-    // embedding service. What is under test is the CHECKPOINT discipline:
-    // what each step drops, what it records, and where a reclaim re-enters.
+    // The paging and rebuild state machines, driven with fake deps — no
+    // Postgres, no Qdrant, no embedding service. What is under test is the
+    // CHECKPOINT discipline: what each step drops, what it records, and
+    // where a reclaim re-enters.
     //
     // NOTE: like agent_hire's suite, these drive the step fns directly and
     // never call the getters — the getters register kinds in the process-wide
-    // registry, and jobs.rs's flip test owns that state.
+    // registry, and jobs.rs's kind-census test owns that state.
     use super::*;
     use crate::runs::define::{RunRow, RunState};
     use std::sync::Mutex;
@@ -1542,8 +1532,8 @@ mod tests {
 
     #[test]
     fn the_checkpoints_read_and_write_the_ts_wire_shape() {
-        // Rows TS drove before the flip carry these exact bytes; they must
-        // parse here, and the checkpoints this side writes must parse there.
+        // Rows driven by earlier deploys carry these exact bytes and must
+        // parse here, byte for byte.
         let backfill_ts = r#"{"source":"kb-docs","cursor":"00000001-0000-0000-0000-000000000001","counts":{"kbDocs":100}}"#;
         let cp: BackfillCheckpoint = serde_json::from_str(backfill_ts).unwrap();
         assert_eq!(cp.source, BackfillSource::KbDocs);
@@ -1564,7 +1554,7 @@ mod tests {
             serde_json::to_value(ReindexPhase::Backfilling).unwrap(),
             json!("backfilling")
         );
-        // And a fresh reindex checkpoint is the null-checkpoint TS started
+        // And a fresh reindex checkpoint is the null-checkpoint a run starts
         // from, spelled the same.
         assert_eq!(
             serde_json::to_value(fresh_reindex()).unwrap(),

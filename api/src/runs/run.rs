@@ -1,7 +1,7 @@
 // THE driver. One chokepoint that turns a `RunDefinition` into a durable run:
 // it takes the lease, loops `step()`, persists every checkpoint, parks on a
 // human decision, and gives the lease back — and it is the only code in the
-// runs system that writes a state transition. Port of ui/src/server/runs/run.ts.
+// runs system that writes a state transition.
 //
 // WHAT IT GUARANTEES, and what it deliberately does not:
 //
@@ -25,17 +25,15 @@
 //   every step boundary and every write requires `state = 'running'`, so a
 //   cancel issued on a different instance stops this one at the next boundary.
 //
-//   AN ERRED STEP IS AN ERROR ROW WITH THE MESSAGE ON IT (TS: a thrown step;
-//   Rust: `Err` from the step future). Never swallowed, never a silent
+//   AN ERRED STEP IS AN ERROR ROW WITH THE MESSAGE ON IT (an `Err` from the
+//   step future). Never swallowed, never a silent
 //   early return, never a state left at `running` for a sweep to reinterpret.
 //
 // TESTABILITY IS A DESIGN CONSTRAINT. Every edge to the outside world — the
 // store, the lease, the publish, the park, the clock, the id generator, the
 // definition lookup — is a field on `RunDeps`. The tests (tests/runs_run.rs)
 // drive the whole runner with no database, no Redis and no clock. The real
-// assembly (store over PgPool, lease over Redis, publish over the realtime
-// topics, pause from decide.rs) comes with the handoff slice; until then
-// nothing here is armed.
+// assembly is `real_run_deps` in runs/mod.rs.
 
 use super::define::{
     DecisionAnswer, DecisionRequest, RunDefinition, RunRow, RunState, RunStepContext, StepResult,
@@ -188,7 +186,7 @@ pub struct RunEvent {
     /// WIRE: who may READ a decision's text is the definition's `audience`
     /// while who may WATCH a run is its subject's read ACL — different sets,
     /// overlapping in the common case and not guaranteed to. The real
-    /// publisher (realtime, later in this batch) names the fields one at a
+    /// publisher (realtime) names the fields one at a
     /// time on the way out so `question` cannot ride along by accident.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub question: Option<DecisionRequest>,
@@ -246,8 +244,8 @@ pub type DefinitionForFn = Arc<dyn Fn(&str) -> Option<Arc<RunDefinition>> + Send
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub type NewIdFn = Arc<dyn Fn() -> String + Send + Sync>;
 
-/// Every edge to the outside world, overridable per call — the run.test.ts
-/// seam. Cloned into the detached drive and the renewal task; all fields are
+/// Every edge to the outside world, overridable per call. Cloned into the
+/// detached drive and the renewal task; all fields are
 /// Arc so the clone is four pointer bumps.
 #[derive(Clone)]
 pub struct RunDeps {
@@ -269,7 +267,7 @@ impl RunDeps {
     /// The default lookup is the global registry — kinds register at module
     /// load — with every other edge still the caller's to supply. The full
     /// real assembly (PgRunStore, RedisRunLease, the realtime publish, decide's
-    /// pause) comes with the handoff slice.
+    /// pause) is `real_run_deps` in runs/mod.rs.
     #[allow(clippy::too_many_arguments)]
     pub fn with_registry_lookup(
         store: Arc<dyn RunStore>,
@@ -329,7 +327,7 @@ pub async fn enqueue(
 ) -> Result<RunRow, sqlx::Error> {
     // A run whose kind nothing has registered can be started by THIS process
     // and then never resumed by any other — the sweep would find the row and
-    // have no code to advance it. That is a wiring bug at module load, so say
+    // have no code to advance it. That is a wiring bug in this build, so say
     // it at enqueue time when the stack still names the caller.
     if (deps.definition_for)(&def.kind).is_none() {
         tracing::error!(
@@ -435,9 +433,8 @@ enum StepInterrupt {
     LeaseLost,
 }
 
-/// TS clamps phase text at 300 UTF-16 units; Rust clamps at 300 BYTES on a
-/// char boundary — the standing surrogate divergence, and no phase line is
-/// near either limit.
+/// Clamp phase text at the given number of BYTES, on a char boundary — the
+/// cut lands before the boundary, never inside a character.
 pub(crate) fn clamp_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -467,11 +464,10 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     let def = match (deps.definition_for)(&existing.kind) {
         Some(def) => def,
         None => {
-            // NOT an error on the row. A kind this instance has never imported
-            // — a row from a newer deploy, or a module not in this process's
-            // graph — is still perfectly drivable by an instance that has it,
-            // and failing the run here would destroy work on the strength of a
-            // local import graph.
+            // NOT an error on the row. A kind this build cannot define — a
+            // row from a newer deploy, or a def outside this build — is still
+            // perfectly drivable by an instance that can, and failing the run
+            // here would destroy work on the strength of a local registry.
             tracing::warn!(
                 "{LOG} {run_id}: no definition registered for kind \"{}\" on this instance — \
                  leaving it for one that has it",
@@ -621,8 +617,8 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
                     LeaseRenewal::Ok => {
                         if let Err(reason) = deps.store.heartbeat(&run_id, &token, lease_ms).await {
                             // The Redis lease is still ours but the row will
-                            // not confirm it. TS aborts here too, and the
-                            // honest reading is the same: stop persisting, let
+                            // not confirm it. The honest reading: stop
+                            // persisting, let
                             // a sweep decide from the checkpoint.
                             tracing::error!(
                                 "{LOG} {run_id}: heartbeat refused ({reason:?}) — stopping the \
@@ -661,9 +657,8 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     // call is queued in order, and the loop FLUSHES the queue at every
     // boundary — persist, then publish, one line at a time. A phase line that
     // outran its write is a device showing a sentence the database will never
-    // confirm. (TS chains the writes onto a promise chain that starts inside
-    // the log call; the queue-and-flush here observes the same order with the
-    // writes starting at the boundary instead of mid-step.)
+    // confirm. (The queue-and-flush keeps that order, with the writes starting
+    // at the boundary instead of mid-step.)
     let progress = Arc::new(ProgressLog {
         queue: Mutex::new(Vec::new()),
         phase: Mutex::new(row.phase.clone()),
@@ -692,7 +687,7 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     )
     .await;
 
-    // ── Cleanup (the TS `finally`) ────────────────────────────────────────────
+    // ── Cleanup ─────────────────────────────────────────────────────────────
     // Runs on EVERY exit path, including a database error thrown out of the
     // loop: a drive that died holding the lease is the one drive that must not
     // keep it.
@@ -754,8 +749,8 @@ async fn flush_progress(
     Ok(())
 }
 
-/// The step loop, extracted so `drive` can run its cleanup (the TS `finally`)
-/// on every exit path without a triply-nested closure.
+/// The step loop, extracted so `drive` can run its cleanup on every exit path
+/// without a triply-nested closure.
 #[allow(clippy::too_many_arguments)]
 async fn drive_loop(
     run_id: &str,
@@ -854,8 +849,7 @@ async fn drive_loop(
             }
             // A lease lost mid-step reaches the step as `ctx.signal`, but a
             // step is ALLOWED to ignore its signal, and the driver must still
-            // stop: dropping the future cancels it at its next await, which is
-            // the Rust spelling of the TS AbortController race.
+            // stop: dropping the future cancels it at its next await.
             _ = abort_fires(abort_tx) => StepRace::Interrupted(StepInterrupt::LeaseLost),
         };
         if matches!(raced, StepRace::Interrupted(StepInterrupt::Deadline)) {
@@ -866,7 +860,7 @@ async fn drive_loop(
         let result = match raced {
             StepRace::Finished(result) => result,
             StepRace::Erred(message) => {
-                // A step that ERRED (TS: threw). Filed as an error row with the
+                // A step that ERRED. Filed as an error row with the
                 // first line of the message on it.
                 tracing::error!(
                     "{LOG} {run_id} ({}) step threw at phase \"{}\": {message}",
@@ -1097,7 +1091,7 @@ fn stop_from_write(run_id: &str, steps: u32, reason: WriteFailure, state: RunSta
 // convention: any route could import the wrong name and resume a run on behalf
 // of somebody entitled to nothing. The ungated write stays private inside
 // decide, behind `decide()`, which resolves the definition's authority and
-// asks `mayDecide` before it writes.
+// asks `may_decide_content` before it writes.
 
 /// Stop a run, from anywhere. The driver that owns it finds out at its next
 /// step boundary — or when its next write is refused, whichever comes first.

@@ -1,11 +1,9 @@
-// app_settings — the settings door (port of getSetting/setSetting in
-// ui/src/server/audit.ts). Everything configured at runtime lives in this one
-// table as jsonb: guardrails, budgets, learned params, capabilities.
+// app_settings — the settings door. Everything configured at runtime lives in
+// this one table as jsonb: guardrails, budgets, learned params, capabilities.
 
 use sqlx::PgPool;
 
-/// Read one setting; `fallback` when the key is absent or unreadable. The TS
-/// version returns rows[0].value ?? fallback — same tolerance, one round trip.
+/// Read one setting; `fallback` when the key is absent or unreadable.
 pub async fn get_setting(pg: &PgPool, key: &str, fallback: serde_json::Value) -> serde_json::Value {
     match sqlx::query_scalar::<_, serde_json::Value>(
         "select value from app_settings where key = $1",

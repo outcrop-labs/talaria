@@ -183,9 +183,8 @@ export async function getAccessToken(userId: string, nowMs: number): Promise<str
 }
 
 /** A valid access token, or the caller-friendly GoogleNotConnected throw.
- *  Drive, Gmail, and Calendar all read through this one door — until the
- *  dedup it lived as three byte-identical private wrappers, which is three
- *  places to forget the error NAME the routes branch on. */
+ *  Drive, Gmail, and Calendar all read through this one door — a shared
+ *  wrapper is the one place the error NAME the routes branch on is spelled. */
 export async function requireToken(userId: string, nowMs: number): Promise<string> {
   const token = await getAccessToken(userId, nowMs)
   if (!token) {

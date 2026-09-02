@@ -1,9 +1,9 @@
-// /api/fleet/endpoints/{id} — port of ui/src/routes/api/fleet.endpoints.$id.ts.
-// PUT → edit an endpoint (class, pricing, model catalog). Removing catalog
-// models that agents use returns 409 with the blast radius; retry with
-// force:true to cascade (agents get new versions with the tier stripped).
-// DELETE → remove the endpoint, same double-opt-in flow (?force=1). An
-// agent's MAIN model is never cascaded — reassign it first.
+// /api/fleet/endpoints/{id}. PUT → edit an endpoint (class, pricing, model
+// catalog). Removing catalog models that agents use returns 409 with the
+// blast radius; retry with force:true to cascade (agents get new versions
+// with the tier stripped). DELETE → remove the endpoint, same double-opt-in
+// flow (?force=1). An agent's MAIN model is never cascaded — reassign it
+// first.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -23,7 +23,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-/// summarize(usage) — the 409's blast radius, four keys in TS's order.
+/// The 409's blast radius — four keys in a fixed order.
 fn summarize(usage: &[ModelUsage]) -> Vec<Value> {
     usage
         .iter()
@@ -85,7 +85,7 @@ pub async fn put(
         };
         let mains: Vec<&ModelUsage> = usage.iter().filter(|u| u.as_main).collect();
         if !mains.is_empty() {
-            // [...new Set(mains.map(m => m.slug))].join(', ')
+            // dedupe by slug, then join with ', '
             let mut seen: Vec<&str> = Vec::new();
             for m in &mains {
                 if !seen.contains(&m.slug.as_str()) {
@@ -262,8 +262,8 @@ pub async fn delete(
     Json(cascade_body(true, &cascade)).into_response()
 }
 
-/// `{ok, cascaded, ...(renderError ? {error} : {})}` — key order from the TS
-/// spread.
+/// `{ok, cascaded, error?}` — the error key rides last, only on a render
+/// failure.
 fn cascade_body(ok: bool, cascade: &(Vec<String>, Option<String>)) -> Value {
     let mut body = json!({
         "ok": ok,
@@ -286,7 +286,7 @@ struct ValidatedPatch {
     rotates_key: bool,
 }
 
-/// The PUT patch (zod): every member optional; priceIn/Out nonneg nullish;
+/// The PUT patch: every member optional; priceIn/Out nonneg nullish;
 /// modelPrices/modelEfforts records; requestDefaults a permissive record;
 /// apiKey raw ('' clears, omitted leaves); force the double opt-in.
 fn validate_patch(obj: &serde_json::Map<String, Value>) -> Result<ValidatedPatch, String> {
@@ -317,8 +317,8 @@ fn validate_patch(obj: &serde_json::Map<String, Value>) -> Result<ValidatedPatch
     };
     // Empty string = an untouched masked field round-tripping — keep the
     // stored key. Only a non-empty value rotates it. A present NULL round-
-    // trips the same way (null?.trim() is undefined, falsy): this route can
-    // only ROTATE a key, never clear one.
+    // trips the same way: this route can only ROTATE a key, never clear
+    // one.
     let api_key_raw = present_nullable_max_string_member(obj, "apiKey", 400)?;
     let rotates = api_key_raw
         .as_ref()
@@ -344,8 +344,7 @@ fn validate_patch(obj: &serde_json::Map<String, Value>) -> Result<ValidatedPatch
     })
 }
 
-/// `z.number().nonnegative().nullish()` — tri-state: absent = don't touch,
-/// null = clear, number = set.
+/// Tri-state, nonnegative: absent = don't touch, null = clear, number = set.
 fn nullish_nonneg(
     obj: &serde_json::Map<String, Value>,
     key: &str,
@@ -367,7 +366,8 @@ fn nullish_nonneg(
     }
 }
 
-/// `z.record(z.string().max(k), z.array(z.string().min(1).max(24)).min(1).max(12))`.
+/// A record of model → effort ladder: keys ≤ key_max, 1..12 entries, each
+/// a 1..24-char string.
 fn effort_record(v: &Value, key_max: usize) -> Result<Value, String> {
     let map = v
         .as_object()

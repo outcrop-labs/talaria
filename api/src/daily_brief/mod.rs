@@ -1,9 +1,9 @@
 // The daily brief — one document per person per day, opened before their
-// workday and APPENDED TO for the rest of it. Port of
-// ui/src/server/daily-brief.ts: the job plane (open_brief, sweep_brief,
-// append_entries, the scheduled pass) and the reader plane (get_brief's
-// absence kinds, mark_brief_read/item, sweep_if_due). The delegation routes'
-// engine halves live in delegation.rs; the document assembly in view.rs.
+// workday and APPENDED TO for the rest of it: the job plane (open_brief,
+// sweep_brief, append_entries, the scheduled pass) and the reader plane
+// (get_brief's absence kinds, mark_brief_read/item, sweep_if_due). The
+// delegation routes' engine halves live in delegation.rs; the document
+// assembly in view.rs.
 //
 // WHY THIS REPLACES THE INBOX
 //   The focus queue answered "what is the single next decision", which is the
@@ -23,9 +23,9 @@
 //   against `daily_brief_entries`, and the only column it updates anywhere is
 //   `read_seq`, which describes the reader rather than the content.
 //
-// THE DIFF ENGINE WAS ALREADY WRITTEN.
-//   `focus.rs` computes "what needs this user" across approvals, tickets, DMs
-//   and notifications, and stamps every item with a `source_fingerprint` over
+// THE DIFF ENGINE IS focus.rs.
+//   It computes "what needs this user" across approvals, tickets and
+//   notifications, and stamps every item with a `source_fingerprint` over
 //   the fields that matter. That is exactly the change detector an append-only
 //   log needs, so this module consumes those functions directly rather than
 //   reimplementing their scoping — which is the half that carries the read ACL
@@ -202,9 +202,8 @@ const ENTRY_COLS: &str = "id::text, seq, batch::text, kind, section, source_key,
                           status_label, badge, title, body, evidence, \
                           (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
 // NOTE: batch and supersedes are uuid columns — both cast to text here because
-// the row decodes them as Option<String>, the shape postgres.js hands TS (a
-// uuid arrives as its text spelling). An uncast uuid column is a decode error
-// the first time a row actually carries one.
+// the row decodes them as Option<String>. An uncast uuid column is a decode
+// error the first time a row actually carries one.
 
 /// The brief's entry log, oldest first — the one read every consumer of the
 /// document (the sweep, the artifact mirror, the deferred reader) shares.
@@ -246,9 +245,9 @@ impl BriefUser {
 impl From<&crate::session::SessionUser> for BriefUser {
     /// The route plane's cut: the session fields, and the timezone LEFT OUT on
     /// purpose — `get_brief` and `mark_brief_item` read the stored zone from
-    /// the row themselves (getTimezone), so a copy carried here would be a
-    /// second version of the same fact that could go stale between login and
-    /// read. The scheduled pass fills it in from its own query.
+    /// the row themselves, so a copy carried here would be a second version of
+    /// the same fact that could go stale between login and read. The scheduled
+    /// pass fills it in from its own query.
     fn from(user: &crate::session::SessionUser) -> Self {
         BriefUser {
             id: user.id.clone(),
@@ -260,7 +259,7 @@ impl From<&crate::session::SessionUser> for BriefUser {
     }
 }
 
-/// users.ts getTimezone — the stored preference, null when unset.
+/// The stored timezone preference, null when unset.
 async fn get_timezone(pg: &PgPool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
     let tz: Option<(Option<String>,)> =
         sqlx::query_as("select timezone from users where id = $1::uuid")
@@ -272,7 +271,7 @@ async fn get_timezone(pg: &PgPool, user_id: &str) -> Result<Option<String>, sqlx
 
 /// The READER'S zone: the one they SET, else the one their browser said, as
 /// an IANA name the clock can actually resolve — anything else falls back to
-/// the workspace config zone (daily-brief.ts readerZone).
+/// the workspace config zone.
 ///
 /// STORED FIRST, DELIBERATELY. A zone the person chose in Settings is the
 /// contract and wins everywhere — brief reads, the scheduled open, the digest
@@ -445,8 +444,7 @@ async fn calendar_entries(
         Err(e) => {
             let message = e.to_string();
             // A missing/expired connection is the ordinary state, not an
-            // incident. The TS test is a case-insensitive substring match over
-            // the message; the same words mean the same thing here.
+            // incident. The match is case-insensitive over the message text.
             let lower = message.to_lowercase();
             if ["not connected", "no google", "unauthor", "401", "409"]
                 .iter()
@@ -494,8 +492,7 @@ async fn calendar_entries(
     Ok(Some(
         events
             .iter()
-            // An event whose start cannot be read in this zone is not today's;
-            // TS's `new Date(bad).getTime()` is NaN and the comparison false.
+            // An event whose start cannot be read in this zone is not today's.
             .filter(|e| {
                 e.start
                     .as_deref()
@@ -570,7 +567,7 @@ fn format_slot(start: Option<&str>, end: Option<&str>, zone: &str) -> String {
         };
         Some(format!("{h12}:{:02} {meridiem}", m.minute))
     };
-    // An unstartable start is an empty slot, the same way the TS catch is.
+    // An unstartable start is an empty slot.
     let Some(left) = fmt(start) else {
         return String::new();
     };
@@ -1333,7 +1330,7 @@ async fn write_note(
 
 // ── The reader ───────────────────────────────────────────────────────────────
 //
-// The route-facing half of daily-brief.ts: the surface's one read (with its
+// The route-facing half: the surface's one read (with its
 // three kinds of nothing), the cursor, the owner's verdict on a line, and the
 // sweep-if-due the read performs first. The document assembly itself lives in
 // `view.rs`; this section is the branching around it.
@@ -1371,7 +1368,7 @@ fn open_brief_detached(deps: Arc<BriefDeps>, user: BriefUser, tz: Option<String>
 }
 
 /// The person's most recent brief, when it is recent enough to still be "the
-/// current one" (48h, matching markBriefStale's window). None otherwise.
+/// current one" (48h staleness window). None otherwise.
 async fn load_recent_row(
     pg: &PgPool,
     user_id: &str,
@@ -1379,8 +1376,8 @@ async fn load_recent_row(
 ) -> Result<Option<BriefRow>, sqlx::Error> {
     // Cutoff computed here rather than as SQL `created_at - interval` — a
     // parameterized timestamp does not participate in interval arithmetic
-    // without a cast, and a JS boundary is the same fact with no cast to get
-    // wrong.
+    // without a cast, and a boundary computed in code is the same fact with
+    // no cast to get wrong.
     let since = epoch_ms_to_iso(at_ms - 48 * 3_600_000);
     // AssertSqlSafe: the interpolation is ROW_COLS, this module's column list.
     let sql = format!(
@@ -1569,7 +1566,7 @@ pub async fn mark_brief_read(
     Ok(())
 }
 
-/// markBriefItem's verdict: ok, or the reason the route answers 404 with.
+/// A mark-item verdict: ok, or the reason the route answers 404 with.
 #[derive(Debug, Clone)]
 pub struct ItemMark {
     pub ok: bool,
@@ -1690,8 +1687,7 @@ pub async fn mark_brief_item(
 
     let current = &line.current;
     // The closing literal sets NO badge and NO evidence — the strike-through
-    // is the whole row; append_entries defaults evidence to [] as TS's
-    // `row.evidence ?? []` does.
+    // is the whole row.
     append_entries(
         deps,
         &row.id,
@@ -1875,7 +1871,7 @@ use std::sync::Arc;
 
 /// The scheduler owns the timing — this module owns the work. Not
 /// `per_instance`: the brief reads and writes rows every instance can reach,
-/// so the tick needs the Redis lease exactly like the TS job's.
+/// so the tick needs the Redis lease.
 ///
 /// A TALARIA JOB, NOT AN AGENT CRON, and the choice is deliberate. An agent
 /// cron fires the agent's loop on the PERSONA gateway key, whose spend reaches
@@ -2093,7 +2089,7 @@ mod tests {
             "12:00 AM"
         );
         assert_eq!(format_slot(None, None, "UTC"), "");
-        // An unparseable start is an empty slot, the way the TS catch is.
+        // An unparseable start is an empty slot.
         assert_eq!(format_slot(Some("whenever"), None, "UTC"), "");
     }
 
@@ -2141,7 +2137,7 @@ mod tests {
         let now = 1_790_481_420_000;
         assert!(sweep_due(&row(None), &config, now));
         assert!(!sweep_due(&row(Some(now - 60_000)), &config, now));
-        // Exactly at the throttle: TS is >=, so this sweeps.
+        // Exactly at the throttle still sweeps — the test is >=.
         assert!(sweep_due(&row(Some(now - 300_000)), &config, now));
     }
 }

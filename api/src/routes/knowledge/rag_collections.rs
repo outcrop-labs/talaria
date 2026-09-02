@@ -1,8 +1,8 @@
-// /api/rag/collections — port of ui/src/routes/api/rag.collections.ts. The
-// RAG collection registry. GET → every collection + its access bindings (the
-// two auto ones ensured first; members get the picker shape with the binding
-// matrix blanked — that matrix is admin governance). POST → spin up a custom
-// collection. The write is admin-only; any signed-in user reads.
+// /api/rag/collections. The RAG collection registry. GET → every collection +
+// its access bindings (the two auto ones ensured first; members get the
+// picker shape with the binding matrix blanked — that matrix is admin
+// governance). POST → spin up a custom collection. The write is admin-only;
+// any signed-in user reads.
 
 use axum::Json;
 use axum::extract::State;
@@ -24,11 +24,11 @@ use crate::session::{actor_of, require_admin, require_user};
 use crate::state::AppState;
 
 /// `timestamptz::text` ("2026-08-29 04:49:51.123456+00") → the ISO-milliseconds
-/// string a JS Date stringifies to. The fold runs through epoch millis, so
-/// the microseconds the text carries and the Date both land on the same
-/// millisecond. An unparseable string passes through — the column renders one
-/// fixed format; anything else means the row was hand-edited, and the honest
-/// answer is what is actually stored.
+/// string on the wire ("…T04:49:51.123Z"). The fold runs through epoch
+/// millis, so the microseconds the text carries land on the same millisecond.
+/// An unparseable string passes through — the column renders one fixed
+/// format; anything else means the row was hand-edited, and the honest answer
+/// is what is actually stored.
 pub(crate) fn pg_text_to_iso(s: &str) -> String {
     // `%#z` not `%:z`: Postgres prints the offset hour-only when its minutes
     // are zero (`+00`) and `+HH:MM` otherwise; the flag admits both shapes.
@@ -37,10 +37,9 @@ pub(crate) fn pg_text_to_iso(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// The row as the TS select aliases it — key order included, because the
-/// spread lands on the wire byte-for-byte. No `bindings` key: the TS row
-/// itself carries none (createCollection returns the bare row; the GET
-/// attaches them, see below).
+/// The row on the wire — key order included, it is part of the contract. No
+/// `bindings` key: this is the bare row (what the POST returns); the GET
+/// attaches bindings itself, see below.
 pub(crate) fn row_json(col: &RagCollection) -> Value {
     json!({
         "id": col.id,
@@ -55,14 +54,13 @@ pub(crate) fn row_json(col: &RagCollection) -> Value {
     })
 }
 
-/// z.array(Binding).max(200): elements validate BEFORE the array-length check
-/// (zod 4's issue order — the same probed behavior the workflows arrays are
-/// pinned on). Unknown keys inside an element strip silently; a nullish
-/// principalId and an absent one are the same value on the wire and in the
-/// table.
+/// bindings: an array capped at 200 — elements validate BEFORE the
+/// array-length check (the same issue order the workflows arrays are pinned
+/// on). Unknown keys inside an element strip silently; a nullish principalId
+/// and an absent one are the same value on the wire and in the table.
 pub(crate) fn parse_bindings(v: Option<&Value>) -> Result<Option<Vec<AccessBinding>>, String> {
     let Some(v) = v else {
-        return Ok(None); // absent — what POST's `.optional()` admits
+        return Ok(None); // absent — bindings are optional
     };
     let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
     let mut out = Vec::with_capacity(arr.len());
@@ -90,8 +88,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Err(gate) => return gate,
     };
     // The two auto collections exist before the list is read — errors
-    // swallowed exactly as TS's `.catch(() => {})`: a dead Qdrant must not
-    // take the registry down with it.
+    // swallowed: a dead Qdrant must not take the registry down with it.
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     let _ = collections::ensure_auto_collections(&state.pg, &qd, &ed).await;
@@ -99,8 +96,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(l) => l,
         Err(_) => return thrown_internal_error(),
     };
-    // Members get names only — the doc "Brain" picker. Key order is the TS
-    // literal's, and `bindings` is an EMPTY array, not omitted.
+    // Members get names only — the doc "Brain" picker. Key order is part of
+    // the contract, and `bindings` is an EMPTY array, not omitted.
     if user.role != "admin" {
         let rows: Vec<Value> = list
             .iter()
@@ -113,8 +110,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .collect();
         return Json(json!({ "collections": rows })).into_response();
     }
-    // The access rows carry their own collectionId in TS (the filter runs on
-    // the raw select), so each binding on the wire has it too.
+    // Each binding on the wire carries its own collectionId.
     let rows: Vec<Value> = list
         .iter()
         .map(|(c, bs)| {
@@ -189,8 +185,8 @@ pub async fn post(
     .await
     {
         Ok(c) => c,
-        // TS's catch: the create's own sentence (a down embedding service, a
-        // Qdrant that will not build the collection) IS the answer, at 400.
+        // The create's own error sentence (a down embedding service, a Qdrant
+        // that will not build the collection) IS the answer, at 400.
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let (pg, actor, target_id, target_label) = (
@@ -243,7 +239,7 @@ mod tests {
 
     #[test]
     fn bindings_parse_the_zod_order() {
-        // Absent is None (POST's optional); elements before the length bound.
+        // Absent is None; elements before the length bound.
         assert_eq!(parse_bindings(None), Ok(None));
         let over: Vec<Value> = (0..201).map(|_| json!({"principalType": "user"})).collect();
         assert_eq!(

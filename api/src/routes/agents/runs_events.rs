@@ -1,6 +1,6 @@
 // GET /api/runs/{id}/events → SSE stream of one run's live transitions (state,
-// phase, terminal error) — the port of ui/src/routes/api/runs.$id.events.ts.
-// Auth-gated by the run's read ACL. This is what makes a long action
+// phase, terminal error). Auth-gated by the run's read ACL. This is what makes
+// a long action
 // attachable: a tab that was closed, a view that was navigated away from, or a
 // second device can re-attach to the SAME server-owned record and see where it
 // actually is.
@@ -22,10 +22,8 @@
 // Every refusal answers 403, including "no such run" — see `RunWatchVerdict`
 // about not turning a guessable id into an existence oracle.
 //
-// TS's `import '@/server/runs/boot'` side effect (arming the reclaim sweep and
-// the run kinds) has no line here: Rust's scheduler registration is explicit
-// and lands with the scheduler slice later in this batch, at which point this
-// route is what puts it in the server graph.
+// The reclaim sweep and run kinds are armed by the scheduler's explicit job
+// declarations, not by anything in this route.
 
 use crate::error::{house_error, thrown_internal_error};
 use crate::realtime::{

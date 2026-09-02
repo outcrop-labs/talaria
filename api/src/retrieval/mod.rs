@@ -1,5 +1,4 @@
-// The retrieval plane — port of ui/src/server/retrieval/*, whole. The TS
-// files cross as siblings here, same shape, same boundaries:
+// The retrieval plane — the family and its boundaries:
 //
 //   sparse            keyword vectors (FNV-1a hashed terms, saturated tf)
 //   qdrant            the REST client — collections, points, filtered search
@@ -13,17 +12,17 @@
 //   migrate           the reindex run's read shape + the 60s upgrade status
 //
 // WHY A DIRECTORY AND NOT FLAT FILES. The crate's flat modules are single
-// concerns (search.rs, mcp_registry.rs); this is a nine-file family with
+// concerns (search.rs, mcp_registry.rs); this is a ten-file family with
 // internal dependencies, which is exactly what gateway/ and runs/ already
-// model. The TS side keeps the same family under server/retrieval/.
+// model.
 //
 // THE ONE SEAM EVERY CLIENT SHARES. qdrant, embed, and rerank all speak HTTP
 // and must be testable against a scripted service (house rule: no
 // network-dependent tests). They share one injected fetch edge here —
 // `HttpFetch`, (method, url, body, headers, timeout) → (status, text) — and
-// one real implementation, `real_http()`. What the TS side gets from module
-// state (sticky bases, dimension caches) stays process-global on the real
-// path but is injected per-test so tests can't fight over it.
+// one real implementation, `real_http()`. Sticky bases and dimension caches
+// stay process-global on the real path but are injected per-test so tests
+// can't fight over it.
 
 pub mod artifact_routing;
 pub mod backfill;
@@ -57,11 +56,11 @@ pub type HttpFetch = Arc<
         + Sync,
 >;
 
-/// The real edge: reqwest, per-call timeout (each TS client carries its own
-/// signal budget — 30s for qdrant/embed writes, 15s for rerank, 5s for the
+/// The real edge: reqwest, per-call timeout (each client carries its own
+/// budget — 30s for qdrant/embed writes, 15s for rerank, 5s for the
 /// embed info probe — and the timeout is the caller's parameter, not the
-/// client's). `content-type` is set only when a body is present, matching the
-/// TS fetches, which never send the header on a GET.
+/// client's). `content-type` is set only when a body is present — a GET
+/// never sends the header.
 pub fn real_http() -> HttpFetch {
     Arc::new(
         |method: &str,

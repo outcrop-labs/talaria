@@ -1,7 +1,5 @@
-// POST /api/fleet/agents/{id}/control — port of
-// ui/src/routes/api/fleet.agents.$id.control.ts. Lifecycle control for one
-// agent (admin; owners of a personal assistant may up/stop/restart their
-// own).
+// POST /api/fleet/agents/{id}/control. Lifecycle control for one agent
+// (admin; owners of a personal assistant may up/stop/restart their own).
 //   up | stop | restart   the managed service (renders first on `up`)
 //   roll                  zero-downtime replacement (admin) — detached
 // `up`/`unretire`/`roll` return IMMEDIATELY; the roster's polled container
@@ -195,8 +193,8 @@ pub async fn post(
                 Ok(removed_volume) => {
                     Json(json!({ "ok": true, "removedVolume": removed_volume })).into_response()
                 }
-                // Includes deleteAgentForever's own refusals — the TS catch
-                // flattens every throw to the same operator sentence.
+                // Includes delete_agent_forever's own refusals — every throw
+                // flattens to the same operator sentence.
                 Err(_) => catch(String::new()),
             }
         }
@@ -231,8 +229,8 @@ pub async fn post(
     }
 }
 
-/// waitHealthy(department).then(ok => ok && pruneBundledSkills(department))
-/// with the TS defaults — 120s health window, slot resolved per call.
+/// wait_healthy, then prune_bundled_skills on success — 120s health
+/// window, slot resolved per call.
 fn spawn_health_prune(pg: &sqlx::PgPool, department: &str) {
     let pg = pg.clone();
     let dept = department.to_string();
@@ -244,8 +242,7 @@ fn spawn_health_prune(pg: &sqlx::PgPool, department: &str) {
     });
 }
 
-/// The catch arm's sentence — an em dash, verbatim from the TS template
-/// literal.
+/// The catch arm's sentence — the em dash is part of the wire contract.
 fn could_not(action: &str) -> String {
     format!("could not {action} the agent — see server logs")
 }

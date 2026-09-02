@@ -1,6 +1,6 @@
-// SSRF guard — port of ui/src/server/safe-fetch.ts. The door every outbound
-// request to a URL that came from a USER, an AGENT, a DB row, or an upstream
-// server's own response has to walk through.
+// SSRF guard. The door every outbound request to a URL that came from a
+// USER, an AGENT, a DB row, or an upstream server's own response has to
+// walk through.
 //
 // The threat: Talaria's server sits inside a private network with a cloud
 // metadata service at 169.254.169.254, a Qdrant on loopback, a Postgres, a
@@ -23,16 +23,15 @@
 //   • strips Authorization / Cookie / api-key-ish headers on a cross-origin
 //     redirect, so a hostile upstream can't harvest credentials by bouncing us
 //   • bounds every request: overall timeout + response size cap
-//   • re-validates at CONNECT time through a custom resolver — the same
-//     closing of the DNS-rebinding window TS's undici dispatcher does. Ours is
-//     not optional-by-design (reqwest takes the resolver on the client), so
-//     the window is closed for every request this client makes. Still
-//     best-effort against a service Talaria is SUPPOSED to reach being hostile.
+//   • re-validates at CONNECT time through a custom resolver — the resolution
+//     the socket actually uses is checked, not just the pre-flight one. The
+//     resolver rides on the client, so every request this client makes dials
+//     through it. Still best-effort against a service Talaria is SUPPOSED to
+//     reach being hostile.
 //
-// One deliberate divergence: TS hand-parses addresses with permissive regexes
-// (it accepts "010.1.1.1" as 10.1.1.1); std's parser is stricter, and the
-// rejects fall through to the NAME path, where no resolver will answer them —
-// failing closed where TS parsed loosely.
+// Odd address spellings — "010.1.1.1", say — do not parse as addresses here;
+// they fall through to the NAME path, where no resolver will answer them:
+// failing closed rather than guessing at loose spellings.
 //
 // What deliberately does NOT come through here: Talaria's own first-party
 // infrastructure — the gateway's provider endpoints, Qdrant, the embedder,
@@ -62,7 +61,7 @@ use reqwest::header::{HeaderMap, HeaderName};
 
 /// Parsed address bytes, with v6 wrappers around a v4 address unwrapped so the
 /// v4 rules apply to ::ffff:10.0.0.1, 2002:0a00:0001::, 64:ff9b::10.0.0.1.
-/// Brackets and a zone suffix are tolerated on the way in, as in TS.
+/// Brackets and a zone suffix are tolerated on the way in.
 fn ip_bytes(ip: &str) -> Option<Vec<u8>> {
     let s = ip.strip_prefix('[').unwrap_or(ip);
     let s = s.strip_suffix(']').unwrap_or(s);
@@ -370,9 +369,9 @@ pub async fn assert_fetchable_url(input: &str) -> Result<reqwest::Url, BlockedUr
 // ── Connect-time re-validation (closes most of the rebinding window) ─────────
 
 /// A reqwest resolver that re-checks the address at CONNECT time — the
-/// resolution the socket actually uses. Where TS wires this through an
-/// optional undici dispatcher, reqwest takes the resolver on the client, so
-/// every request the safe client makes dials through this.
+/// resolution the socket actually uses, not just the pre-flight one. The
+/// resolver rides on the client, so every request the safe client makes
+/// dials through this.
 #[derive(Clone, Default)]
 pub struct ValidatingResolver;
 
@@ -458,9 +457,9 @@ const REDIRECTS: &[u16] = &[301, 302, 303, 307, 308];
 const NULL_BODY: &[u16] = &[101, 204, 205, 304];
 
 /// Anything that could carry a credential gets dropped when the redirect
-/// leaves the origin we validated it for. TS: the regex
-/// /^(authorization|cookie|proxy-authorization)$|(key|token|secret|auth|credential)/i
-/// — the "auth" substring already contains "authorization", exactly as there.
+/// leaves the origin we validated it for: the three exact names
+/// (authorization, cookie, proxy-authorization) and any header whose name
+/// carries key, token, secret, auth, or credential.
 fn is_credential_header(name: &str) -> bool {
     let n = name.to_lowercase();
     n == "authorization"
@@ -602,7 +601,7 @@ pub async fn safe_fetch(input: &str, init: SafeFetch<'_>) -> Result<SafeResponse
                     "too many redirects (over {max_redirects})"
                 ))));
             }
-            // Drain the hop's body (TS cancels it) before moving on.
+            // Drain the hop's body before moving on.
             let _ = res.bytes().await;
 
             // THE point of driving redirects by hand: the new target is
@@ -760,7 +759,7 @@ mod tests {
         assert!(a.host_allowed("shop.internal"));
         assert!(a.host_allowed("a.b.shop.internal"));
         assert!(!a.host_allowed("xshop.internal"));
-        // Trailing dots and case fold like TS.
+        // Trailing dots and case fold away.
         assert!(a.host_allowed("MCP.Corp.Example."));
         assert!(a.address_allowed("10.42.9.9"));
         assert!(!a.address_allowed("10.43.0.1"));

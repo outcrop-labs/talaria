@@ -1,6 +1,5 @@
-// GET /api/integrations/google/org/health — port of
-// ui/src/routes/api/integrations/google.org.health.ts. Live probe of Drive /
-// Calendar / Gmail with the org connection's token. Admin-only, and
+// GET /api/integrations/google/org/health — live probe of Drive / Calendar /
+// Gmail with the org connection's token. Admin-only, and
 // deliberately a separate route from the org status read: it makes three real
 // Google calls and must only run when an admin asks for it, not on every
 // panel load.
@@ -22,8 +21,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         return gate;
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    // The object literal stamps checkedAt before the await suspends, so the
-    // timestamp names when the probe STARTED, not when it answered.
+    // checkedAt is stamped BEFORE the await, so the timestamp names when the
+    // probe STARTED, not when it answered.
     let checked_at = epoch_ms_to_iso(now_ms());
     match probe_org_google_apis(&state.pg, &sb, now_ms()).await {
         Ok(results) => Json(json!({
@@ -35,7 +34,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
 }
 
-/// Date.now() — the one clock the probe reads.
+/// Epoch-ms clock — the one time the probe reads.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

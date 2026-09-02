@@ -1,7 +1,6 @@
-// /api/workbench/repo-requests — port of ui/src/routes/api/workbench.repo-
-// requests.ts. Agent repo-creation requests. GET → pending queue; PUT →
-// approve (creates the repo via the App, auto-grants it to the requester) or
-// reject. Admin — approval mints real org resources.
+// /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
+// queue; PUT → approve (creates the repo via the App, auto-grants it to the
+// requester) or reject. Admin — approval mints real org resources.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -123,10 +122,10 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         }
         return Json(json!({ "ok": true })).into_response();
     }
-    // Approve — everything inside the TS `try` folds into one 400 {error} on
-    // any failure: repo creation, the grant, the decision write, the (only
-    // log) activity line. A failure partway through is a 400 with the
-    // whatever-steps-happened state behind it, exactly like the TS.
+    // Approve — any failure folds into one 400 {error}: repo creation, the
+    // grant, the decision write, the (only log) activity line. A failure
+    // partway through is a 400 with the whatever-steps-happened state
+    // behind it.
     let sb = state.secretbox().await.unwrap_or_default();
     let created = match gh::create_repo(&state.pg, &sb, &req.3, &req.4, &req.5).await {
         Ok(c) => c,
@@ -154,7 +153,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         return house_error(StatusCode::BAD_REQUEST, &e.to_string());
     }
     if let Some(task_id) = &req.7 {
-        // .catch(() => {}) — the ticket's activity line is best-effort.
+        // Best-effort — the ticket's activity line is not load-bearing.
         let _ = log_activity(
             &state.pg,
             task_id,

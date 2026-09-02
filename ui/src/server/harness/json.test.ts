@@ -39,9 +39,9 @@ const OBJECT_THEN_BULLETS = [
   '- The {issues} array is empty because nothing else stood out',
 ].join('\n')
 
-// The two strategies this module replaces, transcribed from judge.ts:107 /
-// model-info.ts:139 (greedy regex) and inbox-focus-assistant.ts:5
-// (indexOf/lastIndexOf), so "these used to fail" is an assertion, not a claim.
+// The two strategies this module replaces, transcribed verbatim — greedy
+// regex and indexOf/lastIndexOf — so "these used to fail" is an assertion,
+// not a claim.
 const legacyGreedy = (text: string): unknown => {
   const m = text.match(/\{[\s\S]*\}/)
   if (!m) return null

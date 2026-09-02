@@ -2,8 +2,6 @@
 // agents you've been explicitly granted, admins and agents.manage shape the
 // fleet. "May use by default" (a member with NO user_agent_access rows) does
 // NOT imply "may rewrite how it works" — tailoring rights are explicit.
-//
-// Port of ui/src/server/skill-access.ts.
 
 use sqlx::PgPool;
 

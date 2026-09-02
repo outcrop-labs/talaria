@@ -237,7 +237,7 @@ export function defineHarness<T>(h: T): T {
 //   runHarness          — the one runner: resolve, floor, widen, render, call,
 //                         parse, repair, guard, redact, meter, `harness_runs`
 //                         row. Same function the registry uses; an app calling
-//                         it gets byte-identical accounting.
+//                         it gets the same accounting.
 //   resolveHarnessModel — the free probe (no model call): what chain would
 //                         carry a harness with this spec, or null. A bridge
 //                         labels itself honestly without spending a turn.

@@ -1,7 +1,6 @@
-// RESEARCH, AS A DURABLE RUN — the pipeline that used to die with its process.
-// Port of ui/src/server/runs/defs/research.ts.
+// RESEARCH, AS A DURABLE RUN — a pipeline that must not die with its process.
 //
-// WHAT THIS DELETES. The in-process pipeline answered "the app restarted while
+// WHY A RUN AT ALL. An in-process pipeline answers "the app restarted while
 // I was researching" with `set status = 'error', error = 'run went stale'`
 // forty-five minutes after the fact, to a person who had asked a question and
 // waited. Nothing was lost when that process died — every search that had come
@@ -31,7 +30,7 @@
 // ONE BILLED CALL PER STEP, CHECKPOINTED IMMEDIATELY AFTER, is the whole reason
 // the steps are cut here and not somewhere more convenient. The runtime is
 // AT-LEAST-ONCE (runs/define.rs states the seven ways), and research is the
-// port where a lost checkpoint is expensive rather than theoretical: a search
+// place where a lost checkpoint is expensive rather than theoretical: a search
 // stage that ran and did not checkpoint is PAID FOR A SECOND TIME on resume.
 //
 // WHAT A RE-ENTRY REPEATS, IN THE WORST CASE, per step: begin nothing (`on
@@ -42,7 +41,7 @@
 // which is one statement apart (the loser is an empty untitled doc); save
 // nothing that is not keyed (saveArtifact overwrites the same id, citation rows
 // are `on conflict do nothing`); publish the index is content-hashed so a
-// repeat is a no-op — the NOTIFICATION is the one repeat this port cannot close
+// repeat is a no-op — the NOTIFICATION is the one repeat this file cannot close
 // from here, which is why `publish` is the last step and does nothing after it.
 //
 // THE OTHER HAZARDS, answered: abandoned-but-running — every step calls
@@ -58,13 +57,12 @@
 // the domain rows, the index, the bell — is a field on `ResearchRunDeps`, so
 // the tests below drive whole runs with no database, no Redis and no gateway.
 //
-// ONE RECORDED DIVERGENCE from the TS: the TS hands its `AbortSignal` INTO
-// `runHarness`, cancelling an in-flight model call with the lease. The Rust
-// `run_harness` takes no signal, so cancellation here is step-boundary only —
-// `stop_if_abandoned` before each outward call, plus the driver's
-// abandon-by-rejection. An in-flight call is bounded by the gateway's own
-// ten-minute timeout instead. The abandoned copy still stops SPENDING at the
-// next boundary; what it cannot do is tear down a request already on the wire.
+// CANCELLATION IS STEP-BOUNDARY ONLY. `run_harness` takes no abort signal, so
+// cancellation here is `stop_if_abandoned` before each outward call, plus the
+// driver's abandon-by-rejection. An in-flight call is bounded by the gateway's
+// own ten-minute timeout instead. The abandoned copy still stops SPENDING at
+// the next boundary; what it cannot do is tear down a request already on the
+// wire.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -156,7 +154,7 @@ fn base_budget(mode: ResearchDepth) -> ModeBudget {
     }
 }
 
-/// `Number(env ?? 0) || b.rounds`: unset, unparsable or zero all fall back to
+/// Unset, unparsable or zero `TALARIA_RESEARCH_MAX_ROUNDS` all fall back to
 /// the mode's own bound; a positive integer overrides it.
 pub fn budget_for(mode: ResearchDepth) -> ModeBudget {
     let mut b = base_budget(mode);
@@ -262,7 +260,7 @@ fn real_plan_search_deps(pg: &PgPool) -> PlanSearchDeps {
         models: Arc::new(move || {
             let pg = pg_models.clone();
             Box::pin(async move {
-                // `.catch(() => [])` in TS — a read failure means "no models",
+                // A read failure means "no models",
                 // and the planner returns None rather than starting a blind run.
                 gateway_models(&pg)
                     .await
@@ -304,8 +302,8 @@ fn real_plan_search_deps(pg: &PgPool) -> PlanSearchDeps {
 /// multiply: fewer, bigger stages instead of many small ones.
 ///
 /// AUDIT NOTE, left as-is deliberately: this is capability reasoning done by
-/// REGEX ON A MODEL NAME (`/deep-research/i`), which is the shape
-/// `harness/capability.ts` exists to replace. Not converted because "runs its
+/// REGEX ON A MODEL NAME (`/deep-research/i`) rather than a declared
+/// capability. Not converted because "runs its
 /// own multi-search sweep" is a genuinely new capability; the right end state
 /// is a `deep-research` capability a probe or catalog declares. Until then the
 /// substring match is honest about being a heuristic.
@@ -330,8 +328,8 @@ pub fn adapt_budget(budget: ModeBudget, search_model: &str) -> ModeBudget {
 /// RUN's input rather than read back from `research_runs` every step because
 /// the run row is written first: a process that dies between the two inserts
 /// leaves a run that can still rebuild the domain record from what it was
-/// started with. camelCase serde — the TS driver wrote these columns first and
-/// a row it wrote must re-enter here.
+/// started with. camelCase serde — the keys were camelCase from the first row
+/// written, and an input a previous deploy wrote must re-enter here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchInput {
@@ -1013,9 +1011,8 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 .await
                 .map_err(|e| e.to_string())?;
                 if args.owner_user_id.is_some() && !args.member_ids.is_empty() {
-                    // The TS wraps the grant in `.catch(() => {})`: a report
-                    // that is saved must not fail its run because a share
-                    // could not land.
+                    // A report that is saved must not fail its run because a
+                    // share could not land.
                     let _ = set_editors(
                         &pg,
                         "artifact",
@@ -1142,14 +1139,14 @@ fn first_round(input: &ResearchInput) -> (ResearchStage, Vec<String>) {
     }
 }
 
-/// The report-side marker grammar. TWO digits, verbatim from the TS def — the
-/// REGISTRY's marker grammar (`source_registry::MARKER_RE`) is three, because
-/// an expedition's global numbering can pass [99], but this file's own three
-/// regexes (cleanup, dropped, cited) were never widened with it. Ported at
-/// {1,2} on purpose: widening here would change report bytes (a [100] marker
-/// that today survives the strip would start being counted and stripped), and
-/// byte-compatibility with the TS pipeline during coexistence outranks the
-/// latent inconsistency. The registry test file documents the same gap.
+/// The report-side marker grammar. TWO digits — deliberately narrower than
+/// the REGISTRY's marker grammar (`source_registry::MARKER_RE`), which is
+/// three because an expedition's global numbering can pass [99], while this
+/// file's own three regexes (cleanup, dropped, cited) were never widened with
+/// it. Kept at {1,2} on purpose: widening here would change report bytes (a
+/// [100] marker that today survives the strip would start being counted and
+/// stripped), and stable report bytes outrank the latent inconsistency. The
+/// registry test file documents the same gap.
 static REPORT_MARKER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[(\d{1,2})\]").expect("the marker grammar compiles"));
 
@@ -1202,9 +1199,9 @@ fn stage_str(stage: ResearchStage) -> &'static str {
     }
 }
 
-/// Serialize the next checkpoint for a `Next` — the TS `{ ...cp, ...changes }`
-/// spelled as clone-and-mutate at each branch, which is why every branch
-/// builds its `next` from `cp.clone()` and nothing here needs a Default.
+/// Serialize the next checkpoint for a `Next` — clone-and-mutate at each
+/// branch, which is why every branch builds its `next` from `cp.clone()` and
+/// nothing here needs a Default.
 fn step_next(cp: &ResearchCheckpoint, phase: &str) -> Result<StepResult, String> {
     Ok(StepResult::Next {
         checkpoint: serde_json::to_value(cp).map_err(|e| e.to_string())?,
@@ -1714,18 +1711,18 @@ fn audience(run: &RunRow) -> Authority {
     }
 }
 
-/// The real step deps, armed with the scheduler handover: the Rust driver
-/// does not exist until the flip arms it, so the deps sit empty until the
-/// boot wiring (which owns the AppState) installs them. An unarmed step is
-/// the loud refusal below — reached only by a driver armed before its deps.
+/// The real step deps. They need the AppState, which the boot wiring owns, so
+/// they are installed separately from registration; an unarmed step is
+/// the loud refusal below — reached only by a driver armed before its deps,
+/// which is a wiring bug.
 static ARMED_DEPS: OnceLock<ResearchRunDeps> = OnceLock::new();
 
 pub fn arm_research_step(deps: ResearchRunDeps) {
     let _ = ARMED_DEPS.set(deps);
 }
 
-/// The registered definition, exactly once per process — TS registers at
-/// module load; the Rust equivalent is the first call, which `start_research`
+/// The registered definition, exactly once per process — registered on the
+/// first call, which `start_research`
 /// makes before any enqueue, so the row's kind is always registered before it
 /// is written. The returned `&'static Arc` is the same one the registry holds.
 pub fn research_run() -> &'static Arc<RunDefinition> {
@@ -1772,14 +1769,14 @@ mod tests {
     // What a research run is worth is what it keeps when the process dies, so
     // that is what this file measures: every test below kills a driver
     // somewhere and then asks what the resumed run PAID for and what it
-    // PRODUCED. Port of research.test.ts.
+    // PRODUCED.
     //
     // THE DRIVER IS SIMULATED, not mocked. `research_step` is the definition's
     // whole contract with runs/run.rs, and the two rules that make an
     // assertion here mean anything are the two the real driver follows: a
     // `next` result's checkpoint is what the NEXT entry is given, and `killAt`
     // drops one on the floor — exactly what a crash between the step and the
-    // checkpoint write does, and how the at-least-once cost of this port is
+    // checkpoint write does, and how the at-least-once cost is
     // stated as a number rather than as a paragraph.
     use super::*;
     use crate::runs::define::{RunState, StepSignal};
@@ -1796,7 +1793,7 @@ mod tests {
         suppliers: Vec<Option<Supplier>>,
         planned: u32,
         synthesized: u32,
-        /// Artifacts created. More than one is the failure this port exists to
+        /// Artifacts created. More than one is the failure this file exists to
         /// make impossible.
         created: Vec<String>,
         /// Bodies written, (artifact id, body).
@@ -2340,7 +2337,7 @@ mod tests {
         let out = drive_run(&deps, &input(ResearchDepth::Recon), Some(4)).await;
         assert!(out.error.is_none());
         let g = w.lock().unwrap();
-        assert_eq!(g.synthesized, 2); // re-billed, which is the cost this port declares
+        assert_eq!(g.synthesized, 2); // re-billed — the declared at-least-once cost
         assert_eq!(g.created.len(), 1);
         assert_eq!(g.written.len(), 1);
         assert_eq!(g.finished[0].0, "art-1");

@@ -1,15 +1,12 @@
 // Task workflows — the hook layer between "an agent got a ticket" and "the
-// agent works it the right way". Port of ui/src/server/workflows.ts: the
-// CRUD half, the match/ classifiers that decide which hook a ticket pulls
-// in (since the runs engine crossed), and the routing map a plan draft
-// reads to route its proposals (since the plan-draft plane crossed). SQL
-// verbatim, only the uuid cast added for sqlx. match/skills/toolkits/env
-// are jsonb passed through untouched — the DB's canonical key order is the
-// wire order on both runtimes.
+// agent works it the right way": the CRUD half, the match classifiers that
+// decide which hook a ticket pulls in, and the routing map a plan draft
+// reads to route its proposals. match/skills/toolkits/env are jsonb passed
+// through untouched — the DB's stored key order is the wire order.
 
 use sqlx::PgPool;
 
-/// The row as LIST/CREATE serve it — workflows.ts's ROW order:
+/// The row as LIST/CREATE serve it — ROW order:
 /// id, name, description, enabled, match, skills, toolkits, env, position.
 #[derive(serde::Serialize)]
 pub struct Workflow {
@@ -94,8 +91,8 @@ pub async fn create_workflow(
     Ok(Workflow::from(row))
 }
 
-/// The PUT patch — every field Option<"present">, absent fields untouched
-/// (TS runs one update per present field, same order, same non-transaction).
+/// The PUT patch — every field Option<"present">, absent fields untouched:
+/// one update statement per present field, in this order, no transaction.
 pub struct WorkflowPatch {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -174,9 +171,9 @@ pub async fn delete_workflow(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
 
 // ── The match half ───────────────────────────────────────────────────────────
 
-/// What a match is decided against — `Pick<Task, 'title' | 'description' |
-/// 'tags' | 'boardId'>`, borrowed: the heartbeat holds the tickets it just
-/// fetched and should not have to clone them to classify them.
+/// What a match is decided against, borrowed: the heartbeat holds the
+/// tickets it just fetched and should not have to clone them to classify
+/// them.
 pub struct MatchTarget<'a> {
     pub title: &'a str,
     pub description: Option<&'a str>,
@@ -194,13 +191,13 @@ pub struct WorkflowDelivery {
     pub toolkits: serde_json::Value,
 }
 
-/// workflows.ts matchWorkflow — does this hook pull in on this ticket?
+/// Does this hook pull in on this ticket?
 ///
 /// A hook matches when EVERY facet it declares is satisfied, and a hook that
 /// declares nothing matches NOTHING (a bare `every` on zero facets would
 /// match everything, and an empty-rules workflow would silently become the
 /// org-wide default hook). Non-string entries in a facet simply never equal
-/// a tag/board id — TS's `Array.includes` behaves the same way.
+/// a tag/board id.
 pub fn match_workflow(h: &Workflow, t: &MatchTarget<'_>) -> bool {
     if !h.enabled {
         return false;
@@ -228,7 +225,7 @@ pub fn match_workflow(h: &Workflow, t: &MatchTarget<'_>) -> bool {
     let keywords = m.get("keywords").and_then(|v| v.as_array());
     if let Some(keywords) = keywords.filter(|k| !k.is_empty()) {
         // Title and description are one haystack, newline-joined — a keyword
-        // spanning the seam matches, as in TS. Case-folded both sides.
+        // spanning the seam matches. Case-folded both sides.
         let hay = format!("{}\n{}", t.title, t.description.unwrap_or("")).to_lowercase();
         facets.push(
             keywords
@@ -240,12 +237,11 @@ pub fn match_workflow(h: &Workflow, t: &MatchTarget<'_>) -> bool {
     !facets.is_empty() && facets.iter().all(|f| *f)
 }
 
-/// workflows.ts workflowsFrom — the match against a list the caller already
-/// holds. Batch callers (the heartbeat walks every servable ticket) MUST use
-/// this with one `list_workflows()` hoisted out of their loop — calling
-/// `workflows_for_task` per ticket re-read the whole table each time. Kept
-/// as the single expression of the match so the hot path cannot drift from
-/// the one-off path.
+/// The match against a list the caller already holds. Batch callers (the
+/// heartbeat walks every servable ticket) MUST use this with one
+/// `list_workflows()` hoisted out of their loop — `workflows_for_task` per
+/// ticket re-reads the whole table each time. Kept as the single expression
+/// of the match so the hot path cannot drift from the one-off path.
 pub fn workflows_from(all: &[Workflow], t: &MatchTarget<'_>) -> Vec<WorkflowDelivery> {
     all.iter()
         .filter(|h| match_workflow(h, t))
@@ -272,19 +268,19 @@ pub async fn workflows_for_task(
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-/// The skill-name grammar (agent-skills.ts NAME_RE) — a directory under a
-/// skills root is a skill only when its name matches. Same constant as
+/// The skill-name grammar — a directory under a skills root is a skill only
+/// when its name matches. Same constant as
 /// runs/defs/work_session.rs, kept local: a routing map and a work session
 /// ask the same question of the same tree, and neither should reach into the
 /// other's module for a one-line grammar.
 static SKILL_NAME_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new("^[a-z0-9][a-z0-9._-]*$").unwrap());
 
-/// One skill owner's name set (agent-skills.ts owners(), name-only): the
-/// shared root first, then every enabled agent. routingContext asks only
-/// "who carries this skill", so the SKILL.md summaries, the platform set,
-/// and the queued regeneration listAllSkills drags in are deliberately not
-/// read — a name-only dir listing answers it without firing the summarizer.
+/// One skill owner's name set, name-only: the shared root first, then every
+/// enabled agent. The routing map asks only "who carries this skill", so
+/// the SKILL.md summaries, the platform set, and the queued regeneration
+/// pipeline are deliberately not read — a name-only dir listing answers it
+/// without firing the summarizer.
 async fn skill_owners(pg: &PgPool) -> Result<Vec<(String, String, HashSet<String>)>, sqlx::Error> {
     let fleet = crate::gateway::provider::fleet_dir();
     let defs: Vec<(String, String)> =
@@ -310,7 +306,7 @@ async fn skill_owners(pg: &PgPool) -> Result<Vec<(String, String, HashSet<String
 async fn skill_names(root: &std::path::Path) -> HashSet<String> {
     let mut names = HashSet::new();
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
-        return names; // no root yet is no skills, not an error — TS readdir catch, same
+        return names; // no root yet is no skills, not an error
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         if let Ok(file_type) = entry.file_type().await
@@ -325,10 +321,9 @@ async fn skill_names(root: &std::path::Path) -> HashSet<String> {
     names
 }
 
-/// A workflow declares a facet when the array is present and non-empty —
-/// `Object.values(w.match ?? {}).some((v) => v?.length)`, where a string's
-/// length also counts (a match value is a string array in every writer, but
-/// jsonb is not contractually one).
+/// A workflow's three named facets as string vectors. Non-array, absent, or
+/// non-string entries yield nothing; only the three names are read, and any
+/// other key in the jsonb is ignored.
 fn match_facets(m: &serde_json::Value) -> Vec<(&'static str, Vec<&str>)> {
     let facet = |key: &str| -> Vec<&str> {
         m.get(key)
@@ -343,11 +338,11 @@ fn match_facets(m: &serde_json::Value) -> Vec<(&'static str, Vec<&str>)> {
     ]
 }
 
-/// A compact, model-readable map of the org's routing (workflows.ts
-/// routingContext): enabled workflows with match rules, bound skills, and
-/// which agents carry those skills — the context a plan draft (and the plan
-/// surface's aside) reads to route ticket work. Empty string when there is
-/// nothing to route by; callers omit the section.
+/// A compact, model-readable map of the org's routing: enabled workflows
+/// with match rules, bound skills, and which agents carry those skills —
+/// the context a plan draft (and the plan surface's aside) reads to route
+/// ticket work. Empty string when there is nothing to route by; callers
+/// omit the section.
 ///
 /// The first TWENTY workflows render — the map is context, not an index. A
 /// skill the shared root carries says "any agent" and stops the walk there
@@ -560,8 +555,7 @@ mod tests {
     fn non_string_facet_entries_never_equal_anything() {
         let tags = strs(&["support"]);
         let t = target("Crash", None, &tags, "b-1");
-        // TS's Array.includes on a string array with a non-string needle is
-        // false; so is this.
+        // A non-string entry never equals a string tag.
         assert!(!match_workflow(
             &hook(true, json!({"labels": [42, true]})),
             &t
@@ -593,8 +587,7 @@ mod tests {
 
     #[test]
     fn match_facets_read_the_three_named_arrays_and_skip_everything_else() {
-        // Non-array / absent / non-string facets are empty, exactly the
-        // `v?.length` read on a zod-validated row.
+        // Non-array / absent / non-string facets are empty.
         let rules = json!({
             "boards": ["b-1", "b-2"],
             "labels": [],

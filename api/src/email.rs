@@ -1,4 +1,4 @@
-// Transactional email — port of ui/src/server/email.ts. Pluggable providers:
+// Transactional email. Pluggable providers:
 //   smtp    any SMTP server (Google Workspace, etc.)
 //   resend  Resend's HTTP API
 // Config lives in app_settings with secrets SEALED; the admin panel writes it
@@ -10,11 +10,9 @@
 // send_email NEVER ERRS AND ALWAYS RETURNS. Both halves matter: most sends
 // are a side effect of somebody else's request or of a queue drain, so a
 // provider that is merely slow must become a reported failure rather than a
-// caller that waits. In TS that took a caller-side deadline race the socket
-// could outlive; tokio's timeout actually cancels the future, so one bound
-// gives a stronger guarantee than the TS three — and the socket phases it
-// enumerated (connect, greeting, mid-dialogue) are still bounded individually
-// by the transport's stream timeout.
+// caller that waits. tokio's timeout actually cancels the future, and the
+// socket phases underneath (connect, greeting, mid-dialogue) are each
+// bounded individually by the transport's stream timeout.
 
 use std::time::Duration;
 
@@ -33,7 +31,7 @@ const KEY: &str = "email_config";
 
 /// The outside bound of one send attempt, whole call, provider included.
 pub const EMAIL_SEND_TIMEOUT_MS: u64 = 30_000;
-/// The Resend HTTP request's own budget (TS: AbortSignal.timeout(15_000)).
+/// The Resend HTTP request's own budget.
 const RESEND_TIMEOUT_MS: u64 = 15_000;
 /// The SMTP stream timeout — every socket phase (greeting included) is
 /// bounded by this; the whole call is bounded again by the 30s above.
@@ -76,7 +74,7 @@ fn provider_of(v: &serde_json::Value) -> Option<Provider> {
     }
 }
 
-/// getEmailConfig — DEFAULTS filled out with whatever the row says. The
+/// The config, DEFAULTS filled out with whatever the row says. The
 /// stored pass/apiKey ciphers ride along as-is (sealed strings); only the
 /// send path ever opens them.
 pub async fn get_email_config(pg: &PgPool) -> EmailConfig {
@@ -144,7 +142,7 @@ pub struct EmailConfigPatch {
     pub resend_api_key: Option<Option<String>>,
 }
 
-/// Errors as plain strings: the admin route (batch 5) surfaces them verbatim,
+/// Errors as plain strings: the admin route surfaces them verbatim,
 /// and a sealed-secret failure is a sentence for the admin, not a typed enum
 /// arm nobody matches.
 pub async fn set_email_config(
@@ -167,8 +165,8 @@ pub async fn set_email_config(
             })
             .unwrap_or(serde_json::Value::Null),
     };
-    // A seal failure stops the write before anything lands — the TS side
-    // throws mid-merge, which drops the whole update; same outcome, stated.
+    // A seal failure stops the write before anything lands — nothing merges
+    // half-sealed.
     let seal = |v: &str| sb.seal(v).map_err(|e| e.to_string());
     let pass_enc = match &patch.smtp_pass {
         None => cur.smtp.pass_enc.clone(),
@@ -264,9 +262,9 @@ async fn send_via(
     }
 }
 
-/// `{from, to, subject, html, text, headers?}` — the stored shape Resend
-/// documents; `text`/`headers` omitted rather than null when absent (TS's
-/// spread makes them undefined, and undefined keys vanish in JSON.stringify).
+/// `{from, to, subject, html, text, headers?}` — the shape Resend documents;
+/// `text`/`headers` are omitted rather than null when absent (undefined keys
+/// vanish in JSON — skip_serializing_if, not explicit null).
 #[derive(serde::Serialize)]
 struct ResendBody<'a> {
     from: &'a str,
@@ -283,8 +281,8 @@ async fn send_via_resend(cfg: &EmailConfig, sb: &SecretBox, input: &EmailInput) 
     let Some(key_enc) = cfg.resend.api_key_enc.as_deref() else {
         return SendOutcome::Failed("Resend API key missing".into());
     };
-    // An unopenable key (rotated root, mangled token) is a config failure the
-    // admin must hear about, worded as a send failure like TS's thrown open().
+    // An unopenable key (rotated root, mangled token) is a config failure
+    // worded as a send failure — the admin has to hear about it.
     let key = match sb.open(key_enc) {
         Ok(k) => k,
         Err(e) => return SendOutcome::Failed(format!("could not open the Resend API key: {e}")),
@@ -331,17 +329,16 @@ async fn send_via_resend(cfg: &EmailConfig, sb: &SecretBox, input: &EmailInput) 
     SendOutcome::Sent
 }
 
-/// One transport per send, closed per send (nodemailer's connect/send/quit
-/// cycle: a queue draining hundreds of mails would otherwise hold a socket
-/// per message). lettre's builder keeps reuse off and the transport's stream
-/// dies with it.
+/// One transport per send, closed per send (a queue draining hundreds of
+/// mails would otherwise hold a socket per message). lettre's builder keeps
+/// reuse off and the transport's stream dies with it.
 ///
-/// The `secure` flag maps to nodemailer's semantics exactly: `false` is
-/// OPPORTUNISTIC STARTTLS — upgrade when the server offers it, proceed
-/// plaintext when it does not — and `true` is TLS from the first byte
-/// (implicit TLS, port 465). Note `Tls::Required` (lettre's starttls_relay)
-/// would be the WRONG arm for `secure:false`: it refuses to send to a server
-/// that never offers STARTTLS, which nodemailer happily does.
+/// The `secure` flag: `false` is OPPORTUNISTIC STARTTLS — upgrade when the
+/// server offers it, proceed plaintext when it does not — and `true` is TLS
+/// from the first byte (implicit TLS, port 465). Note `Tls::Required`
+/// (lettre's starttls_relay) would be the WRONG arm for `secure:false`: it
+/// refuses to send to a server that never offers STARTTLS, which
+/// opportunistic mode deliberately does.
 async fn send_via_smtp(cfg: &EmailConfig, sb: &SecretBox, input: &EmailInput) -> SendOutcome {
     if cfg.smtp.host.is_empty() {
         return SendOutcome::Failed("SMTP host missing".into());
@@ -476,8 +473,8 @@ pub fn email_button(href: &str, label: &str) -> String {
 }
 
 /// The shared shell for transactional mail — quiet, light, no images. All
-/// three parts are ALREADY-ESCAPED or pre-composed HTML, exactly as TS
-/// interpolates them: callers escape the title, and a footer carrying a link
+/// three parts arrive ALREADY-ESCAPED or pre-composed: callers escape the
+/// title, and a footer carrying a link
 /// (the notification mail's does) arrives as markup. This function neither
 /// knows nor checks — double-escaping is how a footer full of &lt;a&gt;
 /// happens.
@@ -488,7 +485,7 @@ pub fn email_shell(title: &str, body_html: &str, footer: &str) -> String {
     )
 }
 
-/// The TS default footer, so notification/digest callers match byte-for-byte.
+/// The default footer — notification and digest callers share it.
 pub const DEFAULT_FOOTER: &str = "Sent by Talaria";
 
 #[cfg(test)]

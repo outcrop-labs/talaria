@@ -1,9 +1,6 @@
 // JSON-RPC 2.0 over MCP — the wire shape and the method envelope every
-// in-process MCP surface in this repo speaks. Three dispatchers carried
-// private copies of the `Rpc` interface, two carried byte-identical
-// `result`/`rpcError` builders and the whole initialize/initialized/ping/
-// tools/list/tools/call switch — identical except for the server's name and
-// what a tool call actually does, which is exactly what a callback is for.
+// in-process MCP surface in this repo speaks. One shared dispatch: the
+// server's name and what a tool call actually does arrive as callbacks.
 //
 // A leaf beside mcp-protocol.ts: the registry, the app dispatcher, and the
 // workbench dispatcher all consume it, and none may import the others.

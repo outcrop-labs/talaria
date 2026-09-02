@@ -1,6 +1,6 @@
-// POST /api/fleet/reconcile — port of ui/src/routes/api/fleet.reconcile.ts.
-// Render + start every enabled managed agent that isn't running. One button
-// to bring the fleet to desired state (drift, cold start). Admin.
+// POST /api/fleet/reconcile. Render + start every enabled managed agent
+// that isn't running. One button to bring the fleet to desired state
+// (drift, cold start). Admin.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::error::{house_error, thrown_internal_error};

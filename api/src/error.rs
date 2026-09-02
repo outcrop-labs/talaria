@@ -7,14 +7,13 @@
 //                                            these fields and nothing else
 //
 // Wire structs are typed and in declaration order, ALWAYS. serde_json's map is
-// a BTreeMap: a json!-built body would land on the wire alphabetized, which is
-// not what JSON.stringify produced and would make byte-diffing a migrated
-// route against its TS original impossible. The tests below pin exact bytes.
+// a BTreeMap: a json!-built body would land on the wire alphabetized — not
+// the field order these envelopes promise. The tests below pin exact bytes.
 //
 // Consumers: the models slice (openai_error's 401), the chat relay (the null-
 // param 429s, the budget facts, the upstream boundary). openai_error_typed
-// has no caller yet — the product route groups that emit type+code without a
-// null param are a later batch.
+// has no caller yet — reserved for route groups that emit type+code without a
+// null param.
 
 /// JS number rendering: JSON.stringify prints whole numbers without a decimal
 /// point (1000, not 1000.0) — serde's f64 always writes one. Budget figures
@@ -32,8 +31,8 @@ pub fn js_num(v: f64) -> serde_json::Value {
     }
 }
 
-/// The 429s carry an explicit `param: null` member — the TS literal has it, so
-/// the wire does too. `param` is serde_json::Value::Null, which serializes as
+/// The 429s carry an explicit `param: null` member — the wire spells it
+/// explicitly. `param` is serde_json::Value::Null, which serializes as
 /// null; an Option would skip it.
 #[derive(serde::Serialize)]
 pub struct OpenAiNullParamBody {
@@ -69,8 +68,8 @@ pub fn openai_error_null_param(
         .into_response()
 }
 
-/// The budget denial's facts, nested under error.budget — declaration order is
-/// the TS literal's (scope, subject, unit, limit, used, windowHours, via).
+/// The budget denial's facts, nested under error.budget — declaration order
+/// is the wire order (scope, subject, unit, limit, used, windowHours, via).
 #[derive(serde::Serialize)]
 pub struct BudgetFacts {
     pub scope: String,
@@ -137,13 +136,12 @@ pub fn house_error(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-/// SvelteKit's fallback when a +server handler THROWS. defineApi has no catch,
-/// so an unhandled exception (a pg error above all) never reaches a json body:
-/// the framework answers `Internal Server Error` as text/plain to non-HTML
-/// accepts, dev and prod alike. Every port site that mirrors a TS throw
-/// answers this byte-for-byte — a house-shaped 500 there would be a body TS
-/// never sent. Routes that TS guards with its own catch-and-answer keep
-/// house_error with the sentence TS puts on the wire.
+/// The house 500 envelope: `Internal Server Error` as text/plain, byte-exact.
+/// An unhandled exception (a pg error above all) never reaches a json body —
+/// clients of long standing match these bytes, so a house-shaped JSON 500
+/// here would be a body they have never seen. Routes that guard a failure
+/// with their own catch-and-answer keep house_error and put their own
+/// sentence on the wire.
 pub fn thrown_internal_error() -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -153,10 +151,10 @@ pub fn thrown_internal_error() -> Response {
         .into_response()
 }
 
-/// The bare Postgres sentence under a sqlx error — what postgres.js puts in
-/// `e.message` and TS routes that catch-and-answer (`(e as Error).message`)
-/// therefore put on the wire. sqlx's own Display wraps it ("error returned
-/// from database: … at line N"), which no TS surface ever shows.
+/// The bare Postgres sentence under a sqlx error — the message
+/// catch-and-answer routes put on the wire. sqlx's own Display wraps it
+/// ("error returned from database: … at line N"), which the wire never
+/// shows.
 pub fn pg_message(e: &sqlx::Error) -> String {
     match e {
         sqlx::Error::Database(db) => db.message().to_string(),
@@ -222,7 +220,7 @@ pub fn openai_error_typed(status: StatusCode, message: &str, kind: &str, code: &
         .into_response()
 }
 
-// ── Upstream error boundary (port of ui/src/server/upstream-error.ts, #268) ──
+// ── Upstream error boundary (#268) ──
 // An upstream's error body is written by the upstream — it can name hostnames,
 // internals, even the credential we sent. Callers past the proxy get the STATUS
 // (ours to share) and a fixed sentence; the verbatim body goes to the log.
@@ -291,7 +289,7 @@ mod tests {
             },
         })
         .unwrap();
-        // message, type, code — JSON.stringify order, not alphabetical.
+        // message, type, code — declaration order, not alphabetical.
         assert_eq!(
             b,
             r#"{"error":{"message":"upstream error (429)","type":"rate_limit_exceeded","code":"rate_limited"}}"#
@@ -358,7 +356,7 @@ mod tests {
             },
         })
         .unwrap();
-        // 2.0 renders "2" the way JSON.stringify would; 2.5 keeps its point.
+        // 2.0 renders "2"; 2.5 keeps its point.
         assert_eq!(
             b,
             r#"{"error":{"message":"…","type":"budget_exceeded","code":"budget_exceeded","param":null,"budget":{"scope":"caller","subject":"api:my-key","unit":"usd","limit":2,"used":2.5,"windowHours":24,"via":"key"}}}"#

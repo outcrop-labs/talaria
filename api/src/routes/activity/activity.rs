@@ -1,5 +1,5 @@
-// GET /api/activity — port of ui/src/routes/api/activity.ts. The merged
-// workspace activity feed, scoped to the requesting user.
+// GET /api/activity. The merged workspace activity feed, scoped to the
+// requesting user.
 
 use crate::activity::{KINDS, activity_feed};
 use crate::error::thrown_internal_error;
@@ -20,9 +20,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // (new URL(request.url).searchParams.get('kinds') ?? '').split(',')
-    //   .filter(k => KINDS.has(k)) — unknown kinds drop, an absent param is
-    //   the empty string, whose only split product ('') also drops.
+    // kinds: comma-split with unknown kinds dropped — an absent param is the
+    // empty string, whose only split product ('') also drops.
     let kinds: Vec<String> = uri
         .query()
         .unwrap_or_default()

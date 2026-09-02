@@ -1,13 +1,11 @@
-// Probe an MCP server for reachability + auth state — port of
-// ui/src/server/mcp-probe.ts. MCP's streamable-HTTP transport speaks JSON-RPC
-// over POST; we send an `initialize` and classify the response so the UI can
-// show a real connection status instead of hoping.
+// Probe an MCP server for reachability + auth state. MCP's streamable-HTTP
+// transport speaks JSON-RPC over POST; we send an `initialize` and classify
+// the response so the UI can show a real connection status instead of hoping.
 //
 // The URL is admin-supplied, so the probe goes through safe_fetch: http(s)
 // only, no private/loopback/link-local targets, and every redirect re-checked.
-// (The dev convenience this TS file once carried — retrying an unresolvable
-// docker hostname against localhost — was exactly the SSRF primitive the
-// guard exists for, and it is not coming back.)
+// (One temptation to resist: retrying an unresolvable docker hostname against
+// localhost would be exactly the SSRF primitive the guard exists for.)
 
 use serde_json::{Value, json};
 
@@ -95,9 +93,9 @@ pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult 
     }
 
     // Body may be JSON or an SSE frame ("data: {}"). `parse_mcp_response` is
-    // the one reader for both — the brace-scan it replaced sliced first-`{`
-    // to last-`}`, so a body carrying more than one data frame (or any `}`
-    // after the final token) failed to parse and read as merely "reachable".
+    // the one reader for both — a naive first-`{`-to-last-`}` brace-scan
+    // breaks on a body carrying more than one data frame (or any `}` after
+    // the final token) and reads as merely "reachable".
     let text = String::from_utf8_lossy(&res.body).into_owned();
     let j = parse_mcp_response(&text);
     if let Some(err) = j

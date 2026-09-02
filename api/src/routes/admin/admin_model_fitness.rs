@@ -1,14 +1,13 @@
-// /api/admin/model-fitness — port of ui/src/routes/api/admin.model-fitness.ts.
-// Admin → Models → Fitness, over HTTP. THIS FILE IS PLUMBING: the admin gate,
-// the query string, the zod body, the audit line, the status code. Every
-// decision — what a capability tag says across a pooled endpoint set, what a
-// run will cost, what the archive keeps and evicts, what the drill-down shows
-// — lives in `src/fitness/surface.rs`.
+// /api/admin/model-fitness. Admin → Models → Fitness, over HTTP. THIS FILE
+// IS PLUMBING: the admin gate, the query string, the body parse, the audit
+// line, the status code. Every decision — what a capability tag says across
+// a pooled endpoint set, what a run will cost, what the archive keeps and
+// evicts, what the drill-down shows — lives in `src/fitness/surface.rs`.
 //
-// The POST body is the zod union: start / stop / forget / clear. Each arm
-// discriminates on a literal `action`, so the classify mirrors zod's smart
-// union — the arm whose literal matches is the arm whose field errors the
-// admin reads, and a body no arm claims is the union's own "Invalid input".
+// The POST body is a union of four intents — start / stop / forget / clear —
+// each discriminating on a literal `action`: the arm whose literal matches
+// is the arm whose field errors the admin reads, and a body no arm claims
+// answers the union's own "Invalid input".
 
 use std::collections::HashMap;
 
@@ -52,8 +51,9 @@ pub async fn get(
     };
     let deps = real_deps(&state);
     match read_fitness(&query, &state.pg, &deps).await {
-        // The whole plane's wire is JS-printed — scores and ratios compute as
-        // f64 here and `1.0` is not what TS sends for one (`js_numberify`).
+        // The whole plane's wire is JS-printed — scores and ratios compute
+        // as f64 but must serialize the way JS prints them, 1.0 → 1
+        // (`js_numberify`).
         Ok(mut body) => {
             js_numberify(&mut body);
             Json(body).into_response()
@@ -62,7 +62,7 @@ pub async fn get(
     }
 }
 
-// ── the POST body: z.union's four arms ───────────────────────────────────────
+// ── the POST body: the four arms ─────────────────────────────────────────────
 
 #[derive(Debug, PartialEq)]
 enum PostIntent {
@@ -96,16 +96,16 @@ fn tier_of(s: &str) -> Option<TierId> {
     }
 }
 
-// THE ERROR CONTRACT, probed against the route's own `z.union` (zod v4):
-// every arm discriminates on a literal `action`, so the union selects exactly
-// one arm — and then the two failure kinds part ways. A PARSE failure (wrong
-// JSON type anywhere, a missing required field, a tier element outside the
-// enum, a non-int concurrency) kills the arm, the union tries its other arms,
-// nothing claims the body, and the answer is the union's own `"Invalid input"`
-// — even when another field ALSO failed a bound. A CHECK failure on the
-// claimed arm (a length or range bound on an otherwise-parsed value) surfaces
-// that arm's own message, first failing field in declaration order. So this
-// classify parses everything first and only then applies the bounds.
+// THE ERROR CONTRACT: every arm discriminates on a literal `action`, so the
+// union selects exactly one arm — and then the two failure kinds part ways.
+// A PARSE failure (wrong JSON type anywhere, a missing required field, a
+// tier element outside the enum, a non-int concurrency) kills the arm, no
+// other arm claims the body, and the answer is the union's own
+// `"Invalid input"` — even when another field ALSO failed a bound. A CHECK
+// failure on the claimed arm (a length or range bound on an
+// otherwise-parsed value) surfaces that arm's own message, first failing
+// field in declaration order. So this classify parses everything first and
+// only then applies the bounds.
 fn classify_post(obj: &serde_json::Map<String, Value>) -> Result<PostIntent, String> {
     let action = match obj.get("action") {
         Some(Value::String(s)) => s.as_str(),
@@ -138,10 +138,10 @@ fn classify_post(obj: &serde_json::Map<String, Value>) -> Result<PostIntent, Str
                 Some(Value::String(s)) => Some(s.as_str()),
                 _ => return Err("Invalid input".into()),
             };
-            // `only` is `.optional()`, NOT nullish — an explicit null parses
-            // as no array at all, which is a type error here (the adversary's
-            // nullish is the contrast on purpose: the picker distinguishes
-            // "no adversary" from an empty list).
+            // `only` is optional, NOT nullable — an explicit null parses as
+            // no array at all, which is a type error here (adversaryModel's
+            // nullable-optional is the contrast on purpose: the picker
+            // distinguishes "no adversary" from an empty list).
             let only = match obj.get("only") {
                 None => None,
                 Some(Value::Array(a)) => Some(
@@ -160,8 +160,8 @@ fn classify_post(obj: &serde_json::Map<String, Value>) -> Result<PostIntent, Str
             };
             let concurrency = match obj.get("concurrency") {
                 None => None,
-                // A whole float is a valid int to zod (1.0 === 1); anything
-                // with a fraction is not an int and never reaches the bounds.
+                // A whole float is a valid int (1.0 === 1); anything with a
+                // fraction is not an int and never reaches the bounds.
                 Some(Value::Number(n)) => match n.as_f64() {
                     Some(f) if f.fract() == 0.0 => Some(f),
                     _ => return Err("Invalid input".into()),
@@ -240,9 +240,8 @@ fn classify_post(obj: &serde_json::Map<String, Value>) -> Result<PostIntent, Str
     }
 }
 
-/// The stop/clear `model` member — `z.string().max(200).nullish()`: null,
-/// absent, and the empty string all mean "every model", and only a string
-/// longer than 200 is refused.
+/// The stop/clear `model` member — null, absent, and the empty string all
+/// mean "every model"; only a string longer than 200 is refused.
 fn nullish_max(key: &str, obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -409,15 +408,14 @@ pub async fn post(
     }
 }
 
-/// The POST response, JS-printed for the same reason as the GET's (the
-/// status row and run rows ride through as stored values, and a whole float
-/// stored as `1.0` reads `1` from TS).
+/// The POST response, JS-printed for the same reason as the GET's — rows
+/// ride through as stored values, and a whole float prints `1`, not `1.0`.
 fn wire(mut body: Value) -> Response {
     js_numberify(&mut body);
     Json(body).into_response()
 }
 
-/// `void logAudit(...)` — the audit line never blocks or breaks the verb.
+/// Fire-and-forget — the audit line never blocks or breaks the verb.
 fn audit(
     state: &AppState,
     actor: &str,
@@ -446,9 +444,8 @@ fn audit(
     });
 }
 
-// The one decision this file makes is the union dispatch, so the one thing it
-// tests is that dispatch — the same probe-answer pinning style as
-// admin_rag's table.
+// The one decision this file makes is the union dispatch, so the one thing
+// it tests is that dispatch, in the same table style as admin_rag's.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,7 +566,7 @@ mod tests {
         );
         // The tiers array: min 1 is a check; an unknown tier is an enum
         // PARSE failure, which drags the whole body to the union's sentence —
-        // even when the model is also over-long (probed: parse poisons bounds).
+        // even when the model is also over-long (parse poisons bounds).
         assert_eq!(
             classify_post(&obj(json!({"action": "start", "model": "m", "tiers": []}))),
             Err("Too small: expected array to have >=1 items".into())
@@ -651,8 +648,8 @@ mod tests {
             }))),
             Err("Too big: expected string to have <=200 characters".into())
         );
-        // Bounds report in the arm's field order: model before adversaryModel
-        // before only (probed against the route's own union).
+        // Bounds report in the arm's field order: model before
+        // adversaryModel before only.
         assert_eq!(
             classify_post(&obj(json!({
                 "action": "start", "model": "x".repeat(201), "tiers": ["probes"],

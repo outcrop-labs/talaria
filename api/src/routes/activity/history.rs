@@ -1,5 +1,5 @@
-// /api/history — port of ui/src/routes/api/history.ts. Version history for
-// agent internals, one API over two stores:
+// /api/history. Version history for agent internals, one API over two
+// stores:
 //   snapshot store (internal_versions): skill, memory, kb-doc, kb-space, artifact
 //   agent versions (agent_versions):    soul, config, personality
 //
@@ -52,9 +52,8 @@ impl VersionKind {
     }
 }
 
-// versionContent — the materialized form each version kind is served in.
-// `config` guards null with {} and personality falls back to "" (the ??
-// arms in the TS ternary chain).
+// version_content — the materialized form each version kind is served in:
+// `config` guards null with {}, personality falls back to "".
 fn version_content(kind: VersionKind, v: &AgentVersionRow) -> String {
     match kind {
         VersionKind::Soul => v.soul.clone(),
@@ -71,7 +70,7 @@ fn version_content(kind: VersionKind, v: &AgentVersionRow) -> String {
     }
 }
 
-/// The version-kind revision summary — key order is the TS object literal's.
+/// The version-kind revision summary — key order pinned in the test below.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionRevision {
@@ -94,7 +93,7 @@ struct ContentBody {
 }
 
 /// The live item's read model, applied to its history. Fail closed: every
-/// miss and every error below reads as no (the TS try/catch swallows all).
+/// miss and every error below reads as no.
 async fn can_read_snapshot_history(
     state: &AppState,
     kind: &str,
@@ -146,7 +145,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     let q = query_pairs(uri.query());
     let kind = q.get("kind").map(String::as_str);
-    // `if (rev)` — an absent or EMPTY rev param lists, it doesn't select.
+    // an absent or EMPTY rev param lists — it doesn't select.
     let rev = q.get("rev").filter(|r| !r.is_empty()).map(String::as_str);
 
     if let Some(vkind) = kind.and_then(VersionKind::parse) {
@@ -191,8 +190,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if !kind.is_some_and(|k| SNAPSHOT_KINDS.contains(&k)) {
         return house_error(StatusCode::BAD_REQUEST, "bad kind");
     }
-    // skill keys on "<owner>/<name>"; the rest key on an id. JS truthiness:
-    // an empty owner/name/id is as good as absent.
+    // skill keys on "<owner>/<name>"; the rest key on an id. An empty
+    // owner/name/id counts as absent.
     let owner_key = if kind == Some("skill") {
         match (
             q.get("owner").filter(|o| !o.is_empty()),
@@ -261,7 +260,7 @@ mod tests {
         assert_eq!(version_content(VersionKind::Config, &v), "model: m\n");
         assert_eq!(version_content(VersionKind::Personality, &v), "warm");
 
-        // null config → {} (the `?? {}` arm); no markers → "" (the `?? ""` arm)
+        // null config → {}; no personality markers → ""
         let null_cfg = version("s", Value::Null);
         assert_eq!(version_content(VersionKind::Config, &null_cfg), "{}\n");
         assert_eq!(version_content(VersionKind::Personality, &null_cfg), "");
@@ -269,8 +268,7 @@ mod tests {
 
     #[test]
     fn sizes_are_utf16_like_the_ts_length() {
-        // versionContent(...).length is JS UTF-16 length — an astral char
-        // counts 2, the way the TS size field does.
+        // the size field is JS UTF-16 length — an astral char counts 2.
         let v = version("a\u{1F600}b", Value::Null);
         assert_eq!(utf16_len(&version_content(VersionKind::Soul, &v)), 4);
     }

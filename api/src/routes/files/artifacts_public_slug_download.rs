@@ -1,6 +1,6 @@
-// /api/artifacts/public/{slug}/download — port of
-// ui/src/routes/api/artifacts.public.$slug.download.ts. Public download for a
-// public *file* artifact — NO AUTH. Serves the stored bytes; only resolves
+// /api/artifacts/public/{slug}/download.
+// Public download for a public *file* artifact — NO AUTH. Serves the stored
+// bytes; only resolves
 // when the artifact is public and points at an upload. The inline/download
 // decision lives in serve_upload — this route is UNAUTHENTICATED, so it
 // especially may not widen that allowlist.

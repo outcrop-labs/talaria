@@ -3,7 +3,7 @@
 // pool mid-day); when an agent's rendered model loses its route, chats freeze
 // silently. This probes every enabled agent's config targets against the
 // gateway registry (llm_endpoints) so the failure surfaces on /agents and in
-// alerts instead of as a hung reply. Port of ui/src/server/brain-health.ts.
+// alerts instead of as a hung reply.
 
 use sqlx::PgPool;
 
@@ -19,8 +19,8 @@ fn now_ms() -> i64 {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrainTarget {
     pub kind: &'static str,
-    /// Tier alias name — present only when kind === 'tier' (TS's conditional
-    /// spread keeps the key absent otherwise, and so does this Option).
+    /// Tier alias name — present only when kind === 'tier'; the key is
+    /// absent otherwise, not null.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub endpoint: String,
@@ -72,13 +72,13 @@ pub async fn fleet_brain_health(pg: &PgPool) -> Result<Vec<AgentBrainHealth>, sq
     }
     let (defs, endpoints) = tokio::join!(
         sqlx::query_as::<_, (String, String, bool, Option<serde_json::Value>)>(
-            // The config is the MAX version's, not current_version's — TS's
-            // listAgentDefs resolves `latest` with `distinct on (agent_id)
-            // … order by version desc` and never consults current_version.
-            // The two agree while the pointer is honest; a dangling
+            // The config is the MAX version's, not current_version's —
+            // `latest` resolves as `distinct on (agent_id) … order by
+            // version desc` and never consults current_version. The two
+            // agree while the pointer is honest; a dangling
             // current_version (a version row deleted underneath it) is
-            // tolerated by TS and must be here too, or a def like that reads
-            // as "no main model configured".
+            // tolerated here too, or a def like that reads as
+            // "no main model configured".
             "select d.model, d.display_name, d.enabled, v.config \
              from agent_defs d \
              left join lateral (select config from agent_versions \

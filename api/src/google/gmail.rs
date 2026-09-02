@@ -1,12 +1,11 @@
-// Gmail service — port of ui/src/server/google/gmail.ts. Read the connected
-// user's recent mail (metadata + snippets), read one full message, organize
-// by label, and send mail, acting strictly as the connected identity
-// (per-user OAuth, or the org account through an already-resolved token).
+// Gmail service: read the connected user's recent mail (metadata + snippets),
+// read one full message, organize by label, and send mail, acting strictly as
+// the connected identity (per-user OAuth, or the org account through an
+// already-resolved token).
 //
-// The SEND half moved here from google_pending_actions when this module was
-// born: pending-actions.ts imports it from gmail.ts in TS, and the executor
-// and the direct route must run the same MIME-building code — two copies
-// would drift on the one wire a sent email actually is.
+// The SEND half lives here — not in pending_actions — so the executor and the
+// direct route run the same MIME-building code: two copies would drift on the
+// one wire a sent email actually is.
 
 use base64::Engine as _;
 use serde::Serialize;
@@ -163,12 +162,12 @@ fn forbidden_label_error(name: &str) -> Option<GoogleError> {
 ///
 /// The caller-facing errors that are NOT Google failures carry the
 /// `gmail organize: ` prefix — the organize route answers those as a 400 the
-/// agent can act on (TS routes on `msg.startsWith('gmail organize: ')`).
+/// agent can act on (it classifies by that prefix).
 pub async fn organize_emails_with_token(
     token: &str,
     input: &OrganizeInput<'_>,
 ) -> Result<usize, GoogleError> {
-    // [...new Set(ids)].slice(0, 100) — first occurrence order, capped.
+    // deduped in first-occurrence order, capped at 100
     let mut ids: Vec<&str> = Vec::new();
     for id in input.ids {
         if !ids.contains(&id.as_str()) {
@@ -206,8 +205,7 @@ pub async fn organize_emails_with_token(
             "gmail organize: no label named \"{name}\" — create it first (create_label), or spell it as list_labels shows"
         ))
     };
-    // byName.get(n) ?? missing(n) — an unknown name is an error naming the
-    // fix, never a silent skip.
+    // An unknown name is an error naming the fix, never a silent skip.
     let mut add_ids = Vec::with_capacity(add.len());
     for n in &add {
         match by_name.get(n.as_str()) {
@@ -337,8 +335,7 @@ pub async fn list_recent_messages_with_token(
 ) -> Result<Vec<MailSummary>, GoogleError> {
     let auth_header = format!("Bearer {token}");
 
-    // maxResults clamped to [1, 25], parameter order exactly as the TS
-    // URLSearchParams (maxResults, q).
+    // maxResults clamped to [1, 25], parameter order pinned (maxResults, q).
     let list_params = {
         let mut p = url::form_urlencoded::Serializer::new(String::new());
         p.append_pair("maxResults", &max_results.clamp(1, 25).to_string());
@@ -373,14 +370,14 @@ pub async fn list_recent_messages_with_token(
         })
         .unwrap_or_default();
 
-    // Fetch each message's metadata (headers + snippet) in parallel — TS's
-    // Promise.all over the id list. Sequential round-trips here cost the
-    // listing N×RTT to Google (+700ms at 25 messages) while preserving nothing
-    // join_all does not: results arrive in the ids' order either way.
+    // Fetch each message's metadata (headers + snippet) in parallel:
+    // sequential round-trips would cost the listing N×RTT to Google (+700ms
+    // at 25 messages) while preserving nothing — results arrive in the ids'
+    // order either way.
     let msgs: Vec<Value> = {
         let futs = ids.iter().map(|id| {
             let auth_header = &auth_header;
-            // metadataHeaders appended in the TS's ['From','Subject','Date'] order.
+            // metadataHeaders appended in From, Subject, Date order.
             // The serializer is finished INSIDE this scope — `Serializer` is not
             // Send, and a bare one held across the await below would make every
             // route awaiting this listing non-Send (Handler requires Send).
@@ -400,7 +397,7 @@ pub async fn list_recent_messages_with_token(
                     .await;
                 let Ok(r) = r else { return None };
                 if !r.status().is_success() {
-                    return None; // TS's per-message null, filtered out below
+                    return None; // a failed per-message fetch is dropped
                 }
                 r.json::<Value>().await.ok()
             }
@@ -458,7 +455,7 @@ pub async fn list_recent_messages_with_token(
         .collect())
 }
 
-/// Recent messages as the connected user (gmail.ts listRecentMessages).
+/// Recent messages as the connected user.
 pub async fn list_recent_messages(
     pg: &PgPool,
     sb: &SecretBox,
@@ -473,9 +470,9 @@ pub async fn list_recent_messages(
 
 // ── One full message ─────────────────────────────────────────────────────────
 
-/// Deepest-first part of a given text mime type. TS checks the part ITSELF
-/// before its children — the comment above the TS says deepest-first, the
-/// code says self-first, and the port follows the code.
+/// Find a part of a given text mime type: the part ITSELF first, then its
+/// children — self-first, not deepest-first (an ancestor match wins over a
+/// deeper one).
 fn text_part_of(part: &Value, mime: &str) -> Option<String> {
     if part.get("mimeType").and_then(Value::as_str) == Some(mime)
         && part
@@ -504,7 +501,7 @@ fn text_part_of(part: &Value, mime: &str) -> Option<String> {
 }
 
 fn decode_base64url(b64url: &str) -> String {
-    // Buffer.from(x, 'base64url') is forgiving of padding; add what's
+    // base64url bodies may lack padding; add what's
     // missing rather than fail a body over it.
     let padded = match b64url.len() % 4 {
         2 => format!("{b64url}=="),
@@ -523,9 +520,9 @@ fn decode_base64url(b64url: &str) -> String {
 /// matters — &amp; last, so a literal "&amp;lt;" cannot decay into "<".
 fn html_to_text(html: &str) -> String {
     // 1. Whole elements whose content is markup, not words: script, style,
-    //    head, title — dropped WITH their content. TS's regex pairs an
-    //    opening tag with the FIRST close of the SAME name (a backreference;
-    //    the four names are fixed, so each gets its own close pattern).
+    //    head, title — dropped WITH their content. An opening tag pairs with
+    //    the FIRST close of the SAME name (the four names are fixed, so each
+    //    gets its own close pattern).
     static OPEN_ELEMENT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)<(script|style|head|title)\b[^>]*>").unwrap()
     });
@@ -554,9 +551,8 @@ fn html_to_text(html: &str) -> String {
                 .get(name)
                 .and_then(|re| re.find(rest))
                 .map(|m| m.end())
-                // No close at all → the element runs to the end (TS's lazy
-                // match would simply never fire; dropping the tail is the
-                // same nothing-left-to-read).
+                // No close at all → the element runs to the end (dropping
+                // the tail is the same nothing-left-to-read).
                 .unwrap_or(rest.len());
             i += close;
         } else {
@@ -720,8 +716,8 @@ pub async fn get_message_with_token(token: &str, id: &str) -> Result<MailMessage
             .iter()
             .map(|id| label_names.get(id).cloned().unwrap_or_else(|| id.clone()))
             .collect(),
-        // slice(0, 20_000) on UTF-16 code units — the TS cut is by JS string
-        // index, which is the UTF-16 length.
+        // the 20_000 cut is in UTF-16 code units (JS string length), not
+        // bytes or chars.
         body: crate::body::utf16_substr(&body_text_of(&payload), 0, 20_000).to_string(),
     })
 }
@@ -746,7 +742,7 @@ fn encode_header(value: &str) -> String {
     format!("=?UTF-8?B?{b64}?=")
 }
 
-/// Send a plain-text email as the connected user (gmail.ts sendMessage).
+/// Send a plain-text email as the connected user.
 /// Returns the sent message id and thread id.
 pub async fn send_message(
     pg: &PgPool,
@@ -761,7 +757,9 @@ pub async fn send_message(
 
 /// Send using an already-resolved token (per-user or org). `from` sets a
 /// verified send-as alias on the account; omit to send from the account's own
-/// address. Headers in the TS order, `\r\n` joined, base64url raw.
+/// address. Headers in fixed order (To, From?, Cc?, Bcc?, Subject,
+/// MIME-Version, Content-Type, Content-Transfer-Encoding), `\r\n` joined,
+/// base64url raw.
 pub async fn send_message_with_token(
     token: &str,
     input: &SendInput<'_>,
@@ -828,8 +826,7 @@ mod tests {
             html_to_text("<p>Hello&nbsp;world</p>\n<br/>next line"),
             "Hello world\n\nnext line"
         );
-        // `</ul>` is not in the close-tag list, so the bullets run together —
-        // the TS ladder's own behavior, kept byte-for-byte.
+        // `</ul>` is not in the close-tag list, so the bullets run together.
         assert_eq!(html_to_text("<ul><li>one<li>two</ul>"), "• one• two");
         // &amp; LAST: a literal "&amp;lt;" stays "&lt;".
         assert_eq!(html_to_text("&amp;lt;"), "&lt;");

@@ -1,6 +1,6 @@
-// Reranking — the precision stage after vector recall. Port of
-// ui/src/server/retrieval/rerank.ts. Vector search across collections merges
-// by raw cosine score (not truly comparable, and bi-encoder recall is fuzzy);
+// Reranking — the precision stage after vector recall. Vector search across
+// collections merges by raw cosine score (not truly comparable, and
+// bi-encoder recall is fuzzy);
 // a cross-encoder rescoring the query against each candidate fixes both.
 // Providers are a registry (like LLM endpoints): pick one, add a key, choose
 // a model — model lists are fetched LIVE where the provider has a catalog
@@ -134,7 +134,7 @@ pub const RERANK_PROVIDERS: &[RerankProviderMeta] = &[
 ];
 
 /// The wire view of the provider catalog — the admin rag GET's `providers`
-/// array. Same fields as the meta, in the TS key order the panel was built
+/// array. Same fields as the meta, in the key order the panel was built
 /// against (id, label, country, needsUrl, needsKey, fallbackModels,
 /// liveCatalog).
 #[derive(Debug, Serialize)]
@@ -164,9 +164,9 @@ pub fn providers_public() -> Vec<RerankProviderPublic> {
         .collect()
 }
 
-/// The stored shape. Serialized camelCase with absent fields OMITTED, byte
-/// for byte the row the TS side writes — the same app_settings key is read
-/// and written by both runtimes during coexistence.
+/// The stored shape. Serialized camelCase with absent fields OMITTED —
+/// byte-stable against the stored row's established shape, which the admin
+/// surfaces below carry through verbatim.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RerankConfig {
@@ -193,31 +193,29 @@ fn defaults() -> RerankConfig {
     }
 }
 
-/// TS's `DEFAULTS = { provider: 'off', candidates: 30 }` — key order and all,
-/// because the admin surfaces below carry the row through verbatim rather
-/// than re-shaping it onto a struct.
+/// The defaults as a raw value — key order and all, because the admin
+/// surfaces below carry the row through verbatim rather than re-shaping it
+/// onto a struct.
 fn defaults_value() -> Value {
     json!({"provider": "off", "candidates": 30})
 }
 
-/// The stored row verbatim — TS's `rows[0]?.value ?? fallback`. The column is
-/// jsonb, so the keys come back in Postgres's own canonical order (shortest
-/// key first); that is the order TS's JSON.parse keeps, and it flows straight
-/// onto the admin wire below.
+/// The stored row verbatim, defaults when absent. The column is jsonb, so
+/// the keys come back in Postgres's own canonical order (shortest key
+/// first), and that order flows straight onto the admin wire below.
 async fn stored_config(pg: &PgPool) -> Value {
     get_setting(pg, KEY, defaults_value()).await
 }
 
 pub async fn get_rerank_config(pg: &PgPool) -> RerankConfig {
-    // The typed view the SEARCH path reads. TS carries the stored row as-is
-    // (`rows[0]?.value ?? fallback`); a row whose shape no longer parses
-    // falls back to the defaults here rather than poisoning every search —
-    // recorded divergence, unreachable unless the key is hand-edited.
+    // The typed view the SEARCH path reads. A row whose shape no longer
+    // parses falls back to the defaults here rather than poisoning every
+    // search — unreachable unless the key is hand-edited.
     serde_json::from_value(stored_config(pg).await).unwrap_or_else(|_| defaults())
 }
 
-/// The patch the admin route sends. TS distinguishes `undefined` (leave the
-/// field alone) from `null` (clear it) on url/model/apiKey — the nested
+/// The patch the admin route sends. Absent (leave the field alone) is
+/// distinct from null (clear it) on url/model/apiKey — the nested
 /// `Option<Option<_>>` is that distinction; `candidates` is never cleared.
 pub struct RerankPatch {
     pub provider: Option<String>,
@@ -227,11 +225,9 @@ pub struct RerankPatch {
     pub candidates: Option<i64>,
 }
 
-/// TS's `setRerankConfig` is a spread, not a merge onto a fixed shape:
-/// `{...cur}` starts from the stored row's own key order, assigning an
-/// existing key keeps its position while a NEW key appends, and the
-/// `?? undefined` / apiKey-ternary paths leave the key ABSENT
-/// (JSON.stringify drops undefined) rather than nulled. `key_sealed` is the
+/// A spread onto the stored row's own key order, not a merge onto a fixed
+/// shape: assigning an existing key keeps its position, a NEW key appends,
+/// and a clear REMOVES the key rather than nulling it. `key_sealed` is the
 /// already-sealed token (or the clear) — sealing needs the box, so the
 /// caller resolves it before this pure fold runs.
 fn apply_patch(
@@ -298,14 +294,13 @@ pub async fn set_rerank_config(state: &AppState, patch: RerankPatch) -> Result<V
         .await
         .map_err(|e| e.to_string())?;
     // The column re-orders canonically on the write; the returned value is
-    // the same pre-normalization `next` object TS's caller holds.
+    // the pre-normalization `next` object.
     Ok(v)
 }
 
-/// The public fold: `const { keySealed, ...rest } = cfg; return { ...rest,
-/// hasKey: !!keySealed }` — the stored row's own keys in their own order,
-/// keySealed gone, hasKey appended last. A passthrough, not a re-shaped
-/// struct: the wire's key order is the jsonb row's order, nothing else.
+/// The public fold — the stored row's own keys in their own order, keySealed
+/// gone, hasKey appended last. A passthrough, not a re-shaped struct: the
+/// wire's key order is the jsonb row's order, nothing else.
 fn public_of(stored: Value) -> Value {
     let mut map = match stored {
         Value::Object(m) => m,
@@ -322,7 +317,7 @@ pub async fn rerank_config_public(pg: &PgPool) -> Value {
     public_of(stored_config(pg).await)
 }
 
-/// The jsonFetch port: 15s, non-ok is `"{status}: {first 200 chars}"`.
+/// The shared JSON fetch: 15s budget, non-ok is `"{status}: {first 200 chars}"`.
 async fn json_fetch(
     http: &HttpFetch,
     method: &str,
@@ -421,8 +416,7 @@ fn openrouter_catalog_ids(j: &Value) -> Vec<String> {
 
 /// Live model catalog for a provider (falls back to the documented list).
 /// Mirrors the LLM-endpoint pattern: fetch live wherever an API exists.
-/// A sealed key that cannot be OPENED is an error, not a silent fallback —
-/// the TS `open()` throws here too, before its try/catch begins.
+/// A sealed key that cannot be OPENED is an error, not a silent fallback.
 pub async fn rerank_models(
     state: &AppState,
     http: &HttpFetch,
@@ -525,9 +519,8 @@ pub async fn rerank_models(
     Ok(meta.fallback_models.iter().map(|s| s.to_string()).collect())
 }
 
-/// One rescored candidate. A row missing its index or score is dropped here —
-/// the TS maps it to `undefined` fields and `align` skips it one step later;
-// same net effect.
+/// One rescored candidate. A row missing its index or score is dropped here;
+/// `align` only ever sees well-formed rows.
 struct Scored {
     index: i64,
     score: f64,
@@ -558,17 +551,15 @@ fn align(scored: &[Scored], len: usize) -> Vec<f64> {
     scores
 }
 
-/// Unseal the configured key — the TS `open(cfg.keySealed)`, which throws on
-/// a bad token and lands in the outer catch → null. Every failure here is
-/// None, never a panic and never a search failure.
+/// Unseal the configured key. Every failure here is None — never a panic,
+/// never a search failure.
 async fn open_key(state: &AppState, sealed: &str) -> Option<String> {
     state.secretbox().await.ok()?.open(sealed).ok()
 }
 
 /// Rescore candidates against the query. Returns per-candidate scores aligned
 /// to the input order, or None when reranking is off/unconfigured/failing —
-/// every arm of the TS switch that isn't a scored answer is null, and its
-/// one catch turns every thrown error into null too.
+/// best-effort by contract, never fatal.
 pub async fn rerank(
     state: &AppState,
     http: &HttpFetch,
@@ -583,9 +574,9 @@ pub async fn rerank(
     Some(align(&scored, texts.len()))
 }
 
-/// The TS switch, factored from the config read so the dispatch is drivable
+/// The provider dispatch, factored from the config read so it is drivable
 /// against a stated config (and testable without a live app_settings row).
-/// Every failure inside is the catch: None, never an error.
+/// Every failure inside is None, never an error.
 async fn rerank_dispatch(
     state: &AppState,
     http: &HttpFetch,
@@ -682,9 +673,8 @@ async fn rerank_dispatch(
                 .model
                 .as_deref()
                 .unwrap_or("nvidia/llama-3.2-nv-rerankqa-1b-v2");
-            // The TS builds this URL through `model.replace('/', '/')` — a
-            // no-op that says "slashes are meant to be here"; the path keeps
-            // the model's own slash.
+            // The model id keeps its own slash in the path — `name/variant`
+            // is one path segment by intent.
             let j = json_fetch(
                 http,
                 "POST",
@@ -893,7 +883,7 @@ mod tests {
             ..Default::default()
         };
         let v = serde_json::to_value(&cfg).unwrap();
-        // camelCase, absent fields omitted — the row the TS runtime reads.
+        // camelCase, absent fields omitted — the stored row's shape.
         assert_eq!(v, json!({ "provider": "tei", "candidates": 30 }));
         let full = RerankConfig {
             provider: "voyage".into(),
@@ -976,7 +966,7 @@ mod tests {
             None
         );
         // A sealed key that cannot open (no secretbox root in a test state)
-        // reads as absent — the TS open() throws into the catch.
+        // reads as absent.
         let cfg = RerankConfig {
             provider: "voyage".into(),
             key_sealed: Some("v2:not-a-real-token".into()),
@@ -1010,9 +1000,8 @@ mod tests {
 
     #[test]
     fn the_public_config_is_the_stored_row_in_its_own_order() {
-        // jsonb's canonical order (shortest key first) is what TS reads back
-        // and spreads — these bytes are the live dev row's, diffed against
-        // the TS route.
+        // jsonb's canonical order (shortest key first) is the wire's key
+        // order — these bytes are the live dev row's.
         assert_eq!(
             public_of(
                 json!({"model": "x", "provider": "tei", "candidates": 10, "keySealed": "v1:a:b:c"})
@@ -1054,9 +1043,8 @@ mod tests {
             r#"{"provider":"tei","candidates":10,"model":"x","keySealed":"v1:a:b:c"}"#
         );
 
-        // Against a full row: a null url/apiKey REMOVES the keys outright
-        // (`?? undefined`, dropped by JSON.stringify), and candidates clamps
-        // to the TS bounds Math.min(100, Math.max(5, n)).
+        // Against a full row: a null url/apiKey REMOVES the keys outright,
+        // and candidates clamps into [5, 100].
         let mut again = map_of(json!({
             "model": "x", "provider": "tei", "candidates": 10,
             "url": "http://tei.local", "keySealed": "v1:a:b:c",
@@ -1082,8 +1070,8 @@ mod tests {
     fn the_provider_catalog_serializes_the_ts_wire_shape() {
         let all = providers_public();
         assert_eq!(all.len(), RERANK_PROVIDERS.len());
-        // The first entry, byte for byte the object the TS table declares —
-        // camelCase keys, declaration order, the empty list rides as [].
+        // The first entry, byte for byte the wire contract — camelCase keys,
+        // declaration order, the empty list rides as [].
         assert_eq!(
             serde_json::to_value(&all[0]).unwrap(),
             json!({

@@ -1,9 +1,8 @@
-// /api/tasks/{id}/comments — port of ui/src/routes/api/tasks.$id.comments.ts.
-// GET → the thread (board member or board-allowed agent). POST → add a
-// comment; an agent goes through the one agent-authority predicate with
-// intent Comment — board policy plus archival, and deliberately NOT the
-// closed-status clause, because commenting is the agent's channel on work it
-// can no longer edit.
+// /api/tasks/{id}/comments. GET → the thread (board member or board-allowed
+// agent). POST → add a comment; an agent goes through the one
+// agent-authority predicate with intent Comment — board policy plus
+// archival, and deliberately NOT the closed-status clause, because
+// commenting is the agent's channel on work it can no longer edit.
 
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::boards::{board_allows_agent, board_role, list_members};
@@ -184,15 +183,14 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    // NOT YET CROSSED: TS indexes the comment into the ambient activity
-    // brain (indexTicketComment, detached) — the retrieval plane, batch 5.
-    // When it crosses it MUST carry `comment.content`, NOT the parsed body's
-    // content: add_comment runs an agent's comment through the agent-writes
-    // door and returns the REDACTED body, so the raw one reaching the index
-    // would put a credential into the retrieval brain — which is read back
-    // into model contexts, the exact re-entry the guardrails cardinal
-    // invariant forbids. The persisted comment is already clean; only that
-    // copy would not be.
+    // No inline index on this path — comments reach the activity brain only
+    // through the backfill/reindex runs, which read the PERSISTED row. That
+    // is the invariant: add_comment runs an agent's comment through the
+    // agent-writes door and returns the REDACTED body; indexing the raw body
+    // would put a credential into a brain read back into model contexts —
+    // the exact re-entry the guardrails forbid. The persisted comment is
+    // already clean; an inline index, if ever added, MUST carry
+    // `comment.content`, never the parsed body's.
     //
     // @mention any board member — they get an inbox notification linking to
     // the ticket. Detached; the POST returns immediately. The mention text

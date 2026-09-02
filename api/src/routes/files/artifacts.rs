@@ -1,4 +1,4 @@
-// /api/artifacts — port of ui/src/routes/api/artifacts.ts. The artifact LIST
+// /api/artifacts. The artifact LIST
 // (what the Files browser opens on) and CREATE. Read is gated exactly like
 // the KB list beside it: org/public visible to all, private only to owner
 // and grants. Creation differs by caller: a PERSONAL assistant's output
@@ -42,7 +42,7 @@ fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
         kind: optional_enum_member(obj, "kind", &["doc", "sheet", "microsite", "file"])?,
         title: optional_max_string_member(obj, "title", 200)?,
         body: optional_max_string_member(obj, "body", 2_000_000)?,
-        // z.string().trim().max(120).optional() — the only trimmed-OPTIONAL
+        // folder: trimmed, max 120, optional — the only trimmed-OPTIONAL
         // member on this surface, so it reads inline rather than growing a
         // body.rs helper for one caller.
         folder: match obj.get("folder") {

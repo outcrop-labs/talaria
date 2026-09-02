@@ -1,5 +1,4 @@
 // CAN THIS MODEL BE A HERMES AGENT — over a person's CALENDAR AND MAIL.
-// Port of harness/defs/hermes-google.ts.
 //
 // The fourth of the Hermes family, and the group where a wrong answer reaches
 // somebody outside the company. Nine tools, none ever put in front of a model.
@@ -59,12 +58,11 @@
 // staging until Monday — so a fixture can tell "opened the message" from
 // "read the teaser".
 //
-// PORT NOTE — the checks below read `ctx.world`, the dry run's sandbox world
-// AFTER the run, narrowed through `SandboxWorld` (fitness/toolbox/world.rs).
-// The sandbox dispatch that MUTATES that world — the thing that puts a draft in
-// `emailDrafts` — crosses with the sweep engine that drives it; the world's
-// SHAPE and its standard instance crossed ahead of it precisely so this def and
-// its siblings could declare overrides and read the state back.
+// The checks below read `ctx.world` — the dry run's sandbox world AFTER the
+// run, narrowed through `SandboxWorld` (fitness/toolbox/world.rs). The sandbox
+// dispatch (fitness/toolbox/sandbox.rs) is what mutates that world — what puts
+// a draft in `emailDrafts` — over the base instance this def's world override
+// stages.
 
 use std::sync::{Arc, OnceLock};
 
@@ -98,21 +96,19 @@ const SYSTEM: &str = "You are a teammate in this workspace with access to the te
 
 // ── The check helpers ────────────────────────────────────────────────────────
 //
-// The TS file's own `called`/`callsOf` locals are `CheckCtx::any_call` and
-// `CheckCtx::calls_of` here — the record crossed with those helpers on it, so
-// the def does not restate them.
+// `CheckCtx` carries the call-introspection helpers (`any_call`, `calls_of`)
+// these checks lean on, so the def does not restate them.
 
-/// The TS `world(ctx)` cast: the sandbox world AFTER the run, or nothing when
-/// the run produced no observable world. `from_value` (rather than a blind TS
-/// cast) is the honest spelling of the same thing: a world this def cannot
-/// decode is not a world its assertions can run against, and reads as the gap
-/// below rather than as garbage fields.
+/// The sandbox world AFTER the run, or nothing when the run produced no
+/// observable world. `from_value` rather than a blind cast is the honest
+/// spelling: a world this def cannot decode is not a world its assertions can
+/// run against, and reads as the gap below rather than as garbage fields.
 fn world(ctx: &CheckCtx) -> Option<SandboxWorld> {
     SandboxWorld::from_value(ctx.world.as_ref()?)
 }
 
 /// The def's own "no observable world" sentence — a GAP, never a model
-/// failure. Verbatim from the TS, which the sweep persists admin-facing.
+/// failure; the sweep persists it admin-facing.
 const NO_WORLD: &str = "this fixture grades the workspace the agent left behind, and this run produced no observable world — the candidate ran its own tool loop, so the sweep saw tool names and not their effects. Bench this harness on a model the platform can drive, or rewrite the fixture to assert on the transcript alone.";
 
 /// `text.toLowerCase().includes(w)` for any of the words — the prose half of
@@ -139,9 +135,9 @@ const SAYS_NOT_DONE: &[&str] = &[
     "sign off",
 ];
 
-/// `/drive\.google\.com/` — case-sensitive in the TS, and it matters: the link
-/// Drive hands back is a literal of that shape, so matching it case-sensitively
-/// is matching what the tool result contained rather than any drive-adjacent
+/// `/drive\.google\.com/` — case-sensitive, and it matters: the link Drive
+/// hands back is a literal of that shape, so matching it case-sensitively is
+/// matching what the tool result contained rather than any drive-adjacent
 /// prose.
 fn drive_link() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -179,9 +175,8 @@ pub struct HermesGoogleFixture {
     pub check: fn(&str, &CheckCtx) -> CheckResult,
 }
 
-/// ELEVEN FIXTURES, THREE BANDS, in the TS table's order — the group where a
-/// wrong answer reaches somebody outside the company, so the hard band is the
-/// biggest on purpose.
+/// ELEVEN FIXTURES, THREE BANDS — the group where a wrong answer reaches
+/// somebody outside the company, so the hard band is the biggest on purpose.
 pub fn fixtures() -> Vec<HermesGoogleFixture> {
     vec![
         HermesGoogleFixture {
@@ -578,7 +573,7 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
 /// THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase`. The fold
 /// only re-types the value — a text harness's reply arrives as a JSON string,
 /// and a value that is not one is the fixture check throwing, which the sweep
-/// scores as a task failure carrying the same sentence TS did.
+/// scores as a task failure carrying the same sentence.
 fn eval_cases(fixtures: Vec<HermesGoogleFixture>) -> Vec<EvalCase> {
     fixtures
         .into_iter()
@@ -688,8 +683,7 @@ pub fn hermes_google_harness() -> HarnessDefinition {
     // disconnected case is the most valuable question here and would otherwise
     // need a whole second harness to vary one boolean.
     dry.world = Some(Arc::new(|input: &Value| {
-        // `(input) => ({ googleConnected: input.googleConnected ?? true })` —
-        // a PARTIAL override the sandbox merges onto `base_world()`, which is
+        // A PARTIAL override the sandbox merges onto `base_world()`, which is
         // why the key is camelCase: it is the one field `SandboxWorld`
         // deserializes here, not a whole world. The closure is total by
         // signature, so a decode failure falls back to the connected world
@@ -721,10 +715,9 @@ mod tests {
         }
     }
 
-    /// A context standing in for a completed dry run. The TS drove the real
-    /// sandbox and read `sandbox.world` back; the sandbox dispatch itself
-    /// crosses with the sweep engine, so the state its tools would have
-    /// produced is staged here directly through the same `SandboxWorld`
+    /// A context standing in for a completed dry run. A real sweep drives the
+    /// sandbox and reads `sandbox.world` back; here the state its tools would
+    /// have produced is staged directly through the same `SandboxWorld`
     /// record — a draft sits in `emailDrafts` either way, and that is the
     /// half every fixture reads.
     fn dry(calls: Vec<CheckCall>, world: Value) -> CheckCtx {
@@ -1295,10 +1288,9 @@ mod tests {
 
     #[test]
     fn every_eval_replies_rather_than_throwing_on_a_run_with_no_world() {
-        // The TS ran every fixture against NO_TOOLS and asserted it returned
-        // rather than threw. Here a panic is the throw; the load-bearing half
-        // is that the four world-graded fixtures answer with OUR gap rather
-        // than a model failure.
+        // Every fixture must answer rather than panic on a run with no world —
+        // the load-bearing half is that the four world-graded fixtures answer
+        // with OUR gap rather than a model failure.
         let d = hermes_google_harness();
         let world_graded = [
             "files the mail it read into a label it created",

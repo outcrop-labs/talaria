@@ -1,4 +1,4 @@
-// /api/channels/{id}/read — port of ui/src/routes/api/channels.$id.read.ts.
+// /api/channels/{id}/read.
 // POST { seq } → advance the caller's read cursor (drives unread badges).
 
 use crate::body::{NumKind, as_object, number_member};
@@ -35,14 +35,14 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.number().int().min(0) — no max; the safe-integer guard is the ceiling
-    // zod itself imposes.
+    // seq: integer, min 0, no schema max — the ceiling is the safe-integer
+    // bound itself.
     let seq = match number_member(obj, "seq", NumKind::Int, 0.0, 9_007_199_254_740_991.0) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // last_read_seq is int4: past 2^31-1 the TS side dies on Postgres' own
-    // overflow (an uncaught sql → 500). Same ceiling, same shape.
+    // last_read_seq is int4: past 2^31-1 the write would die on Postgres'
+    // own overflow (→ 500), so it is refused here.
     if seq > 2_147_483_647.0 {
         tracing::error!("[channels] read cursor past int4: {seq}");
         return thrown_internal_error();

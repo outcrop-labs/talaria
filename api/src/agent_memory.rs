@@ -3,8 +3,6 @@
 // runtime. Talaria reads and writes it through the running managed container
 // (docker exec), so there's no second copy to drift. Requires the container
 // to be up.
-//
-// Port of ui/src/server/agent-memory.ts.
 
 use sqlx::PgPool;
 

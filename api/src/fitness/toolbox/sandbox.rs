@@ -39,10 +39,10 @@
 // (`doc-3`, `run-2`) rather than generated, for the same reason: a fixture that
 // asserts over an id has to be able to predict it.
 //
-// THE REFUSAL CHANNEL. TS throws `ToolRefusal` and lets `dispatch` catch it;
-// Rust has no exceptions, so every backend returns `Result<Value, ToolRefusal>`
-// and the small arg-narrowing helpers (`req_str`, `ticket_of`, …) pass the
-// refusal up with `?`. The distinction the catch preserves is kept exactly: a
+// THE REFUSAL CHANNEL. There is no exception to throw, so every backend
+// returns `Result<Value, ToolRefusal>` and the small arg-narrowing helpers
+// (`req_str`, `ticket_of`, …) pass the refusal up with `?`. The distinction
+// is held exactly: a
 // `ToolRefusal` is the sandbox saying what production would say (recorded, and
 // the model's to recover from), while any OTHER error is a bug in this file —
 // `dispatch` does not dress one up as the model's fault, it just propagates.
@@ -71,8 +71,8 @@ fn refuse(message: impl Into<String>) -> ToolRefusal {
     ToolRefusal(message.into())
 }
 
-/// `str(v, field)` in TS: a string that is present and not blank. The value is
-/// returned UNTRIMMED — TS checks `v.trim()` for truthiness but hands back `v`.
+/// A string that is present and not blank. The value is returned UNTRIMMED —
+/// the blank check looks at `trim()` but the caller gets the original.
 fn req_str<'a>(v: &'a Value, field: &str) -> Result<&'a str, ToolRefusal> {
     let s = v.as_str().filter(|s| !s.trim().is_empty());
     s.map(Ok)
@@ -197,8 +197,7 @@ fn next_id(prefix: &str, existing: usize) -> String {
 
 /// JS `text.split(/\W+/)` — split on anything that is not an ASCII word char.
 /// The ASCII fence is deliberate: `\w` in JS regex has no unicode flag, and the
-/// loose match only has to be the SAME loose match for the port to agree with
-/// the oracle.
+/// loose match only has to be the SAME loose match the oracle agrees with.
 fn words_of(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|w| w.chars().count() > 3)
@@ -1151,9 +1150,9 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         }
 
         // A name that reached dispatch without a backend. Unreachable while the
-        // catalog and this table are in parity (`backed_tool_names` asserts it);
-        // kept so the sentence is produced here rather than panicking three
-        // frames away from the call that caused it.
+        // catalog and this table agree (`backed_tool_names` asserts it); kept
+        // so the sentence is produced here rather than panicking three frames
+        // away from the call that caused it.
         other => Err(refuse(format!("there is no tool called \"{other}\""))),
     }
 }
@@ -1173,8 +1172,8 @@ fn live_index(w: &SandboxWorld, id: &Value) -> Result<usize, ToolRefusal> {
 /// catalog by `every_catalog_tool_is_backed` below — a tool offered with no
 /// backend would answer `there is no tool called "x"`, a refusal a fixture
 /// would read as the MODEL inventing a name. This list IS the handler table's
-/// key set, the way `Object.keys(HANDLERS)` is in TS; the match in `handle`
-/// enumerates the same names arm by arm and the test holds both to it.
+/// key set; the match in `handle` enumerates the same names arm by arm and the
+/// test holds both to it.
 pub const BACKED_TOOLS: &[&str] = &[
     // ── Boards & tickets ─────────────────────────────────────────────────
     "list_boards",
@@ -1272,8 +1271,8 @@ pub struct SandboxOptions {
     /// judgement.
     pub tools: Option<Vec<String>>,
     /// Overrides merged onto `base_world()` — a PARTIAL: present top-level keys
-    /// replace their whole counterpart (TS's object spread), absent ones keep
-    /// the base value.
+    /// replace their whole counterpart (object-spread semantics), absent ones
+    /// keep the base value.
     pub world: Value,
 }
 
@@ -1294,10 +1293,10 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// TS `makeSandbox`. The world is merged in VALUE space so the spread
-    /// semantics hold for keys the typed struct has no helper for, then
-    /// narrowed once — `base_world()` supplies every required key, so the
-    /// deserialize cannot fail.
+    /// The world is merged in VALUE space so the spread semantics hold for
+    /// keys the typed struct has no helper for, then narrowed once —
+    /// `base_world()` supplies every required key, so the deserialize cannot
+    /// fail.
     pub fn new(opts: SandboxOptions) -> Sandbox {
         let mut value = base_world().to_value();
         if let (Value::Object(base), Value::Object(over)) = (&mut value, &opts.world) {
@@ -1321,8 +1320,8 @@ impl Sandbox {
     }
 
     /// The offered tools as the transport shapes them — the dry-run loop's
-    /// `tool_defs`. TS spreads each catalog entry's three wire fields; the
-    /// same three, and none of the sandbox's own bookkeeping.
+    /// `tool_defs`: each catalog entry's three wire fields, and none of the
+    /// sandbox's own bookkeeping.
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .iter()
@@ -1341,8 +1340,8 @@ impl Sandbox {
     pub fn dispatch(&mut self, name: &str, args_json: &str) -> DispatchResult {
         let args: Map<String, Value> = match serde_json::from_str::<Value>(args_json) {
             Ok(Value::Object(map)) => map,
-            // VALID JSON that is not an object proceeds with empty args, exactly
-            // as TS does; only a parse failure is "not valid JSON".
+            // VALID JSON that is not an object proceeds with empty args; only
+            // a parse failure is "not valid JSON".
             Ok(_) => Map::new(),
             // ARGUMENTS THAT ARE NOT JSON ARE A REAL OBSERVATION about a model,
             // so they are recorded as a refusal rather than smoothed over — a
@@ -1990,7 +1989,7 @@ mod tests {
         assert!(owner.text.contains("owner can't be removed"));
     }
 
-    // ── parity ───────────────────────────────────────────────────────────────
+    // ── catalog ↔ backends ───────────────────────────────────────────────────
 
     #[test]
     fn every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog() {

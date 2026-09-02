@@ -1,5 +1,5 @@
-// The driver, driven entirely by fakes — the port of run.test.ts. No database,
-// no Redis, no real clock: the point of the RunDeps seam is that every rule in
+// The driver, driven entirely by fakes. No database, no Redis, no real clock:
+// the point of the RunDeps seam is that every rule in
 // run.rs (the ordering rule, the clean stops, the attempt count, the exact
 // sentences on an error row) is provable without a single service. These run in
 // CI alongside the unit tests; only the LIVE store proofs (runs_store.rs) are

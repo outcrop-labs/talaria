@@ -1,9 +1,8 @@
-// /api/workflows — port of ui/src/routes/api/workflows.ts. GET lists every
-// workflow for any signed-in member (they ground what agents will be told —
-// deliberately unscoped); POST is agents.manage. The body schema is shared
-// with workflows_id exactly the way TS shares it ($id imports Body from this
-// file): validate_workflow_body is that export, post=false is Body.partial()
-// .extend({enabled}).
+// /api/workflows. GET lists every workflow for any signed-in member (they
+// ground what agents will be told — deliberately unscoped); POST is
+// agents.manage. The body schema is shared with workflows_id:
+// validate_workflow_body with post=false is the PUT patch — everything
+// optional, plus `enabled`.
 
 use crate::body::{
     array_msg, array_too_big_msg, as_object, boolean_member, object_msg,
@@ -42,9 +41,9 @@ pub(crate) struct WorkflowBody {
     pub enabled: Option<bool>,
 }
 
-/// workflows.ts's Body, checks in zod's schema order: name, description,
-/// match (labels → boards → keywords), skills, toolkits, enabled. Unknown
-/// keys are stripped at every level — zod objects are not strict.
+/// The POST body, checks in schema order: name, description, match
+/// (labels → boards → keywords), skills, toolkits, enabled. Unknown keys
+/// are stripped at every level — the schema objects are not strict.
 pub(crate) fn validate_workflow_body(
     obj: &serde_json::Map<String, Value>,
     post: bool,
@@ -103,9 +102,9 @@ pub(crate) fn validate_workflow_body(
     })
 }
 
-/// The stored jsonb for a PRESENT match: only facets that were PRESENT (zod
-/// strips absent optionals — they never become null). None in, None out, so
-/// the PUT patch leaves absent fields untouched; POST substitutes {} / [].
+/// The stored jsonb for a PRESENT match: only facets that were PRESENT
+/// (absent optionals are dropped, never nulled). None in, None out, so the
+/// PUT patch leaves absent fields untouched; POST substitutes {} / [].
 pub(crate) fn match_json(r: &Option<MatchRules>) -> Option<Value> {
     let r = r.as_ref()?;
     let mut m = serde_json::Map::new();

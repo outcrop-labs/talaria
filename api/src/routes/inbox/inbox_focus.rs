@@ -1,7 +1,6 @@
-// /api/inbox/focus — port of ui/src/routes/api/inbox.focus.ts.
-// GET → the focus inbox queue: what the assistant has teed up for the caller.
-// TS takes no options here (the queue defaults: enrich, no snoozed), and the
-// query string is ignored entirely.
+// /api/inbox/focus. GET → the focus inbox queue: what the assistant has
+// teed up for the caller. No options are taken (the queue defaults:
+// enrich, no snoozed) — the query string is ignored entirely.
 
 use crate::error::thrown_internal_error;
 use crate::inbox_focus::{FocusQueueOptions, list_focus_queue};

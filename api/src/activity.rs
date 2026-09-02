@@ -1,5 +1,5 @@
-// The fleet-wide activity feed — port of ui/src/server/activity-feed.ts. One
-// merged stream of what's been happening across the workspace, scoped to the
+// The fleet-wide activity feed — one merged stream of what's been happening
+// across the workspace, scoped to the
 // requesting user. Three sources (plus an admins-only fourth):
 //   • ticket events (task_activity)  — only boards the user can access
 //   • channel messages               — only channels the user is a member of
@@ -13,7 +13,7 @@ use crate::boards::board_visibility_sql;
 use sqlx::PgPool;
 
 /// The event kinds the route's `kinds` filter admits; anything else in the
-/// query string is dropped (activity-feed.ts's KINDS set).
+/// query string is dropped.
 pub const KINDS: [&str; 4] = ["ticket", "channel", "fleet", "audit"];
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -57,8 +57,8 @@ pub async fn activity_feed(
         default_kinds.to_vec()
     };
     let want = |k: &str| selected.contains(&k) && (k != "audit" || is_admin);
-    // per = Math.min(limit, 80). Inlined into the LIMIT clauses below — it is
-    // min(route constant, 80), never caller text (the same discipline as
+    // Per-source cap: min(limit, 80). Inlined into the LIMIT clauses below —
+    // a route constant, never caller text (the same discipline as
     // gateway/usage.rs's PRICED).
     let per = limit.min(80);
 
@@ -195,9 +195,9 @@ pub async fn activity_feed(
             .fetch_all(pg)
             .await?;
         for (at_ms, actor, action, target_type, target_label, after) in rows {
-            // `${targetLabel ?? targetType}${after ? ` → ${JSON.stringify(after)}` : ''}`
-            // .slice(0, 200) — JS slices UTF-16 code units; the labels and
-            // actions here are ASCII, so 200 chars is the same cut.
+            // detail = target_label (falling back to target_type), with
+            // " → <json of after>" appended when after is set — capped at
+            // 200 chars.
             let mut detail = target_label.unwrap_or(target_type.clone());
             if let Some(a) = &after {
                 detail = format!("{detail} → {a}");
@@ -217,8 +217,8 @@ pub async fn activity_feed(
         }
     }
 
-    // Merge newest-first (JS sort is stable; so is sort_by — ties keep source
-    // order: tickets, channels, fleet, audit), then the caller's limit.
+    // Merge newest-first — sort_by is stable, so ties keep source order:
+    // tickets, channels, fleet, audit — then the caller's limit.
     stamped.sort_by_key(|s| std::cmp::Reverse(s.at_ms));
     Ok(stamped
         .into_iter()

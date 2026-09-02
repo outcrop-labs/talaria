@@ -1,7 +1,6 @@
-// /api/tasks/{id}/review — port of ui/src/routes/api/tasks.$id.review.ts.
-// The human quality gate. Approve moves the ticket to the board's done
-// column; reject sends it back to the board's first working column. Board
-// owner/editor only.
+// /api/tasks/{id}/review. The human quality gate. Approve moves the ticket
+// to the board's done column; reject sends it back to the board's first
+// working column. Board owner/editor only.
 
 use crate::boards::{board_role, can_edit};
 use crate::body::{as_object, optional_max_string_member, parse};
@@ -118,8 +117,7 @@ pub async fn post(
             },
         );
     }
-    // TS has no catch here — any update_task throw is an unhandled 500 on
-    // that side, so every error maps to the house 500, not a refusal shape.
+    // Any update_task throw here is the house 500, never a refusal shape.
     let patch = TaskPatch {
         status: Some(target),
         ..Default::default()

@@ -1,8 +1,8 @@
-// /api/kb/docs/{id}/comments — port of ui/src/routes/api/kb.docs.$id.comments.ts.
-// Doc comment threads. GET → all comments (client assembles threads).
-// POST { content, parentId?, quote? } → comment/reply. Read access to the doc
-// is the gate for both — discussion is part of the document. 404-as-ACL: a
-// doc you can't discuss doesn't exist as far as this route is concerned.
+// /api/kb/docs/{id}/comments. Doc comment threads. GET → all comments (client
+// assembles threads). POST { content, parentId?, quote? } → comment/reply.
+// Read access to the doc is the gate for both — discussion is part of the
+// document. 404-as-ACL: a doc you can't discuss doesn't exist as far as this
+// route is concerned.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -59,8 +59,8 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // content/quote are `.trim()` members — zod trims BEFORE the length
-    // checks and the TRIMMED value is what parseBody hands through.
+    // content/quote are trim-then-validate members — the length bounds apply
+    // to the TRIMMED value, which is also what gets stored.
     let content = match trimmed_string_member(obj, "content", 1, 8_000) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

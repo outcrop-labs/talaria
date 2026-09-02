@@ -1,5 +1,4 @@
-// /api/channels/{id}/messages/{msgId}/reactions — port of
-// ui/src/routes/api/channels.$id.messages.$msgId.reactions.ts.
+// /api/channels/{id}/messages/{msgId}/reactions.
 // POST { emoji } → toggle your reaction on a message. Agents react too, under
 // their own identity — one of our twists on the Slack shape.
 

@@ -3,9 +3,8 @@
 // fire INSIDE the agent — Talaria is just the control surface: it reads
 // jobs.json for truth and drives the `hermes cron` CLI for mutations through
 // the running container (docker exec). Requires the container to be up.
-// Port of ui/src/server/agent-crons.ts.
 //
-// METERING CAVEAT (kept from the TS module): a cron fires the agent's own
+// METERING CAVEAT: a cron fires the agent's own
 // loop on the agent's own config, i.e. the PERSONA gateway key, which the
 // gateway leaves unmetered because a Talaria flow normally writes that turn's
 // ledger row. A cron has no flow, so its spend reaches no ledger. Not fixable
@@ -32,7 +31,7 @@ async fn agent_for(pg: &PgPool, def_id: &str) -> Result<(String, String), String
 }
 
 /// The job as Talaria shows it — every field defaulted from the raw
-/// jobs.json entry exactly as the TS mapper does.
+/// jobs.json entry.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronJob {
@@ -152,10 +151,10 @@ fn unit_minutes(unit: char) -> Option<f64> {
 /// Expand one comma-separated cron field into the values it fires on
 /// (cronFieldValues). An unparseable field expands to NOTHING — the caller
 /// reads that as "can't tell" and stays permissive. Values stay f64 because
-/// JS's Set holds the floats it accumulated (`v += step` with a fractional
+/// the expansion accumulates floats (`v += step` with a fractional
 /// step lands on 1.5, 4.5, …) and the gap arithmetic runs on them.
 fn cron_field_values(field: &str, max: i64) -> Vec<f64> {
-    // A JS Set, as a sorted vec: f64 isn't Ord, so the dedup is by equality
+    // A set, as a sorted vec: f64 isn't Ord, so the dedup is by equality
     // over sorted neighbors (values are finite and ≥ 0 here).
     let mut out: Vec<f64> = Vec::new();
     for part in field.split(',') {
@@ -181,8 +180,8 @@ fn cron_field_values(field: &str, max: i64) -> Vec<f64> {
                 None => (spec, None),
             };
             let parse = |s: &str| -> Result<f64, ()> {
-                // JS Number('') is 0, but an empty spec never reaches here
-                // except as lo of "‑5", which parses; NaN fails below.
+                // An empty spec never reaches here except as lo of "‑5",
+                // which parses; NaN fails below.
                 s.parse::<f64>().map_err(|_| ()).or(Ok(f64::NAN))
             };
             let lo = match parse(a) {
@@ -213,7 +212,7 @@ fn cron_field_values(field: &str, max: i64) -> Vec<f64> {
 /// The SHORTEST gap between two firings of a schedule, in minutes — the
 /// number a floor has to be compared against. None when we can't tell
 /// (Hermes stays the validator for anything exotic; we only refuse what we
-/// can prove is too fast). Port of minIntervalMinutes.
+/// can prove is too fast).
 pub fn min_interval_minutes(schedule: &str) -> Option<f64> {
     let s = schedule.trim().to_lowercase();
 
@@ -256,8 +255,8 @@ async fn assert_schedule_allowed(pg: &PgPool, schedule: &str) -> Result<(), Stri
     };
     let floor = cron_floor_minutes(pg).await;
     if floor > 0.0 && gap < floor {
-        // JS template literals print numbers whole: 5 stays "5", 5.5 "5.5" —
-        // Rust's f64 Display does the same for this range.
+        // Numbers print whole here: 5 stays "5", 5.5 "5.5" — f64 Display
+        // does the same for this range.
         let every = if gap < 1.0 {
             format!("{}s", (gap * 60.0).round())
         } else {
@@ -406,7 +405,7 @@ pub async fn list_fleet_crons(pg: &PgPool) -> Result<Vec<FleetCronAgent>, sqlx::
     )
     .fetch_all(pg)
     .await?;
-    // TS's Promise.all across agents — each list_cron_jobs is a round-trip to
+    // join_all across agents — each list_cron_jobs is a round-trip to
     // that agent's container, and sequential turns N containers' answers into
     // a+b+… instead of max(a,b). join_all keeps the defs' slug order; a failed
     // agent still reports per-agent, never fatal.

@@ -1,5 +1,4 @@
-// THE ARMED PATH, END TO END, WITH NOTHING FAKED BETWEEN THE PIECES — the
-// port of arming.test.ts.
+// THE ARMED PATH, END TO END, WITH NOTHING FAKED BETWEEN THE PIECES.
 //
 // Every other suite covers one hop: transport.rs's tests prove the gateway
 // puts tool definitions on the wire, probes.rs's prove `tool-select` grades
@@ -20,8 +19,7 @@
 // run_harness's widening gate -> the action allowlist the Inbox validates
 // against. Only the transport and the key derivation are scripted — and the
 // key derivation is scripted ONLY because `probe_keys` derives keys from
-// `llm_endpoints`, where the fabricated `pl-main` pair does not live; the TS
-// mocked `routingFor` for exactly the same reason.
+// `llm_endpoints`, where the fabricated `pl-main` pair does not live.
 //
 // LIVE-DB ONLY: the real record/get edges are the point, and they write the
 // `harness_capabilities` settings row. The pair `pl-main:qwen3-14b` is
@@ -114,10 +112,9 @@ fn approve_transport() -> TransportFn {
 
 // ── the harness run's deps: the real capability edges, the scripted rest ─────
 
-/// The TS hands run_harness a partial deps object and lets TS's per-field
-/// defaults fill the rest; Rust's HarnessDeps has no defaults, so this spells
-/// them — the two capability edges are the REAL ones (that is the test), the
-/// rest are the TS stubs or their inert equivalents.
+/// HarnessDeps has no defaults, so every field is spelled here — the two
+/// capability edges are the REAL ones (that is the test), the rest are stubs
+/// or their inert equivalents.
 fn harness_deps(pg: &sqlx::PgPool) -> HarnessDeps {
     HarnessDeps {
         // Never called: the context pins the model.
@@ -127,8 +124,8 @@ fn harness_deps(pg: &sqlx::PgPool) -> HarnessDeps {
             )
         }),
         slot_effort: Arc::new(|_slot, _model| Box::pin(async move { Option::<String>::None })),
-        // The TS scripts routingFor to `{ endpoints: ['pl-main'], upstreamModel: m }`
-        // — the key the widening gate derives is the KEY this file writes.
+        // Routing pinned to `pl-main` — the key the widening gate derives is
+        // the KEY this file writes.
         routing: Arc::new(|m: String| Box::pin(async move { (vec!["pl-main".to_string()], m) })),
         persona_keys: Arc::new(|_m: String| Box::pin(async move { Vec::<String>::new() })),
         missing_capabilities: {
@@ -152,7 +149,7 @@ fn harness_deps(pg: &sqlx::PgPool) -> HarnessDeps {
             Box::pin(async move { HashMap::<String, talaria_api::capability_reach::Reach>::new() })
         }),
         transport: approve_transport(),
-        // The TS stub turns the guard off; `Off` says it in one word.
+        // The guard, off in one word.
         guard_config: Arc::new(|| {
             Box::pin(async move {
                 Some(GuardConfig {
@@ -233,8 +230,7 @@ fn live_config() -> Option<Config> {
     .ok()
 }
 
-/// The TS's `beforeEach(store.clear())`, scoped to the one fabricated key —
-/// the live row belongs to everyone.
+/// Clear the one fabricated key — the live row belongs to everyone.
 async fn reset(pg: &sqlx::PgPool, key: &str) {
     forget_capabilities(pg, key)
         .await
@@ -269,7 +265,7 @@ async fn a_reported_tool_call_becomes_a_widened_inbox_surface() {
     deps.ask_with_tools = runner_tool_ask(&state, "qwen3-14b", tool_transport());
     deps.offers_tool_definitions = Arc::new(|| Box::pin(async move { true }));
     // probe_keys derives keys from llm_endpoints, where the fabricated pair
-    // does not live — the TS mocked routingFor for the same reason.
+    // does not live.
     deps.keys = {
         let key = key.clone();
         Arc::new(move || {

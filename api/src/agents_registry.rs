@@ -1,7 +1,6 @@
-// Fleet agent registry — Talaria owns this (ripped from mission-control).
-// Agents register once and heartbeat to keep last_seen fresh; status is
-// derived from heartbeat recency so a crashed agent reads offline. Port of
-// ui/src/server/agents-registry.ts.
+// Fleet agent registry — Talaria owns this. Agents register once and
+// heartbeat to keep last_seen fresh; status is derived from heartbeat
+// recency so a crashed agent reads offline.
 
 use sqlx::PgPool;
 
@@ -53,7 +52,7 @@ pub struct RegistryAgent {
     pub framework: Option<String>,
 }
 
-/// POST /api/agents/register — upsert by name, mark idle + seen (registerAgent).
+/// POST /api/agents/register — upsert by name, mark idle + seen.
 /// Answers (id, name) for the wire's `{agent: {id, name}, registered: true}`.
 pub async fn register_agent(
     pg: &PgPool,
@@ -84,9 +83,9 @@ pub async fn register_agent(
     Ok((rec.0, rec.1))
 }
 
-/// Heartbeat by registry id — refresh last_seen; lift offline → idle
-/// (heartbeatAgent). Answers the agent's name (for assigned-work lookup), or
-/// None when the id is unknown.
+/// Heartbeat by registry id — refresh last_seen; lift offline → idle.
+/// Answers the agent's name (for assigned-work lookup), or None when the id
+/// is unknown.
 pub async fn heartbeat_agent(
     pg: &PgPool,
     id: &str,
@@ -109,8 +108,8 @@ pub async fn heartbeat_agent(
 }
 
 /// Seed fleet names (from the fleet list) so agents appear before they
-/// heartbeat (seedFleetNames). Insert-if-absent, one statement per name —
-/// the roster is small.
+/// heartbeat. Insert-if-absent, one statement per name — the roster is
+/// small.
 pub async fn seed_fleet_names(pg: &PgPool, names: &[String]) -> Result<(), sqlx::Error> {
     for name in names {
         sqlx::query("insert into fleet_agents (name) values ($1) on conflict (name) do nothing")
@@ -121,10 +120,10 @@ pub async fn seed_fleet_names(pg: &PgPool, names: &[String]) -> Result<(), sqlx:
     Ok(())
 }
 
-/// Registry keyed by name, with status derived from heartbeat recency
-/// (registryByName): a stale heartbeat reads offline whatever the stored
-/// status says; a fresh one lifts offline → idle. `now` is epoch ms (the
-/// house rule — callers pass the clock).
+/// Registry keyed by name, with status derived from heartbeat recency:
+/// a stale heartbeat reads offline whatever the stored status says; a fresh
+/// one lifts offline → idle. `now` is epoch ms (the house rule — callers
+/// pass the clock).
 pub async fn registry_by_name(
     pg: &PgPool,
     now: i64,

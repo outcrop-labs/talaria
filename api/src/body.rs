@@ -1,7 +1,6 @@
-// Body validation — parseBody's contract (ui/src/server/api-guard.ts): the
-// first zod issue's message rides a 400 {error}. The message STRINGS are part
-// of the wire (the SPA surfaces them), so they are ported verbatim from the
-// ui's own zod 4.3 and pinned by tests probed against it. zod 4 spells them:
+// Body validation: the first validation issue's message rides a 400 {error}.
+// The message STRINGS are part
+// of the wire (the SPA surfaces them verbatim) and follow zod 4's spellings:
 //   "Invalid input: expected object, received null"
 //   "Invalid input: expected string, received undefined"   (missing member)
 //   "Invalid input: expected string, received number"      (wrong JSON type)
@@ -11,26 +10,24 @@
 // Checks run in schema order — first failure wins, like zod's issue list.
 //
 // This module is pure: it returns the MESSAGE, and the route wraps it in the
-// 400 envelope. (TS's parseBody builds the Response itself; here the HTTP
-// concern stays with the routes so these functions stay trivially testable.)
+// 400 envelope — the HTTP concern stays with the routes so these functions
+// stay trivially testable.
 
 use serde_json::Value;
 
-/// The request body as JSON, null when unparsable — exactly
-/// `request.json().catch(() => null)`.
+/// The request body as JSON, null when unparsable.
 pub fn parse(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap_or(Value::Null)
 }
 
-/// The RESPONSE-side twin: print every whole float the way JavaScript's
-/// `JSON.stringify` does — `1`, never `1.0`. Rust computes scores, ratios and
+/// The RESPONSE-side normalization: print every whole float as an integer —
+/// `1`, never `1.0`. Rust computes scores, ratios and
 /// prices as f64, and serde prints an f64 with a decimal point even when the
-/// fraction is zero, so a view that is otherwise byte-identical to TS's reads
-/// `"score":1.0` against TS's `"score":1`. Whole floats within JS's safe
+/// fraction is zero. Whole floats within the safe
 /// integer range become integer numbers; genuine fractions and integer-typed
 /// numbers pass through untouched. (Numbers at or beyond 2^53 are left alone:
-/// JS prints full digits there, serde prints the same digits with a `.0`, and
-/// no view on this wire carries one — the pin is the range check, not luck.)
+/// no view on this wire carries one — printing there is a decision, not a
+/// default.)
 pub fn js_numberify(v: &mut Value) {
     match v {
         Value::Array(items) => items.iter_mut().for_each(js_numberify),
@@ -85,7 +82,7 @@ pub fn array_too_big_msg(max: usize) -> String {
 }
 
 /// The min twin — the entries array's `.min(1)`. Element issues surface
-/// before either length check, as the probes pinned.
+/// before either length check.
 pub fn array_too_small_msg(min: usize) -> String {
     format!("Too small: expected array to have >={min} items")
 }
@@ -116,9 +113,9 @@ pub fn as_object(body: &Value) -> Result<&serde_json::Map<String, Value>, String
         .ok_or_else(|| object_msg(zod_type_name(body)))
 }
 
-/// JS string length (UTF-16 code units) — what zod's min/max count. An emoji
-/// outside the BMP counts 2, so chars().count() would disagree with the TS
-/// route on exactly the strings people put in display names.
+/// UTF-16 code-unit length — what the min/max bounds count. An emoji
+/// outside the BMP counts 2, so chars().count() would misjudge exactly the
+/// strings people put in display names.
 pub(crate) fn utf16_len(s: &str) -> usize {
     s.chars()
         .map(|c| usize::from((c as u32) > 0xFFFF))
@@ -126,10 +123,10 @@ pub(crate) fn utf16_len(s: &str) -> usize {
         + s.chars().count()
 }
 
-/// JS `s.slice(0, max)` for a UTF-16 budget: the longest `&str` prefix whose
+/// Truncate to a UTF-16 budget: the longest `&str` prefix whose
 /// UTF-16 length stays within `max`. A cut that would split a surrogate pair
-/// yields the prefix one unit short rather than a broken half-pair — the one
-/// documented divergence from the TS, which happily produces lone surrogates.
+/// yields the prefix one unit short rather than a broken half-pair — a lone
+/// surrogate never escapes this crate.
 pub(crate) fn truncate_utf16(s: &str, max: usize) -> &str {
     let mut units = 0;
     for (i, c) in s.char_indices() {
@@ -141,11 +138,11 @@ pub(crate) fn truncate_utf16(s: &str, max: usize) -> &str {
     s
 }
 
-/// JS `s.slice(start, end)` under a UTF-16 budget — the windowed sibling of
-/// `truncate_utf16` (the retrieval chunker hard-splits an oversized paragraph
-/// into fixed windows). A window that would split a surrogate pair rounds at
-/// char boundaries: a char belongs to the window iff it fits entirely inside
-/// it, so a lone-surrogate half never escapes this crate.
+/// The windowed sibling of `truncate_utf16` (the retrieval chunker
+/// hard-splits an oversized paragraph into fixed windows). A window that
+/// would split a surrogate pair rounds at char boundaries: a char belongs to
+/// the window iff it fits entirely inside it, so a lone-surrogate half never
+/// escapes this crate.
 pub(crate) fn utf16_substr(s: &str, start: usize, end: usize) -> &str {
     let mut units = 0;
     let mut from = None;
@@ -419,7 +416,7 @@ pub fn preprocessed_email_member(
     Ok(s)
 }
 
-/// zod v4's "practical email" pattern (zod/v4/core/regexes.js), hand-rolled
+/// zod v4's "practical email" pattern, hand-rolled
 /// because one pattern is not a regex dependency:
 /// /^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/
 pub fn zod_email_ok(s: &str) -> bool {
@@ -684,9 +681,9 @@ pub fn optional_uuid_member(
     }
 }
 
-/// zod 4's `z.string().datetime()` under default params, transcribed from
-/// zod/src/v4/core/regexes.ts: a real proleptic date (per-month day bounds
-/// and the leap-year alternatives in the source), then `T`, an `hh:mm` that
+/// zod 4's `z.string().datetime()` under default params: a real proleptic
+/// date (per-month day bounds
+/// and the leap-year alternatives), then `T`, an `hh:mm` that
 /// may carry seconds and any-length fraction, then a bare `Z` — no offsets,
 /// no local times, unless the schema asked for them and these routes never
 /// do. The failure message is zod 4's `Invalid ISO datetime` (the
@@ -817,10 +814,11 @@ pub enum NumKind {
     Float,
 }
 
-/// A float the way JSON.stringify prints it: an integral value serializes as
-/// an integer ("0", "1"), not Rust's "0.0". Any number that rides the wire
+/// A float printed as an integer when it is one: an integral value
+/// serializes as
+/// "0", "1", not Rust's "0.0". Any number that rides the wire
 /// — parsed request echoes, DB columns read as f64 — goes through this so a
-/// 1000-token cap is byte-identical to TS's.
+/// 1000-token cap prints "1000".
 pub fn js_num(v: f64) -> serde_json::Number {
     if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.007_199_254_740_992e15 {
         serde_json::Number::from(v as i64)
@@ -842,7 +840,7 @@ pub(crate) fn fmt_bound(b: f64) -> String {
 
 /// An optional+nullable z.number() member (`.nullish()`): absent and null both
 /// pass. Numbers run type → int guard → min → max, zod's order. The message
-/// table is zod 4.3.6's, probed — including its odd corners: the int guard
+/// table is zod 4's — including its odd corners: the int guard
 /// reports the SAFE-INTEGER bounds (±9007199254740991) for anything beyond
 /// them, each side naming its own, and a plain bound breach on an int field
 /// still says "expected number", not "expected int".
@@ -1026,14 +1024,13 @@ mod datetime_tests {
 
 // ── JS coercion semantics ─────────────────────────────────────────────────────
 //
-// Structured replies are coerced the way the TS transforms coerced them, which
-// is the way JavaScript does: a lenient member goes through `String(x)` and an
+// Structured replies coerce members the way JavaScript does: a lenient member
+// goes through `String(x)` and an
 // index member through `Number(x)`, and the difference from Rust's own
 // `to_string` is observable — `null` becomes the truthy string "null" and is
 // KEPT, an object becomes "[object Object]", an array joins, and whole
-// numbers lose the fraction. Reproducing JS here is not nostalgia; it is the
-// difference between a member the TS transform kept and one this port would
-// silently drop.
+// numbers lose the fraction. The coercion rules ARE the wire contract: a
+// member that fails to coerce is still a member of the reply, never dropped.
 
 /// JS `String(x)`.
 pub fn js_string(value: &Value) -> String {
@@ -1118,7 +1115,7 @@ mod tests {
     #[test]
     fn js_numberify_prints_whole_floats_as_integers_like_stringify() {
         // The fitness diff's detail case: a score stored as 1.0 must read `1`
-        // on the wire, exactly as TS's JSON.stringify prints it.
+        // on the wire.
         let mut v =
             json!({ "score": 1.0, "ratio": 0.9090909090909091, "n": 3, "list": [2.0, 0.5] });
         js_numberify(&mut v);
@@ -1137,7 +1134,7 @@ mod tests {
 
     #[test]
     fn zod_messages_are_verbatim() {
-        // Each string printed by the ui's own zod 4.3.6 for that case.
+        // Each string exactly as the message table spells it.
         assert_eq!(
             object_msg("null"),
             "Invalid input: expected object, received null"
@@ -1191,7 +1188,7 @@ mod tests {
 
     #[test]
     fn email_truth_table_matches_zod_probes() {
-        // Every row probed against z.string().email() in the ui's zod 4.3.6.
+        // The email truth table.
         let ok = [
             "a@b.co",
             "A@B.CO",
@@ -1415,7 +1412,7 @@ mod tests {
     fn nullable_number_members_match_zod_probes() {
         use super::NumKind;
         // The key-policy schema (keys.$id): int fields max 1e15/10_000, a
-        // float field max 1e9 — every row probed against zod 4.3.6.
+        // float field max 1e9.
         let num =
             |v: Value| nullable_number_member(v.as_object().unwrap(), "v", NumKind::Int, 0.0, 1e15);
         assert_eq!(num(json!({ "v": 250 })).unwrap(), Some(250.0));
@@ -1552,8 +1549,8 @@ mod tests {
 
     #[test]
     fn trimmed_max_only_and_array_members_match_zod_probes() {
-        // Every row probed against the workflows schema in the ui's zod
-        // 4.3.6: z.string().trim().min(1).max(80), z.string().max(500)
+        // The workflows schema's shapes:
+        // z.string().trim().min(1).max(80), z.string().max(500)
         // .optional(), and the arrays behind match/skills/toolkits.
         let trimmed = |v: Value| trimmed_string_member(v.as_object().unwrap(), "name", 1, 80);
         assert_eq!(trimmed(json!({ "name": "  x  " })).unwrap(), "x");

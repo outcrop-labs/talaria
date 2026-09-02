@@ -1,7 +1,6 @@
-// Spend ceiling — port of the llm-gateway.ts budget block (#265): the
-// circuit breaker checked BEFORE an upstream call, at org and caller scope,
-// with the key's own caps min-merged under the admin's ceiling. Off by
-// default; a failed read must not become an outage.
+// Spend ceiling — the circuit breaker checked BEFORE an upstream call, at org
+// and caller scope, with the key's own caps min-merged under the admin's
+// ceiling. Off by default; a failed read must not become an outage.
 
 use crate::gateway::settings::get_setting;
 use crate::gateway::usage::{SpendWindow, spend_since};
@@ -135,8 +134,8 @@ fn retry_after(window_hours: i64) -> i64 {
     (window_hours * 3600).clamp(30, 300)
 }
 
-/// en-US grouping for a token figure — node's toLocaleString(). Shared
-/// with the task-usage route, whose activity line carries the same shape.
+/// en-US grouping for a token figure. Shared with the task-usage route,
+/// whose activity line carries the same shape.
 pub fn group(n: i64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
@@ -149,8 +148,8 @@ pub fn group(n: i64) -> String {
     out
 }
 
-/// Port of budgetMessage — the sentence a denial carries, pointing its reader
-/// at the surface whoever-hit-it can actually act on.
+/// The sentence a denial carries, pointing its reader at the surface
+/// whoever-hit-it can actually act on.
 pub fn budget_message(d: &BudgetDenial) -> String {
     let (used, cap) = if d.unit == "usd" {
         (format!("${:.2}", d.used), format!("${:.2}", d.limit))
@@ -226,7 +225,7 @@ async fn cached_spend(
 
 /// The circuit breaker. Returns a denial when `caller` (or the org) is over
 /// budget, else None. Called BEFORE the upstream request — a refusal must
-/// cost nothing. Port of checkBudget.
+/// cost nothing.
 pub async fn check_budget(
     pg: &PgPool,
     caller: &str,

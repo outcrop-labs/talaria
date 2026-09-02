@@ -1,7 +1,7 @@
-// /api/kb/search — port of ui/src/routes/api/kb.search.ts. Full-text search
-// across the knowledgebase (docs the caller can read). The engine (ranked
-// union of docs + space overviews, effective-visibility ACL filter, sentinel
-// highlighting) lives in kb::search_docs.
+// /api/kb/search. Full-text search across the knowledgebase (docs the caller
+// can read). The engine (ranked union of docs + space overviews,
+// effective-visibility ACL filter, sentinel highlighting) lives in
+// kb::search_docs.
 
 use axum::Json;
 use axum::extract::State;
@@ -19,8 +19,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(u) => u,
         Err(gate) => return gate,
     };
-    // searchParams.get('q') ?? '' — missing param is the empty query, which
-    // the engine answers with no hits (never an error).
+    // a missing q is the empty query, which the engine answers with no hits
+    // (never an error).
     let q = uri
         .query()
         .and_then(|qs| {

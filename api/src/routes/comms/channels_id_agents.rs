@@ -1,4 +1,4 @@
-// /api/channels/{id}/agents — port of ui/src/routes/api/channels.$id.agents.ts.
+// /api/channels/{id}/agents.
 // POST { model } → add a fleet agent to the channel (the adder needs access
 // to that agent). DELETE { model } → remove it. Any member.
 

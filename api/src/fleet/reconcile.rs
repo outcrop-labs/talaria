@@ -1,5 +1,4 @@
-// Fleet reconciliation — port of ui/src/server/fleet-reconcile.ts's rollAgent
-// and reconcileFleet. A ROLL is the blue/green cutover: render the incoming
+// Fleet reconciliation. A ROLL is the blue/green cutover: render the incoming
 // slot alongside the active one, bring it up, wait for real health, flip the
 // manifest, drain, retire the old container. In-flight replies never hit a
 // dead container, and an unhealthy replacement never takes over — the old
@@ -14,7 +13,7 @@ use crate::fleet::render::{RollOverlay, next_free_port, render_fleet};
 use crate::secretbox::SecretBox;
 
 /// How long the old container keeps serving after cutover so in-flight
-/// replies drain (fleet-reconcile.ts ROLL_DRAIN_MS).
+/// replies drain (TALARIA_ROLL_DRAIN_SECONDS; default 45s).
 fn roll_drain_ms() -> u64 {
     std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
         .ok()
@@ -24,9 +23,9 @@ fn roll_drain_ms() -> u64 {
         * 1000
 }
 
-/// The roll verdict. `Err` is a thrown step (the caller decides what that
-/// means); `Ok(Some(error))` is TS's `{ ok: false, error }` — a deliberate
-/// soft failure with a sentence for the UI.
+/// The roll verdict. `Err` is a failed step (the caller decides what that
+/// means); `Ok(Some(error))` is a deliberate soft failure with a sentence
+/// for the UI.
 ///
 /// Everything a running agent's config bakes in at process start — MCP
 /// servers above all — becomes live only through this.
@@ -123,7 +122,7 @@ pub struct ReconcileResult {
 /// container isn't running. Reboot survival is already handled by `restart:
 /// unless-stopped` on the generated services; this covers drift (an agent
 /// enabled/created while Talaria was down, a stopped container, a manifest
-/// change) — reconcileFleet.
+/// change).
 pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileResult, String> {
     let render = render_fleet(pg, sb, None).await?;
     let managed: Vec<(String, String)> = sqlx::query_as(

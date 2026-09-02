@@ -1,10 +1,8 @@
-// The brief's three row sources and the shared policy they are shaped by —
-// ports of the brief-facing half of ui/src/server/inbox-focus-sources.ts and
-// the helpers it borrows from ui/src/server/inbox-focus-policy.ts.
+// The brief's three row sources and the shared policy they are shaped by.
 //
-// `channelItems` is deliberately NOT here: the brief takes its conversations
-// from `comms_lines` (daily-brief-comms.ts) because "unread" is the wrong
-// question for a document about who is waiting — see that module's header.
+// Conversations are deliberately NOT one of them: the brief takes its comms
+// from `comms_lines` because "unread" is the wrong question for a document
+// about who is waiting — see that module's header.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -18,8 +16,7 @@ use crate::agent_auth::epoch_ms_to_iso;
 use crate::boards::board_visibility_sql;
 use crate::statuses::status_category_sql;
 
-/// notifications.ts kinds the brief lists — the actionable set, not the bell
-/// (lib/notify-classes ACTIONABLE_NOTIFICATION_KINDS).
+/// The notification kinds the brief lists — the actionable set, not the bell.
 pub const ACTIONABLE_NOTIFICATION_KINDS: [&str; 11] = [
     "mention",
     "dm",
@@ -34,14 +31,12 @@ pub const ACTIONABLE_NOTIFICATION_KINDS: [&str; 11] = [
     "task-status",
 ];
 
-/// The fingerprint hash: sha256 over the exact bytes `JSON.stringify` would
-/// produce. serde_json (with the crate's preserve_order build) writes object
-/// keys in insertion order and the same minimal escaping, so a `json!` value
-/// built in the TS literal's key order hashes identically on both sides —
-/// which matters during the handover, when fingerprints written by TS sweeps
-/// are compared by Rust ones: a mismatch would read as "everything changed"
-/// and append a change row for every line in the document, exactly once, for
-/// no reason.
+/// The fingerprint hash: sha256 over the exact bytes JSON serialization
+/// produces. serde_json (with the crate's preserve_order build) writes object
+/// keys in insertion order with minimal escaping, so a `json!` value built in
+/// a fixed key order hashes byte-stably across releases — a mismatch would
+/// read as "everything changed" and append a change row for every line in the
+/// document, exactly once, for no reason.
 pub fn fingerprint(value: &Value) -> String {
     let bytes = serde_json::to_string(value).expect("value serializes");
     let mut hasher = Sha256::new();
@@ -57,9 +52,9 @@ pub fn key_of(source_type: &str, source_id: &str) -> String {
     format!("{source_type}:{source_id}")
 }
 
-/// `asIso`: any timestamp the sources read becomes an ISO string; the epoch-ms
-/// reads here are always real Postgres timestamps, and the TS fallback (epoch 0
-/// for an unparseable value) is carried for shape-parity.
+/// Any timestamp the sources read becomes an ISO string; the epoch-ms reads
+/// here are always real Postgres timestamps, and an unparseable timestamp
+/// falls back to epoch 0.
 pub fn as_iso(ms: i64) -> String {
     epoch_ms_to_iso(ms)
 }
@@ -134,12 +129,9 @@ pub fn task_recommendation(status: &str, is_review: bool) -> &'static str {
     }
 }
 
-/// One source row, folded to the fields the brief reads. The TS shape carries
-/// more (actions with labels and risk, briefStatus, the whole metadata record);
-/// what the BRIEF consumes is the key, the rendering fields, and — because the
-/// fingerprint is over what the line SAYS — the action IDS. Those are the
-/// fields kept here; the inbox surface builds its own richer shape when that
-/// route family crosses.
+/// One source row, folded to the fields the brief reads: the key, the
+/// rendering fields, and — because the fingerprint is over what the line SAYS
+/// — the action IDS.
 #[derive(Debug, Clone)]
 pub struct RawFocusItem {
     pub key: String,
@@ -210,12 +202,8 @@ pub fn item_fingerprint(item: &RawFocusItem) -> String {
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 
 /// Everything on this person's boards that needs a human: failed, blocked, in
-/// review, or waiting in triage — the same scoped read the inbox runs, the
-/// read ACL (board membership or the owning team's) carried in the WHERE.
-///
-/// The optional `source_id` narrow-down the inbox route uses is not ported:
-/// the scheduled pass never passes one, and the route family will bring its
-/// own spelling when it crosses.
+/// review, or waiting in triage — the read ACL (board membership or the owning
+/// team's) carried in the WHERE.
 pub async fn task_items(pg: &PgPool, user_id: &str) -> Result<Vec<RawFocusItem>, sqlx::Error> {
     let review = status_category_sql("review", &["quality_review"]);
     let sql = format!(
@@ -271,8 +259,8 @@ pub async fn task_items(pg: &PgPool, user_id: &str) -> Result<Vec<RawFocusItem>,
                 });
             }
             // The review pair. 'Safe' DESCRIBES A HUMAN CLICK on this card;
-            // whether a MODEL may run it is decided elsewhere (the inbox's
-            // proposal gate) — the ids are all that ride the fingerprint.
+            // whether a MODEL may run it is decided elsewhere — the ids are
+            // all that ride the fingerprint.
             let action_ids: Vec<String> = if row.is_review {
                 vec!["approve_task".into(), "request_changes".into()]
             } else {
@@ -294,8 +282,9 @@ pub async fn task_items(pg: &PgPool, user_id: &str) -> Result<Vec<RawFocusItem>,
                 action_ids,
                 bucket,
                 created_at_ms: row.created_ms,
-                // Stamped by the spread below — `item_fingerprint` never reads
-                // this field, so the placeholder is exact, not a default.
+                // Stamped by the struct update below — `item_fingerprint`
+                // never reads this field, so the placeholder is exact, not a
+                // default.
                 source_fingerprint: String::new(),
             };
             RawFocusItem {
@@ -414,7 +403,7 @@ fn approval_evidence_email(payload: &Value) -> Vec<BriefEvidence> {
             text: format!("{to}{cc}").chars().take(1_000).collect(),
         });
     }
-    // `subject !== undefined`: a present-but-empty subject still gets its row.
+    // A present-but-empty subject still gets its row.
     match payload.get("subject") {
         Some(Value::String(s)) => out.push(BriefEvidence {
             label: "Subject".into(),
@@ -656,10 +645,9 @@ pub async fn notification_items(
 // ── Dedupe and order ─────────────────────────────────────────────────────────
 
 /// Drop a notification that merely points at a ticket or a channel already in
-/// the set. What the BRIEF passes here never contains channel items (the
-/// conversations are their own source now), so the channel half is dormant
-/// until the inbox surface crosses — it is ported anyway because the policy is
-/// one function there and half of it here would be a lie.
+/// the set. What the brief passes here never contains channel items (the
+/// conversations are their own source), so the channel half never fires — the
+/// rule is one policy over whatever lines the set holds.
 pub fn dedupe_items(items: Vec<RawFocusItem>) -> Vec<RawFocusItem> {
     // Owned id sets: borrowing them off `items` would pin the vec for the
     // whole function and the consume-with-into_iter below could not move it.
@@ -714,9 +702,8 @@ pub fn sort_items(items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem> {
         let Some(raw) = item.due_at.as_deref() else {
             return 2;
         };
-        // An unparseable due date is NaN in TS, and every comparison on it is
-        // false — which lands it in the "due, but not soon" rank, not the
-        // none-at-all one.
+        // An unparseable due date lands in the "due, but not soon" rank —
+        // not the none-at-all one.
         let Some(due) = crate::agent_auth::iso_to_epoch_ms(raw) else {
             return 1;
         };
@@ -728,7 +715,7 @@ pub fn sort_items(items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem> {
             "high" => 1,
             "medium" => 2,
             "low" => 3,
-            // TS ranks String(undefined) — an absent metadata.priority — at 4.
+            // An absent metadata.priority ranks at 4, below every real tier.
             _ => 4,
         }
     };
@@ -761,11 +748,10 @@ mod tests {
         item
     }
 
-    // THE FINGERPRINT IS A CROSS-RUNTIME CONTRACT: these vectors were produced
-    // by `JSON.stringify` + sha256 in node, over literals written in the same
-    // key order as the `json!` calls above. If this test fails, the bytes
-    // changed and every line in a TS-written brief would read as "changed" the
-    // first time a Rust sweep looked at it.
+    // THE FINGERPRINT IS BYTE-STABLE BY CONTRACT: these vectors pin the exact
+    // bytes the hash is computed over, in the same key order as the `json!`
+    // calls above. If this test fails, the bytes changed and every line in
+    // every existing brief reads as "changed" on the next sweep.
     #[test]
     fn fingerprint_bytes_match_json_stringify() {
         let value = json!({

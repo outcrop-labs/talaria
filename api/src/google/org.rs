@@ -1,10 +1,9 @@
 // The shared, org-wide Google connection (google_org_connection id=1) — the
-// token half that the agent Drive export path needs (ui/src/server/google/
-// org-connection.ts getOrgTargets/getOrgAccessToken). The admin save /
+// token half that the agent Drive export path needs. The admin save /
 // disconnect / status writers stay with the integrations plane: general fleet
 // agents — which have no human owner — act as THIS identity for Drive/Docs,
 // so "the company" has one Google workspace the swarm can build in. Personal
-// assistants instead act as their own owner (google_agent.rs). Tokens are
+// assistants instead act as their own owner (google/agent.rs). Tokens are
 // encrypted at rest, same as per-user connections.
 
 use crate::agent_auth::epoch_ms_to_iso;
@@ -12,8 +11,8 @@ use crate::google::connections::{EXPIRY_SKEW_MS, TokenError, request_refresh};
 use crate::secretbox::SecretBox;
 use sqlx::PgPool;
 
-/// Where the org account's agents build (org-connection.ts OrgTargets).
-/// Empty strings are never stored — the writers normalize blanks to null.
+/// Where the org account's agents build. Empty strings are never stored —
+/// the writers normalize blanks to null.
 #[derive(Debug, Clone, Default)]
 pub struct OrgTargets {
     /// Shared Drive or folder id for agent file creation (null → My Drive).
@@ -27,7 +26,7 @@ pub struct OrgTargets {
 }
 
 /// The org build targets alone (for execution paths). No row at all is the
-/// unconfigured zero value, same as TS.
+/// unconfigured zero value.
 pub async fn get_org_targets(pg: &PgPool) -> Result<OrgTargets, sqlx::Error> {
     // (drive_folder_id, calendar_id, send_as, shared_drive_id) — one row.
     type TargetRow = (
@@ -53,11 +52,11 @@ pub async fn get_org_targets(pg: &PgPool) -> Result<OrgTargets, sqlx::Error> {
     })
 }
 
-/// A valid access token for the org connection, or None when not connected
-/// (org-connection.ts getOrgAccessToken — same read-through shape as the
-/// per-user get_access_token: reuse the cached token while comfortably valid,
-/// else refresh and re-seal; a revoked refresh token clears the connection so
-/// the admin UI prompts a reconnect instead of erroring forever).
+/// A valid access token for the org connection, or None when not connected —
+/// the same read-through shape as the per-user get_access_token: reuse the
+/// cached token while comfortably valid, else refresh and re-seal; a revoked
+/// refresh token clears the connection so the admin UI prompts a reconnect
+/// instead of erroring forever.
 pub async fn get_org_access_token(
     pg: &PgPool,
     sb: &SecretBox,
@@ -117,7 +116,7 @@ pub async fn get_org_access_token(
     Ok(Some(access_token))
 }
 
-// ── The admin/status half (org-connection.ts) ────────────────────────────────
+// ── The admin/status half ────────────────────────────────────────────────────
 
 use serde::Serialize;
 
@@ -144,7 +143,7 @@ impl From<&OrgTargets> for TargetsWire {
     }
 }
 
-/// GoogleConnectionStatus & { targets } — getOrgConnectionStatus.
+/// The per-user status shape plus `targets` — the admin panel's org read.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgStatus {
@@ -180,8 +179,8 @@ async fn org_status_row(pg: &PgPool) -> Result<Option<OrgStatusRow>, sqlx::Error
 }
 
 /// The shared org connection's full status. No row, or a row without a
-/// refresh token, is the unconfigured zero shape (TS truthiness: a blank
-/// cipher counts as not connected).
+/// refresh token, is the unconfigured zero shape (truthiness: a blank cipher
+/// counts as not connected).
 pub async fn get_org_connection_status(pg: &PgPool) -> Result<OrgStatus, sqlx::Error> {
     let row = org_status_row(pg).await?;
     let (email, scope, refresh, drive_folder_id, calendar_id, send_as, shared_drive_id, created_ms) =

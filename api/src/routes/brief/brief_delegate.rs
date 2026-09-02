@@ -1,5 +1,5 @@
-// /api/brief/delegate — port of ui/src/routes/api/brief.delegate.ts.
-// GET → the caller's live reply grants. POST { channelId, granted } → grant
+// /api/brief/delegate. GET → the caller's live reply grants. POST
+// { channelId, granted } → grant
 // or revoke the assistant's reply-without-asking privilege, org-wide (null)
 // or for one channel.
 //
@@ -20,15 +20,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// The POST body, TS's `Body` zod shape.
+/// The POST body: channelId (uuid or null) + granted.
 struct DelegateBody {
     channel_id: Option<String>,
     granted: bool,
 }
 
 fn validate(obj: &serde_json::Map<String, serde_json::Value>) -> Result<DelegateBody, String> {
-    // `Uuid.nullable()` — the key must be present; null is the standing,
-    // org-wide grant.
+    // channelId must be PRESENT; null is the standing, org-wide grant.
     let channel_id = nullable_uuid_member(obj, "channelId")?;
     let granted = boolean_member(obj, "granted")?;
     Ok(DelegateBody {
@@ -94,10 +93,9 @@ pub async fn post(
     };
     // Granting permission to send a reply that is already written means
     // sending it — otherwise the control appears to do nothing until the other
-    // person happens to speak again. A send failure here is swallowed to 0
-    // (the TS `.catch(() => 0)`): the grant itself stands, and the sweep will
-    // still draft — the response must not read as a failed grant because one
-    // parked send hiccupped.
+    // person happens to speak again. A send failure here is swallowed to 0:
+    // the grant itself stands, and the sweep will still draft — the response
+    // must not read as a failed grant because one parked send hiccupped.
     let notify = crate::notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     let sent = release_drafts(&notify, &user.id, body.channel_id.as_deref())
         .await

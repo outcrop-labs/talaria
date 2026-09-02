@@ -1,9 +1,10 @@
-// /api/models — port of ui/src/routes/api/models.ts. The gateway model
-// catalog for signed-in users (the /api/llm/v1/models twin without an API
-// key) — powers the preferred-model picker. Role-filtered: members see only
-// what the admin allowlist permits; admins see everything. Each model carries
-// a pretty label + a "what it's good at" blurb when the public catalog knows
-// it. Also says which model the caller's muse would use.
+// /api/models.
+// The gateway model catalog for signed-in users (the /api/llm/v1/models
+// twin without an API key) — powers the preferred-model picker.
+// Role-filtered: members see only what the admin allowlist permits; admins
+// see everything. Each model carries a pretty label + a "what it's good at"
+// blurb when the public catalog knows it. Also says which model the caller's
+// muse would use.
 
 use crate::error::thrown_internal_error;
 use crate::harness_model::muse_model_for;
@@ -24,10 +25,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     // New registered models get their org-voice blurb from the registered
     // blurb-rewrite job (model_info.rs) — same pass, same throttle, on the
-    // cadence. The coexistence-era kick this route used to fire (the job's
-    // only trigger while TS owned the schedule) retired with the flip: a
-    // kick AND a job on one throttle is two model calls for one batch of
-    // pending ids.
+    // cadence. This route never kicks the job: a kick AND a job on one
+    // throttle is two model calls for one batch of pending ids.
     let catalog = match gateway_models_for(&state.pg, &user.role).await {
         Ok(c) => c,
         Err(e) => {
@@ -52,9 +51,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 return thrown_internal_error();
             }
         };
-        // TS spreads `{...m, label, blurb}` — the three catalog keys in their
-        // order, then the two info keys. A model the public catalog doesn't
-        // know serves the catalog row alone.
+        // `{...m, label, blurb}` — the three catalog keys in their order,
+        // then the two info keys. A model the public catalog doesn't know
+        // serves the catalog row alone.
         models.push(match info {
             Some(info) => json!({
                 "id": m.id,

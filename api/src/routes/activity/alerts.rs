@@ -1,5 +1,5 @@
-// /api/alerts — port of ui/src/routes/api/alerts.ts.
-// GET → derived system alerts (no persistence) for the requesting user.
+// /api/alerts. GET → derived system alerts (no persistence) for the
+// requesting user.
 
 use crate::alerts::compute_alerts;
 use crate::session::require_user;

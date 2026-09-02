@@ -1,4 +1,4 @@
-// The RAG collection registry. Port of ui/src/server/retrieval/collections.ts.
+// The RAG collection registry.
 // Talaria spins up as many collections as needed; two are auto-provisioned
 // and undeletable:
 //   activity  — the ambient workspace index (chats/channels/plans/research/),
@@ -62,7 +62,7 @@ fn col_of(row: &sqlx::postgres::PgRow) -> RagCollection {
 }
 
 // schema_version casts to int8 for the same reason id casts to text: the
-// column is the TS schema's `integer`, and Rust holds the row as i64 (the
+// column is an `integer`, and Rust holds the row as i64 (the
 // type the Qdrant-shape functions take). Uncast, sqlx refuses INT4→i64 at
 // row decode — a panic the empty dev table hid until a route listed rows.
 const COL_SELECT: &str = "select id::text, name, kind, qdrant_name, description, auto, \
@@ -90,7 +90,7 @@ const AUTO: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-/// `Date.now().toString(36)` — the clash-avoidance suffix, base 36 lowercase.
+/// The clash-avoidance suffix — epoch millis, base 36 lowercase.
 fn base36(millis: u128) -> String {
     if millis == 0 {
         return "0".into();
@@ -106,9 +106,9 @@ fn base36(millis: u128) -> String {
     String::from_utf8(out).expect("base-36 digits are ascii")
 }
 
-/// `autoBindingsChecked` — the process flag that keeps the binding repair off
-/// the hot path once it has run once. Set only by a successful pass: a failed
-/// one retries on the next call, exactly the TS catch-and-move-on.
+/// The process flag that keeps the binding repair off the hot path once it
+/// has run once. Set only by a successful pass: a failed one retries on the
+/// next call.
 static AUTO_BINDINGS_CHECKED: AtomicBool = AtomicBool::new(false);
 
 /// Create the two auto collections + their Qdrant collections if missing.
@@ -223,10 +223,9 @@ pub async fn get_collection(pg: &PgPool, id: &str) -> Result<Option<RagCollectio
 }
 
 /// `'talaria_' + lower` with non-alphanumeric RUNS folded to a single `_`
-/// (the TS class carries a `+` — "Department!! of" is department_of, not
-/// department___of), separators trimmed at both ends, 40 chars. A slice that
-/// lands mid-word can leave a trailing `_` — the TS doesn't re-trim, so
-/// neither does this.
+/// ("Department!! of" is department_of, not department___of), separators
+/// trimmed at both ends, 40 chars. A slice that lands mid-word can leave a
+/// trailing `_` — no re-trim.
 fn slugify(s: &str) -> String {
     let mut folded = String::with_capacity(s.len());
     let mut in_run = false;
@@ -256,8 +255,8 @@ pub async fn create_collection(
     ed: &EmbedDeps,
     input: &CreateCollection<'_>,
 ) -> Result<RagCollection, String> {
-    // A down embedding service fails the create — same as the TS, which lets
-    // embedDim() throw rather than register a collection it cannot fill.
+    // A down embedding service fails the create rather than register a
+    // collection it cannot fill.
     let dim = embed_dim(ed).await?;
     let mut qdrant_name = slugify(input.name);
     // Avoid a name clash with an existing collection.
@@ -543,7 +542,7 @@ mod tests {
         );
         // Long names cap at 40 (the cap is on the folded part, after the
         // 'talaria_' prefix is decided) and keep a trailing `_` when the cut
-        // lands there — the TS does not re-trim.
+        // lands there — no re-trim.
         let long = "a".repeat(80);
         assert_eq!(slugify(&long), format!("talaria_{}", "a".repeat(40)));
         assert_eq!(slugify(""), "talaria_");
@@ -552,7 +551,7 @@ mod tests {
 
     #[test]
     fn base36_matches_the_js_spelling() {
-        // Date.now().toString(36) — lowercase, no padding.
+        // Lowercase, no padding.
         assert_eq!(base36(0), "0");
         assert_eq!(base36(35), "z");
         assert_eq!(base36(36), "10");

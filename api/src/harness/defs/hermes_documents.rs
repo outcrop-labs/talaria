@@ -1,11 +1,8 @@
 // CAN THIS MODEL BE A HERMES AGENT — over the workspace's DOCUMENTS.
-// Port of harness/defs/hermes-documents.ts.
 //
 // The second of the Hermes family (see `hermes_knowledge.rs` for why the family
-// exists at all). That file closed the largest hole, 1 of 9 knowledge tools ever
-// asked of a model. This closes the next: SIX document tools, none of which had
-// ever been put in front of one — modelled in `toolbox/talaria-tools.ts`,
-// simulated in `toolbox/sandbox.ts`, driven only by the sandbox's own unit test.
+// exists at all): the document half of the fleet toolkit, SIX tools, every one
+// of them able to hand a person a thing the org will later rely on.
 //
 // WHY DOCUMENTS ARE THEIR OWN HARNESS RATHER THAN MORE KNOWLEDGE FIXTURES. A
 // knowledge doc is a page the org believes; a document is a thing an agent
@@ -38,10 +35,9 @@
 // called — or the WORLD the run left behind, which is the stronger evidence and
 // the only thing that can see a body that got deleted.
 //
-// THE SANDBOX HALF IS DECLARED, NOT EMBEDDED: `dry_run` names the six tools and
-// the world override; the dispatch that mutates `fitness/toolbox/world.rs`
-// crosses with the sandbox itself, and this file's tests hand-build the post-
-// states the TS suite reads back out of a real one.
+// THE SANDBOX HALF IS DECLARED, NOT EMBEDDED: `dry_run` names the six tools
+// and the world override; this file's tests hand-build the post-states a
+// sandbox run leaves behind rather than driving a real one.
 
 use std::sync::Arc;
 
@@ -97,13 +93,11 @@ fn refused(ctx: &CheckCtx, tool: &str) -> bool {
 /// real production path rather than a hypothetical: a RENDERED HERMES PERSONA
 /// runs its own tool loop inside its container, so the sweep sees tool names and
 /// never the world they acted on. A fixture that reads `w.documents` there does
-/// not merely fail the model — in the TS it THREW, in a check, mid-sweep.
+/// not merely fail the model — it could not fairly ask its question at all.
 ///
-/// So the absence is answered as what it is: the fixture could not fairly ask
-/// its question, which is a gap reported to US. (The TS cast never validated, so
-/// a world of the wrong shape read as undefined fields and a model failure; the
-/// port's `SandboxWorld::from_value` folds a world that does not decode into the
-/// same gap.)
+/// So the absence is answered as what it is: a gap reported to US. And
+/// `SandboxWorld::from_value` folds a world that does not decode into the same
+/// gap rather than reading it as garbage fields and a model failure.
 fn world(ctx: &CheckCtx) -> Option<SandboxWorld> {
     ctx.world.as_ref().and_then(SandboxWorld::from_value)
 }
@@ -122,10 +116,8 @@ fn mentions(text: &str, words: &[&str]) -> bool {
     words.iter().any(|w| t.contains(w))
 }
 
-/// `/docs\.google\.com/i.test(v)` — the TS check is a case-insensitive literal
-/// match, which is a lowercase `contains` here. A `docs.google.com` URL after a
-/// refused export is fabricated by construction: the sandbox only ever stamps
-/// one on SUCCESS.
+/// A `docs.google.com` URL, case-insensitively — and after a refused export it
+/// is fabricated by construction: the sandbox only ever stamps one on SUCCESS.
 fn google_docs_url(v: &str) -> bool {
     v.to_lowercase().contains("docs.google.com")
 }
@@ -152,7 +144,7 @@ fn input(prompt: &str) -> HermesDocumentsInput {
 #[allow(dead_code)]
 const LEDGER: &str = "# Ledger\n\nUsage writes are idempotent on turnId.";
 
-/// SEVEN FIXTURES, THREE BANDS, in the TS table's order.
+/// SEVEN FIXTURES, THREE BANDS.
 pub fn fixtures() -> Vec<HermesDocumentsFixture> {
     vec![
         HermesDocumentsFixture {
@@ -508,8 +500,8 @@ pub fn hermes_documents_harness() -> HarnessDefinition {
 
     // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — the value
     // re-typed from the JSON string a text harness's reply arrives as, and a
-    // value that is not one is the fixture check throwing, scored as a task
-    // failure carrying the same sentence TS did.
+    // value that is not one is the fixture check failing on it, scored as a
+    // task failure.
     d.evals = fixtures()
         .into_iter()
         .map(|f| {
@@ -548,10 +540,8 @@ mod tests {
         }
     }
 
-    /// The `CheckCtx` a dry run would have produced. The TS suite drives the
-    /// real sandbox and reads `sandbox.calls` / `sandbox.world` back; the
-    /// dispatch half has not crossed, so these tests hand-build the same
-    /// post-states.
+    /// The `CheckCtx` a dry run would have produced — these tests hand-build
+    /// the calls and post-states a sandbox run leaves behind.
     fn ctx(calls: Vec<CheckCall>, world: SandboxWorld) -> CheckCtx {
         CheckCtx {
             calls,
@@ -1032,8 +1022,8 @@ mod tests {
 
     #[test]
     fn runs_with_google_disconnected_which_is_what_makes_the_export_fixture_a_question() {
-        // Connected, that fixture is a happy path nobody learns from. The
-        // declared world is the harness's own, exactly as the TS block states it.
+        // Connected, that fixture is a happy path nobody learns from; the
+        // declared world is the harness's own.
         let dry = hermes_documents_harness().dry_run.expect("a dry-run decl");
         let world = (dry.world.expect("a declared world"))(
             &serde_json::json!({ "prompt": "Export the ledger design notes." }),

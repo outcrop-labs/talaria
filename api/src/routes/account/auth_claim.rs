@@ -1,10 +1,9 @@
-// POST /api/auth/claim { email, password, name? } — port of
-// ui/src/routes/api/auth/claim.ts. The FIRST admin. Offered only while the
-// instance has zero admins (GET /api/auth/providers → claimable); claim's
-// advisory lock closes the race, so a lost race is a 409, never a second
-// admin. Reachable by whoever gets there first on a fresh install — by
-// design: whoever deploys, owns (same trust model as the Google claim, which
-// needs no form at all).
+// POST /api/auth/claim { email, password, name? }. The FIRST admin. Offered
+// only while the instance has zero admins (GET /api/auth/providers →
+// claimable); claim's advisory lock closes the race, so a lost race is a 409,
+// never a second admin. Reachable by whoever gets there first on a fresh
+// install — by design: whoever deploys, owns (same trust model as the Google
+// claim, which needs no form at all).
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -66,8 +65,7 @@ pub async fn post(
         }
     }
 
-    // scrypt is ~100ms of CPU; keeping it off the async workers is the point
-    // of doing this login plane in Rust.
+    // scrypt is ~100ms of CPU — it stays off the async workers.
     let pw = password.clone();
     let hash = match tokio::task::spawn_blocking(move || hash_password(&pw)).await {
         Ok(h) => h,
@@ -77,8 +75,7 @@ pub async fn post(
         }
     };
 
-    // `parsed.name?.trim() || parsed.email` — a name that trims to empty falls
-    // back to the email.
+    // a name that trims to empty falls back to the email.
     let display_name = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
@@ -107,7 +104,7 @@ pub async fn post(
         rate_limit_reset(&mut redis, &ip_key).await;
     }
     // No session exists yet, so the actor is the claimed email itself. Audit
-    // failures never break the claim (logAudit ends in .catch(() => {})).
+    // failures never break the claim.
     let pg = state.pg.clone();
     let (cid, role) = (claimed.0.clone(), claimed.5.clone());
     tokio::spawn(async move {

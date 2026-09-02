@@ -1,6 +1,6 @@
-// /api/kb/public/space/{slug} — port of ui/src/routes/api/kb.public.space.$slug.ts.
-// Public folder read — no auth. Only spaces with visibility 'public' resolve;
-// returns the folder's name + overview (its body), like a public doc.
+// /api/kb/public/space/{slug}. Public folder read — no auth. Only spaces with
+// visibility 'public' resolve; returns the folder's name + overview (its
+// body), like a public doc.
 
 use axum::Json;
 use axum::extract::{Path, State};

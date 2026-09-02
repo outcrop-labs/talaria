@@ -1,5 +1,4 @@
-// /api/research/{id}/conversation — port of ui/src/routes/api/
-// research.$id.conversation.ts.
+// /api/research/{id}/conversation.
 //
 // OPEN THE CONVERSATION FOR A RUN, creating it the first time.
 //

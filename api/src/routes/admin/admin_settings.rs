@@ -1,6 +1,6 @@
-// /api/admin/settings — port of ui/src/routes/api/admin.settings.ts. App
-// settings (admin). GET → current values. PUT → update. Grows as more
-// app-wide settings land; audit retention is the first.
+// /api/admin/settings. App settings (admin). GET → current values. PUT →
+// update. Grows as more app-wide settings land; audit retention is the
+// first.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse, utf16_len, zod_type_name};
@@ -38,22 +38,22 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
 }
 
 async fn audit_retention_days(pg: &sqlx::PgPool) -> i64 {
-    // TS's DEFAULT_RETENTION_DAYS (audit.ts) — 90, not 0: an instance that
-    // never set the knob keeps a quarter of history, not none.
+    // 90, not 0: an instance that never set the knob keeps a quarter of
+    // history, not none.
     get_setting(pg, "audit_retention_days", serde_json::json!(90))
         .await
         .as_i64()
         .unwrap_or(90)
 }
 
-/// The PUT body's five independent writes, in TS's order (budgets first —
-/// the governance control — then cron floor, retention, member models, org).
-/// Every bound here REJECTS, like zod: a present-but-wrong field is a 400,
-/// never a silent skip.
+/// The PUT body's five independent writes, in apply order (budgets first —
+/// the governance control — then cron floor, retention, member models,
+/// org). Every bound REJECTS: a present-but-wrong field is a 400, never a
+/// silent skip.
 struct PutBody {
     audit_retention_days: Option<i64>,
-    /// org: {} is truthy in TS — it runs (a no-op write, a roll, an audit
-    /// with an empty after), so presence is tracked apart from the fields.
+    /// an org of {} still runs (a no-op write, a roll, an audit with an
+    /// empty after), so presence is tracked apart from the fields.
     org_present: bool,
     org_name: Option<String>,
     org_about: Option<String>,
@@ -65,25 +65,25 @@ struct PutBody {
     cron_min_interval_minutes: Option<i64>,
 }
 
-/// budgetLimits = z.object({ tokens: int(0..1e12).nullish(),
-/// usd: number(0..1e9).nullish() }).nullable().optional() — every rejection
-/// carries zod's own message, and the numbers pass through as the ORIGINAL
-/// JSON (re-serializing from f64 would write 100000.0 where TS writes
+/// A budget-limits block: tokens (int 0..1e12) and usd (number 0..1e9),
+/// both nullish, the whole block nullable+optional. Every rejection carries
+/// the schema's own message, and the numbers pass through as the ORIGINAL
+/// JSON (re-serializing from f64 would write 100000.0 where the wire wants
 /// 100000).
 fn budget_limits(v: Option<&Value>) -> Result<Option<Value>, String> {
-    let Some(v) = v else { return Ok(None) }; // .optional()
+    let Some(v) = v else { return Ok(None) }; // absent
     if v.is_null() {
-        return Ok(None); // .nullable()
+        return Ok(None); // null
     }
     let o = v
         .as_object()
         .ok_or_else(|| crate::body::object_msg(zod_type_name(v)))?;
-    // tokens is z.number().int() — a fraction fails it; 24.0-style floats
-    // carry an integer value and PASS.
+    // tokens is int-checked — a fraction fails; 24.0-style floats carry an
+    // integer value and PASS.
     let field =
         |o: &serde_json::Map<String, Value>, key: &str, hi: f64, int: bool| -> Result<(), String> {
             match o.get(key) {
-                None | Some(Value::Null) => Ok(()), // nullish — kept verbatim below
+                None | Some(Value::Null) => Ok(()), // null or absent — kept verbatim below
                 Some(n) => {
                     let f = n.as_f64().ok_or_else(|| {
                         format!(
@@ -124,7 +124,7 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         NumKind, array_msg, array_too_big_msg, number_member, object_msg, optional_number_member,
         string_msg, too_big_msg, too_small_msg, zod_type_name,
     };
-    // Keys in the schema's order — zod surfaces the FIRST key's issue.
+    // Keys in the schema's order — the FIRST key's issue is the answer.
     let audit_retention_days =
         optional_number_member(obj, "auditRetentionDays", NumKind::Int, 0.0, 3650.0)?
             .map(|f| f as i64);
@@ -176,17 +176,17 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
             Some(out)
         }
     };
-    // llmBudgets, when present, is rewritten to the NORMALIZED shape zod
-    // hands TS: all four keys, in order, agents null-filtered.
+    // llmBudgets, when present, is rewritten to the NORMALIZED shape: all
+    // four keys, in order, agents null-filtered.
     let mut llm_after: Option<Value> = None;
     let llm_budgets = match obj.get("llmBudgets") {
         None => None,
         Some(b) => {
             let o = b.as_object().ok_or_else(|| object_msg(zod_type_name(b)))?;
-            // z.number().int(): 24 passes, 24.5 fails, 24.0 passes too —
-            // and the ORIGINAL number passes through to storage.
+            // int-checked: 24 passes, 24.5 fails, 24.0 passes too — and the
+            // ORIGINAL number passes through to storage.
             let window_hours = number_member(o, "windowHours", NumKind::Int, 1.0, 8760.0)?;
-            // zod's .default(): absent org/perAgent → null, absent agents → {}.
+            // defaults: absent org/perAgent → null, absent agents → {}.
             let org = budget_limits(o.get("org"))?;
             let per_agent = budget_limits(o.get("perAgent"))?;
             let mut after_agents = serde_json::Map::new();
@@ -368,8 +368,7 @@ pub async fn put(
         // The org lives in every rendered soul — propagate by ROLLING running
         // agents (new container up + healthy before the old one retires), so
         // an identity edit never kills anyone's in-flight conversation.
-        // `void rollRunningAgents().catch(() => {})` — detached, failures
-        // swallowed; the setting write already succeeded.
+        // Detached, failures swallowed; the setting write already succeeded.
         let pg = state.pg.clone();
         let sb = state.secretbox().await.ok();
         tokio::spawn(async move {

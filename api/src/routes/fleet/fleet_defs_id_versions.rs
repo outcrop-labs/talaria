@@ -1,8 +1,7 @@
-// /api/fleet/defs/{id}/versions — port of ui/src/routes/api/
-// fleet.defs.$id.versions.ts.
-// GET → an agent definition's full version history (admin).
-// POST { revertTo } → re-publish an old version's payload as a NEW version
-// (history is append-only; a revert is itself a tracked change).
+// /api/fleet/defs/{id}/versions. GET → an agent definition's full version
+// history (admin). POST { revertTo } → re-publish an old version's payload
+// as a NEW version (history is append-only; a revert is itself a tracked
+// change).
 
 use crate::agent_defs::{
     AgentVersionRow, NewVersion, add_version_if_changed, get_agent_def_wire, list_versions,
@@ -80,8 +79,7 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `.int().positive()` — exclusive lower bound, so the folded helper's
-    // >= min cannot say it.
+    // exclusive lower bound, so the folded helper's >= min cannot say it.
     let revert_to = match number_member(obj, "revertTo", NumKind::Int, f64::MIN, f64::INFINITY) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),

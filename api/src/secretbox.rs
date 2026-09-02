@@ -1,6 +1,6 @@
-// Symmetric envelope encryption for sealed secrets — a byte-exact port of
-// ui/src/server/secretbox.ts, the one crypto dependency the Rust api inherits.
-// Read that file for the design; the shape:
+// Symmetric envelope encryption for sealed secrets. The token grammar is a
+// CROSS-LANGUAGE contract: the TS implementation of the same recipe seals and
+// opens these rows, so every byte of the format is load-bearing. The shape:
 //
 //   KEK  scrypt(root secret, "talaria.secretbox.v1", 32) — node's default
 //        parameters, N=16384 (log2 14), r=8, p=1. The only key material
@@ -13,22 +13,16 @@
 //                                ACTIVE key, because it predates versioning)
 //   v2:<ver>:<iv>:<tag>:<data>   DEK version <ver>  ← what seal() writes
 //
-// All parts are base64url WITHOUT padding (node's 'base64url'). The AES-GCM
-// IV is 12 bytes and the tag 16. One asymmetry that will silently corrupt
-// everything if mis-ported: the DEK wrap's plaintext is the STANDARD padded
-// base64 STRING of the key bytes (dek.toString('base64')), not the raw bytes
-// — secretbox.ts:90. It has its own fixture case in tests/fixtures.
+// All parts are base64url WITHOUT padding. The AES-GCM IV is 12 bytes and the
+// tag 16. One asymmetry that will silently corrupt everything if gotten
+// wrong: the DEK wrap's plaintext is the STANDARD padded base64 STRING of the
+// key bytes, not the raw bytes — a quirk of the first writer that is now part
+// of the format. It has its own fixture case in tests/fixtures.
 //
-// This port OPENS and SEALS but never CREATES key material: creating the
-// first DEK is a migration-time write, and the schema is the TS server's
-// during coexistence (see db.rs). A Rust process that finds an empty
-// secret_keys records the failure and carries on — same posture as TS's
-// __sbFailure, which is recorded rather than thrown so nothing that doesn't
-// need a key ever learns about it.
-//
-// Unit-tested now; its first production caller is the phase-2 chat-completions
-// relay (unsealing llm_endpoints.api_key_cipher). DELETE THIS ALLOW when that
-// lands — dead-code analysis is the checklist of what still needs wiring.
+// This box OPENS, SEALS, and ROTATES, but never CREATES the first key: an
+// empty secret_keys is a recorded failure, not a migration write this crate
+// performs. The failure is recorded rather than thrown so nothing that
+// doesn't need a key ever learns about it.
 #![allow(dead_code)]
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -66,8 +60,9 @@ pub enum SecretboxError {
 /// re-wrap without a second implementation. `root_source()` in config.rs names
 /// where the material came from; it never leaves the process.
 pub fn derive_kek(root_material: &str) -> Key {
-    // Node scryptSync's defaults, spelled out: N=16384 (log2 14), r=8, p=1.
-    // scrypt 0.12's Params fixes the output at 32 bytes — exactly KEK_LEN.
+    // Node's scryptSync defaults, spelled out: N=16384 (log2 14), r=8, p=1 —
+    // the TS side derives with the same numbers or the KEK is not the same
+    // key. scrypt's Params fixes the output at 32 bytes — exactly KEK_LEN.
     let params = Params::new(14, 8, 1).expect("params are node's defaults and always valid");
     let mut out = [0u8; KEK_LEN];
     scrypt::scrypt(root_material.as_bytes(), SALT, &params, &mut out)
@@ -82,7 +77,7 @@ pub struct SecretBox {
     active: Option<u32>,
     /// Why there is no usable key, if there isn't. Recorded, not thrown —
     /// models listing doesn't need a key; the diagnosis belongs to the
-    /// operation that does. Mirrors `g.__sbFailure` in secretbox.ts.
+    /// operation that does.
     failure: Option<String>,
 }
 
@@ -129,7 +124,7 @@ fn bad_part(e: base64::DecodeError) -> SecretboxError {
 }
 
 /// Wrap a DEK under a KEK. The plaintext is the standard padded base64 string
-/// of the key bytes — the asymmetry from secretbox.ts:90; unwrap is its mirror.
+/// of the key bytes — the asymmetry above; unwrap is its mirror.
 fn wrap_dek(kek: &Key, dek: &Key) -> Result<String, SecretboxError> {
     let (iv, tag, data) = enc_raw(kek, &random_iv()?, &STANDARD.encode(dek))?;
     Ok(["v1", &iv, &tag, &data].join(":"))
@@ -162,8 +157,8 @@ fn random_iv() -> Result<[u8; IV_LEN], SecretboxError> {
 
 impl SecretBox {
     /// Load every DEK version from `secret_keys`, unwrapping each with the
-    /// KEK derived from `root_material`. Never writes: the first key is the
-    /// TS server's to create (it runs during migration, this must not).
+    /// KEK derived from `root_material`. `load` never writes — not even to
+    /// create a first key on an empty table.
     pub async fn load(pg: &PgPool, root_material: &str) -> SecretBox {
         let mut sb = SecretBox {
             kek: Some(derive_kek(root_material)),
@@ -201,7 +196,7 @@ impl SecretBox {
             match unwrap_dek(&kek, wrapped) {
                 Ok(dek) => {
                     if *active {
-                        sb.active = Some(*version as u32); // last active row wins, like the TS loop
+                        sb.active = Some(*version as u32); // last active row wins
                     }
                     sb.deks.insert(*version as u32, dek);
                 }
@@ -220,9 +215,9 @@ impl SecretBox {
         }
 
         if sb.active.is_none() && sb.deks.is_empty() {
-            // Port of secretbox.ts's refusal-to-mislead: name the real cause
-            // (the root secret), not the code path that noticed. Every row
-            // failed to unwrap — deks is empty — so rows.len() IS the count.
+            // Refusal to mislead: name the real cause (the root secret), not
+            // the code path that noticed. Every row failed to unwrap — deks
+            // is empty — so rows.len() IS the count.
             sb.failure = Some(format!(
                 "this database has {row_count} data key(s) and none can be unwrapped with the current \
                      root secret. Restore it — every provider key, agent secret and OAuth token \
@@ -256,8 +251,8 @@ impl SecretBox {
             .ok_or(SecretboxError::VersionNotLoaded(version))
     }
 
-    /// The recorded diagnosis wins over everything, as in secretbox.ts's
-    /// active(): it names the root secret, which is the real cause.
+    /// The recorded diagnosis wins over everything: it names the root
+    /// secret, which is the real cause.
     fn active(&self) -> Result<(&Key, u32), SecretboxError> {
         if let Some(why) = &self.failure {
             return Err(SecretboxError::Unusable(why.clone()));
@@ -276,12 +271,12 @@ impl SecretBox {
         Ok(["v2", &version.to_string(), &iv, &tag, &data].join(":"))
     }
 
-    /// Decrypt any token the TS secretbox has produced.
+    /// Decrypt any token in the grammar, whichever side produced it.
     pub fn open(&self, token: &str) -> Result<String, SecretboxError> {
         let p: Vec<&str> = token.split(':').collect();
         match (p.first().copied(), p.len()) {
             // v1 never consults the DEK registry — a failed DEK load must not
-            // break KEK-direct tokens. Same in TS: open() calls kek() directly.
+            // break KEK-direct tokens.
             (Some("v1"), 4) => dec_raw(
                 &self
                     .kek
@@ -337,8 +332,8 @@ impl SecretBox {
     // All of these answer rather than throw: an inventory of every secret on a
     // broken instance is the one read that MUST work while it is broken.
 
-    /// tokenReadable — a v2:<ver> token names its DEK, so the answer is a map
-    /// lookup; v1 and legacy unversioned v2 have to actually try.
+    /// A v2:<ver> token names its DEK, so the answer is a map lookup; v1 and
+    /// legacy unversioned v2 have to actually try.
     pub fn token_readable(&self, token: &str) -> bool {
         let parts: Vec<&str> = token.split(':').collect();
         if parts.first() == Some(&"v2") && parts.len() == 5 {
@@ -350,13 +345,12 @@ impl SecretBox {
         self.open(token).is_ok()
     }
 
-    /// activeKeyVersion — the active DEK version, or None when there isn't one.
+    /// The active DEK version, or None when there isn't one.
     pub fn active_key_version(&self) -> Option<u32> {
         self.active
     }
 
-    /// loadedVersions — every DEK version in memory, ascending (JS Map key
-    /// order is insertion order = load order = version order).
+    /// Every DEK version in memory, ascending (load order is version order).
     pub fn loaded_versions(&self) -> Vec<u32> {
         let mut v: Vec<u32> = self.deks.keys().copied().collect();
         v.sort_unstable();
@@ -365,16 +359,15 @@ impl SecretBox {
 
     // ── Rotation surface (secret-rotation's writes) ─────────────────────────
 
-    /// currentKeyVersion — the version a rotation's successor gets. Throws
-    /// like TS's active(): rotation is a write, and a write on an unusable
-    /// key set SHOULD fail loudly.
+    /// The version a rotation's successor gets. Rotation is a write, and a
+    /// write on an unusable key set SHOULD fail loudly.
     pub fn current_key_version(&self) -> Result<u32, SecretboxError> {
         Ok(self.active()?.1)
     }
 
-    /// rewrapVersion — re-wrap an in-memory DEK under a KEK derived from new
-    /// root material (the DB row keeps the old wrap; the same transaction
-    /// overwrites it with this).
+    /// Re-wrap an in-memory DEK under a KEK derived from new root material
+    /// (the DB row keeps the old wrap; the same transaction overwrites it
+    /// with this).
     pub fn rewrap_version(
         &self,
         version: u32,
@@ -384,8 +377,8 @@ impl SecretBox {
         wrap_dek(&derive_kek(root_material), dek)
     }
 
-    /// sealWith — encrypt with an explicit DEK + version (re-encryption under
-    /// the new key; the box's own active version is not consulted).
+    /// Encrypt with an explicit DEK + version (re-encryption under the new
+    /// key; the box's own active version is not consulted).
     pub fn seal_with(
         &self,
         dek: &Key,
@@ -396,8 +389,8 @@ impl SecretBox {
         Ok(["v2", &version.to_string(), &iv, &tag, &data].join(":"))
     }
 
-    /// wrapDekFor — wrap a DEK under the current KEK, or one derived from new
-    /// root material when the rotation also moves the root.
+    /// Wrap a DEK under the current KEK, or one derived from new root
+    /// material when the rotation also moves the root.
     pub fn wrap_dek_for(
         &self,
         dek: &Key,
@@ -414,9 +407,9 @@ impl SecretBox {
         }
     }
 
-    /// installActiveKey as a NEW box (secretbox.ts mutates globals; this
-    /// process's box is swapped atomically instead). Keeps every prior version;
-    /// moves the KEK when the root changed.
+    /// An installed key as a NEW box — the process's box is swapped
+    /// atomically, never mutated. Keeps every prior version; moves the KEK
+    /// when the root changed.
     pub fn installed(&self, dek: Key, version: u32, root_material: Option<&str>) -> SecretBox {
         let mut next = self.clone();
         if let Some(m) = root_material {
@@ -428,7 +421,7 @@ impl SecretBox {
     }
 }
 
-/// newDek — a fresh random 256-bit data key.
+/// A fresh random 256-bit data key.
 pub fn new_dek() -> Result<Key, SecretboxError> {
     let mut dek = [0u8; KEK_LEN];
     getrandom::fill(&mut dek)
@@ -450,7 +443,7 @@ mod tests {
     #[test]
     fn kek_matches_the_recipe() {
         // 32 bytes, deterministic, salted by the literal — the exact value is
-        // pinned against TS in tests/fixtures/secretbox.json.
+        // pinned in tests/fixtures/secretbox.json.
         assert_eq!(kek_for("root").len(), 32);
         assert_ne!(kek_for("root"), kek_for("other"));
     }
@@ -502,8 +495,8 @@ mod tests {
         let wrapped = SecretBox::wrap_dek_with_iv(&kek, &dek, &[5u8; IV_LEN]).unwrap();
         // unwrap returns the raw key…
         assert_eq!(unwrap_dek(&kek, &wrapped).unwrap(), dek);
-        // …but only via the standard-base64 string, which is what TS's
-        // decRaw hands back before its own base64 decode.
+        // …but only via the standard-base64 string — the wrap's plaintext is
+        // the string itself.
         let plain = dec_raw(
             &kek,
             part(&wrapped, 1).unwrap(),

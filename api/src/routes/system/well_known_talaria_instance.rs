@@ -1,5 +1,4 @@
-// /api/well-known/talaria-instance — port of
-// ui/src/routes/api/well-known.talaria-instance.ts.
+// /api/well-known/talaria-instance.
 //
 // Instance identity beacon — the target of hosting-domain verification's
 // self-fetch. Public and harmless: a random UUID that proves which deployment

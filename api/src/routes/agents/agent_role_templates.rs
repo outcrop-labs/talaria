@@ -1,5 +1,4 @@
-// /api/agent-role-templates — port of ui/src/routes/api/agent-role-templates.ts.
-// The business roles a new agent can start from.
+// /api/agent-role-templates. The business roles a new agent can start from.
 //   GET    → built-ins + the org's own (anyone who may create an agent).
 //   PUT    → create or update an ORG template (admin; it seeds every future agent).
 //   DELETE → remove an org template; a shadowed built-in reappears.
@@ -66,9 +65,8 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // z.string().max(300).default('') — no min: '' is a legal description,
-    // and an absent one IS ''. `.default` only fills UNDEFINED; a present
-    // null still fails the type check, exactly as zod does it.
+    // description: no min ('' is legal), max 300. An absent member IS '' —
+    // only a MISSING one defaults; a present null still fails the type check.
     let description = match obj.get("description") {
         None => String::new(),
         Some(_) => match string_member(obj, "description", 0, 300) {

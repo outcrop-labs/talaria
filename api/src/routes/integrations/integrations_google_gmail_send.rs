@@ -1,6 +1,5 @@
-// POST /api/integrations/google/gmail/send — port of
-// ui/src/routes/api/integrations/google.gmail.send.ts. Send a plain-text
-// email as the user.
+// POST /api/integrations/google/gmail/send — send a plain-text email as the
+// user.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -30,7 +29,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    // `.default('')` — absent folds to the empty string, never null.
+    // Absent subject folds to the empty string, never null.
     let subject = match optional_max_string_member(obj, "subject", 500) {
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
@@ -65,7 +64,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     }
 }
 
-/// Date.now() — the one clock the send executes under.
+/// Epoch-ms clock — the one time the send executes under.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

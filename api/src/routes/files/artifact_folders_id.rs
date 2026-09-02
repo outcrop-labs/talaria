@@ -1,5 +1,4 @@
-// /api/artifact-folders/{id} — port of
-// ui/src/routes/api/artifact-folders.$id.ts. One artifact folder. GET → the
+// /api/artifact-folders/{id}. One artifact folder. GET → the
 // folder + its grants (what the Share dialog reads). PUT → rename / icon /
 // reparent / re-share. DELETE → remove (its artifacts and child folders fall
 // back to the root).
@@ -57,7 +56,7 @@ fn parse_patch(obj: &serde_json::Map<String, Value>) -> Result<Patch, String> {
 /// enum with no default (absent role is a 400 here, unlike the KB surface).
 fn parse_folder_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>>, String> {
     let Some(v) = v else {
-        return Ok(None); // absent — what `.optional()` admits
+        return Ok(None); // absent editors → no change
     };
     let arr = v.as_array().ok_or_else(|| {
         format!(

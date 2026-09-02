@@ -1,4 +1,4 @@
-// /api/secrets — port of ui/src/routes/api/secrets.ts.
+// /api/secrets.
 //
 // WORKING SECRETS — the ones a PERSON needs back. Not admin, and that is the
 // entire reason this exists: somebody wiring up a staging integration has a
@@ -81,7 +81,7 @@ struct CreateBody {
 
 fn parse_create(obj: &serde_json::Map<String, Value>) -> Result<CreateBody, String> {
     let title = string_member(obj, "title", 1, 80)?;
-    // Elements before length: zod parses each item, then runs the bounds.
+    // Elements before length: each item is parsed, then the bounds run.
     let v = obj.get("entries").ok_or_else(|| array_msg("undefined"))?;
     let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
     let mut entries = Vec::with_capacity(arr.len());
@@ -263,7 +263,7 @@ pub async fn patch(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
 
-    // The TS route passes no isAdmin — owner-only, even for admins, by design.
+    // isAdmin is never raised here — owner-only, even for admins, by design.
     let moved = match move_secret_to_folder(&state.pg, &name, folder_id.as_deref(), &user.id, false)
         .await
     {

@@ -1,5 +1,4 @@
-// /api/brief — port of ui/src/routes/api/brief.ts.
-// GET → the caller's daily brief: the assistant-assembled digest of what
+// /api/brief. GET → the caller's daily brief: the assistant-assembled digest of what
 // needs them. The read sweeps-if-due first, then answers with the document —
 // or with WHICH kind of nothing, because the three absences render
 // differently and collapsing them into one empty state is how a surface
@@ -48,7 +47,7 @@ pub async fn get(
     }
     match get_brief(&deps, &user, query.tz.as_deref()).await {
         Ok(BriefRead::Document(doc)) => Json(doc).into_response(),
-        // The absent literal in TS key order: absent, nextAt, agent. Every
+        // The absent literal in wire key order: absent, nextAt, agent. Every
         // absence carries `agent` — the surface offers assistant settings
         // from the empty state too — and 'pending' is the only kind whose
         // nextAt is knowable; the other two answer null.
