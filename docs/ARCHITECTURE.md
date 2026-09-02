@@ -33,13 +33,15 @@ holds no database and no identity — it authenticates connecting agents by aski
 (`GET /api/users` is the fleet-wide auth oracle; `agent-auth.ts` and `mcp/README.md` carry
 the warning). Two transports: stdio for one agent, streamable-HTTP for the whole fleet.
 
-**The Rust api (`api/`)** is the backend of record — 216 of 219 route files serve from it
-(merged 2026-09-01): the app's TS handler forwards `/api` prefixes to it on loopback
-(`server/rust-proxy.ts`, gated on `TALARIA_RUST_API_URL`; unset serves everything from TS,
-the posture unproxied installs keep until cutover). Dev runs it as a sidecar
-(`TALARIA_API=on`). The three residents are permanent (`admin/update`, app dispatch, and
-`healthz`); the rules, the batch record, the recorded divergences and the cutover end
-state (the TS API deleted, this hop staying) are
+**The Rust api (`api/`)** is the backend of record — every `/api/*` route except the
+four permanent TS residents serves from it (the TS API behind the proxy was deleted with
+the cutover, 2026-09-01): the app's TS handler forwards `/api` prefixes to it on loopback
+(`server/rust-proxy.ts`, gated on `TALARIA_RUST_API_URL`; unset forwards nothing, the
+posture of a TS-only process — tests, an unproxied install — while production
+server-entry arms the hop itself by spawning or adopting the api). Dev runs it as a
+sidecar by default (`talaria dev`; `TALARIA_API=off` opts out). The four residents are
+permanent (`admin/update`, app dispatch, the app-MCP gateway, and `healthz`); the rules,
+the batch record, the recorded divergences and the port's whole story are
 [`docs/RUST-MIGRATION.md`](./RUST-MIGRATION.md).
 
 | Surface | Port | Notes |
@@ -58,9 +60,9 @@ TEI embeddings, MinIO, SearXNG.
 
 1. **Entry.** Node request → `Request` → `server/app.ts`'s fetch handler (prod), or the same
    via `ssrLoadModule` (dev). The handler's first act is the proxy switch: a request under
-   a migrated prefix forwards to the Rust api on loopback (`rust-proxy.ts`, streamed
-   through, no fallback by design), and everything below this line describes the TS route
-   table that remains — the SPA shell and the three residents — until cutover.
+   `/api` forwards to the Rust api on loopback (`rust-proxy.ts`, streamed through, no
+   fallback by design), and everything below this line describes the TS route table that
+   remains by design — the SPA shell and the four permanent residents.
 2. **Route table.** `app.ts` globs `routes/api/**/*.ts`, requires a `Route` export, sorts by
    static-segment count (`/api/boards/mine` beats `/api/boards/$id`). 405 with an `allow`
    header on the wrong method; unknown paths fall through to the SPA shell.
@@ -207,16 +209,18 @@ Building them: `docs/APPS.md` + `docs/sdk/`.
 
 ## Jobs and durable runs
 
-One scheduler, two runtimes, one switch: `TALARIA_SCHEDULER` — unset arms TS's
-(`scheduler.ts`), `rust` arms the Rust api's (`api/src/jobs.rs`) while TS's stands down,
-`off` arms nobody. Registered jobs with named intervals, **exactly-once via a Redis lease**
+One scheduler, one runtime, one switch: `TALARIA_SCHEDULER` — unset arms the
+Rust api's (`api/src/jobs.rs`), `off` arms nobody (the kill switch; `rust` is
+the retired coexistence-era value and reads as unset). Registered jobs with
+named intervals, **exactly-once via a Redis lease**
 — one run per interval fleet-wide; unreachable Redis skips the tick rather than running
-unguarded. The first eight jobs are required: a missing registration fails boot. The TS
-scheduler runs in prod only — `vite dev` never arms it (`TALARIA_SCHEDULER=off` is the
-kill switch) — which is why "my background job never fires locally" is usually not a bug;
-a dev stack that proxies to Rust arms the Rust one instead (`TALARIA_SCHEDULER=rust` in
-the env). The app container warms the route graph with an in-process health check before
-listening, so jobs run only on an instance that can serve.
+unguarded. The first eight jobs are required: a missing registration fails boot. The api
+arms in every posture that serves — `talaria dev`'s child included, so background jobs
+fire locally exactly as in prod; a bare `vite dev` with no api is the one posture that
+never arms them, which is why "my background job never fires locally" usually means the
+api isn't running. Boot arms independently of the stores (the arm loop retries until
+Postgres and Redis answer — the startup log says which), and server-entry probes the
+api before reporting the app ready, so jobs run only on an instance that can serve.
 
 The scheduled family: comms decay (distill idle threads), the daily digest and approval
 escalation, the daily brief (opens per person, per timezone), notification mail, outreach

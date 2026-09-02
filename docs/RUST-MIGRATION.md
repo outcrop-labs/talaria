@@ -111,11 +111,13 @@ sub-paths still belong to TS (`/api/agents` next to `register`/`heartbeat`,
 `/api/apps` next to the app-server gateway) migrates by exact pathname, or the
 prefix would strand those sub-routes on a Rust 404.
 
-Flipping a group is two edits: the prefix joins `PREFIXES`, and `ui/.env` sets
-`TALARIA_RUST_API_URL` (see `ui/.env.example` for the block). In dev,
-`TALARIA_API=on` makes `talaria dev` start the Rust api as a sidecar (`cargo
-run` in `api/`, adopting an instance already on the port, signals forwarded,
-readiness polled without blocking the app); a devbox carries the whole toolchain
+Flipping a group was two edits: the prefix joined `PREFIXES`, and `ui/.env` set
+`TALARIA_RUST_API_URL` (see `ui/.env.example` for the block). The cutover has
+since deleted the far side: `PREFIXES` is `/api` itself and the hop is
+permanent. In dev, `talaria dev` starts the Rust api as a sidecar by default
+(`cargo run` in `api/`, adopting an instance already on the port, signals
+forwarded, readiness polled without blocking the app; `TALARIA_API=off` opts
+out); a devbox carries the whole toolchain
 (`docker/devbox.Dockerfile` — pinned 1.97.1, mirroring `api/rust-toolchain.toml`).
 
 ## The batches
