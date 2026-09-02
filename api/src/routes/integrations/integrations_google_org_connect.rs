@@ -1,7 +1,8 @@
 // GET /api/integrations/google/org/connect — an admin begins connecting the
 // shared org Google account (offline access). Wider scopes
 // than the per-user flow: the org account is the one that provisions the
-// shared calendar + Drive.
+// shared calendar + Drive. Same relocation rule as every Google dance: a
+// pinned origin owns the flow, so a start hit elsewhere moves there first.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
@@ -11,9 +12,9 @@ use crate::error::{house_error, thrown_internal_error};
 use crate::google::client::resolve_google_client;
 use crate::google::oauth::{
     ORG_CONNECT_SCOPES, google_connect_url, google_integration_enabled,
-    google_org_connect_redirect_uri,
+    google_org_connect_redirect_uri, oauth_relocation,
 };
-use crate::session::{get_session_user, random_token, state_cookie};
+use crate::session::{get_session_user, random_token, state_cookie_for};
 use crate::state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -42,6 +43,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         return thrown_internal_error();
     };
     let public_url = crate::auth_config::get_auth_config().public_url;
+    if let Some(to) = oauth_relocation(
+        public_url.as_deref(),
+        &headers,
+        &uri,
+        "/api/integrations/google/org/connect",
+    ) {
+        return (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+    }
     let state_token = random_token();
     let url = google_connect_url(
         &cfg,
@@ -53,7 +62,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         StatusCode::FOUND,
         [
             (header::LOCATION, url),
-            (header::SET_COOKIE, state_cookie(&state_token)),
+            (header::SET_COOKIE, state_cookie_for(&headers, &state_token)),
         ],
     )
         .into_response()

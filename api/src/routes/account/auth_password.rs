@@ -7,7 +7,9 @@ use crate::body::{as_object, parse, string_member};
 use crate::error::{house_error, thrown_internal_error};
 use crate::password_accounts::{has_password_accounts, verify_password_login};
 use crate::ratelimit::{client_ip, rate_limit, rate_limit_reset};
-use crate::session::{SessionUser, WireUser, create_session, json_with_cookies, session_cookie};
+use crate::session::{
+    SessionUser, WireUser, create_session, json_with_cookies, session_cookie_for,
+};
 use crate::state::AppState;
 use crate::users::upsert_user;
 use axum::Json;
@@ -143,7 +145,7 @@ pub async fn post(
             ok: true,
             user: WireUser::from(&user),
         }),
-        &[session_cookie(&sid)],
+        &[session_cookie_for(&headers, &sid)],
     )
     .into_response()
 }

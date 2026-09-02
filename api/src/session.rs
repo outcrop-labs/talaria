@@ -274,52 +274,66 @@ fn encode_uri_component(s: &str) -> String {
     out
 }
 
-fn cookie_string(name: &str, value: &str, max_age: u64) -> String {
-    // Secure by default in production, unless COOKIE_SECURE opts out (browsers
-    // drop Secure cookies over plain http://, which breaks LAN deployments).
-    let override_ = std::env::var("COOKIE_SECURE")
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    let insecure = matches!(override_.as_str(), "0" | "false" | "no");
-    let node_env = std::env::var("NODE_ENV").ok();
-    cookie_string_parts(name, value, max_age, insecure, node_env.as_deref())
+/// The caller's scheme as the app host stated it (`x-forwarded-proto`). None
+/// when nothing stated one — a direct hit carries no signal, and the
+/// environment rules decide.
+fn forwarded_https(headers: &HeaderMap) -> Option<bool> {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|p| p.trim().eq_ignore_ascii_case("https"))
 }
 
-/// The pure core of the cookie format, so the format itself is testable
-/// without racing other tests over the process environment.
-fn cookie_string_parts(
-    name: &str,
-    value: &str,
-    max_age: u64,
-    insecure_optout: bool,
-    node_env: Option<&str>,
-) -> String {
-    let secure = if !insecure_optout && node_env == Some("production") {
-        "; Secure"
-    } else {
-        ""
-    };
+/// The cookie's Secure flag: mirror the scheme the request actually rode when
+/// the app host stated one — a Secure cookie handed to the browser over plain
+/// http:// is dropped (the LAN-origin login loop), so the request wins over
+/// the environment. Without the statement (direct dev hits), fall back to the
+/// old rules: Secure in production unless COOKIE_SECURE opts out.
+fn secure_for(headers: &HeaderMap) -> bool {
+    if let Some(https) = forwarded_https(headers) {
+        return https;
+    }
+    let override_ = std::env::var("COOKIE_SECURE").unwrap_or_default();
+    let node_env = std::env::var("NODE_ENV").ok();
+    secure_from_env(&override_, node_env.as_deref())
+}
+
+/// The environment rules as a pure decision — Secure in production unless
+/// COOKIE_SECURE opts out (any casing) — so they stay testable without racing
+/// the env.
+fn secure_from_env(cookie_secure: &str, node_env: Option<&str>) -> bool {
+    let lowered = cookie_secure.trim().to_lowercase();
+    let insecure = matches!(lowered.as_str(), "0" | "false" | "no");
+    !insecure && node_env == Some("production")
+}
+
+fn cookie_string_for(headers: &HeaderMap, name: &str, value: &str, max_age: u64) -> String {
+    cookie_string_with_secure(name, value, max_age, secure_for(headers))
+}
+
+/// The pure core of the cookie format, so the format itself is testable.
+fn cookie_string_with_secure(name: &str, value: &str, max_age: u64, secure: bool) -> String {
     format!(
-        "{name}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
-        encode_uri_component(value)
+        "{name}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
+        encode_uri_component(value),
+        if secure { "; Secure" } else { "" }
     )
 }
 
-pub fn session_cookie(sid: &str) -> String {
-    cookie_string(SESSION_COOKIE, sid, SESSION_TTL_SECONDS)
+pub fn session_cookie_for(headers: &HeaderMap, sid: &str) -> String {
+    cookie_string_for(headers, SESSION_COOKIE, sid, SESSION_TTL_SECONDS)
 }
 
-pub fn clear_session_cookie() -> String {
-    cookie_string(SESSION_COOKIE, "", 0)
+pub fn clear_session_cookie_for(headers: &HeaderMap) -> String {
+    cookie_string_for(headers, SESSION_COOKIE, "", 0)
 }
 
-pub fn state_cookie(value: &str) -> String {
-    cookie_string(STATE_COOKIE, value, 600) // 10 min
+pub fn state_cookie_for(headers: &HeaderMap, value: &str) -> String {
+    cookie_string_for(headers, STATE_COOKIE, value, 600) // 10 min
 }
 
-pub fn clear_state_cookie() -> String {
-    cookie_string(STATE_COOKIE, "", 0)
+pub fn clear_state_cookie_for(headers: &HeaderMap) -> String {
+    cookie_string_for(headers, STATE_COOKIE, "", 0)
 }
 
 /// Constant-time compare for the OAuth state cookie — no early exit on the
@@ -583,22 +597,49 @@ mod tests {
     #[test]
     fn cookie_strings_match_the_ts_format() {
         // The pure core, so the format test doesn't race the env.
-        let c =
-            |name: &str, value: &str, age: u64| cookie_string_parts(name, value, age, false, None);
         assert_eq!(
-            c("talaria_session", "abc/def", 604800),
+            cookie_string_with_secure("talaria_session", "abc/def", 604800, false),
             "talaria_session=abc%2Fdef; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
         );
         assert_eq!(
-            c("talaria_oauth_state", "", 0),
+            cookie_string_with_secure("talaria_oauth_state", "", 0, false),
             "talaria_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
         );
-        // Production adds Secure; the COOKIE_SECURE opt-outs (any casing) remove it.
-        let prod = |optout: bool| cookie_string_parts("s", "v", 1, optout, Some("production"));
-        assert!(prod(false).ends_with("; Secure"));
-        assert!(!prod(true).ends_with("; Secure"));
-        // Outside production there is never a Secure suffix.
-        assert!(!cookie_string_parts("s", "v", 1, false, None).contains("Secure"));
+        // Secure is the only thing the flag changes — a suffix, nothing else.
+        assert_eq!(
+            cookie_string_with_secure("s", "v", 1, true),
+            "s=v; Path=/; HttpOnly; SameSite=Lax; Max-Age=1; Secure"
+        );
+    }
+
+    #[test]
+    fn secure_mirrors_the_forwarded_scheme_over_the_env() {
+        let headers = |proto: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                "x-forwarded-proto",
+                axum::http::HeaderValue::from_str(proto).unwrap(),
+            );
+            h
+        };
+        // A stated scheme decides outright — no env is read, so this part is
+        // deterministic however the process was launched.
+        assert!(!secure_for(&headers("http"))); // LAN hit keeps its cookie
+        assert!(secure_for(&headers("https")));
+        assert!(secure_for(&headers("HTTPS"))); // case-insensitive
+        // Without a statement the environment rules: production adds Secure,
+        // the COOKIE_SECURE opt-outs (any casing) remove it, and outside
+        // production there is never a suffix.
+        assert!(secure_from_env("", Some("production")));
+        for optout in ["0", "false", "no", "NO"] {
+            assert!(
+                !secure_from_env(optout, Some("production")),
+                "{optout} must opt out"
+            );
+        }
+        assert!(!secure_from_env("", None));
+        assert!(!secure_from_env("", Some("development")));
+        assert!(!secure_from_env("1", Some("development")));
     }
 
     #[test]
