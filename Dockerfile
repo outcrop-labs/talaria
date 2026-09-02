@@ -159,6 +159,10 @@ RUN adduser -D -u 10001 talaria \
 # TALARIA_API_BIN tells server-entry.js where the api binary it spawns lives —
 # the path is fixed by the COPY above; the env keeps the entry from guessing a
 # repo-layout path that only exists on dev boxes.
+# TALARIA_JS_RUNTIME=bun because this image ships bun and NO node: the api's
+# mcp supervisor (api/src/mcp/service.rs) spawns mcp/dist/index.js under this
+# runtime, and its node default dies with ENOENT in a container that has no
+# node to find.
 # State lives under /var/lib/talaria via the existing path overrides, never in
 # default paths inside /app (those are image-owned).
 ENV PORT=5273 \
@@ -167,6 +171,7 @@ ENV PORT=5273 \
     COOKIE_SECURE=0 \
     TALARIA_UPDATER=off \
     TALARIA_API_BIN=/usr/local/bin/talaria-api \
+    TALARIA_JS_RUNTIME=bun \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
     TALARIA_APPS_DIR=/var/lib/talaria/apps \

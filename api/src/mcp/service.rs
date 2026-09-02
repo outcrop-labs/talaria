@@ -6,7 +6,8 @@
 //
 // The child is a plain node script (`#!/usr/bin/env node`, engines pin
 // >= 20), so it spawns under `node`, overridable with TALARIA_JS_RUNTIME
-// for installs that run everything under bun.
+// for installs that run everything under bun — the container image is one
+// (its runtime ships bun, no node) and sets the override in its ENV block.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
