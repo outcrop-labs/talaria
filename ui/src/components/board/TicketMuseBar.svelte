@@ -107,7 +107,8 @@
   // into an unhandled rejection with the chips already gone — the user watched
   // the preview vanish and nothing happen, and the patch was unrecoverable.
   // The harness contract now catches the likeliest causes before the model's
-  // answer ever gets here (muse.ts's schema is the route's `Patch`, bound for
+  // answer ever gets here (the muse def's schema — api/src/harness/defs/muse.rs —
+  // is the route's `Patch`, bound for
   // bound), but a board with a custom status set can still refuse a status this
   // schema allows, and "rare" is not "never" for the one step that writes.
   const applyFields = async () => {

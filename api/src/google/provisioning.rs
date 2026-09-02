@@ -703,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outcome_serializes_in_the_ts_field_order() {
+    fn the_outcome_serializes_in_the_wire_field_order() {
         let ok = ProvisionResult::Ok {
             state: "created",
             id: "cal-1".into(),

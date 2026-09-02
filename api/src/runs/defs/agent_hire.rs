@@ -445,7 +445,7 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
                 Box::pin(async move {
                     let Some(deps) = ARMED_DEPS.get().cloned() else {
                         return Err(
-                            "agent-hire steps are armed with the fleet write plane; this Rust \
+                            "agent-hire steps are armed by the scheduler's boot wiring; this \
                              step was reached by a driver armed before its deps were"
                                 .into(),
                         );

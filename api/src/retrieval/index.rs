@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn the_content_hash_joins_exactly_what_the_ts_joins() {
+    fn the_content_hash_joins_exactly_the_doc_fields() {
         let doc = IndexDoc {
             source_type: "kb-doc".into(),
             source_id: "d1".into(),

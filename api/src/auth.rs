@@ -102,7 +102,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sha256_hex_is_the_ts_digest() {
+    fn sha256_hex_matches_the_known_vectors() {
         // `printf '%s' 'tlk_abc' | sha256sum` — lowercase hex, exactly as
         // key_hash stores it.
         assert_eq!(

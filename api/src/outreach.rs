@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_null_is_falsy_like_ts() {
+    fn a_stored_null_is_falsy_on_the_wire() {
         let c = parse_config(&json!({ "enabled": null }));
         assert!(!c.enabled);
     }

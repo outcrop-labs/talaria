@@ -1322,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn marker_names_join_like_ts() {
+    fn attachment_markers_join_the_filenames() {
         let attachments = json!([
             { "id": "1", "filename": "a.txt", "mime": "text/plain", "size": 3 },
             { "id": "2", "filename": "b.txt", "mime": "text/plain", "size": 4 },

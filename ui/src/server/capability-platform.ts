@@ -62,8 +62,10 @@ export const PLATFORM_SERVER = 'talaria'
 /** HOW LONG AN ANSWER IS GOOD FOR.
  *
  *  THIS IS NOT AN OPTIMISATION, IT IS A CORRECTNESS FIX. `reachFor` is on the
- *  RESEARCH HOT PATH — `research.ts` asks it whether this deployment can search
- *  before every run — so an uncached `platformSupply` put a live HTTP probe of
+ *  RESEARCH HOT PATH — the runner asks it whether this deployment can search
+ *  before every research run (the Rust twin's shape:
+ *  api/src/runs/defs/research.rs) — so an uncached `platformSupply` put a live
+ *  HTTP probe of
  *  SearXNG in front of every research run, and a four-second one in front of
  *  every run where SearXNG was down. The first version of this file did exactly
  *  that and two research tests caught it by hanging.

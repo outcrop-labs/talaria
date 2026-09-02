@@ -3,7 +3,8 @@
 //
 // An agent presents ITS OWN credential: a `tak_` secret minted per agent_defs
 // row, sealed in the DB, and stamped into that agent's container as
-// TALARIA_AGENT_KEY (fleet-render). Identity is resolved FROM THE CREDENTIAL —
+// TALARIA_AGENT_KEY (the Rust fleet render, api/src/fleet/render.rs). Identity
+// is resolved FROM THE CREDENTIAL —
 // x-agent-name is a cross-check that can narrow access but never grant it.
 // That binding is what makes board policy, MCP allowlists, retrieval
 // principals and owner-identity proxying enforceable rather than advisory.
@@ -13,9 +14,10 @@
 // window is open (set TALARIA_AGENT_KEY_LEGACY=off to close it) and resolve
 // `legacy: true` — enough for board-scoped work so a deploy never locks the
 // live fleet out, refused by anything that grants privilege. To finish the
-// migration: render the fleet (mints + stamps every key), rollRunningAgents()
-// (fleet-reconcile), then set the flag. `legacyMigrationStatus()` answers the
-// question that decides when that flag is safe to flip.
+// migration: render the fleet (mints + stamps every key — api/src/fleet/render.rs),
+// `roll_running_agents()` (api/src/fleet/reconcile.rs), then set the flag.
+// `legacyMigrationStatus()` answers the question that decides when that flag
+// is safe to flip.
 //
 // LEGACY MEANS IDENTIFIED BUT UNTRUSTED, and that is enforced HERE rather than
 // left to each caller to remember:
@@ -27,9 +29,10 @@
 //     owner-proxying, org-wide boards/channels/KB, the owner's Google token —
 //     is escalation, and the shared key proves fleet membership, not identity.
 //     Ordinary scoped agents keep working, which is the point of the window.
-// Surfaces that grant privilege still check `legacy` themselves (users.ts,
-// boards.ts, channels.ts, the Google agent routes) — defence in depth, so
-// loosening one layer doesn't quietly open the other.
+// Surfaces that grant privilege still check `legacy` themselves (users.ts
+// here; the boards and Google agent engines in Rust — api/src/boards.rs,
+// api/src/google/agent.rs) — defence in depth, so loosening one layer doesn't
+// quietly open the other.
 //
 // LOAD-BEARING OFF-SITE DEPENDENCY — `GET /api/users`:
 // the toolkit MCP process (mcp/src/index.ts, HTTP mode) holds no DB, so it
@@ -89,7 +92,8 @@ export const subjectProven = (subject: AgentSubject): boolean => typeof subject 
 
 /** The one instruction every legacy refusal ends with — the failure has to say
  *  what to DO, or it reads as a broken integration instead of a migration step
- *  (fleet-render's AGENT_KEY_VAR is the variable being named). */
+ *  (the variable `agent_key_var` mints — api/src/fleet/layout.rs; the Rust
+ *  twin of this line lives in api/src/agent_auth.rs). */
 const ROLL_IT = 'Re-render the fleet and roll this container so it presents its own TALARIA_AGENT_KEY_<SLUG>.'
 
 /** Ready-to-return refusal for a surface that acts as a HUMAN (Google, owner
@@ -251,7 +255,7 @@ export function legacyMigrationWarning(s: LegacyMigrationStatus): string | null 
   if (!s.windowOpen) {
     // The trap sprung: every pending agent is ALREADY failing auth. Say it
     // instead of leaving a pile of undiagnosable 401s to be read.
-    return `TALARIA_AGENT_KEY_LEGACY=off but ${s.pending.length} agent(s) have never authenticated with their own credential — they are locked out right now: ${who}. Roll their containers (render → rollRunningAgents), or set the flag back to 'on' until they have.`
+    return `TALARIA_AGENT_KEY_LEGACY=off but ${s.pending.length} agent(s) have never authenticated with their own credential — they are locked out right now: ${who}. Roll their containers (render → roll_running_agents), or set the flag back to 'on' until they have.`
   }
   return `per-agent credential migration: ${s.agents.length - s.pending.length}/${s.agents.length} done. Still on the org-wide key (or never seen since): ${who}. Roll their containers before setting TALARIA_AGENT_KEY_LEGACY=off — flipping it first is a fleet-wide outage.`
 }

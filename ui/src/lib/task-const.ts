@@ -7,25 +7,13 @@ export const TASK_STATUSES = ['inbox', 'assigned', 'in_progress', 'blocked', 'qu
 /** THE OFF-BOARD LIST. Statuses legal on every board but never board COLUMNS:
  *  terminal in every UI that reads them, and agents may not park work there.
  *
- *  This used to be said three times — here as the type union `| 'failed' |
- *  'cancelled'`, in `server/statuses.ts` as `OFF_BOARD_STATUSES`, and in
- *  `kanban.tsx` as a bare `['failed','cancelled']` literal that decided which
- *  legacy terminal columns render AT ALL. Three copies of "which statuses exist
- *  but are not columns" is three chances for a board to hold a ticket in a
- *  status no view will draw, and a ticket in no column is work that has silently
- *  disappeared from the board.
- *
- *  It lives HERE because this file is the one both sides may import: the client
- *  cannot import from `server/`, but `server/` already imports from `@/lib`
- *  (see `server/tasks.ts`, `server/workflows.ts`). `TaskStatus` now DERIVES from
- *  it, so the union cannot drift from the list.
- *
- *  `server/statuses.ts` still declares its own copy next to the resolvers that
- *  exclude them. CI (`scripts/check-invariants.mjs`) fails if the two lists ever
- *  disagree, and the permanent fix — one line, out of scope for the round that
- *  wrote this — is for that file to `import { OFF_BOARD_STATUSES } from
- *  '@/lib/task-const'` and delete its own, at which point the CI cross-check
- *  deletes itself too. */
+ *  Said exactly twice, once per language that needs it: here as the client's
+ *  wire vocabulary (the client cannot import from `server/`, and no TS module
+ *  can be imported by Rust at all), and in the Rust statuses engine as
+ *  `OFF_BOARD_STATUSES` (api/src/statuses.rs), next to the resolvers that
+ *  exclude them. `TaskStatus` DERIVES from the list here, and the pin test in
+ *  `task-const.test.ts` reads the Rust source and fails if the two languages
+ *  ever disagree. Two copies, each held shut. */
 export const OFF_BOARD_STATUSES = ['failed', 'cancelled'] as const
 export type OffBoardStatus = (typeof OFF_BOARD_STATUSES)[number]
 export type TaskStatus = (typeof TASK_STATUSES)[number] | OffBoardStatus
@@ -51,28 +39,13 @@ export const isHumanAssignee = (a: string): boolean => a.startsWith('user:')
 export const humanAssigneeId = (a: string): string => a.slice(5)
 
 /** ── The wire type of a postgres NUMERIC / BIGINT ───────────────────────────
- *  postgres.js hands `numeric` and `int8` back as STRINGS. There is no `types`
- *  override on the pool (`server/db/pg.ts` constructs `postgres(url, {max,
- *  idle_timeout, onnotice})` and nothing else), and no mapping layer between
- *  the row and this interface — `server/tasks.ts` selects
- *  `t.estimated_hours as "estimatedHours"` and casts the rows
- *  `as unknown as Task[]`. So `typeof task.estimatedHours === 'string'` after a
- *  round trip, and the same value is JSON-serialised as a string to the client.
- *
- *  That is not cosmetic. `updateTask` decides whether to write an activity line
- *  with `patch.estimatedHours !== cur.estimatedHours` — a number from the API
- *  body against a string from the row — so re-saving an unchanged estimate logs
- *  a spurious "estimate → 4h" every time, and client rollups that do
- *  `sum + t.estimatedHours` build a concatenated string instead of a total.
- *
- *  Declaring these `number` did not make them numbers; it only stopped the
- *  compiler from mentioning it. So the type says what arrives, and callers
- *  convert through `pgNum`/`pgNumOr` below.
- *
- *  THE REAL FIX is one line in `server/db/pg.ts` — a postgres.js `types`
- *  override that parses numeric/int8 as declared (audit task 21) — after which
- *  `PgNumeric` collapses back to `number` here and the coercions go away. That
- *  file is outside this change's scope. */
+ *  The Rust engine casts at the SQL boundary (`estimated_hours::float8`,
+ *  `time_spent_seconds` typed i64 — api/src/tasks.rs `TASK_SELECT`), so the
+ *  task wire carries real numbers. The tolerant union stays anyway: the wire is
+ *  JSON across an API boundary, and a numeric column that ships uncast arrives
+ *  as a string no matter what the type says — a lie the compiler cannot catch
+ *  in exactly the places arithmetic is implicit. Callers convert through
+ *  `pgNum`/`pgNumOr` below; a number passes through unchanged. */
 export type PgNumeric = number | string
 
 /** Wire numeric → a real number. Null/undefined pass through as null, and
@@ -119,40 +92,17 @@ export interface Task {
   color: TicketColor | null
   tags: string[]
   attachments: Attachment[]
-  /** `time_spent_seconds bigint` — the SAME wire lie as `estimatedHours` below:
-   *  it arrives as a STRING and this declaration says `number`.
+  /** `time_spent_seconds bigint` — the Rust read types it i64 (`TASK_SELECT`,
+   *  api/src/tasks.rs), so it arrives as a real number. Read it through
+   *  `taskTimeSpent(t)` anyway: one honest path for the arithmetic, whatever
+   *  the wire does (see `PgNumeric` above).
    *
-   *  MEASURED, not assumed. Changing this line to `PgNumeric` and running
-   *  `npx tsc --noEmit` in `ui/` produces EXACTLY TWO errors, both call sites of
-   *  a `(seconds: number)` formatter:
-   *
-   *    components/board/board-list.tsx:408   fmtTime(t.timeSpentSeconds)
-   *    components/board/task-detail.tsx:416  formatDuration(t.timeSpentSeconds)
-   *
-   *  The first is gone — board-list reads through `taskTimeSpent` below. So the
-   *  whole remaining cost of telling the truth here is ONE signature:
-   *  `formatDuration(seconds: number)` at task-detail.tsx:756. That file was
-   *  outside the round that wrote this; the change is `PgNumeric` in the
-   *  signature and `pgNumOr(seconds, 0)` on its first line.
-   *
-   *  Note what tsc did NOT catch, because it is the reason this comment is long:
-   *  `board-list.tsx` sorted by this field with a bare `return t.timeSpentSeconds`
-   *  into a comparator whose operands are inferred. No error, and `"100" < "99"`
-   *  is true, so the time column sorted lexically. A type that lies is not caught
-   *  by the compiler in exactly the places arithmetic is implicit — which is most
-   *  of them. Read through the accessor.
-   *
-   *  THE GENERAL FIX is one line in `server/db/pg.ts`: a postgres.js `types`
-   *  override parsing numeric/int8 as declared (audit task 21). Then `PgNumeric`
-   *  collapses to `number`, this field is honest for free, and `taskTimeSpent`
-   *  becomes a pass-through.
-   *
-   *  @deprecated Not really deprecated — read it through `taskTimeSpent(t)`. The
-   *  tag is here for the editor strike-through, which is the only friction that
-   *  exists against writing the raw field into arithmetic again. */
+   *  @deprecated Not really deprecated — read it through `taskTimeSpent(t)`.
+   *  The tag is here for the editor strike-through, which is the only friction
+   *  that exists against writing the raw field into arithmetic again. */
   timeSpentSeconds: number
-  /** Human planning estimate, in hours. `estimated_hours numeric` — see
-   *  `PgNumeric`: this arrives as a STRING and the arithmetic on it was wrong. */
+  /** Human planning estimate, in hours. `estimated_hours numeric`, cast
+   *  `::float8` at the Rust boundary — see `PgNumeric` above. */
   estimatedHours: PgNumeric | null
   /** Sub-task parent (one level deep). */
   parentId: string | null

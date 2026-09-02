@@ -23,7 +23,6 @@
 // empty secret_keys is a recorded failure, not a migration write this crate
 // performs. The failure is recorded rather than thrown so nothing that
 // doesn't need a key ever learns about it.
-#![allow(dead_code)]
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -182,10 +181,15 @@ impl SecretBox {
         };
 
         if rows.is_empty() {
+            // The first data key is the app's migration write (initSecretbox in
+            // ui/src/server/db/pg.ts) and only happens under an explicit
+            // TALARIA_SECRET_KEY — so an empty table after the app has run means
+            // it refused, and its boot log says why. Name that, not a rerun.
             sb.failure = Some(
-                "secret_keys is empty — the TS server creates the first data key during its boot \
-                 migration; run it against this database once. (This service never creates key \
-                 material: the schema is the TS server's during coexistence.)"
+                "secret_keys is empty — the app's migration pass creates the first data key, \
+                 and only under an explicit TALARIA_SECRET_KEY. If the app has already run \
+                 against this database, its boot log names why it refused. (This service never \
+                 creates key material — see docs/ENCRYPTION.md.)"
                     .into(),
             );
             return sb;

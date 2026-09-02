@@ -42,11 +42,11 @@ re-exports its types as `@talaria/sdk`'s server contract, and app-shipped harnes
 api's rule 10 — customer code, never port surface (the fitness consequence is a recorded divergence
 in [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A platform harness is written in Rust.
 
-**One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a
-hand-written model call anywhere in `ui/src`; the census is at its floor, and the one entry left is
-`channel-replies.ts` — a live persona conversation where the messages are the human's and there is
-no prompt of Talaria's to declare. (The `/api/llm/v1` pass-through and `/api/chat` once carried
-census entries of their own; both serve from the api now.) In the api the same discipline is the
+**One chokepoint, and the architecture holds it.** The hand-written-harness census this file used
+to cite left with the port — the last entry it carried (`channel-replies`, a live persona
+conversation where the messages are the human's and there is no prompt of Talaria's to declare)
+serves from the api now, so there is nothing left to enumerate: `ui/src` holds no hand-written model
+call at all. In the api the same discipline is the
 architecture itself: `harness/run.rs` is the only module that talks to a model, and everything else
 reaches one through it. A new hand-written call is a regression, not a backlog item.
 
@@ -353,7 +353,8 @@ item's whole action list and a regex-bound one a single id, and "did it stay ins
 offered" is unanswerable without that.
 
 Keep it cheap and pure: it runs on every attempt of every run, including the redaction re-check, and
-`define.ts` imports no database by construction. A check that needs to ask the database whether an id
+`define` imports no database by construction (both spellings — `api/src/harness/define.rs` and the
+TS twin). A check that needs to ask the database whether an id
 exists belongs to the caller, not to the contract.
 
 ## The capability model

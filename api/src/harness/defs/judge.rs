@@ -393,7 +393,7 @@ pub fn fixtures() -> Vec<JudgeFixture> {
             JudgeInput {
                 title: "Fix the timezone drift on the weekly digest".into(),
                 description: Some("The Monday digest goes out at 09:00 UTC regardless of the org timezone. It should send at 09:00 local. Add a test.".into()),
-                outcome: Some("Changed digest scheduling to resolve the org timezone before computing the send window (server/digest.ts). Added a test covering an org in America/Chicago and one in Asia/Tokyo; both now send at 09:00 local. Full suite: 341 passing.".into()),
+                outcome: Some("Changed digest scheduling to resolve the org timezone before computing the send window (api/src/digest.rs). Added a test covering an org in America/Chicago and one in Asia/Tokyo; both now send at 09:00 local. Full suite: 341 passing.".into()),
                 ..Default::default()
             },
         ),
@@ -970,7 +970,7 @@ mod tests {
         serde_json::json!({
             "title": "Fix the timezone drift on the weekly digest",
             "description": "The Monday digest goes out at 09:00 UTC regardless of the org timezone. It should send at 09:00 local. Add a test.",
-            "outcome": "Changed digest scheduling to resolve the org timezone before computing the send window (server/digest.ts). Added a test covering an org in America/Chicago; both now send at 09:00 local. Full suite: 341 passing."
+            "outcome": "Changed digest scheduling to resolve the org timezone before computing the send window (api/src/digest.rs). Added a test covering an org in America/Chicago; both now send at 09:00 local. Full suite: 341 passing."
         })
     }
 

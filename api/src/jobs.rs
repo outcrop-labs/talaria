@@ -52,7 +52,7 @@ const LOG: &str = "[jobs]";
 /// The run kinds the boot census carries, spelled as strings because that is
 /// what the registry keys on. Arming with fewer means the sweep strands rows
 /// of the missing kinds (see the header).
-const FLIP_RUN_KINDS: &[&str] = &[
+const BOOT_RUN_KINDS: &[&str] = &[
     "agent-hire",
     "plan-draft",
     "rag-backfill",
@@ -96,7 +96,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
 /// The census kinds this build cannot define. Empty is arming's
 /// precondition; non-empty is the checklist, spelled out for the operator.
 fn missing_run_kinds() -> Vec<&'static str> {
-    FLIP_RUN_KINDS
+    BOOT_RUN_KINDS
         .iter()
         .filter(|k| run_definition(k).is_none())
         .copied()
@@ -176,7 +176,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     if !missing.is_empty() {
         return Err(format!(
             "run kinds with no definition in this build: {} — the sweep would strand their rows. \
-             The flip arms when the census's kind table is whole.",
+             The schedule arms when the census's kind table is whole.",
             missing.join(", ")
         ));
     }
@@ -237,13 +237,13 @@ mod tests {
         for required in REQUIRED_JOBS {
             assert!(
                 names.contains(required),
-                "{} fell out of the flip table",
+                "{} fell out of the job table",
                 required.as_str()
             );
         }
         assert!(
             names.contains(&JobName::McpLibraryRefresh),
-            "mcp-library-refresh fell out of the flip table"
+            "mcp-library-refresh fell out of the job table"
         );
         // The hold, pinned: update-check does not register, and the day it
         // does is the day the hold note in this module's header retires
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn the_flip_refuses_to_arm_without_the_whole_kind_table() {
+    fn arming_refuses_without_the_whole_kind_table() {
         // Touch the getters exactly as try_arm does, so the registry reflects
         // a real boot and not whatever earlier tests loaded.
         let _ = crate::runs::defs::research::research_run();
@@ -271,7 +271,7 @@ mod tests {
         let missing = missing_run_kinds();
         assert!(
             missing.is_empty(),
-            "the flip's kind table has holes: {missing:?} — every FLIP_RUN_KINDS entry \
+            "the census's kind table has holes: {missing:?} — every BOOT_RUN_KINDS entry \
              needs its getter touched in try_arm"
         );
     }

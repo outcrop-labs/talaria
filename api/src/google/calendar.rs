@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn the_request_url_is_the_ts_serialization() {
+    fn the_events_url_is_pinned_parameter_for_parameter() {
         // Parameter order and values: timeMin first, over-fetched maxResults,
         // singleEvents, orderBy.
         assert_eq!(

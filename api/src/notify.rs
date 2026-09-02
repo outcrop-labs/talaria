@@ -1847,7 +1847,7 @@ mod tests {
     // ── the sentences ────────────────────────────────────────────────────────
 
     #[test]
-    fn job_message_shapes_the_ts_sentences() {
+    fn job_messages_are_the_pinned_sentences() {
         // Quiet pass: nothing to do at all.
         assert_eq!(
             job_message(
@@ -1910,7 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn the_composed_mail_matches_the_ts_arrangement() {
+    fn the_composed_mail_is_pinned() {
         // Full case: verified domain → deep link, settings URL, real body.
         let p = notification_email_parts(
             "Q3 plan",

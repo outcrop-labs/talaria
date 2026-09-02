@@ -241,7 +241,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn domain_truth_table_matches_the_ts_regex() {
+    fn the_domain_regex_holds_the_truth_table() {
         let ok = [
             "talaria.example.com",
             "a.bb",

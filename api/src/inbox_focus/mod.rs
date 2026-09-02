@@ -1785,7 +1785,7 @@ async fn execute_action_arms(
             )
             .await;
         }
-        let task_deps = TaskDeps::coexistence(pg.clone(), state.redis().await.ok());
+        let task_deps = TaskDeps::from_route(pg.clone(), state.redis().await.ok());
         let updated = match complete_quality_review(
             &task_deps,
             &task.id,
@@ -2443,7 +2443,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_json_orders_match_the_ts_literals() {
+    fn turn_json_orders_are_pinned() {
         let model = CommandTurn {
             kind: "proposal",
             message: "m".into(),

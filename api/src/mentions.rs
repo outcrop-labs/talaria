@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn mention_tokens_match_the_ts_regex_shape() {
+    fn mention_tokens_match_the_regex_shape() {
         // First char must be alphanumeric; then alphanumerics and dashes.
         assert_eq!(mention_tokens("hey @ada-l look"), ["ada-l"]);
         assert_eq!(mention_tokens("@Ada"), ["ada"]);

@@ -1173,7 +1173,7 @@ describe('the guard pass', () => {
 
 // ── Grounding the guard against the run's own input ──────────────────────────
 //
-// `groundingTextOf` shipped with `agent-writes.ts` and `guardCompletion` wired
+// `groundingTextOf` shipped with the agent-writes engine and `guardCompletion` wired
 // to it and THIS RUNNER NOT — so the one path that guards 23 harnesses was the
 // one path that grounded nothing, and it is the path that also REDACTS THE
 // VALUE. Both halves of `pii_leak`'s `groundable: 'finding+redaction'` were
@@ -1485,7 +1485,7 @@ describe('routing a persona TIER', () => {
 })
 
 describe('a caller that ran the chain itself', () => {
-  // `routes/api/muse.ts` must know the model BEFORE it opens the stream —
+  // The muse route must know the model BEFORE it opens the stream —
   // `x-muse-model` is a header, and "nothing routes" has to be a 400 rather than
   // a stream that opens and closes empty. So it resolves the chain and hands the
   // answer over. `ctx.step` is what stops that from silently costing the

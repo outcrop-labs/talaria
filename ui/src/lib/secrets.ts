@@ -1,4 +1,5 @@
-// Client view of the secrets inventory. The shapes mirror server/secret-health.ts
+// Client view of the secrets inventory. The shapes mirror the Rust secret
+// health engine (api/src/secret_health.rs)
 // exactly — including the absence of any field that could hold a plaintext
 // secret, which is the point: there is nowhere for one to arrive.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'

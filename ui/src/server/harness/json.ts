@@ -4,9 +4,9 @@
 // WHY THIS FILE EXISTS
 //   Six different extractors grew up in this codebase, and three of them are the
 //   same non-solution: take everything from the first `{` to the last `}` and
-//   hand it to JSON.parse — `judge.ts` (greedy regex), `model-info.ts` (greedy
-//   regex), `muse.svelte.ts` (greedy regex, three times, client-side), and
-//   `inbox-focus-assistant.ts` (indexOf/lastIndexOf, same idea spelled by hand).
+//   hand it to JSON.parse — the old judge, model-info, Muse (three times,
+//   client-side) and inbox-focus assistant sites (their heirs live in the Rust
+//   defs, api/src/harness/defs/ + api/src/inbox_focus/).
 //   That is not a JSON scanner. It is a substring, and it was verified by
 //   EXECUTION to fail on three shapes a 14B model emits constantly:
 //
@@ -16,7 +16,7 @@
 //
 //   In all three the greedy span swallows the trailing prose and the parse dies.
 //   A brace-BALANCING scan that knows what a string literal is handles all three
-//   and costs one pass. `research.ts:186` already half-learned this — a
+//   and costs one pass. The old research extractor already half-learned this — a
 //   non-greedy regex plus a line-based fallback — but there was nowhere to put
 //   the lesson, so it never propagated. This is the somewhere.
 //

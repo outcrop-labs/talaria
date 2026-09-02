@@ -48,7 +48,7 @@ impl TaskDeps {
     /// From the pieces a route handler holds. Realtime unreachable publishes
     /// nothing, notification rows still land, dispatch stands down — each edge
     /// degrades alone, never fatally to the write.
-    pub fn coexistence(pg: PgPool, redis: Option<redis::aio::ConnectionManager>) -> Self {
+    pub fn from_route(pg: PgPool, redis: Option<redis::aio::ConnectionManager>) -> Self {
         let realtime = RealtimeDeps::publish_only(redis.clone());
         let notify = NotifyDeps::publishing(pg.clone(), redis.clone());
         let dispatch = redis.map(|conn| dispatch_deps(pg.clone(), conn, realtime.clone()));

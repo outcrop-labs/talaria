@@ -9,8 +9,9 @@
 //
 // The lifecycle is ONE-WAY for an agent, and the tool descriptions below say so
 // because an agent that doesn't know burns turns on writes that 403
-// (server/tasks.ts — `agentSafePatch` for the ticket patch, the exported
-// exported `agentTicketRefusal` for every door that never reaches it):
+// (the Rust tasks engine, api/src/tasks.rs — `agent_safe_patch` for the ticket
+// patch, the exported `agent_ticket_refusal` for every door that never reaches
+// it):
 //   • blocked → in_progress   refused — only a person restarts parked work
 //   • anything out of review  refused — review is the human sign-off queue
 //   • ANY write to work a person TOOK OFF THE TABLE — and that is THREE
@@ -34,7 +35,7 @@
 //                               · ARCHIVED ticket, or archived BOARD → refused
 //                                 like everything else. Archiving withdraws the
 //                                 work from view; there is no channel on it.
-//                             (server/tasks.ts `agentTicketRefusal`, intent
+//                             (api/src/tasks.rs `agent_ticket_refusal`, intent
 //                             'comment' — it skips ONE clause, not three.)
 //
 // Nothing here re-implements those rules — Talaria enforces them and this
@@ -65,8 +66,8 @@
 //                      the Talaria route HTTP mode authenticates callers against
 //                      (default /api/users). Load-bearing — see `verify()`.
 //
-// BUILD: this compiles to mcp/dist, which is gitignored and which the app
-// SPAWNS (ui/src/server/mcp-service.ts). Nothing about editing this file makes
+// BUILD: this compiles to mcp/dist, which is gitignored and which the Rust
+// api SPAWNS (api/src/mcp/service.rs). Nothing about editing this file makes
 // the running toolkit change — `npm run build` here does, and `talaria dev` +
 // `talaria setup` run it for you. A stale dist is silent: it serves last
 // month's tool descriptions and last month's auth to the whole fleet.
@@ -1140,21 +1141,19 @@ if (HTTP_PORT) {
    *  admins or to session auth and every agent's `initialize`/`tools/list`
    *  starts 401ing, which takes the fleet toolkit dark with no error that
    *  points at the cause. `/api/users` was chosen because its agent branch is
-   *  nothing but `agentCaller()` — the same resolution a tool call hits — but
+   *  nothing but `agent_caller()` — the same resolution a tool call hits — but
    *  the contract it has to keep is narrow: agent-credential auth, GET, cheap,
    *  401/403 (not 404) on a bad credential.
    *
    *  THE CONTRACT IS WRITTEN AT BOTH ENDS, and "the other end" means three
    *  files, because the person who breaks this is not reading this one:
    *    · mcp/README.md § "Authentication — and the route it depends on"
-   *    · ui/src/server/agent-auth.ts — the resolution the probe exercises
-   *    · ui/src/routes/api/users.ts — THE ROUTE ITSELF, the file someone edits
-   *      when they decide the people directory should be admin-only. A warning
-   *      that lives one module away from the edit does not get read; that route
-   *      must carry the marker "the MCP toolkit authenticates against this
-   *      route" beside its handler. (Still MISSING there as of this change —
-   *      this file could not add it under its ownership; it is the one thing
-   *      standing between a routine permissions tightening and a dark fleet.)
+   *    · api/src/agent_auth.rs (`agent_caller`) — the resolution the probe
+   *      exercises
+   *    · api/src/routes/account/users.rs — THE ROUTE ITSELF, the file someone
+   *      edits when they decide the people directory should be admin-only. A
+   *      warning that lives one module away from the edit does not get read;
+   *      that route carries the oracle note beside its handler.
    *  The durable fix is a purpose-built probe (`GET /api/agent/whoami`: auth,
    *  no payload, nothing a product decision would ever want to narrow) pointed
    *  at with TALARIA_MCP_VERIFY_PATH. Until then, repoint with that env var

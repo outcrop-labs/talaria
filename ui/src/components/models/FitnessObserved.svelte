@@ -10,7 +10,7 @@
   // matters, and it is the one thing no external benchmark can ever give you.
   //
   // The two halves are computed by the same definitions on purpose (see the
-  // header of server/fitness/observed.ts): if they diverge it must be because
+  // header of api/src/fitness/observed.rs): if they diverge it must be because
   // the model changed, not because the ruler did.
   let {
     tested,

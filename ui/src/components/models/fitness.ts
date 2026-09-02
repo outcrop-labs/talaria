@@ -6,10 +6,10 @@
 // a capability tag (roles, platform agents, member access). One table each, so
 // a colour or a word cannot mean two things on two panels.
 //
-// Nothing here scores. Bands come from `server/fitness/score.ts`, capability
-// facts from `server/harness/capability.ts`, thresholds off the wire — the
-// route sends them precisely so that "Ready needs 95%" and the arithmetic that
-// decides it cannot drift apart.
+// Nothing here scores. Bands come from the Rust fitness engine
+// (`api/src/fitness/score.rs`), capability facts from `harness/capability`,
+// thresholds off the wire — the route sends them precisely so that "Ready
+// needs 95%" and the arithmetic that decides it cannot drift apart.
 //
 // RUNTIME-DEPENDENCY-FREE ON PURPOSE. The queries live next door in
 // `fitness-queries.ts` so that this module — where the two rules that could
@@ -18,46 +18,61 @@
 // `@tanstack/svelte-query`.
 import type { ChipTone } from '@/components/ui/chip'
 import type { Capability } from '@/server/harness/capability'
-import type { FitnessBand, FitnessReport } from '@/server/fitness/score'
-import type { EvalCaseScore, HarnessScore, InFlightCase, SweepConcurrency } from '@/server/fitness/evals'
-import type { EvalLogLine, LiveRun, MatrixView, SpeedReading } from '@/server/fitness/surface'
-import type { FixtureHealth, HealthSummary, Suspicion } from '@/server/fitness/health'
-import type { AdversarialReport, ProvocationScore } from '@/server/fitness/adversarial'
-import type { ProbeReport } from '@/server/fitness/probes'
-import type { Divergence, ObservedHarness, ObservedModel } from '@/server/fitness/observed'
-import type { ModelValue, SlotValue, ValueView, Workload } from '@/server/fitness/value'
-// The wire types, straight from the module that shaped them — the route file
-// that re-exported them is deleted with the cutover, and the shapes are the
-// contract the Rust twin now serves (RUST-MIGRATION.md, R21).
+// The wire types, straight from the module that shapes them: `fitness-wire`
+// holds the contract the Rust twin serves (RUST-MIGRATION.md, R21).
 import type {
+  AdversarialReport,
   CapabilityState,
   CapabilityView,
+  Divergence,
+  EvalCaseScore,
+  EvalLogLine,
+  FixtureHealth,
+  FitnessBand,
   FitnessIndexEntry,
+  FitnessReport,
   FitnessRunStatus,
+  HarnessScore,
+  HealthSummary,
+  InFlightCase,
+  LiveRun,
+  MatrixView,
   ModelRow,
+  ModelValue,
+  ObservedHarness,
+  ObservedModel,
+  ProbeReport,
+  ProvocationScore,
   RunEstimate,
+  SlotValue,
+  SpeedReading,
+  Suspicion,
+  SweepConcurrency,
   TierEstimate,
   TierId,
-} from '@/server/fitness/surface'
+  ValueView,
+  Workload,
+} from './fitness-wire'
 
 /** The run modal's default width. A LITERAL, not an import, and that is the
- *  whole point of the header above: `import { DEFAULT_CONCURRENCY } from
- *  '@/server/fitness/evals'` is a VALUE import, and it drags the sweep driver —
- *  and with it the database, the harness runner and the guard registry — into
- *  the browser bundle. The Models route stopped loading the moment one appeared.
- *  Every other import in this file is `import type` for that reason.
+ *  whole point of the header above: a value import from the sweep engine drags
+ *  the driver — and with it the database, the harness runner and the guard
+ *  registry — into the browser bundle. The Models route stopped loading the
+ *  moment one appeared. Every other import in this file is `import type` for
+ *  that reason.
  *
- *  `fitness.test.ts` asserts this equals the server's constant, so the copy
- *  cannot drift — a test may import the server module; the browser may not. */
+ *  The authority is the Rust twin (`api/src/fitness/evals.rs`), which pins the
+ *  value in its own tests; this copy is what the modal opens with. */
 export const DEFAULT_CONCURRENCY = 4
 
 /** DID THIS CASE LEAVE A HOLE? The predicate behind "Re-run N failures".
  *
  *  A COPY, for the reason `DEFAULT_CONCURRENCY` above is a copy: importing the
- *  sweep driver into the browser takes the route down. `fitness.test.ts` holds
- *  it to the server's version case by case, so the button's count and the set
- *  the sweep actually re-runs cannot drift apart — which they would silently,
- *  and the number on a button nobody can verify is worse than no button. */
+ *  sweep driver into the browser takes the route down. The authority is the
+ *  Rust twin (`worth_retrying` in `api/src/fitness/evals.rs`, pinned case for
+ *  case by its own test) — this copy decides the number on the button, and the
+ *  sweep the Rust side runs decides the set; a number on a button nobody can
+ *  verify is worse than no button. */
 export const worthRetrying = (c: Pick<EvalCaseScore, 'skipped' | 'gap' | 'contractHeld' | 'task'>): boolean =>
   !(c.skipped === null && c.gap === null && c.contractHeld && c.task === 'pass')
 
@@ -104,7 +119,7 @@ export interface Thresholds {
 
 export interface SlotView {
   /** 'fleet' is the model behind a Hermes persona — see `SlotKind` in
-   *  server/fitness/score.ts for why it had to exist. */
+   *  `./fitness-wire` for why it had to exist. */
   kind: 'role' | 'agent' | 'fleet'
   id: string
   key: string
@@ -121,9 +136,9 @@ export interface DetailPayload {
   model: string
   /** Non-null only while this candidate is being tested. */
   live: LiveRun | null
-  /** The run's console, which outlives the run — see `DetailView` in surface.ts. */
+  /** The run's console, which outlives the run — see `LiveRun` in fitness-wire. */
   consoleLog: EvalLogLine[]
-  /** A hand-kept copy of `FitnessRecord` (surface.ts) MINUS its `tierAt` —
+  /** A hand-kept copy of the wire's `FitnessRecord` MINUS its `tierAt` —
    *  when each tier was last measured — which no panel here reads. That is a
    *  real gap, not a reason: this interface is why DetailPayload is NOT an
    *  alias of DetailView. The day the drill-down shows tier freshness, import
@@ -276,11 +291,11 @@ export const reasonOf = (entry: FitnessIndexEntry | undefined, slotKey: string):
  *  "worst first" slot ordering. `untested` sits BELOW `workable`: a row nobody
  *  has measured must not summarize as better than a row with a known weakness.
  *
- *  This is the client's copy of `score.ts`'s private `BAND_ORDER`, and it is a
- *  copy on purpose — importing a runtime value out of `server/fitness/score.ts`
- *  would pull the registry, the resolver and `model-roles.ts` into the browser
- *  bundle for five integers. `fitness.test.ts` asserts the two agree, so the
- *  copy cannot rot silently. */
+ *  This is the client's copy of the severity order the Rust scorer keeps
+ *  (`band_order` in `api/src/fitness/score.rs`), and it is a copy on purpose —
+ *  the server is another process; there is no shared value to import.
+ *  `fitness.test.ts` pins the copy to the literal so a reorder on either side
+ *  is at least a visible disagreement, not a silent second opinion. */
 export const BAND_SEVERITY: Record<FitnessBand, number> = { unfit: 0, untested: 1, unbound: 2, workable: 3, ready: 4 }
 
 export function rowSummary(entry: FitnessIndexEntry | undefined, slots: SlotView[]): { band: FitnessBand; counts: Record<FitnessBand, number> } {

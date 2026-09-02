@@ -195,6 +195,10 @@ pub async fn draft_reply(
     Ok(Some((true, draft_id)))
 }
 
+// One parked draft the sweep may now send: (id, channel, content, model,
+// seq it answers, seq of the last thing THEY said).
+type ParkedDraft = (String, String, String, Option<String>, i32, Option<i32>);
+
 /// Send drafts that a NEW grant has just made sendable.
 ///
 /// THE GAP THIS CLOSES. Granting on a thread that already had a parked draft did
@@ -206,12 +210,7 @@ pub async fn draft_reply(
 /// response is to click it again.
 ///
 /// Granting permission to send a reply that is already written means sending it.
-/// Stale drafts are left alone, for the same reason `decide_draft`
-/// One parked draft the sweep may now send: (id, channel, content, model,
-/// seq it answers, seq of the last thing THEY said).
-type ParkedDraft = (String, String, String, Option<String>, i32, Option<i32>);
-
-/// refuses them.
+/// Stale drafts are left alone, for the same reason `decide_draft` refuses them.
 pub async fn release_drafts(
     notify: &NotifyDeps,
     user_id: &str,

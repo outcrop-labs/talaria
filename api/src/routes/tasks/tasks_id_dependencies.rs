@@ -164,7 +164,7 @@ pub async fn post(
     // ticket in it can ever satisfy) — a write that needs a person is 403, a
     // request that cannot be satisfied is 400, and both carry the sentence
     // that says why.
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     match add_dependency(&deps, &id, &depends_on_id, &actor).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(TaskError::ApprovalRequired(msg)) => house_error(StatusCode::FORBIDDEN, &msg),
@@ -220,7 +220,7 @@ pub async fn delete(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     match remove_dependency(&deps, &id, &depends_on_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => {

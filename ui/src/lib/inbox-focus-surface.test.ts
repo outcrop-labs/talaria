@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { surfaceBrief } from '../server/inbox-focus-policy'
 import { ASSISTANT_SURFACE_IDS, assistantSurface, shouldAttachInboxDecision } from './inbox-focus-surface'
 
 test('Home is the Inbox surface only on the tab that is the focus queue', () => {
@@ -46,13 +45,19 @@ test('every route in the app map resolves to a labelled surface', () => {
   }
 })
 
-test('every surface the client can send has prose on the server', () => {
-  // The two halves live in different files and would drift apart quietly:
-  // an id with no brief falls through to "no context", which looks exactly
-  // like the bug the surface was added to fix.
-  for (const id of ASSISTANT_SURFACE_IDS) {
-    assert.ok(surfaceBrief(id), `surface "${id}" has no server brief`)
-  }
+test('every surface the client can send, the server recognises', () => {
+  // The two halves live in different processes and would drift apart quietly:
+  // an id with no brief falls through to "no context" on the Rust side, which
+  // looks exactly like the bug the surface was added to fix. This pins the
+  // client's id list to the keys of `SURFACE_BRIEFS` in
+  // `api/src/harness/defs/inbox_focus.rs` — same 18, so a rename or an
+  // addition on either side shows up here as a visible disagreement.
+  const server = [
+    'inbox', 'home', 'chat', 'comms', 'boards', 'plan', 'research', 'knowledge',
+    'artifacts', 'agents', 'studio', 'templates', 'models', 'mcp',
+    'observability', 'apps', 'settings', 'admin',
+  ]
+  assert.deepEqual([...ASSISTANT_SURFACE_IDS].sort(), [...server].sort())
 })
 
 // THE INBOX HAS ITS OWN URL NOW. It used to be `/`, which meant it had no

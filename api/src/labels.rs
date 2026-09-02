@@ -234,7 +234,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn palette_is_the_ts_palette_in_order() {
+    fn palette_keys_are_pinned_in_order() {
         assert_eq!(LABEL_COLOR_KEYS.len(), 16);
         assert_eq!(LABEL_COLOR_KEYS[0], "slate");
         assert_eq!(LABEL_COLOR_KEYS[15], "brown");

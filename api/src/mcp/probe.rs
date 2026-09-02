@@ -132,7 +132,7 @@ pub async fn probe_mcp(url: &str, headers: Vec<(&str, &str)>) -> McpProbeResult 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn detail_sentences_match_ts() {
+    fn detail_sentences_are_the_fixed_three() {
         // The three fixed strings the UI switches on.
         assert_eq!(
             format!("server requires authentication ({})", 401),

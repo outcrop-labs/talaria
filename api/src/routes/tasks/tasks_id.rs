@@ -417,7 +417,7 @@ pub async fn put(
         add_time_spent_seconds,
         status_note: None,
     };
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let updated = match update_task(&deps, &id, patch, &actor).await {
         Ok(t) => t,
         Err(TaskError::ApprovalRequired(msg)) => return house_error(StatusCode::FORBIDDEN, &msg),
@@ -512,12 +512,37 @@ pub async fn delete(
     if !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    // Nothing is unindexed inline: a deleted ticket's text lingers in the
-    // activity index (the brain's copy, never the board's source of truth)
-    // until a full reindex rebuilds the collections.
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    // Comments ride the task's foreign keys, so their ids are read before the
+    // row dies — the delete takes the ticket's and every comment's activity
+    // point out of the brain too, so no dead text answers searches while a
+    // reindex is nowhere in sight.
+    let comment_ids: Vec<String> =
+        sqlx::query_scalar("select id::text from task_comments where task_id = $1::uuid")
+            .bind(&id)
+            .fetch_all(&state.pg)
+            .await
+            .unwrap_or_default();
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     match delete_task(&deps, &id).await {
-        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Ok(()) => {
+            // Fire-and-forget, like the board and channel deletes.
+            let pg = state.pg.clone();
+            let ticket_id = id.clone();
+            tokio::spawn(async move {
+                let qd = crate::retrieval::qdrant::real_deps();
+                let ed = crate::retrieval::embed::real_deps();
+                let _ = crate::retrieval::sources::unindex_activity(
+                    &pg, &qd, &ed, "ticket", &ticket_id,
+                )
+                .await;
+                for cid in comment_ids {
+                    let _ =
+                        crate::retrieval::sources::unindex_activity(&pg, &qd, &ed, "comment", &cid)
+                            .await;
+                }
+            });
+            Json(json!({ "ok": true })).into_response()
+        }
         Err(e) => {
             tracing::error!("[tasks] delete failed: {e}");
             thrown_internal_error()

@@ -14,6 +14,8 @@ use crate::body::{
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
 use crate::error::{house_error, thrown_internal_error};
+use crate::retrieval::qdrant;
+use crate::retrieval::sources::{ActivityField, purge_activity_by_field};
 use crate::session::{acting_user, require_user, unauthorized};
 use crate::state::AppState;
 use axum::Json;
@@ -190,10 +192,15 @@ pub async fn delete(
         tracing::error!("[boards] delete failed: {e}");
         return thrown_internal_error();
     }
-    // KNOWN GAP: this delete does not purge the board's tickets + comments
-    // from the activity brain. `purge_activity_by_field` exists and channel
-    // delete fires its channel analog, but nothing on this path calls it, so
-    // the deleted board's activity points linger in the index.
+    // A delete removes the board's tickets + comments — purge their activity
+    // points too so nothing orphans in the index (the channel analog fires in
+    // channels_id). Fire-and-forget: the purge's errors are swallowed.
+    let pg = state.pg.clone();
+    let board_id = id.clone();
+    tokio::spawn(async move {
+        let qd = qdrant::real_deps();
+        let _ = purge_activity_by_field(&pg, &qd, ActivityField::BoardId, &board_id).await;
+    });
     Json(json!({ "ok": true })).into_response()
 }
 

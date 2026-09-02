@@ -140,11 +140,12 @@ create; they still hold the org-wide key. The render only changed files on disk.
 
 ## Step 3 — Roll the running containers
 
-**Roll, not restart.** `restart` is `docker compose restart` (`fleetRestart` in `fleet-docker.ts`),
+**Roll, not restart.** `restart` is `docker compose restart` (`fleet_restart` in
+`api/src/fleet/docker.rs`),
 which does not recreate the container and therefore does **not** pick up the new environment — the
 agent stays on the org-wide key while looking healthy. `POST /api/fleet/reconcile` is not enough
-either: it skips anything already running (`reconcileFleet` in `fleet-reconcile.ts`). Only `roll`
-replaces the container (`rollAgent`, same file).
+either: it skips anything already running (`reconcile_fleet` in `api/src/fleet/reconcile.rs`). Only `roll`
+replaces the container (`roll_agent`, same file).
 
 **Personal and elevated assistants first** — they are the ones that are currently down:
 
@@ -270,8 +271,9 @@ impersonate the whole fleet.
 **That is render-time only, and it does not reach an install that hasn't rendered since.** A deployed
 instance keeps whatever modes it already had (`0644` in a `0755` directory, the process umask
 defaults) until a render happens. The same is true of per-agent `secrets.env`:
-`materializeAgentSecrets` (`agent-secrets.ts`) chmods the file at write time and never touches its
-directory (created `0755` by the per-agent `mkdir` in `fleet-render.ts`). So **existing installs need
+`materialize_agent_secrets` (api/src/agent_secrets.rs) chmods the file at write time and never
+touches its directory (created `0755` by the per-agent `mkdir` in the fleet render,
+api/src/fleet/render.rs). So **existing installs need
 a one-time chmod**, done by hand once:
 
 ```sh

@@ -246,12 +246,9 @@ pub enum InboxCommandEvent {
 
 // ── The ad-hoc result shapes ─────────────────────────────────────────────────
 //
-// FocusActionResult and FocusCommandResult have NO fixed key order: each
+// The engine's per-site action/command results have NO fixed key order: each
 // branch spells its own literal (some put `message` before `decisionId`, the
-// catch paths after it). The engine therefore builds them per site as Values
-// via `json!`, and these aliases name the intent.
-pub type FocusActionResult = Value;
-pub type FocusCommandResult = Value;
+// catch paths after it), so they are built per site as Values via `json!`.
 
 #[cfg(test)]
 mod tests {

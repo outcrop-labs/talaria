@@ -1,11 +1,11 @@
-import type { BriefAbsent, BriefResponse } from '@/server/daily-brief-types'
+import type { BriefAbsent, BriefResponse } from './daily-brief-types'
 
 // ONE DEFINITION, REACHABLE FROM BOTH SIDES.
 //
 // This predicate is needed by the browser (which branch of the surface to
 // render) and by the server, and the obvious spellings are both wrong:
 //
-//   · exporting it from `@/server/daily-brief-types` and importing the VALUE
+//   · exporting it from `@/lib/daily-brief-types` and importing the VALUE
 //     into a component makes the client bundle depend on the server module
 //     graph — the graph that reaches the database pool, the harness runner and
 //     the guard registry. `scripts/check-invariants.mjs` fails the build on it,

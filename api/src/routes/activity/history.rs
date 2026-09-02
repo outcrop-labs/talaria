@@ -267,14 +267,14 @@ mod tests {
     }
 
     #[test]
-    fn sizes_are_utf16_like_the_ts_length() {
+    fn sizes_are_utf16_lengths() {
         // the size field is JS UTF-16 length — an astral char counts 2.
         let v = version("a\u{1F600}b", Value::Null);
         assert_eq!(utf16_len(&version_content(VersionKind::Soul, &v)), 4);
     }
 
     #[test]
-    fn revision_keys_serialize_in_ts_order() {
+    fn revision_keys_serialize_in_wire_order() {
         let body = RevisionsBody {
             revisions: vec![VersionRevision {
                 id: "v1".into(),
@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_revision_keys_serialize_in_ts_order() {
+    fn snapshot_revision_keys_serialize_in_wire_order() {
         let body = RevisionsBody {
             revisions: vec![Revision {
                 id: "r1".into(),

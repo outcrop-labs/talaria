@@ -6,10 +6,11 @@
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
 
-  /** A board-shape problem the server found, in its own words. Mirrors
-   *  `StatusDiagnostic` in @/server/statuses — the sentences are composed THERE,
-   *  from the same resolved fields the task engine refuses on, so this file never
-   *  has to work out what makes a board broken. */
+  /** A board-shape problem the server found, in its own words. Mirrors the
+   *  Rust statuses engine's `StatusDiagnostic` (api/src/statuses.rs) — the
+   *  sentences are composed THERE, from the same resolved fields the task
+   *  engine refuses on, so this file never has to work out what makes a
+   *  board broken. */
   interface StatusDiagnostic {
     level: 'error' | 'warning'
     text: string

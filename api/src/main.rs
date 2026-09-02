@@ -53,6 +53,23 @@ async fn main() {
         tokio::spawn(async move { jobs::arm(st).await });
     }
 
+    // The builtin MCP rows (the toolkit, the Workbench) are this api's to
+    // guarantee: every reader — the gateway, agents' rendered configs, the
+    // SPA harness's capability reach — treats them as present, so boot seeds
+    // them rather than waiting for the first admin list. Best-effort, like
+    // arm: a database still coming up retries on the next registry list,
+    // which re-ensures.
+    {
+        let pg = state.pg.clone();
+        tokio::spawn(async move {
+            if let Err(e) = talaria_api::mcp::registry::ensure_builtin_mcp(&pg).await {
+                tracing::warn!(
+                    "[mcp] builtin rows not seeded — the first registry list retries: {e}"
+                );
+            }
+        });
+    }
+
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind)

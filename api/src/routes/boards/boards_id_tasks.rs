@@ -262,7 +262,7 @@ pub async fn post(
         tags: &tags,
         created_by: &actor,
     };
-    let deps = crate::tasks::TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = crate::tasks::TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let task = match create_task(&deps, &input).await {
         Ok(t) => t,
         Err(crate::tasks::TaskError::Db(e)) => {

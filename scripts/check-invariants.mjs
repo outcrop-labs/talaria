@@ -4,28 +4,24 @@
 // scripts/check-invariants.mjs` from anywhere.
 //
 // WHY THIS FILE EXISTS
-//   Seven consecutive rounds of review found the same shape of bug: a rule that
-//   decides whether an AGENT may write to a ticket, or which statuses are
-//   terminal, gets written out by hand at a new call site instead of imported.
-//   Each round centralized one predicate; the next round found the neighbouring
-//   copy that had not been. `closedToAgents` was defined exactly once with eight
-//   importing call sites — and a verifier immediately found `ticketState`, a
-//   fourth expression of the same question, in the one file that round did not
-//   treat as a copy.
+//   The recurring shape of bug here: a rule that decides who may read a thing,
+//   or which statuses are terminal, gets written out by hand at a new call
+//   site instead of imported — merged by a human who had read the code around
+//   it, failing nothing. Centralizing a predicate without a check that FAILS
+//   on the next copy just schedules the next round. This is that check.
 //
-//   Round eight collapsed all four into `agentTicketRefusal`, which takes the
-//   AGENT as a required argument so the board-policy half cannot be skipped, and
-//   collapsed the three hand-written active-column lookups into `statusMeta`'s
-//   `activeKey`. Both are rules below. Note what changed in this file when
-//   `closedToAgents` was renamed: the duplicate rule kept PASSING on a tree that
-//   no longer contained its subject. Only the exists-exactly-once post-check
-//   caught it. Every single-definition rule needs that companion, or the rule
-//   quietly becomes decoration.
+//   The Rust port moved the engines — tasks, boards, statuses, approvals,
+//   notifications — into the api crate, and the rules whose subjects went with
+//   them went too. What remains polices the TypeScript that is still live
+//   (the SPA, the resident server tier, mcp/, cli/) and follows two subjects
+//   across the language line (upload bytes, the fitness toolbox), because a
+//   guard that stops at the edge of the tree its subject moved out of guards
+//   nothing.
 //
-//   Nothing failed for any of that. Every one of those copies was merged by a
-//   human who had read the code around it. Centralizing the predicate an eighth
-//   time without a check that FAILS on the ninth copy just schedules round nine.
-//   This is that check.
+//   One lesson earned twice, kept as machinery: a duplicate-detection rule
+//   whose subject is renamed keeps passing on a tree that no longer contains
+//   it. A rule that names its subject's home carries a companion that fails
+//   when the home goes empty — the allowlist and anchor checks below.
 //
 // WHY NOT ESLINT
 //   A linter is a dependency, a config, a plugin API and a rollout against an
@@ -75,164 +71,8 @@ const EXTS = ['.ts', '.tsx', '.mts', '.js', '.mjs', '.svelte']
 
 // ── Rules ────────────────────────────────────────────────────────────────────
 
-/** "Everyone who is an admin", however it is spelled at a call site: the
- *  resolver's own function, or a local already holding its result.
- *
- *  The word boundary belongs to the IDENTIFIER alternatives only. Hung on the
- *  end of the whole group it silently un-matched every `adminUserIds()` form —
- *  `)` is not a word character, so `\b` there demands a transition that never
- *  arrives — which is to say the rule passed on the exact line it was written
- *  to catch. Found by the injection test, not by reading it. */
-const ADMIN_LIST = String.raw`(?:await\s+)?(?:[\w$]+\s*\.\s*)?(?:adminUserIds\s*\(\s*\)|(?:admins|adminIds|adminUsers|allAdmins)\b)`
-
-/** A hand-rolled audience: some named people, falling back to every admin.
- *
- *  Both orders, because both were written:
- *    owners.length ? owners : await adminUserIds()      judge.ts, verbatim
- *    !owners.length ? admins : owners                   the same thing, inverted
- *  and the `> 0` / `!== 0` / `=== 0` spellings, and a spread in either branch. */
-// An optional `[ ...` before the identifier and `]` after it, because the
-// spelling you actually get when a caller is BUILDING the audience rather than
-// picking one is `owners.length ? [...owners] : [...admins]` — and the first
-// version of this regex put `(?:\.\.\.)?` immediately before the identifier, so
-// the `[` slipped past it. Same class of miss as the trailing `\b` above:
-// written for the line already in the tree, blind to the next one.
-const OPEN = String.raw`(?:\[\s*)?(?:\.\.\.)?\s*`
-const CLOSE = String.raw`\s*\]?`
-const HAND_ROLLED_AUDIENCE = new RegExp(
-  String.raw`\b([A-Za-z_$][\w$]*)\s*\.\s*length\s*(?:>\s*0\s*|!==?\s*0\s*)?\?\s*${OPEN}\1${CLOSE}\s*:\s*${OPEN}${ADMIN_LIST}` +
-    String.raw`|!?\s*\b([A-Za-z_$][\w$]*)\s*\.\s*length\s*(?:===?\s*0\s*)?\?\s*${OPEN}${ADMIN_LIST}${CLOSE}\s*:\s*${OPEN}\2\b`,
-  'g',
-)
-
 /** Forbidden outright, except in the files that legitimately define the thing. */
 const RULES = [
-  {
-    id: 'hand-rolled-agent-write-predicate',
-    // `doneKeys.includes(k) || OFF_BOARD_STATUSES.includes(k)`, either order,
-    // any receiver (`meta.doneKeys`, destructured `doneKeys`).
-    pattern:
-      /(?:\bdoneKeys\s*\.\s*includes\s*\([^)]*\)\s*\|\|\s*OFF_BOARD_STATUSES\s*\.\s*includes|\bOFF_BOARD_STATUSES\s*\.\s*includes\s*\([^)]*\)\s*\|\|\s*[\w.]*doneKeys\s*\.\s*includes)/g,
-    allow: ['ui/src/server/statuses.ts'],
-    what: 'the terminal-status predicate, written out by hand',
-    fix: [
-      'Call `meta.terminal(key)` — `statusMeta()` returns it for exactly this reason.',
-      'The half-written version of this expression (the one that checks doneKeys and forgets',
-      'OFF_BOARD_STATUSES) is how a pickup queue keyed `cancelled` became a dispatch target.',
-      'It is a function and not a list on purpose: a function cannot be half-copied.',
-    ],
-  },
-  {
-    id: 'second-agentTicketRefusal-definition',
-    pattern:
-      /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+agentTicketRefusal\b|(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+agentTicketRefusal\s*[:=]/g,
-    allow: ['ui/src/server/tasks.ts'],
-    // Also asserted to exist exactly once — see the post-check below.
-    what: 'a second definition of `agentTicketRefusal`',
-    fix: [
-      "Import it: `import { agentTicketRefusal } from '@/server/tasks'` (or",
-      "`const { agentTicketRefusal } = await import('./tasks')` where the cycle demands it).",
-      'It answers ONE question — "may this agent act on this ticket?" — and it answers the',
-      'whole of it: the board\'s agent policy, ticket archival, board archival, and (for a',
-      "write) closed status. Its predecessors each answered part. `closedToAgents` asked",
-      'nothing about board policy, so revoking an agent\'s grant 403\'d every write route while',
-      'the heartbeat kept serving the ticket. `ticketState` in work-dispatch.ts asked neither',
-      'archival clause, so archiving a ticket did not stop the live work session on it.',
-    ],
-  },
-  {
-    id: 'hand-rolled-active-column-lookup',
-    // `s.category === 'active'` outside statuses.ts. Three callers each spelled
-    // `listStatuses(...).find(s => s.category === 'active')?.key` to answer
-    // "where does a ticket go while it is being worked?" — and none of them
-    // excluded terminal columns, so a column labelled "Cancelled" was a legal
-    // answer to all three.
-    pattern: /\.\s*category\s*===\s*'active'/g,
-    allow: ['ui/src/server/statuses.ts'],
-    what: "an active-column lookup, re-derived outside `statusMeta`",
-    fix: [
-      'Use `meta.activeKey` (the board\'s working column) or `meta.workingKeys` (is this ticket',
-      'still in play?) from `statusMeta()`. Both are picked from the one `placeable` list, so',
-      'they can never be a terminal column or the system Blocked column.',
-      'The three copies of this expression were the dispatch prompt\'s "triage_ticket to status',
-      "\"<hint>\" while you work\", the QA judge's revision bounce, and the human reviewer's",
-      '"request changes". On a board whose first active column is labelled "Cancelled" — legal,',
-      'and `agentStartConflict` does not refuse it — all three sent the ticket to a TERMINAL',
-      'status, and the first one told the AGENT to do it.',
-    ],
-  },
-  {
-    id: 'second-mail-gate-definition',
-    pattern:
-      /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+sendGatedMail\b|(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+sendGatedMail\s*[:=]/g,
-    allow: ['ui/src/server/notifications.ts'],
-    // Also asserted to exist exactly once — see the post-check below.
-    what: 'a second definition of `sendGatedMail`',
-    fix: [
-      "Import it: `import { sendGatedMail } from '@/server/notifications'` (or `./notifications`).",
-      'It answers ONE question — "is this deployment allowed to mail anybody at all?" — and it is',
-      'the only place that asks it before a send. The reason it is a function and not a flag you',
-      'check yourself is the bug it was extracted from: `addNotification` consulted the switch and',
-      '`runDigest` did not, so an admin who turned email OFF still had a daily digest mailed to',
-      'every user in the workspace. The control was named, audited, and inert.',
-      'A second definition, or a second hand-written `if (delivery.emailEnabled)`, is that bug',
-      'again with a different subject.',
-    ],
-  },
-  {
-    id: 'hand-rolled-audience',
-    pattern: HAND_ROLLED_AUDIENCE,
-    // No `allow`. There is no file in which this expression is the right answer,
-    // including the one that owns the resolver.
-    what: 'an audience worked out by hand, falling back to every admin',
-    fix: [
-      "Ask the resolver: `import { audienceFor } from '@/server/approvals'` (or",
-      "`const { audienceFor } = await import('./approvals')` where the cycle demands it), then",
-      '`const who = await audienceFor(<authority>)` and address `who.content`.',
-      '',
-      'THE AUTHORITY IS THE POINT. `{ by: "board", boardId }` for anything a board decides,',
-      '`{ by: "user", userIds }` for one person\'s own business, `{ by: "admin" }` for org-scoped',
-      'things, `{ by: "admin", onBoard }` for admin work whose TEXT quotes one board, and',
-      '`{ by: "nobody" }` when no route in the product can act on it. Declaring which one is the',
-      'question this expression skips.',
-      '',
-      'THIS EXACT LINE SHIPPED. `judge.ts` resolved a QA escalation audience with',
-      '`owners.length ? owners : await adminUserIds()` and it was wrong in BOTH directions at',
-      'once. On an unassigned ticket it sent the ticket TITLE and the judge\'s issue list to every',
-      'org admin — including admins with no membership of that board, the disclosure the approval',
-      'escalation had just closed, through a different door. And because the fallback went to the',
-      'admins instead of the BOARD, the board\'s own editors — the only people who can approve the',
-      'ticket, ask for changes or close it — were never told at all. Its doc comment claimed it',
-      'was "the same rule" as the approvals path and named a function that does not exist.',
-      '',
-      '"Nobody is named, so tell the admins" is almost never the rule. The people who can ACT are.',
-      'When genuinely nobody can act, that is `who.fact` — the admins, told THAT something is',
-      'stuck and not what it says, so they can fix the access rather than read the content.',
-    ],
-  },
-  {
-    id: 'second-audience-resolver-definition',
-    pattern:
-      /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+audienceFor\b|(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+audienceFor\s*[:=]/g,
-    allow: ['ui/src/server/approvals.ts'],
-    // Also asserted to exist EXACTLY once — see the post-check below. That
-    // companion is not optional: when `closedToAgents` was renamed, its
-    // duplicate rule kept passing on a tree that no longer contained it.
-    exactlyOnce: true,
-    what: 'a second definition of `audienceFor`',
-    fix: [
-      "Import it: `import { audienceFor } from '@/server/approvals'`.",
-      'It answers ONE question — "who may be told about this thing, and how much of it?" — and it',
-      'answers the whole of it: the ids, AND the split between the people who may be told what the',
-      'thing IS (`content`) and the people who may only be told THAT it exists so they can unblock',
-      'it (`fact`). A second definition answers half and picks its own audience for the rest,',
-      'which is the shape of every disclosure bug in this file\'s history.',
-      '',
-      'Three copies of this question existed before it was one: `approvalAudience` here,',
-      '`owners.length ? owners : adminUserIds()` in judge.ts, and a raw',
-      "`select id from users where role = 'admin'` in gaps.ts. Two of the three leaked.",
-    ],
-  },
   {
     id: 'queryfn-swallows-errors',
     // Scanned structurally, not by regex — see scanQueryFns().
@@ -351,88 +191,14 @@ const RULES = [
  *  Counts are exact — a file that GAINS an occurrence fails, and a file that
  *  LOSES its last one fails too, so the table cannot rot into a permanent
  *  amnesty for code that was fixed years ago. */
-/** Census entries on `hand-written-harness` that are NOT debt: the live
- *  persona-conversation paths. They stay on the census (their counts are still
- *  exact, so a new call in one of them fails) but they are excluded from the
- *  "still owed" note, because they are never going to be ported and a debt
- *  figure that never reaches zero is a figure nobody reads. The cutover took
- *  the pass-through gateway proxy, the /api/chat route and chat-persist.ts
- *  with it — their entries left the set when the files left the tree. */
-const HARNESS_NOT_A_HARNESS = new Set(['ui/src/server/channel-replies.ts'])
-
-/** THE THIRD CATEGORY IS GONE, and the deletion is the finding.
- *
- *  This set used to name five files — muse.ts, briefing.ts, outreach.ts,
- *  work-dispatch.ts and plan-persona-turn.ts — that WERE declared harnesses but
- *  supplied their own transport, because `runHarness` could not pass a model's
- *  own tools through, stream, carry ledger attribution, or route a persona TIER
- *  id. Four independent agents hit that one gap and each wrote the same shim.
- *
- *  run.ts serves all four now (`def.tools`, `runHarnessStreamed`, `ctx.ledger`,
- *  `ctx.tier`), so the five shims were DELETED rather than reduced —
- *  plan-persona-turn.ts as a whole file. The census below is back to what a
- *  census should be: the permanent exceptions and nothing else. Anything that
- *  reaches a model by hand from here on is a regression, not debt, and it fails
- *  this rule with no entry to hide behind.
- *
- *  This comment is the only trace kept on purpose, so the next author who needs
- *  one of those four capabilities looks for the runner slot instead of writing
- *  a sixth shim. */
+/** The `hand-written-harness` census left with the port: every non-exempt call
+ *  site it policed was in the deleted engines, and the persona-conversation
+ *  path it carried as its one permanent exception (channel-replies.ts) serves
+ *  from the Rust api now. Model access in the live TS tier goes through the
+ *  transports (gateway.ts, llm-gateway.ts) and the one runner that may call
+ *  them (harness/run.ts). */
 
 const CENSUS = [
-  {
-    id: 'hand-written-harness',
-    // Reaching a model directly: the four transports. `server/gateway.ts` and
-    // `server/llm-gateway.ts` DEFINE them and are excluded by path below.
-    pattern: /\b(?:proxyChat|completeViaGateway|buildUpstream|fetchUpstream)\(/g,
-    // The transports themselves, the runner that is the one legitimate caller of
-    // all four, and tests that drive a transport on purpose.
-    exempt: (path) =>
-      path === 'ui/src/server/gateway.ts' ||
-      path === 'ui/src/server/llm-gateway.ts' ||
-      path.startsWith('ui/src/server/harness/') ||
-      path.endsWith('.test.ts'),
-    what: 'a model call written by hand instead of declared as a harness',
-    fix: [
-      'Declare it: `defineHarness({ ... })` in ui/src/server/harness/ and call it through',
-      '`runHarness`. The runner owns model resolution, the capability floor, structured-output',
-      'parsing WITH a repair round-trip, the guardrail pass, metering, and the harness_runs row.',
-      'A hand-written call gets none of those, and gets them wrong in its own particular way:',
-      'the audit found six different JSON extractors, six copies of the model-fallback chain,',
-      'and three model paths reaching users with no guardrail at all — every one of them a call',
-      'site that was written by hand by somebody who had read the code around it.',
-      '',
-      'THE PORT IS DONE AND THE CENSUS IS AT ITS FLOOR: the one entry below is a live',
-      'persona-conversation path — no prompt, no schema, no model policy to declare. (The',
-      'pass-through gateway proxy, the /api/chat route and chat-persist.ts left with the',
-      'cutover: their files are deleted, and /api/llm/v1/* and /api/chat serve from the',
-      'Rust api.) There is no debt column any more, so a new match here is not "one more to',
-      'port" — it is a call that went around the runner, and the fix is to declare it',
-      'rather than to add a line to this table.',
-      '',
-      'IF WHAT YOU NEED IS A RUNNER CAPABILITY, ASK FOR IT IN run.ts. The five shims this',
-      'census used to carry (muse.ts, briefing.ts, outreach.ts, work-dispatch.ts and the whole',
-      'of plan-persona-turn.ts) all existed for four missing slots, and all four exist now:',
-      "  a model's OWN tools     `tools: 'own'` on the definition (harness/transport.ts ToolPolicy)",
-      '  streaming to a screen   `runHarnessStreamed(def, input, ctx, { stream, onDelta })`',
-      '  ledger attribution      `ctx.ledger` — source / refId / taskId',
-      '  a persona TIER id       `ctx.tier` — the alias NAME; the runner assembles `<agent>-<alias>`',
-    ],
-    sites: {
-      // Live persona conversation. A human is talking to an agent and the reply
-      // streams to their screen token by token; there is no structured contract
-      // to parse and no repair turn that would make sense mid-stream. These
-      // guard through `guardChatReply`, which is the right shape for a path that
-      // sees tool NAMES but not tool results.
-      //
-      // These are NOT the streaming exception `runHarnessStreamed` closed. That
-      // one is for a harness — a declared prompt and a declared contract —
-      // whose OUTPUT happens to arrive token by token (the Muse's prose kinds,
-      // the briefing chat-back), and both moved onto the runner. A chat turn has
-      // no prompt of Talaria's to declare: the messages are the human's.
-      'ui/src/server/channel-replies.ts': 1,
-    },
-  },
   {
     id: 'off-board-status-literal',
     // 'failed' next to 'cancelled' (either order) in an array literal or a type
@@ -440,100 +206,36 @@ const CENSUS = [
     pattern: /(?:(['"])failed\1\s*[,|]\s*(['"])cancelled\2|(['"])cancelled\3\s*[,|]\s*(['"])failed\4)/g,
     what: "the off-board status list, spelled out as a literal",
     fix: [
-      "Import the list: `import { OFF_BOARD_STATUSES } from '@/lib/task-const'` (client and",
-      "server may both import it; `server/` already imports from `@/lib`).",
+      "Import the list: `import { OFF_BOARD_STATUSES } from '@/lib/task-const'`.",
       'This set decides which statuses exist but are never COLUMNS. A copy that drifts leaves',
       'tickets in a status no view draws — work that has silently disappeared off the board.',
+      'The workflow-column engine that owns the set on the server side is the Rust statuses',
+      'engine (api/src/statuses.rs); the client list is the wire vocabulary it serves.',
     ],
     sites: {
-      // The two definitions. `server/statuses.ts` still declares its own; the
-      // cross-check below fails if the two lists ever disagree, and the fix that
-      // retires both this line and that check is one import.
+      // The one TS definition. `server/statuses.ts` carried the second until
+      // the Rust cutover deleted the file — and with it the cross-check that
+      // held the two lists identical. The Rust engine declares its own, and a
+      // client copy must import, not re-spell.
       'ui/src/lib/task-const.ts': 1,
-      'ui/src/server/statuses.ts': 1,
-      // The four board-view copies this census used to carry are GONE, not
-      // renamed: FilterBar and TaskDetail spread `OFF_BOARD_STATUSES`, and the
-      // two byte-identical closed predicates (field-pills + Board.svelte)
-      // collapsed into `isClosedStatus`, which Board.svelte now imports.
-      // The census shrank to the two definitions, which is what a census is for.
     },
   },
   {
     id: 'board-agent-policy-in-sql',
     // `allow_all_agents` inside a query — the board agent policy, expressed as
-    // SQL instead of as `boardAllowsAgent`.
+    // SQL instead of asked of the engine that owns it.
     pattern: /\ballow_all_agents\b/g,
     what: 'the board agent policy, re-expressed in SQL',
     fix: [
-      'Prefer `boardAllowsAgent(boardId, agent, facts?)` — it is the one definition of "may this',
-      'agent touch this board", and `agentTicketRefusal` builds the ticket-level answer on it.',
+      'The policy is the Rust boards engine\'s (api/src/boards.rs — `board_allows_agent` and the',
+      'set-scoping SQL fragment both live there). No TS query needs this column: the resident',
+      'tier reads boards through the api, never straight out of the database.',
       '',
-      'SET-SCOPING is the legitimate exception: a JOIN that filters MANY boards at once cannot',
-      'call a per-row JS predicate without an N+1. That exception now has ONE shape —',
-      '`agentBoardPolicySql(sql, model)` in server/boards.ts — which bakes in the `archived_at`',
-      'filter the three hand-written copies once disagreed on (two omitted it, so an agent',
-      'could not list an archived board but could still fetch its attachments and retrieve',
-      'its content). Any NEW match here is a fourth hand-rolled copy, not a set-scoping need.',
+      'The one site below is the migration DDL that declares the column. Anything else in TS',
+      'would be a THIRD implementation of a policy the api already owns end to end.',
     ],
     sites: {
-      // The two single-board config reads/writes and the shared fragment itself.
-      'ui/src/server/boards.ts': 3, // getBoardAgentConfig, setBoardAgentConfig, agentBoardPolicySql
       'ui/src/server/db/pg.ts': 1, // the column DDL
-    },
-  },
-  {
-    id: 'board-members-visibility-join',
-    // A `left join board_members` in a query — the user-side board visibility
-    // check, hand-rolled instead of the shared fragment.
-    pattern: /left join board_members/g,
-    what: 'a hand-rolled board-membership visibility join',
-    fix: [
-      'Filter with the fragment: `where ${boardVisibilitySql(sql, userId)}` from server/boards.ts —',
-      'direct member or owning-team member, with the `archived_at` filter baked in.',
-      '',
-      'THE DRIFT THIS CLOSES: nine hand-written joins, three of which forgot `archived_at`, so',
-      'an archived board stayed reachable through the activity feed, retrieval scopes and',
-      'upload reach checks after it had vanished from every list. The one survivor below is',
-      'listBoards, which needs the join to SELECT the member role and passes',
-      '`{ includeArchived: true }` so it can state its own archival view.',
-    ],
-    sites: {
-      'ui/src/server/boards.ts': 1, // listBoards — role selection, predicate via boardVisibilitySql
-    },
-  },
-  {
-    id: 'raw-transport-send',
-    // A direct call to the mail transport. Legal in four places and nowhere
-    // else — anything that mails a person because of a NOTIFICATION or a DIGEST
-    // must go through `sendGatedMail`, which is where the instance master
-    // switch is asked.
-    pattern: /\bsendEmail\s*\(/g,
-    what: 'a direct call to the mail transport, bypassing the instance master switch',
-    fix: [
-      "Send through the gate: `import { sendGatedMail } from '@/server/notifications'`. It asks the",
-      'instance-wide email switch FRESH on every mail, attaches `List-Unsubscribe`, and tells you',
-      'whether the send was refused (`blocked`) rather than failed — the two are different and the',
-      'breaker, the digest retry and /observability all care which one happened.',
-      '',
-      'THIS RULE EXISTS BECAUSE THE SWITCH WAS ALREADY BYPASSED ONCE. `addNotification` consulted',
-      '`getNotifyDelivery` and the daily digest did not, so an admin who switched email OFF still',
-      'had a digest mailed to every user in the workspace, every morning, from a control that is',
-      'named "email delivery" and writes an audit row when you flip it. Nothing failed; the second',
-      'sender simply never asked. A second `if (emailEnabled)` next to the send would have been the',
-      'same bug waiting for a third sender, which is why the answer is one function and this check.',
-      '',
-      'The two sites below are the complete list of TS code allowed to touch the transport:',
-      '  server/email.ts        the definition',
-      '  server/notifications.ts  `sendGatedMail` — the gate itself, and the ONLY gated path',
-      'The invite mail and the admin test-send that also sat here are the Rust api\'s now —',
-      'invites.rs and admin_email.rs call send_email directly, the same standing invites.ts',
-      'had (a reply to a human action, not a notification), and the crate carries its own',
-      'gate (`send_gated_mail`, api/src/notify.rs) with the same nothing-else-may-call rule.',
-      'A third is a bypass. If you believe you need one, say so in the PR.',
-    ],
-    sites: {
-      'ui/src/server/email.ts': 1,
-      'ui/src/server/notifications.ts': 1,
     },
   },
   {
@@ -573,77 +275,6 @@ const CENSUS = [
     },
   },
   {
-    id: 'admin-list-outside-the-resolver',
-    // Both spellings of "fetch every admin": the resolver's own function, and
-    // the raw query it wraps. gaps.ts used the second one to fan an agent's
-    // free text to the whole admin list, so matching only the first would have
-    // watched one door.
-    // `role in ('admin')` is the same query with different punctuation, and was
-    // the spelling this rule did not watch. Comparison operator OR an `in` list.
-    pattern:
-      /\badminUserIds\s*\(|(?:\bwhere|\band)\s+(?:[\w$]+\s*\.\s*)?role\s*(?:=\s*'admin'|in\s*\([^)]*'admin'[^)]*\))/g,
-    what: 'the admin list, fetched outside the one audience resolver',
-    fix: [
-      "Ask `audienceFor(<authority>)` in server/approvals.ts and address `who.content` — or",
-      '`who.fact` when nobody can act and the admins are being asked to FIX that rather than to',
-      'read what is stuck. The admin list is an answer to "who may be told"; fetching it yourself',
-      'is deciding that question at the call site, which is where every leak so far was written.',
-      '',
-      'BEING AN ADMIN IS NOT A READ GRANT. It is a set of powers over the workspace, and none of',
-      'them is "may be shown a board you were never added to". An admin cannot open the board, the',
-      'ticket or the plan; sending them the title of one is disclosure with no action attached to',
-      'it. `{ by: "admin", onBoard }` exists for the middle case — admin work whose TEXT quotes one',
-      'board — and gives the content to the admins on that board and the FACT to the rest.',
-      '',
-      'THE FACT IS PART OF THE ANSWER, NOT A SECOND QUESTION. `audienceFor` returns `content` AND',
-      '`fact` from one resolution, and a caller that addresses one of them by asking the resolver',
-      'and the other by fetching the admin list has two answers to one question. That is what the',
-      'SLA stall report did — `adminUserIds()` for approvals whose own authority had something',
-      'narrower to say — and it is why `content: []` could mean "announced to nobody" in one file',
-      'and "reported to every admin" in another, about the same row.',
-      '',
-      'The sites below are the complete list of code allowed to reach for it:',
-      '  server/approvals.ts  the definition, and the resolver that consumes it — including the',
-      '                       FACT half, which is why nothing downstream needs the list any more.',
-      '  server/users.ts      NOT an audience: "which elevated delegations belong to an admin".',
-      'Anything else on this census is debt, and the note printed on every run names it.',
-    ],
-    sites: {
-      'ui/src/server/approvals.ts': 3, // adminUserIds() itself (call + query) and the resolver's use
-      'ui/src/server/users.ts': 2, // `and u.role = 'admin'` (delegation) + adminCount() — the
-      //   last-admin guard. Both are role-governance questions, not audiences.
-      // (auth/claim.ts used to sit here — "does an admin exist", claim
-      //   eligibility. The claim flow is the Rust api's now; the entry left
-      //   with the file.)
-      // ── Known debt, owned by a later round ──────────────────────────────────
-      // EMPTY, and both departures are the same fix rather than two:
-      //   agent.problem.ts    takes an authorised `taskId`, asks `agentTextAuthority` for the
-      //                       authority and `audienceFor` for the people.
-      //   workbench-mcp.ts    `request_repo` no longer announces itself at all. It calls
-      //                       `announceApproval('repo_request:<id>')`, the same announcer the
-      //                       census's own authority feeds, so the row has ONE announcement path.
-      //   digest.ts           the stall report addresses `census.audience.get(key).fact`.
-    },
-  },
-  {
-    id: 'hand-rolled-done-check',
-    // `doneKeys.includes(...)` on its own. Legal in two places; anywhere else it
-    // is the HALF of the terminal predicate that forgets the off-board keys.
-    pattern: /\bdoneKeys\s*\.\s*includes\s*\(/g,
-    what: '`doneKeys.includes(...)` — half of the terminal predicate',
-    fix: [
-      'Call `meta.terminal(key)` unless you specifically mean "is this a done-CATEGORY column',
-      'on this board" and NOT "is this terminal" — the two differ by exactly the off-board',
-      'keys, and every place that has confused them so far was a bug.',
-      'If you really mean the narrow question, add your file to the census in',
-      'scripts/check-invariants.mjs with a comment saying which question you are asking.',
-    ],
-    sites: {
-      'ui/src/server/statuses.ts': 1, // the definition of terminal()
-      'ui/src/server/tasks.ts': 1, // completedAt: a done-CATEGORY question, not a terminal one
-    },
-  },
-  {
     id: 'same-origin-fetch-outside-the-door',
     // The credential stanza. `credentials: 'same-origin'` is what makes a fetch
     // a request AS THE SIGNED-IN USER — the difference between an anonymous
@@ -679,12 +310,6 @@ const CENSUS = [
     },
   },
 ]
-
-/** The off-board list is currently written twice. Until `server/statuses.ts`
- *  imports it from `@/lib/task-const`, CI is what keeps the copies identical.
- *  When that import lands this check finds no local definition and retires
- *  itself — it does not need to be deleted by hand. */
-const OFF_BOARD_SOURCES = ['ui/src/lib/task-const.ts', 'ui/src/server/statuses.ts']
 
 // ── Machinery ────────────────────────────────────────────────────────────────
 
@@ -908,14 +533,6 @@ function scanPopoverEngines(src) {
   return [{ line: hits[0].line, text: `panel + own document-level listener (${hits[0].text})` }]
 }
 
-/** Read the array literal assigned to OFF_BOARD_STATUSES, or null if the file
- *  no longer declares one (i.e. it imports it — the goal state). */
-function offBoardListIn(src) {
-  const m = /OFF_BOARD_STATUSES\s*(?::[^=]+)?=\s*\[([^\]]*)\]/.exec(src)
-  if (!m) return null
-  return [...m[1].matchAll(/['"]([^'"]+)['"]/g)].map((x) => x[1])
-}
-
 // ── Run ──────────────────────────────────────────────────────────────────────
 
 const failures = []
@@ -934,52 +551,6 @@ for (const rule of RULES) {
     for (const h of hits) found.push({ path, ...h })
   }
   if (found.length) failures.push({ id: rule.id, what: rule.what, fix: rule.fix, found })
-}
-
-// Each single-definition predicate must exist EXACTLY once. Without this,
-// deleting (or renaming) the canonical definition would leave the duplicate rule
-// above passing forever on a tree that has none — which is precisely what
-// happened when `closedToAgents` became `agentTicketRefusal`: the rule kept
-// passing, and only this post-check caught that its subject had vanished.
-for (const [ruleId, name] of [
-  ['second-agentTicketRefusal-definition', 'agentTicketRefusal'],
-  ['hand-rolled-active-column-lookup', "the active-column lookup (`s.category === 'active'`)"],
-  ['second-mail-gate-definition', 'sendGatedMail'],
-  ['second-audience-resolver-definition', 'audienceFor'],
-]) {
-  const rule = RULES.find((r) => r.id === ruleId)
-  const home = rule.allow[0]
-  const n = matches(sources.get(home) ?? '', rule.pattern).length
-  if (n < 1) {
-    failures.push({
-      id: `${ruleId}-home-is-empty`,
-      what: `${name} no longer appears in ${home}; the duplicate check above is now inert`,
-      fix: [
-        `If it moved, update \`allow\` for '${ruleId}' in scripts/check-invariants.mjs so the`,
-        'duplicate check keeps pointing at its home. If it was deleted, every call site that',
-        'imported it is about to hand-roll it again — which is the entire history this file',
-        'exists to stop.',
-      ],
-      found: [],
-    })
-  }
-  // EXACTLY once, for the rules that ask for it. `allow` exempts the home file
-  // from the duplicate rule entirely, so a second definition INSIDE that file is
-  // the one copy neither half of this check would otherwise see — and for a
-  // resolver whose whole value is that there is one of it, two in one file is
-  // the same bug as two in two files.
-  if (rule.exactlyOnce && n > 1) {
-    failures.push({
-      id: `${ruleId}-defined-twice-at-home`,
-      what: `${name} is defined ${n} times in ${home}; there must be exactly one`,
-      fix: [
-        'Delete all but one. The point of this function is that there is a single answer to its',
-        'question — a second definition in its own file is not an exception to that, it is the',
-        'duplication with a shorter import path.',
-      ],
-      found: [],
-    })
-  }
 }
 
 // The popover rule's `allow` list carries the same rot risk every `allow` does,
@@ -1122,196 +693,53 @@ for (const rule of CENSUS) {
       found: [],
     })
   }
-  // "All clean" on this rule means "nobody added a NEW hand-written model call".
-  // That is now the whole statement, because the census is at its floor — but it
-  // is not the statement a reader assumes, so say the floor out loud and PROVE it
-  // from the table rather than asserting it in prose.
-  //
-  // DERIVED from the census, never written by hand, for the reason the last two
-  // rounds learned the hard way: the previous version of this block described a
-  // debt column and five shim files, and kept printing that description for the
-  // whole of the round that deleted them. A note that can only describe the
-  // census it is computed from cannot outlive its subject.
-  if (rule.id === 'hand-written-harness') {
-    const owed = Object.entries(rule.sites).filter(([p]) => !HARNESS_NOT_A_HARNESS.has(p))
-    if (owed.length) {
-      notes.push(
-        `${owed.length} file(s) still reach a model by hand instead of declaring a harness ` +
-          `(${owed.reduce((s, [, n]) => s + n, 0)} call sites: ${owed.map(([p]) => p.replace(/^ui\/src\//, '')).join(', ')}). ` +
-          'Each one re-implements some of model resolution, structured-output parsing, the repair ' +
-          'turn, the guardrail pass and metering, and gets a different subset of them wrong. On the ' +
-          'census in scripts/check-invariants.mjs.',
-      )
-    } else {
-      // THE CENSUS IS AT ITS FLOOR. Said out loud, once, because "no failures" is
-      // not the same statement and this is the one somebody will want to cite.
-      notes.push(
-        'THE HARNESS PORT IS COMPLETE AND THIS CENSUS IS AT ITS FLOOR: every entry is a permanent ' +
-          'exception (the persona-conversation path; the pass-through proxy, the /api/chat route ' +
-          'and chat-persist.ts that also sat here left with the cutover) and nothing on it is ' +
-          'debt. No file in the tree reaches a model with a hand-written prompt, parser, fallback ' +
-          'chain and guard pass, and none supplies its own transport to work around a missing runner ' +
-          'capability — run.ts serves tools, streaming, ledger attribution and tier routing itself. ' +
-          'The next match on this rule is a regression, not a backlog item.',
-      )
-    }
-  }
-  // The board-policy census used to carry a KNOWN DIVERGENCE (two SQL copies
-  // skipped the archived filter). Both sides now route through the shared
-  // fragments in server/boards.ts — `boardVisibilitySql` (user) and
-  // `agentBoardPolicySql` (agent) — and this note is what keeps a clean run
-  // from reading as "and they always agreed".
-  if (rule.id === 'board-agent-policy-in-sql') {
-    notes.push(
-      'Agent-side board scoping in SQL goes through `agentBoardPolicySql` (server/boards.ts), ' +
-        'which bakes in the archived filter the hand-written copies once disagreed on. ' +
-        'A new `allow_all_agents` match outside the two config reads and the fragment is a regression.',
-    )
-  }
-  // Any admin-list site that is not one of the two DECLARED ones is a file still
-  // addressing the admins as an audience, and a clean run must say so — or "all
-  // clean" reads as "and nothing fans content to every admin any more".
-  //
-  // DERIVED FROM THE CENSUS, never written out by hand, because the hand-written
-  // version is what this round had to correct: it named two files and asserted
-  // they were "org-level by nature, so neither is the board leak that was just
-  // closed", which stopped being true the moment `repo_request` was bounded to a
-  // board — and it kept printing, on every clean run, the opposite of the code.
-  // A note that cannot outlive its subject is the only kind worth printing: this
-  // one disappears when the census does, and it cannot describe a file that is
-  // no longer on it.
-  if (rule.id === 'admin-list-outside-the-resolver') {
-    const DECLARED = new Set(['ui/src/server/approvals.ts', 'ui/src/server/users.ts'])
-    const owing = Object.keys(rule.sites).filter((p) => !DECLARED.has(p))
-    if (owing.length) {
-      notes.push(
-        `${owing.join(', ')} still reach for the admin list instead of asking \`audienceFor\` — an ` +
-          'audience decided at the call site, for a subject whose authority is declared elsewhere. On ' +
-          'the census in scripts/check-invariants.mjs; owned by a later round.',
-      )
-    }
-  }
-  // Anything on the census beyond the two real definitions is debt, not policy.
-  const debt = Object.entries(rule.sites).filter(([p]) => !OFF_BOARD_SOURCES.includes(p))
-  if (rule.id === 'off-board-status-literal' && debt.length) {
-    notes.push(
-      `${debt.length} file(s) still spell out the off-board status list instead of importing it ` +
-        `(${debt.reduce((s, [, n]) => s + n, 0)} occurrences). They are on the census in ` +
-        'scripts/check-invariants.mjs, so they cannot multiply — but they should shrink to zero.',
-    )
-  }
 }
 
-// EVERY TOOL AN AGENT CAN CALL MUST BE SIMULATED AND EXERCISED.
+// EVERY TOOL AN AGENT CAN CALL MUST BE SIMULATED AND EXERCISED — and the
+// invariant lives in the Rust tree now, with the toolbox it describes. Four
+// #[test]s in api/src/fitness/toolbox/ carry it, unit-level so a new
+// registration fails in `cargo test` first:
 //
-// THE RULE. A tool registered in `mcp/src/index.ts` is a verb Talaria hands to
-// every fleet agent in the workspace. Three things must then be true of it, and
-// this check fails the build when any of them is not:
+//   MODELLED    every `registerTool` in mcp/src/index.ts appears in the fitness
+//               catalog with the real description and argument names
+//               (talaria_tools.rs — `models_every_tool_the_toolkit_registers`,
+//               under its own reads-the-real-source guard)
+//   BACKED      every catalogued tool has a simulated backend in the sandbox,
+//               and every backend is in the catalog (sandbox.rs —
+//               `every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog`)
+//   EXERCISED   every backend is driven by a sandbox test or a harness's
+//               dry-run tool surface (sandbox.rs —
+//               `every_backend_is_exercised_by_a_test_or_a_harness_surface`)
 //
-//   MODELLED   it appears in fitness/toolbox/talaria-tools.ts with the real
-//              description and the real argument names (the sync test holds it
-//              to those; this holds it to existing at all)
-//   BACKED     it has a handler in fitness/toolbox/sandbox.ts, so a model in the
-//              eval sweep can actually call it against simulated state
-//   EXERCISED  something drives it — a sandbox test, or a harness's
-//              `dryRun.tools` surface. A backend nobody calls is a backend
-//              nobody has checked.
-//
-// WHY IT IS AN INVARIANT AND NOT A CONVENTION. The toolkit reached forty-four
-// tools while the simulator modelled sixteen. Nothing was wrong with any one
-// commit — each new tool was reviewed on its own, and "add an eval" is the kind
-// of follow-up that never has an owner. The result was that twenty-eight verbs
-// an org depends on had no simulated backend and no fixture, and the model
-// fitness page reported confident scores over the third of the surface that
-// happened to be covered.
-//
-// THIS IS ALSO THE PATTERN WE ASK OF SDK AUTHORS. A plugin's harness is required
-// to ship evals (docs/HARNESSES.md); a rule the platform exempts itself from is
-// a rule nobody follows. So the platform's own toolkit is held to it first, in
-// CI, with the worklist printed rather than described.
+// WHY AN ANCHOR CHECK INSTEAD OF THE CENSUS ITSELF. This script used to compute
+// the census over the TS toolbox; the toolbox moved to Rust with the port and
+// the census went with it. What belongs HERE is the lesson every renamed rule
+// in this file has paid for once: a coverage check whose subject quietly moved
+// reports "all clean" over nothing. The anchors fail when a test is renamed,
+// deleted, or moved — and the fix text points at the file that holds the rule.
 {
-  const MCP = sources.get('mcp/src/index.ts') ?? ''
-  const MODEL = sources.get('ui/src/server/fitness/toolbox/talaria-tools.ts') ?? ''
-  const SANDBOX = sources.get('ui/src/server/fitness/toolbox/sandbox.ts') ?? ''
-
-  const registered = [...MCP.matchAll(/server\.registerTool\(\s*'([a-z_]+)'/g)].map((m) => m[1])
-  // The guard on the guard: a renamed `registerTool` would leave this rule
-  // asserting over an empty list and passing forever.
-  if (registered.length < 30) {
+  const ANCHORS = [
+    ['api/src/fitness/toolbox/talaria_tools.rs', 'fn reads_the_real_registrations_at_all'],
+    ['api/src/fitness/toolbox/talaria_tools.rs', 'fn models_every_tool_the_toolkit_registers'],
+    ['api/src/fitness/toolbox/sandbox.rs', 'fn every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog'],
+    ['api/src/fitness/toolbox/sandbox.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
+  ]
+  const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
+  if (missing.length) {
     failures.push({
-      id: 'toolkit-coverage-cannot-read-the-toolkit',
-      what: `found ${registered.length} tool registrations in mcp/src/index.ts, which cannot be right`,
+      id: 'toolkit-coverage-anchor-missing',
+      what: 'the fitness toolbox coverage tests are not where this check expects them',
       fix: [
-        'The scanner looks for `server.registerTool(\'name\'`. If registration was renamed or wrapped,',
-        'update the pattern in scripts/check-invariants.mjs — do NOT delete the rule. A coverage check',
-        'that silently matches nothing is worse than no coverage check: it reports "all clean".',
+        'The toolkit coverage invariant (every registered tool modelled, simulated, and exercised)',
+        'lives in #[test]s in api/src/fitness/toolbox/. A named anchor was not found:',
+        ...missing.map(([path, anchor]) => `  ${anchor}  in  ${path}`),
+        '',
+        'If the tests moved or were renamed, update ANCHORS in scripts/check-invariants.mjs — do',
+        'NOT delete this check. It is what fails when the coverage rule quietly stops existing;',
+        'the Rust suite is what fails when a tool is uncovered.',
       ],
       found: [],
     })
-  }
-
-  // Handlers only: the top-level `name: (args, world) =>` keys of the HANDLERS
-  // object. Matching the whole file would count `research:` on the world
-  // interface as a backend, which is exactly the false pass to avoid.
-  const from = SANDBOX.indexOf('const HANDLERS')
-  const to = SANDBOX.indexOf('export const backedToolNames')
-  const backed = new Set([...SANDBOX.slice(from === -1 ? 0 : from, to === -1 ? undefined : to).matchAll(/^ {2}([a-z_]+): \(/gm)].map((m) => m[1]))
-
-  // Anything that drives a tool by name: the sandbox's own tests, and the
-  // `dryRun.tools` surfaces harnesses declare.
-  const drivers = [...sources].filter(([p]) => p.startsWith('ui/src/server/fitness/toolbox/') || p.startsWith('ui/src/server/harness/defs/')).map(([, src]) => src)
-
-  const unmodelled = registered.filter((n) => !new RegExp(`name: '${n}'`).test(MODEL))
-  const unbacked = registered.filter((n) => !backed.has(n))
-  const unexercised = registered.filter((n) => !drivers.some((src) => src.includes(`'${n}'`)))
-
-  for (const [id, names, what, fix] of [
-    [
-      'mcp-tool-not-modelled',
-      unmodelled,
-      'a tool the fleet can call that the fitness suite does not model',
-      [
-        'Add it to ui/src/server/fitness/toolbox/talaria-tools.ts: the name, the DESCRIPTION COPIED',
-        'VERBATIM from mcp/src/index.ts, the real argument names, and a `group`. The sync test',
-        'compares all three against the real registration and will tell you which part drifted.',
-      ],
-    ],
-    [
-      'mcp-tool-not-simulated',
-      unbacked,
-      'a tool the fitness suite offers with no simulated backend behind it',
-      [
-        'Add a handler to HANDLERS in ui/src/server/fitness/toolbox/sandbox.ts, over the in-memory',
-        'world. Simulate the REFUSALS as well as the happy path — "personal assistants only", "no',
-        'Google account connected", "that ticket is off the table". A sandbox that only ever says yes',
-        'measures nothing: the failures worth catching are a model reaching for a tool its identity',
-        'does not carry, and a model narrating a result it was refused.',
-      ],
-    ],
-    [
-      'mcp-tool-never-exercised',
-      unexercised,
-      'a simulated tool that nothing ever calls',
-      [
-        'Drive it: a case in ui/src/server/fitness/toolbox/sandbox.test.ts asserting the rule that makes',
-        'the tool worth simulating, and — where the tool is part of a job a model does — the harness',
-        "surface that offers it (`dryRun.tools` on a definition in ui/src/server/harness/defs/).",
-        '',
-        'THIS IS THE STEP THAT IS ALWAYS SKIPPED, and it is the one that finds things. A backend written',
-        'from the tool description and never called is a guess about production with a test-shaped',
-        'wrapper around it.',
-      ],
-    ],
-  ]) {
-    if (!names.length) continue
-    failures.push({ id, what, fix: [...fix, '', 'TOOLS:', ...names.map((n) => `  ${n}`)], found: [] })
-  }
-
-  if (!unmodelled.length && !unbacked.length && !unexercised.length) {
-    notes.push(
-      `all ${registered.length} tools in Talaria's MCP toolkit are modelled, simulated against in-memory state, and exercised ` +
-        '(fitness/toolbox/). This is the coverage bar docs/HARNESSES.md asks of SDK plugin authors, held by the platform first.',
-    )
   }
 }
 
@@ -1468,7 +896,7 @@ for (const rule of CENSUS) {
 //
 // THE RULE. No route under ui/src/routes/api/ may (a) set a Content-Disposition
 // that says `inline`, or (b) set a Content-Type taken from a stored `.mime` /
-// `.type` field. Upload bytes go through `serveUpload()` in server/uploads.ts —
+// `.type` field. Upload bytes go through `serve_upload` in api/src/uploads.rs —
 // the single inline/download decision, built on the INLINE_MIME set (raster
 // images and PDF inline; EVERYTHING else `attachment` + `nosniff` + a sandbox
 // CSP). A route that re-makes that decision is the P0 again.
@@ -1489,7 +917,7 @@ for (const rule of CENSUS) {
 // mime was NOT uploader input. `readAgentImage` derived it from a fixed
 // extension map (png/jpg/gif/webp — nothing a browser executes), path-guarded
 // the read to the agent's own volume, and carried nosniff: a server-decided
-// type on guarded bytes is the shape serveUpload itself has, so it was excepted
+// type on guarded bytes is the shape serve_upload itself has, so it was excepted
 // BY NAME. The route moved to Rust with the cutover and the carve-out left with
 // it — a bytes route that needs the same standing makes its case in the PR, in
 // the fix text below.
@@ -1532,28 +960,28 @@ for (const rule of CENSUS) {
       id: 'upload-bytes-served-outside-serveupload',
       what: 'an inline or content-type decision on upload bytes, made inside a route',
       fix: [
-        "Serve through the helper: `import { serveUpload } from '@/server/uploads'` and",
-        '`return serveUpload(up, { cache: … })`. It is the one inline/download decision — the',
-        'INLINE_MIME allowlist (raster + PDF), the filename-header scrub, `nosniff`, and the',
-        'sandbox CSP on everything downloaded. No route can widen it, which is the point: the two',
-        'routes this rule was written after each shipped script-in-"image" running with the',
-        "viewer's session, and the public one served it to the open internet.",
+        'Upload bytes are the Rust api\'s to serve: `serve_upload` in api/src/uploads.rs is the one',
+        'inline/download decision — the INLINE_MIME allowlist (raster + PDF), the filename-header',
+        'scrub, `nosniff`, and the sandbox CSP on everything downloaded. No route can widen it,',
+        'which is the point: the two routes this rule was written after each shipped script-in-"image"',
+        "running with the viewer's session, and the public one served it to the open internet.",
         '',
-        'If the bytes are NOT an upload (generated on the server, read out of an agent volume),',
-        'do what agent-media does: derive the type from a fixed map of safe extensions, refuse',
-        'everything else, carry nosniff — and say so in the PR, because the exception has to be',
-        'written into this block by name, not slipped past it.',
+        'A TS resident route has no business making this decision at all — proxy the bytes to the',
+        'api and let serve_upload answer. If the bytes are NOT an upload (generated on the server,',
+        'read out of an agent volume), do what agent-media did: derive the type from a fixed map of',
+        'safe extensions, refuse everything else, carry nosniff — and say so in the PR, because the',
+        'exception has to be written into this block by name, not slipped past it.',
       ],
       found,
     })
   }
 
   // THE COMPANION — the closedToAgents lesson, applied to a helper. The scan
-  // above watches every route file for a NEW hand-made decision; this watches
-  // the two routes that actually carry bytes for the helper itself. If either
-  // stops calling serveUpload, the bytes came back inside the route, and the
-  // scan above is the only thing left between the response headers and the
-  // uploader's declared MIME.
+  // above watches every resident route file for a NEW hand-made decision; this
+  // watches the two Rust routes that actually carry bytes for the helper
+  // itself. If either stops calling serve_upload, the bytes came back inside
+  // the route, and the scan above is the only thing left between the response
+  // headers and the uploader's declared MIME.
   const rustSrc = (path) => {
     try {
       return readFileSync(join(ROOT, path), 'utf8')
@@ -1618,29 +1046,6 @@ for (const rule of CENSUS) {
       found: [],
     })
   }
-}
-
-// The two OFF_BOARD_STATUSES declarations must agree, until there is only one.
-{
-  const lists = OFF_BOARD_SOURCES.map((p) => [p, offBoardListIn(sources.get(p) ?? '')]).filter(([, l]) => l !== null)
-  const [first, ...rest] = lists
-  const disagree = rest.filter(([, l]) => l.join(',') !== first?.[1].join(','))
-  if (first && disagree.length) {
-    failures.push({
-      id: 'off-board-list-copies-disagree',
-      what: 'the two OFF_BOARD_STATUSES declarations have drifted apart',
-      fix: [
-        `${first[0]} says [${first[1].join(', ')}]`,
-        ...disagree.map(([p, l]) => `${p} says [${l.join(', ')}]`),
-        '',
-        "Make `server/statuses.ts` import the list: `import { OFF_BOARD_STATUSES } from '@/lib/task-const'`.",
-        'That is the fix for the drift AND for this check, which retires itself once there is',
-        'only one declaration left to find.',
-      ],
-      found: [],
-    })
-  }
-  if (lists.length === 1) notes.push('OFF_BOARD_STATUSES is now declared once — the cross-check found nothing to compare and is inert.')
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

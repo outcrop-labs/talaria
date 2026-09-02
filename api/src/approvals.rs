@@ -1600,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn kind_strings_are_the_ts_ones() {
+    fn kind_strings_are_the_wire_ones() {
         assert_eq!(ApprovalKind::GoogleAction.as_str(), "google_action");
         assert_eq!(ApprovalKind::RunDecision.as_str(), "run_decision");
         assert_eq!(

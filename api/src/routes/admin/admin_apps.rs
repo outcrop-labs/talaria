@@ -113,10 +113,11 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // Two bodies on one PUT, dispatched by key presence: { app, enabled }
-    // toggles an app, { catalogUrl } (nullable) sets the source — a
-    // catalogUrl that is a string but not a URL answers the field's own
-    // sentence ("Invalid URL"). A body naming NEITHER key still takes the
-    // catalogUrl arm and resets the source to the default.
+    // toggles an app, { catalogUrl } (nullable — null resets to the default
+    // source) sets the catalog source. A body naming NONE of the keys answers
+    // 400 rather than silently falling into the catalog arm and resetting the
+    // source; a catalogUrl that is a string but not a URL answers the field's
+    // own sentence ("Invalid URL").
     if obj.contains_key("app") || obj.contains_key("enabled") {
         let app = match crate::body::string_member(obj, "app", 1, usize::MAX) {
             Ok(a) => a,
@@ -145,7 +146,13 @@ pub async fn put(
         return Json(serde_json::json!({ "ok": true })).into_response();
     }
     let next_url = match obj.get("catalogUrl") {
-        None | Some(Value::Null) => None,
+        None => {
+            return house_error(
+                StatusCode::BAD_REQUEST,
+                "body must name app + enabled, or catalogUrl",
+            );
+        }
+        Some(Value::Null) => None,
         Some(Value::String(u)) => {
             if !url_ok(u) {
                 return house_error(StatusCode::BAD_REQUEST, "Invalid URL");

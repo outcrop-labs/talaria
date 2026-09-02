@@ -11,7 +11,7 @@ bun talaria restore <snapshot-dir> [--target …]   # put one back
 ```
 
 Neither schedules itself. Point cron or a systemd timer at `backup`; the
-in-app scheduler (`server/scheduler.ts`) is a later milestone and will invoke
+api's job table is a later milestone and will invoke
 the same command rather than reimplement it.
 
 ## What's in a snapshot

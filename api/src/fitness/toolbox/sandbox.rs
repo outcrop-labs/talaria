@@ -1762,6 +1762,8 @@ mod tests {
         let mut s = sb();
         let created = s.dispatch("create_document", r#"{"title":"Run notes","markdown":"x"}"#);
         assert!(created.text.contains("\"documentId\":\"doc-2\""));
+        let read = s.dispatch("get_document", r#"{"documentId":"doc-2"}"#);
+        assert!(read.text.contains("Run notes"));
         s.dispatch(
             "update_document",
             r#"{"documentId":"doc-2","markdown":"y"}"#,
@@ -1769,6 +1771,10 @@ mod tests {
         assert_eq!(s.world.documents[1].versions, 2);
         let listed = s.dispatch("list_documents", "{}");
         assert!(listed.text.contains("Run notes"));
+        // An id the listing never returned — same rule as every listing-backed
+        // tool.
+        let invented = s.dispatch("get_document", r#"{"documentId":"doc-99"}"#);
+        assert!(invented.text.contains("list_documents"));
     }
 
     #[test]
@@ -1866,9 +1872,80 @@ mod tests {
     }
 
     #[test]
+    fn search_drive_hands_back_real_links_and_answers_empty_when_nothing_matches() {
+        let mut s = sb();
+        let hit = s.dispatch("search_drive", r#"{"q":"migration"}"#);
+        assert!(hit.text.contains("Ledger migration plan"));
+        assert!(hit.text.contains("https://drive.google.com/open?id=df-1"));
+        // Nothing in Drive answers this — which is a REAL answer a model must
+        // pass on to the human, not an error to smooth over with a plausible
+        // link.
+        let none = s.dispatch("search_drive", r#"{"q":"q4 board deck"}"#);
+        assert!(!none.is_error);
+        assert!(none.text.contains("\"files\":[]"));
+    }
+
+    #[test]
+    fn drafts_rather_than_sends_and_says_so_in_the_result() {
+        let mut s = sb();
+        // The whole point of the confirm-send design, and the failure worth
+        // catching is a model that then tells a human the mail went out.
+        let mail = s.dispatch(
+            "draft_email",
+            r#"{"to":"priya@example.com","subject":"License","body":"Any news?"}"#,
+        );
+        assert!(mail.text.contains("nothing has been sent"));
+        let event = s.dispatch(
+            "draft_calendar_event",
+            r#"{"summary":"Ledger sync","start":"2026-07-10T15:00:00Z","end":"2026-07-10T15:30:00Z"}"#,
+        );
+        assert!(event.text.contains("NOT on the calendar yet"));
+        assert_eq!(s.world.email_drafts.len(), 1);
+        assert_eq!(s.world.event_drafts.len(), 1);
+        // The real calendar is untouched — two entries, as the world began.
+        assert_eq!(s.world.calendar.len(), 2);
+    }
+
+    #[test]
+    fn refuses_all_nine_google_tools_when_no_account_is_connected() {
+        let mut s = Sandbox::new(SandboxOptions {
+            world: serde_json::json!({ "googleConnected": false }),
+            ..SandboxOptions::default()
+        });
+        for (tool, args) in [
+            ("read_calendar", "{}"),
+            ("read_recent_email", "{}"),
+            ("read_email", r#"{"id":"em-1"}"#),
+            ("list_labels", "{}"),
+            ("create_label", r#"{"name":"Vendor"}"#),
+            (
+                "organize_emails",
+                r#"{"ids":["em-1"],"addLabels":["Vendor"]}"#,
+            ),
+            ("search_drive", "{}"),
+            ("draft_email", r#"{"to":"priya@example.com"}"#),
+            (
+                "draft_calendar_event",
+                r#"{"summary":"x","start":"2026-07-10","end":"2026-07-10"}"#,
+            ),
+        ] {
+            let r = s.dispatch(tool, args);
+            assert!(
+                r.is_error && r.text.contains("setup problem on our side"),
+                "{tool}: {}",
+                r.text
+            );
+        }
+    }
+
+    #[test]
     fn organizes_by_id_and_label_name_and_the_world_shows_the_filing() {
         let mut s = sb();
         s.dispatch("create_label", r#"{"name":"Vendor"}"#);
+        // The listing sees it — a label the listing cannot show is a label
+        // the model has no way to know exists.
+        let labels = s.dispatch("list_labels", "{}");
+        assert!(labels.text.contains("Vendor"));
         let r = s.dispatch(
             "organize_emails",
             r#"{"ids":["em-1"],"addLabels":["Vendor"],"removeLabels":["UNREAD"]}"#,
@@ -1931,14 +2008,54 @@ mod tests {
         assert!(status.text.contains("\"phase\":\"planning\""));
     }
 
+    #[test]
+    fn reports_a_finished_run_with_the_document_to_read() {
+        let mut s = sb();
+        let listed = s.dispatch("list_research", "{}");
+        assert!(listed.text.contains("run-1"));
+        let done = s.dispatch("research_status", r#"{"runId":"run-1"}"#);
+        assert!(done.text.contains("doc-1"));
+        let invented = s.dispatch("research_status", r#"{"runId":"run-9"}"#);
+        assert!(invented.text.contains("list_research"));
+    }
+
     // ── governance: the personal-assistant gate ──────────────────────────────
 
     #[test]
     fn refuses_the_governance_tools_for_a_general_org_agent() {
         let mut s = sb();
-        let r = s.dispatch("list_teams", "{}");
-        assert!(r.text.contains("personal assistants only"));
-        assert!(r.text.contains("401"));
+        for (tool, args) in [
+            ("list_teams", "{}"),
+            (
+                "move_board_to_team",
+                r#"{"boardId":"b-platform","teamName":"engineering"}"#,
+            ),
+            (
+                "add_board_member",
+                r#"{"boardId":"b-platform","email":"new@example.com"}"#,
+            ),
+            (
+                "remove_board_member",
+                r#"{"boardId":"b-platform","email":"dana@example.com"}"#,
+            ),
+            (
+                "set_board_agents",
+                r#"{"boardId":"b-platform","add":["nova-analyst"]}"#,
+            ),
+        ] {
+            let r = s.dispatch(tool, args);
+            assert!(
+                r.text.contains("personal assistants only"),
+                "{tool}: {}",
+                r.text
+            );
+            assert!(r.text.contains("401"), "{tool}: {}", r.text);
+        }
+        // Reading the roster is NOT assistant-only — any agent on the board
+        // may, which is what makes the write refusal above mean something.
+        let roster = s.dispatch("list_board_members", r#"{"boardId":"b-platform"}"#);
+        assert!(!roster.is_error);
+        assert!(roster.text.contains("priya@example.com"));
     }
 
     #[test]
@@ -1987,6 +2104,12 @@ mod tests {
             r#"{"boardId":"b-platform","email":"priya@example.com"}"#,
         );
         assert!(owner.text.contains("owner can't be removed"));
+        let agents = s.dispatch(
+            "set_board_agents",
+            r#"{"boardId":"b-platform","add":["nova-analyst"],"remove":["engineer-engineering"]}"#,
+        );
+        assert!(!agents.is_error, "{}", agents.text);
+        assert_eq!(s.world.boards[0].agents, vec!["nova-analyst".to_string()]);
     }
 
     // ── catalog ↔ backends ───────────────────────────────────────────────────
@@ -2011,5 +2134,39 @@ mod tests {
             51,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
+    }
+
+    /// EVERY BACKEND IS DRIVEN BY SOMETHING — a case in this module, or a
+    /// harness's dry-run tool surface. A backend written from the tool
+    /// description and never called is a guess about production with a
+    /// test-shaped wrapper around it. (This rule used to live in
+    /// scripts/check-invariants.mjs over the TS toolbox; it moved with the
+    /// toolbox, and that script now points here.)
+    ///
+    /// THE SCAN READS THIS FILE'S OWN TEST MODULE, and the module boundary is
+    /// the line: `BACKED_TOOLS` above spells every name, so scanning the whole
+    /// file would make the rule pass vacuously.
+    #[test]
+    fn every_backend_is_exercised_by_a_test_or_a_harness_surface() {
+        let own = include_str!("sandbox.rs");
+        let tests = own
+            .split("mod tests")
+            .nth(1)
+            .expect("this file's test module is what the scan reads");
+        let mut surfaces: Vec<&'static str> = Vec::new();
+        for h in crate::harness::registry::builtin_activity_harnesses() {
+            if let Some(d) = &h.def.dry_run {
+                surfaces.extend(d.tools.iter().copied());
+            }
+        }
+        for name in BACKED_TOOLS {
+            let by_test = tests.contains(&format!("\"{name}\""));
+            let by_surface = surfaces.contains(name);
+            assert!(
+                by_test || by_surface,
+                "\"{name}\" has a backend nothing ever drives — add a case in this module that \
+                 calls it, or offer it on a harness's dry-run tool surface"
+            );
+        }
     }
 }

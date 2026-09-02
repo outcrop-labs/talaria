@@ -130,7 +130,7 @@ fn dek_wraps_reproduce_ts_bytes_both_directions() {
 }
 
 #[test]
-fn opens_every_ts_case_including_tampered() {
+fn opens_every_fixture_case_including_tampered() {
     let f = fixture();
     let (sb, _) = box_for(&f);
     for case in &f.open {

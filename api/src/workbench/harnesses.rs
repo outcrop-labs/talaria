@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(
             r.full_env.get("OPENAI_BASE_URL").and_then(Value::as_str),
             Some("overridden"),
-            "the definition's env wins over the auth-derived default, like TS's spread order"
+            "the definition's env wins over the auth-derived default — an explicit definition beats a derived default"
         );
         // A native-auth harness gets NO gateway env at all.
         let native = resolve_def(

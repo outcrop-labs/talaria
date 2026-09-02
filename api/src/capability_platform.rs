@@ -107,13 +107,13 @@ pub async fn call_platform_tool(
     }
 
     if tool == "describe_image" {
-        // The vision harness (vision.rs, serving /api/vision/describe) is
-        // never dispatched through here — a caller reaching this branch routed
+        // The vision harness (vision.rs, serving /api/vision/describe)
+        // is never dispatched through here — a caller reaching this branch routed
         // a supplier to the wrong surface, so the honest answer is a refusal
         // that names the gap rather than a half-answer.
         return Err(
-            "describe_image runs on the vision harness, which has not crossed to Rust yet — \
-             this supplier should not have been reachable from a Rust stage"
+            "describe_image runs on the vision harness, never through the platform tools — \
+             this supplier should not have been reachable from this stage"
                 .into(),
         );
     }
@@ -228,7 +228,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("vision harness"), "{err}");
-        assert!(err.contains("not crossed"), "{err}");
+        assert!(err.contains("never through the platform tools"), "{err}");
         let err = call_platform_tool(
             &lazy_pg(),
             "make_coffee",

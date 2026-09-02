@@ -151,7 +151,7 @@ Chat streaming is *not* on the bus: `/api/chat` tees the agent's own SSE stream 
 
 ## The fleet
 
-Agents are **rendered, not hand-written**. `fleet-render.ts` materializes gitignored
+Agents are **rendered, not hand-written**. The fleet render (api/src/fleet/render.rs) materializes gitignored
 `fleet/` from one Talaria-owned chassis: per-agent `config.yaml` + `SOUL.md`, a
 `docker-compose.yml` under the `talaria-fleet` project, and `fleet.json` — the manifest the
 app reads to dial each agent's persona gateway directly on its published port. No bridge, no
@@ -161,18 +161,18 @@ multiplexer.
   exactly one upstream — guarded, metered, attributed.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
-- **Blue/green rolls** (`fleet-reconcile.ts`): the incoming slot comes up on a fresh port,
+- **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,
   must pass `docker inspect` health within 120s (a sick newcomer is discarded; the old
   container never stopped serving), then cutover is one `UPDATE agent_defs` + re-render —
   traffic shifts on the next manifest read — a drain window (default 45s), then the old slot
   is removed. `proxyChat` re-reads the manifest per attempt and holds a turn up to two
   minutes across a restart.
 - **Preflight probes from where the agent stands**: a throwaway container on the fleet
-  network probes the gateway/MCP base URLs (`fleet-preflight.ts`) — the host's view proves
+  network probes the gateway/MCP base URLs (api/src/fleet/preflight.rs) — the host's view proves
   nothing.
 - **Crons live in the agent**, not in Talaria: Hermes' own scheduler ticks inside the
   container; Talaria reads it for truth and mutates through `docker exec`
-  (`agent-crons.ts`).
+  (api/src/agent_crons.rs).
 
 ## Agent work and the guardrails
 

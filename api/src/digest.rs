@@ -1655,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn the_state_blobs_round_trip_in_the_ts_spelling() {
+    fn the_state_blobs_round_trip_in_the_wire_spelling() {
         // The blob's spelling is the stored contract: a pass writes the
         // shape the next pass reads, key for key.
         let state = DigestState {

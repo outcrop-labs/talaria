@@ -1118,7 +1118,7 @@ pub fn backfill_run() -> &'static Arc<RunDefinition> {
                 Box::pin(async move {
                     let Some(deps) = ARMED_BACKFILL.get().cloned() else {
                         return Err(
-                            "rag-backfill steps are armed with the retrieval plane; this Rust \
+                            "rag-backfill steps are armed by the scheduler's boot wiring; this \
                              step was reached by a driver armed before its deps were"
                                 .into(),
                         );
@@ -1145,7 +1145,7 @@ pub fn reindex_run() -> &'static Arc<RunDefinition> {
                 Box::pin(async move {
                     let Some(deps) = ARMED_REINDEX.get().cloned() else {
                         return Err(
-                            "rag-reindex steps are armed with the retrieval plane; this Rust \
+                            "rag-reindex steps are armed by the scheduler's boot wiring; this \
                              step was reached by a driver armed before its deps were"
                                 .into(),
                         );
@@ -1531,17 +1531,17 @@ mod tests {
     }
 
     #[test]
-    fn the_checkpoints_read_and_write_the_ts_wire_shape() {
+    fn the_checkpoints_read_and_write_the_wire_shape() {
         // Rows driven by earlier deploys carry these exact bytes and must
         // parse here, byte for byte.
-        let backfill_ts = r#"{"source":"kb-docs","cursor":"00000001-0000-0000-0000-000000000001","counts":{"kbDocs":100}}"#;
-        let cp: BackfillCheckpoint = serde_json::from_str(backfill_ts).unwrap();
+        let backfill_json = r#"{"source":"kb-docs","cursor":"00000001-0000-0000-0000-000000000001","counts":{"kbDocs":100}}"#;
+        let cp: BackfillCheckpoint = serde_json::from_str(backfill_json).unwrap();
         assert_eq!(cp.source, BackfillSource::KbDocs);
         assert_eq!(cp.counts.get("kbDocs"), Some(&100));
 
-        let reindex_ts =
+        let reindex_json =
             r#"{"phase":"rebuilding","rebuilt":["c1"],"embedDim":384,"backfill":null}"#;
-        let rc: ReindexCheckpoint = serde_json::from_str(reindex_ts).unwrap();
+        let rc: ReindexCheckpoint = serde_json::from_str(reindex_json).unwrap();
         assert_eq!(rc.phase, ReindexPhase::Rebuilding);
         assert_eq!(rc.embed_dim, Some(384));
         assert_eq!(

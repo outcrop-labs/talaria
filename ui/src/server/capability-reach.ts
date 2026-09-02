@@ -56,9 +56,10 @@ export interface Reach {
 
 // ── Which capabilities a tool can stand in for ───────────────────────────────
 
-/** THE TABLE IS SHORT ON PURPOSE, and the discipline is the same one
- *  `score.ts` applies to `DECLARED_EDGES`: an entry earns its place by being a
- *  case where a tool genuinely does the job, not by being conceivable.
+/** THE TABLE IS SHORT ON PURPOSE, and the discipline is the same one the Rust
+ *  fitness scorer (api/src/fitness/score.rs) applies to `DECLARED_EDGES`: an
+ *  entry earns its place by being a case where a tool genuinely does the job,
+ *  not by being conceivable.
  *
  *  `search` qualifies completely. A web-search tool returns the same thing a
  *  sonar model returns — passages with source URLs — and the synthesis stage
@@ -255,8 +256,9 @@ export async function reachFor(keys: readonly string[], wanted: readonly Capabil
     // died having searched nothing.
     //
     // UPDATED, because this comment used to say "Talaria sends none of them" and
-    // that is no longer true. `native-search.ts` now arms what can be armed over
-    // an OpenAI-shaped body: OpenRouter's web plugin, and Perplexity, which
+    // that is no longer true. The Rust native-search arming
+    // (api/src/native_search.rs) now arms what can be armed over an
+    // OpenAI-shaped body: OpenRouter's web plugin, and Perplexity, which
     // needs nothing. It is still only those two — OpenAI's switch is the MODEL
     // (`-search-api`) and its parameter 400s elsewhere; Anthropic's search is a
     // server tool on a body shape the compat layer does not expose.

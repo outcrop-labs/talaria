@@ -64,7 +64,7 @@ pub async fn post(
         .clone()
         .or_else(|| user.name.clone())
         .unwrap_or_else(|| "reviewer".into());
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_review(&deps, &id, &reviewer, &status, notes.as_deref()).await {
         tracing::error!("[tasks] review record failed: {e}");
         return thrown_internal_error();

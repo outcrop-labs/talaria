@@ -7,7 +7,7 @@ import type {
   FocusSourceType,
   InboxCommandEvent,
   InboxConversationPage,
-} from '@/server/inbox-focus'
+} from './inbox-focus-types'
 
 export type {
   FocusAction,
@@ -19,7 +19,7 @@ export type {
   InboxCommandEvent,
   InboxConversationPage,
   InboxTimelineEntry,
-} from '@/server/inbox-focus'
+} from './inbox-focus-types'
 
 // The focus endpoints are polled on 30s timers, so every read/mutation here
 // carries a 20s abort — a hung request must never stack behind the next tick.
@@ -104,7 +104,7 @@ export function updateInboxFocusState(input: {
   snoozedUntil?: string | null
   viewed?: boolean
 }) {
-  return putJson<{ ok: true; timelineEntry?: import('@/server/inbox-focus').InboxTimelineEntry }>('/api/inbox/focus/state', input, {
+  return putJson<{ ok: true; timelineEntry?: import('./inbox-focus-types').InboxTimelineEntry }>('/api/inbox/focus/state', input, {
     signal: requestSignal(),
   })
 }

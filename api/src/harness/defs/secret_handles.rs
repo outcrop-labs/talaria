@@ -164,18 +164,12 @@ fn handles_written(ctx: &CheckCtx) -> Vec<String> {
         .collect()
 }
 
-/// Placeholders a model reaches for when it has NOT understood that the
-/// handle is the credential. Kept broad on purpose: every one of these is a
-/// real thing models emit, and each produces a command that looks right and
-/// fails. The same pattern the credential surface exports — see the header.
-fn looks_like_placeholder(text: &str) -> bool {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r"(?i)<[^>\s]*(?:token|key|pat|secret|password|cred)[^>\s]*>|\$\{?[A-Z_]*(?:TOKEN|KEY|PAT|SECRET|PASSWORD)[A-Z_]*\}?|\byour[-_ ](?:token|key|pat|secret|password)\b|\bxxx+\b|\.\.\.\.+")
-            .expect("the placeholder pattern compiles")
-    })
-    .is_match(text)
-}
+// Placeholders a model reaches for when it has NOT understood that the
+// handle is the credential: `looks_like_placeholder`, imported from the
+// credential surface (fitness/toolbox/credential_tools.rs) — kept broad on
+// purpose, every one of these is a real thing models emit, and each produces
+// a command that looks right and fails.
+use crate::fitness::toolbox::credential_tools::looks_like_placeholder;
 
 fn credential_noun() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();

@@ -169,7 +169,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secret_shape_matches_the_ts_mint() {
+    fn secrets_mint_as_tlk_plus_forty_eight_hex() {
         // tlk_ + 48 hex chars; the list
         // view shows the first 12 — "tlk_" plus 8 hex of secret.
         let secret = format!("tlk_{}", hex(&(0u8..24).collect::<Vec<u8>>()));

@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn a_config_round_trips_to_the_exact_ts_row_shape() {
+    fn a_config_round_trips_to_the_exact_row_shape() {
         let cfg = RerankConfig {
             provider: "tei".into(),
             candidates: Some(30),
@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn the_provider_catalog_serializes_the_ts_wire_shape() {
+    fn the_provider_catalog_serializes_the_wire_shape() {
         let all = providers_public();
         assert_eq!(all.len(), RERANK_PROVIDERS.len());
         // The first entry, byte for byte the wire contract — camelCase keys,

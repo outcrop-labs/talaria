@@ -1,6 +1,6 @@
 // The Google Cloud APIs the workspace integration calls, and where each is
 // enabled. Client-safe by design — the Admin UI renders the list as setup
-// instructions, the server probes them (server/google/api-health.ts imports
+// instructions, the Rust api probes them (api/src/google/api_health.rs imports
 // from here, never the other way: @/server must not reach a browser bundle).
 
 export const GOOGLE_API_LIBRARY = [

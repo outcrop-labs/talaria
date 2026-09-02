@@ -1315,7 +1315,7 @@ pub fn work_session_run() -> &'static Arc<RunDefinition> {
                 Box::pin(async move {
                     let Some(deps) = ARMED_DEPS.get().cloned() else {
                         return Err(
-                            "work-session steps are armed with the scheduler handover; this Rust \
+                            "work-session steps are armed by the scheduler's boot wiring; this \
                              step was reached by a driver armed before its deps were"
                                 .into(),
                         );
@@ -1357,7 +1357,7 @@ mod tests {
     // Fixed vectors from the original derivation — not re-derived here,
     // which would test the derivation against itself.
     #[test]
-    fn session_run_id_matches_the_ts_derivation() {
+    fn session_run_id_is_the_pinned_derivation() {
         assert_eq!(
             session_run_id("11111111-1111-1111-1111-111111111111", "claude-opus-4-5", 0),
             "b1715287-c692-8f1e-9255-ea7ba786880b"
@@ -1429,19 +1429,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_unarmed_step_refuses_with_the_handover_posture() {
+    async fn the_unarmed_step_refuses_naming_the_wiring_bug() {
         let def = work_session_run();
         let err = (def.step)(row_ctx(json!(null), json!(null), 0))
             .await
             .unwrap_err();
-        assert!(err.contains("handover"), "{err}");
+        assert!(err.contains("scheduler"), "{err}");
         assert!(err.contains("armed"), "{err}");
     }
 
     // ── Checkpoint wire shape ───────────────────────────────────────────────
 
     #[test]
-    fn checkpoints_round_trip_the_ts_spellings() {
+    fn checkpoints_round_trip_the_db_spellings() {
         // A send checkpoint, with and without notBefore.
         let send: WorkSessionCheckpoint = serde_json::from_value(
             json!({"stage":"send","turn":3,"stageAttempt":1,"lastTail":"will DONE soon"}),

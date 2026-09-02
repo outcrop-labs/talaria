@@ -217,7 +217,7 @@ pub async fn call_mcp_tool(
     if let Some(slug) = &server.app_slug {
         return Err(format!(
             "MCP server \"{server_name}\" is published by the app \"{slug}\" and dispatches \
-             in-process through the app runtime, which stays TS by the port's rule 10"
+             in-process through the app runtime, which stays TS by rule 10 (docs/RUST-MIGRATION.md)"
         ));
     }
 
@@ -1092,7 +1092,7 @@ pub async fn refresh_mcp_tools(
         // authors' TS/node code, owned by the app runtime, not something this
         // registry path can fetch.
         return Err(format!(
-            "app \"{}\" publishes its catalog from the app module, which stays TS by the port's rule 10",
+            "app \"{}\" publishes its catalog from the app module, which stays TS by rule 10 (docs/RUST-MIGRATION.md)",
             server.app_slug.unwrap_or_default()
         ));
     }

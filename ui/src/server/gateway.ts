@@ -5,7 +5,7 @@
 import { newVault, sealContent } from './secret-vault'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { FLEET_DIR } from './fleet-render'
+import { FLEET_DIR } from './fleet-dir'
 
 export interface AgentModel {
   id: string

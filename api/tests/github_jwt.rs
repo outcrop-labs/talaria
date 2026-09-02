@@ -1,10 +1,10 @@
-// Cross-language GitHub app JWT vectors. The committed fixture is produced by
-// the TS side (scripts/gen-github-jwt-vectors.mjs, which runs github.ts's own
-// appJwtAt); this suite proves the Rust api signs the SAME bytes — header
-// and payload literals, the iat-60/exp+540 offsets, base64url unpadded, and
-// the PKCS#1 v1.5 SHA-256 signature itself. If this fails after a change on
-// EITHER side, the two have drifted: fix the code, then regenerate with
-// `bun run api:vectors`.
+// GitHub app JWT vectors, pinned to a frozen fixture. The fixture was
+// produced by the pre-port TS signer and is ground truth now: nothing
+// regenerates it, and this suite proves the Rust api signs the SAME bytes —
+// header and payload literals, the iat-60/exp+540 offsets, base64url
+// unpadded, and the PKCS#1 v1.5 SHA-256 signature itself. If this fails
+// after a change here, the signer has drifted from the pinned recipe: fix
+// the code, not the fixture.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -31,7 +31,7 @@ struct Case {
 }
 
 #[test]
-fn rust_signs_the_ts_bytes() {
+fn rust_signs_the_pinned_bytes() {
     let f: Fixture = serde_json::from_str(FIXTURE).expect("fixture parses");
     assert!(!f.cases.is_empty());
     for case in &f.cases {
@@ -42,7 +42,7 @@ fn rust_signs_the_ts_bytes() {
 }
 
 #[test]
-fn header_and_payload_are_the_ts_literals() {
+fn header_and_payload_are_the_pinned_literals() {
     let f: Fixture = serde_json::from_str(FIXTURE).expect("fixture parses");
     let case = &f.cases[0];
     let mut parts = case.jwt.split('.');

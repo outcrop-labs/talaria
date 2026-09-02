@@ -2,11 +2,11 @@
   import { cn } from '@/lib/cn'
   import WingMark from './WingMark.svelte'
 
-  // The Talaria brand: the gold "A"-delta mark, on its own.
+  // The Talaria brand: the gold three-stroke wing mark, on its own.
   //
   // The spaced-caps wordmark that used to sit beside it is gone — the mark
   // carries the brand alone now. The collapsed rail had already been doing
-  // exactly this (NavRail renders a bare WingMark at 64px), so the two states
+  // exactly this (NavRail renders a bare WingMark at its own size), so the two states
   // of the sidebar now show the same thing at the same size instead of the
   // expanded one growing a word.
   //

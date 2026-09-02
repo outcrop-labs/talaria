@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn okf_template_matches_the_ts_starter() {
+    fn okf_template_carries_the_front_matter_and_sections() {
         assert!(
             OKF_TEMPLATE.starts_with("---\ntitle:\nsummary:\ntags: []\nsource: talaria-kb\n---")
         );
