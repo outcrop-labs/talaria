@@ -120,8 +120,8 @@ Source: [`api/src/routes/files/artifacts.rs`](../../api/src/routes/files/artifac
 
 > /api/artifacts. The artifact LIST
 > (what the Files browser opens on) and CREATE. Read is gated exactly like
-> the KB list beside it: org/public visible to all, private only to owner
-> and grants. Creation differs by caller: a PERSONAL assistant's output
+> the KB list beside it: org/public visible to all, private only to owner,
+> grants — and, for a personal assistant, its owner's own reach (the single-
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

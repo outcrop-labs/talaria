@@ -73,6 +73,36 @@ the destructive parts"*:
   `GET /api/agent/whoami` introspects any agent's effective reach (identity, boards with *why*,
   guardrails, pending requests).
 
+## Who owns what agents make
+
+When an agent creates something — a knowledge doc or space, a document or file, a saved image,
+a research report, a workbench plan — the item's owner is **the human responsible for the agent
+run**, not the agent:
+
+1. a **personal assistant**'s output belongs to its owner (and starts private to them, as
+   before);
+2. an **org agent working mid-chat** attributes to the human it is answering;
+3. anything else the agent makes on its own (crons, standalone calls) attributes to **the admin
+   who hired it**;
+4. an agent nobody can trace stays ownerless.
+
+Default visibility is unchanged — an org agent's output remains org-readable; ownership adds
+*control* (share it, flip it private, set policy), not secrecy. A research run keeps its
+org-ness either way: an org agent's findings stay org-visible and ambient-indexed however
+owned, while a person's own run (or their assistant's) stays private with its share grants.
+
+Two consequences worth knowing:
+
+- **Governance follows the owner.** On a human-owned item, the owner alone governs — *admins
+  included* do not get `can_govern` there (`can_govern`'s owner arm is exclusive by design).
+  The owner can always re-share or hand the item off by changing visibility.
+- **Read reach is not ownership.** The ladder stamps owners; it never widens what the *agent
+  itself* may read. An org agent's read reach stays its own (org/public + grants); only a
+  personal assistant reads through its owner's eyes.
+
+Going forward only: items made before attribution (ownerless, governed by admins + the agent's
+allow-list) stay exactly as they were.
+
 ## Enforcement in code
 
 Every API route speaks one dialect ([API-CONVENTIONS.md](./API-CONVENTIONS.md)):

@@ -72,6 +72,19 @@ board's inbox, **never pre-assigned** — assignment is a person's approval.
 | Open a pull request against a repo it's granted | Merge its own PR — you press that button |
 | Reach out to you first, within the outreach cap | Sign off its own ticket |
 
+## What an agent makes is someone's
+
+Everything an agent creates — a knowledge doc, a document or file, a saved image, a research
+report, a workbench plan — carries a **human owner**, not the agent: the person it was
+answering in a chat, its owner (for a personal assistant), or the admin who hired it. That
+person controls access: share it, make it private, change who can edit — the ordinary owner's
+controls, in the item's **Manage access**.
+
+What doesn't change is who can *read* the org's agents' work: an org agent's output stays
+visible to the workspace, and its research stays in the org's shared index. Ownership adds
+control, not secrecy — and a personal assistant's output stays private to its owner, as
+always.
+
 ## Agent Studio
 
 **Manage → Agent Studio** is where agents learn. Pick who you're building for on the left

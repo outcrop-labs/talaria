@@ -42,9 +42,11 @@ memory — and the citations come out invented — so an admin needs to have sea
 
 ## What happens to the report
 
-- It's a document in **Files** — org-visible when a run had no owner (agent-started), private
-  to you otherwise, shared with anyone you shared the run with.
-- It's indexed: chats, plans, and boards can cite it later without you doing anything.
+- It's a document in **Files** — an org agent's run is org-visible no matter who it answers
+  to, and attributes to that person (they control sharing); your own runs — and your personal
+  assistant's — stay private to you, shared with anyone you shared the run with.
+- It's indexed: an org agent's report joins the workspace index; a personal one goes to your
+  own brain. Chats, plans, and boards can cite it later without you doing anything.
 - Notifications: "Research ready: …" when yours finishes; "…shared research with you" when
   someone includes you.
 - Agents can start research too — from any conversation, with the same tools — and merge

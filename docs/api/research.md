@@ -28,7 +28,8 @@ Source: [`api/src/routes/research/research.rs`](../../api/src/routes/research/re
 > /api/research.
 > GET → recent runs scoped to the viewer + the mode catalog. POST { question,
 > mode?, agentModel? } → start a run. Humans and agents both start research;
-> an agent researches AS ITSELF, pinned to its own model.
+> an agent researches AS ITSELF, pinned to its own model. An agent-started
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
