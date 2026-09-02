@@ -1,9 +1,11 @@
 // Container readiness gate — the entrypoint runs this before exec'ing the app.
 //
-// Migrations run lazily on the first query (ui/src/server/db/pg.ts
-// ensureMigrated, advisory-locked), and while a failed attempt self-heals on
-// the next query, a boot that races Postgres spends its first minutes logging
-// scary connection errors. Earlier deploy shapes gated on pg_isready for the
+// The app runs database migrations as it boots (server-entry.js, before the
+// Rust api spawns; the pass itself lives in ui/src/server/db/pg.ts,
+// advisory-locked). That step is bounded and non-fatal, so a boot that races
+// Postgres degrades to a failed pass and a schema-less instance logging
+// errors until restarted. Gate FIRST: by the time the app starts, migrations
+// find a ready postgres. Earlier deploy shapes gated on pg_isready for the
 // same reason; here the probe uses the app's own drivers, so the image needs
 // no postgres client.
 //
