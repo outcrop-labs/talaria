@@ -54,6 +54,9 @@ on:
       - 'api/**'
       - 'api/package.Dockerfile'
       - '.github/workflows/api-package.yml'
+      # The context's shape is a build input too: .dockerignore decides what
+      # `COPY api ./` picks up (it's what keeps api/target out).
+      - '.dockerignore'
   workflow_dispatch: {}
   workflow_call:
     inputs:
