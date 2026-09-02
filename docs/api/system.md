@@ -18,9 +18,10 @@
 
 Source: [`ui/src/routes/api/healthz.ts`](../../ui/src/routes/api/healthz.ts)
 
-> Liveness/readiness — SQL and Redis round-trips. PUBLIC BY DESIGN: no
-> session guard, because a health check that needs a session tells you
-> nothing exactly when you need it.
+> Liveness/readiness — SQL and Redis round-trips, plus a `migrations`
+> check that appears (and fails the probe) when the boot migration pass
+> died. PUBLIC BY DESIGN: no session guard, because a health check that
+> needs a session tells you nothing exactly when you need it.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

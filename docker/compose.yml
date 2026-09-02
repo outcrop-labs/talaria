@@ -91,7 +91,9 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # /api/healthz flips ok only when the DB is migrated and reachable.
+      # /api/healthz flips ok only when the DB is reachable AND the boot
+      # migration pass didn't fail (a failed pass reports migrations: !ok —
+      # green-while-broken was the old behavior).
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:5273/api/healthz >/dev/null 2>&1 || exit 1']
       interval: 10s
       timeout: 5s
