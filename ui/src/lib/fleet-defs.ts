@@ -43,7 +43,7 @@ export interface AgentDef {
   /** Human-readable job title (e.g. "Support Lead"); editable, shown on the roster. */
   role: string | null
   /** Send-address override for org agents: null = the derived org plus-address
-   *  (org+slug@domain) — see server/google/aliasing.ts. */
+   *  (org+slug@domain) — see the aliasing derivation (api/src/google/org.rs). */
   emailAlias: string | null
   /** The human a PERSONAL assistant belongs to (null = an org agent). */
   ownerUserId: string | null

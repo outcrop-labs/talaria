@@ -44,7 +44,7 @@ async fn get(path: &str, auth: Option<&str>) -> axum::response::Response {
 }
 
 #[tokio::test]
-async fn missing_bearer_is_the_exact_ts_401() {
+async fn missing_bearer_is_the_pinned_envelope_401() {
     let res = get("/api/llm/v1/models", None).await;
     assert_eq!(res.status(), 401);
     assert_eq!(

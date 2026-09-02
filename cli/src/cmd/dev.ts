@@ -14,8 +14,8 @@ import { renderSearxng } from '../searxng'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
-/** mcp/ compiles to mcp/dist/index.js, which the app SPAWNS
- *  (ui/src/server/mcp-service.ts) — and mcp/dist is gitignored, so a pull, a
+/** mcp/ compiles to mcp/dist/index.js, which the Rust api SPAWNS
+ *  (api/src/mcp/service.rs) — and mcp/dist is gitignored, so a pull, a
  *  rebase or an edit to mcp/src changes nothing at runtime until it is
  *  rebuilt. Nothing did that before this step, so every agent kept talking to
  *  whatever dist happened to be on disk: stale tool descriptions and, worse,

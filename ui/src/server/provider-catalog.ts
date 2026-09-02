@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises'
 import type { LlmEndpoint } from './agent-defs'
 import { db } from './db/pg'
 import { open, seal } from './secretbox'
-import { FLEET_ENV } from './fleet-render'
+import { FLEET_ENV } from './fleet-dir'
 
 /** Env names the catalog fetch may read. Only provider-key-shaped vars — an
  *  endpoint pairs an admin-chosen env name with an admin-chosen base URL, so

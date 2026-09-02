@@ -175,7 +175,7 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let comment = match add_comment(&deps, &id, &author, &content, parent_id.as_deref()).await {
         Ok(c) => c,
         Err(e) => {

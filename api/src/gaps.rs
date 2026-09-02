@@ -473,7 +473,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slug_matches_ts() {
+    fn slug_trims_folds_and_caps_at_sixty() {
         // trim, lower, [^a-z0-9]+ → '-', edge dashes off, 60 max, else
         // 'unclassified'.
         assert_eq!(slug("  Invoice Handling!! "), "invoice-handling");

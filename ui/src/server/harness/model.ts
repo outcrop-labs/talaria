@@ -2,12 +2,14 @@
 //
 // WHY THIS FILE EXISTS: the same eight lines — the platform-agent pin, then the
 // Utility model role, then TALARIA_COPILOT_MODEL, then 'pl-main', then the first
-// routable bare model — were hand-copied VERBATIM into titler.ts, skill-summaries.ts,
-// model-info.ts and kb-okf.ts, and with local variations into muse.ts (adds the
-// user's preference plus the member allowlist), workbench-harnesses.ts (adds the
-// effort fall-down) and comms-decay.ts (pin, else the owner's muse). Seven
-// spellings of one policy (AUDIT-HARNESS-2026-08-06, finding 1.10). Changing the
-// policy meant finding all seven, and nobody ever did.
+// routable bare model — were hand-copied VERBATIM into the titler,
+// skill-summaries, model-info and kb-okf harnesses, and with local variations
+// into muse (adds the user's preference plus the member allowlist),
+// workbench-harnesses (adds the effort fall-down) and comms-decay (pin, else
+// the owner's muse). Seven spellings of one policy (AUDIT-HARNESS-2026-08-06,
+// finding 1.10). Changing the policy meant finding all seven, and nobody ever
+// did. Their heirs live in the Rust defs (api/src/harness/defs/,
+// api/src/agent_skills.rs); this chain is the SPA-side spelling.
 //
 // AUDIT 1.7 — 'pl-main' was a BARE STRING at seven call sites. It is the
 // reference deployment's main model and a perfectly good preference; it is a
@@ -125,7 +127,8 @@ export async function resolveHarnessModelWith(spec: ModelSpec, deps: HarnessMode
 
   // The member model allowlist is ORG POLICY: an admin gating the expensive
   // brains decides which models a non-admin may be handed, and no refactor gets
-  // to route around it (muse.ts:112 is the behavior being preserved here). It
+  // to route around it (the muse def's step is the behavior being preserved
+  // here — api/src/harness/defs/muse.rs). It
   // applies to the steps that hand a USER's own choice or the user-visible
   // catalog to a harness - 'preferred', 'role', 'utility', 'first-routable'.
   // It deliberately does NOT apply to 'pin' or 'env': an admin-assigned platform

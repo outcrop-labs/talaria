@@ -21,7 +21,7 @@
   // PRICE AGAINST PERFORMANCE. The matrix says whether a model CAN hold a slot;
   // this says what holding it costs and how much of a real day it covers. The
   // two axes are weighted by the same runs-per-day vector — see the header of
-  // `server/fitness/value.ts` for why neither number means anything alone.
+  // `api/src/fitness/value.rs` for why neither number means anything alone.
   let { data, selected, onSelect }: { data: ValuePayload; selected: string | null; onSelect: (model: string) => void } = $props()
 
   type Sort = 'value' | 'cost' | 'coverage'
@@ -35,7 +35,8 @@
 
   /** Nulls sort LAST in every mode. An unpriced model may well be the cheapest
    *  and a page that ranked it first would be guessing — the same rule
-   *  `value.ts` applies inside a slot's candidate list. */
+   *  the Rust value engine (api/src/fitness/value.rs) applies inside a slot's
+   *  candidate list. */
   const rank = (a: ModelValue, b: ModelValue): number => {
     const asc = (x: number | null, y: number | null): number => (x === null ? (y === null ? 0 : 1) : y === null ? -1 : x - y)
     if (sort === 'cost') return asc(a.usdPerDay, b.usdPerDay) || a.model.localeCompare(b.model)

@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fingerprint_object_matches_the_ts_literal_key_for_key() {
+    fn the_fingerprint_object_is_pinned_key_for_key() {
         // The exact object the comms fingerprint hashes, in its fixed key
         // order, for both the null-draft and pending-draft shapes.
         let null_draft = json!({"u": 0, "a": serde_json::Value::Null, "s": 7, "l": 7, "d": serde_json::Value::Null, "g": false});
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_are_capped_like_the_ts_slice() {
+    fn excerpts_cap_at_chars_never_mid_character() {
         // chars().take(1000), not bytes — a multibyte excerpt must not be cut
         // mid-character.
         let long: String = "é".repeat(1_050);

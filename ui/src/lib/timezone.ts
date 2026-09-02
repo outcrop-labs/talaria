@@ -5,7 +5,7 @@
 //
 // The validation idiom is the codebase's established one — ask Intl to
 // RESOLVE the name rather than pattern-matching it — the same check
-// `readerZone` in server/daily-brief.ts applies to the brief's `?tz=` param.
+// `reader_zone` in api/src/daily_brief applies to the brief's `?tz=` param.
 // A name that parses is an IANA zone the runtime actually knows.
 
 /** Can this runtime resolve `tz` as an IANA zone? The only authority that

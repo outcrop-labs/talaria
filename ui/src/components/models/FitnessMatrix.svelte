@@ -31,7 +31,8 @@
   // harnesses — the work session, the channel plan, both briefers, all three
   // Inbox harnesses — were measured and archived into a matrix with no column
   // to show them in, because their model is the subject of the call rather than
-  // anything an admin assigns from a registry. See `SlotKind` in score.ts.
+  // anything an admin assigns from a registry. See `SlotKind` in the Rust
+  // fitness scorer (api/src/fitness/score.rs).
   const fleet = $derived(slots.filter((s) => s.kind === 'fleet'))
   const ordered = $derived([...roles, ...agents, ...fleet])
 

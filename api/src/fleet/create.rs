@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(
             out["aliases"][0]["model"],
             serde_json::json!("sloane-v2"),
-            "a substring hit inside a model id is still re-stamped — TS replace has no word-boundary awareness beyond \\b, and \\b matches at the hyphen"
+            "a substring hit inside a model id is still re-stamped — the re-stamp is a plain substring replace, and \\b matches at the hyphen"
         );
         assert_eq!(
             out["raw"]["headers"]["X-Agent-Name"],

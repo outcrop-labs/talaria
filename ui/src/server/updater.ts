@@ -8,8 +8,13 @@
 // the old one lets go of the port.
 //
 // MANUAL BY DEFAULT. Nothing updates itself until an admin turns the
-// auto-update toggle on; the scheduled job checks the switch every run and
-// sits still when it is off.
+// auto-update toggle on — and the SCHEDULED CHECK IS A HOLD: it lives with
+// neither runtime's scheduler (the Rust api cannot rebuild and restart its
+// own binary, so an auto-update driven from there would leave the artifacts
+// diverged behind a green checkmark; see the hold note in api/src/jobs.rs).
+// The admin routes keep the check/apply halves: manual apply, the state
+// panel, and the toggle that the scheduled half will consult when its
+// restart topology lands.
 //
 // THE RESTART SEQUENCE, end to end:
 //   1. applyUpdate() records lastRun.state='running' BEFORE touching
@@ -22,7 +27,7 @@
 //      filesystem; the gap between them is milliseconds against the minutes
 //      of exposure a live build would have.
 //   4. spawn scripts/update-restart.mjs detached, then SIGTERM ourselves.
-//      server-entry's SIGTERM path drains the scheduler jobs gracefully;
+//      server-entry's SIGTERM path drains in-flight requests gracefully;
 //      reusing it means an update restarts exactly the way a well-behaved
 //      operator would restart it.
 //   5. the helper waits for the port to free, runs `bun server-entry.js`
@@ -39,15 +44,13 @@
 // git-pulling from under a dev session would be chaos for no gain. The
 // panel says so instead of hiding the button.
 //
-// TALARIA_UPDATER=off is the kill switch (same convention as
-// TALARIA_SCHEDULER=off) for deployments that supervise the process
-// themselves and own restarts their own way.
+// TALARIA_UPDATER=off is the kill switch for deployments that supervise the
+// process themselves and own restarts their own way.
 import { execFile, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getSetting, setSetting } from './audit'
-import { registerJob } from './scheduler'
 import { errLine } from './errors'
 
 type ExecResult = { stdout: string; stderr: string }
@@ -301,9 +304,8 @@ function spawnRestartHelper(root: string): void {
 // ── Reconciliation ───────────────────────────────────────────────────────────
 
 /** Turn a 'running' lastRun into its final state, judged from where the
- *  server actually is now. Called on the first updater read after a restart
- *  (and by the scheduled job): the new server is the only party that knows
- *  the update landed. */
+ *  server actually is now. Called on the first updater read after a restart:
+ *  the new server is the only party that knows the update landed. */
 export async function reconcileUpdate(): Promise<void> {
   const s = await updaterState()
   const run = s.lastRun
@@ -340,26 +342,3 @@ export async function reconcileUpdate(): Promise<void> {
 export async function setAutoUpdate(enabled: boolean): Promise<void> {
   await patchState((s) => ({ ...s, autoUpdate: enabled }))
 }
-
-// ── The scheduled check ──────────────────────────────────────────────────────
-//
-// NOT in REQUIRED_JOBS, for the same reason mcp-library-refresh is not: its
-// failure mode is "auto-update quietly does not run", which the panel shows
-// directly (a stale lastCheck next to a switch that is on), not work that
-// silently never happens.
-registerJob({
-  name: 'update-check',
-  everyMs: 6 * 60 * 60 * 1000,
-  firstRunDelayMs: 10 * 60_000,
-  maxRunMs: 20 * 60_000,
-  run: async () => {
-    await reconcileUpdate()
-    const s = await updaterState()
-    if (!s.autoUpdate) return 'auto-update is off'
-    if (updaterMode() !== 'server') return 'not a server install'
-    const check = await checkForUpdate()
-    if (check.behind <= 0) return 'up to date'
-    const applied = await applyUpdate('auto')
-    return applied.started ? 'installing update' : `skipped: ${applied.error ?? 'unknown reason'}`
-  },
-})

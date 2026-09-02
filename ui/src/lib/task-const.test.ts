@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { EFFORTS, humanAssigneeId, isHumanAssignee, OFF_BOARD_STATUSES, PRIORITIES, STATUS_LABEL, TASK_STATUSES } from '@/lib/task-const'
 
@@ -26,5 +29,20 @@ describe('constants', () => {
   it('keeps the ordered scales ordered', () => {
     expect(PRIORITIES).toEqual(['low', 'medium', 'high', 'urgent'])
     expect(EFFORTS).toEqual(['xs', 's', 'm', 'l', 'xl'])
+  })
+})
+
+describe('off-board pin', () => {
+  // No import crosses languages, so the pin reads the Rust engine's source and
+  // compares (same move as the secretbox fixtures test reading api/tests/). If
+  // the Rust literal is renamed or reflows so the regex misses, this parses to
+  // [] and FAILS against the client list — it cannot silently pass.
+  const RUST_STATUSES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'src', 'statuses.rs')
+
+  it('matches the Rust statuses engine list exactly', () => {
+    const src = readFileSync(RUST_STATUSES, 'utf8')
+    const literal = src.match(/pub const OFF_BOARD_STATUSES: &\[&str\] = &\[([^\]]*)\]/)?.[1] ?? ''
+    const rust = literal.match(/"([^"]+)"/g)?.map((s) => s.slice(1, -1)) ?? []
+    expect(rust).toEqual([...OFF_BOARD_STATUSES])
   })
 })

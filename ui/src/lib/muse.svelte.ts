@@ -13,8 +13,8 @@
 //   are already spent, so there is no repair turn; no guardrail can run on a
 //   value that never passed through the server; and a `null` is a button that
 //   silently does nothing. The parse, the schema, the identifier coercion, the
-//   ticket field allowlist and the form-record schemas all live in
-//   `server/harness/defs/muse.ts` now. What is left here is a fetch.
+//   ticket field allowlist and the form-record schemas all live in the Rust
+//   muse def (api/src/harness/defs/muse.rs). What is left here is a fetch.
 import { createQuery } from '@tanstack/svelte-query'
 import { errorMessage, getJson, postJson, postStream, putJson } from '@/lib/fetch-json'
 
@@ -146,7 +146,8 @@ export const saveTimezone = (timezone: string | null): Promise<{ error?: string 
 
 // ── The five structured drafts ───────────────────────────────────────────────
 //
-// The interfaces below MIRROR the zod schemas in `server/harness/defs/muse.ts`,
+// The interfaces below MIRROR the schemas in the Rust muse def
+// (api/src/harness/defs/muse.rs),
 // the same way `GatewayModel` above mirrors the gateway's own type. The server
 // is the authority: it validates, it coerces the identifiers, it drops the
 // fields outside the allowlist. Nothing on this side re-checks any of that —

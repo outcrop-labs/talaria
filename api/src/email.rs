@@ -494,7 +494,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn escape_hits_exactly_the_five_ts_characters() {
+    fn escape_hits_exactly_the_five_characters() {
         assert_eq!(email_escape("a&<\">'b"), "a&amp;&lt;&quot;&gt;&#39;b");
         assert_eq!(email_escape("plain"), "plain");
         // The full set and nothing else — accented and CJK text passes as-is.
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn the_button_and_shell_reproduce_the_ts_bytes() {
+    fn the_button_and_shell_are_pinned_bytes() {
         assert_eq!(
             email_button("https://x/y?a=1&b=2", "Open"),
             "<p style=\"margin:24px 0\"><a href=\"https://x/y?a=1&amp;b=2\" style=\"background:#1a1a18;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;font-size:14px\">Open</a></p>"

@@ -15,7 +15,8 @@ import { focusGold } from '@/components/chat/chat-chrome'
 // rehypeMercury hast pass below. Reuse — do not re-render markdown inline.
 
 // ── @mention highlighting ────────────────────────────────────────────────────
-// Same token shape the server notifies on (mentions.ts) plus the channel
+// Same token shape the Rust mentions engine notifies on (api/src/mentions.rs)
+// plus the channel
 // `:tier` suffix; requires a boundary before the @ so emails don't match.
 // Matched tokens become `mention:` links, which rehypeMercury renders as
 // a styled span — one plugin, every markdown surface at once. Text nodes

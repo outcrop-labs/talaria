@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn regions_derive_from_the_host_like_ts() {
+    fn regions_derive_from_the_host() {
         let blank = target(
             "https://s3.us-west-004.backblazeb2.com",
             "b",

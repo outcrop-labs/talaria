@@ -1646,7 +1646,7 @@ const MIGRATIONS: string[] = [
   // ── AGENT ROLE TEMPLATES ──────────────────────────────────────────────────
   // The starting point for a new agent, expressed as a BUSINESS ROLE rather
   // than a person. Talaria ships and maintains a common set in code
-  // (server/agent-role-templates.ts); this table is the org's own additions,
+  // (api/src/agent_role_templates.rs); this table is the org's own additions,
   // which is the half that cannot live in the repo. `slug` is unique so an org
   // template can deliberately shadow a built-in of the same name — the org's
   // version of "Support Agent" should win over ours.
@@ -1673,25 +1673,26 @@ const MIGRATIONS: string[] = [
   // definition's `step()` with the last PERSISTED checkpoint, which is what
   // makes it survive a tab close, a view change, a restart and a deploy.
   //
-  // What each of those cost before this table existed:
-  //   research.ts:352       a restart mid-run marks the user's run FAILED —
-  //                         'run went stale (app restarted mid-research?)'
-  //   fitness/surface.ts    a status blob in app_settings driven by a bare
-  //   retrieval/migrate.ts  `void fn()`; a deploy leaves state:'running'
-  //                         forever with nothing driving it
-  //   work-dispatch.ts:51   `liveSessions`, a process-local Set with an
-  //                         explicit TODO(multi-instance)
+  // What each of those cost before this table existed (engines now in Rust —
+  // the costs are why the table is shaped like this): a restart mid-research
+  // marked the user's run FAILED; the fitness surface was a status blob in
+  // app_settings driven by a bare `void fn()`, so a deploy left state
+  // 'running' forever with nothing driving it; retrieval migrations had the
+  // same fire-and-forget shape; work dispatch tracked liveness in a
+  // process-local Set with an explicit TODO(multi-instance).
   //
   // `state` is not a check constraint on purpose: the six values are declared
-  // in server/runs/define.ts, and a constraint here would make every new state
-  // a migration on a hot table for no protection the driver does not already
-  // give (every write is a compare-and-set on state + lease_owner).
+  // in the runs driver (api/src/runs/define.rs, `RunState`), and a constraint
+  // here would make every new state a migration on a hot table for no
+  // protection the driver does not already give (every write is a
+  // compare-and-set on state + lease_owner).
   //
   // `awaiting` is the state worth naming: a run PARKED on a human decision.
   // `decision` carries the question and, later, the answer, because a question
   // that lives only in the process that raised it is gone the moment you open
-  // the approval on another device. `approval_key` is the dedupe handle
-  // server/approvals.ts's announce and nag machinery already keys on.
+  // the approval on another device. `approval_key` is the dedupe handle the
+  // Rust approvals engine's announce and nag machinery keys on
+  // (api/src/approvals.rs).
   //
   // `lease_owner` / `lease_expires_at` mirror the Redis lease that actually
   // enforces mutual exclusion. Both, deliberately: Redis is what another
@@ -1744,7 +1745,8 @@ const MIGRATIONS: string[] = [
   // ── THE DAILY BRIEF: one document per person per day, WRITTEN ONCE AND ONLY
   //    EVER APPENDED TO ─────────────────────────────────────────────────────
   //
-  // The brief opens two hours before the workday (server/daily-brief.ts) and
+  // The brief opens two hours before the workday (the Rust brief engine,
+  // api/src/daily_brief/) and
   // then follows the day: a ticket moves, an approval lands, a DM arrives, and
   // the brief LEARNS about it. What it must never do is rewrite itself. A
   // person who read their brief at 08:00 and comes back at 14:00 has to be
@@ -1753,7 +1755,8 @@ const MIGRATIONS: string[] = [
   // because the earlier text no longer exists.
   //
   // So immutability is SCHEMA, not discipline. `daily_brief_entries` rows are
-  // insert-only: nothing in server/daily-brief.ts issues an UPDATE against
+  // insert-only: nothing in the brief engine (api/src/daily_brief/) issues an
+  // UPDATE against
   // them, and the one mutable column in the whole feature is the parent row's
   // `read_seq` (how far the reader got), which is about the reader and not
   // about the content. An item that resolves does not get edited or deleted;
@@ -2052,7 +2055,8 @@ const MIGRATIONS: string[] = [
   //
   // An OPTIONAL override of an agent's derived send address. The default is
   // derived, not stored: the org account's plus-address for the agent's slug
-  // (org+triage@domain — see google/aliasing.ts), which needs no storage and
+  // (org+triage@domain — the Rust aliasing derivation, api/src/google/org.rs),
+  // which needs no storage and
   // no Google-side setup. This column exists only for the rare agent whose
   // address should differ — a verified send-as, a differently-named plus-tag —
   // which is why it is null for every row this migration touches.
@@ -2130,19 +2134,19 @@ const MIGRATIONS: string[] = [
 
   // ── ORG-WIDE BOARDS ────────────────────────────────────────────────────────
   //
-  // The workspace's own surfaces (the Helpdesk — see server/boards.ts, "Org-wide
-  // boards"). The flag marks ownership; access is materialized as ordinary
-  // board_members rows by the ensure and sign-in grants there, so nothing about
-  // how boards are listed, shared, or authorized changes.
+  // The workspace's own surfaces (the Helpdesk — see the Rust boards engine,
+  // api/src/boards.rs). The flag marks ownership; access is materialized as
+  // ordinary board_members rows by the ensure and sign-in grants there, so
+  // nothing about how boards are listed, shared, or authorized changes.
   `alter table boards add column if not exists org_wide boolean not null default false`,
 
   // ── BRIEF MIRRORS, TAKE TWO ────────────────────────────────────────────────
   //
   // The reparent above only points a mirror at a Briefs folder it CREATED —
   // its `briefs` CTE is the bare insert. An agent whose Briefs folder the
-  // runtime code path had already built (daily-brief-artifact.ts creates it
-  // on append, so this is any HMR-order upgrade where a brief landed between
-  // the two boots) was missed: the folder existed, the insert created nothing,
+  // runtime append path had already built (the brief engine creates it on
+  // append, so this is any upgrade where a brief landed between the two boots)
+  // was missed: the folder existed, the insert created nothing,
   // and that agent's rootless mirrors stayed at My Files forever — the exact
   // install the migration was written for.
   //

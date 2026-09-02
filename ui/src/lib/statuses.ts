@@ -6,17 +6,24 @@ import { createQuery } from '@tanstack/svelte-query'
 import { delJson, getList, postJson, putJson } from '@/lib/fetch-json'
 import { STATUS_LABEL } from './task-const'
 import { LABEL_CSS } from '@/components/board/field-pills'
-import type { BoardStatus, StatusCategory } from '@/server/statuses'
+// THE COLUMN SHAPES live here — the client's wire vocabulary for the workflow
+// columns, served by the Rust statuses engine (`api/src/statuses.rs`, whose
+// `BoardStatus` is the authority this copies). 'blocked' stays OUT of
+// StatusCategory — it is not a workflow category, no write ever assigns it,
+// and every resolver excludes it — riding only on BoardStatus.category for
+// the system column.
+export type StatusCategory = 'open' | 'active' | 'review' | 'done'
 
-// ONE OWNER for the column shapes. This file used to re-declare both, and the
-// copies had drifted exactly the way copies do: the server keeps 'blocked' OUT
-// of StatusCategory — it is not a workflow category, no write ever assigns it,
-// and every resolver excludes it — adding it only on BoardStatus.category for
-// the system column; this copy had folded it into the union. The wire type was
-// the same either way, but the two files spelled two different vocabularies,
-// and a reader comparing them had no way to know which was the accident.
-// Re-exported so every existing '@/lib/statuses' import keeps working.
-export type { BoardStatus, StatusCategory }
+export interface BoardStatus {
+  id: string | null // null for virtual defaults + the system blocked row
+  key: string
+  label: string
+  color: string
+  category: StatusCategory | 'blocked'
+  agentStart: boolean
+  position: number
+  system?: boolean
+}
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */

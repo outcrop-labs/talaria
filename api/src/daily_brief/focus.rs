@@ -879,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn task_labels_read_like_the_ts_sentences() {
+    fn task_labels_read_the_pinned_sentences() {
         assert_eq!(task_status_label("quality_review", true, false), "REVIEW");
         assert_eq!(
             task_status_label("in_progress", false, false),

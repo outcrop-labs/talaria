@@ -187,10 +187,10 @@ LLM_MODEL=
   }
 
   // mcp/ is a SEPARATE package that compiles to mcp/dist/index.js — the
-  // fleet's Talaria toolkit, spawned by the app (ui/src/server/mcp-service.ts).
+  // fleet's Talaria toolkit, spawned by the Rust api (api/src/mcp/service.rs).
   // dist is gitignored, so a fresh clone has no toolkit at all until this
   // runs. Not optional: without it every agent's tool calls fail and the only
-  // trace is one stderr line from mcp-service.
+  // trace is one stderr line from the mcp service.
   ctx.log.say('Fleet toolkit (mcp/)')
   if (!existsSync(join(root, 'mcp/node_modules'))) {
     const code = await ctx.run('bun', ['install'], { cwd: join(root, 'mcp') })

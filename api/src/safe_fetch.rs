@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_headers_are_recognized_like_the_ts_regex() {
+    fn credential_headers_are_recognized_without_false_positives() {
         for kept in ["content-type", "user-agent", "accept", "x-request-id"] {
             assert!(!is_credential_header(kept), "{kept} must survive");
         }

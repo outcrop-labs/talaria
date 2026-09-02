@@ -264,7 +264,7 @@ pub async fn put(
         // update_task each, and the person who reshaped the column owns
         // those moves.
         let actor = actor_of_user(user.email.as_deref(), user.name.as_deref());
-        let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+        let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
         match update_status(&deps, &id, &status_key, &patch, &actor).await {
             Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
             Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
@@ -340,7 +340,7 @@ pub async fn delete(
     // ticket's activity log — deleting a column moves work, and the person
     // who did it owns that move.
     let actor = actor_of_user(user.email.as_deref(), user.name.as_deref());
-    let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+    let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     match delete_status(&deps, &id, &status_key, &reassign_to, &actor).await {
         Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),

@@ -65,7 +65,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         let registry = match servers_for_agent(&state.pg, &model).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!("[mcp] serversForAgent failed: {e}");
+                tracing::error!("[mcp] servers_for_agent failed: {e}");
                 return thrown_internal_error();
             }
         };

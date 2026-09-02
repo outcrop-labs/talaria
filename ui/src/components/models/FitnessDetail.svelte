@@ -48,7 +48,8 @@
   // twenty slots (scoring is unchanged); the five nothing reaches are `unbound`
   // for every model forever, and the harnesses behind one of them — the
   // briefer's — are still listed under "no assignable slot" below. See
-  // `slotViews` in fitness/surface.ts for the two reasons a slot has no column.
+  // `slotViews` in the Rust fitness surface (api/src/fitness/surface.rs) for
+  //  the two reasons a slot has no column.
   //
   // `BAND_SEVERITY` and `BAND_TEXT` come from `fitness.ts` rather than being
   // restated here: three copies of the band ordering and two of the colour table

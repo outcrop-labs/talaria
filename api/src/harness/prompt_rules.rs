@@ -47,3 +47,45 @@ pub const STATES_THE_BOUNDARY: [&str; 8] = [
     "distiller",
     "blurb-writer",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::define::RenderContext;
+
+    /// The list is coverage or it is nothing: every name must be a registered
+    /// harness whose rendered prompt actually carries the clause. Each def is
+    /// driven through its FIRST eval fixture — an input its own author wrote,
+    /// valid by construction — with every message scanned for the sentence:
+    /// most defs put the clause in the system prompt; inbox-reply folds its
+    /// whole prompt into one user message. (`muse:draft` states it per-KIND at
+    /// render time; muse's own fixtures assert it, per the note above.)
+    #[test]
+    fn every_named_harness_renders_the_clause() {
+        for name in STATES_THE_BOUNDARY {
+            let Some(h) = crate::harness::registry::builtin_by_id(name) else {
+                panic!(
+                    "STATES_THE_BOUNDARY names \"{name}\", which is not a registered harness — \
+                     a name that is never wired reads as coverage it does not have"
+                );
+            };
+            let case = h
+                .def
+                .evals
+                .first()
+                .unwrap_or_else(|| panic!("\"{name}\" has no eval fixture to render"));
+            let ctx = RenderContext {
+                widened: false,
+                model: "test".into(),
+            };
+            let msgs = (h.def.render)(&case.input, &ctx)
+                .unwrap_or_else(|e| panic!("\"{name}\" failed to render its own fixture: {e}"));
+            let carries = msgs.iter().any(|m| m.content.contains(UNTRUSTED_INPUT));
+            assert!(
+                carries,
+                "\"{name}\" is named in STATES_THE_BOUNDARY but its rendered prompt does not \
+                 carry UNTRUSTED_INPUT"
+            );
+        }
+    }
+}

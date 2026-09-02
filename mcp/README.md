@@ -41,7 +41,7 @@ cd mcp && bun install && bun run build
 ### `mcp/dist` is the thing that runs, and it is gitignored
 
 `bun run build` (tsc) compiles `src/index.ts` → `dist/index.js`. That file — not `src` —
-is what the app spawns (`ui/src/server/mcp-service.ts`) and what an agent's stdio
+is what the Rust api spawns (`api/src/mcp/service.rs`) and what an agent's stdio
 config points at. `dist/` is in `.gitignore`, so **a commit cannot carry it**: a
 fresh clone has no toolkit at all until it is built, and an edit to `src` changes
 nothing at runtime until it is rebuilt. A stale `dist` fails silently — the fleet
@@ -95,7 +95,7 @@ offers the unsafe inputs, so a well-behaved agent never even sees them.
 ### The lifecycle is one-way for an agent
 
 `triage_ticket` accepts three statuses, but not from anywhere to anywhere. The
-whole rule lives in `agentSafePatch` (`ui/src/server/tasks.ts`) — **not here** —
+whole rule lives in `agent_safe_patch` (`api/src/tasks.rs`) — **not here** —
 and every clause raises `HumanApprovalRequired`, which the route turns into a
 403. The tool descriptions mirror it, because an agent that doesn't know spends
 turns on writes that can't land:
@@ -115,7 +115,8 @@ turns on writes that can't land:
 **"Live" is one word for three conditions.** A ticket takes agent writes only
 while its status is not closed (`done` column / `failed` / `cancelled`), the
 ticket is not archived, and its board is not archived. One exported predicate in
-`ui/src/server/tasks.ts` — `agentTicketRefusal` — answers that, *and* the board's
+the Rust tasks engine (`api/src/tasks.rs`) — `agent_ticket_refusal` — answers
+that, *and* the board's
 agent policy, for every door, and returns the *reason*, so the refusal reads the
 same sentence wherever the write arrived.
 
@@ -126,10 +127,10 @@ itself:
 
 | Door | Reaches the predicate via |
 | --- | --- |
-| the ticket patch (`triage_ticket`, `report_outcome`, `add_time`) | `agentSafePatch` inside `updateTask` |
+| the ticket patch (`triage_ticket`, `report_outcome`, `add_time`) | `agent_safe_patch` inside `updateTask` |
 | `log_usage`, `add_dependency` (both ends), `report_gap`'s `taskId` | their own routes — they never reach `updateTask` |
 | `comment` | its route, with intent `comment` — see below |
-| the workbench MCP's ticket audit lines, **including `finish_job --abandon`** | `logTicket` → `authorizeTicket` (`ui/src/server/workbench-mcp.ts`) |
+| the workbench MCP's ticket audit lines, **including `finish_job --abandon`** | `logTicket` → `authorizeTicket` (`api/src/workbench/mcp.rs`) |
 | the ticket a workbench verb names in its arguments | `ticketArg` → `authorizeTicket` — parse and gate are one call, so a verb cannot hold an ungated `taskId` |
 
 A `task_activity` row on a ticket **is** a write to that ticket, which is why
@@ -178,7 +179,7 @@ bound to the calling agent's identity. Auth is PASS-THROUGH: this process has
 no identity of its own, so it forwards each caller's `X-Api-Key` (and
 `X-Agent-Name`) to Talaria, which is the only thing that can validate them.
 Talaria runs this mode
-itself (`ui/src/server/mcp-service.ts`) and injects the connection into every
+itself (`api/src/mcp/service.rs`) and injects the connection into every
 rendered agent config — you never start it by hand. Stdio mode (one agent via
 `TALARIA_AGENT_NAME`) remains for external clients.
 
@@ -228,23 +229,12 @@ directory. So the coupling is stated at every file that edit passes through:
 | File | Carries |
 | --- | --- |
 | `mcp/src/index.ts` (`verify`) | the ⚠ coupling note and the repoint instruction |
-| `ui/src/server/agent-auth.ts` | the matching warning on the resolution the probe exercises |
-| `ui/src/routes/api/users.ts` | **still missing** — the route handler itself, and the only file a narrowing edit is guaranteed to open |
+| `api/src/agent_auth.rs` (`agent_caller`) | the matching warning on the resolution the probe exercises |
+| `api/src/routes/account/users.rs` | the oracle note in the route's header — the one file a narrowing edit is guaranteed to open |
 | the startup log | one line naming the coupling on every boot that uses the default probe, so the sentence is already in an operator's scrollback before the outage |
 
-The `users.ts` marker is the one thing standing between a routine permissions
-tightening and a dark fleet, and a warning one module away does not get read.
-Paste this above that route's `GET` handler:
-
-```ts
-// ⚠ THE MCP TOOLKIT AUTHENTICATES EVERY AGENT AGAINST THIS ROUTE.
-// mcp/src/index.ts (HTTP mode) holds no DB, so it verifies a connecting agent's
-// credential by issuing an authenticated GET here and reading the status code.
-// Narrowing this — admin-only, session-only, moved, renamed — makes every
-// agent's initialize/tools/list 401 and takes the fleet toolkit dark, with no
-// error that points here. If you must: repoint TALARIA_MCP_VERIFY_PATH at
-// another agent-authenticated GET first. See mcp/README.md § Authentication.
-```
+A warning one module away does not get read; that is why the marker sits in the
+route file itself, above the handler.
 
 The durable fix is to stop borrowing a product route: a purpose-built
 `GET /api/agent/whoami` (agent-credential auth, no payload, nothing a product

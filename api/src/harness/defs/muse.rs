@@ -2037,14 +2037,14 @@ pub struct MuseFixture {
 /// The spelling for check messages that interpolate an optional field:
 /// absent prints "undefined", null prints "null" — the spelling these
 /// sentences have always carried.
-fn ts_str(v: &Option<String>) -> String {
+fn js_optional(v: &Option<String>) -> String {
     match v {
         None => "undefined".into(),
         Some(s) => s.clone(),
     }
 }
 
-fn ts_opt(v: &Option<Option<String>>) -> String {
+fn js_nested_optional(v: &Option<Option<String>>) -> String {
     match v {
         None => "undefined".into(),
         Some(None) => "null".into(),
@@ -2499,7 +2499,7 @@ pub fn ticket_fixtures() -> Vec<MuseFixture> {
                 if p.priority.as_deref() != Some("urgent") {
                     return Some(format!(
                         "priority is {}, expected urgent",
-                        ts_str(&p.priority)
+                        js_optional(&p.priority)
                     ));
                 }
                 if p.due_date.as_ref().and_then(|d| d.as_ref()).is_none() {
@@ -2541,7 +2541,10 @@ pub fn ticket_fixtures() -> Vec<MuseFixture> {
                     if p.priority.as_deref() == Some("low") {
                         None
                     } else {
-                        Some(format!("priority is {}, expected low", ts_str(&p.priority)))
+                        Some(format!(
+                            "priority is {}, expected low",
+                            js_optional(&p.priority)
+                        ))
                     }
                 })
             },
@@ -2565,7 +2568,7 @@ pub fn ticket_fixtures() -> Vec<MuseFixture> {
                     None => only_changed(&p, &["dueDate"]),
                     Some(_) => Some(format!(
                         "set dueDate to {} instead of clearing it",
-                        ts_opt(&p.due_date)
+                        js_nested_optional(&p.due_date)
                     )),
                 }
             },
@@ -2667,13 +2670,16 @@ pub fn ticket_fixtures() -> Vec<MuseFixture> {
                     if p.priority.as_deref() != Some("high") {
                         return Some(format!(
                             "priority is {}, expected high",
-                            ts_str(&p.priority)
+                            js_optional(&p.priority)
                         ));
                     }
                     if p.effort.as_ref().and_then(|e| e.as_deref()) == Some("l") {
                         None
                     } else {
-                        Some(format!("effort is {}, expected \"l\"", ts_opt(&p.effort)))
+                        Some(format!(
+                            "effort is {}, expected \"l\"",
+                            js_nested_optional(&p.effort)
+                        ))
                     }
                 })
             },
@@ -2776,7 +2782,7 @@ pub fn ticket_fixtures() -> Vec<MuseFixture> {
                     } else {
                         Some(format!(
                             "priority is {}, expected urgent",
-                            ts_str(&p.priority)
+                            js_optional(&p.priority)
                         ))
                     }
                 })
@@ -3141,7 +3147,7 @@ pub fn skill_form_fixtures() -> Vec<MuseFixture> {
                     if f.name.as_deref() != Some("deploy-triage") {
                         return Some(format!(
                             "renamed the skill to \"{}\", which the instruction did not ask for",
-                            ts_str(&f.name)
+                            js_optional(&f.name)
                         ));
                     }
                     if !ONCALL_PAGE.is_match(f.content.as_deref().unwrap_or("")) {
@@ -3170,7 +3176,7 @@ pub fn skill_form_fixtures() -> Vec<MuseFixture> {
                     if f.name.as_deref().unwrap_or("").to_lowercase() != "incidents-review" {
                         return Some(format!(
                             "the name is \"{}\", expected incidents-review",
-                            ts_str(&f.name)
+                            js_optional(&f.name)
                         ));
                     }
                     let missing: Vec<&str> = [READ_RUN_LOG, "first error"]
@@ -3365,7 +3371,7 @@ pub fn template_form_fixtures() -> Vec<MuseFixture> {
                     {
                         return Some(format!(
                             "renamed the template to \"{}\", which the instruction did not ask for",
-                            ts_str(&f.name)
+                            js_optional(&f.name)
                         ));
                     }
                     if f.guidance.as_deref().unwrap_or("") != BUG_REPORT_GUIDANCE {
@@ -3430,7 +3436,7 @@ pub fn template_form_fixtures() -> Vec<MuseFixture> {
                     if f.name.as_deref().unwrap_or("").to_lowercase() != "bug report" {
                         return Some(format!(
                             "the name is \"{}\", expected Bug report",
-                            ts_str(&f.name)
+                            js_optional(&f.name)
                         ));
                     }
                     let kept: Vec<&str> = ["## Summary", "## Steps to reproduce", "## Expected"]

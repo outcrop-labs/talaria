@@ -92,7 +92,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_reconnect_regex_is_the_ts_one() {
+    fn the_reconnect_regex_matches_both_spellings() {
         // Case-insensitive over the message, both spellings.
         assert!(reconnect_needed(
             "Google answered 403: Request had insufficient authentication scopes."

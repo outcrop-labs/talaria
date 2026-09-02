@@ -7,9 +7,7 @@
 // this page could lie: an untested cell reading as a pass, and an unmeasured
 // capability reading as a no.
 import { describe, expect, it } from 'vitest'
-import { BAND_ORDER } from '@/server/fitness/score'
-import type { AdversarialBand } from '@/server/fitness/adversarial'
-import type { EvalCaseScore } from '@/server/fitness/evals'
+import type { AdversarialBand, EvalCaseScore } from './fitness-wire'
 import {
   BAND_META,
   BAND_SEVERITY,
@@ -18,7 +16,6 @@ import {
   TAG_TONE,
   assignmentNotice,
   bandOf,
-  DEFAULT_CONCURRENCY,
   caseCategory,
   worthRetrying,
   centsPerRun,
@@ -102,13 +99,15 @@ describe('band vocabulary', () => {
     expect(BAND_META.unbound.blurb).toMatch(/not a pass/i)
   })
 
-  it('orders bands exactly as score.ts does — the client copy cannot drift', () => {
-    // `BAND_SEVERITY` is a literal copy of `score.ts`'s `BAND_ORDER` (see the
-    // note on it: importing the server value would pull the harness registry
-    // into the browser bundle). This is what stops the copy rotting: a band
-    // reordered on the server and not here would have the page summarize a row
-    // by one ranking while the verdict was decided by another.
-    expect(BAND_SEVERITY).toEqual(BAND_ORDER)
+  it('orders bands exactly as the Rust scorer does — the client copy cannot drift', () => {
+    // `BAND_SEVERITY` is a literal copy of the severity order in
+    // `api/src/fitness/score.rs`'s `band_order` (see the note on it: the
+    // server is another process, there is no shared value to import). This
+    // pins the copy to the literal so a reorder on either side is at least a
+    // visible disagreement: a band reordered in Rust and not here would have
+    // the page summarize a row by one ranking while the verdict was decided
+    // by another.
+    expect(BAND_SEVERITY).toEqual({ unfit: 0, untested: 1, unbound: 2, workable: 3, ready: 4 })
   })
 
   it('has a colour and a word for every band, including the tier-3 subset', () => {
@@ -408,36 +407,6 @@ describe('worthRetrying', () => {
     expect(worthRetrying(c({ gap: 'the fixture never gave it the id', task: 'unscored' }))).toBe(true)
   })
 
-  it('agrees with the server predicate case for case', async () => {
-    // A COPY THAT DRIFTS IS WORSE THAN NO BUTTON: the count on the button and
-    // the set the sweep actually re-runs would diverge silently, and nobody
-    // could tell which was right.
-    const server = await import('@/server/fitness/evals')
-    for (const over of [
-      {},
-      { task: 'fail' as const },
-      { contractHeld: false },
-      { skipped: 'busy' },
-      { gap: 'ours' },
-      { task: 'unscored' as const },
-    ]) {
-      expect(worthRetrying(c(over)), JSON.stringify(over)).toBe(server.worthRetrying(c(over)))
-    }
-  })
-})
-
-describe('DEFAULT_CONCURRENCY', () => {
-  it('matches the server constant it stands in for', async () => {
-    // WHY IT IS A COPY AT ALL. `fitness.ts` is runtime-dependency-free on
-    // purpose (see its header): a VALUE import from `@/server/fitness/evals`
-    // pulls the sweep driver, the database and the harness runner into the
-    // browser bundle, and the Models route stops loading. It happened.
-    //
-    // A test may import the server module; the browser may not. So the constant
-    // is copied and this is what stops the copy from rotting.
-    const server = await import('@/server/fitness/evals')
-    expect(DEFAULT_CONCURRENCY).toBe(server.DEFAULT_CONCURRENCY)
-  })
 })
 
 

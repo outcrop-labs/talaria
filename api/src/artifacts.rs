@@ -1042,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn sheet_rendering_matches_the_ts_edge_shapes() {
+    fn sheet_rendering_holds_the_edge_shapes() {
         // Unparseable body passes through verbatim.
         assert_eq!(sheet_to_markdown_table("not json"), "not json");
         // A JSON non-array passes through too.

@@ -216,7 +216,10 @@ export function open(token: string): string {
   throw new Error('secretbox: unrecognized token')
 }
 
-// ── Introspection (used by secret-health.ts) ──────────────────────────────────
+// ── Introspection ────────────────────────────────────────────────────────────
+// The secrets inventory that consumed these went to Rust with its own secretbox
+// port (api/src/secret_health.rs); they remain this side's diagnostic surface,
+// exercised by the tests and available to the SDK tier.
 /** Can this process read this specific token? Cheap where the token says so.
  *
  *  A `v2:<ver>:…` token names its own DEK version, so the answer is a Map

@@ -819,7 +819,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn html_to_text_matches_the_ts_ladder() {
+    fn html_to_text_walks_the_substitution_ladder() {
         // Structural tags, entities in their order, whitespace squeezed.
         // `</p>` and `<br/>` BOTH become \n, and only runs of 3+ collapse.
         assert_eq!(
@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn organize_refuses_destructive_labels_in_ts_words() {
+    fn organize_refuses_destructive_labels_in_the_wire_words() {
         // Case-insensitive over the three destructive names; the message
         // carries the 'gmail organize: ' prefix the route classifies by.
         for name in ["TRASH", "spam", "Bin"] {

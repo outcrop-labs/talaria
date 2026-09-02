@@ -1,13 +1,10 @@
 // Users, view denials, and fine-grained permissions — the session/auth
-// plane's substrate: acting_user, the assistant owner/elevation grants,
-// has_perm. App discovery (the apps/<slug>/talaria.json manifests) sits here
-// beside the admin console queries the route groups use.
+// plane's substrate: the assistant owner/elevation grants, has_perm (acting
+// itself lives in session.rs). App discovery (the apps/<slug>/talaria.json
+// manifests) sits here beside the admin console queries the route groups use.
 
 use crate::agent_auth::{AgentSubject, subject_model, subject_proven};
 use crate::gateway::settings::get_setting;
-use crate::state::AppState;
-use axum::http::HeaderMap;
-use axum::response::Response;
 use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -536,92 +533,6 @@ pub async fn set_assistant_elevated(
 
 pub use crate::permissions::{has_perm, user_permissions};
 
-// ── Who a request acts AS ───────────────────────────────────────────────────
-
-#[allow(dead_code)] // dead: the routes use session::acting_user
-#[derive(Debug, Clone)]
-pub struct ActingUser {
-    pub id: String,
-    pub role: String,
-    /// For attribution: the human, or "<assistant> (for <human>)".
-    pub label: String,
-    pub via_assistant: bool,
-    /// Admin-elevated assistant (org-wide view/edit; owner must be an admin).
-    /// Always false for humans — a human admin's access is unchanged.
-    pub elevated: bool,
-}
-
-/// Who a request acts AS: the signed-in human — or, for a PERSONAL assistant
-/// calling with its own credential, its owner (the identity-proxy model: your
-/// assistant manages your boards for you). General agents resolve to None;
-/// governance actions stay human(-proxied). An agent-credential REJECTION
-/// also resolves to None — the dual-auth routes that need the refusal itself
-/// read `agent_caller` directly.
-#[allow(dead_code)] // dead: the routes use session::acting_user
-pub async fn acting_user(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<Option<ActingUser>, Response> {
-    match crate::agent_auth::agent_caller(&state.pg, headers).await {
-        Err(_) => return Ok(None),
-        Ok(Some(agent)) => {
-            // Proxying a human — and inheriting their admin role — is the one
-            // thing a self-declared name must never buy. agent-auth already
-            // refuses a legacy caller that CLAIMS a personal-assistant name,
-            // so this is unreachable today and stays as the guarantee for
-            // anything that loosens the door.
-            if agent.legacy {
-                return Ok(None);
-            }
-            // (id, role, email, name, elevated) — the owner row a personal
-            // assistant proxies.
-            type OwnerRow = (String, String, Option<String>, Option<String>, bool);
-            let row: Option<OwnerRow> = sqlx::query_as(
-                "select u.id::text, u.role, u.email, u.name, d.elevated from agent_defs d \
-                 join users u on u.id = d.owner_user_id \
-                 where d.model = $1 and d.owner_user_id is not null",
-            )
-            .bind(&agent.model)
-            .fetch_optional(&state.pg)
-            .await
-            .map_err(|e| internal(&e))?;
-            let Some((id, role, email, name, elevated)) = row else {
-                return Ok(None); // not a personal assistant → no proxied identity
-            };
-            let who = email.or(name).unwrap_or_else(|| id.clone());
-            return Ok(Some(ActingUser {
-                id,
-                role: role.clone(),
-                label: format!("{} (for {who})", agent.model),
-                via_assistant: true,
-                // Elevation only bites while the owner is still an admin —
-                // demote the human and the assistant's reach collapses.
-                elevated: elevated && role == "admin",
-            }));
-        }
-        Ok(None) => {}
-    }
-    let user = match crate::session::get_session_user(state, headers).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            tracing::error!("[users] session read failed: {e}");
-            return Err(internal_msg());
-        }
-    };
-    Ok(Some(ActingUser {
-        label: user
-            .email
-            .clone()
-            .or(user.name.clone())
-            .unwrap_or_else(|| "user".into()),
-        id: user.id,
-        role: user.role,
-        via_assistant: false,
-        elevated: false,
-    }))
-}
-
 /// True only for a personal assistant an admin explicitly promoted AND whose
 /// owner is currently an admin. Gates org-wide agent access. Takes the
 /// SUBJECT, never a bare name: elevation is the largest grant an agent
@@ -673,17 +584,6 @@ pub async fn assistant_owner_for(
         .await?
         .get(subject_model(subject))
         .cloned())
-}
-
-#[allow(dead_code)] // acting_user's error arm
-fn internal(e: &sqlx::Error) -> Response {
-    tracing::error!("[users] database read failed: {e}");
-    internal_msg()
-}
-
-#[allow(dead_code)] // acting_user's error arm
-fn internal_msg() -> Response {
-    crate::error::thrown_internal_error()
 }
 
 #[cfg(test)]

@@ -59,8 +59,8 @@ export type TransportKind = 'gateway' | 'fleet'
  *  'none' is the default and is right for every single-shot structured harness:
  *  the runner asks one question and parses one answer, so a tool call can only
  *  be the model wandering off. It is sent as an OpenAI-level `tools: []` /
- *  `tool_choice: 'none'` rather than left to the prompt, which is what
- *  `inbox-focus-assistant.ts` did by hand for exactly that reason.
+ *  `tool_choice: 'none'` rather than left to the prompt, which is what the
+ *  old inbox-focus assistant did by hand for exactly that reason.
  *
  *  'own' is for the three turns whose whole FEATURE is the tool loop — an agent
  *  working a ticket, an outreach check-in that acts through `message_user`, a
@@ -909,8 +909,9 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
  *  its verdict, so only `source: 'gateway'` counts.
  *
  *  TIERS ROUTE TOO. The Plan modal has a model-tier dropdown and `routedModelFor`
- *  turns that pick into exactly such an id; `inbox-focus.ts` `validDelegate`
- *  returns one for a delegate chosen with a tier. `listAgents` deliberately HIDES
+ *  turns that pick into exactly such an id; the Rust inbox-focus engine's
+ *  `valid_delegate` (api/src/inbox_focus/mod.rs) returns one for a delegate
+ *  chosen with a tier. `listAgents` deliberately HIDES
  *  tier entries from the picker ("engineer-engineering-opus" is not something you
  *  assign; "engineer-engineering" is), so matching on its list alone classified a tier
  *  as a gateway model and failed the call with "model X is not on the gateway" —
@@ -984,5 +985,6 @@ export const offersToolDefinitions = async (model: string): Promise<boolean> => 
  *  `gatewayToolsRefusal` before a single token was spent, and recorded as 0%
  *  first-pass. A model that was never called scoring zero is the same class of
  *  confidently-wrong number the probe suite's `skipped` outcome exists to
- *  prevent — see `evals.ts` `harnessSkipReason`. */
+ *  prevent — see the Rust fitness evals' `harness_skip_reason`
+ *  (api/src/fitness/evals.rs). */
 export const runsOwnToolLoop = async (model: string): Promise<boolean> => (await pickTransport(model)) === fleetTransport

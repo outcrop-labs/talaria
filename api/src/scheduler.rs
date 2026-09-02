@@ -1210,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn the_required_table_is_the_ts_eight_plus_the_new_sweep() {
+    fn the_required_table_is_the_eight_plus_the_new_sweep() {
         let names: Vec<&str> = REQUIRED_JOBS.iter().map(|n| n.as_str()).collect();
         assert_eq!(
             names,

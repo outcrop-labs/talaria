@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upgrade_flags_fold_ts_verbatim() {
+    fn the_upgrade_flags_fold_verbatim() {
         // The two staleness modes plus a missing collection, with the embed
         // service up: everything is flagged, and needsReindex is the
         // disjunction.
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn the_upgrade_status_serializes_the_ts_wire_shape() {
+    fn the_upgrade_status_serializes_the_wire_shape() {
         let s = fold_flags(
             Some(EmbedInfo {
                 model_id: "bge-m3".into(),

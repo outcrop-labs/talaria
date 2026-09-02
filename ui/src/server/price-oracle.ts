@@ -4,7 +4,6 @@
 // in llm_endpoints.auto_prices — separate from user overrides (model_prices),
 // which always win. Local endpoints are skipped ($0 by definition).
 import { db } from './db/pg'
-import { registerJob } from './scheduler'
 
 interface OrModel {
   id: string
@@ -36,7 +35,6 @@ function idCandidates(model: string): string[] {
 let lastRefresh = 0
 let lastAttempt = 0 // failure backoff: don't hammer an unreachable catalog
 let inFlight: Promise<{ priced: number; endpoints: number }> | null = null
-const MIN_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6h between successful refreshes
 const RETRY_INTERVAL_MS = 10 * 60 * 1000 // 10min between attempts after a failure
 
 interface Catalog {
@@ -106,7 +104,7 @@ function suffixMatch(catalog: Catalog, vendor: string, model: string): { in: num
  *  second set is what keeps costing honest: tier routing and aliases send
  *  usage to models nobody registered, and those rows must price too. Keys are
  *  the EXACT strings usage carries, so the costing join hits directly. */
-export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: number }> {
+async function refreshAutoPrices(): Promise<{ priced: number; endpoints: number }> {
   lastAttempt = Date.now()
   const catalog = await fetchCatalog()
   const sql = await db()
@@ -138,11 +136,11 @@ export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: 
   return { priced, endpoints: endpoints.length }
 }
 
-/** Single-flight around `refreshAutoPrices`. The scheduled job, the
- *  opportunistic kick and the usage nudge all go through here, so the catalog
- *  is never fetched twice at once. It REJECTS when the refresh failed — the
- *  scheduler logs that; the two fire-and-forget callers below keep swallowing
- *  on purpose, because for them the next pass is the retry. */
+/** Single-flight around `refreshAutoPrices`. The scheduled refresh (the Rust
+ *  api's `price-refresh` job) and the usage nudge both funnel through their
+ *  own copy of this throttle, so this one serves the in-process callers. It
+ *  REJECTS when the refresh failed; the fire-and-forget nudge below swallows
+ *  on purpose, because for it the next pass is the retry. */
 function refreshOnce(): Promise<{ priced: number; endpoints: number }> {
   if (inFlight) return inFlight
   const run = refreshAutoPrices()
@@ -158,33 +156,11 @@ function refreshOnce(): Promise<{ priced: number; endpoints: number }> {
   return run
 }
 
-// Scheduled, not kicked. The 6h cadence used to live in `maybeRefreshAutoPrices`
-// and only advanced when someone loaded /models — an instance nobody
-// administered priced its usage against a catalog that never updated. The
-// interval is unchanged; the scheduler owns it now. The two opportunistic
-// callers below stay: they catch a brand-new model or alias between ticks.
-registerJob({
-  name: 'price-refresh',
-  everyMs: MIN_INTERVAL_MS,
-  // Earliest of the three jobs, and the only one that writes nothing a person
-  // sees — safe to run soon after boot so a fresh deploy prices correctly.
-  firstRunDelayMs: 60_000,
-  maxRunMs: 5 * 60_000,
-  run: async () => {
-    const { priced, endpoints } = await refreshOnce()
-    return `${priced} model price(s) across ${endpoints} cloud endpoint(s)`
-  },
-})
-
-/** Fire-and-forget refresh: at most every 6h after a success, and no retry
- *  storm when offline (10min backoff between failed attempts). Call from hot
- *  read paths. */
-export function maybeRefreshAutoPrices(): void {
-  const now = Date.now()
-  if (inFlight || now - lastRefresh < MIN_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
-  void refreshOnce().catch(() => {}) // offline/unreachable → prices stay as they were
-}
-
+// The CADENCE is the Rust api's job (`price-refresh`, api/src/price_oracle.rs)
+// — it ticks every 6h so an instance nobody administers still prices its
+// usage against a current catalog. What stays here is the in-process nudge:
+// the metering path, pricing a model the catalog pass has not seen yet, fires
+// the refresh sooner than the tick would.
 /** Usage just landed on a cloud model with NO price: refresh sooner than the
  *  6h cadence (new model, new alias), but never storm — 15min between nudges,
  *  and the failure backoff still applies. */

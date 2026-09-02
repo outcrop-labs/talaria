@@ -8,9 +8,10 @@
 //   harness a harness. The prompt, the output shape, the fallback chain, the
 //   failure behavior and the guard pass live in eight other files, hand-written
 //   nine times over, and `PLATFORM_AGENTS[].auto` is a PROSE DESCRIPTION of a
-//   chain implemented elsewhere and free to drift from it (it already has:
-//   'pl-main when judging is enabled without a pick' is spelled out in judge.ts
-//   and in six other files besides). This interface is the other half of that
+//   chain implemented elsewhere and free to drift from it (it already had:
+//   'pl-main when judging is enabled without a pick' was spelled out in the
+//   judge definition — api/src/harness/defs/judge.rs since the port — and in
+//   six other files besides). This interface is the other half of that
 //   registry — the executable half.
 //
 //   The cost of the nine copies is not aesthetic. Each one answers "the model
@@ -119,7 +120,7 @@ export interface RoleFloor {
    *  `capabilities: []` and five wrote `capabilities: ['json']`, and both ran
    *  identically. Keep this EMPTY unless `refuseBelow` is true, and say what the
    *  job leans on in `requires` — which is what the fitness matrix scores, and
-   *  which never blocks. `registry.test.ts` enforces the pairing. */
+   *  which never blocks. */
   capabilities: Capability[]
   /** True: refuse the run and say which capability is missing. False: run
    *  anyway and let the result carry the fact. Never silently half-work. */
@@ -163,7 +164,8 @@ export interface EvalCase<I, O> {
   name: string
   input: I
   /** `ctx` carries WHAT THE MODEL DID, for the harnesses that are dry-run
-   *  against a sandbox Talaria (see `fitness/toolbox/`). Optional to receive and
+   *  against a sandbox Talaria (the Rust fitness toolbox, api/src/fitness/toolbox/).
+   *  Optional to receive and
    *  empty for every single-shot harness, so the hundred existing fixtures that
    *  ignore it stay correct — a fixture only reaches for it when the question it
    *  is asking is behavioural.
@@ -195,11 +197,11 @@ export type EvalBand = 'easy' | 'standard' | 'hard'
 /** What a fixture can see about a DRY RUN — a harness turn the fitness suite ran
  *  with a real tool loop against an isolated, in-memory Talaria.
  *
- *  Typed structurally rather than importing `fitness/toolbox`, because a harness
- *  definition must stay importable without the fitness suite: `registry.ts`
- *  enumerates every definition — `evals` included — in production, and dragging
- *  a benchmark's module graph into that path would be exactly the kind of
- *  coupling the harness layer exists to avoid. */
+ *  Typed structurally rather than importing the suite that fills it: that suite
+ *  is the Rust api's (api/src/fitness/toolbox/) and no TS import crosses
+ *  languages, but the deeper reason survives the port — a harness definition
+ *  must stay importable without any benchmark's module graph attached, which is
+ *  exactly the kind of coupling the harness layer exists to avoid. */
 export interface EvalContext {
   /** Every tool call the model made, in order, with what it got back. Empty for
    *  a harness that was not dry-run. */
@@ -442,8 +444,9 @@ export interface HarnessDefinition<I, O> {
    *
    *  For `kind: 'text'` with no `clean`, O is string by construction. `clean`
    *  is where a text harness narrows: it receives the raw reply and returns the
-   *  value, or null to fail the contract (which is exactly what titler.ts's
-   *  quote-and-fence stripping already does by hand).
+   *  value, or null to fail the contract (which is exactly what the Rust titler
+   *  def's quote-and-fence stripping, api/src/harness/defs/titler.rs, already
+   *  does by hand).
    *
    *  `verify` is the OTHER half of the contract and the half neither a schema
    *  nor a `clean` can express, because both are written before the input
@@ -461,8 +464,9 @@ export interface HarnessDefinition<I, O> {
    *    { fallback }      a declared safe value (a default verdict, an empty list)
    *    { escalate: true } a human decides — the runner sets `escalate` on the
    *                       result and the caller raises it, because only the
-   *                       caller knows who to tell (judge.ts's
-   *                       `tellHumansTheGateStopped`). A FLAG, not a phrase in
+   *                       caller knows who to tell (the judge def's
+   *                       `tellHumansTheGateStopped`, api/src/harness/defs/judge.rs).
+   *                       A FLAG, not a phrase in
    *                       the error string: a caller that has to string-match to
    *                       find out is a caller that stops escalating the day
    *                       somebody rewords the message.

@@ -1,10 +1,10 @@
 // Notification VOCABULARY — classes, destinations, defaults, and the digest
-// switch. Framework-free ON PURPOSE: both halves need it — the client draws
-// the settings panel from `NOTIFY_CLASSES`, and `server/notifications.ts`
-// imports the same list to decide where a notification goes — and the server
-// graph must never pull in svelte-query, which the client-hooks half of
-// `lib/notifications.ts` imports. Same reason `OFF_BOARD_STATUSES` lives in
-// `lib/task-const.ts`: the list exists exactly once.
+// switch. Framework-free ON PURPOSE: the client draws the settings panel from
+// `NOTIFY_CLASSES`, and the notification engine is the Rust api's
+// (api/src/notify.rs carries the twin list and routes by `notify_class_of`) —
+// so this file must never pull in svelte-query, which the client-hooks half
+// of `lib/notifications.ts` imports. Same reason `OFF_BOARD_STATUSES` lives
+// in `lib/task-const.ts`: the client's wire vocabulary exists exactly once.
 
 export interface Notification {
   id: string
@@ -217,8 +217,9 @@ export interface NotifySettings {
   digest: DigestPref
 }
 
-/** The INSTANCE-wide email master switch, off until an admin turns it on (see
- *  `getNotifyDelivery` in server/notifications.ts for why off is the default).
+/** The INSTANCE-wide email master switch, off until an admin turns it on (the
+ *  delivery read is the Rust notify engine's — `DELIVERY_KEY` in
+ *  api/src/notify.rs — and off-by-default is its rule).
  *
  *  It rides on the same read as the per-user prefs so the panel can explain the
  *  gap: routing a class to "Email" does nothing while this is off, and someone

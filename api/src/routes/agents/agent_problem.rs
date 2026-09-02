@@ -242,7 +242,7 @@ pub async fn post(
             .unwrap_or_default(),
             details.as_deref().unwrap_or("(none provided)"),
         );
-        let deps = TaskDeps::coexistence(state.pg.clone(), state.redis().await.ok());
+        let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
         let filed = create_task(
             &deps,
             &NewTask {

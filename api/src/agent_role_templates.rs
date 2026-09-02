@@ -321,7 +321,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn soul_builder_matches_the_ts_join_byte_for_byte() {
+    fn soul_builder_is_pinned_byte_for_byte() {
         let s = soul("X", "Y", "WHO", "VOICE", &["W1", "W2"]);
         assert_eq!(
             s,

@@ -12,10 +12,10 @@
 // scrolling the timeline to the top), never on load.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
-import type { BriefResponse, BriefView } from '@/server/daily-brief-types'
+import type { BriefResponse, BriefView } from '@/lib/daily-brief-types'
 
 export type { BriefResponse, BriefView }
-export type * from '@/server/daily-brief-types'
+export type * from '@/lib/daily-brief-types'
 
 export { isBriefAbsent } from '@/lib/brief-absent'
 
@@ -60,8 +60,9 @@ export function useBrief() {
 
 /** Subscribe to the person's own firehose and refetch when the brief moves.
  *
- *  THE EVENT CARRIES NO CONTENT — see the note on `UserEvent` in
- *  server/realtime.ts — so this deliberately does not try to patch the page
+ *  THE EVENT CARRIES NO CONTENT — see the note on `UserEvent` in the Rust
+ *  realtime engine (api/src/realtime.rs) — so this deliberately does not try
+ *  to patch the page
  *  from the payload. It invalidates, the ordinary route re-reads with the
  *  ordinary ACL, and there is exactly one path by which brief content reaches a
  *  browser.

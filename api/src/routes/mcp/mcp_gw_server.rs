@@ -175,7 +175,7 @@ pub async fn post(
         return house_error(
             StatusCode::BAD_GATEWAY,
             &format!(
-                "app \"{app_slug}\" dispatches in-process through the app runtime, which stays TS by the port's rule 10"
+                "app \"{app_slug}\" dispatches in-process through the app runtime, which stays TS by rule 10 (docs/RUST-MIGRATION.md)"
             ),
         );
     }

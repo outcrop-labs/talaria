@@ -332,7 +332,7 @@ pub async fn enqueue(
     if (deps.definition_for)(&def.kind).is_none() {
         tracing::error!(
             "{LOG} enqueuing kind \"{}\", which is not registered — it cannot be reclaimed after \
-             a restart. Call register_run at module load.",
+             a restart. Register it with register_run where the definition is built.",
             def.kind
         );
     }

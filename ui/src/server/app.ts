@@ -5,11 +5,10 @@
 //   dev   vite.config.ts middleware ssrLoadModule()s this file per request
 //   prod  vite.server.config.ts bundles it to dist/server/server.js, which
 //         server-entry.js wraps in a Node http server (SSE pump, logging,
-//         graceful shutdown, scheduler boot — all live there, not here)
+//         graceful shutdown — all live there, not here)
 //
-// Importing every route eagerly is deliberate: the route graph is what pulls
-// in the job modules, and server-entry.js's scheduler handshake (the
-// well-known global symbol) depends on those modules loading with the graph.
+// Importing every route eagerly keeps the table flat and total: what you see
+// in src/routes/api/ is the whole resident surface, loaded at boot.
 import { readFile } from 'node:fs/promises'
 import { compileRoute, matchRoute, type ApiMethod, type ApiRoute } from './api-route'
 import { json } from './http'
@@ -48,8 +47,8 @@ async function handle(request: Request): Promise<Response> {
   const method = request.method.toUpperCase() as ApiMethod
 
   // /api/* is the Rust api's before the route table is consulted; the table
-  // below is the four residents (app dispatch, admin.update, healthz) — the
-  // SPA shell, and nothing else.
+  // below is the four residents (app dispatch, admin.update, healthz, the app
+  // MCP gateway) — the SPA shell, and nothing else.
   const proxied = await maybeProxy(request, pathname)
   if (proxied) return proxied
 

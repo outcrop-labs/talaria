@@ -149,7 +149,7 @@ async fn page(
             // arm checks.
             if since.fract() != 0.0 {
                 return Err(format!(
-                    "fractional since={since} dies on the int4 cast in the TS too"
+                    "fractional since={since} would die on the int4 comparison downstream"
                 ));
             }
             list_channel_messages(&state.pg, id, since as i64, 60, false)

@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn fragment_matches_the_ts_composition() {
+    fn the_status_category_fragment_is_pinned() {
         assert_eq!(
             status_category_sql("review", &["quality_review"]),
             "( t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id \
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn slug_matches_the_ts_pipeline() {
+    fn slug_folds_to_underscores_and_floors_at_status() {
         assert_eq!(slug("In progress"), "in_progress");
         assert_eq!(slug("  Hi! There  "), "hi_there");
         assert_eq!(slug("Hi!!!  ---  There"), "hi_there"); // runs collapse to one _

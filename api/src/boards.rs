@@ -705,7 +705,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn visibility_fragment_matches_the_ts_composition() {
+    fn the_visibility_fragment_is_pinned() {
         assert_eq!(
             board_visibility_sql("$1", "$2", false),
             "(b.archived_at is null and (exists (select 1 from board_members bvm where bvm.board_id = b.id and bvm.user_id = $1::uuid) or exists (select 1 from team_members tvm where tvm.team_id = b.team_id and tvm.user_id = $2::uuid)))"
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_policy_fragment_matches_the_ts_composition() {
+    fn the_agent_policy_fragment_is_pinned() {
         assert_eq!(
             agent_board_policy_sql("$2"),
             "(b.archived_at is null and (b.allow_all_agents or exists (select 1 from board_agents abm where abm.board_id = b.id and abm.agent_model = $2)))"

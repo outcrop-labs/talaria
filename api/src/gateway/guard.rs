@@ -1187,8 +1187,6 @@ pub async fn guard_completion(
 /// model for repeating the customer's order number and not; callers with
 /// nothing honest to name pass None and get the old behavior.
 ///
-/// Never fails: a guard that errored loudly on a database hiccup would take
-/// down commenting, posting and DMs alongside it.
 /// The comms reply guard: a streamed reply
 /// the caller holds a TOOL NAMES list for — not the full record, so the record
 /// is the derived one (`overflowed` — results were too big to inspect, fail
@@ -1262,6 +1260,8 @@ pub fn redact_findings(findings: &[Finding]) -> Vec<Finding> {
         .collect()
 }
 
+/// Never fails: a guard that errored loudly on a database hiccup would take
+/// down commenting, posting and DMs alongside it.
 pub async fn guard_text(pg: &PgPool, text: &str, input: Option<&str>) -> Vec<Finding> {
     if text.trim().is_empty() {
         return Vec::new();

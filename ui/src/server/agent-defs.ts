@@ -49,7 +49,7 @@ export interface LlmEndpoint {
 }
 
 export interface AgentDef {
-  /** Workbench: THE setting + per-agent tuning (see server/workbench.ts). */
+  /** Workbench: THE setting + per-agent tuning (api/src/harness/defs/workbench.rs). */
   workbench?: 'off' | 'auto' | 'on'
   workbenchProfile?: string | null
   workbenchHarness?: string | null
@@ -61,8 +61,9 @@ export interface AgentDef {
   displayName: string
   /** Human-readable job title (e.g. "Support Lead"); editable, distinct from department. */
   role: string | null
-  /** Optional override of the agent's derived send address (google/aliasing.ts);
-   *  null = derive the org account's plus-address for its slug. */
+  /** Optional override of the agent's derived send address (the Rust aliasing
+   *  derivation, api/src/google/org.rs); null = derive the org account's
+   *  plus-address for its slug. */
   emailAlias: string | null
   enabled: boolean
   managed: boolean

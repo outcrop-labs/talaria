@@ -660,7 +660,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn csv_grids_parse_like_the_ts_state_machine() {
+    fn csv_grids_parse_through_the_same_state_machine() {
         // Plain rows, quoted commas, doubled quotes, CRLF.
         let grid = csv_to_grid("a,b\r\n\"x,1\",\"say \"\"hi\"\"\"\r\nc");
         assert_eq!(

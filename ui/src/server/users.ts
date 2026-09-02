@@ -52,12 +52,16 @@ export async function upsertUser(identity: Identity): Promise<User> {
   `
   const user = rows[0] as User
   // Org-wide boards (the workspace Helpdesk) are everyone's by definition, so
-  // a sign-in joins this user to any they lack. Dynamic import for the same
-  // reason as allManageRoutes below: boards.ts imports from this file, and a
-  // static cycle would rather be avoided than argued with. Never fatal — a
-  // user who could not be joined still signs in; the next login retries.
-  const { joinOrgWideBoards } = await import('./boards')
-  await joinOrgWideBoards(user.id).catch((e: unknown) =>
+  // a sign-in joins this user to any they lack: an editor grant, materialized
+  // as board_members rows rather than derived on read, undone never. The SQL
+  // lives here rather than in the boards engine — the board surface itself is
+  // Rust's, and this grant is part of what a sign-in IS. Never fatal — a user
+  // who could not be joined still signs in; the next login retries.
+  await sql`
+    insert into board_members (board_id, user_id, role)
+    select b.id, ${user.id}, 'editor' from boards b where b.org_wide
+    on conflict (board_id, user_id) do nothing
+  `.catch((e: unknown) =>
     console.error(`[users] could not join ${user.id} to org-wide boards:`, e),
   )
   return user
@@ -317,7 +321,7 @@ export function canUseAgent(access: 'all' | string[], model: string): boolean {
  *  Use this — not `personalAssistantOwners().get(model)` — on any surface that
  *  has a resolved caller. The map lookup takes a bare string, which throws the
  *  `legacy` flag away silently; this takes the caller and consults it. The map
- *  is for LISTINGS (many models, no caller): channel-replies, mcp-registry. */
+ *  is for LISTINGS (many models, no caller): usableAgentGate, canUseAgentModel. */
 export async function assistantOwnerFor(subject: AgentSubject): Promise<string | null> {
   if (!subjectProven(subject)) return null
   return (await personalAssistantOwners()).get(subjectModel(subject)) ?? null

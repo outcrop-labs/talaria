@@ -124,19 +124,24 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             return thrown_internal_error();
         }
     };
-    // Per-row read: each wire gets its repo's testing branch appended —
-    // testingBranch is null only when the flow read SAYS so; an infra
-    // failure is the 500.
+    // Per-row read, fanned out: each wire gets its repo's testing branch
+    // appended — testingBranch is null only when the flow read SAYS so; an
+    // infra failure is the 500. join_all keeps the rows' order.
+    let pg = state.pg.clone();
+    let flows = futures_util::future::join_all(rows.iter().map(|r| {
+        let pg = pg.clone();
+        async move { gh::repo_flow(&pg, &r.3).await }
+    }))
+    .await;
     let mut wires = Vec::with_capacity(rows.len());
-    for r in &rows {
-        let testing = match gh::repo_flow(&state.pg, &r.3).await {
-            Ok(f) => f.testing_branch,
+    for (r, flow) in rows.iter().zip(flows) {
+        match flow {
+            Ok(f) => wires.push(row_wire(r, f.testing_branch)),
             Err(e) => {
                 tracing::error!("[workbench/jobs] repo flow read failed: {e}");
                 return thrown_internal_error();
             }
-        };
-        wires.push(row_wire(r, testing));
+        }
     }
     Json(json!({ "jobs": wires })).into_response()
 }

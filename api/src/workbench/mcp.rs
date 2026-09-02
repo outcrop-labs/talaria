@@ -66,7 +66,7 @@ pub struct WorkbenchDeps {
 
 impl WorkbenchDeps {
     pub fn task_deps(&self) -> TaskDeps {
-        TaskDeps::coexistence(self.pg.clone(), self.redis.clone())
+        TaskDeps::from_route(self.pg.clone(), self.redis.clone())
     }
 }
 
@@ -1499,7 +1499,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slugify_matches_the_ts_normalizer() {
+    fn slugify_folds_runs_and_caps_at_forty() {
         assert_eq!(slugify("  Fix the Login Bug!! "), "fix-the-login-bug");
         assert_eq!(slugify("a---b"), "a-b");
         assert_eq!(slugify("--lead--"), "lead");
@@ -1519,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tools_spell_the_ts_key_order() {
+    fn the_tools_spell_the_wire_key_order() {
         let tools = workbench_tools();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(

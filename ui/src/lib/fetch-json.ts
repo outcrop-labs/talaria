@@ -9,7 +9,7 @@
 // A 200 carrying `[]` is a genuine empty result and passes straight through:
 // empty and broken are different answers and must render differently.
 //
-// Generalized from the helper `channels.ts` has always had; every query module
+// Generalized from the helper the channels engine always had; every query module
 // now shares this one.
 
 /** A non-2xx response. `status` lets a call site treat a specific code (a 404

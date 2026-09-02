@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { promptShape, strictEligible, wireSchemaOf } from './json-schema'
-import { builtinActivityHarnesses } from './registry'
 
 // What goes ON THE WIRE for a structured harness. The bug this closes: Talaria
 // declared a zod schema per JSON harness and used it only to reject bad answers
@@ -74,34 +73,6 @@ describe('strictEligible', () => {
 
     expect(wire?.strict).toBe(true)
     expect(strictEligible({ anyOf: [{ type: 'string' }, { type: 'object' }] })).toBe(false)
-  })
-})
-
-describe('every JSON harness Talaria ships', () => {
-  const jsonHarnesses = builtinActivityHarnesses().filter((h) => h.outputKind === 'json')
-
-  it('renders a schema for the wire — no JSON harness falls back to json_object', () => {
-    // A harness that cannot render one would go back to "some JSON, shape
-    // unspecified", which is the state this whole module exists to leave.
-    expect(jsonHarnesses.length).toBeGreaterThan(0)
-    for (const h of jsonHarnesses) {
-      const wire = h.use((def) => (def.output.kind === 'json' ? wireSchemaOf(def.id, def.output.schema) : null))
-      expect(wire, `${h.id} renders no wire schema`).not.toBeNull()
-      expect(wire?.name, h.id).toMatch(/^[a-zA-Z0-9_-]+$/)
-    }
-  })
-
-  it('records WHICH harnesses can be sent strict, so a schema change is visible here', () => {
-    // Not an aspiration — a census. A harness moving between these lists is a
-    // real change in how strongly the provider constrains its replies, and it
-    // should fail here rather than be discovered from a 400 or a bad reply.
-    const strict: string[] = []
-    const loose: string[] = []
-    for (const h of jsonHarnesses) {
-      const wire = h.use((def) => (def.output.kind === 'json' ? wireSchemaOf(def.id, def.output.schema) : null))
-      ;(wire?.strict ? strict : loose).push(h.id)
-    }
-    expect({ strict: strict.sort(), loose: loose.sort() }).toMatchSnapshot()
   })
 })
 

@@ -2,7 +2,7 @@ import type {
   InboxFocusContext,
   InboxMessageMetadata,
   InboxTimelineEntry,
-} from '@/server/inbox-focus-types'
+} from './inbox-focus-types'
 
 export type InboxTimelineRecord =
   | {

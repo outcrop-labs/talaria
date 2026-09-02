@@ -2,14 +2,15 @@ import assert from 'node:assert/strict'
 import { beforeEach, test, vi } from 'vitest'
 import { getSetting, setSetting } from './audit'
 
-// The updater's branching, exercised without a second process: git, the
-// settings store, and the scheduler are all stood in for, and what's left is
+// The updater's branching, exercised without a second process: git and the
+// settings store are stood in for, and what's left is
 // every decision the module makes — mode gating, dirty-tree refusal, and the
-// running → done/failed reconciliation that a restart has to survive.
+// running → done/failed reconciliation that a restart has to survive. (The
+// scheduled check is a HOLD — see the module header — so there is no scheduler
+// half to stand in.)
 
-const { state, registered, gitAnswers } = vi.hoisted(() => ({
+const { state, gitAnswers } = vi.hoisted(() => ({
   state: new Map<string, unknown>(),
-  registered: new Map<string, { everyMs: number; run: () => Promise<string> }>(),
   gitAnswers: new Map<string, string | Error>(),
 }))
 
@@ -17,12 +18,6 @@ vi.mock('./audit', () => ({
   getSetting: vi.fn(async (key: string, fallback: unknown) => (state.has(key) ? state.get(key) : fallback)),
   setSetting: vi.fn(async (key: string, value: unknown) => {
     state.set(key, value)
-  }),
-}))
-
-vi.mock('./scheduler', () => ({
-  registerJob: vi.fn((spec: { name: string; everyMs: number; run: () => Promise<string> }) => {
-    registered.set(spec.name, spec)
   }),
 }))
 
@@ -169,22 +164,6 @@ test('reconcile fails an update that never landed, after half an hour of silence
   const s = await updaterState()
   assert.equal(s.lastRun?.state, 'failed')
   assert.match(s.lastRun?.error ?? '', /never came back/i)
-})
-
-test('the scheduled job registers, sits still while auto is off, and checks while it is on', async () => {
-  const job = registered.get('update-check')
-  assert.ok(job, 'the updater must register its job by importing the module')
-  assert.equal(job.everyMs, 6 * 60 * 60 * 1000)
-
-  process.env.TALARIA_RUNTIME = 'prod-server'
-  let result = await job.run()
-  assert.match(result, /auto-update is off/)
-
-  state.set('updater', { autoUpdate: true, lastCheck: null, lastRun: null, history: [] })
-  // Up to date: the count says zero.
-  plant(['rev-list', '--count', `HEAD..origin/${'main'}`], '0\n')
-  result = await job.run()
-  assert.equal(result, 'up to date')
 })
 
 test('getSetting/setSetting round-trip through the mocked store the tests assert on', async () => {

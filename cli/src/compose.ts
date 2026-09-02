@@ -1,7 +1,7 @@
 // docker compose plumbing — the tuple builders and waits the bash scripts
-// kept re-spelling. The composeArgs shape mirrors fleet-docker.ts's builder:
-// every caller goes through ONE place, so the -p/-f/--env-file convention
-// cannot drift between commands.
+// kept re-spelling. The composeArgs shape mirrors the Rust fleet docker
+// builder's (api/src/fleet/docker.rs): every caller goes through ONE place,
+// so the -p/-f/--env-file convention cannot drift between commands.
 
 import type { Ctx } from './ctx'
 
@@ -46,8 +46,9 @@ export async function waitFor(
 }
 
 /** The `docker network inspect x || docker network create x` idiom,
- *  race-safe the way fleet-docker's is: re-inspect after a failed create,
- *  because "already exists" from a concurrent creator is success. */
+ *  race-safe the way the Rust fleet builder's is (api/src/fleet/docker.rs):
+ *  re-inspect after a failed create, because "already exists" from a
+ *  concurrent creator is success. */
 export async function ensureNetwork(ctx: Ctx, name: string): Promise<'exists' | 'created'> {
   const has = async () => {
     try {

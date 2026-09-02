@@ -196,7 +196,8 @@ export function manifestGet(manifest: string, key: string): string {
 
 // ── mc, against the resolved bucket ──────────────────────────────────────────
 
-/** Every blob key the app writes lives under "<prefix>uploads/" (uploads.ts). */
+/** Every blob key the app writes lives under "<prefix>uploads/" — the Rust
+ *  upload store (api/src/uploads.rs). */
 export const bucketUploadsPath = (st: Storage): string => `t/${st.bucket}/${st.prefix}uploads`
 
 /** Single-quote for the one place a shell string is unavoidable (the docker

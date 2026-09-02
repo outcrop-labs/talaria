@@ -1246,7 +1246,7 @@ mod tests {
     }
 
     #[test]
-    fn member_view_serializes_in_the_ts_key_order() {
+    fn member_view_serializes_in_the_wire_key_order() {
         // id..updatedAt, unreadCount, then peer LAST,
         // peer null for non-DMs.
         let ch = MemberChannel {

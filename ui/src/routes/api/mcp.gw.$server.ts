@@ -1,19 +1,19 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { presentedCredential, requireAgent } from '@/server/agent-auth'
-import { effectiveMcpFor, parseMcpResponse } from '@/server/mcp-registry'
+import { requireAgent } from '@/server/agent-auth'
+import { effectiveMcpFor } from '@/server/mcp-registry'
 import { rpcError, type Rpc } from '@/server/mcp-jsonrpc'
-import { assertFetchableUrl } from '@/server/safe-fetch'
-import { logUpstreamError, upstreamErrorMessage } from '@/server/upstream-error'
 
-// The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
-// upstream URL or credential: their configs point here, the agent's own
-// credential identifies the caller (agent-auth), and the gateway
-//   · forwards JSON-RPC to the upstream (org headers, or the acting user's
-//     connected-account headers on per-user servers)
-//   · FILTERS tools/list down to the allowed set
-//   · REJECTS tools/call outside it
-// so a hand-edited agent config can never exceed what the registry granted.
+// The app-MCP gateway — the registry's ENFORCEMENT point for servers an app
+// publishes (/api/mcp/gw/app-<slug>). Agents never see the module or its
+// inputs: their configs point here, the agent's own credential identifies the
+// caller (agent-auth), and this route resolves the agent's grant (assignment ∩
+// the acting owner's allowance) and dispatches the compiled module IN PROCESS
+// — app code runs in the TS runtime that can load it (RUST-MIGRATION.md,
+// rule 10). Every other MCP server — the builtin toolkit, the Workbench,
+// third-party URLs — is the Rust api's relay (api/src/routes/mcp/
+// mcp_gw_server.rs); the proxy holds back only the app- prefix, so those
+// requests never reach this file.
 export const Route = defineApi('/api/mcp/gw/$server', {
   POST: async ({ request, params }) => {
     const caller = await requireAgent(request)
@@ -21,23 +21,22 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     // Pass the CALLER, never `caller.model`. `subjectModel`/`subjectProven`
     // read a bare string as PROVEN, so downgrading to the name here throws
     // away `legacy` — and this route is where that matters most: it resolves
-    // the acting owner and can put that human's OAuth bearer token into
-    // `upstreamHeaders`. `name` below is only ever used where a header or an
-    // unthreaded callee genuinely needs the string.
+    // the acting owner and gates what that human's assistant may reach.
+    // `name` below is only ever used where an unthreaded callee genuinely
+    // needs the string.
     const name = caller.model
     const eff = await effectiveMcpFor(caller, params.server)
     if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
 
-    let bodyText = await request.text()
     let rpc: Rpc | null = null
     try {
-      rpc = JSON.parse(bodyText) as Rpc
+      rpc = JSON.parse(await request.text()) as Rpc
     } catch {
-      /* non-JSON (batch or ping) — pass through untouched */
+      /* not valid JSON-RPC — the dispatcher below answers it */
     }
 
-    // The call gate: reject disallowed tools before the upstream ever
-    // hears about them.
+    // The call gate: reject disallowed tools before the module ever hears
+    // about them.
     if (rpc?.method === 'tools/call' && eff.tools !== null && !eff.tools.includes(rpc.params?.name ?? '')) {
       return json(
         rpcError(rpc.id, -32602, `tool "${rpc.params?.name}" is not available here`),
@@ -48,163 +47,38 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     // THE BOUNDARY THAT SPENDS A CREDENTIAL. An agent holds
     // `«secret:deploy.github_pat»` and passes it wherever the value would go;
     // this is where the value actually appears, on its way OUT. It has to be
-    // here, before every dispatch below, because this route is the only thing an
+    // here, before the dispatch below, because this route is the only thing an
     // agent's tool call goes through — see `spendHandlesInToolCall` for what
-    // forwarding the handle verbatim looked like.
-    //
-    // The in-process branches take the mutated `rpc`; the HTTP one re-serializes,
-    // and only when something was actually spent. An unresolved handle is
-    // reported to the OPERATOR and never back to the model: a caller that learns
-    // which names exist has been handed a map of the workspace's credentials.
+    // forwarding the handle verbatim looked like. The dispatch takes the
+    // mutated `rpc`. An unresolved handle is reported to the OPERATOR and
+    // never back to the model: a caller that learns which names exist has
+    // been handed a map of the workspace's credentials.
     const { spendHandlesInToolCall } = await import('@/server/workspace-secrets')
     const spend = await spendHandlesInToolCall(rpc, name)
     for (const u of spend.used) console.warn(`[secrets] ${name} spent ${u.name}.${u.key} (${u.label}) on ${params.server}.${rpc?.params?.name}`)
     for (const u of spend.unresolved) console.warn(`[secrets] ${name} could not resolve ${u.handle} on ${params.server}.${rpc?.params?.name}: ${u.reason}`)
-    if (spend.changed) bodyText = JSON.stringify(rpc)
 
-    // The Workbench surface dispatches IN-PROCESS with the caller's agent
-    // identity — grants resolved by the same gateway rules as any server.
-    if (eff.server.url.startsWith('talaria-workbench://')) {
-      const { dispatchWorkbenchMcp } = await import('@/server/workbench-mcp')
-      const r = await dispatchWorkbenchMcp(rpc ?? {}, caller, eff.tools)
-      return r.body === null ? new Response(null, { status: r.status }) : json(r.body, { status: r.status })
-    }
-
-    // App-published servers dispatch IN-PROCESS — same access resolution
-    // as above, no HTTP hop, tool subset enforced again inside.
+    // App-published servers dispatch IN-PROCESS — no HTTP hop, tool subset
+    // enforced again inside.
     if (eff.server.appSlug) {
       const { dispatchAppMcp } = await import('@/server/app-mcp')
       const r = await dispatchAppMcp(eff.server.appSlug, rpc ?? {}, name, eff.tools)
       return r.body === null ? new Response(null, { status: r.status }) : json(r.body, { status: r.status })
     }
 
-    // Upstream URLs are admin-entered, not first-party: validate the hop
-    // through the same door every other registry URL walks (mcp-registry's
-    // session path uses safeFetch). The relay itself stays a raw pass-through
-    // fetch — a streamable-HTTP response can be an endless SSE stream, which
-    // safeFetch's response cap would buffer and kill — so the URL is checked
-    // BEFORE the hop and the response streamed as before. The BUILTIN toolkit
-    // is this process's own loopback listener and skips the check (loopback is
-    // exactly what it refuses).
-    if (!eff.server.builtin) {
-      try {
-        await assertFetchableUrl(eff.server.url)
-      } catch {
-        return json({ error: 'upstream URL refused (not a reachable external address)' }, { status: 502 })
-      }
-    }
-    const upstream = await fetch(eff.server.url, {
-      method: 'POST',
-      headers: {
-        'content-type': request.headers.get('content-type') ?? 'application/json',
-        accept: request.headers.get('accept') ?? 'application/json, text/event-stream',
-        ...(request.headers.get('mcp-session-id') ? { 'mcp-session-id': request.headers.get('mcp-session-id')! } : {}),
-        ...eff.upstreamHeaders,
-        // The builtin toolkit calls back into this API as the same agent,
-        // so its OWN credential rides through — substituting a server-held
-        // key here would make that hop the forgeable one.
-        ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': presentedCredential(request) ?? '' } : {}),
-      },
-      body: bodyText,
-      signal: AbortSignal.timeout((eff.server.timeoutSecs ?? 120) * 1000),
-    }).catch((e: Error) => e)
-    if (upstream instanceof Error) {
-      // The fetch error can name the upstream host (ECONNREFUSED host:port) —
-      // agent configs are hand-editable; endpoint topology isn't theirs.
-      logUpstreamError(`mcp-gw:${params.server}`, 'unreachable', upstream.message)
-      return json({ error: 'upstream unreachable' }, { status: 502 })
-    }
-    // HTTP-level failures never relay verbatim: their bodies are written by
-    // whatever proxy or server answered, not by the MCP protocol. One check
-    // here covers every relay below (tools/list filter, its fallback, the
-    // final stream). JSON-RPC errors ride 200s and pass untouched — tool
-    // results, including tool FAILURES, are the protocol the agent speaks.
-    if (!upstream.ok) {
-      const text = await upstream.text().catch(() => '')
-      logUpstreamError(`mcp-gw:${params.server}`, upstream.status, text)
-      return json({ error: upstreamErrorMessage(upstream.status) }, { status: upstream.status })
-    }
-
-    const respHeaders: Record<string, string> = {
-      'content-type': upstream.headers.get('content-type') ?? 'application/json',
-    }
-    const session = upstream.headers.get('mcp-session-id')
-    if (session) respHeaders['mcp-session-id'] = session
-
-    // The list filter: rewrite result.tools inside JSON or SSE-framed
-    // bodies. Everything else streams back verbatim.
-    if (rpc?.method === 'tools/list' && eff.tools !== null) {
-      const text = await upstream.text()
-      const allowed = new Set(eff.tools)
-      const filterMsg = (msg: unknown): unknown => {
-        const m = msg as { result?: { tools?: Array<{ name: string }> } } | null
-        if (m?.result?.tools) m.result.tools = m.result.tools.filter((t) => allowed.has(t.name))
-        return msg
-      }
-      const ct = respHeaders['content-type'] ?? ''
-      if (ct.includes('text/event-stream')) {
-        const out = text
-          .split('\n')
-          .map((line) => {
-            if (!line.startsWith('data:')) return line
-            try {
-              return `data: ${JSON.stringify(filterMsg(JSON.parse(line.slice(5).trim())))}`
-            } catch {
-              return line
-            }
-          })
-          .join('\n')
-        return new Response(out, { status: upstream.status, headers: respHeaders })
-      }
-      const msg = parseMcpResponse(text)
-      if (msg) return new Response(JSON.stringify(filterMsg(msg)), { status: upstream.status, headers: respHeaders })
-      return new Response(text, { status: upstream.status, headers: respHeaders })
-    }
-
-    return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
+    // Anything else is not this process's to serve (see the header): refuse
+    // rather than grow a second relay that could disagree with the api's.
+    return json({ error: 'not an app-published server' }, { status: 404 })
   },
-  // Streamable-HTTP GET (server → client notification stream): plain relay.
+  // Streamable-HTTP GET (server → client notification stream): app servers
+  // have none.
   GET: async ({ request, params }) => {
     const caller = await requireAgent(request)
     if (caller instanceof Response) return caller
-    const name = caller.model
     // Same rule as POST: the caller carries the proof, the string does not.
     const eff = await effectiveMcpFor(caller, params.server)
     if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
-    // App servers have no notification stream — decline politely.
     if (eff.server.appSlug) return new Response(null, { status: 405 })
-    // Same rule as POST: validate a non-builtin upstream URL before the hop;
-    // the response is a live SSE relay, so the fetch itself stays raw.
-    if (!eff.server.builtin) {
-      try {
-        await assertFetchableUrl(eff.server.url)
-      } catch {
-        return json({ error: 'upstream URL refused (not a reachable external address)' }, { status: 502 })
-      }
-    }
-    const upstream = await fetch(eff.server.url, {
-      method: 'GET',
-      headers: {
-        accept: request.headers.get('accept') ?? 'text/event-stream',
-        ...(request.headers.get('mcp-session-id') ? { 'mcp-session-id': request.headers.get('mcp-session-id')! } : {}),
-        ...eff.upstreamHeaders,
-        ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': presentedCredential(request) ?? '' } : {}),
-      },
-    }).catch((e: Error) => e)
-    if (upstream instanceof Error) {
-      logUpstreamError(`mcp-gw-get:${params.server}`, 'unreachable', upstream.message)
-      return json({ error: 'upstream unreachable' }, { status: 502 })
-    }
-    // A failed notification-stream hop relays the same way as POST: fixed
-    // sentence, verbatim to the log. Only a live 200 SSE stream passes.
-    if (!upstream.ok) {
-      const text = await upstream.text().catch(() => '')
-      logUpstreamError(`mcp-gw-get:${params.server}`, upstream.status, text)
-      return json({ error: upstreamErrorMessage(upstream.status) }, { status: upstream.status })
-    }
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: { 'content-type': upstream.headers.get('content-type') ?? 'text/event-stream' },
-    })
+    return json({ error: 'not an app-published server' }, { status: 404 })
   },
 })

@@ -83,9 +83,10 @@ import type { Grounding, HarnessDefinition, Message, RenderContext } from './def
 // The transports moved to harness/transport.ts when `TransportRequest` grew the
 // four slots the five hand-written shims existed to supply (tools, ledger
 // attribution, an explicit tier, a hold deadline). They are re-exported here
-// because every one of those files, plus defs/research.ts, imports `Transport`
-// from this module — and because "which transport" remains a decision of the
-// runner's, not of any harness author's.
+// because this module is the SDK tier's entry to the harness (sdk/server.ts
+// re-exports `runHarness` and its result types from here), so the transports
+// stay part of its public surface — and because "which transport" remains a
+// decision of the runner's, not of any harness author's.
 export {
   defaultTransport,
   fleetStream,
@@ -189,7 +190,8 @@ export interface HarnessResult<O> {
   latencyMs: number
   /** The harness declared `onFailure: { escalate: true }` and the contract
    *  failed. A FLAG rather than a phrase in `error`, because the caller is the
-   *  only thing that knows who to tell (judge.ts's `tellHumansTheGateStopped`)
+   *  only thing that knows who to tell (the judge def's `tellHumansTheGateStopped`,
+   *  api/src/harness/defs/judge.rs)
    *  and a caller that has to string-match an error message to find that out is
    *  a caller that will silently stop escalating the day the wording changes. */
   escalate: boolean
@@ -285,9 +287,11 @@ const REAL_DEPS: HarnessDeps = {
  *  cannot know which member will take this one without advancing the round-robin
  *  cursor.
  *
- *  Exported because `research.ts` has to ask `capability-reach.ts` the same
+ *  Exported because the research run has to ask `capability-reach.ts` the same
  *  question the floor asks — "can this run reach search" — and had to derive the
- *  same keys to do it. Two spellings of a key derivation is how a stage and the
+ *  same keys to do it (its heir is the Rust research run,
+ *  api/src/runs/defs/research.rs). Two spellings of a key derivation is how a
+ *  stage and the
  *  floor that guards it come to disagree about which model they are talking
  *  about, and the whole point of this pass is that they never do. */
 export const capabilityKeysOf = (route: { endpoints: string[]; upstreamModel: string }): string[] =>
@@ -327,9 +331,10 @@ export interface RunContext {
    *  the agent on the ticket), and the only supported way to bypass the chain. */
   model?: string
   /** Which chain step produced `ctx.model`, when the caller ran the chain
-   *  ITSELF and is only handing the answer over — `routes/api/muse.ts` must have
+   *  ITSELF and is only handing the answer over — the muse route must have
    *  the model before it opens the stream, for `x-muse-model` and so that "no
-   *  model routes" is a 400 rather than a stream that opens empty.
+   *  model routes" is a 400 rather than a stream that opens empty
+   *  (the Rust muse route, api/src/routes/agents/muse.rs).
    *
    *  It exists so that pre-resolving does not silently erase the step from the
    *  `harness_runs` row: an install limping along on 'first-routable' for a
@@ -897,8 +902,8 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   /** THE TURN'S GROUNDING MATERIAL — everything this run put in front of the
    *  model, for `guardrails.ts`'s "was this span the model's at all" question.
    *
-   *  IT WAS THE HOLE IN THE GROUNDING WORK. `groundingTextOf` landed with
-   *  `agent-writes.ts` and `guardCompletion` wired to it and this runner not, so
+   *  IT WAS THE HOLE IN THE GROUNDING WORK. `groundingTextOf` landed with the
+   *  agent-writes engine and `guardCompletion` wired to it and this runner not, so
    *  the ONE path that guards 23 harnesses was the one path that grounded
    *  nothing — and it is the path where it costs the most, because it is the
    *  only one that redacts the VALUE it hands back at every mode above off. A

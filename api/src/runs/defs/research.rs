@@ -1735,7 +1735,7 @@ pub fn research_run() -> &'static Arc<RunDefinition> {
                 Box::pin(async move {
                     let Some(deps) = ARMED_DEPS.get().cloned() else {
                         return Err(
-                            "research steps are armed with the scheduler handover; this Rust \
+                            "research steps are armed by the scheduler's boot wiring; this \
                              step was reached by a driver armed before its deps were"
                                 .into(),
                         );

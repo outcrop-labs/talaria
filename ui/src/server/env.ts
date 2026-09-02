@@ -13,8 +13,9 @@ import { z } from 'zod'
 
 /** The bundled MinIO password published in docker/dev-compose.yml and
  *  ui/.env.example. Anyone who has read this repo knows it, so it is a local-dev
- *  convenience only — never a production credential. `storage.ts` refuses it at
- *  use-time and validateEnv() refuses it at boot. */
+ *  convenience only — never a production credential. The Rust upload engine
+ *  (api/src/uploads.rs) refuses it at use-time and validateEnv() refuses it at
+ *  boot. */
 export const DEV_S3_SECRET = 'talaria-dev-secret'
 
 // Empty-string env vars are "unset" as far as every consumer is concerned
@@ -125,8 +126,9 @@ export const envSchema = z
       })
     }
 
-    // The published dev password must never reach production. storage.ts carries
-    // the same guard at use-time; this one refuses the boot so it cannot linger.
+    // The published dev password must never reach production. The Rust upload
+    // engine (api/src/uploads.rs) carries the same guard at use-time; this one
+    // refuses the boot so it cannot linger.
     if (env.NODE_ENV === 'production' && env.TALARIA_S3_SECRET_KEY === DEV_S3_SECRET) {
       ctx.addIssue({
         code: 'custom',

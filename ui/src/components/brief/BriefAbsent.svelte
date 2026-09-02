@@ -33,7 +33,7 @@
 {#if state.absent === 'no-agent'}
   <!-- The only one of the three with an action, because it is the only one the
        person can do anything about. A brief is written by YOUR assistant and by
-       no other model — see the note in server/daily-brief.ts — so without one
+       no other model — see the note in api/src/daily_brief — so without one
        there is nothing to wait for. -->
   <EmptyState
     icon={sparkle}

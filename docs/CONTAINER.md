@@ -276,7 +276,7 @@ Two docker networks, one socket — this is the "right shape"
 - **Isolation**: only the app joins the fleet network. Agent containers are
   model-driven and semi-trusted; they can reach the app, never postgres,
   redis, or minio.
-- **Preflight** follows the renderer (`fleet-preflight.ts` derives its probe
+- **Preflight** follows the renderer (api/src/fleet/preflight.rs derives its probe
   target from `MCP_GW_BASE`), so it probes the name agents actually use.
 
 The `talaria` network is compose-managed with a fixed name so a fresh host

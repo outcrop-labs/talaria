@@ -122,8 +122,9 @@ function composeFile(dir) {
   if (!service) throw new Error(`no "service:" block in ${TEMPLATE}`)
 
   service.restart = 'no'
-  // Mounted read-only exactly as fleet-render.ts mounts them, so the smoke test
-  // exercises the same shape a real agent gets.
+  // Mounted read-only exactly as the Rust fleet render mounts them
+  // (api/src/fleet/render.rs), so the smoke test exercises the same shape a
+  // real agent gets.
   service.volumes = [
     `${PROJECT}-state:/opt/data`,
     `${join(dir, 'config.yaml')}:/opt/data/config.yaml:ro`,

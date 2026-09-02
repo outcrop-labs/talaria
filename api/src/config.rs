@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn secret_root_precedence_matches_secretbox_ts() {
+    fn secret_root_precedence_matches_secretbox() {
         let [db, rd, _, _, _, port] = base();
         let c = Config::from_parts(
             db.clone(),

@@ -10,7 +10,8 @@
 //                              creation — these doors do not re-gate them)
 //
 //   Google OAuth — credentials from EITHER the Admin UI record (Admin → Org →
-//   Google Workspace, stored in app_settings; see google/client-config.ts) OR:
+//   Google Workspace, stored in app_settings; the Rust client-config twin is
+//   api/src/google/client.rs) OR:
 //   AUTH_GOOGLE_CLIENT_ID / AUTH_GOOGLE_CLIENT_SECRET
 //   AUTH_GOOGLE_ENABLED=1     login bootstrap — the Admin UI toggle beside the
 //                             client is the primary switch; env pins login ON

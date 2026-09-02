@@ -404,7 +404,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_serializes_as_the_ts_wire_strings() {
+    fn state_serializes_as_the_wire_strings() {
         assert_eq!(
             serde_json::to_string(&RunState::Queued).unwrap(),
             "\"queued\""
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn the_decision_column_round_trips_the_ts_shape() {
+    fn the_decision_column_round_trips_the_db_shape() {
         // The exact JSON a parked run stores in `runs.decision` — camelCase
         // keys, optional fields omitted — must read and write back identically,
         // including rows written by earlier deploys.

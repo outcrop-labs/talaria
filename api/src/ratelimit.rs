@@ -102,7 +102,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_shape_matches_the_ts_limiter() {
+    fn the_limiter_key_carries_the_shared_prefix() {
         // The gateway chat route's key is `gw:key:{keyId}`;
         // the shared counter depends on this exact string.
         assert_eq!(redis_key("gw:key:abc"), "talaria:rl:gw:key:abc");
