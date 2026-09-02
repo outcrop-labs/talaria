@@ -180,6 +180,17 @@ pub async fn post(
         );
     }
 
+    // The builtin toolkit is a child of THIS process, spawned on demand —
+    // and a deploy's first agent session can beat the spawn. A session
+    // whose initialize fails drops the server (and with it every talaria
+    // tool) for its whole lifetime, so the relay heals the race instead of
+    // reporting it: bring the child up and wait, then let the fetch below
+    // speak for the outcome either way. A live child answers the probe in
+    // milliseconds; only a dead one pays the wait.
+    if eff.server.builtin {
+        crate::mcp::service::await_mcp_service(8_000).await;
+    }
+
     // Upstream URLs are admin-entered, not first-party: validate the hop
     // through the same door every other registry URL walks (mcp-registry's
     // session path uses safeFetch). The relay itself stays a raw pass-through
@@ -285,6 +296,12 @@ pub async fn get(
     if eff.server.app_slug.is_some() {
         return (StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response();
     }
+    // Same heal as POST: the builtin child may not be up when the client
+    // opens its notification stream.
+    if eff.server.builtin {
+        crate::mcp::service::await_mcp_service(8_000).await;
+    }
+
     // Same rule as POST: validate a non-builtin upstream URL before the hop;
     // the response is a live SSE relay, so the fetch itself stays raw.
     if !eff.server.builtin

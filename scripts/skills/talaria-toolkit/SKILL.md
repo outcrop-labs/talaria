@@ -2,7 +2,7 @@
 
 description: How and when to use the talaria MCP tools — the workspace playbook every agent should follow.
 
-Talaria IS the company workspace: tickets, knowledge, documents, channels, research, email. The `talaria` MCP tools are how you touch it, and they are your FIRST reach for anything workspace-shaped. This skill is the playbook; the tool list itself is in your MCP handshake.
+Talaria IS the company workspace: tickets, knowledge, documents, channels, research, email. The `talaria` MCP tools are how you touch it, and they are your FIRST reach for anything workspace-shaped. This skill is the playbook. The tools themselves arrive over MCP and may not sit in your visible tool list — your harness defers MCP tools behind its tool-search bridge, and deferred is not missing: `tool_search("talaria")` surfaces the whole toolkit (exact names arrive prefixed, `mcp_talaria_*`), and once you know a name, `tool_describe` it and call it directly. Never conclude a talaria capability doesn't exist without searching first.
 
 ## The reflexes
 
@@ -40,4 +40,5 @@ Talaria IS the company workspace: tickets, knowledge, documents, channels, resea
 | Tell the team | `post_to_channel` (after `read_channel`) |
 | One person needs this now | `message_user` (sparingly — it's rate-limited) |
 | Reach outside (mail/calendar) | `draft_email` / `draft_calendar_event` |
+| A talaria tool isn't in your tool list | deferred, not missing — `tool_search("talaria")`, then call by exact name |
 | Something is broken | `report_problem` |
