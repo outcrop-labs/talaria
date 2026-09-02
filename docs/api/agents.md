@@ -1,7 +1,9 @@
 # API reference — agents
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -31,7 +33,7 @@
 
 ## `/api/agent-role-templates`
 
-Source: [`ui/src/routes/api/agent-role-templates.ts`](../../ui/src/routes/api/agent-role-templates.ts)
+Source: [`api/src/routes/agent_role_templates.rs`](../../api/src/routes/agent_role_templates.rs)
 
 > Agent role templates — the business roles a new agent can start from.
 > GET   → built-ins + the org's own (anyone who may create an agent needs it).
@@ -57,7 +59,7 @@ Source: [`ui/src/routes/api/agent-role-templates.ts`](../../ui/src/routes/api/ag
 
 ## `/api/agent/gap`
 
-Source: [`ui/src/routes/api/agent.gap.ts`](../../ui/src/routes/api/agent.gap.ts)
+Source: [`api/src/routes/agent_gap.rs`](../../api/src/routes/agent_gap.rs)
 
 > POST — an agent reports a capability gap (the honesty loop). Deduped by
 > work-shape server-side: repeats bump seen_count, never re-notify. Lands in
@@ -78,7 +80,7 @@ Source: [`ui/src/routes/api/agent.gap.ts`](../../ui/src/routes/api/agent.gap.ts)
 
 ## `/api/agent/message-user`
 
-Source: [`ui/src/routes/api/agent.message-user.ts`](../../ui/src/routes/api/agent.message-user.ts)
+Source: [`api/src/routes/agent_message_user.rs`](../../api/src/routes/agent_message_user.rs)
 
 > POST (agent key) → an agent starts or continues a direct conversation with
 > a human teammate. The message lands as a normal turn in their chat with
@@ -98,7 +100,7 @@ Source: [`ui/src/routes/api/agent.message-user.ts`](../../ui/src/routes/api/agen
 
 ## `/api/agent/problem`
 
-Source: [`ui/src/routes/api/agent.problem.ts`](../../ui/src/routes/api/agent.problem.ts)
+Source: [`api/src/routes/agent_problem.rs`](../../api/src/routes/agent_problem.rs)
 
 > POST (agent key) → an agent hit something broken it shouldn't explain to a
 > normal person. Talaria elevates it: the admins who may hear it get an alert
@@ -121,7 +123,7 @@ Source: [`ui/src/routes/api/agent.problem.ts`](../../ui/src/routes/api/agent.pro
 
 ## `/api/agents`
 
-Source: [`ui/src/routes/api/agents.ts`](../../ui/src/routes/api/agents.ts)
+Source: [`api/src/routes/agents.rs`](../../api/src/routes/agents.rs)
 
 > GET /api/agents → the fleet the current user may use (definition-backed
 > agents with their model tiers, filtered by per-agent access). Auth-gated.
@@ -132,7 +134,7 @@ Source: [`ui/src/routes/api/agents.ts`](../../ui/src/routes/api/agents.ts)
 
 ## `/api/agents/{id}/heartbeat`
 
-Source: [`ui/src/routes/api/agents.$id.heartbeat.ts`](../../ui/src/routes/api/agents.$id.heartbeat.ts)
+Source: [`api/src/routes/agents_id_heartbeat.rs`](../../api/src/routes/agents_id_heartbeat.rs)
 
 > GET /api/agents/:id/heartbeat — refresh last_seen and return the agent's
 > assigned work (tasks assigned to it, across boards). MC-compatible.
@@ -143,7 +145,7 @@ Source: [`ui/src/routes/api/agents.$id.heartbeat.ts`](../../ui/src/routes/api/ag
 
 ## `/api/agents/register`
 
-Source: [`ui/src/routes/api/agents.register.ts`](../../ui/src/routes/api/agents.register.ts)
+Source: [`api/src/routes/agents_register.rs`](../../api/src/routes/agents_register.rs)
 
 > POST /api/agents/register — an agent registers with Talaria (MC-compatible
 > contract, so the existing plugin works repointed). Agent-key auth.
@@ -163,7 +165,7 @@ Source: [`ui/src/routes/api/agents.register.ts`](../../ui/src/routes/api/agents.
 
 ## `/api/gaps`
 
-Source: [`ui/src/routes/api/gaps.ts`](../../ui/src/routes/api/gaps.ts)
+Source: [`api/src/routes/gaps.rs`](../../api/src/routes/gaps.rs)
 
 > The Studio's Suggested queue: capability gaps agents have reported, ranked
 > by how often the work-shape recurs. Any member reads (the queue is what
@@ -175,7 +177,7 @@ Source: [`ui/src/routes/api/gaps.ts`](../../ui/src/routes/api/gaps.ts)
 
 ## `/api/gaps/{id}`
 
-Source: [`ui/src/routes/api/gaps.$id.ts`](../../ui/src/routes/api/gaps.$id.ts)
+Source: [`api/src/routes/gaps_id.rs`](../../api/src/routes/gaps_id.rs)
 
 > One capability gap: PUT status (open | dismissed | resolved) — agents.manage.
 > Dismissed shapes that keep recurring reopen automatically; resolved sticks.
@@ -192,7 +194,7 @@ Source: [`ui/src/routes/api/gaps.$id.ts`](../../ui/src/routes/api/gaps.$id.ts)
 
 ## `/api/muse`
 
-Source: [`ui/src/routes/api/muse.ts`](../../ui/src/routes/api/muse.ts)
+Source: [`api/src/routes/muse.rs`](../../api/src/routes/muse.rs)
 
 > POST → a validated JSON draft (cron / agent / ticket / skillForm /
 > templateForm) or a streamed document.
@@ -216,7 +218,7 @@ Source: [`ui/src/routes/api/muse.ts`](../../ui/src/routes/api/muse.ts)
 
 ## `/api/runs/{id}/events`
 
-Source: [`ui/src/routes/api/runs.$id.events.ts`](../../ui/src/routes/api/runs.$id.events.ts)
+Source: [`api/src/routes/runs_events.rs`](../../api/src/routes/runs_events.rs)
 
 > GET /api/runs/:id/events → SSE stream of one run's live transitions (state,
 > phase, terminal error). Auth-gated by the run's read ACL. This is what makes
@@ -230,7 +232,7 @@ Source: [`ui/src/routes/api/runs.$id.events.ts`](../../ui/src/routes/api/runs.$i
 
 ## `/api/skills`
 
-Source: [`ui/src/routes/api/skills.ts`](../../ui/src/routes/api/skills.ts)
+Source: [`api/src/routes/skills.rs`](../../api/src/routes/skills.rs)
 
 > Skills across the fleet: shared + per-agent, straight from the mounts the
 > agents actually read. Any member reads (the library grounds the Studio and
@@ -244,7 +246,7 @@ Source: [`ui/src/routes/api/skills.ts`](../../ui/src/routes/api/skills.ts)
 
 ## `/api/skills/{owner}/{name}`
 
-Source: [`ui/src/routes/api/skills.$owner.$name.ts`](../../ui/src/routes/api/skills.$owner.$name.ts)
+Source: [`api/src/routes/skills_owner_name.rs`](../../api/src/routes/skills_owner_name.rs)
 
 > One skill's SKILL.md. GET → content + file list (any member — the library
 > is org work material). PUT → save (creates the skill if new). DELETE →
@@ -290,7 +292,7 @@ Source: [`ui/src/routes/api/skills.$owner.$name.ts`](../../ui/src/routes/api/ski
 
 ## `/api/vision/describe`
 
-Source: [`ui/src/routes/api/vision.describe.ts`](../../ui/src/routes/api/vision.describe.ts)
+Source: [`api/src/routes/vision_describe.rs`](../../api/src/routes/vision_describe.rs)
 
 > READ AN IMAGE ON BEHALF OF A MODEL THAT CANNOT — the endpoint behind the
 > `describe_image` tool.

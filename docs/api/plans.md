@@ -1,7 +1,9 @@
 # API reference — plans
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -22,7 +24,7 @@
 
 ## `/api/plans/{id}/doc`
 
-Source: [`ui/src/routes/api/plans.$id.doc.ts`](../../ui/src/routes/api/plans.$id.doc.ts)
+Source: [`api/src/routes/plans_id_doc.rs`](../../api/src/routes/plans_id_doc.rs)
 
 > The plan's living document (a linked doc artifact). GET → find-or-create it,
 > seeded from the agent's plan template when one is bound. POST → the plan's
@@ -43,7 +45,7 @@ Source: [`ui/src/routes/api/plans.$id.doc.ts`](../../ui/src/routes/api/plans.$id
 
 ## `/api/plans/{id}/draft`
 
-Source: [`ui/src/routes/api/plans.$id.draft.ts`](../../ui/src/routes/api/plans.$id.draft.ts)
+Source: [`api/src/routes/plans_id_draft.rs`](../../api/src/routes/plans_id_draft.rs)
 
 > The plan's ticket drafts, as a DURABLE JOB: POST enqueues a 'plan-draft' run
 > and answers immediately with the queued draft; the agent reads the
@@ -74,7 +76,7 @@ Source: [`ui/src/routes/api/plans.$id.draft.ts`](../../ui/src/routes/api/plans.$
 
 ## `/api/plans/{id}/members`
 
-Source: [`ui/src/routes/api/plans.$id.members.ts`](../../ui/src/routes/api/plans.$id.members.ts)
+Source: [`api/src/routes/plans_id_members.rs`](../../api/src/routes/plans_id_members.rs)
 
 > Multiplayer plan membership + presence.
 > GET → { members, active } (any member; active = user ids seen in the last

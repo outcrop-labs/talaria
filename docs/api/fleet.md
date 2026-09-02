@@ -1,7 +1,9 @@
 # API reference — fleet
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -41,7 +43,7 @@
 
 ## `/api/fleet`
 
-Source: [`ui/src/routes/api/fleet.ts`](../../ui/src/routes/api/fleet.ts)
+Source: [`api/src/routes/fleet.rs`](../../api/src/routes/fleet.rs)
 
 > GET /api/fleet → owned fleet ops data (agents + Talaria-native usage).
 > Ops-wide detail: admins + people granted the Observability view.
@@ -52,7 +54,7 @@ Source: [`ui/src/routes/api/fleet.ts`](../../ui/src/routes/api/fleet.ts)
 
 ## `/api/fleet/agents/{id}/control`
 
-Source: [`ui/src/routes/api/fleet.agents.$id.control.ts`](../../ui/src/routes/api/fleet.agents.$id.control.ts)
+Source: [`api/src/routes/fleet_agents_id_control.rs`](../../api/src/routes/fleet_agents_id_control.rs)
 
 > POST { action } → lifecycle control for one agent (admin; owners of a
 > personal assistant may up/stop/restart their own).
@@ -72,7 +74,7 @@ Source: [`ui/src/routes/api/fleet.agents.$id.control.ts`](../../ui/src/routes/ap
 
 ## `/api/fleet/agents/{id}/crons`
 
-Source: [`ui/src/routes/api/fleet.agents.$id.crons.ts`](../../ui/src/routes/api/fleet.agents.$id.crons.ts)
+Source: [`api/src/routes/fleet_agents_id_crons.rs`](../../api/src/routes/fleet_agents_id_crons.rs)
 
 > One agent's native Hermes cron jobs. GET → jobs (read from the container's
 > jobs.json). POST → create. Admin, or the owner of a personal assistant.
@@ -92,7 +94,7 @@ Source: [`ui/src/routes/api/fleet.agents.$id.crons.ts`](../../ui/src/routes/api/
 
 ## `/api/fleet/agents/{id}/crons/{jobId}`
 
-Source: [`ui/src/routes/api/fleet.agents.$id.crons.$jobId.ts`](../../ui/src/routes/api/fleet.agents.$id.crons.$jobId.ts)
+Source: [`api/src/routes/fleet_agents_id_crons_jobid.rs`](../../api/src/routes/fleet_agents_id_crons_jobid.rs)
 
 > One cron job: DELETE → remove. POST { action } → pause | resume | run
 > ("run" queues it for the next scheduler tick, ≤60s). PUT { name? schedule?
@@ -120,7 +122,7 @@ Source: [`ui/src/routes/api/fleet.agents.$id.crons.$jobId.ts`](../../ui/src/rout
 
 ## `/api/fleet/agents/{id}/secrets`
 
-Source: [`ui/src/routes/api/fleet.agents.$id.secrets.ts`](../../ui/src/routes/api/fleet.agents.$id.secrets.ts)
+Source: [`api/src/routes/fleet_agents_id_secrets.rs`](../../api/src/routes/fleet_agents_id_secrets.rs)
 
 > Per-agent secrets, write-only. GET → names + timestamps (never values).
 > PUT { name, value } → set/replace. DELETE { name } → remove. Admin, or the
@@ -148,7 +150,7 @@ Source: [`ui/src/routes/api/fleet.agents.$id.secrets.ts`](../../ui/src/routes/ap
 
 ## `/api/fleet/containers`
 
-Source: [`ui/src/routes/api/fleet.containers.ts`](../../ui/src/routes/api/fleet.containers.ts)
+Source: [`api/src/routes/fleet_containers.rs`](../../api/src/routes/fleet_containers.rs)
 
 > GET → container reality per agent (the managed service), admin.
 
@@ -158,7 +160,7 @@ Source: [`ui/src/routes/api/fleet.containers.ts`](../../ui/src/routes/api/fleet.
 
 ## `/api/fleet/create`
 
-Source: [`ui/src/routes/api/fleet.create.ts`](../../ui/src/routes/api/fleet.create.ts)
+Source: [`api/src/routes/fleet_create.rs`](../../api/src/routes/fleet_create.rs)
 
 > POST → start HIRING a new agent. The work — create the def, write v1 and
 > any starter skills, render the fleet, boot the container, wait out the
@@ -185,7 +187,7 @@ Source: [`ui/src/routes/api/fleet.create.ts`](../../ui/src/routes/api/fleet.crea
 
 ## `/api/fleet/crons`
 
-Source: [`ui/src/routes/api/fleet.crons.ts`](../../ui/src/routes/api/fleet.crons.ts)
+Source: [`api/src/routes/fleet_crons.rs`](../../api/src/routes/fleet_crons.rs)
 
 > Fleet-wide crons (admin). GET → every managed agent's jobs (down containers
 > reported per-agent, not fatal). POST → create the same job across agents,
@@ -208,7 +210,7 @@ Source: [`ui/src/routes/api/fleet.crons.ts`](../../ui/src/routes/api/fleet.crons
 
 ## `/api/fleet/defs`
 
-Source: [`ui/src/routes/api/fleet.defs.ts`](../../ui/src/routes/api/fleet.defs.ts)
+Source: [`api/src/routes/fleet_defs.rs`](../../api/src/routes/fleet_defs.rs)
 
 > The harness registry. GET → agent definitions (latest version inline) +
 > LLM endpoints. Admins only — the config surface includes infra layout.
@@ -219,7 +221,7 @@ Source: [`ui/src/routes/api/fleet.defs.ts`](../../ui/src/routes/api/fleet.defs.t
 
 ## `/api/fleet/defs/{id}`
 
-Source: [`ui/src/routes/api/fleet.defs.$id.ts`](../../ui/src/routes/api/fleet.defs.$id.ts)
+Source: [`api/src/routes/fleet_defs_id.rs`](../../api/src/routes/fleet_defs_id.rs)
 
 > PATCH → editable agent identity metadata (role, display name). Not versioned
 > — this is identity, not config. Admin only.
@@ -244,7 +246,7 @@ Source: [`ui/src/routes/api/fleet.defs.$id.ts`](../../ui/src/routes/api/fleet.de
 
 ## `/api/fleet/defs/{id}/edit`
 
-Source: [`ui/src/routes/api/fleet.defs.$id.edit.ts`](../../ui/src/routes/api/fleet.defs.$id.edit.ts)
+Source: [`api/src/routes/fleet_defs_id_edit.rs`](../../api/src/routes/fleet_defs_id_edit.rs)
 
 > POST → save an edit as a NEW immutable version (and optionally apply it to
 > the running managed container). Admin. This is "versioned agent internals":
@@ -267,7 +269,7 @@ Source: [`ui/src/routes/api/fleet.defs.$id.edit.ts`](../../ui/src/routes/api/fle
 
 ## `/api/fleet/defs/{id}/mcp`
 
-Source: [`ui/src/routes/api/fleet.defs.$id.mcp.ts`](../../ui/src/routes/api/fleet.defs.$id.mcp.ts)
+Source: [`api/src/routes/fleet_defs_id_mcp.rs`](../../api/src/routes/fleet_defs_id_mcp.rs)
 
 > POST → add/remove MCP servers on an agent as a NEW config version (same
 > versioned-internals contract as model edits), optionally applied live.
@@ -286,7 +288,7 @@ Source: [`ui/src/routes/api/fleet.defs.$id.mcp.ts`](../../ui/src/routes/api/flee
 
 ## `/api/fleet/defs/{id}/versions`
 
-Source: [`ui/src/routes/api/fleet.defs.$id.versions.ts`](../../ui/src/routes/api/fleet.defs.$id.versions.ts)
+Source: [`api/src/routes/fleet_defs_id_versions.rs`](../../api/src/routes/fleet_defs_id_versions.rs)
 
 > GET → an agent definition's full version history (admin).
 > POST { revertTo } → re-publish an old version's payload as a NEW version
@@ -305,7 +307,7 @@ Source: [`ui/src/routes/api/fleet.defs.$id.versions.ts`](../../ui/src/routes/api
 
 ## `/api/fleet/endpoints`
 
-Source: [`ui/src/routes/api/fleet.endpoints.ts`](../../ui/src/routes/api/fleet.endpoints.ts)
+Source: [`api/src/routes/fleet_endpoints.rs`](../../api/src/routes/fleet_endpoints.rs)
 
 > The model-backend registry (Models tab). GET → all endpoints. POST → add one.
 
@@ -329,7 +331,7 @@ Source: [`ui/src/routes/api/fleet.endpoints.ts`](../../ui/src/routes/api/fleet.e
 
 ## `/api/fleet/endpoints/{id}`
 
-Source: [`ui/src/routes/api/fleet.endpoints.$id.ts`](../../ui/src/routes/api/fleet.endpoints.$id.ts)
+Source: [`api/src/routes/fleet_endpoints_id.rs`](../../api/src/routes/fleet_endpoints_id.rs)
 
 > PUT → edit an endpoint (class, pricing, model catalog). Removing catalog
 > models that agents use returns 409 with the blast radius; retry with
@@ -358,7 +360,7 @@ Source: [`ui/src/routes/api/fleet.endpoints.$id.ts`](../../ui/src/routes/api/fle
 
 ## `/api/fleet/endpoints/{id}/available`
 
-Source: [`ui/src/routes/api/fleet.endpoints.$id.available.ts`](../../ui/src/routes/api/fleet.endpoints.$id.available.ts)
+Source: [`api/src/routes/fleet_endpoints_id_available.rs`](../../api/src/routes/fleet_endpoints_id_available.rs)
 
 > GET → what this provider actually offers right now (live /models call,
 > server-side, keys never leave the box). Admin.
@@ -372,7 +374,7 @@ Source: [`ui/src/routes/api/fleet.endpoints.$id.available.ts`](../../ui/src/rout
 
 ## `/api/fleet/federate`
 
-Source: [`ui/src/routes/api/fleet.federate.ts`](../../ui/src/routes/api/fleet.federate.ts)
+Source: [`api/src/routes/fleet_federate.rs`](../../api/src/routes/fleet_federate.rs)
 
 > POST → federate outside agents into Talaria: read a Hermes-format directory
 > and create each agent natively (Talaria def, fresh key + state volume, our
@@ -390,7 +392,7 @@ Source: [`ui/src/routes/api/fleet.federate.ts`](../../ui/src/routes/api/fleet.fe
 
 ## `/api/fleet/hires`
 
-Source: [`ui/src/routes/api/fleet.hires.ts`](../../ui/src/routes/api/fleet.hires.ts)
+Source: [`api/src/routes/fleet_hires.rs`](../../api/src/routes/fleet_hires.rs)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -398,7 +400,7 @@ Source: [`ui/src/routes/api/fleet.hires.ts`](../../ui/src/routes/api/fleet.hires
 
 ## `/api/fleet/reconcile`
 
-Source: [`ui/src/routes/api/fleet.reconcile.ts`](../../ui/src/routes/api/fleet.reconcile.ts)
+Source: [`api/src/routes/fleet_reconcile.rs`](../../api/src/routes/fleet_reconcile.rs)
 
 > POST → render + start every enabled managed agent that isn't running. One
 > button to bring the fleet to desired state (drift, cold start). Admin.
@@ -409,7 +411,7 @@ Source: [`ui/src/routes/api/fleet.reconcile.ts`](../../ui/src/routes/api/fleet.r
 
 ## `/api/fleet/render`
 
-Source: [`ui/src/routes/api/fleet.render.ts`](../../ui/src/routes/api/fleet.render.ts)
+Source: [`api/src/routes/fleet_render.rs`](../../api/src/routes/fleet_render.rs)
 
 > POST → render every managed agent's config + the fleet compose + the gateway
 > manifest (the bridge hot-reloads the manifest). Admin.

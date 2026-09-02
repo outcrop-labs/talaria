@@ -1,7 +1,9 @@
 # API reference — secrets
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -22,7 +24,7 @@
 
 ## `/api/secrets`
 
-Source: [`ui/src/routes/api/secrets.ts`](../../ui/src/routes/api/secrets.ts)
+Source: [`api/src/routes/secrets.rs`](../../api/src/routes/secrets.rs)
 
 > The sealed-secrets vault. GET → the secrets the caller can see
 > (metadata only — values never leave the vault); POST → seal a new one.
@@ -62,7 +64,7 @@ Source: [`ui/src/routes/api/secrets.ts`](../../ui/src/routes/api/secrets.ts)
 
 ## `/api/secrets/folders`
 
-Source: [`ui/src/routes/api/secrets.folders.ts`](../../ui/src/routes/api/secrets.folders.ts)
+Source: [`api/src/routes/secrets_folders.rs`](../../api/src/routes/secrets_folders.rs)
 
 > Secret folders: list / create / rename / delete. Folder membership
 > gates what GET /api/secrets shows.
@@ -106,7 +108,7 @@ Source: [`ui/src/routes/api/secrets.folders.ts`](../../ui/src/routes/api/secrets
 
 ## `/api/secrets/git-credential`
 
-Source: [`ui/src/routes/api/secrets.git-credential.ts`](../../ui/src/routes/api/secrets.git-credential.ts)
+Source: [`api/src/routes/secrets_git_credential.rs`](../../api/src/routes/secrets_git_credential.rs)
 
 > THE SANDBOX'S WAY IN — where a handle could not otherwise reach.
 >
@@ -128,7 +130,7 @@ Source: [`ui/src/routes/api/secrets.git-credential.ts`](../../ui/src/routes/api/
 
 ## `/api/secrets/relay`
 
-Source: [`ui/src/routes/api/secrets.relay.ts`](../../ui/src/routes/api/secrets.relay.ts)
+Source: [`api/src/routes/secrets_relay.rs`](../../api/src/routes/secrets_relay.rs)
 
 > HAND AN AGENT A CREDENTIAL, MID-CONVERSATION, WITHOUT PUTTING IT IN THE CHAT.
 >
@@ -152,7 +154,7 @@ Source: [`ui/src/routes/api/secrets.relay.ts`](../../ui/src/routes/api/secrets.r
 
 ## `/api/secrets/reveal`
 
-Source: [`ui/src/routes/api/secrets.reveal.ts`](../../ui/src/routes/api/secrets.reveal.ts)
+Source: [`api/src/routes/secrets_reveal.rs`](../../api/src/routes/secrets_reveal.rs)
 
 > THE ONE ROUTE IN THIS FEATURE THAT RETURNS A CREDENTIAL.
 >
@@ -173,7 +175,7 @@ Source: [`ui/src/routes/api/secrets.reveal.ts`](../../ui/src/routes/api/secrets.
 
 ## `/api/secrets/share`
 
-Source: [`ui/src/routes/api/secrets.share.ts`](../../ui/src/routes/api/secrets.share.ts)
+Source: [`api/src/routes/secrets_share.rs`](../../api/src/routes/secrets_share.rs)
 
 > Share a sealed secret with a person (share / unshare) or grant an
 > agent access to it (grant / revoke). Values stay sealed; shares gate

@@ -1,7 +1,9 @@
 # API reference — apps
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -14,7 +16,7 @@
 
 ## `/api/apps`
 
-Source: [`ui/src/routes/api/apps.ts`](../../ui/src/routes/api/apps.ts)
+Source: [`api/src/routes/apps.rs`](../../api/src/routes/apps.rs)
 
 > The signed-in view of installed apps: ENABLED apps only, manifest data the
 > client needs to draw nav items, routes, and settings tabs. Per-user view

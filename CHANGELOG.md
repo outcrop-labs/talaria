@@ -26,7 +26,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   and the app image consumes it with `COPY --from`, so no GitHub runner,
   operator machine, or customer VM ever compiles Rust to build the app
   image. healthz grew the third check (`rustApi`) and `talaria dev` now
-  spawns the api by default (`TALARIA_API=off` opts out).
+  spawns the api by default (`TALARIA_API=off` opts out). The generated API
+  reference froze at the cutover: its Source links point at the Rust modules
+  (`api/src/routes/**`), `gen-docs` skips `docs/api/**` until its extractor is
+  ported to the Rust router table (#293), and the CLI reference generates as
+  before.
 - **The port merges — the Rust API is the backend of record.** PR #290
   landed on main (2026-09-01): 216 of 219 TS route files serve from the Rust
   crate in any proxied environment, the parity battery closed at 370 route

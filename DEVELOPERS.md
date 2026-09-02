@@ -133,7 +133,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 
 | Doc | What it covers |
 |---|---|
-| [`docs/api/`](./docs/api/README.md) | **generated** — the HTTP API reference, one table per route, from source |
+| [`docs/api/`](./docs/api/README.md) | **frozen at the TS→Rust cutover** — the HTTP API reference, one table per route; maintained by hand until its extractor moves to the Rust routes (#293) |
 | [`docs/sdk/`](./docs/sdk/README.md) | The complete `@talaria/sdk` docset: UI kit, client, server, MCP, harnesses |
 | [`docs/SDK.md`](./docs/SDK.md) | Redirect stub → `docs/sdk/` (old links survive) |
 | [`docs/APPS.md`](./docs/APPS.md) | Building apps: anatomy, lifecycle, marketplace, publishing |

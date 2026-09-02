@@ -1,7 +1,9 @@
 # API reference — mcp
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -24,7 +26,7 @@
 
 ## `/api/mcp`
 
-Source: [`ui/src/routes/api/mcp.ts`](../../ui/src/routes/api/mcp.ts)
+Source: [`api/src/routes/mcp.rs`](../../api/src/routes/mcp.rs)
 
 > MCP servers per agent: the agent's own config version PLUS the org
 > registry's assignments (rendered in at deploy — marked 'managed' here so
@@ -53,7 +55,7 @@ Source: [`ui/src/routes/api/mcp.gw.$server.ts`](../../ui/src/routes/api/mcp.gw.$
 
 ## `/api/mcp/icon`
 
-Source: [`ui/src/routes/api/mcp.icon.ts`](../../ui/src/routes/api/mcp.icon.ts)
+Source: [`api/src/routes/mcp_icon.rs`](../../api/src/routes/mcp_icon.rs)
 
 > FALLBACK marketplace icons: the publisher's favicon, proxied + cached
 > server-side (warmed in bulk when library pages are served). Registry-
@@ -65,7 +67,7 @@ Source: [`ui/src/routes/api/mcp.icon.ts`](../../ui/src/routes/api/mcp.icon.ts)
 
 ## `/api/mcp/library`
 
-Source: [`ui/src/routes/api/mcp.library.ts`](../../ui/src/routes/api/mcp.library.ts)
+Source: [`api/src/routes/mcp_library.rs`](../../api/src/routes/mcp_library.rs)
 
 > GET ?q= → the MCP server library (the official registry, live, filtered to
 > remote-capable servers). Backs the Add-server picker.
@@ -76,7 +78,7 @@ Source: [`ui/src/routes/api/mcp.library.ts`](../../ui/src/routes/api/mcp.library
 
 ## `/api/mcp/oauth/callback`
 
-Source: [`ui/src/routes/api/mcp.oauth.callback.ts`](../../ui/src/routes/api/mcp.oauth.callback.ts)
+Source: [`api/src/routes/mcp_oauth_callback.rs`](../../api/src/routes/mcp_oauth_callback.rs)
 
 > The OAuth redirect target. No session requirement — identity was bound to
 > the state row when the flow started; the state is single-use and expiring.
@@ -87,7 +89,7 @@ Source: [`ui/src/routes/api/mcp.oauth.callback.ts`](../../ui/src/routes/api/mcp.
 
 ## `/api/mcp/oauth/start`
 
-Source: [`ui/src/routes/api/mcp.oauth.start.ts`](../../ui/src/routes/api/mcp.oauth.start.ts)
+Source: [`api/src/routes/mcp_oauth_start.rs`](../../api/src/routes/mcp_oauth_start.rs)
 
 > GET ?server=<id>&scope=org|me → 302 into the provider's authorization page.
 > scope=org (one shared connection) needs agents.manage; scope=me connects
@@ -99,7 +101,7 @@ Source: [`ui/src/routes/api/mcp.oauth.start.ts`](../../ui/src/routes/api/mcp.oau
 
 ## `/api/mcp/servers`
 
-Source: [`ui/src/routes/api/mcp.servers.ts`](../../ui/src/routes/api/mcp.servers.ts)
+Source: [`api/src/routes/mcp_servers.rs`](../../api/src/routes/mcp_servers.rs)
 
 > The org MCP registry. GET → servers + their assignments + user access
 > (admin/agents.manage view). POST → register a server. Every mutation
@@ -126,7 +128,7 @@ Source: [`ui/src/routes/api/mcp.servers.ts`](../../ui/src/routes/api/mcp.servers
 
 ## `/api/mcp/servers/{id}`
 
-Source: [`ui/src/routes/api/mcp.servers.$id.ts`](../../ui/src/routes/api/mcp.servers.$id.ts)
+Source: [`api/src/routes/mcp_servers_id.rs`](../../api/src/routes/mcp_servers_id.rs)
 
 > One registry server: PUT patches config / assignment / user access / tool
 > refresh in one idempotent surface; DELETE unregisters (assignments, user
@@ -157,7 +159,7 @@ Source: [`ui/src/routes/api/mcp.servers.$id.ts`](../../ui/src/routes/api/mcp.ser
 
 ## `/api/mcp/test`
 
-Source: [`ui/src/routes/api/mcp.test.ts`](../../ui/src/routes/api/mcp.test.ts)
+Source: [`api/src/routes/mcp_test.rs`](../../api/src/routes/mcp_test.rs)
 
 > POST → probe an MCP server's reachability + auth state (admin only; it makes
 > an outbound request to an admin-supplied URL).

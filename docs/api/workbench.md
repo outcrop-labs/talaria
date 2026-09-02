@@ -1,7 +1,9 @@
 # API reference — workbench
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -28,7 +30,7 @@
 
 ## `/api/workbench`
 
-Source: [`ui/src/routes/api/workbench.ts`](../../ui/src/routes/api/workbench.ts)
+Source: [`api/src/routes/workbench.rs`](../../api/src/routes/workbench.rs)
 
 > Workbench profiles — the role-agnostic sandbox registry ('dev' seeded;
 > designer/data/etc ride the same table). GET → any member (the Studio and
@@ -56,7 +58,7 @@ Source: [`ui/src/routes/api/workbench.ts`](../../ui/src/routes/api/workbench.ts)
 
 ## `/api/workbench/flow`
 
-Source: [`ui/src/routes/api/workbench.flow.ts`](../../ui/src/routes/api/workbench.flow.ts)
+Source: [`api/src/routes/workbench_flow.rs`](../../api/src/routes/workbench_flow.rs)
 
 > Per-repo git flow (PR base + optional testing branch). GET → configured
 > flows + the reachable pool; PUT → set one repo's flow. agents.manage.
@@ -76,7 +78,7 @@ Source: [`ui/src/routes/api/workbench.flow.ts`](../../ui/src/routes/api/workbenc
 
 ## `/api/workbench/github`
 
-Source: [`ui/src/routes/api/workbench.github.ts`](../../ui/src/routes/api/workbench.github.ts)
+Source: [`api/src/routes/workbench_github.rs`](../../api/src/routes/workbench_github.rs)
 
 > The Workbench's GitHub connection. Deliberately requireAdmin (not
 > agents.manage): this holds ORG CREDENTIALS (PAT / App private key) — a
@@ -101,7 +103,7 @@ Source: [`ui/src/routes/api/workbench.github.ts`](../../ui/src/routes/api/workbe
 
 ## `/api/workbench/harnesses`
 
-Source: [`ui/src/routes/api/workbench.harnesses.ts`](../../ui/src/routes/api/workbench.harnesses.ts)
+Source: [`api/src/routes/workbench_harnesses.rs`](../../api/src/routes/workbench_harnesses.rs)
 
 > The harness registry. GET → merged definitions with sources (any member —
 > grounds the per-agent dropdowns). PUT → register/replace a CUSTOM
@@ -133,7 +135,7 @@ Source: [`ui/src/routes/api/workbench.harnesses.ts`](../../ui/src/routes/api/wor
 
 ## `/api/workbench/jobs`
 
-Source: [`ui/src/routes/api/workbench.jobs.ts`](../../ui/src/routes/api/workbench.jobs.ts)
+Source: [`api/src/routes/workbench_jobs.rs`](../../api/src/routes/workbench_jobs.rs)
 
 > Workbench jobs from the human side. GET ?taskId= → the ticket's jobs (board
 > members — this is how the plan-approval gate and PR links surface on the
@@ -155,7 +157,7 @@ Source: [`ui/src/routes/api/workbench.jobs.ts`](../../ui/src/routes/api/workbenc
 
 ## `/api/workbench/repo-requests`
 
-Source: [`ui/src/routes/api/workbench.repo-requests.ts`](../../ui/src/routes/api/workbench.repo-requests.ts)
+Source: [`api/src/routes/workbench_repo_requests.rs`](../../api/src/routes/workbench_repo_requests.rs)
 
 > Agent repo-creation requests. GET → pending queue; PUT → approve (creates
 > the repo via the App, auto-grants it to the requester) or reject. Admin —
@@ -175,7 +177,7 @@ Source: [`ui/src/routes/api/workbench.repo-requests.ts`](../../ui/src/routes/api
 
 ## `/api/workbench/repos/{agentId}`
 
-Source: [`ui/src/routes/api/workbench.repos.$agentId.ts`](../../ui/src/routes/api/workbench.repos.$agentId.ts)
+Source: [`api/src/routes/workbench_repos_agent_id.rs`](../../api/src/routes/workbench_repos_agent_id.rs)
 
 > Per-agent workbench repo grants — explicit, like MCP assignment. GET →
 > the connection's reachable pool + this agent's grants; PUT → replace the

@@ -1,7 +1,9 @@
 # API reference — research
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -21,7 +23,7 @@
 
 ## `/api/research`
 
-Source: [`ui/src/routes/api/research.ts`](../../ui/src/routes/api/research.ts)
+Source: [`api/src/routes/research.rs`](../../api/src/routes/research.rs)
 
 > GET → recent research runs (org-visible: research is shared knowledge) +
 > the mode catalog. POST { question, mode, agentModel? } → start a run.
@@ -43,7 +45,7 @@ Source: [`ui/src/routes/api/research.ts`](../../ui/src/routes/api/research.ts)
 
 ## `/api/research/{id}`
 
-Source: [`ui/src/routes/api/research.$id.ts`](../../ui/src/routes/api/research.$id.ts)
+Source: [`api/src/routes/research_id.rs`](../../api/src/routes/research_id.rs)
 
 > GET → one run + its citation registry (owner / shared member / org runs).
 > DELETE → owner/admin.
@@ -55,7 +57,7 @@ Source: [`ui/src/routes/api/research.$id.ts`](../../ui/src/routes/api/research.$
 
 ## `/api/research/{id}/conversation`
 
-Source: [`ui/src/routes/api/research.$id.conversation.ts`](../../ui/src/routes/api/research.$id.conversation.ts)
+Source: [`api/src/routes/research_id_conversation.rs`](../../api/src/routes/research_id_conversation.rs)
 
 > OPEN THE CONVERSATION FOR A RUN, creating it the first time.
 >
@@ -69,7 +71,7 @@ Source: [`ui/src/routes/api/research.$id.conversation.ts`](../../ui/src/routes/a
 
 ## `/api/research/{id}/decide`
 
-Source: [`ui/src/routes/api/research.$id.decide.ts`](../../ui/src/routes/api/research.$id.decide.ts)
+Source: [`api/src/routes/research_id_decide.rs`](../../api/src/routes/research_id_decide.rs)
 
 > THE EXIT FROM 'awaiting', on the run's own surface. A parked run is an
 > approval (runs/decide.ts files it with the approvals machinery), and the
@@ -90,7 +92,7 @@ Source: [`ui/src/routes/api/research.$id.decide.ts`](../../ui/src/routes/api/res
 
 ## `/api/research/{id}/members`
 
-Source: [`ui/src/routes/api/research.$id.members.ts`](../../ui/src/routes/api/research.$id.members.ts)
+Source: [`api/src/routes/research_id_members.rs`](../../api/src/routes/research_id_members.rs)
 
 > Multiplayer research, mirroring plan membership. GET → members (any member).
 > POST { email } → share (owner only; grants the report, notifies). DELETE

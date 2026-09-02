@@ -1,7 +1,9 @@
 # API reference — brief
 
-> **Generated** by `bun run docs:api` from `ui/src/routes/api/**` — do not edit by hand.
-> Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
+> **Frozen at the cutover (2026-09-01)** — generated from the TS route tree the Rust port
+> replaced. Source links point at the Rust modules (`api/src/routes/**`; each module’s
+> header names the TS file it ported) or the permanent TS residents still serving.
+> Regeneration returns with the Rust extractor (#293); until then, maintained by hand.
 > The **Returns** column is the first success-shaped `json({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
@@ -18,7 +20,7 @@
 
 ## `/api/brief`
 
-Source: [`ui/src/routes/api/brief.ts`](../../ui/src/routes/api/brief.ts)
+Source: [`api/src/routes/brief.rs`](../../api/src/routes/brief.rs)
 
 > The caller's daily brief — the assistant-assembled digest of what needs
 > them. GET sweeps-if-due, then returns the current brief.
@@ -29,7 +31,7 @@ Source: [`ui/src/routes/api/brief.ts`](../../ui/src/routes/api/brief.ts)
 
 ## `/api/brief/delegate`
 
-Source: [`ui/src/routes/api/brief.delegate.ts`](../../ui/src/routes/api/brief.delegate.ts)
+Source: [`api/src/routes/brief_delegate.rs`](../../api/src/routes/brief_delegate.rs)
 
 > Grant or revoke the assistant's reply-without-asking privilege, org-wide
 > (null) or for one channel. Owner-only by construction: not a Perm, and no
@@ -49,7 +51,7 @@ Source: [`ui/src/routes/api/brief.delegate.ts`](../../ui/src/routes/api/brief.de
 
 ## `/api/brief/item`
 
-Source: [`ui/src/routes/api/brief.item.ts`](../../ui/src/routes/api/brief.item.ts)
+Source: [`api/src/routes/brief_item.rs`](../../api/src/routes/brief_item.rs)
 
 > Check off, dismiss, or restore one brief item. The reader's timezone
 > rides along so the change lands on the brief they are looking at.
@@ -68,7 +70,7 @@ Source: [`ui/src/routes/api/brief.item.ts`](../../ui/src/routes/api/brief.item.t
 
 ## `/api/brief/read`
 
-Source: [`ui/src/routes/api/brief.read.ts`](../../ui/src/routes/api/brief.read.ts)
+Source: [`api/src/routes/brief_read.rs`](../../api/src/routes/brief_read.rs)
 
 > Move the brief reader's cursor — the only mutation this surface exposes.
 
@@ -85,7 +87,7 @@ Source: [`ui/src/routes/api/brief.read.ts`](../../ui/src/routes/api/brief.read.t
 
 ## `/api/brief/reply`
 
-Source: [`ui/src/routes/api/brief.reply.ts`](../../ui/src/routes/api/brief.reply.ts)
+Source: [`api/src/routes/brief_reply.rs`](../../api/src/routes/brief_reply.rs)
 
 > Approve or reject a reply the assistant drafted — send it, or discard it.
 
