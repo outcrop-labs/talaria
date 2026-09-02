@@ -26,7 +26,7 @@ use crate::gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
 use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
-use crate::model_efforts::efforts_for_model;
+use crate::model::efforts::efforts_for_model;
 use crate::notify::NotifyDeps;
 use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
 use crate::retrieval::index::IndexDoc;

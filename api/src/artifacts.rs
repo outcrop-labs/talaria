@@ -10,7 +10,7 @@
 use sqlx::PgPool;
 
 use crate::agent_auth::epoch_ms_to_iso;
-use crate::kb_perms::Guarded;
+use crate::kb::perms::Guarded;
 
 /// An artifact (artifacts.ts Artifact) — full row shape, so batch 5 only adds
 /// functions, never fields.

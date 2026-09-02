@@ -23,7 +23,7 @@
 
 ## `/api/inbox/focus`
 
-Source: [`api/src/routes/inbox_focus.rs`](../../api/src/routes/inbox_focus.rs)
+Source: [`api/src/routes/inbox/inbox_focus.rs`](../../api/src/routes/inbox/inbox_focus.rs)
 
 > The focus inbox queue — what the assistant has teed up for the caller.
 
@@ -33,7 +33,7 @@ Source: [`api/src/routes/inbox_focus.rs`](../../api/src/routes/inbox_focus.rs)
 
 ## `/api/inbox/focus/actions`
 
-Source: [`api/src/routes/inbox_focus_actions.rs`](../../api/src/routes/inbox_focus_actions.rs)
+Source: [`api/src/routes/inbox/inbox_focus_actions.rs`](../../api/src/routes/inbox/inbox_focus_actions.rs)
 
 > Execute a focus-inbox action: fire an action, confirm or cancel a
 > pending decision, undo the last one.
@@ -57,7 +57,7 @@ Source: [`api/src/routes/inbox_focus_actions.rs`](../../api/src/routes/inbox_foc
 
 ## `/api/inbox/focus/command`
 
-Source: [`api/src/routes/inbox_focus_command.rs`](../../api/src/routes/inbox_focus_command.rs)
+Source: [`api/src/routes/inbox/inbox_focus_command.rs`](../../api/src/routes/inbox/inbox_focus_command.rs)
 
 > Run one instruction from the focus inbox panel through the assistant
 > (normal / fast / plan mode, optional model overrides).
@@ -83,7 +83,7 @@ Source: [`api/src/routes/inbox_focus_command.rs`](../../api/src/routes/inbox_foc
 
 ## `/api/inbox/focus/conversations`
 
-Source: [`api/src/routes/inbox_focus_conversations.rs`](../../api/src/routes/inbox_focus_conversations.rs)
+Source: [`api/src/routes/inbox/inbox_focus_conversations.rs`](../../api/src/routes/inbox/inbox_focus_conversations.rs)
 
 > GET → the panel's chat picker. POST → start a fresh conversation instance.
 > Segmentation is the context strategy: a new instance is how old context is
@@ -96,7 +96,7 @@ Source: [`api/src/routes/inbox_focus_conversations.rs`](../../api/src/routes/inb
 
 ## `/api/inbox/focus/conversations/{id}`
 
-Source: [`api/src/routes/inbox_focus_conversations_id.rs`](../../api/src/routes/inbox_focus_conversations_id.rs)
+Source: [`api/src/routes/inbox/inbox_focus_conversations_id.rs`](../../api/src/routes/inbox/inbox_focus_conversations_id.rs)
 
 > One conversation instance, by its path id. GET → its timeline page (cursor
 > paginates); DELETE → archive it. Both are scoped inside the module to the
@@ -111,7 +111,7 @@ Source: [`api/src/routes/inbox_focus_conversations_id.rs`](../../api/src/routes/
 
 ## `/api/inbox/focus/state`
 
-Source: [`api/src/routes/inbox_focus_state.rs`](../../api/src/routes/inbox_focus_state.rs)
+Source: [`api/src/routes/inbox/inbox_focus_state.rs`](../../api/src/routes/inbox/inbox_focus_state.rs)
 
 > Mark a focus item viewed, or snooze it until a time.
 
@@ -125,7 +125,7 @@ Body schema `z.object({ sourceType: z.enum(FOCUS_SOURCE_TYPES), sourceId: z.stri
 
 ## `/api/inbox/focus/summary`
 
-Source: [`api/src/routes/inbox_focus_summary.rs`](../../api/src/routes/inbox_focus_summary.rs)
+Source: [`api/src/routes/inbox/inbox_focus_summary.rs`](../../api/src/routes/inbox/inbox_focus_summary.rs)
 
 > The one-screen summary of the caller's focus state — what's queued,
 > what's in flight, what needs a decision.

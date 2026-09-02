@@ -7,7 +7,7 @@
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::mcp_service::mcp_fleet_url;
+use crate::mcp::service::mcp_fleet_url;
 
 /// One server entry as the roster answers it.
 #[derive(Debug, Clone)]

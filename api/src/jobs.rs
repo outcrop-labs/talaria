@@ -38,8 +38,7 @@ use std::time::Duration;
 use crate::comms_decay::real_decay_deps;
 use crate::daily_brief::real_brief_deps;
 use crate::digest::real_digest_deps;
-use crate::mcp_library;
-use crate::model_info::BlurbDeps;
+use crate::model::info::BlurbDeps;
 use crate::notify::real_drain_deps;
 use crate::outreach::OutreachDeps;
 use crate::price_oracle::PriceRefreshDeps;
@@ -89,13 +88,13 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         now: run.now.clone(),
     }));
     crate::daily_brief::register_daily_brief_job(real_brief_deps(state).await);
-    crate::model_info::register_blurb_rewrite_job(Arc::new(BlurbDeps {
+    crate::model::info::register_blurb_rewrite_job(Arc::new(BlurbDeps {
         state: state.clone(),
     }));
     // The TS-optional pair. mcp-library-refresh is per-instance cache warming
     // and arms on every Rust instance; update-check is the hold named in the
     // module header and deliberately registers nothing.
-    mcp_library::register_mcp_library_refresh_job(mcp_library::library());
+    crate::mcp::library::register_mcp_library_refresh_job(crate::mcp::library::library());
 }
 
 /// The census kinds this build cannot yet define. Empty is the flip's

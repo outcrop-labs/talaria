@@ -69,7 +69,7 @@ pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
     .unwrap_or_default();
     for (id, app_slug) in have {
         if !want.iter().any(|(slug, _, _)| *slug == app_slug) {
-            crate::mcp_apply::roll_agents_for_server(pg, sb, &id).await;
+            crate::mcp::apply::roll_agents_for_server(pg, sb, &id).await;
             let _ = sqlx::query("delete from mcp_servers where id::text = $1")
                 .bind(&id)
                 .execute(pg)

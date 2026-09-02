@@ -10,7 +10,6 @@
 use sqlx::PgPool;
 use std::path::Path;
 
-use crate::fleet_layout;
 use crate::secretbox::SecretBox;
 
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.
@@ -125,7 +124,7 @@ pub async fn materialize_agent_secrets(
     .fetch_all(pg)
     .await
     .map_err(|e| format!("agent secrets read failed: {e}"))?;
-    let path = fleet_layout::fleet_dir()
+    let path = crate::fleet::layout::fleet_dir()
         .join("agents")
         .join(slug)
         .join("secrets.env");

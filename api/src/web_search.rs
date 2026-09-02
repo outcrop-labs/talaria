@@ -211,7 +211,7 @@ pub async fn search_the_web(
         .secretbox()
         .await
         .map_err(|e| format!("secretbox unavailable: {e}"))?;
-    let out = crate::mcp_registry::call_mcp_tool(pg, &sb, &supplier.server, &supplier.tool, &args)
+    let out = crate::mcp::registry::call_mcp_tool(pg, &sb, &supplier.server, &supplier.tool, &args)
         .await?;
     let payload = out
         .structured

@@ -7,7 +7,7 @@
 
 use sqlx::PgPool;
 
-use crate::fleet_docker::managed_container;
+use crate::fleet::docker::managed_container;
 
 fn mime_for(ext: &str) -> Option<&'static str> {
     match ext {

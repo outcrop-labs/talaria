@@ -34,7 +34,7 @@
 
 ## `/api/agent-media/{model}`
 
-Source: [`api/src/routes/agent_media_model.rs`](../../api/src/routes/agent_media_model.rs)
+Source: [`api/src/routes/files/agent_media_model.rs`](../../api/src/routes/files/agent_media_model.rs)
 
 > GET ?path=/opt/data/ → stream an image out of the agent's container, so
 > media agents produce ("MEDIA:<path>" in replies) renders inline in chat.
@@ -46,7 +46,7 @@ Source: [`api/src/routes/agent_media_model.rs`](../../api/src/routes/agent_media
 
 ## `/api/agent-media/{model}/save`
 
-Source: [`api/src/routes/agent_media_model_save.rs`](../../api/src/routes/agent_media_model_save.rs)
+Source: [`api/src/routes/files/agent_media_model_save.rs`](../../api/src/routes/files/agent_media_model_save.rs)
 
 > POST { path, title?, folderId? | folder? } → copy an image out of the
 > agent's container into a durable FILE artifact (uploads-backed), optionally
@@ -69,7 +69,7 @@ Source: [`api/src/routes/agent_media_model_save.rs`](../../api/src/routes/agent_
 
 ## `/api/artifact-folders`
 
-Source: [`api/src/routes/artifact_folders.rs`](../../api/src/routes/artifact_folders.rs)
+Source: [`api/src/routes/files/artifact_folders.rs`](../../api/src/routes/files/artifact_folders.rs)
 
 > Artifact folders. GET → the ones you can read. POST → create one you own.
 
@@ -88,7 +88,7 @@ Source: [`api/src/routes/artifact_folders.rs`](../../api/src/routes/artifact_fol
 
 ## `/api/artifact-folders/{id}`
 
-Source: [`api/src/routes/artifact_folders_id.rs`](../../api/src/routes/artifact_folders_id.rs)
+Source: [`api/src/routes/files/artifact_folders_id.rs`](../../api/src/routes/files/artifact_folders_id.rs)
 
 > One artifact folder. GET → the folder + its grants (what the Share dialog
 > reads). PUT → rename / icon / reparent / re-share. DELETE → remove (its
@@ -113,7 +113,7 @@ Source: [`api/src/routes/artifact_folders_id.rs`](../../api/src/routes/artifact_
 
 ## `/api/artifacts`
 
-Source: [`api/src/routes/artifacts.rs`](../../api/src/routes/artifacts.rs)
+Source: [`api/src/routes/files/artifacts.rs`](../../api/src/routes/files/artifacts.rs)
 
 > Artifacts the caller can read. POST creates one (owned by the caller, or —
 > for an agent over MCP — org-visible and editable by that agent).
@@ -135,7 +135,7 @@ Source: [`api/src/routes/artifacts.rs`](../../api/src/routes/artifacts.rs)
 
 ## `/api/artifacts/{id}`
 
-Source: [`api/src/routes/artifacts_id.rs`](../../api/src/routes/artifacts_id.rs)
+Source: [`api/src/routes/files/artifacts_id.rs`](../../api/src/routes/files/artifacts_id.rs)
 
 > One artifact. Read/edit gated by its audience; sharing owner-only; agents
 > (by key) only edit content when granted the Editor role.
@@ -164,7 +164,7 @@ Source: [`api/src/routes/artifacts_id.rs`](../../api/src/routes/artifacts_id.rs)
 
 ## `/api/artifacts/{id}/export/google`
 
-Source: [`api/src/routes/artifacts_id_export_google.rs`](../../api/src/routes/artifacts_id_export_google.rs)
+Source: [`api/src/routes/files/artifacts_id_export_google.rs`](../../api/src/routes/files/artifacts_id_export_google.rs)
 
 > POST /api/artifacts/$id/export/google — mirror an artifact into Google Drive.
 >
@@ -178,7 +178,7 @@ Source: [`api/src/routes/artifacts_id_export_google.rs`](../../api/src/routes/ar
 
 ## `/api/artifacts/{id}/links`
 
-Source: [`api/src/routes/artifacts_id_links.rs`](../../api/src/routes/artifacts_id_links.rs)
+Source: [`api/src/routes/files/artifacts_id_links.rs`](../../api/src/routes/files/artifacts_id_links.rs)
 
 > Attach / detach an artifact to/from a target (KB doc, ticket, channel, ).
 > The caller must be able to read the artifact.
@@ -204,7 +204,7 @@ Source: [`api/src/routes/artifacts_id_links.rs`](../../api/src/routes/artifacts_
 
 ## `/api/artifacts/for`
 
-Source: [`api/src/routes/artifacts_for.rs`](../../api/src/routes/artifacts_for.rs)
+Source: [`api/src/routes/files/artifacts_for.rs`](../../api/src/routes/files/artifacts_for.rs)
 
 > Artifacts attached to a given target (e.g. a KB doc), filtered to the ones
 > the caller can read.  GET /api/artifacts/for?targetType=kb-doc&targetId=<id>
@@ -215,7 +215,7 @@ Source: [`api/src/routes/artifacts_for.rs`](../../api/src/routes/artifacts_for.r
 
 ## `/api/artifacts/public/{slug}`
 
-Source: [`api/src/routes/artifacts_public_slug.rs`](../../api/src/routes/artifacts_public_slug.rs)
+Source: [`api/src/routes/files/artifacts_public_slug.rs`](../../api/src/routes/files/artifacts_public_slug.rs)
 
 > Public artifact read — no auth. Only artifacts set to 'public' resolve.
 
@@ -225,7 +225,7 @@ Source: [`api/src/routes/artifacts_public_slug.rs`](../../api/src/routes/artifac
 
 ## `/api/artifacts/public/{slug}/download`
 
-Source: [`api/src/routes/artifacts_public_slug_download.rs`](../../api/src/routes/artifacts_public_slug_download.rs)
+Source: [`api/src/routes/files/artifacts_public_slug_download.rs`](../../api/src/routes/files/artifacts_public_slug_download.rs)
 
 > Public download for a public *file* artifact — no auth. Serves the stored
 > bytes; only resolves when the artifact is public and points at an upload.
@@ -238,7 +238,7 @@ Source: [`api/src/routes/artifacts_public_slug_download.rs`](../../api/src/route
 
 ## `/api/uploads`
 
-Source: [`api/src/routes/uploads.rs`](../../api/src/routes/uploads.rs)
+Source: [`api/src/routes/files/uploads.rs`](../../api/src/routes/files/uploads.rs)
 
 > POST (multipart/form-data, field "file") → store an attachment, return its
 > metadata. Any signed-in user may upload; the file is served back from
@@ -251,7 +251,7 @@ Source: [`api/src/routes/uploads.rs`](../../api/src/routes/uploads.rs)
 
 ## `/api/uploads/{id}`
 
-Source: [`api/src/routes/uploads_id.rs`](../../api/src/routes/uploads_id.rs)
+Source: [`api/src/routes/files/uploads_id.rs`](../../api/src/routes/files/uploads_id.rs)
 
 > GET → serve an attachment's bytes: signed-in users, or fleet agents (agent
 > key) pulling ticket/chat attachments they were handed. The inline/download

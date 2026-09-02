@@ -1,0 +1,22 @@
+// The Google integrations: calendar, drive, gmail, org connect/provision.
+pub mod integrations_google;
+pub mod integrations_google_agent_calendar;
+pub mod integrations_google_agent_drive;
+pub mod integrations_google_agent_gmail;
+pub mod integrations_google_agent_gmail_id;
+pub mod integrations_google_agent_gmail_labels;
+pub mod integrations_google_agent_gmail_organize;
+pub mod integrations_google_calendar_events;
+pub mod integrations_google_callback;
+pub mod integrations_google_connect;
+pub mod integrations_google_drive_files;
+pub mod integrations_google_drive_import;
+pub mod integrations_google_gmail_messages;
+pub mod integrations_google_gmail_send;
+pub mod integrations_google_org;
+pub mod integrations_google_org_callback;
+pub mod integrations_google_org_connect;
+pub mod integrations_google_org_health;
+pub mod integrations_google_org_provision;
+pub mod integrations_google_pending;
+pub mod integrations_google_pending_id;

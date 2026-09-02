@@ -24,7 +24,7 @@
 
 ## `/api/plans/{id}/doc`
 
-Source: [`api/src/routes/plans_id_doc.rs`](../../api/src/routes/plans_id_doc.rs)
+Source: [`api/src/routes/plans/plans_id_doc.rs`](../../api/src/routes/plans/plans_id_doc.rs)
 
 > The plan's living document (a linked doc artifact). GET → find-or-create it,
 > seeded from the agent's plan template when one is bound. POST → the plan's
@@ -45,7 +45,7 @@ Source: [`api/src/routes/plans_id_doc.rs`](../../api/src/routes/plans_id_doc.rs)
 
 ## `/api/plans/{id}/draft`
 
-Source: [`api/src/routes/plans_id_draft.rs`](../../api/src/routes/plans_id_draft.rs)
+Source: [`api/src/routes/plans/plans_id_draft.rs`](../../api/src/routes/plans/plans_id_draft.rs)
 
 > The plan's ticket drafts, as a DURABLE JOB: POST enqueues a 'plan-draft' run
 > and answers immediately with the queued draft; the agent reads the
@@ -76,7 +76,7 @@ Source: [`api/src/routes/plans_id_draft.rs`](../../api/src/routes/plans_id_draft
 
 ## `/api/plans/{id}/members`
 
-Source: [`api/src/routes/plans_id_members.rs`](../../api/src/routes/plans_id_members.rs)
+Source: [`api/src/routes/plans/plans_id_members.rs`](../../api/src/routes/plans/plans_id_members.rs)
 
 > Multiplayer plan membership + presence.
 > GET → { members, active } (any member; active = user ids seen in the last

@@ -53,7 +53,7 @@ use crate::daily_brief::focus::{
     notification_items, sort_items, task_items,
 };
 use crate::daily_brief::types::{BriefEntry, BriefLine, NewEntry, fold_entries};
-use crate::google_calendar::list_upcoming_events;
+use crate::google::calendar::list_upcoming_events;
 use crate::harness::defs::briefer::{daily_brief_lede_harness, daily_brief_note_harness};
 use crate::harness::run::{RunContext, run_harness};
 use crate::notify::NotifyDeps;

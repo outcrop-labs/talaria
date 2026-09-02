@@ -40,7 +40,7 @@
 
 ## `/api/channels`
 
-Source: [`api/src/routes/channels.rs`](../../api/src/routes/channels.rs)
+Source: [`api/src/routes/comms/channels.rs`](../../api/src/routes/comms/channels.rs)
 
 > GET /api/channels → the user's channels/relays/DMs. POST { name, topic?,
 > kind? } → create a channel (default) or a Relay (kind 'group').
@@ -60,7 +60,7 @@ Source: [`api/src/routes/channels.rs`](../../api/src/routes/channels.rs)
 
 ## `/api/channels/{id}`
 
-Source: [`api/src/routes/channels_id.rs`](../../api/src/routes/channels_id.rs)
+Source: [`api/src/routes/comms/channels_id.rs`](../../api/src/routes/comms/channels_id.rs)
 
 > GET → channel detail (members + agents). PUT → rename / set topic (owner).
 > DELETE → archive (?hard=1 deletes; owner only).
@@ -80,7 +80,7 @@ Source: [`api/src/routes/channels_id.rs`](../../api/src/routes/channels_id.rs)
 
 ## `/api/channels/{id}/agents`
 
-Source: [`api/src/routes/channels_id_agents.rs`](../../api/src/routes/channels_id_agents.rs)
+Source: [`api/src/routes/comms/channels_id_agents.rs`](../../api/src/routes/comms/channels_id_agents.rs)
 
 > POST { model } → add a fleet agent to the channel (adder needs access to that
 > agent). DELETE { model } → remove it. Any member.
@@ -104,7 +104,7 @@ Source: [`api/src/routes/channels_id_agents.rs`](../../api/src/routes/channels_i
 
 ## `/api/channels/{id}/conclude`
 
-Source: [`api/src/routes/channels_id_conclude.rs`](../../api/src/routes/channels_id_conclude.rs)
+Source: [`api/src/routes/comms/channels_id_conclude.rs`](../../api/src/routes/comms/channels_id_conclude.rs)
 
 > POST → conclude a Relay: summarize what was decided (posted as the final
 > message + indexed for retrieval), then archive it. Members only; relays only.
@@ -115,7 +115,7 @@ Source: [`api/src/routes/channels_id_conclude.rs`](../../api/src/routes/channels
 
 ## `/api/channels/{id}/events`
 
-Source: [`api/src/routes/channels_id_events.rs`](../../api/src/routes/channels_id_events.rs)
+Source: [`api/src/routes/comms/channels_id_events.rs`](../../api/src/routes/comms/channels_id_events.rs)
 
 > GET /api/channels/:id/events → SSE stream of the channel's live events
 > (messages, membership). Auth-gated to members. Powers multiplayer chat.
@@ -126,7 +126,7 @@ Source: [`api/src/routes/channels_id_events.rs`](../../api/src/routes/channels_i
 
 ## `/api/channels/{id}/members`
 
-Source: [`api/src/routes/channels_id_members.rs`](../../api/src/routes/channels_id_members.rs)
+Source: [`api/src/routes/comms/channels_id_members.rs`](../../api/src/routes/comms/channels_id_members.rs)
 
 > POST { email } → add a member (any member can invite).
 > DELETE { userId } → remove a member (owner, or yourself to leave).
@@ -150,7 +150,7 @@ Source: [`api/src/routes/channels_id_members.rs`](../../api/src/routes/channels_
 
 ## `/api/channels/{id}/messages`
 
-Source: [`api/src/routes/channels_id_messages.rs`](../../api/src/routes/channels_id_messages.rs)
+Source: [`api/src/routes/comms/channels_id_messages.rs`](../../api/src/routes/comms/channels_id_messages.rs)
 
 > GET ?since=<seq> → the channel's messages (members). POST { content } → post
 > a message; @mentioned channel agents reply, streamed into the channel.
@@ -171,7 +171,7 @@ Source: [`api/src/routes/channels_id_messages.rs`](../../api/src/routes/channels
 
 ## `/api/channels/{id}/messages/{msgId}`
 
-Source: [`api/src/routes/channels_id_messages_msgid.rs`](../../api/src/routes/channels_id_messages_msgid.rs)
+Source: [`api/src/routes/comms/channels_id_messages_msgid.rs`](../../api/src/routes/comms/channels_id_messages_msgid.rs)
 
 > PATCH { content } → edit your own message (edited marker shows).
 > DELETE → remove it: the author, or the channel owner tidying up. A thread
@@ -190,7 +190,7 @@ Source: [`api/src/routes/channels_id_messages_msgid.rs`](../../api/src/routes/ch
 
 ## `/api/channels/{id}/messages/{msgId}/reactions`
 
-Source: [`api/src/routes/channels_id_messages_msgid_reactions.rs`](../../api/src/routes/channels_id_messages_msgid_reactions.rs)
+Source: [`api/src/routes/comms/channels_id_messages_msgid_reactions.rs`](../../api/src/routes/comms/channels_id_messages_msgid_reactions.rs)
 
 > POST { emoji } → toggle your reaction on a message. Agents react too, under
 > their own identity — one of our twists on the Slack shape.
@@ -207,7 +207,7 @@ Source: [`api/src/routes/channels_id_messages_msgid_reactions.rs`](../../api/src
 
 ## `/api/channels/{id}/plan`
 
-Source: [`api/src/routes/channels_id_plan.rs`](../../api/src/routes/channels_id_plan.rs)
+Source: [`api/src/routes/comms/channels_id_plan.rs`](../../api/src/routes/comms/channels_id_plan.rs)
 
 > Channel ticket drafts, as a DURABLE JOB (the plan surface's twin — one
 > domain module, two conversation kinds). POST enqueues a 'plan-draft' run on
@@ -239,7 +239,7 @@ Source: [`api/src/routes/channels_id_plan.rs`](../../api/src/routes/channels_id_
 
 ## `/api/channels/{id}/read`
 
-Source: [`api/src/routes/channels_id_read.rs`](../../api/src/routes/channels_id_read.rs)
+Source: [`api/src/routes/comms/channels_id_read.rs`](../../api/src/routes/comms/channels_id_read.rs)
 
 > POST { seq } → advance the caller's read cursor (drives unread badges).
 
@@ -255,7 +255,7 @@ Source: [`api/src/routes/channels_id_read.rs`](../../api/src/routes/channels_id_
 
 ## `/api/chat`
 
-Source: [`api/src/routes/chat.rs`](../../api/src/routes/chat.rs)
+Source: [`api/src/routes/comms/chat.rs`](../../api/src/routes/comms/chat.rs)
 
 > POST /api/chat { model, conversationId?, content } → durable streaming chat.
 > Persists the turn to Postgres (server owns history) and tees the gateway
@@ -283,7 +283,7 @@ Source: [`api/src/routes/chat.rs`](../../api/src/routes/chat.rs)
 
 ## `/api/conversations`
 
-Source: [`api/src/routes/conversations.rs`](../../api/src/routes/conversations.rs)
+Source: [`api/src/routes/comms/conversations.rs`](../../api/src/routes/comms/conversations.rs)
 
 > GET /api/conversations → the current user's conversations (newest first).
 > The client groups them by agent.
@@ -294,7 +294,7 @@ Source: [`api/src/routes/conversations.rs`](../../api/src/routes/conversations.r
 
 ## `/api/conversations/{id}`
 
-Source: [`api/src/routes/conversations_id.rs`](../../api/src/routes/conversations_id.rs)
+Source: [`api/src/routes/comms/conversations_id.rs`](../../api/src/routes/comms/conversations_id.rs)
 
 > GET /api/conversations/:id → a conversation + its messages (ownership-checked).
 > PATCH { title } → rename (owner, or a plan collaborator). A renamed title no
@@ -314,7 +314,7 @@ Source: [`api/src/routes/conversations_id.rs`](../../api/src/routes/conversation
 
 ## `/api/dms`
 
-Source: [`api/src/routes/dms.rs`](../../api/src/routes/dms.rs)
+Source: [`api/src/routes/comms/dms.rs`](../../api/src/routes/comms/dms.rs)
 
 > POST { userId } → find-or-create the DM with that person (rides the channel
 > machinery: same messages, SSE feed, and composer as everything else).

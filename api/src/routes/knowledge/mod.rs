@@ -1,0 +1,20 @@
+// KB spaces/docs/comments/search/public slugs and the RAG collections/search pair.
+pub mod kb_comments_id;
+pub mod kb_docs_id;
+pub mod kb_docs_id_backlinks;
+pub mod kb_docs_id_comments;
+pub mod kb_docs_id_live;
+pub mod kb_docs_id_move;
+pub mod kb_public;
+pub mod kb_public_space;
+pub mod kb_search;
+pub mod kb_spaces;
+pub mod kb_spaces_id;
+pub mod kb_spaces_id_docs;
+pub mod memory_id;
+pub mod rag_collections;
+pub mod rag_collections_id;
+pub mod rag_search;
+pub mod search;
+pub mod templates;
+pub mod templates_id;

@@ -23,7 +23,7 @@
 
 use crate::capability::{CapabilityFact, get_capabilities};
 use crate::gateway::settings::get_setting;
-use crate::model_roles::resolve_role_model;
+use crate::model::roles::resolve_role_model;
 use futures_util::future::join_all;
 use sqlx::PgPool;
 use std::collections::HashMap;

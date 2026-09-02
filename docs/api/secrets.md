@@ -24,7 +24,7 @@
 
 ## `/api/secrets`
 
-Source: [`api/src/routes/secrets.rs`](../../api/src/routes/secrets.rs)
+Source: [`api/src/routes/secrets/secrets.rs`](../../api/src/routes/secrets/secrets.rs)
 
 > The sealed-secrets vault. GET → the secrets the caller can see
 > (metadata only — values never leave the vault); POST → seal a new one.
@@ -64,7 +64,7 @@ Source: [`api/src/routes/secrets.rs`](../../api/src/routes/secrets.rs)
 
 ## `/api/secrets/folders`
 
-Source: [`api/src/routes/secrets_folders.rs`](../../api/src/routes/secrets_folders.rs)
+Source: [`api/src/routes/secrets/secrets_folders.rs`](../../api/src/routes/secrets/secrets_folders.rs)
 
 > Secret folders: list / create / rename / delete. Folder membership
 > gates what GET /api/secrets shows.
@@ -108,7 +108,7 @@ Source: [`api/src/routes/secrets_folders.rs`](../../api/src/routes/secrets_folde
 
 ## `/api/secrets/git-credential`
 
-Source: [`api/src/routes/secrets_git_credential.rs`](../../api/src/routes/secrets_git_credential.rs)
+Source: [`api/src/routes/secrets/secrets_git_credential.rs`](../../api/src/routes/secrets/secrets_git_credential.rs)
 
 > THE SANDBOX'S WAY IN — where a handle could not otherwise reach.
 >
@@ -130,7 +130,7 @@ Source: [`api/src/routes/secrets_git_credential.rs`](../../api/src/routes/secret
 
 ## `/api/secrets/relay`
 
-Source: [`api/src/routes/secrets_relay.rs`](../../api/src/routes/secrets_relay.rs)
+Source: [`api/src/routes/secrets/secrets_relay.rs`](../../api/src/routes/secrets/secrets_relay.rs)
 
 > HAND AN AGENT A CREDENTIAL, MID-CONVERSATION, WITHOUT PUTTING IT IN THE CHAT.
 >
@@ -154,7 +154,7 @@ Source: [`api/src/routes/secrets_relay.rs`](../../api/src/routes/secrets_relay.r
 
 ## `/api/secrets/reveal`
 
-Source: [`api/src/routes/secrets_reveal.rs`](../../api/src/routes/secrets_reveal.rs)
+Source: [`api/src/routes/secrets/secrets_reveal.rs`](../../api/src/routes/secrets/secrets_reveal.rs)
 
 > THE ONE ROUTE IN THIS FEATURE THAT RETURNS A CREDENTIAL.
 >
@@ -175,7 +175,7 @@ Source: [`api/src/routes/secrets_reveal.rs`](../../api/src/routes/secrets_reveal
 
 ## `/api/secrets/share`
 
-Source: [`api/src/routes/secrets_share.rs`](../../api/src/routes/secrets_share.rs)
+Source: [`api/src/routes/secrets/secrets_share.rs`](../../api/src/routes/secrets/secrets_share.rs)
 
 > Share a sealed secret with a person (share / unshare) or grant an
 > agent access to it (grant / revoke). Values stay sealed; shares gate

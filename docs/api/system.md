@@ -28,7 +28,7 @@ Source: [`ui/src/routes/api/healthz.ts`](../../ui/src/routes/api/healthz.ts)
 
 ## `/api/well-known/talaria-instance`
 
-Source: [`api/src/routes/well_known_talaria_instance.rs`](../../api/src/routes/well_known_talaria_instance.rs)
+Source: [`api/src/routes/system/well_known_talaria_instance.rs`](../../api/src/routes/system/well_known_talaria_instance.rs)
 
 > Instance identity beacon — the target of hosting-domain verification's
 > self-fetch. Public and harmless: a random UUID that proves which

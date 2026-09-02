@@ -73,7 +73,7 @@
 
 ## `/api/admin/apps`
 
-Source: [`api/src/routes/admin_apps.rs`](../../api/src/routes/admin_apps.rs)
+Source: [`api/src/routes/admin/admin_apps.rs`](../../api/src/routes/admin/admin_apps.rs)
 
 > App administration. GET → installed apps (+ ?catalog=1 for the marketplace
 > feed). Reads are open to anyone granted the /apps Manage view; mutations
@@ -116,7 +116,7 @@ Source: [`api/src/routes/admin_apps.rs`](../../api/src/routes/admin_apps.rs)
 
 ## `/api/admin/domains`
 
-Source: [`api/src/routes/admin_domains.rs`](../../api/src/routes/admin_domains.rs)
+Source: [`api/src/routes/admin/admin_domains.rs`](../../api/src/routes/admin/admin_domains.rs)
 
 > Sign-up domains. GET → the list. POST { domain } → add (returns the TXT
 > token to publish). POST { verifyId } → run the DNS check. DELETE { id } →
@@ -146,7 +146,7 @@ Body schema `IdBody` is not an object literal in the route file — see the rout
 
 ## `/api/admin/email`
 
-Source: [`api/src/routes/admin_email.rs`](../../api/src/routes/admin_email.rs)
+Source: [`api/src/routes/admin/admin_email.rs`](../../api/src/routes/admin/admin_email.rs)
 
 > Transactional email config. GET → config with secrets MASKED (set-flags
 > only). POST → patch config; { test: true } → send a test to the caller.
@@ -174,7 +174,7 @@ Source: [`api/src/routes/admin_email.rs`](../../api/src/routes/admin_email.rs)
 
 ## `/api/admin/encryption`
 
-Source: [`api/src/routes/admin_encryption.rs`](../../api/src/routes/admin_encryption.rs)
+Source: [`api/src/routes/admin/admin_encryption.rs`](../../api/src/routes/admin/admin_encryption.rs)
 
 > Encryption status + one-click key rotation. Rotating re-generates the data key
 > and re-encrypts every stored secret (provider keys, agent secrets, OAuth
@@ -191,7 +191,7 @@ Body schema `z.object({ newRootSecret: z.string().min(16, 'new root secret must 
 
 ## `/api/admin/google-client`
 
-Source: [`api/src/routes/admin_google_client.rs`](../../api/src/routes/admin_google_client.rs)
+Source: [`api/src/routes/admin/admin_google_client.rs`](../../api/src/routes/admin/admin_google_client.rs)
 
 > The Google OAuth client — the credential the whole Google integration (login
 > + workspace connect) runs on. Admins register it here instead of editing
@@ -215,7 +215,7 @@ Source: [`api/src/routes/admin_google_client.rs`](../../api/src/routes/admin_goo
 
 ## `/api/admin/google-client/login`
 
-Source: [`api/src/routes/admin_google_client.rs`](../../api/src/routes/admin_google_client.rs)
+Source: [`api/src/routes/admin/admin_google_client.rs`](../../api/src/routes/admin/admin_google_client.rs)
 
 > The Google LOGIN switch — the policy half of the client credential
 > (PUT /api/admin/google-client stores the credential; this decides whether the
@@ -235,7 +235,7 @@ Source: [`api/src/routes/admin_google_client.rs`](../../api/src/routes/admin_goo
 
 ## `/api/admin/guardrails`
 
-Source: [`api/src/routes/admin_guardrails.rs`](../../api/src/routes/admin_guardrails.rs)
+Source: [`api/src/routes/admin/admin_guardrails.rs`](../../api/src/routes/admin/admin_guardrails.rs)
 
 > Confab guardrail config + observability (admin). GET → config + stats + recent
 > findings. PUT → update config.
@@ -257,7 +257,7 @@ Source: [`api/src/routes/admin_guardrails.rs`](../../api/src/routes/admin_guardr
 
 ## `/api/admin/instance`
 
-Source: [`api/src/routes/admin_instance.rs`](../../api/src/routes/admin_instance.rs)
+Source: [`api/src/routes/admin/admin_instance.rs`](../../api/src/routes/admin/admin_instance.rs)
 
 > The instance's hosting domain. GET → current config. PUT { domain } → set
 > (unverified until the round trip passes); { domain: null } clears.
@@ -283,7 +283,7 @@ Source: [`api/src/routes/admin_instance.rs`](../../api/src/routes/admin_instance
 
 ## `/api/admin/invites`
 
-Source: [`api/src/routes/admin_invites.rs`](../../api/src/routes/admin_invites.rs)
+Source: [`api/src/routes/admin/admin_invites.rs`](../../api/src/routes/admin/admin_invites.rs)
 
 > Invites. GET → recent invites with state. POST { email } → create + send
 > (re-invites re-issue with a fresh token). DELETE { id } → revoke.
@@ -306,7 +306,7 @@ Body schema `IdBody` is not an object literal in the route file — see the rout
 
 ## `/api/admin/judge`
 
-Source: [`api/src/routes/admin_judge.rs`](../../api/src/routes/admin_judge.rs)
+Source: [`api/src/routes/admin/admin_judge.rs`](../../api/src/routes/admin/admin_judge.rs)
 
 > The automated QA judge config (admin). GET → current + available models.
 > PUT → enable/disable + pick the judge model.
@@ -326,7 +326,7 @@ Source: [`api/src/routes/admin_judge.rs`](../../api/src/routes/admin_judge.rs)
 
 ## `/api/admin/model-fitness`
 
-Source: [`api/src/routes/admin_model_fitness.rs`](../../api/src/routes/admin_model_fitness.rs)
+Source: [`api/src/routes/admin/admin_model_fitness.rs`](../../api/src/routes/admin/admin_model_fitness.rs)
 
 > GET  ?view=matrix (default) → slots + models + capability facts + cells + runs
 >      ?view=capabilities     → models + facts only (the model pickers)
@@ -377,7 +377,7 @@ Source: [`api/src/routes/admin_model_fitness.rs`](../../api/src/routes/admin_mod
 
 ## `/api/admin/model-roles`
 
-Source: [`api/src/routes/admin_model_roles.rs`](../../api/src/routes/admin_model_roles.rs)
+Source: [`api/src/routes/admin/admin_model_roles.rs`](../../api/src/routes/admin/admin_model_roles.rs)
 
 > Model Roles — which model handles each activity class. GET → the catalog of
 > roles + current assignments + assignable models + fitness issues. PUT
@@ -400,7 +400,7 @@ Source: [`api/src/routes/admin_model_roles.rs`](../../api/src/routes/admin_model
 
 ## `/api/admin/outreach`
 
-Source: [`api/src/routes/admin_outreach.rs`](../../api/src/routes/admin_outreach.rs)
+Source: [`api/src/routes/admin/admin_outreach.rs`](../../api/src/routes/admin/admin_outreach.rs)
 
 > GET → config + per-agent proactive flags + recent events. PUT → save both.
 > Admin-only; the sweep itself stays off unless `enabled`.
@@ -421,7 +421,7 @@ Source: [`api/src/routes/admin_outreach.rs`](../../api/src/routes/admin_outreach
 
 ## `/api/admin/password-accounts`
 
-Source: [`api/src/routes/admin_password_accounts.rs`](../../api/src/routes/admin_password_accounts.rs)
+Source: [`api/src/routes/admin/admin_password_accounts.rs`](../../api/src/routes/admin/admin_password_accounts.rs)
 
 > Admin console API for DB-backed password accounts (Admin → People).
 > GET → the account list. POST → create an account. PUT → set/reset a
@@ -458,7 +458,7 @@ Source: [`api/src/routes/admin_password_accounts.rs`](../../api/src/routes/admin
 
 ## `/api/admin/permissions`
 
-Source: [`api/src/routes/admin_permissions.rs`](../../api/src/routes/admin_permissions.rs)
+Source: [`api/src/routes/admin/admin_permissions.rs`](../../api/src/routes/admin/admin_permissions.rs)
 
 > Fine-grained permissions admin. GET → the catalog + org member defaults +
 > every user's overrides. PUT { userId, perm, allowed|null } → set/clear a
@@ -487,7 +487,7 @@ Source: [`api/src/routes/admin_permissions.rs`](../../api/src/routes/admin_permi
 
 ## `/api/admin/platform-agents`
 
-Source: [`api/src/routes/admin_platform_agents.rs`](../../api/src/routes/admin_platform_agents.rs)
+Source: [`api/src/routes/admin/admin_platform_agents.rs`](../../api/src/routes/admin/admin_platform_agents.rs)
 
 > Platform sub-agents — Talaria's own workers (Muse, Distiller, Concluder, )
 > and which model powers each. GET → registry + assignments + assignable
@@ -510,7 +510,7 @@ Source: [`api/src/routes/admin_platform_agents.rs`](../../api/src/routes/admin_p
 
 ## `/api/admin/rag`
 
-Source: [`api/src/routes/admin_rag.rs`](../../api/src/routes/admin_rag.rs)
+Source: [`api/src/routes/admin/admin_rag.rs`](../../api/src/routes/admin/admin_rag.rs)
 
 > Admin → Retrieval. GET → services health + backfill status + reranker
 > providers/config + KB-space brain bindings. PUT → reranker config and/or a
@@ -545,7 +545,7 @@ Source: [`api/src/routes/admin_rag.rs`](../../api/src/routes/admin_rag.rs)
 
 ## `/api/admin/search`
 
-Source: [`api/src/routes/admin_search.rs`](../../api/src/routes/admin_search.rs)
+Source: [`api/src/routes/admin/admin_search.rs`](../../api/src/routes/admin/admin_search.rs)
 
 > LIVE WEB SEARCH — where it points, and whether it is actually answering.
 >
@@ -566,7 +566,7 @@ Source: [`api/src/routes/admin_search.rs`](../../api/src/routes/admin_search.rs)
 
 ## `/api/admin/secrets`
 
-Source: [`api/src/routes/admin_secrets.rs`](../../api/src/routes/admin_secrets.rs)
+Source: [`api/src/routes/admin/admin_secrets.rs`](../../api/src/routes/admin/admin_secrets.rs)
 
 > The secrets inventory. GET is a VIEW over the stores that own each value —
 > presence, provenance and readability, never the value itself. DELETE clears
@@ -593,7 +593,7 @@ Source: [`api/src/routes/admin_secrets.rs`](../../api/src/routes/admin_secrets.r
 
 ## `/api/admin/settings`
 
-Source: [`api/src/routes/admin_settings.rs`](../../api/src/routes/admin_settings.rs)
+Source: [`api/src/routes/admin/admin_settings.rs`](../../api/src/routes/admin/admin_settings.rs)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -612,7 +612,7 @@ Source: [`api/src/routes/admin_settings.rs`](../../api/src/routes/admin_settings
 
 ## `/api/admin/storage`
 
-Source: [`api/src/routes/admin_storage.rs`](../../api/src/routes/admin_storage.rs)
+Source: [`api/src/routes/admin/admin_storage.rs`](../../api/src/routes/admin/admin_storage.rs)
 
 > Object storage (uploads blob store) config. GET → config (secrets masked) +
 > blob location stats + migration/sync status + the built-in bucket's endpoint.
@@ -668,7 +668,7 @@ Source: [`ui/src/routes/api/admin.update.ts`](../../ui/src/routes/api/admin.upda
 
 ## `/api/admin/users`
 
-Source: [`api/src/routes/admin_users.rs`](../../api/src/routes/admin_users.rs)
+Source: [`api/src/routes/admin/admin_users.rs`](../../api/src/routes/admin/admin_users.rs)
 
 > Admin console API. GET → all users with roles + agent allow-lists.
 > PUT { userId, role? , agentModels? } → update either. Admins only.
@@ -692,7 +692,7 @@ Source: [`api/src/routes/admin_users.rs`](../../api/src/routes/admin_users.rs)
 
 ## `/api/admin/workspace-secrets`
 
-Source: [`api/src/routes/admin_workspace_secrets.rs`](../../api/src/routes/admin_workspace_secrets.rs)
+Source: [`api/src/routes/admin/admin_workspace_secrets.rs`](../../api/src/routes/admin/admin_workspace_secrets.rs)
 
 > WORKSPACE SECRETS — the credentials agents may USE without ever reading one.
 >

@@ -23,7 +23,7 @@
 
 ## `/api/research`
 
-Source: [`api/src/routes/research.rs`](../../api/src/routes/research.rs)
+Source: [`api/src/routes/research/research.rs`](../../api/src/routes/research/research.rs)
 
 > GET → recent research runs (org-visible: research is shared knowledge) +
 > the mode catalog. POST { question, mode, agentModel? } → start a run.
@@ -45,7 +45,7 @@ Source: [`api/src/routes/research.rs`](../../api/src/routes/research.rs)
 
 ## `/api/research/{id}`
 
-Source: [`api/src/routes/research_id.rs`](../../api/src/routes/research_id.rs)
+Source: [`api/src/routes/research/research_id.rs`](../../api/src/routes/research/research_id.rs)
 
 > GET → one run + its citation registry (owner / shared member / org runs).
 > DELETE → owner/admin.
@@ -57,7 +57,7 @@ Source: [`api/src/routes/research_id.rs`](../../api/src/routes/research_id.rs)
 
 ## `/api/research/{id}/conversation`
 
-Source: [`api/src/routes/research_id_conversation.rs`](../../api/src/routes/research_id_conversation.rs)
+Source: [`api/src/routes/research/research_id_conversation.rs`](../../api/src/routes/research/research_id_conversation.rs)
 
 > OPEN THE CONVERSATION FOR A RUN, creating it the first time.
 >
@@ -71,7 +71,7 @@ Source: [`api/src/routes/research_id_conversation.rs`](../../api/src/routes/rese
 
 ## `/api/research/{id}/decide`
 
-Source: [`api/src/routes/research_id_decide.rs`](../../api/src/routes/research_id_decide.rs)
+Source: [`api/src/routes/research/research_id_decide.rs`](../../api/src/routes/research/research_id_decide.rs)
 
 > THE EXIT FROM 'awaiting', on the run's own surface. A parked run is an
 > approval (runs/decide.ts files it with the approvals machinery), and the
@@ -92,7 +92,7 @@ Source: [`api/src/routes/research_id_decide.rs`](../../api/src/routes/research_i
 
 ## `/api/research/{id}/members`
 
-Source: [`api/src/routes/research_id_members.rs`](../../api/src/routes/research_id_members.rs)
+Source: [`api/src/routes/research/research_id_members.rs`](../../api/src/routes/research/research_id_members.rs)
 
 > Multiplayer research, mirroring plan membership. GET → members (any member).
 > POST { email } → share (owner only; grants the report, notifies). DELETE

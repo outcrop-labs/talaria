@@ -21,7 +21,7 @@
 
 ## `/api/inference`
 
-Source: [`api/src/routes/inference.rs`](../../api/src/routes/inference.rs)
+Source: [`api/src/routes/models/inference.rs`](../../api/src/routes/models/inference.rs)
 
 > Local inference: your own hardware's backends (class=local), probed live,
 > plus what they've served from the token ledger. Config lives on /models.
@@ -32,7 +32,7 @@ Source: [`api/src/routes/inference.rs`](../../api/src/routes/inference.rs)
 
 ## `/api/keys`
 
-Source: [`api/src/routes/keys.rs`](../../api/src/routes/keys.rs)
+Source: [`api/src/routes/models/keys.rs`](../../api/src/routes/models/keys.rs)
 
 > Personal API keys for the Talaria LLM gateway. GET → my keys (+ whether I
 > may mint). POST → mint one; the secret is in THIS response only.
@@ -50,7 +50,7 @@ Source: [`api/src/routes/keys.rs`](../../api/src/routes/keys.rs)
 
 ## `/api/keys/{id}`
 
-Source: [`api/src/routes/keys_id.rs`](../../api/src/routes/keys_id.rs)
+Source: [`api/src/routes/models/keys_id.rs`](../../api/src/routes/models/keys_id.rs)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -67,7 +67,7 @@ Source: [`api/src/routes/keys_id.rs`](../../api/src/routes/keys_id.rs)
 
 ## `/api/models`
 
-Source: [`api/src/routes/models.rs`](../../api/src/routes/models.rs)
+Source: [`api/src/routes/models/models.rs`](../../api/src/routes/models/models.rs)
 
 > The gateway model catalog for signed-in users (the /api/llm/v1/models twin
 > without an API key) — powers the preferred-model picker. Role-filtered:
@@ -81,7 +81,7 @@ Source: [`api/src/routes/models.rs`](../../api/src/routes/models.rs)
 
 ## `/api/models/efforts`
 
-Source: [`api/src/routes/models_efforts.rs`](../../api/src/routes/models_efforts.rs)
+Source: [`api/src/routes/models/models_efforts.rs`](../../api/src/routes/models/models_efforts.rs)
 
 > The composer's effort-picker feed: which reasoning-effort levels THIS model
 > id may be asked for, plus the default it should start from. Thin by the house

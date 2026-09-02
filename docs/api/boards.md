@@ -40,7 +40,7 @@
 
 ## `/api/boards`
 
-Source: [`api/src/routes/boards.rs`](../../api/src/routes/boards.rs)
+Source: [`api/src/routes/boards/boards.rs`](../../api/src/routes/boards/boards.rs)
 
 > GET /api/boards → boards the user owns or that are shared with them.
 > Agent-key + x-agent-name → boards whose policy allows that agent; a personal
@@ -62,7 +62,7 @@ Source: [`api/src/routes/boards.rs`](../../api/src/routes/boards.rs)
 
 ## `/api/boards/{id}`
 
-Source: [`api/src/routes/boards_id.rs`](../../api/src/routes/boards_id.rs)
+Source: [`api/src/routes/boards/boards_id.rs`](../../api/src/routes/boards/boards_id.rs)
 
 > PATCH /api/boards/:id { name?, archived?, judgeMode? } → rename/archive/set the
 > QA judge mode (owner/editor). DELETE → owner only.
@@ -84,7 +84,7 @@ Source: [`api/src/routes/boards_id.rs`](../../api/src/routes/boards_id.rs)
 
 ## `/api/boards/{id}/agents`
 
-Source: [`api/src/routes/boards_id_agents.rs`](../../api/src/routes/boards_id_agents.rs)
+Source: [`api/src/routes/boards/boards_id_agents.rs`](../../api/src/routes/boards/boards_id_agents.rs)
 
 > GET → { allowAll, models }. PUT → set the board's agent policy (owner/editor,
 > or a personal assistant acting as its owner): either the full { allowAll,
@@ -107,7 +107,7 @@ Source: [`api/src/routes/boards_id_agents.rs`](../../api/src/routes/boards_id_ag
 
 ## `/api/boards/{id}/events`
 
-Source: [`api/src/routes/boards_id_events.rs`](../../api/src/routes/boards_id_events.rs)
+Source: [`api/src/routes/boards/boards_id_events.rs`](../../api/src/routes/boards/boards_id_events.rs)
 
 > GET /api/boards/:id/events → SSE stream of this board's live events (task/
 > comment changes). Auth-gated to board members. Powers multiplayer boards.
@@ -118,7 +118,7 @@ Source: [`api/src/routes/boards_id_events.rs`](../../api/src/routes/boards_id_ev
 
 ## `/api/boards/{id}/labels`
 
-Source: [`api/src/routes/boards_id_labels.rs`](../../api/src/routes/boards_id_labels.rs)
+Source: [`api/src/routes/boards/boards_id_labels.rs`](../../api/src/routes/boards/boards_id_labels.rs)
 
 > Board labels. GET → the registry (any member). POST create, PUT rename/
 > recolor (rename cascades into tickets), DELETE (strips off tickets) —
@@ -154,7 +154,7 @@ Source: [`api/src/routes/boards_id_labels.rs`](../../api/src/routes/boards_id_la
 
 ## `/api/boards/{id}/members`
 
-Source: [`api/src/routes/boards_id_members.rs`](../../api/src/routes/boards_id_members.rs)
+Source: [`api/src/routes/boards/boards_id_members.rs`](../../api/src/routes/boards/boards_id_members.rs)
 
 > GET → members. POST { email, role } → share (owner/editor). DELETE { userId
 > | email } → unshare. Write actions accept a personal assistant acting as its
@@ -179,7 +179,7 @@ Body schema `z.object({ userId: Uuid.optional(), email: Email.optional() }).refi
 
 ## `/api/boards/{id}/statuses`
 
-Source: [`api/src/routes/boards_id_statuses.rs`](../../api/src/routes/boards_id_statuses.rs)
+Source: [`api/src/routes/boards/boards_id_statuses.rs`](../../api/src/routes/boards/boards_id_statuses.rs)
 
 > A board's custom statuses and the diagnostics that explain whether
 > agents may start/stop work on each. Writes are owner/editor.
@@ -225,7 +225,7 @@ Source: [`api/src/routes/boards_id_statuses.rs`](../../api/src/routes/boards_id_
 
 ## `/api/boards/{id}/tasks`
 
-Source: [`api/src/routes/boards_id_tasks.rs`](../../api/src/routes/boards_id_tasks.rs)
+Source: [`api/src/routes/boards/boards_id_tasks.rs`](../../api/src/routes/boards/boards_id_tasks.rs)
 
 > GET → the board's tasks (any member, or a board-allowed agent).
 > POST → create a card (owner/editor, or a board-allowed agent → inbox).
@@ -253,7 +253,7 @@ Source: [`api/src/routes/boards_id_tasks.rs`](../../api/src/routes/boards_id_tas
 
 ## `/api/boards/{id}/templates`
 
-Source: [`api/src/routes/boards_id_templates.rs`](../../api/src/routes/boards_id_templates.rs)
+Source: [`api/src/routes/boards/boards_id_templates.rs`](../../api/src/routes/boards/boards_id_templates.rs)
 
 > The ticket templates a board uses. GET → bindings. PUT { templateIds,
 > defaultId } → replace the set (owner/editor); defaultId must be in the set.
@@ -272,7 +272,7 @@ Source: [`api/src/routes/boards_id_templates.rs`](../../api/src/routes/boards_id
 
 ## `/api/boards/{id}/views`
 
-Source: [`api/src/routes/boards_id_views.rs`](../../api/src/routes/boards_id_views.rs)
+Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards/boards_id_views.rs)
 
 > Saved board views — named filter/layout presets shared with the board.
 > GET → list (any member); POST/PUT/DELETE → owner/editor. Config is the

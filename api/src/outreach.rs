@@ -289,7 +289,7 @@ pub async fn agent_message_user(
     };
     let href = format!(
         "/comms/agent/{}/{}",
-        crate::google_oauth::encode_uri_component(agent_model),
+        crate::google::oauth::encode_uri_component(agent_model),
         conv_id
     );
     let _ = crate::notify::add_notification(

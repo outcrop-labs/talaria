@@ -19,6 +19,11 @@ await_holding_lock = "allow"
 # honestly complex types; the TS originals were equally complex `Promise<...>`
 # chains that TS simply didn't make you spell out.
 type_complexity = "allow"
+# module_inception: routes/<group>/<group>.rs (agents/agents.rs, boards/
+# boards.rs, …) is the subsystem layout's flagship-module shape, not recursion
+# — the module names are load-bearing (docs/api Source links and the port
+# provenance headers point at them by name).
+module_inception = "allow"
 
 [dependencies]
 # "multipart" for the uploads route's streamed form read (axum keeps the
