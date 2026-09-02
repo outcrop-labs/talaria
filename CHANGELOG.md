@@ -4,6 +4,36 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Added
+
+- **Personal assistants inherit their owner's reach for read + draft — with the
+  grant friction gone and introspection in its place.** Boards were the one
+  policy-gated hole: the board listing showed an assistant its owner's boards
+  while the board interior 403'd it, and the only path onto a board was an
+  editor's hand. Now a personal assistant adds *itself* to any board its owner
+  can read (`POST /api/boards/{id}/agents/self` — one step, own row only,
+  audited), removes itself the same way, and for boards the owner cannot see
+  files a request (`/api/boards/{id}/agent-requests`) that lands in the
+  editors' approvals queue as a sixth approval kind (`board_access`) with a
+  one-press Approve/Decline card in Board settings → Agents — approve grants
+  and closes atomically, decline notifies the requester's owner. The board's
+  agent policy stays authoritative throughout; nothing here widens it.
+- **`GET /api/agent/whoami`** — the introspection call agents were missing:
+  identity (personal? whose? elevated?), every board it can work with *why*
+  (policy / owner / elevated), channels, MCP servers, the guardrails that
+  will refuse it, and its own pending access requests — plus the MCP tools
+  that act on the answer (`whoami`, `join_board`, `leave_board`,
+  `request_board_access`). The fleet verifier's auth oracle moved onto this
+  purpose-built route from its old borrow on `GET /api/users`, so narrowing
+  the people directory can no longer take the toolkit dark.
+- **A personal assistant reads its owner's private knowledge.** `can_read_agent`
+  gained an owner arm: private docs, spaces, and artifacts the owner owns open
+  to their assistant across the file plane (doc GET, doc trees, space and
+  artifact listings, Drive export) — the brain already retrieved that
+  collection for them, so two planes had stopped agreeing about "it reads your
+  private work". Edit stays grant-only; sharing, routing, and officialness
+  stay human-only.
+
 ### Changed
 
 - **Migrations ship in the image — and bad ones die before (or at) the
