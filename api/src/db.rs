@@ -53,7 +53,11 @@ pub fn configured_pool_max() -> u32 {
 pub fn pool(cfg: &Config) -> PgPool {
     let t = tuning();
     // The running ceiling belongs in the log, not just in the env.
-    tracing::info!("[db] pg pool max={} acquire_timeout_ms={}", t.max, t.acquire_ms);
+    tracing::info!(
+        "[db] pg pool max={} acquire_timeout_ms={}",
+        t.max,
+        t.acquire_ms
+    );
     // connect_lazy: construction does no I/O, so the api boots before
     // postgres and its healthz reports degraded instead of the process
     // dying — only healthz's round trip tells the truth.

@@ -64,11 +64,7 @@ pub async fn get_setting_hot(
     // cache the CALLER's fallback object forever — a later caller with a
     // different fallback still gets its own.
     let stored = get_setting(pg, key, serde_json::Value::Null).await;
-    let v = if stored.is_null() {
-        fallback
-    } else {
-        stored
-    };
+    let v = if stored.is_null() { fallback } else { stored };
     hot_cache()
         .lock()
         .expect("hot settings cache")

@@ -72,10 +72,13 @@ const IDENTITY_TTL: std::time::Duration = std::time::Duration::from_secs(15);
 /// grows — random-key hammering must not buy unbounded memory.
 const IDENTITY_CAP: usize = 4096;
 
-fn identity_cache(
-) -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<KeyIdentity>)>> {
+fn identity_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, (std::time::Instant, Option<KeyIdentity>)>,
+> {
     static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<KeyIdentity>)>>,
+        std::sync::Mutex<
+            std::collections::HashMap<String, (std::time::Instant, Option<KeyIdentity>)>,
+        >,
     > = std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }

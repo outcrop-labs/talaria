@@ -87,10 +87,11 @@ pub async fn resolve_key(env_var: Option<&str>) -> Option<String> {
 /// its exposure. Key writes invalidate (see `invalidate_endpoint_key`).
 const ENDPOINT_KEY_TTL: Duration = Duration::from_secs(60);
 
-fn endpoint_key_cache(
-) -> &'static Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>> {
-    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>>> =
-        OnceLock::new();
+fn endpoint_key_cache()
+-> &'static Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>> {
+    static CACHE: OnceLock<
+        Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>>,
+    > = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -872,12 +873,20 @@ mod tests {
             Serve
         );
         assert_eq!(
-            us_pool_decision(now - US_POOL_TTL_MS, Some(now - US_POOL_FAILURE_BACKOFF_MS + 1), now),
+            us_pool_decision(
+                now - US_POOL_TTL_MS,
+                Some(now - US_POOL_FAILURE_BACKOFF_MS + 1),
+                now
+            ),
             Serve
         );
         // The backoff lapses: fetch again.
         assert_eq!(
-            us_pool_decision(now - US_POOL_TTL_MS, Some(now - US_POOL_FAILURE_BACKOFF_MS), now),
+            us_pool_decision(
+                now - US_POOL_TTL_MS,
+                Some(now - US_POOL_FAILURE_BACKOFF_MS),
+                now
+            ),
             Fetch
         );
         // A clock that went backwards saturates rather than panics.
