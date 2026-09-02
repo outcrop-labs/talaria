@@ -24,11 +24,19 @@ function databaseUrl(): string {
 }
 
 /** The APPLICATION pool. Every request handler and every scheduled job runs on
- *  this one. `idle_timeout` lets the driver reap connections a quiet instance
- *  is not using — see runMigrations for why nothing may `reserve()` it. */
+ *  this one. `max` is env-tunable (TALARIA_UI_PG_POOL_MAX, default 20) so the
+ *  UI's ceiling moves with the api's — the two pools share one postgres, and
+ *  the sizing law lives in docker/compose.yml. `idle_timeout` lets the driver
+ *  reap connections a quiet instance is not using — see runMigrations for why
+ *  nothing may `reserve()` it. */
 export function getSql(): Sql {
   if (!g.__talariaSql) {
-    g.__talariaSql = postgres(databaseUrl(), { max: 10, idle_timeout: 20, onnotice: () => {} })
+    const max = Number.parseInt(process.env.TALARIA_UI_PG_POOL_MAX ?? '20', 10)
+    g.__talariaSql = postgres(databaseUrl(), {
+      max: Number.isFinite(max) && max > 0 ? max : 20,
+      idle_timeout: 20,
+      onnotice: () => {},
+    })
   }
   return g.__talariaSql
 }

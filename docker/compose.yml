@@ -147,6 +147,14 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       AUTH_PUBLIC_URL: ${AUTH_PUBLIC_URL:-}
       TALARIA_TRUST_PROXY: ${TALARIA_TRUST_PROXY:-}
+      # Postgres pool ceilings — the api's and the UI's own pools, sharing one
+      # postgres (default max_connections=100; api 40 + ui 20 + migration 1 =
+      # 61). Raised from the inherited 10: agent fleets and parallel tasks
+      # queue on the api pool otherwise; the acquire timeout keeps bursts
+      # queueing instead of 500ing.
+      TALARIA_PG_POOL_MAX: ${TALARIA_PG_POOL_MAX:-40}
+      TALARIA_PG_ACQUIRE_TIMEOUT_MS: ${TALARIA_PG_ACQUIRE_TIMEOUT_MS:-15000}
+      TALARIA_UI_PG_POOL_MAX: ${TALARIA_UI_PG_POOL_MAX:-20}
     networks:
       - internal
       - talaria
