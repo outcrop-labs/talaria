@@ -1,7 +1,7 @@
 // POST /api/auth/logout. Delete the Redis session and clear the cookie.
 
 use crate::error::thrown_internal_error;
-use crate::session::{clear_session_cookie, destroy_session, json_with_cookies};
+use crate::session::{clear_session_cookie_for, destroy_session, json_with_cookies};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -18,5 +18,8 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
         tracing::error!("[auth/logout] redis delete failed: {e}");
         return thrown_internal_error();
     }
-    json_with_cookies(Json(OkBody { ok: true }), &[clear_session_cookie()])
+    json_with_cookies(
+        Json(OkBody { ok: true }),
+        &[clear_session_cookie_for(&headers)],
+    )
 }

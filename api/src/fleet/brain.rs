@@ -167,6 +167,17 @@ pub(crate) fn read_env_line(content: &str, key: &str) -> Option<String> {
     re.captures(content).map(|c| c[1].trim().to_string())
 }
 
+/// The fleet's LLM endpoint override — only when the operator deliberately
+/// pointed it at a raw upstream. Absent, EMPTY (the fresh-install seeded
+/// placeholder: the chassis's `${LLM_BASE_URL:-…}` treats empty as unset, and
+/// so does this), and gateway-shaped values are all "not an override" —
+/// managed provisioning owns them. An empty value read as an override is the
+/// brain-dead-fresh-install bug: the early return skips provisioning and every
+/// agent keeps the chassis's dev default.
+fn raw_upstream_override(content: &str) -> Option<String> {
+    read_env_line(content, "LLM_BASE_URL").filter(|u| !u.is_empty() && !is_gateway_url(u))
+}
+
 /// Set or replace a KEY=value line; append if absent. The append shape is
 /// fixed, including the leading newline when the file is empty.
 pub(crate) fn upsert_env_line(content: &str, key: &str, value: &str) -> String {
@@ -317,7 +328,7 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
             .map_err(|e| format!("gateway_agent_loop_keys write failed: {e}"))?;
     }
 
-    if let Some(cur) = read_env_line(&content, "LLM_BASE_URL").filter(|u| !is_gateway_url(u)) {
+    if let Some(cur) = raw_upstream_override(&content) {
         // Operator override: a raw upstream. Respect it — no gateway brain.
         return Ok(GatewayBrain {
             url: Some(cur),
@@ -496,6 +507,30 @@ mod tests {
         // A raw upstream the operator chose: not ours to migrate.
         assert!(!is_gateway_url("https://openrouter.ai/api/v1"));
         assert!(!is_gateway_url("http://litellm:4000/v1"));
+    }
+
+    #[test]
+    fn an_empty_seeded_llm_base_url_is_not_an_override() {
+        // The fresh-install shape: `talaria setup` seeds placeholder lines
+        // with empty values, and the override check must read an empty value
+        // as "not set" — the same call the chassis's `${LLM_BASE_URL:-…}`
+        // makes — so managed provisioning runs instead of silently keeping
+        // the chassis's dev default (the brain-dead-fresh-install bug).
+        assert_eq!(
+            raw_upstream_override("LLM_BASE_URL=\nLLM_API_KEY=\nLLM_MODEL=\n"),
+            None
+        );
+        assert_eq!(raw_upstream_override(""), None);
+        assert_eq!(
+            raw_upstream_override("LLM_BASE_URL=http://talaria:5273/api/llm/v1\n"),
+            None,
+            "a gateway-shaped URL is ours to manage"
+        );
+        // A real raw upstream stays an override.
+        assert_eq!(
+            raw_upstream_override("LLM_BASE_URL=https://openrouter.ai/api/v1\n").as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
     }
 
     #[test]

@@ -66,6 +66,30 @@ pub fn google_redirect_uri(cfg_public_url: Option<&str>, headers: &HeaderMap, ur
     )
 }
 
+/// The origin the caller actually hit — forwarded headers first, the request's
+/// own scheme/host as the direct fallback, and NEVER the pin: the relocation
+/// check below needs the truth, not the configured answer.
+pub fn forwarded_origin(headers: &HeaderMap, uri: &Uri) -> String {
+    resolve_origin(None, headers, uri)
+}
+
+/// OAuth's one-origin rule, as a bounce: when a public origin is pinned and
+/// the request hit a DIFFERENT one, the dance must run at home — the state
+/// cookie only survives on the origin that sets it, and Google only knows the
+/// pinned callback. Returns the URL to relocate to (the pinned origin plus
+/// this request's path and query), or None when the request is already home
+/// or no origin is pinned.
+pub fn oauth_relocation(
+    pinned: Option<&str>,
+    headers: &HeaderMap,
+    uri: &Uri,
+    path_and_query: &str,
+) -> Option<String> {
+    let home = pinned.filter(|s| !s.is_empty())?;
+    let hit = forwarded_origin(headers, uri);
+    (hit != home).then(|| format!("{home}{path_and_query}"))
+}
+
 /// application/x-www-form-urlencoded serialization (WHATWG url spec: space →
 /// '+', unreserved passthrough) — append order is preserved, which pins the
 /// consent URLs byte-for-byte.
@@ -587,11 +611,12 @@ pub enum ConnectFlavor {
     Org,
 }
 
-/// The connect flows' shared callback body: gate on the integration, require
-/// a session (the org flavor adds admin), verify the state cookie, exchange +
-/// store, and bounce back with a status flag the landing page's flash reads.
-/// Every bounce clears the one-shot state cookie — except the /login bounce,
-/// which never had one to clear.
+/// The connect flows' shared callback body: relocate to the pinned origin if
+/// the dance started there (mirroring the login callback), gate on the
+/// integration, require a session (the org flavor adds admin), verify the
+/// state cookie, exchange + store, and bounce back with a status flag the
+/// landing page's flash reads. Every bounce clears the one-shot state cookie —
+/// except the /login bounce, which never had one to clear.
 pub async fn handle_connect_callback(
     state: &crate::state::AppState,
     headers: &HeaderMap,
@@ -609,13 +634,33 @@ pub async fn handle_connect_callback(
                 [(header::LOCATION, landing(status))],
             )
                 .into_response();
-            if let Ok(v) = axum::http::HeaderValue::from_str(&crate::session::clear_state_cookie())
+            if let Ok(v) =
+                axum::http::HeaderValue::from_str(&crate::session::clear_state_cookie_for(headers))
             {
                 res.headers_mut().append(header::SET_COOKIE, v);
             }
             res
         }
     };
+
+    // The start route's mirror: when a public origin is pinned, the state
+    // cookie lives there and Google only knows the pinned callback — anything
+    // arriving elsewhere moves home with code and state intact.
+    {
+        let path_and_query = format!(
+            "{}{}",
+            uri.path(),
+            uri.query().map(|q| format!("?{q}")).unwrap_or_default()
+        );
+        if let Some(to) = oauth_relocation(
+            crate::auth_config::get_auth_config().public_url.as_deref(),
+            headers,
+            uri,
+            &path_and_query,
+        ) {
+            return (axum::http::StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+        }
+    }
 
     let sb = state.secretbox().await.unwrap_or_default();
     if !google_integration_enabled(&state.pg, &sb).await {

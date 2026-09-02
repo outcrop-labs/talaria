@@ -13,7 +13,9 @@ use crate::claim::claim_admin;
 use crate::error::{house_error, thrown_internal_error};
 use crate::password::hash_password;
 use crate::ratelimit::{client_ip, rate_limit, rate_limit_reset};
-use crate::session::{SessionUser, WireUser, create_session, json_with_cookies, session_cookie};
+use crate::session::{
+    SessionUser, WireUser, create_session, json_with_cookies, session_cookie_for,
+};
 use crate::state::AppState;
 use crate::users::Identity;
 use axum::Json;
@@ -147,7 +149,7 @@ pub async fn post(
             ok: true,
             user: WireUser::from(&user),
         }),
-        &[session_cookie(&sid)],
+        &[session_cookie_for(&headers, &sid)],
     )
     .into_response()
 }

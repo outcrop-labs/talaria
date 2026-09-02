@@ -9,14 +9,14 @@ use crate::claim::{claim_admin, instance_claimable};
 use crate::error::thrown_internal_error;
 use crate::google::client::google_login_enabled;
 use crate::google::oauth::{
-    PROVIDER, email_domain_of, exchange_google_code, google_redirect_uri, org_login_allowed,
-    org_login_email, query_pairs,
+    PROVIDER, email_domain_of, exchange_google_code, google_redirect_uri, oauth_relocation,
+    org_login_allowed, org_login_email, query_pairs,
 };
 use crate::invites::{invite_allowed, mark_invite_accepted};
 use crate::org_domains::self_join_allowed;
 use crate::session::{
-    STATE_COOKIE, SessionUser, clear_state_cookie, create_session, parse_cookies, session_cookie,
-    state_matches,
+    STATE_COOKIE, SessionUser, clear_state_cookie_for, create_session, parse_cookies,
+    session_cookie_for, state_matches,
 };
 use crate::state::AppState;
 use crate::users::upsert_user;
@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 /// Bounce back to the login screen with a machine-readable reason (the
 /// callback's loginError). Extra params ride along — the org-domain refusal
 /// carries WHICH domain to name.
-fn login_error(reason: &str, extra: &[(&str, &str)]) -> Response {
+fn login_error(headers: &HeaderMap, reason: &str, extra: &[(&str, &str)]) -> Response {
     let mut pairs: Vec<(&str, &str)> = vec![("error", reason)];
     pairs.extend_from_slice(extra);
     let qs = {
@@ -37,7 +37,7 @@ fn login_error(reason: &str, extra: &[(&str, &str)]) -> Response {
         }
         out.finish()
     };
-    redirect(&format!("/login?{qs}"), &[clear_state_cookie()])
+    redirect(&format!("/login?{qs}"), &[clear_state_cookie_for(headers)])
 }
 
 /// 302 with cookies — the callback's only success/failure shape.
@@ -52,9 +52,27 @@ fn redirect(location: &str, cookies: &[String]) -> Response {
 }
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+    // The start route's mirror: a pinned origin owns the dance, and the state
+    // cookie lives where the start ran. A callback arriving anywhere else
+    // (a URI someone registered at Google by hand, say) relocates home with
+    // its code and state intact before any cookie is read.
+    let path_and_query = format!(
+        "{}{}",
+        uri.path(),
+        uri.query().map(|q| format!("?{q}")).unwrap_or_default()
+    );
+    if let Some(to) = oauth_relocation(
+        crate::auth_config::get_auth_config().public_url.as_deref(),
+        &headers,
+        &uri,
+        &path_and_query,
+    ) {
+        return redirect(&to, &[]);
+    }
+
     let sb = state.secretbox().await.unwrap_or_default();
     if !google_login_enabled(&state.pg, &sb).await {
-        return login_error("google_disabled", &[]);
+        return login_error(&headers, "google_disabled", &[]);
     }
 
     let qp = query_pairs(uri.query());
@@ -64,16 +82,16 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
 
     // A non-empty error param from Google = the human said no.
     if qp.get("error").is_some_and(|e| !e.is_empty()) {
-        return login_error("google_denied", &[]);
+        return login_error(&headers, "google_denied", &[]);
     }
     let (Some(code), Some(state_param)) = (code, state_param) else {
-        return login_error("bad_state", &[]);
+        return login_error(&headers, "bad_state", &[]);
     };
     if cookie_state
         .as_deref()
         .is_none_or(|c| !state_matches(state_param, c))
     {
-        return login_error("bad_state", &[]);
+        return login_error(&headers, "bad_state", &[]);
     }
 
     let cfg = get_auth_config();
@@ -84,7 +102,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             // The error names the client or the code; the user sees a fixed
             // sentence and the log keeps the detail.
             tracing::error!("[auth/google] callback failed: {e}");
-            return login_error("exchange_failed", &[]);
+            return login_error(&headers, "exchange_failed", &[]);
         }
     };
 
@@ -120,7 +138,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
                     )
                     .await;
                 });
-                return finish_login(&state, &claimed, PROVIDER).await;
+                return finish_login(&state, &headers, &claimed, PROVIDER).await;
             }
             Ok(None) => {} // race lost — fall through to the doors
             Err(e) => return internal(&e),
@@ -141,6 +159,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     if !org_login_allowed(org_email.as_deref(), identity.email.as_deref()) {
         return login_error(
+            &headers,
             "org_domain",
             &[(
                 "domain",
@@ -163,7 +182,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             Err(e) => return internal(&e),
         };
         if !self_join && !invited {
-            return login_error("not_allowed", &[]);
+            return login_error(&headers, "not_allowed", &[]);
         }
     }
 
@@ -183,7 +202,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             }
         });
     }
-    finish_login(&state, &row, PROVIDER).await
+    finish_login(&state, &headers, &row, PROVIDER).await
 }
 
 /// Mint the session and land on the cockpit — the callback's one success
@@ -191,6 +210,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
 /// and the doors paths.
 async fn finish_login(
     state: &AppState,
+    headers: &HeaderMap,
     row: &crate::claim::ClaimedAdmin,
     provider: &str,
 ) -> Response {
@@ -204,7 +224,13 @@ async fn finish_login(
         provider: provider.into(),
     };
     match create_session(state, &user).await {
-        Ok(sid) => redirect("/", &[session_cookie(&sid), clear_state_cookie()]),
+        Ok(sid) => redirect(
+            "/",
+            &[
+                session_cookie_for(headers, &sid),
+                clear_state_cookie_for(headers),
+            ],
+        ),
         Err(e) => {
             tracing::error!("[auth/google] session create failed: {e}");
             thrown_internal_error()
