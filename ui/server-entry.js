@@ -430,6 +430,12 @@ async function apiUp(timeoutMs) {
 }
 
 async function ensureRustApi() {
+  // `off` is the whole-env contract, not just the proxy's: a process whose
+  // hop is stood down must not go looking for (or spawning) an api either.
+  if (process.env.TALARIA_RUST_API_URL === 'off') {
+    console.warn('[talaria-ui] TALARIA_RUST_API_URL=off — the hop is stood down; not probing or spawning the Rust api.')
+    return
+  }
   if (await apiUp(1500)) {
     process.env.TALARIA_RUST_API_URL = API_URL
     console.log(`[talaria-ui] rust api → already listening on :${API_PORT}; adopting it`)

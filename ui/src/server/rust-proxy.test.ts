@@ -3,9 +3,10 @@
 // after the cutover there is exactly one: every /api/* path forwards unless
 // it is one of the four permanent residents, and the port-era table of
 // per-batch prefixes is gone. What these cases lock in is the residents'
-// edges, the unset-env posture, and the mechanics of the hop itself.
+// edges, the default-on posture (unset env hops to the loopback default;
+// only `off` stands the boundary down), and the mechanics of the hop itself.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { maybeProxy } from './rust-proxy'
+import { maybeProxy, DEFAULT_RUST_API_URL } from './rust-proxy'
 
 const req = (path: string, init?: RequestInit) =>
   new Request(`http://talaria.test${path}`, init)
@@ -16,8 +17,22 @@ describe('maybeProxy', () => {
     vi.unstubAllEnvs()
   })
 
-  it('forwards nothing when the env is unset — the TS-only process keeps its residents', async () => {
+  it('unset env hops to the loopback default — first spin-up assumes the Rust api', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', '')
+    let sawTarget = ''
+    vi.stubGlobal(
+      'fetch',
+      (async (target: string) => {
+        sawTarget = target
+        return new Response('{}', { status: 200 })
+      }) as unknown as typeof globalThis.fetch,
+    )
+    expect(await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')).not.toBeNull()
+    expect(sawTarget).toBe(`${DEFAULT_RUST_API_URL}/api/llm/v1/models`)
+  })
+
+  it("`off` forwards nothing — the hop stood down on purpose keeps its residents", async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'off')
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
     expect(await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')).toBeNull()

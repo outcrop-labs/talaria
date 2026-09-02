@@ -2,6 +2,7 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { getSql } from '@/server/db/pg'
 import { getRedis } from '@/server/db/redis'
+import { rustApiUrl } from '@/server/rust-proxy'
 
 // Liveness/readiness for whatever is watching the process — a load balancer, a
 // container orchestrator, an uptime monitor, a human at 2am. PUBLIC BY DESIGN:
@@ -66,17 +67,18 @@ export const Route = defineApi('/api/healthz', {
       redis: await timed('redis', () => getRedis().ping()),
     }
 
-    // The Rust api this process fronts (the hop is armed — unset means an
-    // unproxied install, and a missing api is not this body's claim). Any
-    // HTTP answer counts as ok, including the api's own 503: its postgres
-    // and redis are the same two the checks above already speak for, so the
-    // only fact this check adds is the one only this side can see — the hop
-    // works. The body stays secret-free by the same rule as the rest: the
-    // URL never rides, safeCode keeps the short code only.
-    const rustApiUrl = process.env.TALARIA_RUST_API_URL
-    if (rustApiUrl) {
+    // The Rust api this process fronts — the same effective URL the proxy
+    // would hop to (default loopback included; only `off` skips the check,
+    // because only `off` means this process fronts no api at all). Any HTTP
+    // answer counts as ok, including the api's own 503: its postgres and
+    // redis are the same two the checks above already speak for, so the only
+    // fact this check adds is the one only this side can see — the hop works.
+    // The body stays secret-free by the same rule as the rest: the URL never
+    // rides, safeCode keeps the short code only.
+    const rustUrl = rustApiUrl()
+    if (rustUrl) {
       checks.rustApi = await timed('rustApi', () =>
-        fetch(new URL('/api/healthz', rustApiUrl), {
+        fetch(new URL('/api/healthz', rustUrl), {
           signal: AbortSignal.timeout(PING_TIMEOUT_MS),
         }).then((res) => {
           void res.body?.cancel()

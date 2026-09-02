@@ -36,9 +36,11 @@ the warning). Two transports: stdio for one agent, streamable-HTTP for the whole
 **The Rust api (`api/`)** is the backend of record — every `/api/*` route except the
 four permanent TS residents serves from it (the TS API behind the proxy was deleted with
 the cutover, 2026-09-01): the app's TS handler forwards `/api` prefixes to it on loopback
-(`server/rust-proxy.ts`, gated on `TALARIA_RUST_API_URL`; unset forwards nothing, the
-posture of a TS-only process — tests, an unproxied install — while production
-server-entry arms the hop itself by spawning or adopting the api). Dev runs it as a
+(`server/rust-proxy.ts` on `TALARIA_RUST_API_URL` — assumed, not opted into: unset hops
+to the loopback default `http://127.0.0.1:5274`, so a fresh checkout proxies the moment
+an api is listening; the literal `off` stands the hop down for tests and the one
+deliberately-unproxied posture). Production server-entry spawns or adopts the api on
+exactly that port; dev runs it as a
 sidecar by default (`talaria dev`; `TALARIA_API=off` opts out). The four residents are
 permanent (`admin/update`, app dispatch, the app-MCP gateway, and `healthz`); the rules,
 the batch record, the recorded divergences and the port's whole story are

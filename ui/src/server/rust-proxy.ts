@@ -4,11 +4,15 @@
 // they shadowed are deleted with them. What remains in routes/api/ is exactly
 // the residents STAY_TS holds back below.
 //
-// Unset env still forwards nothing: dev without the sidecar and tests keep a
-// TS-only process that boots and serves its residents. No silent fallback,
-// on purpose: if the env names a Rust api and it is down, the answer is a
-// 502, not a quiet re-serve from TS. A fallback would make "both runtimes
-// serve one group" the failure mode instead of the invariant.
+// The Rust api is ASSUMED, not opted into: unset env forwards to the default
+// loopback address, so a fresh checkout proxies the moment an api is listening
+// — no wiring step exists to forget (the day-long API-DARK dev box this
+// default deleted was a real one). TALARIA_RUST_API_URL moves the target;
+// the literal `off` stands the hop down for the one posture that wants no
+// api behind this process at all (tests, a deliberately-unproxied install).
+// No silent fallback either way: if the env names a Rust api and it is down,
+// the answer is a 502, not a quiet re-serve from TS. A fallback would make
+// "both runtimes serve one group" the failure mode instead of the invariant.
 //
 // The target is operator env (same standing as the gateway's configured
 // endpoints, not safeFetch's user-supplied URLs); the fetch below is a
@@ -45,9 +49,21 @@ const STAY_TS = [
   /^\/api\/healthz$/,
 ] as const
 
+// The default target: in-box loopback on the same port `talaria dev` and
+// server-entry.js bind their api to. Both wire the env explicitly when they
+// own the api; this default covers everyone else — a bare `vite dev`, a
+// hand-started install — so "first spin-up assumes Rust" is a property of the
+// process, not of its operator's memory.
+export const DEFAULT_RUST_API_URL = 'http://127.0.0.1:5274'
+
 // Read per call, not at module load: the unset→set flip (dev wiring, tests)
-// must not depend on which module graph got the frozen copy.
-const rustApiUrl = (): string | undefined => process.env.TALARIA_RUST_API_URL || undefined
+// must not depend on which module graph got the frozen copy. Returns the
+// effective URL, or undefined ONLY for `off` — the hop stood down on purpose.
+export const rustApiUrl = (): string | undefined => {
+  const v = process.env.TALARIA_RUST_API_URL?.trim()
+  if (v === 'off') return undefined
+  return v || DEFAULT_RUST_API_URL
+}
 
 // Hop-by-hop headers die at this hop: the Rust api is a fresh origin with its
 // own framing. Everything not listed here rides through untouched — the
@@ -67,7 +83,7 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
-  if (!base || STAY_TS.some((r) => r.test(pathname))) return null
+  if (base === undefined || STAY_TS.some((r) => r.test(pathname))) return null
   if (!PREFIXES.some((p) => pathname.startsWith(p))) return null
 
   const incoming = new URL(request.url)

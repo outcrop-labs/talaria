@@ -230,23 +230,34 @@ describe('talaria dev — rust api sidecar', () => {
     const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
     ctx.plant(['cargo', ['--version']], new Error('not found'))
     await rustApi(ctx, 'DATABASE_URL=x\n')
-    // the proxy-URL warning fires in every run-path — ui/.env here has none
     expect(ctx.logLines.filter((l) => l.kind === 'warn').map((l) => l.msg)).toEqual([
-      expect.stringContaining('TALARIA_RUST_API_URL is not set'),
       'no cargo on PATH — skipping the Rust api. The UI will serve, but every /api/* request fails:' +
         ' the api is the whole product surface, not a side feature.',
     ])
+    // the hop URL lifted even though the api never came up — the proxy aims
+    // at where the api WOULD be, and its 502 names reality
+    expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
     // looked for cargo, but never tried to run it
     expect(ctx.calls.map((c) => [c.cmd, ...c.args])).toEqual([['cargo', '--version']])
   })
 
-  test('something already answering on the port → adopt, never check cargo', async () => {
+  test('something already answering on the port → adopt, never check cargo, lift the hop URL', async () => {
     await withListener(async (port) => {
       const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
-      await rustApi(ctx, `TALARIA_RUST_API_URL=http://127.0.0.1:${port}\n`)
+      await rustApi(ctx, 'DATABASE_URL=x\n')
       expect(ctx.logLines).toHaveLength(1)
       expect(ctx.logLines[0]).toMatchObject({ kind: 'say', msg: `rust api → already listening on :${port}; adopting it` })
+      // lifted even on adopt — ui/.env here names no URL
+      expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
       expect(ctx.calls).toHaveLength(0)
+    })
+  })
+
+  test('an explicit URL (shell or ui/.env) is never overwritten by the lift', async () => {
+    await withListener(async (port) => {
+      const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port), TALARIA_RUST_API_URL: 'http://10.0.0.5:5274' } })
+      await rustApi(ctx, 'DATABASE_URL=x\n')
+      expect(ctx.env.TALARIA_RUST_API_URL).toBe('http://10.0.0.5:5274')
     })
   })
 })
