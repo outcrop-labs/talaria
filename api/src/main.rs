@@ -70,6 +70,15 @@ async fn main() {
         });
     }
 
+    // The toolkit child gets the same boot guarantee. It spawns on demand —
+    // renders and comms reads are the only callers that summon it — so a
+    // deploy's first agent session can beat the spawn, and a session whose
+    // initialize fails drops the server (every talaria tool with it) for its
+    // whole lifetime. Boot closes the window before any session opens it.
+    // Fire-and-forget like everything here; the gateway relay double-checks
+    // before every builtin hop.
+    talaria_api::mcp::service::ensure_mcp_service();
+
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind)
