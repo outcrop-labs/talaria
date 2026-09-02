@@ -64,16 +64,18 @@ pub async fn get(
         }
     };
     if let Some(caller) = caller {
-        let owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[kb] owner resolve failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+        let owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(caller.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] owner resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         if !can_read_agent(
             &guarded_of(&space),
             &caller.model,
@@ -206,15 +208,18 @@ pub async fn post(
         // attribution ladder — a personal assistant's owner, or the human an
         // org agent is answering — because whose row it is and who it may
         // read for are different facts.
-        let owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone())).await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[kb] owner resolve failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+        let owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(caller.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] owner resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let responsible = match crate::attribution::responsible_user_for(
             &state.pg,
             state.redis().await.ok(),

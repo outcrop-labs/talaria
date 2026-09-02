@@ -207,7 +207,11 @@ async fn proxied_actor(pg: &sqlx::PgPool, model: &str, owner: &str) -> String {
             .await
             .ok()
             .flatten();
-    format!("{} (for {})", model, label.map(|(l,)| l).unwrap_or(owner.into()))
+    format!(
+        "{} (for {})",
+        model,
+        label.map(|(l,)| l).unwrap_or(owner.into())
+    )
 }
 
 pub async fn post(
@@ -266,11 +270,8 @@ pub async fn post(
                     }
                 }
             }
-            let owner = match assistant_owner_for(
-                &state.pg,
-                &AgentSubject::Caller(caller.clone()),
-            )
-            .await
+            let owner = match assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
+                .await
             {
                 Ok(Some(owner)) => owner,
                 Ok(None) => {
@@ -281,7 +282,7 @@ pub async fn post(
                              policy's to set, not a request's",
                             caller.model
                         ),
-                    )
+                    );
                 }
                 Err(e) => {
                     tracing::error!("[boards] owner read on agent request failed: {e}");
@@ -319,12 +320,12 @@ pub async fn post(
                 }
             };
             match owner {
-                Some((Some(owner_id,),)) if owner_id == user.id => {}
+                Some((Some(owner_id),)) if owner_id == user.id => {}
                 Some(_) => {
                     return house_error(
                         StatusCode::FORBIDDEN,
                         "only the assistant's owner may request access for it",
-                    )
+                    );
                 }
                 _ => return house_error(StatusCode::BAD_REQUEST, "unknown agentModel"),
             }
@@ -357,15 +358,21 @@ pub async fn post(
                      POST /api/boards/{}/agents/self (agentModel \"{}\")",
                     id, agent_model
                 ),
-            )
+            );
         }
         Err(e) => {
             tracing::error!("[boards] owner role read on agent request failed: {e}");
             return thrown_internal_error();
         }
     }
-    let inserted = match insert_request(&state.pg, &id, &agent_model, &requested_by, reason.as_deref())
-        .await
+    let inserted = match insert_request(
+        &state.pg,
+        &id,
+        &agent_model,
+        &requested_by,
+        reason.as_deref(),
+    )
+    .await
     {
         Ok(n) => n,
         Err(e) => {
@@ -373,7 +380,15 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    filed(&state, &id, &agent_model, &actor, reason.as_deref(), inserted).await
+    filed(
+        &state,
+        &id,
+        &agent_model,
+        &actor,
+        reason.as_deref(),
+        inserted,
+    )
+    .await
 }
 
 /// The request a decide acts on: its id, a display name for the outcome

@@ -714,10 +714,7 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
             ticket_review_approvals(pg).await,
         ),
         (ApprovalKind::RepoRequest, repo_request_approvals(pg).await),
-        (
-            ApprovalKind::BoardAccess,
-            board_access_approvals(pg).await,
-        ),
+        (ApprovalKind::BoardAccess, board_access_approvals(pg).await),
         (
             ApprovalKind::RunDecision,
             run_decision_approvals(pg, definition_for).await,

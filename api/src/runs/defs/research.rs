@@ -2066,8 +2066,7 @@ mod tests {
                 Arc::new(move |_run_id: String| {
                     let w = w.clone();
                     Box::pin(async move {
-                        Ok(w
-                            .lock()
+                        Ok(w.lock()
                             .expect("the world is never held across an await")
                             .org_answer)
                     })
@@ -2147,8 +2146,7 @@ mod tests {
                 Arc::new(move |args: WriteReportArgs| {
                     let w = w.clone();
                     Box::pin(async move {
-                        let mut g =
-                            w.lock().expect("the world is never held across an await");
+                        let mut g = w.lock().expect("the world is never held across an await");
                         g.written.push((args.artifact_id, args.body));
                         g.report_org.push(args.org_run);
                         Ok(())

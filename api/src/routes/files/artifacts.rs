@@ -184,15 +184,18 @@ pub async fn post(
         // org-visible, but now belongs to a person who can govern it instead
         // of an allow-list. Both asks need the CALLER: attaching output to a
         // human's account is owner-proxying, proven identity only.
-        let pa_owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone())).await
-            {
-                Ok(o) => o,
-                Err(e) => {
-                    tracing::error!("[artifacts] owner lookup failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+        let pa_owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(caller.clone()),
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!("[artifacts] owner lookup failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let responsible = match crate::attribution::responsible_user_for(
             &state.pg,
             state.redis().await.ok(),

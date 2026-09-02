@@ -80,16 +80,18 @@ pub async fn get(
         Err(resp) => return resp,
     };
     if let Some(reader) = reader {
-        let owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(reader.clone()))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[kb] owner resolve failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+        let owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(reader.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] owner resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         if !can_read_agent(&eff.perms, &reader.model, owner.as_deref(), &eff.grants) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }

@@ -212,7 +212,7 @@ async fn self_service_actor(
                      assistant's reach. A board editor can add it to the allow-list instead.",
                     caller.model
                 ),
-            ))
+            ));
         }
         Err(e) => {
             tracing::error!("[boards] owner read on agents/self failed: {e}");
@@ -221,16 +221,15 @@ async fn self_service_actor(
     };
     // Best-effort label for the audit actor only — the owner id above is the
     // authority; this is how the audit line reads.
-    let for_label: Option<(String,)> = sqlx::query_as(
-        "select coalesce(email, name, id::text) from users where id = $1::uuid",
-    )
-    .bind(&owner)
-    .fetch_optional(&state.pg)
-    .await
-    .map_err(|e| {
-        tracing::error!("[boards] owner label read on agents/self failed: {e}");
-        thrown_internal_error()
-    })?;
+    let for_label: Option<(String,)> =
+        sqlx::query_as("select coalesce(email, name, id::text) from users where id = $1::uuid")
+            .bind(&owner)
+            .fetch_optional(&state.pg)
+            .await
+            .map_err(|e| {
+                tracing::error!("[boards] owner label read on agents/self failed: {e}");
+                thrown_internal_error()
+            })?;
     let actor = format!(
         "{} (for {})",
         caller.model,
@@ -324,7 +323,7 @@ pub async fn post_self(
                      agentModel \"{}\"",
                     caller.model, id, caller.model
                 ),
-            )
+            );
         }
         Err(e) => {
             tracing::error!("[boards] owner role read on agents/self failed: {e}");

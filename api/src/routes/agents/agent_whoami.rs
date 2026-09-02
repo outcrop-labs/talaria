@@ -56,13 +56,12 @@ pub async fn get(
     let model = caller.model.as_str();
 
     // Display name from the registry — the label the workspace knows.
-    let name: Option<(String,)> = sqlx::query_as(
-        "select display_name from agent_defs where model = $1",
-    )
-    .bind(model)
-    .fetch_optional(&state.pg)
-    .await
-    .unwrap_or(None);
+    let name: Option<(String,)> =
+        sqlx::query_as("select display_name from agent_defs where model = $1")
+            .bind(model)
+            .fetch_optional(&state.pg)
+            .await
+            .unwrap_or(None);
 
     let owner = match assistant_owner_for(&state.pg, &subject).await {
         Ok(v) => v,
@@ -73,13 +72,12 @@ pub async fn get(
     };
     let owner_json = match &owner {
         Some(owner_id) => {
-            let label: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-                "select email, name from users where id = $1::uuid",
-            )
-            .bind(owner_id)
-            .fetch_optional(&state.pg)
-            .await
-            .unwrap_or(None);
+            let label: Option<(Option<String>, Option<String>)> =
+                sqlx::query_as("select email, name from users where id = $1::uuid")
+                    .bind(owner_id)
+                    .fetch_optional(&state.pg)
+                    .await
+                    .unwrap_or(None);
             json!({
                 "id": owner_id,
                 "label": label

@@ -77,30 +77,31 @@ pub async fn post(
             // A personal assistant saves media FOR ITS OWNER — owned +
             // private. Asked with the CALLER: writing into a human's account
             // needs a proven identity, not an asserted one.
-            owner_user_id =
-                match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
-                    .await
-                {
-                    Ok(o) => o,
-                    Err(e) => {
-                        tracing::error!("[agent-media] owner lookup failed: {e}");
-                        return thrown_internal_error();
-                    }
-                };
-            responsible =
-                match crate::attribution::responsible_user_for(
-                    &state.pg,
-                    state.redis().await.ok(),
-                    &AgentSubject::Caller(caller),
-                )
-                .await
-                {
-                    Ok(o) => o,
-                    Err(e) => {
-                        tracing::error!("[agent-media] responsible-user lookup failed: {e}");
-                        return thrown_internal_error();
-                    }
-                };
+            owner_user_id = match crate::users::assistant_owner_for(
+                &state.pg,
+                &AgentSubject::Caller(caller.clone()),
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::error!("[agent-media] owner lookup failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+            responsible = match crate::attribution::responsible_user_for(
+                &state.pg,
+                state.redis().await.ok(),
+                &AgentSubject::Caller(caller),
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::error!("[agent-media] responsible-user lookup failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
         }
         Ok(None) => {
             let user = match require_user(&state, &headers).await {

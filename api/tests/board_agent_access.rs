@@ -8,9 +8,7 @@
 //   DATABASE_URL=postgres://… cargo test --test board_agent_access -- --ignored
 
 use sqlx::postgres::PgPool;
-use talaria_api::boards::{
-    add_board_agent_row, get_board_agent_config, remove_board_agent_row,
-};
+use talaria_api::boards::{add_board_agent_row, get_board_agent_config, remove_board_agent_row};
 
 async fn pool() -> PgPool {
     let url = std::env::var("DATABASE_URL")

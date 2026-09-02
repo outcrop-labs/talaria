@@ -53,16 +53,18 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         // The owner arm is the inherited-read promise: a personal assistant
         // sees the spaces its owner sees, so a private space is not hidden
         // from the person's own assistant.
-        let owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[kb] owner resolve failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+        let owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(caller.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] owner resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let spaces: Vec<_> = all
             .into_iter()
             .filter(|s| {

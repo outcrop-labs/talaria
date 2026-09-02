@@ -100,16 +100,18 @@ pub async fn post(
         // The read gate the GET uses, owner arm included — a personal
         // assistant exports its owner's private artifacts, same as it reads
         // them.
-        let owner =
-            match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(agent.clone()))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[artifacts] owner resolve failed: {e}");
-                    return thrown_internal_error();
-                }
-            };
+        let owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(agent.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[artifacts] owner resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         if !can_read_agent(&guarded(&artifact), &name, owner.as_deref(), &editors) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }

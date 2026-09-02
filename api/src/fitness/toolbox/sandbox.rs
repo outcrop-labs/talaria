@@ -253,17 +253,26 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             let mut seen = std::collections::HashSet::new();
             let mut boards: Vec<Value> = Vec::new();
             if let Some(owner) = &owner {
-                for b in w.boards.iter().filter(|b| b.members.iter().any(|m| m.email == *owner)) {
+                for b in w
+                    .boards
+                    .iter()
+                    .filter(|b| b.members.iter().any(|m| m.email == *owner))
+                {
                     seen.insert(b.id.clone());
                     let role = b
                         .members
                         .iter()
                         .find(|m| m.email == *owner)
                         .map(|m| m.role.clone());
-                    boards.push(json!({ "id": b.id, "name": b.name, "why": "owner", "role": role }));
+                    boards
+                        .push(json!({ "id": b.id, "name": b.name, "why": "owner", "role": role }));
                 }
             }
-            for b in w.boards.iter().filter(|b| b.agents.iter().any(|m| m == &w.agent)) {
+            for b in w
+                .boards
+                .iter()
+                .filter(|b| b.agents.iter().any(|m| m == &w.agent))
+            {
                 if !seen.insert(b.id.clone()) {
                     continue;
                 }
@@ -1217,7 +1226,6 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         // role, not edit rank), request the path for boards the owner cannot
         // see. Removal narrows only the caller's own row, so it carries no
         // owner gate at all.
-
         "join_board" => {
             let owner = assistant_only(w, "join_board")?.to_string();
             let board = board_of(w, &a["boardId"])?;
@@ -2327,9 +2335,17 @@ mod tests {
         });
         let left = s.dispatch("leave_board", r#"{"boardId":"b-mine"}"#);
         assert!(!left.is_error, "{}", left.text);
-        assert!(!s.world.boards[0].agents.contains(&"engineer-engineering".to_string()));
+        assert!(
+            !s.world.boards[0]
+                .agents
+                .contains(&"engineer-engineering".to_string())
+        );
         // The editor-granted row survives — only the caller's own row goes.
-        assert!(s.world.boards[0].agents.contains(&"nova-analyst".to_string()));
+        assert!(
+            s.world.boards[0]
+                .agents
+                .contains(&"nova-analyst".to_string())
+        );
         // A repeat leave is a no-op.
         let again = s.dispatch("leave_board", r#"{"boardId":"b-mine"}"#);
         assert!(!again.is_error, "{}", again.text);
@@ -2352,7 +2368,11 @@ mod tests {
             "request_board_access",
             r#"{"boardId":"b-helpdesk","reason":"triage helpdesk tickets"}"#,
         );
-        assert!(repeat.text.contains("\"alreadyPending\":true"), "{}", repeat.text);
+        assert!(
+            repeat.text.contains("\"alreadyPending\":true"),
+            "{}",
+            repeat.text
+        );
         // whoami carries where the request stands, so the agent stops asking
         // people and starts watching its own answer.
         let r = s.dispatch("whoami", "{}");

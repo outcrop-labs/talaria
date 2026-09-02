@@ -26,7 +26,9 @@ async fn pool() -> PgPool {
 async fn redis() -> redis::aio::ConnectionManager {
     let url = std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)");
     let client = redis::Client::open(url).expect("parse redis url");
-    redis::aio::ConnectionManager::new(client).await.expect("connect redis")
+    redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("connect redis")
 }
 
 /// This test's rows only: its slug's hire runs (runs name agents by bare
