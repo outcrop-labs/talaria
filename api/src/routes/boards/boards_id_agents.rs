@@ -5,7 +5,8 @@
 // (the assistant-friendly spelling). Boards are restrictive by default.
 
 use crate::boards::{
-    BoardAgentConfig, board_role, can_edit, get_board_agent_config, set_board_agent_config,
+    BoardAgentConfig, board_info, board_role, can_edit, get_board_agent_config,
+    set_board_agent_config,
 };
 use crate::body::{as_object, optional_boolean_member, optional_string_array_member, parse};
 use crate::error::{house_error, thrown_internal_error};
@@ -132,12 +133,40 @@ pub async fn put(
         return thrown_internal_error();
     }
     // The answer is the FRESH config — re-read after the write, not echoed
-    // from it.
-    match get_board_agent_config(&state.pg, &id).await {
-        Ok(cfg) => Json(json!(cfg)).into_response(),
+    // from it. The policy write is an audited mutation (it decides which
+    // agents may touch the board at all): before = the config read above,
+    // after = the fresh one, actor = the ActingUser label so an assistant
+    // proxying its owner is recorded as "model (for owner)".
+    let fresh = match get_board_agent_config(&state.pg, &id).await {
+        Ok(cfg) => cfg,
         Err(e) => {
             tracing::error!("[boards] agent config re-read failed: {e}");
-            thrown_internal_error()
+            return thrown_internal_error();
         }
-    }
+    };
+    let label = match board_info(&state.pg, &id).await {
+        Ok(info) if info.exists => Some(info.label),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::error!("[boards] board label read on agent put failed: {e}");
+            None
+        }
+    };
+    crate::audit::log_audit(
+        &state.pg,
+        crate::audit::AuditEntry {
+            actor: &user.label,
+            action: "board.agent_policy",
+            target_type: "board",
+            target_id: Some(&id),
+            target_label: label.as_deref(),
+            before: Some(serde_json::json!({
+                "allowAll": current.allow_all,
+                "models": current.models,
+            })),
+            after: Some(serde_json::json!(fresh)),
+        },
+    )
+    .await;
+    Json(json!(fresh)).into_response()
 }

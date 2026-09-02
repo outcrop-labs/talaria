@@ -2637,6 +2637,25 @@ const MIGRATIONS: string[] = [
   `update daily_brief_entries
      set source_href = replace(source_href, '/research?r=', '/research/')
    where source_href like '/research?r=%'`,
+  // Personal assistants' board access — the request half of the one-step
+  // grant. A request names a board and an agent model; the board's editors
+  // approve (which writes the board_agents row) or decline. ONE open request
+  // per (board, agent): the partial unique index is the dedup, not handler
+  // logic. A declined request can be re-filed — the index covers 'open'
+  // only — because the approver is always free to decline again.
+  `create table if not exists board_agent_requests (
+     id uuid primary key default gen_random_uuid(),
+     board_id uuid not null references boards(id) on delete cascade,
+     agent_model text not null,
+     requested_by_user_id uuid references users(id) on delete set null,
+     reason text,
+     status text not null default 'open',
+     decided_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     decided_at timestamptz
+   )`,
+  `create unique index if not exists board_agent_requests_one_open
+     on board_agent_requests (board_id, agent_model) where status = 'open'`,
 
 ]
 
