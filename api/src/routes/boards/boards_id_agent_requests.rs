@@ -257,18 +257,17 @@ pub async fn post(
             }
             // An agent files for ITSELF; a body naming another model is a
             // spoof attempt, not a convenience.
-            if let Some(obj) = obj {
-                if let Ok(Some(model)) = optional_max_string_member(obj, "agentModel", 200) {
-                    if model != caller.model {
-                        return house_error(
-                            StatusCode::FORBIDDEN,
-                            &format!(
-                                "an agent may only request access for itself (\"{}\")",
-                                caller.model
-                            ),
-                        );
-                    }
-                }
+            if let Some(obj) = obj
+                && let Ok(Some(model)) = optional_max_string_member(obj, "agentModel", 200)
+                && model != caller.model
+            {
+                return house_error(
+                    StatusCode::FORBIDDEN,
+                    &format!(
+                        "an agent may only request access for itself (\"{}\")",
+                        caller.model
+                    ),
+                );
             }
             let owner = match assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
                 .await

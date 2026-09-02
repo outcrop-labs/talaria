@@ -204,7 +204,7 @@ async fn a_live_turn_outranks_the_hirer() {
 #[ignore]
 async fn no_turn_falls_to_the_latest_hirer() {
     let pg = pool().await;
-    let mut redis = redis().await;
+    let redis = redis().await;
     cleanup(&pg, "attrtest-rehire", "rehire").await;
     let first = user(&pg, "first@rehire.attribution-test.invalid").await;
     let latest = user(&pg, "latest@rehire.attribution-test.invalid").await;
@@ -278,7 +278,7 @@ async fn a_legacy_caller_gets_nobody() {
 #[ignore]
 async fn nobody_stands_behind_an_untraceable_agent() {
     let pg = pool().await;
-    let mut redis = redis().await;
+    let redis = redis().await;
     cleanup(&pg, "attrtest-orphan", "orphan").await;
     let model = agent(&pg, "attrtest-orphan", None).await;
     // No owner, no turn, no hire run: ownerless is an ordinary answer.
