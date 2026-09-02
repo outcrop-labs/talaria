@@ -1,7 +1,7 @@
 // THE CHANNEL OR THREAD YOU WERE LAST IN, remembered by Comms itself.
 //
-// Comms already puts its selection in the URL (`?c=<channel>`, or
-// `?a=<agent>&x=<thread>`) and derives everything from it, which is right: the
+// Comms already puts its selection in the URL (`/comms/channel/<id>` or
+// `/comms/agent/<model>[/<thread>]`) and derives everything from it, which is right: the
 // view is copy-linkable and back/forward walks your reading order. What the URL
 // cannot do is survive leaving the view — the nav rail sends you to `/comms`,
 // which carries no selection, so the default-selection effect does exactly what
