@@ -106,7 +106,7 @@ pub async fn get_org_access_token(
         .map_err(|e| TokenError::Other(format!("google org access token seal: {e}")))?;
     let _ = sqlx::query(
         "update google_org_connection \
-         set access_token_enc = $2, access_expires_at = $3, updated_at = now() \
+         set access_token_enc = $2, access_expires_at = $3::timestamptz, updated_at = now() \
          where id = 1",
     )
     .bind(sealed)
@@ -314,7 +314,7 @@ pub async fn save_org_connection(
     sqlx::query(
         "insert into google_org_connection \
              (id, google_sub, email, scope, refresh_token_enc, access_token_enc, access_expires_at, connected_by, updated_at) \
-         values (1, $1, $2, $3, $4, $5, $6, $7::uuid, now()) \
+         values (1, $1, $2, $3, $4, $5, $6::timestamptz, $7::uuid, now()) \
          on conflict (id) do update set \
              google_sub = excluded.google_sub, \
              email = excluded.email, \
