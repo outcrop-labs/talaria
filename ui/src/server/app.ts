@@ -79,11 +79,15 @@ async function handle(request: Request): Promise<Response> {
   return new Response('Not Found', { status: 404 })
 }
 
-// The one non-fetch export, and the reason it must live HERE: only this
-// module's exports survive into dist/server/server.js, and server-entry.js
-// runs the migration pass off this export before it spawns the Rust api —
+// The non-fetch exports, and the reason they must live HERE: only this
+// module's exports survive into dist/server/server.js. server-entry.js runs
+// the migration pass off `migrate` before it spawns the Rust api —
 // post-cutover, boot itself touches no table, so a fresh database never
-// migrated until this hook existed.
+// migrated until this hook existed. And it converts every response's headers
+// for res.writeHead off `writeHeadHeaders` — the boundary conversion lives
+// with the code it serves so the dev middleware (vite.config.ts) and the prod
+// wrapper can never drift apart on Set-Cookie, the one header that repeats.
 export { migrate } from './db/pg'
+export { writeHeadHeaders } from './http'
 
 export default { fetch: handle }

@@ -5,6 +5,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
+import { writeHeadHeaders } from './src/server/http'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
 
@@ -58,7 +59,10 @@ function apiDev(): Plugin {
           const response = await mod.default.fetch(
             new Request(url.toString(), { method: req.method, headers, body }),
           )
-          res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+          // writeHeadHeaders (not the Object.fromEntries one-liner) so dev
+          // matches server-entry.js on multi-cookie responses — Set-Cookie is
+          // the one header that repeats, and the OAuth callback sends two.
+          res.writeHead(response.status, writeHeadHeaders(response))
           if (!response.body) {
             res.end(await response.text())
             return

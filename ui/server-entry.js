@@ -76,7 +76,20 @@ if (validateEnv) {
 
 // Imported AFTER the env is in place: a static import is hoisted above every
 // statement here, and the server graph reads process.env as it loads.
-const { default: server, migrate } = await import('./dist/server/server.js')
+const { default: server, migrate, writeHeadHeaders } = await import('./dist/server/server.js')
+
+// The boundary conversion for res.writeHead. A bundle built before
+// writeHeadHeaders existed exports none — same stale-dist case as `migrate`
+// below; the old one-liner conversion is kept as the fallback so a mismatched
+// dist degrades to the old behavior instead of 500ing every request, with
+// this line saying which box needs a rebuild.
+const headersForWriteHead =
+  typeof writeHeadHeaders === 'function'
+    ? writeHeadHeaders
+    : (response) => {
+        console.warn('[talaria-ui] dist bundle predates writeHeadHeaders — rebuild to fix multi-cookie responses (OAuth login)')
+        return Object.fromEntries(response.headers.entries())
+      }
 
 const CLIENT_DIR = join(__dirname, 'dist', 'client')
 const port = parseInt(process.env.PORT || '3000', 10)
@@ -318,7 +331,7 @@ async function requestHandler(req, res) {
   try {
     const response = await server.fetch(request)
     isEventStream = (response.headers.get('content-type') || '').includes('text/event-stream')
-    res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+    res.writeHead(response.status, headersForWriteHead(response))
     if (response.body) {
       reader = response.body.getReader()
       for (;;) {

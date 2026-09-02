@@ -97,15 +97,21 @@
     }
   })
 
-  // The session gate used to blank the WHOLE app ("no content, then BAM").
-  // Render the real frame immediately — rail placeholder (honoring the persisted
-  // collapse state so the frame never jumps), top strip, a skeleton page — and
-  // only content fills in.
+  // THE AUTH GATE PAINTS NOTHING IT MIGHT TAKE BACK. While the session read is
+  // in flight — and in the beat between "resolved: nobody" and the /login
+  // navigation landing — the screen is the login surface's own ground with the
+  // mark centered (sessionHold below). The app chrome used to paint here too
+  // (skeleton rail + strip + cards): for a signed-in reload that read as
+  // "frame first, content fills in", but for every signed-out visitor it was
+  // the dashboard flashing for a moment before the login screen slammed in.
+  // One session round-trip of quiet mark is the price both pay — and since the
+  // holding ground, the login card, and the app chrome all sit on the same
+  // Mercury ground, nothing blanks and nothing BAMs: content arrives on ground
+  // that never changed.
   //
-  // `content` swaps the skeleton page body for a real message: the session read
-  // broke. Same frame either way, so "still loading" and "this failed" are the
-  // same shape and only the words differ — and the theme toggle stays reachable
-  // because that frame is the whole app until the session comes back.
+  // The ERROR case keeps the real chrome (shellSkeleton below): the read broke,
+  // not the session — the person is probably signed in, so they get the frame
+  // with a retry in it, not a bounce that reads as "you have been signed out".
   //
   // Hydration-safe: server snapshot is "expanded"; the persisted client value
   // swaps in right after hydration (same store NavRail uses, so no jump).
@@ -122,6 +128,17 @@
     return upgradeDitherSurfaces(el)
   })
 </script>
+
+{#snippet sessionHold()}
+  <!-- The gate's holding frame: the ground every auth-adjacent surface sits
+       on, the brand mark centered where the login card is about to be. Still,
+       not breathing — Mercury is matte, the wait is one round-trip, and motion
+       here would perform rather than confirm. -->
+  <MercuryBackdrop />
+  <div class="flex min-h-screen items-center justify-center">
+    <Brand size={40} class="opacity-70" />
+  </div>
+{/snippet}
 
 {#snippet shellSkeleton(content: Snippet | undefined)}
   <MercuryBackdrop />
@@ -197,7 +214,7 @@
        used to do — is worse still: it reads as "you have been signed out". -->
   {@render shellSkeleton(sessionFailed)}
 {:else if session.isLoading || !user}
-  {@render shellSkeleton(undefined)}
+  {@render sessionHold()}
 {:else}
   <MercuryBackdrop />
   <div bind:this={shell} class="flex h-screen">
