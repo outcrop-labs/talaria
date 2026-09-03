@@ -80,6 +80,7 @@ pub mod plan_doc;
 pub mod plan_drafts;
 pub mod platform_agents;
 pub mod price_oracle;
+pub mod push;
 pub mod ratelimit;
 pub mod realtime;
 pub mod refs;

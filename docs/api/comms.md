@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-15 routes.
+16 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -36,6 +36,7 @@
 | [`/api/conversations`](#apiconversations) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | PATCH | `session` |
+| [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
 ## `/api/channels`
@@ -330,6 +331,26 @@ Source: [`api/src/routes/comms/conversations_id.rs`](../../api/src/routes/comms/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `title` | `string trimmed(1, 120)` |  |
+
+## `/api/conversations/{id}/read`
+
+Source: [`api/src/routes/comms/conversations_id_read.rs`](../../api/src/routes/comms/conversations_id_read.rs)
+
+> /api/conversations/{id}/read.
+> POST { seq? } → advance the caller's read cursor (drives the thread's
+> unread pill). The same contract as /api/channels/{id}/read, gated by the
+> conversations' own access rule: the owner, or a member of the plan. An
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiconversationsidread-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/conversations/{id}/read` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `seq` | `number?(0, 9007)` | seq: optional integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
 
 ## `/api/dms`
 

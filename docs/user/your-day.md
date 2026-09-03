@@ -72,3 +72,11 @@ class (**Settings → Notifications**):
 
 **Daily digest**: one email a day listing what's waiting — never sent on a day when
 nothing is.
+
+**Desktop notifications** (**Settings → Notifications**, the row under the routing table)
+extend the in-app copies to your OS: a browser notification when Talaria is in another
+tab or window, and — once your browser takes the push subscription the same toggle
+files — when it's closed entirely. A copy your browser shows while you're looking at
+Talaria is suppressed (the toast already said it), and turning the toggle off retires
+the subscription at both ends. Classes routed **Email only** reach mail, not your
+screen.

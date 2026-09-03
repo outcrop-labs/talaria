@@ -710,6 +710,15 @@ CREATE TABLE public.plan_drafts (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.push_subscriptions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    endpoint text NOT NULL,
+    p256dh text NOT NULL,
+    auth text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.quality_reviews (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     task_id uuid NOT NULL,
@@ -1252,6 +1261,10 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_endpoint_key UNIQUE (endpoint);
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.quality_reviews
     ADD CONSTRAINT quality_reviews_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.rag_collection_access
@@ -1386,6 +1399,7 @@ CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_
 CREATE INDEX notifications_user_idx ON public.notifications USING btree (user_id, created_at DESC);
 CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (agent_model, kind, created_at DESC);
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);
+CREATE INDEX push_subscriptions_user_idx ON public.push_subscriptions USING btree (user_id);
 CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree (conversation_id);
 CREATE INDEX research_runs_created_idx ON public.research_runs USING btree (created_at DESC);
 CREATE INDEX research_runs_parent_idx ON public.research_runs USING btree (parent_run_id);
@@ -1569,6 +1583,8 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.quality_reviews
     ADD CONSTRAINT quality_reviews_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.rag_collection_access

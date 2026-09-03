@@ -6,18 +6,18 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-221 routes across 23 groups.
+224 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 13 |
-| [`activity`](./activity.md) | What happened, what it cost, what needs you. | 6 |
+| [`activity`](./activity.md) | What happened, what it cost, what needs you. | 8 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 24 |
 | [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 15 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views. | 11 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
-| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 15 |
+| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 16 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 13 |
 | [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 20 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |

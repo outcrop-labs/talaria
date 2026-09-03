@@ -303,6 +303,22 @@ pub fn router(state: AppState) -> Router {
             "/api/unreads",
             get(activity::unreads::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        // The closed-tab plane's door: the VAPID public key a browser needs
+        // to subscribe, and the subscribe/unsubscribe pair that files and
+        // retires a device browser. Delivery itself is scheduler-plane
+        // (src/push.rs), not a route.
+        .route(
+            "/api/push/key",
+            get(activity::push::key).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/push/subscribe",
+            post(activity::push::subscribe).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/push/unsubscribe",
+            post(activity::push::unsubscribe).fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/history",
             get(activity::history::get).fallback(|| async { method_not_allowed("GET") }),

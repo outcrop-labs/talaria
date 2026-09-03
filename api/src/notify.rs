@@ -380,6 +380,22 @@ pub async fn add_notification(
             tracing::error!("[notifications] brief nudge failed: {e}");
         }
     });
+    // Closed tabs ride the same row: whenever the prefs route keeps an
+    // in-app copy (in_app or both — email-only is the one route where the
+    // person asked this platform to leave their screens alone), the push
+    // plane fans it to every subscribed browser. Detached and quiet like the
+    // nudge above: the row is the record, the delivery is best-effort on top.
+    if route != "email" {
+        crate::push::push_notification(
+            user_id,
+            crate::push::PushNote {
+                id: notification_id.clone(),
+                title: n.title.to_string(),
+                body: n.body.unwrap_or("").to_string(),
+                href: n.href.unwrap_or("").to_string(),
+            },
+        );
+    }
     if will_mail {
         // `both` deliberately passes null: that route wants the in-app copy to
         // stay unread whatever the mail does.

@@ -2681,6 +2681,25 @@ const MIGRATIONS: string[] = [
      primary key (conversation_id, user_id)
    )`,
 
+  // One device browser per row — the closed-tab half of notifications. The
+  // endpoint is the push service's unique handle for a subscription, so
+  // unique(endpoint) makes subscribe idempotent across devices AND people
+  // (a browser hands the same endpoint to whoever asks); p256dh/auth are the
+  // per-subscription keys RFC 8291 encrypts the payload against. last_seen_at
+  // is the liveness signal: a 2xx delivery touches it, and a dead endpoint
+  // answers 404/410 and is deleted outright.
+  `create table if not exists push_subscriptions (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     endpoint text unique not null,
+     p256dh text not null,
+     auth text not null,
+     created_at timestamptz not null default now(),
+     last_seen_at timestamptz not null default now()
+   )`,
+  `create index if not exists push_subscriptions_user_idx
+     on push_subscriptions (user_id)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
