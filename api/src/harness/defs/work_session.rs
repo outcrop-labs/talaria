@@ -18,7 +18,7 @@
 //
 // WHAT IS AND IS NOT MODELLED HERE
 //   The TURN is the model contract: one prompt in, one reply out. The SESSION
-//   — the turn cap, the reconcile nudge, `sessionState`/`agentTicketRefusal`,
+//   — the turn cap, the reconcile nudge, `session_state`/`agent_ticket_refusal`,
 //   the activity trail — is ticket-state orchestration and lives in the run
 //   kind (runs/defs/work_session.rs; the dispatch side keeps the push-side
 //   choke point). Nothing in this file knows what a ticket is, which is why

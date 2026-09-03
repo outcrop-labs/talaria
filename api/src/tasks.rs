@@ -4,9 +4,9 @@
 // structured result, comments, activity, watchers, dependencies and a
 // quality-review approval gate.
 //
-// The TS plane keeps a twin of the authority half (`ui/src/server/tasks.ts` —
-// the spelling app servers and the MCP tool descriptions ask); the refusal
-// conditions must stay the same in both. See `agent_ticket_refusal`.
+// The authority half is defined once, here — the TS routes that carried a
+// twin spelling were deleted at the cutover, and the MCP tools ask the api.
+// See `agent_ticket_refusal`.
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_fields, guard_agent_write};
@@ -769,10 +769,10 @@ pub enum AgentIntent {
     Comment,
 }
 
-/// Why an agent may not act on this ticket, or None when it may. The TS
-/// plane carries its own spelling of this predicate (`agentTicketRefusal`
-/// in `ui/src/server/tasks.ts` — what app servers and the MCP tool
-/// descriptions ask); the stop conditions must stay the same in both.
+/// Why an agent may not act on this ticket, or None when it may. This is the
+/// one definition: the TS routes that carried a twin spelling were deleted
+/// at the cutover, and the MCP tool descriptions ask the api — so there is
+/// no second copy to keep in step.
 ///
 /// FOUR STOP CONDITIONS, in the order a person would ask them:
 /// · the BOARD does not allow this agent — revoked, never granted, or the
@@ -793,9 +793,8 @@ pub enum AgentIntent {
 /// an agent that can see the board can read the ticket, because reading
 /// changes nothing.
 ///
-/// The TS twin takes an optional per-pass `boardFacts()` cache for loops;
-/// this side reads through — the boards it resolves twice per call are the
-/// queries the cache existed to save.
+/// No per-pass facts cache to thread — it reads through; the boards it
+/// resolves twice per call are the queries a cache would exist to save.
 pub async fn agent_ticket_refusal(
     pg: &PgPool,
     task: &AgentWriteTarget,
