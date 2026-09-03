@@ -14,7 +14,10 @@
          rounded ground. ui/public is Vite's static root — served at / in dev
          and copied into dist/client, which server-entry.js serves in prod. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Talaria — the winged fleet cockpit</title>
+    <!-- Pre-hydration default; App.svelte's svelte:head takes over on boot —
+         "Talaria" stays the answer until (and unless) an admin names the
+         instance, so the static tag matches the unconfigured title exactly. -->
+    <title>Talaria</title>
     <script>
       ;(function () {
         try {

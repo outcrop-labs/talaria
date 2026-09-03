@@ -26,6 +26,7 @@
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
+  import AdminCompanyNamePanel from './AdminCompanyNamePanel.svelte'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
   import AdminGithubPanel from './AdminGithubPanel.svelte'
@@ -112,6 +113,7 @@
       <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
       {#if tab === 'org'}
         <AdminOrgPanel />
+        <AdminCompanyNamePanel />
         <AdminInstanceDomainPanel />
         <AdminSignupDomainsPanel />
         <AdminEmailPanel />

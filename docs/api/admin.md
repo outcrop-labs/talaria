@@ -250,16 +250,17 @@ Source: [`api/src/routes/admin/admin_guardrails.rs`](../../api/src/routes/admin/
 
 Source: [`api/src/routes/admin/admin_instance.rs`](../../api/src/routes/admin/admin_instance.rs)
 
-> /api/admin/instance. The instance's hosting domain. GET → current config.
-> PUT { domain } → set (unverified until the round trip passes); { domain:
-> null } clears. POST { verify: true } → run the self-fetch (the action).
-> Admins only.
+> /api/admin/instance. The instance's hosting domain and display name.
+> GET → both configs. PUT { domain } sets the domain (unverified until the
+> round trip passes), { domain: null } clears it; { companyName } sets the
+> display name, { companyName: null } clears it — one PUT may carry either
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{instance}` | 200 | — |
+| GET | `admin` | — | `{instance, companyName}` | 200 | — |
 | POST | `admin` | [body](#post-apiadmininstance-body) | `…` | 200, 400 | audit |
-| PUT | `admin` | [body](#put-apiadmininstance-body) | `{instance}` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadmininstance-body) | `{instance, companyName}` | 200, 400 | audit |
 
 ### POST `/api/admin/instance` body
 
@@ -271,6 +272,7 @@ Source: [`api/src/routes/admin/admin_instance.rs`](../../api/src/routes/admin/ad
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `companyName` | `string? nullable` |  |
 | `domain` | `string? nullable(3, 253)` |  |
 
 ## `/api/admin/invites`
