@@ -168,7 +168,9 @@ RUN adduser -D -u 10001 talaria \
 # keys on exactly this to know it may roll its own container. A checkout
 # install never sets it, and the updater stays dormant there.
 # State lives under /var/lib/talaria via the existing path overrides, never in
-# default paths inside /app (those are image-owned).
+# default paths inside /app (those are image-owned). TALARIA_UPDATE_DIR is the
+# updater's subtree — rendered slots, env files, the project's compose — same
+# discipline as its siblings.
 ENV PORT=5273 \
     HOST=0.0.0.0 \
     NODE_ENV=production \
@@ -180,6 +182,7 @@ ENV PORT=5273 \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
     TALARIA_APPS_DIR=/var/lib/talaria/apps \
+    TALARIA_UPDATE_DIR=/var/lib/talaria/update \
     # From ARG VERSION above: the LABEL carries it for `docker inspect`, this
     # carries it for the process and `docker exec`.
     TALARIA_VERSION=${VERSION}
