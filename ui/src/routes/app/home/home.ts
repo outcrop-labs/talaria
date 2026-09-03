@@ -89,9 +89,12 @@ export const QUEUE_META: Record<QueueKey, { label: string; hint: string; dot: Do
 }
 
 // ── Research: runs in flight and fresh reports ──────────────────────────────
+// `awaiting` shares running's accent but not its pulse (ResearchTab keys pulse
+// on status === 'running') — waiting on you, not working.
 export const RUN_DOT: Record<string, DotStatus> = {
   queued: 'warn',
   running: 'accent',
+  awaiting: 'accent',
   done: 'ok',
   error: 'danger',
 }

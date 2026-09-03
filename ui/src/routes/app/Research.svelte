@@ -1,7 +1,7 @@
 <script lang="ts">
   import { pathId } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Gauge, Telescope, Trash2 } from '@lucide/svelte'
+  import { Gauge, Plus, Telescope, Trash2 } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -50,6 +50,9 @@
   const STATUS_DOT: Record<ResearchRun['status'], DotStatus> = {
     queued: 'idle',
     running: 'accent',
+    // Parked on a question: accent without the pulse — "waiting on you", not
+    // "working". The pulse stays running-only so those two never blur.
+    awaiting: 'accent',
     done: 'ok',
     error: 'danger',
   }
@@ -73,8 +76,6 @@
     else void navigate('/research')
   }
   let question = $state('')
-  /** Measured composer height — what the content below reserves. */
-  let composerH = $state(0)
   const mayRun = useHasPerm('research.run')
   let mode = $state<ResearchMode>('brief')
   const sticky = useStickyAgent('research', () => agents)
@@ -134,15 +135,24 @@
 {#snippet stageHeader()}
   {#if selected}
     {#snippet headerActions()}
-      {#if selected && canDelete(selected)}
+      <!-- NEW beside Remove: the ask composer only exists on the zero state,
+           so with a run open this is where "ask something else" lives. -->
+      <button
+        type="button"
+        onclick={() => setSelectedId(null)}
+        class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
+      >
+        <Plus size={13} /> New
+      </button>
+      {#if canDelete(selected)}
         <DangerLink onClick={() => selected && void remove(selected)}>Remove</DangerLink>
       {/if}
     {/snippet}
     <!-- No title: the strip carries the run's name (claimed above); the row
-         keeps the run's meta and the Remove action. -->
+         keeps the run's meta and the actions. -->
     <StageHeader
       meta={`${MODE_META[selected.mode].label} · ${selected.agentModel}`}
-      actions={canDelete(selected) ? headerActions : undefined}
+      actions={headerActions}
     />
   {/if}
 {/snippet}
@@ -249,87 +259,81 @@
   </Rail>
 
   <Stage header={stageHeader}>
-    <!-- The ask FLOATS over the content so the report and the zero state both
-         own the whole stage. Its measured height rides down as
-         `--research-composer`; the report column and the discussion's own chat
-         input each reserve that much. Measured, not a constant — the textarea
-         auto-grows. -->
-    <div class="relative flex h-full min-h-0 flex-col" style:--research-composer="{composerH}px">
-      <!-- Research cannot run without a provider; the surface still opens and
-           past runs still read. Renders nothing once a provider exists. -->
-      <NoModelBump class="m-4 shrink-0" />
-      <!-- flex-col so RunView's `flex min-h-0 flex-1` root fills it and its two
-           columns scroll independently. -->
-      <div class="flex min-h-0 flex-1 flex-col">
-        {#if selectedId}
-          <RunView runId={selectedId} />
-        {:else}
-          <!-- Edge to edge: no centring wrapper. EmptyState's `full` variant
-               centres its own words and paints its vignette to its bounds. -->
-          <EmptyState
-            class="flex-1"
-            icon="◎"
-            title="Research"
-            hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
-          />
-        {/if}
+    {#if selectedId}
+      <!-- flex-col so RunView's `flex min-h-0 flex-1` root fills the stage and
+           its two columns scroll independently. No composer here: with a run
+           open, the discussion is the only input on the page. -->
+      <div class="flex h-full min-h-0 flex-col">
+        <NoModelBump class="m-4 shrink-0" />
+        <RunView runId={selectedId} />
       </div>
-
-      <!-- pointer-events-none gutter, auto panel: the float spans the stage so
-           the panel can centre in it, and without that split the transparent
-           margin would swallow clicks on the report behind it. Opaque ground,
-           or the report shows through beneath the panel. -->
-      <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6 pt-2">
-        <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
-        <!-- §7 composer anatomy: panel body, STRONG hairline, radius 8,
-             p-2, matte float shadow — the prompt in a ground inset on top,
-             every control on the row UNDERNEATH it, submit right-aligned. -->
-        <div class="pointer-events-auto rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
-          <div class="rounded-md border border-line bg-surface px-2 py-1">
-            <Textarea
-              autoGrow
-              rows={1}
-              bind:value={question}
-              disabled={!mayRun.current}
-              placeholder={mayRun.current ? 'What should we find out?' : 'You don’t have permission to run research'}
-              class="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-              onkeydown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void start()
-                }
-              }}
-            />
+    {:else}
+      <!-- THE ASK, CENTERED. The zero state IS the composer — the first thing
+           a person does here is the thing the page is about, so it gets the
+           middle of the stage and room to write a real question, not a
+           one-line float. It unmounts entirely on dispatch, which is what
+           keeps "controls only in the chat area" true afterwards. -->
+      <div class="flex h-full min-h-0 flex-col">
+        <NoModelBump class="m-4 shrink-0" />
+        <div class="grid min-h-0 flex-1 place-items-center overflow-y-auto px-6 py-10">
+          <div class="w-full max-w-[var(--converse-width)]">
+            <div class="mb-4 text-center">
+              <div class="text-lg font-medium text-fg">Research</div>
+              <p class="mx-auto mt-1 max-w-md font-sans text-xs leading-relaxed text-muted">
+                Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited,
+                org-visible documents your agents can retrieve later.
+              </p>
+            </div>
+            <!-- §7 composer anatomy: panel body, STRONG hairline, radius 8,
+                 p-2, matte float shadow — the prompt in a ground inset on top,
+                 every control on the row UNDERNEATH it, submit right-aligned. -->
+            <div class="rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
+              <div class="rounded-md border border-line bg-surface px-2 py-1">
+                <Textarea
+                  autoGrow
+                  rows={6}
+                  bind:value={question}
+                  disabled={!mayRun.current}
+                  placeholder={mayRun.current ? 'What should we find out?' : 'You don’t have permission to run research'}
+                  class="max-h-[26rem] min-h-[10rem] border-0 bg-transparent focus:border-0"
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      void start()
+                    }
+                  }}
+                />
+              </div>
+              <div class="mt-2 flex h-10 min-w-0 items-center gap-1.5">
+                <ComposerPicker
+                  icon={Gauge}
+                  value={mode}
+                  onChange={(m) => (mode = m as ResearchMode)}
+                  title="Research depth"
+                  menuLabel="Depth"
+                  options={(Object.keys(MODE_META) as ResearchMode[]).map((m) => ({
+                    value: m,
+                    label: MODE_META[m].label,
+                    sub: `${MODE_META[m].tagline} · ${MODE_META[m].eta}`,
+                  }))}
+                />
+                {#if starting}
+                  <span class="grid h-9 w-9 shrink-0 place-items-center"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
+                {/if}
+                <span class="flex-1"></span>
+                <SendButton
+                  title="Start (⏎)"
+                  icon={Telescope}
+                  enabled={mayRun.current && !starting && !!question.trim() && !!agent}
+                  onClick={() => void start()}
+                />
+              </div>
+              {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
+            </div>
           </div>
-          <div class="mt-2 flex h-10 min-w-0 items-center gap-1.5">
-            <ComposerPicker
-              icon={Gauge}
-              value={mode}
-              onChange={(m) => (mode = m as ResearchMode)}
-              title="Research depth"
-              menuLabel="Depth"
-              options={(Object.keys(MODE_META) as ResearchMode[]).map((m) => ({
-                value: m,
-                label: MODE_META[m].label,
-                sub: `${MODE_META[m].tagline} · ${MODE_META[m].eta}`,
-              }))}
-            />
-            {#if starting}
-              <span class="grid h-9 w-9 shrink-0 place-items-center"><WaitingMark site="research/start" size={12} class="text-accent" /></span>
-            {/if}
-            <span class="flex-1"></span>
-            <SendButton
-              title="Start (⏎)"
-              icon={Telescope}
-              enabled={mayRun.current && !starting && !!question.trim() && !!agent}
-              onClick={() => void start()}
-            />
-          </div>
-          {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
-        </div>
         </div>
       </div>
-    </div>
+    {/if}
   </Stage>
   <ContextMenu {menu} />
 </RailSurface>

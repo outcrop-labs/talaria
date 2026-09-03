@@ -31,6 +31,7 @@
     tiers = [],
     conversationId,
     newChatSignal,
+    syncSignal = 0,
     onCreated,
     kind = 'chat',
     templateId,
@@ -45,6 +46,10 @@
     tiers?: string[]
     conversationId: string | null
     newChatSignal: number
+    /** An inbound nudge to re-read history — the surface knows about turns this
+     *  view's own pollers will not see (the Research run posts its scope
+     *  questions and report-ready turn straight into the conversation). */
+    syncSignal?: number
     onCreated: (id: string) => void
     /** 'plan' conversations live in the Plan surface and draft tickets.
      *  'research' conversations discuss a report on the Research surface — the
@@ -257,6 +262,15 @@
     const res = await loadConversation(id)
     if (res && convId === id) messages = res.messages.map(toDisplay)
   }
+
+  // The surface's nudge — see the prop. Same last-signal guard the doc panes
+  // use, so the effect only fires on a real bump.
+  let lastSync = syncSignal
+  $effect(() => {
+    if (syncSignal === lastSync) return
+    lastSync = syncSignal
+    void syncFromServer()
+  })
 
   const send = async (text: string) => {
     if (!text && attachments.length === 0) return

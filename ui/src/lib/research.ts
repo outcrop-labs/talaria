@@ -9,7 +9,10 @@ type MaybeGetter<T> = T | (() => T)
 const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type ResearchMode = 'recon' | 'brief' | 'expedition'
-export type ResearchStatus = 'queued' | 'running' | 'done' | 'error'
+/** 'awaiting' is its own value, not a shade of 'running': a run parked on a
+ *  question reads as waiting-on-you, never as working (the ticket-#5 lesson).
+ *  It still polls like an in-flight run — the answer can land any second. */
+export type ResearchStatus = 'queued' | 'running' | 'awaiting' | 'done' | 'error'
 
 export interface ResearchRun {
   id: string
@@ -25,7 +28,10 @@ export interface ResearchRun {
    *  panel at the top of the run's page. Null the rest of the time. */
   awaiting: RunQuestion | null
   artifactId: string | null
-  /** Null until the first message — the conversation is created on demand. */
+  /** The run's discussion, created with the run — the clarify question, the
+   *  scope ack, and the report-ready turn all land in it. Null for a run an
+   *  ownerless org-agent started (still readable, not talkable-in) and for old
+   *  rows predating eager conversations. */
   conversationId: string | null
   error: string | null
   stats: { queries?: number; sources?: number; cited?: number }
@@ -43,12 +49,14 @@ export interface ResearchSource {
 /** WHAT A PARKED RUN ASKS — the step's own question with the options it
  *  offered. Answers go back by option id; an id the step never declared is
  *  refused by the server, so the run can only ever be told something it wrote
- *  a branch for. */
+ *  a branch for. A `freeText` question is answered in the run's discussion —
+ *  the options are a placeholder, not buttons. */
 export interface RunQuestion {
   key: string
   question: string
   detail?: string
   options: Array<{ id: string; label: string; detail?: string }>
+  freeText?: boolean
 }
 
 export const MODE_META: Record<ResearchMode, { label: string; tagline: string; eta: string }> = {
@@ -61,9 +69,10 @@ export function useResearchRuns() {
   return createQuery(() => ({
     queryKey: ['research-runs'],
     queryFn: (): Promise<ResearchRun[]> => getList<ResearchRun>('/api/research', 'runs'),
-    // Live while anything is in flight.
+    // Live while anything is in flight — including parked: an answer in a
+    // discussion can resume a run between any two polls.
     refetchInterval: (q: { state: { data?: ResearchRun[] } }) =>
-      q.state.data?.some((r) => r.status === 'queued' || r.status === 'running') ? 3_000 : false,
+      q.state.data?.some((r) => r.status === 'queued' || r.status === 'running' || r.status === 'awaiting') ? 3_000 : false,
   }))
 }
 
@@ -77,7 +86,7 @@ export function useResearchRun(id: MaybeGetter<string | null>) {
         getJson<{ run: ResearchRun; sources: ResearchSource[] }>(`/api/research/${i}`),
       refetchInterval: (q: { state: { data?: { run: ResearchRun } } }) => {
         const s = q.state.data?.run.status
-        return s === 'queued' || s === 'running' ? 2_500 : false
+        return s === 'queued' || s === 'running' || s === 'awaiting' ? 2_500 : false
       },
     }
   })
