@@ -13,12 +13,12 @@ use talaria_api::conversations::{
     accessible_conversation, conversation_accessible, post_agent_turn,
 };
 use talaria_api::realtime::RealtimeDeps;
-use talaria_api::runs::decide::{DecideArgs, DecideResult, decide};
-use talaria_api::runs::real_decide_deps;
 use talaria_api::research::{
     add_research_member, awaiting_scope_answer, ensure_research_conversation, get_research_run,
 };
+use talaria_api::runs::decide::{DecideArgs, DecideResult, decide};
 use talaria_api::runs::define::{DecisionOption, DecisionRequest, RunDecision};
+use talaria_api::runs::real_decide_deps;
 use talaria_api::runs::store::{NewRun, PgRunStore, RunStore};
 
 async fn pool() -> PgPool {
