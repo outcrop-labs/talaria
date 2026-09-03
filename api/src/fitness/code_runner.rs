@@ -15,10 +15,11 @@
 //
 // THE TIMEOUT LIVES ON A THREAD, because boa has no wall-clock kill. The whole
 // task — definition plus every assertion — is evaluated inside one spawned
-// thread and the caller waits 250ms for its answer. A wrong `while (true) {}`
-// costs its 250ms and no more; the leaked thread is reaped shortly after by
-// the runtime limits below, so a run cannot shed unbounded threads the way a
-// run without limits could.
+// thread and the caller waits 250ms for its answer, counted from the moment
+// the engine is built (construction is our cost; the window times the
+// candidate's code). A wrong `while (true) {}` costs its 250ms and no more;
+// the leaked thread is reaped shortly after by the runtime limits below, so a
+// run cannot shed unbounded threads the way a run without limits could.
 //
 // THIS IS NOT A SECURITY SANDBOX and must never be described as one. It is here
 // because the alternative — grading code by asking another model whether it
@@ -158,7 +159,11 @@ fn same_value(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// How long the WHOLE task — definition plus every assertion — may run.
+/// How long the candidate's SCRIPT — definition plus every assertion — may
+/// run. The clock starts when the evaluator signals the engine is built:
+/// constructing a boa context is OUR cost, and a host slow enough that the
+/// build eats the window must fail the host, not a correct solution (CI's
+/// loaded runners proved the failure mode is real).
 ///
 /// A wrong regex loop is an ordinary small-model failure and it has to cost
 /// 250ms, not a wedged admin request. That is only true if the calls happen
@@ -208,18 +213,32 @@ fn read_code_result(reply: &str) -> Option<CodeReply> {
 
 /// The candidate's completion value, or the message for "the code did not run".
 /// Everything boa-related happens on the spawned thread; the caller's only
-/// concern is the clock.
+/// concern is the clock. The clock starts at the worker's READY signal —
+/// after context construction, before the first line of candidate code — so
+/// the window times the candidate, never our engine setup.
 fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
     let (tx, rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::channel();
     let worker = std::thread::Builder::new()
         .name("code-probe".into())
         .spawn(move || {
-            let outcome = run_in_boa(&script);
-            // The receiver may already be gone (timeout fired); a send error is
-            // not one, because nobody is waiting to hear it.
+            let mut context = build_boa_context();
+            // The clock starts here. The receiver may already be gone
+            // (timeout fired during evaluation); a send error is not one,
+            // because nobody is waiting to hear it.
+            let _ = ready_tx.send(());
+            let outcome = run_in_boa(&mut context, &script);
             let _ = tx.send(outcome);
         })
         .expect("spawning the code-probe thread is not a resource decision we make");
+    // Engine setup is untimed and bounded only by the worker's life: a slow
+    // build must not eat the candidate's window (the flake this split fixes),
+    // and a worker that dies mid-build surfaces as the same "did not come
+    // back" sentence an eval-time panic gets.
+    if ready_rx.recv_timeout(Duration::from_secs(30)).is_err() {
+        let _ = worker.join();
+        return Err("the evaluator did not come back".to_string());
+    }
     match rx.recv_timeout(Duration::from_millis(CODE_TIMEOUT_MS)) {
         Ok(outcome) => Ok(outcome),
         Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -238,12 +257,22 @@ fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
     }
 }
 
-fn run_in_boa(script: &str) -> EvalOutcome {
-    use boa_engine::{Context, Source};
+/// The engine the candidate runs in: a fresh context per probe (nothing a
+/// candidate defines can outlive its own evaluation), the runtime limits
+/// that reap a timed-out thread, and a stubbed console. Setup only — no
+/// candidate code runs in here, which is exactly why it sits outside the
+/// timed window.
+fn build_boa_context() -> boa_engine::Context {
+    use boa_engine::Context;
     let mut context = Context::default();
     let limits = context.runtime_limits_mut();
     limits.set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
     limits.set_recursion_limit(RECURSION_LIMIT);
+    context
+}
+
+fn run_in_boa(context: &mut boa_engine::Context, script: &str) -> EvalOutcome {
+    use boa_engine::Source;
     // `console` is stubbed rather than omitted: a model that left a debug log
     // in an otherwise correct function solved the problem, and a ReferenceError
     // for it would score our context instead of the model. Everything else the
