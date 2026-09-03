@@ -134,22 +134,36 @@ pub async fn unread_count(pg: &PgPool, user_id: &str) -> Result<i32, sqlx::Error
     Ok(n.0)
 }
 
-/// Mark specific notifications read, or all of the user's when ids is
-/// omitted — and when it is EMPTY, which folds into the same all-rows
-/// update.
+/// Mark specific notifications read, or all of the user's when neither
+/// selector is given — and when ids is EMPTY, which folds into the same
+/// all-rows update. `href` is the surface's selector: a page that was opened
+/// knows its own href, not the ids of whatever rows point at it, and marking
+/// by href clears exactly those rows without touching anything else. ids win
+/// over href when both arrive; an empty href folds into all, like empty ids.
 pub async fn mark_notifications_read(
     pg: &PgPool,
     user_id: &str,
     ids: Option<&[String]>,
+    href: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    match ids {
-        Some(list) if !list.is_empty() => {
+    match (ids, href) {
+        (Some(list), _) if !list.is_empty() => {
             sqlx::query(
                 "update notifications set read_at = now() \
                  where user_id = $1::uuid and id = any($2::uuid[]) and read_at is null",
             )
             .bind(user_id)
             .bind(list)
+            .execute(pg)
+            .await?;
+        }
+        (_, Some(href)) if !href.is_empty() => {
+            sqlx::query(
+                "update notifications set read_at = now() \
+                 where user_id = $1::uuid and href = $2 and read_at is null",
+            )
+            .bind(user_id)
+            .bind(href)
             .execute(pg)
             .await?;
         }
@@ -176,11 +190,11 @@ fn kind_class(kind: &str) -> Option<&'static str> {
         // Someone pointed at you on purpose.
         "mention" | "kb-comment" | "task-assigned" | "plan-share" | "research-share" => "mention",
         // Addressed to you, in a thread of your own.
-        "dm" | "agent-outreach" => "dm",
+        "dm" | "agent-outreach" | "agent-reply" => "dm",
         // Blocked on a human.
         "agent-problem" | "workbench-repo-request" => "agent_blocked",
         // Outcomes.
-        "research" | "task-status" => "work_complete",
+        "research" | "task-status" | "board_access" => "work_complete",
         // `judge_escalation` and `gap_reported` are NOT here on purpose: their
         // writers name the CLASS as the kind, which `notify_class_of` accepts
         // directly. A kind that is already the class it belongs to has nothing
@@ -1501,6 +1515,36 @@ pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn kinds_route_to_their_classes() {
+        // The pinned arms, one line per family, then the fall-through rule.
+        for (kind, class) in [
+            ("mention", "mention"),
+            ("kb-comment", "mention"),
+            ("plan-share", "mention"),
+            ("dm", "dm"),
+            ("agent-outreach", "dm"),
+            // A reply an agent filed in your thread — yours, like a DM. The
+            // arm exists ahead of its writer; routing lands first so the first
+            // row ever filed is already in the right bucket.
+            ("agent-reply", "dm"),
+            ("agent-problem", "agent_blocked"),
+            ("research", "work_complete"),
+            ("task-status", "work_complete"),
+            // An access request's outcome — the request was yours, but the
+            // notification is news, not a door. Explicit so the quiet bucket
+            // is a decision here, not the fall-through's default.
+            ("board_access", "work_complete"),
+            // Every class id is its own kind.
+            ("judge_escalation", "judge_escalation"),
+            ("gap_reported", "gap_reported"),
+        ] {
+            assert_eq!(notify_class_of(kind), class, "kind {kind}");
+        }
+        // An unknown kind lands in the quiet bucket, never the mail-defaults.
+        assert_eq!(notify_class_of("brand-new-kind"), "work_complete");
+    }
 
     #[test]
     fn resolve_fills_defaults_in_class_order() {

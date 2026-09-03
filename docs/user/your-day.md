@@ -55,7 +55,9 @@ already handling another Inbox action."
 
 ## Notifications
 
-Every notification is kept in your inbox. What reaches you as a toast or an email is per
+Every notification is kept in your inbox — the **bell** at the top right. Its count is what's
+unread; open it and the latest land on top. Clicking a row takes you there and marks it read;
+**Mark all read** clears the count. What reaches you as a toast or an email is per
 class (**Settings → Notifications**):
 
 | Class | About | Default |

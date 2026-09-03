@@ -1374,6 +1374,7 @@ CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, it
 CREATE INDEX messages_conv_idx ON public.messages USING btree (conversation_id, seq);
 CREATE INDEX messages_conversation_timeline_idx ON public.messages USING btree (conversation_id, created_at DESC, id DESC);
 CREATE INDEX messages_streaming_idx ON public.messages USING btree (created_at) WHERE (status = 'streaming'::text);
+CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_id) WHERE (read_at IS NULL);
 CREATE INDEX notifications_user_idx ON public.notifications USING btree (user_id, created_at DESC);
 CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (agent_model, kind, created_at DESC);
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);

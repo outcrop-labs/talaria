@@ -2657,6 +2657,13 @@ const MIGRATIONS: string[] = [
   `create unique index if not exists board_agent_requests_one_open
      on board_agent_requests (board_id, agent_model) where status = 'open'`,
 
+  // The unread scan every badge rides: the bell's count, /api/unreads, the
+  // brief's notification arm — all of them filter on exactly these rows. The
+  // partial index keeps the scan an index scan at any inbox size; the rows
+  // already read (the vast majority, forever) never enter the picture.
+  `create index if not exists notifications_unread_idx
+     on notifications (user_id) where read_at is null`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

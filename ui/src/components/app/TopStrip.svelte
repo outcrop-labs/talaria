@@ -62,6 +62,7 @@
 </script>
 
 <script lang="ts">
+  import NotificationBell from './NotificationBell.svelte'
   import UserMenu from './UserMenu.svelte'
   import CopyButton from '@/components/ui/CopyButton.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
@@ -123,6 +124,9 @@
          search / command palette yet — rendering the tile (or a ⌘K hint)
          would be a fabricated affordance (spec §7: no fabricated data).
          Add it here when a real search ships. -->
+    <!-- The bell before the account chip: what is waiting for you, then who
+         you are — the two things every view shares, right of every title. -->
+    <NotificationBell />
     <UserMenu {user} {onLogout} />
   </div>
 </header>
