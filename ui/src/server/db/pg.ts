@@ -2700,6 +2700,17 @@ const MIGRATIONS: string[] = [
   `create index if not exists push_subscriptions_user_idx
      on push_subscriptions (user_id)`,
 
+  // Ticket threads — a task's discussion becomes a conversations row of new
+  // kind 'ticket', linked the way research_runs links its discussion
+  // (conversation_id, nullable: the thread is opened on demand, never at
+  // task-create). on delete set null, the research precedent — an orphaned
+  // kind='ticket' conversation matches no access predicate and no rail: dead
+  // but harmless, rather than taking the history with the task.
+  `alter table tasks
+     add column if not exists conversation_id uuid
+     references conversations(id) on delete set null`,
+  `create index if not exists tasks_conversation_idx on tasks (conversation_id)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
