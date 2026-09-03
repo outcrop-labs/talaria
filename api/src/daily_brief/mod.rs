@@ -1620,11 +1620,27 @@ pub async fn mark_brief_item(
         .map_err(|e| format!("timezone read: {e}"))?;
     let zone = reader_zone(stored.as_deref(), tz, &config);
     let date = brief_window(&config, &zone, at).date;
-    let row = load_row(pg, &user.id, &date)
+    // THE DOCUMENT THE READER IS LOOKING AT, not "today's or none". The read
+    // serves the most recent readable document when today's has not opened
+    // yet (get_brief's NEVER-'pending'-OVER-A-READABLE-DOCUMENT rule) and
+    // promises that anything the owner checks off there is real work — a mark
+    // that resolved only today's row 404'd every action on that served page
+    // into a day that did not exist. Same resolution as the read: today's row
+    // when it exists, else the recent one. When today's DOES exist, only a
+    // stale tab can offer yesterday's key, and the miss below stays the
+    // deliberate stale-tab answer.
+    let row = match load_row(pg, &user.id, &date)
         .await
-        .map_err(|e| format!("brief read: {e}"))?;
-    let Some(row) = row else {
-        return Ok(ItemMark::refused("no brief today"));
+        .map_err(|e| format!("brief read: {e}"))?
+    {
+        Some(row) => row,
+        None => match load_recent_row(pg, &user.id, at)
+            .await
+            .map_err(|e| format!("recent brief read: {e}"))?
+        {
+            Some(recent) => recent,
+            None => return Ok(ItemMark::refused("no brief to mark")),
+        },
     };
 
     let entries = load_brief_entries(pg, &row.id)
