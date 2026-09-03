@@ -21,7 +21,7 @@
 | [`talaria box build`](#talaria-box-build) | rebuild the talaria-devbox:latest toolchain image |
 | [`talaria deploy up`](#talaria-deploy-up) | build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved |
 | [`talaria deploy down`](#talaria-deploy-down) | stop the stack (--volumes also deletes its data — destructive) |
-| [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, then the redeploy (up -d --build) |
+| [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, pull the api package, then the redeploy (up -d --build) |
 | [`talaria deploy logs`](#talaria-deploy-logs) | follow the stack's logs (Ctrl-C to detach) |
 | [`talaria deploy creds`](#talaria-deploy-creds) | where first-run access lives: the claim screen, not a generated password |
 | [`talaria deploy status`](#talaria-deploy-status) | effective port/state/fleet + compose ps |
@@ -170,7 +170,7 @@ talaria deploy down [--volumes]
 
 ### `talaria deploy update`
 
-git pull --ff-only, then the redeploy (up -d --build)
+git pull --ff-only, pull the api package, then the redeploy (up -d --build)
 
 ```
 talaria deploy update

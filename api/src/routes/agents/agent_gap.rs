@@ -116,8 +116,8 @@ pub async fn post(
             return refuse();
         }
         // A person has taken this ticket off the table (signed off, archived,
-        // or its board archived). The SAME predicate `agentSafePatch` asks:
-        // this route writes an activity line and never reaches `updateTask`.
+        // or its board archived). The SAME predicate `agent_safe_patch` asks:
+        // this route writes an activity line and never reaches `update_task`.
         // The agent IS allowed on this board, so this is the one refusal whose
         // board we can safely bind a retry to.
         let target = AgentWriteTarget {
