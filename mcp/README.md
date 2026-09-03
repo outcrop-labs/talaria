@@ -17,7 +17,7 @@ bypass them.
 | `get_ticket` | Full ticket: fields, comments, activity, watchers, reviews, dependencies |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
 | `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves → `in_progress` / `blocked` / `quality_review` (see below) |
-| `comment` | Comment on a ticket — the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
+| `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
 | `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger. Live tickets only |
