@@ -49,6 +49,10 @@ pub struct TurnMeta {
     pub agent_model: String,
     pub tier: Option<String>,
     pub plan: Option<PlanMeta>,
+    /// Research conversations carry one of the two research prompts, chosen by
+    /// the run's state at the turn — working while the run is, report-mode
+    /// once it has finished. None for every other kind.
+    pub research_prompt: Option<&'static str>,
 }
 
 // One continuation at a time per conversation (in-process guard — the check
@@ -102,11 +106,15 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
     // Chained plan turns carry the same plan-mode harness as live ones — and
     // the same handle note, for the same reason /api/chat adds it: a relay
     // minted while a reply was still streaming arrives on a QUEUED message,
-    // so the turn that finally reads it is this one.
+    // so the turn that finally reads it is this one. A chained research turn
+    // carries the same state-chosen prompt the live one got.
     let mut messages: Vec<Value> = Vec::new();
     if meta.plan.is_some() {
         let block = plan_routing_block(&state.pg).await;
         messages.push(json!({ "role": "system", "content": format!("{PLAN_MODE_PROMPT}{block}") }));
+    }
+    if let Some(prompt) = meta.research_prompt {
+        messages.push(json!({ "role": "system", "content": prompt }));
     }
     if mentions_handle(&last.content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
@@ -173,6 +181,7 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         prompt_chars,
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
+        research_prompt: meta.research_prompt,
     };
     // Detached — the chain's own tail continues it. The
     // plain-fn seam is load-bearing: this chain is continue → persist →
@@ -216,6 +225,8 @@ pub struct PersistMeta {
     pub prompt_chars: usize,
     pub tier: Option<String>,
     pub plan: Option<PlanMeta>,
+    /// Rides through to the continuation's TurnMeta — see TurnMeta.
+    pub research_prompt: Option<&'static str>,
 }
 
 /// Drain an assistant stream into the reply row.
@@ -506,6 +517,7 @@ pub async fn persist_assistant_stream(
                     agent_model: meta.agent_model,
                     tier: meta.tier,
                     plan: meta.plan,
+                    research_prompt: meta.research_prompt,
                 },
             )
             .await;

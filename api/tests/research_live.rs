@@ -12,6 +12,9 @@ use sqlx::postgres::PgPool;
 use talaria_api::conversations::{
     accessible_conversation, conversation_accessible, post_agent_turn,
 };
+use talaria_api::realtime::RealtimeDeps;
+use talaria_api::runs::decide::{DecideArgs, DecideResult, decide};
+use talaria_api::runs::real_decide_deps;
 use talaria_api::research::{
     add_research_member, awaiting_scope_answer, ensure_research_conversation, get_research_run,
 };
@@ -272,4 +275,118 @@ async fn a_parked_scope_run_reads_as_awaiting_with_its_free_text_question() {
         .await
         .unwrap();
     sweep_user_rows(&pg, "awaiting-owner").await;
+}
+
+/// The resume hook's whole contract: a conversation's parked scope run is
+/// findable BEFORE the answer and gone AFTER — a reply is spent once, not
+/// re-spent on every message that follows. The answer is spent through
+/// decide() exactly the way the chat hook spends it (minus the detached
+/// resume, which a test does not want).
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL, REDIS_URL)"]
+async fn answering_the_scope_park_clears_the_resume_hook() {
+    let pg = pool().await;
+    let owner = fabricate_user(&pg, "resume-owner").await;
+    let id = fabricate_parked_scope_run(&pg, &owner, "which cache, and how warm?").await;
+    let conv = get_research_run(&pg, &id)
+        .await
+        .unwrap()
+        .expect("the run reads back")
+        .0
+        .conversation_id
+        .expect("the discussion exists");
+
+    // BEFORE: the hook finds exactly this run.
+    assert_eq!(
+        awaiting_scope_answer(&pg, &conv).await.unwrap().as_deref(),
+        Some(id.as_str())
+    );
+
+    // THE ANSWER, the chat hook's call verbatim. decide() resolves who may
+    // answer through the kind's registered definition, which registers on
+    // first use — a test binary that never started a run must touch it.
+    let _ = talaria_api::runs::defs::research::research_run();
+    let redis_url =
+        std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env) for the decide deps");
+    let redis = redis::aio::ConnectionManager::new(
+        redis::Client::open(redis_url).expect("parse redis url"),
+    )
+    .await
+    .expect("connect redis");
+    let deps = real_decide_deps(
+        pg.clone(),
+        redis.clone(),
+        RealtimeDeps::publish_only(Some(redis)),
+    );
+    let res = decide(
+        DecideArgs {
+            run_id: id.clone(),
+            option_id: "answered".into(),
+            note: Some("redis, and it must survive a restart".into()),
+            by: owner.clone(),
+            start: Some(false), // queued for the sweep, not driven here
+        },
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(res, DecideResult::Decided { .. }),
+        "the owner's reply answers its own run, got {res:?}"
+    );
+
+    // AFTER: the hook finds nothing — the next message in this conversation
+    // is a persona turn again, not a second answer to a spent question.
+    assert_eq!(awaiting_scope_answer(&pg, &conv).await.unwrap(), None);
+
+    // And the authority is decide()'s, not the hook's: a run MEMBER can chat
+    // in this conversation but cannot answer the owner's park — their
+    // message spends nothing, and the run stays parked for the owner.
+    let member = fabricate_user(&pg, "resume-member").await;
+    let id2 = fabricate_parked_scope_run(&pg, &owner, "a second, member-watched ask").await;
+    add_research_member(&pg, &id2, &member).await.unwrap();
+    let conv2 = get_research_run(&pg, &id2)
+        .await
+        .unwrap()
+        .expect("the second run reads back")
+        .0
+        .conversation_id
+        .expect("its discussion exists");
+    let res2 = decide(
+        DecideArgs {
+            run_id: id2.clone(),
+            option_id: "answered".into(),
+            note: Some("speaking as a member, not the owner".into()),
+            by: member.clone(),
+            start: Some(false),
+        },
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            res2,
+            DecideResult::Refused {
+                reason: talaria_api::runs::decide::DecideRefusal::Forbidden,
+                ..
+            }
+        ),
+        "a member does not answer the owner's park, got {res2:?}"
+    );
+    assert_eq!(
+        awaiting_scope_answer(&pg, &conv2).await.unwrap().as_deref(),
+        Some(id2.as_str()),
+        "refused spends nothing — still parked"
+    );
+
+    for row_id in [&id, &id2] {
+        sqlx::query("delete from runs where id = $1::uuid")
+            .bind(row_id)
+            .execute(&pg)
+            .await
+            .unwrap();
+    }
+    sweep_user_rows(&pg, "resume-owner").await;
+    sweep_user_rows(&pg, "resume-member").await;
 }
