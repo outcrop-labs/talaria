@@ -12,7 +12,7 @@
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 13 |
 | [`activity`](./activity.md) | What happened, what it cost, what needs you. | 8 |
-| [`admin`](./admin.md) | Instance administration (admin session required). | 24 |
+| [`admin`](./admin.md) | Instance administration (admin session required). | 25 |
 | [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 15 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views. | 11 |

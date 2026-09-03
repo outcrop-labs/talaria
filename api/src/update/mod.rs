@@ -27,8 +27,10 @@
 // every verb: an install that isn't `image` mode gets a sentence, never a
 // container.
 pub mod docker;
+pub mod job;
 pub mod layout;
 pub mod mode;
 pub mod registry;
 pub mod render;
+pub mod roll;
 pub mod state;

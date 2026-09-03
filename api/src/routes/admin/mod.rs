@@ -19,5 +19,6 @@ pub mod admin_search;
 pub mod admin_secrets;
 pub mod admin_settings;
 pub mod admin_storage;
+pub mod admin_updates;
 pub mod admin_users;
 pub mod admin_workspace_secrets;

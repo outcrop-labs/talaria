@@ -124,9 +124,10 @@ impl JobName {
 /// The jobs whose absence is SILENCE, and so must fail the boot check loudly.
 /// The two optional jobs (mcp-library-refresh, update-check) are out: their
 /// failure mode is a slower first load or a stale "last checked" next to a
-/// switch the panel shows, not work that silently never happens. BlurbRewrite
-/// is in for the reason above — a dark org-voice sweep is exactly the
-/// criterion.
+/// switch the panel shows, not work that silently never happens — and
+/// update-check is a designed no-op on every install that has not adopted
+/// the update engine. BlurbRewrite is in for the reason above — a dark
+/// org-voice sweep is exactly the criterion.
 pub const REQUIRED_JOBS: &[JobName] = &[
     JobName::CommsDecay,
     JobName::OutreachSweep,

@@ -19,14 +19,13 @@
 // A kind reappearing in it is a def module that fell out of the boot list
 // below.
 //
-// update-check is the one deliberate absence from the job table, and it is a
-// HOLD, not an oversight: its apply half pulls, rebuilds ui/dist and restarts
-// the app — choreography that cannot rebuild or restart THIS binary, so an
-// update driven from here would leave the artifacts diverged with a green
-// checkmark. Its state, check and reconcile halves stay reachable through
-// the admin routes, manual apply keeps working there, and the auto half
-// returns when the restart topology can drive this binary too. Recorded in
-// docs/RUST-MIGRATION.md.
+// update-check rides the same table now (api/src/update/job.rs): the
+// restart-topology HOLD it sat under is retired by the update engine — a
+// roll replaces the whole CONTAINER (slots behind an edge), so the binary
+// that choreographs a roll is under no obligation to survive it. The job
+// stays out of REQUIRED_JOBS: on the dormant installs (checkout, dev,
+// off) it is an honest no-op, and a missing no-op is not work that
+// silently never happened.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,9 +87,13 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state: state.clone(),
     }));
     // The optional pair. mcp-library-refresh is per-instance cache warming
-    // and arms on every Rust instance; update-check is the hold named in the
-    // module header and deliberately registers nothing.
+    // and arms on every Rust instance; update-check self-gates by install
+    // mode (a quiet no-op on checkout/dev/off) and by adoption — the
+    // engine acts only on instances that handed over the keys.
     crate::mcp::library::register_mcp_library_refresh_job(crate::mcp::library::library());
+    crate::update::job::register_update_check_job(Arc::new(crate::update::job::UpdateCheckDeps {
+        state: state.clone(),
+    }));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -251,12 +254,17 @@ mod tests {
             names.contains(&JobName::McpLibraryRefresh),
             "mcp-library-refresh fell out of the job table"
         );
-        // The hold, pinned: update-check does not register, and the day it
-        // does is the day the hold note in this module's header retires
-        // with it.
+        // The retired hold, pinned from the other side: update-check IS in
+        // the table now (the update engine's restart topology landed with
+        // it), and it stays out of REQUIRED_JOBS — a no-op job on dormant
+        // installs must not fail anyone's boot.
         assert!(
-            !names.contains(&JobName::UpdateCheck),
-            "update-check registered — retire the hold note in this module's header and the census"
+            names.contains(&JobName::UpdateCheck),
+            "update-check fell out of the job table — the scheduled check silently stopped"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::UpdateCheck),
+            "update-check must stay optional: dormant installs legitimately run it as a no-op"
         );
     }
 
