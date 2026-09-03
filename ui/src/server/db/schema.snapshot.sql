@@ -660,7 +660,8 @@ CREATE TABLE public.messages (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     author_user_id uuid,
     guard jsonb,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    streamed_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.model_blurbs (
     model_id text NOT NULL,

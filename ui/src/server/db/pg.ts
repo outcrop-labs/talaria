@@ -2824,6 +2824,15 @@ const MIGRATIONS: string[] = [
   -- its comments here (called out above) — the cutover is worth that edge.
 drop table if exists task_comments`,
 
+  // When a streaming assistant row last moved. Age (created_at) was the only
+  // liveness signal the sweep and the working flags had, and a long agent
+  // turn — the kind that builds a knowledgebase for an hour — reads as dead
+  // at ten minutes while it is still streaming. The persist loop stamps this
+  // on every flush; liveness becomes "is it still writing", not "is it old".
+  // Existing rows stamp at migration time, which only ever ages a stale
+  // streaming row into the sweep one boot sooner — the honest direction.
+  `alter table messages add column if not exists streamed_at timestamptz not null default now()`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

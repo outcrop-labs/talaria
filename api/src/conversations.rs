@@ -124,6 +124,10 @@ pub async fn prior_messages(
     pg: &PgPool,
     sb: &SecretBox,
     conversation_id: &str,
+    // A row to leave out — the auto-resume re-drive names the dead attempt's
+    // own row here, so the agent re-hears the conversation as it stood when
+    // the attempt began, not its own death notice. None everywhere else.
+    exclude: Option<&str>,
 ) -> Result<Vec<PriorMessage>, sqlx::Error> {
     struct Row {
         role: String,
@@ -146,9 +150,11 @@ pub async fn prior_messages(
          left join users u on u.id = m.author_user_id \
          where m.conversation_id = $1::uuid and m.role in ('user','assistant') \
            and (m.content <> '' or m.attachments <> '[]'::jsonb) \
+           and ($2::uuid is null or m.id <> $2::uuid) \
          order by m.seq asc",
         )
         .bind(conversation_id)
+        .bind(exclude)
         .fetch_all(pg)
         .await?
         .into_iter()
@@ -322,7 +328,7 @@ pub async fn list_conversations(
                 exists( \
                   select 1 from messages m \
                   where m.conversation_id = c.id and m.role = 'assistant' \
-                    and m.status = 'streaming' and m.created_at > now() - interval '10 minutes' \
+                    and m.status = 'streaming' and m.streamed_at > now() - interval '5 minutes' \
                 ), \
                 coalesce(( \
                   select m.status = 'error' from messages m \
@@ -735,16 +741,21 @@ pub async fn insert_user_message(
     Ok(id)
 }
 
-/// The conversation's in-flight assistant reply, if any. A streaming row
-/// older than 10 minutes is a
-/// crashed persist — mark it errored and report none, so a dead stream can
-/// never wedge the conversation's turn-taking.
+/// The conversation's in-flight assistant reply, if any. A streaming row that
+/// has not MOVED in 15 minutes is a crashed persist — mark it errored and
+/// report none, so a dead stream can never wedge the conversation's
+/// turn-taking. The signal is `streamed_at` (stamped on every flush), not the
+/// row's age: a long agent turn — the kind that builds out a knowledgebase —
+/// streams tool progress for an hour, and age alone would kill it at ten
+/// minutes while it was still working. Fifteen minutes of SILENCE is the
+/// honest bar: the drain loop owns a 10-minute idle ceiling (chat_persist's
+/// STREAM_IDLE), so a row this quiet means its writer is gone.
 pub async fn active_streaming_assistant(
     pg: &PgPool,
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String, bool)> = sqlx::query_as(
-        "select id::text, created_at < now() - interval '10 minutes' as stale \
+        "select id::text, streamed_at < now() - interval '15 minutes' as stale \
          from messages \
          where conversation_id = $1::uuid and role = 'assistant' and status = 'streaming' \
          order by seq desc limit 1",
@@ -756,10 +767,20 @@ pub async fn active_streaming_assistant(
         None => Ok(None),
         Some((id, stale)) => {
             if stale {
-                sqlx::query("update messages set status = 'error' where id = $1::uuid")
-                    .bind(&id)
-                    .execute(pg)
-                    .await?;
+                // The reason lands only on an EMPTY row: a writer that died
+                // mid-prose keeps its prose (the mark renders beside it), and
+                // this sweep is the last-resort writer — the normal death
+                // paths put a better sentence in the row themselves.
+                sqlx::query(
+                    "update messages set status = 'error', \
+                        content = case when content = '' \
+                          then '(agent error: the stream writer vanished mid-turn)' \
+                          else content end \
+                     where id = $1::uuid",
+                )
+                .bind(&id)
+                .execute(pg)
+                .await?;
                 Ok(None)
             } else {
                 Ok(Some(id))
@@ -810,7 +831,10 @@ pub async fn insert_streaming_assistant(
 }
 
 /// Flush accumulated assistant state — throttled during streaming, final at
-/// end.
+/// end. Every flush also stamps `streamed_at`, which is the row's liveness
+/// signal everywhere liveness is asked about (the sweep above, the sidebar's
+/// working flag): a streaming row that is still writing is still alive,
+/// however long the turn runs.
 pub async fn update_assistant(
     pg: &PgPool,
     message_id: &str,
@@ -820,7 +844,8 @@ pub async fn update_assistant(
     status: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "update messages set content = $2, reasoning = $3, tools = $4, status = $5 \
+        "update messages set content = $2, reasoning = $3, tools = $4, status = $5, \
+            streamed_at = now() \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -831,6 +856,59 @@ pub async fn update_assistant(
     .execute(pg)
     .await?;
     Ok(())
+}
+
+/// Put a dead turn back to work: same row, blank slate, streaming again. The
+/// auto-resume path's move — a resurrected turn keeps its place in the
+/// transcript (no duplicate bubble) and the working indicators come back on
+/// (the stamp below is what they read). Content and tools clear because the
+/// re-driven turn re-derives them; a half-arrival left behind would read as
+/// the agent's own words.
+pub async fn resurrect_streaming_assistant(
+    pg: &PgPool,
+    message_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages set content = '', reasoning = '', tools = '[]'::jsonb, \
+            status = 'streaming', streamed_at = now() \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Stamp a turn as having been auto-resumed. Merged like every metadata
+/// stamp; the UI reads it to mark the turn, and the resume path reads it to
+/// retry exactly once — a turn that dies twice is a human's to look at.
+pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages \
+         set metadata = coalesce(metadata, '{}'::jsonb) || '{\"resumed\": true}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The resume gate's re-read: is the row still the errored turn the backoff
+/// left behind — neither nudged complete by some other writer, nor already
+/// resumed once? Key-existence, not a cast of the value: the stamp is written
+/// by mark_message_resumed and read by no SQL that cares about its value.
+pub async fn message_still_errored(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error> {
+    let (live,): (bool,) = sqlx::query_as(
+        "select exists ( \
+            select 1 from messages \
+            where id = $1::uuid and status = 'error' \
+              and not coalesce(metadata, '{}'::jsonb) ? 'resumed')",
+    )
+    .bind(message_id)
+    .fetch_one(pg)
+    .await?;
+    Ok(live)
 }
 
 /// Pin confab-guard findings to a reply. Metadata only — the UI renders a

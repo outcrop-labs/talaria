@@ -32,6 +32,9 @@ export interface StoredMessage {
   authorLabel?: string | null
   /** Confab-guard findings pinned to a reply (annotate/strict modes). */
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
+  /** Row-level stamps; `resumed` marks a turn the server auto-resumed after
+   *  its stream died mid-flight. */
+  metadata?: { resumed?: boolean } | null
 }
 
 export interface PlanMember {

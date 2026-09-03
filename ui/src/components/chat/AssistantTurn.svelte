@@ -32,6 +32,15 @@
   const tools = $derived(message.tools ?? [])
   const hasTools = $derived(tools.length > 0)
   const empty = $derived(!message.content && !hasReasoning && !hasTools)
+  // The server writes a dead turn's reason INTO the row's content —
+  // "(agent error: …)" — so the explanation survives reloads and reaches the
+  // next turn's history. Render it as the error mark, not body prose: it's a
+  // system fact about the turn, not something the agent said.
+  const agentErrorNote = $derived(
+    message.status === 'error' && message.content.startsWith('(agent error:')
+      ? message.content.replace(/^\(agent error:\s*/, '').replace(/\)$/, '')
+      : null,
+  )
 </script>
 
 <div in:fade={{ duration: 150 }} class="flex gap-2.5" oncontextmenu={onContextMenu}>
@@ -73,7 +82,15 @@
       </Disclosure>
     {/if}
 
-    {#if message.content}
+    <!-- The auto-resume's visible half: the row the person watched die is
+        back to streaming (metadata.resumed), so say THAT instead of letting a
+        cleared-and-refilling turn read as a fresh unexplained one. -->
+    {#if live && message.resumed}
+      <div class="font-mono text-[10px] tracking-[0.05em] text-muted">
+        ↻ stream dropped — picking the turn back up…
+      </div>
+    {/if}
+    {#if message.content && agentErrorNote === null}
       <StreamText
         content={resolveAgentMedia(message.content, agentModel)}
         live={live}
@@ -95,11 +112,18 @@
     {#if !live && message.status === 'streaming'}
       <div class="font-mono text-[11px] text-muted">· saved (was in progress)</div>
     {/if}
+    {#if !live && message.resumed}
+      <div class="font-mono text-[10px] tracking-[0.05em] text-ink-dim">↻ resumed after a dropped stream</div>
+    {/if}
     {#if !live && message.status === 'error'}
       <div class="text-xs" style:color="var(--theme-danger)">
-        {empty
-          ? 'The agent returned nothing. Its model may not be routable; check its config and /models.'
-          : '· interrupted'}
+        {#if agentErrorNote}
+          {agentErrorNote}
+        {:else if empty}
+          The agent returned nothing. Its model may not be routable; check its config and /models.
+        {:else}
+          · interrupted
+        {/if}
       </div>
     {/if}
   </div>

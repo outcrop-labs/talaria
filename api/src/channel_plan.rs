@@ -257,7 +257,7 @@ pub async fn plan_from_conversation(
     // A degraded secretbox is a transcript whose file tail quietly isn't
     // there — per-file catch, not a failure.
     let sb = state.secretbox().await.unwrap_or_default();
-    let msgs = prior_messages(&state.pg, &sb, conversation_id)
+    let msgs = prior_messages(&state.pg, &sb, conversation_id, None)
         .await
         .map_err(|e| e.to_string())?;
     let transcript = msgs
