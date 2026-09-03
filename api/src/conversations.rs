@@ -15,8 +15,10 @@ use crate::uploads::attachment_text_blocks;
 
 /// The access gate, reduced to the question its callers that only gate ask:
 /// does this row exist for this person? The WHERE clause is the whole rule —
-/// the OWNER, or (a PLAN, and a member): a chat does not admit
-/// collaborators, and that distinction is decided here and nowhere else.
+/// the OWNER, or (a PLAN, and a member), or (RESEARCH, and the run says so):
+/// a chat does not admit collaborators, research access follows the RUN
+/// (research_runs/research_members decide — the same leg get_conversation
+/// carries), and these distinctions are decided here and nowhere else.
 /// Re-deciding it at a call site would be a second answer.
 pub async fn conversation_accessible(
     pg: &PgPool,
@@ -25,10 +27,16 @@ pub async fn conversation_accessible(
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(i32,)> = sqlx::query_as(
         "select 1 from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan') \
-           and (c.user_id = $2::uuid or (c.kind = 'plan' and exists( \
-             select 1 from conversation_members cm \
-             where cm.conversation_id = c.id and cm.user_id = $2::uuid))) \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+           and (c.user_id = $2::uuid \
+             or (c.kind = 'plan' and exists( \
+               select 1 from conversation_members cm \
+               where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+             or (c.kind = 'research' and exists( \
+               select 1 from research_runs r \
+                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
+                where r.conversation_id = c.id \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null)))) \
          limit 1",
     )
     .bind(conversation_id)
@@ -39,7 +47,9 @@ pub async fn conversation_accessible(
 }
 
 /// The same predicate with the one column the plan-draft POST needs after it
-/// passes: the conversation's own agent, which drafts. None covers both "not
+/// passes: the conversation's own agent, which drafts. Research rows pass the
+/// gate (they must not be refused here) but carry no drafting meaning — the
+/// plan-draft route requires kind='plan' on top. None covers both "not
 /// accessible" and "accessible but agentless", and the route answers
 /// 'plan not found' for both, never leaking which.
 pub async fn accessible_conversation_agent(
@@ -49,10 +59,16 @@ pub async fn accessible_conversation_agent(
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "select agent_model from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan') \
-           and (c.user_id = $2::uuid or (c.kind = 'plan' and exists( \
-             select 1 from conversation_members cm \
-             where cm.conversation_id = c.id and cm.user_id = $2::uuid))) \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+           and (c.user_id = $2::uuid \
+             or (c.kind = 'plan' and exists( \
+               select 1 from conversation_members cm \
+               where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+             or (c.kind = 'research' and exists( \
+               select 1 from research_runs r \
+                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
+                where r.conversation_id = c.id \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null)))) \
          limit 1",
     )
     .bind(conversation_id)
@@ -183,10 +199,16 @@ pub async fn accessible_conversation(
                     case when user_id = $2::uuid then 'owner' else 'collaborator' end, \
                     plan_template_id::text \
              from conversations c \
-             where id = $1::uuid and kind in ('chat', 'plan') \
-               and (user_id = $2::uuid or (kind = 'plan' and exists( \
-                 select 1 from conversation_members cm \
-                 where cm.conversation_id = c.id and cm.user_id = $2::uuid)))",
+             where id = $1::uuid and kind in ('chat', 'plan', 'research') \
+               and (user_id = $2::uuid \
+                 or (kind = 'plan' and exists( \
+                   select 1 from conversation_members cm \
+                   where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+                 or (kind = 'research' and exists( \
+                   select 1 from research_runs r \
+                     left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
+                    where r.conversation_id = c.id \
+                      and (r.owner_user_id = $2::uuid or rm.user_id is not null))))",
     )
     .bind(conversation_id)
     .bind(user_id)

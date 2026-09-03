@@ -10,6 +10,10 @@
 // The gate is the conversation-ownership rule (conversations.rs): the owner,
 // or a collaborator of a plan. The 404 body says 'plan not found' for both a
 // missing conversation and an inaccessible one — never leaking which.
+// The ownership rule now also admits RESEARCH conversations (their access
+// follows the run), which this surface must refuse: a research discussion is
+// not a plan, so `draftable_conversation` re-narrows to the kinds that have
+// always drafted here — plans, and the chats the rule has always admitted.
 
 use crate::body::{as_object, parse};
 use crate::conversations::{accessible_conversation_agent, conversation_accessible};
@@ -27,6 +31,19 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use sqlx::PgPool;
+
+/// Drafting is a PLANS surface: the general access predicates admit research
+/// conversations now, but a research discussion is not a plan. One read says
+/// whether this id is one of the kinds that have always drafted here.
+async fn draftable_conversation(pg: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let row: Option<(bool,)> =
+        sqlx::query_as("select kind in ('chat', 'plan') from conversations where id = $1::uuid")
+            .bind(id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.map(|(draftable,)| draftable).unwrap_or(false))
+}
 
 pub async fn get(
     State(state): State<AppState>,
@@ -40,6 +57,14 @@ pub async fn get(
     // a non-uuid id answers the 500 here — it never reaches the uuid bind.
     if let Some(gate) = uuid_gate("plans", "GET draft", &id) {
         return gate;
+    }
+    match draftable_conversation(&state.pg, &id).await {
+        Ok(true) => {}
+        Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
+        Err(e) => {
+            tracing::error!("[plans] kind read on GET draft failed: {e}");
+            return thrown_internal_error();
+        }
     }
     match conversation_accessible(&state.pg, &user.id, &id).await {
         Ok(true) => {}
@@ -70,6 +95,14 @@ pub async fn post(
     };
     if let Some(gate) = uuid_gate("plans", "POST draft", &id) {
         return gate;
+    }
+    match draftable_conversation(&state.pg, &id).await {
+        Ok(true) => {}
+        Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
+        Err(e) => {
+            tracing::error!("[plans] kind read on POST draft failed: {e}");
+            return thrown_internal_error();
+        }
     }
     // The conversation's own agent drafts — the body cannot name one. None
     // covers "not accessible" and "no agent" both, and the 404 never says
