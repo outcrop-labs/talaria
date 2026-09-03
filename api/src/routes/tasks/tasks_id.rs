@@ -512,16 +512,22 @@ pub async fn delete(
     if !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    // Comments ride the task's foreign keys, so their ids are read before the
-    // row dies — the delete takes the ticket's and every comment's activity
-    // point out of the brain too, so no dead text answers searches while a
-    // reindex is nowhere in sight.
-    let comment_ids: Vec<String> =
-        sqlx::query_scalar("select id::text from task_comments where task_id = $1::uuid")
-            .bind(&id)
-            .fetch_all(&state.pg)
-            .await
-            .unwrap_or_default();
+    // Comments are thread turns: their ids are the messages of the task's
+    // conversation, read before the row dies — the delete takes the ticket's
+    // and every comment's activity point out of the brain too, so no dead
+    // text answers searches while a reindex is nowhere in sight. The thread
+    // itself survives the task (on delete set null) as an orphan nothing can
+    // read — no task row, no reader — so this unindex is what actually
+    // retires its turns.
+    let comment_ids: Vec<String> = sqlx::query_scalar(
+        "select m.id::text from messages m \
+         join tasks t on t.conversation_id = m.conversation_id \
+         where t.id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_all(&state.pg)
+    .await
+    .unwrap_or_default();
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     match delete_task(&deps, &id).await {
         Ok(()) => {

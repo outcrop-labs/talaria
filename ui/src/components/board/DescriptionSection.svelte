@@ -18,6 +18,7 @@
     canEdit,
     mentions,
     onSave,
+    mode = $bindable('read'),
     editor = $bindable(null),
   }: {
     title: string
@@ -25,13 +26,17 @@
     canEdit: boolean
     mentions?: Mentionable[]
     onSave: (md: string) => void
+    /** Read/Edit is the PARENT'S to know: the ticket gates its Muse bar on
+     *  "the description is being edited". The parent owns the initial too
+     *  (it used to live here as "canEdit && empty → edit"), so bind it —
+     *  the fallback only serves a caller that doesn't care. */
+    mode?: 'read' | 'edit'
     /** Exposes the live editor handle (selection-scoped Muse) — bind:editor.
      *  (React forwarded a ref; here it's a bindable prop fed by bind:this.) */
     editor?: RichEditorHandle | null
   } = $props()
 
   let draft = $state(value)
-  let mode = $state<'read' | 'edit'>(canEdit && !value ? 'edit' : 'read')
   let reading = $state(false)
   // Bumped on every save so the other (unfocused) editor instance remounts with
   // the latest draft — keeps the inline + expanded views in sync.

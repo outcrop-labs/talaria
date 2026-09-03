@@ -4,6 +4,16 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Fixed
+
+- **The code probe's clock starts at the candidate, not the engine.** The
+  fitness code tasks ran inside a 250ms window that also covered building
+  the boa context evaluating them — on a loaded host (CI's runners proved
+  it) a cold context build ate the whole window and a correct solution
+  failed with "the code did not run". The evaluator now signals when the
+  engine is built and the window times only the candidate's script;
+  an infinite loop still costs its 250ms exactly as before.
+
 ### Added
 
 - **The update engine learns to render its slots.** The updater-owned
@@ -25,6 +35,35 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   could never act); dormancy is the adoption gate, and operators who want
   the hard switch set the env themselves. Still nothing routes to any of
   this: no behavior change for any running install.
+- **Agents developing Talaria get their own floor.** `AGENTS.md` is the
+  canonical instruction file for anyone — human or agent, on any harness —
+  coding in this repo: the distilled rules, the command map, environment
+  facts (ports, worktree isolation), parallel-session etiquette, the skills
+  index, and the do-not-touch list, kept under ~200 lines because it loads
+  into agent context at launch; `CLAUDE.md` is a stub importing it, since
+  Claude Code reads `CLAUDE.md` while opencode, Pi, Oh My Pi, and Codex read
+  `AGENTS.md` directly. Four skills (`.claude/skills/`: dev-loop, repo-traps,
+  ship-a-change, cut-release) carry the procedures — frontmatter `name` +
+  `description` so Claude Code and opencode both discover them natively, with
+  the AGENTS.md index as the path for everything else — including the
+  operational traps that cost real time, each phrased symptom → check → fix
+  and verified against the code they describe (the session-mint field order
+  against `api/src/session.rs`, the scheduler kill switch against
+  `api/src/scheduler.rs`). The stop gate is a harness-agnostic library:
+  `scripts/hooks/stop-check.mjs` runs `bun run check` (seconds, zero
+  dependencies) under one contract — exit 0 silent pass, exit 2 block with
+  the reason on stderr, anything else a non-blocking error — wired into
+  Claude Code by a tracked `.claude/settings.json` holding only the Stop
+  hook; permissions stay personal in the untracked `settings.local.json`,
+  which the tracked `.gitignore` now covers along with `.claude/worktrees/`.
+  How the layers fit and how each harness consumes them is documented at
+  `docs/AGENT-TOOLING.md`. Also corrects the stale "frozen at cutover" notes
+  about `docs/api/` in CONTRIBUTING.md and DEVELOPERS.md — the #293 extractor
+  landed; the reference is generated. Verified: `bun run check` green from a
+  checkout with no `node_modules` (every new link resolves, no generated
+  drift), the hook standalone passes silent and exits 2 on a planted dead doc
+  link, `git check-ignore` proves both new ignores, and Claude Code loads the
+  stub and lists the four skills (`/context`, `/skills`).
 
 - **The update engine's foundation lands — dormant by design.** `api/src/update/`
   is the groundwork for the app rolling its own container: install modes
@@ -224,6 +263,72 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   allocation and decision execution actually race.
 
 ### Fixed
+
+
+- **Long agent turns finish instead of dying as "· interrupted."** Diagnosed
+  from a fleet deploy: a knowledgebase-build turn that ran past ten minutes
+  was killed by the API's own request timeout — a total 600s ceiling on the
+  agent stream — while the agent's container was still working; the partial
+  reply was dropped, the row landed as a bare error the chat rendered as
+  "· interrupted", and nothing retried. (Compaction was never the culprit —
+  it happens inside the container and simply made the turn long.) The turn
+  now ends only on SILENCE: frames flowing — deltas, tool progress,
+  keep-alives — keep it alive however long the work takes, with a tunable
+  idle ceiling (`TALARIA_AGENT_IDLE_SECS`, default 10 min, floored at 1) and
+  a bounded wait only for the stream to open. Liveness throughout is the
+  last write, not the row's age: a new `streamed_at` stamps every flush, and
+  the stale sweep, the sidebar's working flag, and the generating pulse all
+  read it — an hour-long turn no longer reads as dead at ten minutes. A
+  stream that does die is retried once, ON THE SAME ROW, after a short
+  backoff: the row is resurrected to streaming and the turn re-driven with
+  its own failed attempt excluded from the history, and the chat visibly
+  picks it back up ("↻ stream dropped — picking the turn back up…") rather
+  than sitting on an error. The error itself is now an explanation — the
+  row's content says what happened ("the agent's stream went silent for
+  600s mid-turn", the container's own failure reason when it refuses)
+  instead of a bare interrupted mark, and it survives reloads and reaches
+  the next turn's history. A turn that dies twice stays down for a person
+  to look at; an agent's refusal (the failure frame) is never retried.
+
+- **Agents can build out a knowledge space, not just append to it.**
+  Reported live from a fleet deploy: an agent asked to put a space's intro
+  and table of contents on the space page itself had no tool that could
+  reach it — `create_kb_space` writes a landing body only at creation, and
+  nothing after can edit it — so the content landed in a lookalike
+  top-level doc, and with no move or delete the misfile couldn't be
+  corrected, only duplicated. Three tools close the gap. `edit_kb_space`
+  (name, description, icon, and the landing markdown; admission mirrors
+  doc edits — authorship, an editor grant, or an elevated assistant on
+  non-private material — and sharing fields stay human-only).
+  `move_kb_doc` (nest under a same-space parent, lift to the space's top
+  level, or reorder among siblings), under the same edit admission the
+  doc's PUT already grants. And `delete_kb_doc`, deliberately narrower
+  than the edit beside it: an edit is versioned and recoverable, a delete
+  is not, so an agent deletes only docs it created and re-files anything
+  else (`move_kb_doc` re-files without destroying). Doc deletes now land
+  in the audit log whoever pulled the trigger. All three are mirrored
+  through the fitness lockstep — catalog, sandbox backends, exercise
+  tests — so the toolkit the next agent is trained against knows them.
+
+- **API-CONVENTIONS tells the current truth.** The page still described a TS
+  route tier the cutover deleted: the reference "frozen until #293" (the
+  extractor landed — it is generated, and drift fails check), a TS twin of the
+  agent-ticket predicate in `server/tasks.ts` (the file is gone; the predicate
+  lives once, in `api/src/tasks.rs` — `agent_safe_patch` through `update_task`,
+  the exported `agent_ticket_refusal` for every door that never reaches the
+  patch), an invariants table naming rules that left with those routes
+  (rewritten against the live script: swallowed query errors, flattened query
+  results, dropped `listQuery` notices, hand-rolled popover engines, and the
+  off-board / board-policy / fetch-door censuses), `.tsx` board filenames
+  (`Kanban.svelte` and `BoardList.svelte` refuse a failed statuses read,
+  `Gantt.svelte` marks it inline; the dead ci.yml note is gone), and an
+  audit-task pointer that resolves nowhere. Every claim in the rewrite was
+  re-verified against the code it names.
+
+- **RELEASING.md says how main actually merges.** The branch table claimed PRs
+  land "rebase-merged"; they land as merge commits, each merge subject carrying
+  the PR number. Corrected so the doc a release follows matches the history it
+  walks.
 
 - **`deploy update` pulls the api package before it builds.** The app image
   never compiles the api — it bakes in the pre-built package named by the

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-8 routes.
+9 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -16,6 +16,7 @@
 | [`/api/tasks/{id}`](#apitasksid) | DELETE | `session` |
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | GET | `dual` |
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | POST | `dual` |
+| [`/api/tasks/{id}/conversation`](#apitasksidconversation) | POST | `session` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
@@ -88,6 +89,20 @@ Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks
 | :--- | :--- | :--- |
 | `content` | `string(1, 20000)` |  |
 | `parentId` | `uuid?` |  |
+
+## `/api/tasks/{id}/conversation`
+
+Source: [`api/src/routes/tasks/tasks_id_conversation.rs`](../../api/src/routes/tasks/tasks_id_conversation.rs)
+
+> /api/tasks/{id}/conversation.
+>
+> OPEN THE THREAD FOR A TICKET, creating it the first time.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{conversationId, agentModel}` | 200, 404, 409 | — |
 
 ## `/api/tasks/{id}/dependencies`
 

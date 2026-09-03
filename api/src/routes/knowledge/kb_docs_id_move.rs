@@ -11,10 +11,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{NumKind, as_object, nullable_uuid_member, number_member, parse};
 use crate::error::{house_error, thrown_internal_error};
-use crate::kb::perms::can_edit_human;
+use crate::kb::perms::{can_edit_agent, can_edit_human};
 use crate::kb::{effective_doc_perms, get_doc, move_doc};
 use crate::session::{actor_of, require_perm, who_of};
 use crate::state::AppState;
@@ -35,10 +36,6 @@ pub async fn post(
     let Some(existing) = existing else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
-    let user = match require_perm(&state, &headers, "kb.edit").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
     let eff = match effective_doc_perms(&state.pg, &existing).await {
         Ok(e) => e,
         Err(e) => {
@@ -46,9 +43,48 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    let who = who_of(&user);
-    if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+    // The same agent admission the doc PUT carries, because a move IS an edit
+    // of the doc: its own authored doc, an editor grant — or an
+    // admin-elevated assistant on any non-private doc. Without this, an agent
+    // that filed a doc one level too deep could edit its body but never lift
+    // it, and the workaround is a duplicate.
+    let agent = match agent_caller(&state.pg, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let actor: String;
+    if let Some(agent) = agent {
+        let name = agent.model.clone();
+        let elevated = eff.perms.visibility != "private"
+            && match crate::users::is_elevated_assistant(
+                &state.pg,
+                &AgentSubject::Caller(agent.clone()),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("[kb] elevation read failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        let may_edit = existing.created_by.as_deref() == Some(name.as_str())
+            || can_edit_agent(&name, &eff.grants)
+            || elevated;
+        if !may_edit {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        actor = name;
+    } else {
+        let user = match require_perm(&state, &headers, "kb.edit").await {
+            Ok(u) => u,
+            Err(gate) => return gate,
+        };
+        let who = who_of(&user);
+        if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        actor = actor_of(&user);
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -98,7 +134,7 @@ pub async fn post(
     };
     let (pg, actor, target_id, target_label, after) = (
         state.pg.clone(),
-        actor_of(&user),
+        actor,
         id.clone(),
         doc.title.clone(),
         json!({ "parentId": parent_id, "sort": sort }),

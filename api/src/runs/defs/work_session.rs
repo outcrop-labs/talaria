@@ -782,10 +782,12 @@ async fn dispatch_prompt(
     let active_hint = hint.active_key.or(hint.assigned_key);
     let step2 = match active_hint {
         Some(key) => format!(
-            "comment a one-line acknowledgment, and triage_ticket to status \"{key}\" while you work."
+            "comment a one-line acknowledgment in the ticket's discussion thread (the board's \
+             humans read it), and triage_ticket to status \"{key}\" while you work."
         ),
-        None => "comment a one-line acknowledgment. Leave the status where it is — this board has \
-                 no working column for you to move it to."
+        None => "comment a one-line acknowledgment in the ticket's discussion thread (the board's \
+                 humans read it). Leave the status where it is — this board has no working column \
+                 for you to move it to."
             .to_string(),
     };
     Ok(dispatch_brief(
@@ -1543,6 +1545,7 @@ mod tests {
             effort: None,
             assignees: vec!["hermes".into()],
             created_by: "u-1".into(),
+            conversation_id: None,
             due_date: None,
             start_date: None,
             color: None,
