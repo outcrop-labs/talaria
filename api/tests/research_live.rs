@@ -10,7 +10,11 @@
 
 use sqlx::postgres::PgPool;
 use talaria_api::conversations::{accessible_conversation, conversation_accessible};
-use talaria_api::research::{add_research_member, ensure_research_conversation};
+use talaria_api::research::{
+    add_research_member, awaiting_scope_answer, ensure_research_conversation, get_research_run,
+};
+use talaria_api::runs::define::{DecisionOption, DecisionRequest, RunDecision};
+use talaria_api::runs::store::{NewRun, PgRunStore, RunStore};
 
 async fn pool() -> PgPool {
     let url = std::env::var("DATABASE_URL")
@@ -118,4 +122,110 @@ async fn a_research_conversation_passes_the_chat_gates_for_owner_and_member_only
     sweep_user_rows(&pg, "gates-owner").await;
     sweep_user_rows(&pg, "gates-member").await;
     sweep_user_rows(&pg, "gates-stranger").await;
+}
+
+/// A run parked exactly the way the scope step parks one: research record,
+/// conversation, runs row, claim, park with a free-text scope decision. The
+/// store's own park() writes the awaiting state and the decision — the same
+/// writes the real driver makes — so what the projection reads below is what
+/// production would read.
+async fn fabricate_parked_scope_run(pg: &PgPool, owner: &str, question: &str) -> String {
+    let id = fabricate_research_run(pg, owner, question).await;
+    ensure_research_conversation(pg, &id)
+        .await
+        .unwrap()
+        .expect("an owned run gets a conversation");
+
+    let store = PgRunStore::new(pg.clone());
+    store
+        .insert(NewRun {
+            id: id.clone(),
+            kind: "research".into(),
+            owner_user_id: Some(owner.into()),
+            subject_type: Some("research".into()),
+            subject_id: Some(id.clone()),
+            input: serde_json::json!({"question": question, "mode": "brief"}),
+            phase: "reading the ask".into(),
+        })
+        .await
+        .unwrap();
+    match store.claim(&id, "live-test-driver", 60_000).await.unwrap() {
+        talaria_api::runs::store::ClaimOutcome::Claimed { .. } => {}
+        other => panic!("the fresh row must claim, got {other:?}"),
+    }
+    store
+        .park(
+            &id,
+            "live-test-driver",
+            RunDecision {
+                request: DecisionRequest {
+                    key: "scope".into(),
+                    question: "Before this run starts: which database?".into(),
+                    detail: None,
+                    options: vec![DecisionOption {
+                        id: "answered".into(),
+                        label: "Answered".into(),
+                        detail: None,
+                    }],
+                    href: Some(format!("/research/{id}")),
+                    free_text: true,
+                },
+                answer: None,
+            },
+            format!("scope:{id}"),
+            "asking".into(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    id
+}
+
+/// THE TICKET-#5 LESSON, as a wire contract: a parked run is 'awaiting', its
+/// own word — not a shade of 'running' — and it spells the question it waits
+/// on, free-text flag and all, so the surface can say "reply in the
+/// discussion" instead of drawing buttons. Read through the projection the
+/// list and run routes share, because the five-value CASE is the only
+/// sanctioned spelling of "is this run alive".
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_parked_scope_run_reads_as_awaiting_with_its_free_text_question() {
+    let pg = pool().await;
+    let owner = fabricate_user(&pg, "awaiting-owner").await;
+    let id = fabricate_parked_scope_run(&pg, &owner, "which database should we move to?").await;
+
+    let (run, _sources) = get_research_run(&pg, &id)
+        .await
+        .unwrap()
+        .expect("the parked run is still a run");
+    assert_eq!(run.status, "awaiting", "its own word, not 'running'");
+    let waiting = run.awaiting.expect("the open question is spelled");
+    assert_eq!(waiting["key"], "scope");
+    assert_eq!(
+        waiting["free_text"], true,
+        "the surface answers this one in the discussion, not with buttons"
+    );
+    assert_eq!(waiting["options"].as_array().map(Vec::len), Some(1));
+    assert!(
+        run.conversation_id.is_some(),
+        "the discussion exists to answer in"
+    );
+
+    // And the chat plane's lookup agrees: this conversation's run is the one
+    // waiting on a scope answer.
+    let conv = run.conversation_id.clone().unwrap();
+    assert_eq!(
+        talaria_api::research::awaiting_scope_answer(&pg, &conv)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(id.as_str())
+    );
+
+    sqlx::query("delete from runs where id = $1::uuid")
+        .bind(&id)
+        .execute(&pg)
+        .await
+        .unwrap();
+    sweep_user_rows(&pg, "awaiting-owner").await;
 }

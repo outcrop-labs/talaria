@@ -51,6 +51,17 @@ When the answer genuinely is not in what was found, say so plainly and offer to 
 
 Do not re-research something the report already covers — say what it says and point at the section.";
 
+/// The other half of the research chat contract: the run is STILL WORKING. The
+/// report does not exist yet, so the mode prompt's whole frame — "answer from
+/// the report" — would be an instruction to invent one. Chosen by the run's
+/// state (working while queued/running/awaiting), declared here for the same
+/// reason as the mode prompt: it is research's contract, not chat's.
+pub const RESEARCH_WORKING_PROMPT: &str = "This is the discussion of a research run that is still working, on the Research surface. The report does not exist yet — it is being researched beside this chat, and several teammates may be in the conversation.
+
+Do not describe findings the run has not produced and do not present guesses as research: nothing is cited yet, and in this surface everything looks cited. You may say what the run is doing (scoping, searching, writing) and what it was asked to find.
+
+A message here may be meant for the run, not for you — answers to the run's clarifying question belong to the run and steer it. When someone asks for something the finished report would answer better, say the run is on it rather than pre-empting it from memory.";
+
 // ── The report-side machinery ─────────────────────────────────────────────────
 //
 // The citation registry itself (`SourceRegistry`, `MARKER_RE`,
@@ -178,25 +189,27 @@ pub struct ResearchRun {
     pub mode: String,
     pub question: String,
     pub title: Option<String>,
-    /// 'queued' | 'running' | 'done' | 'error' — the four-value wire
-    /// constraint; a parked run spells its open question in `awaiting`
-    /// instead of needing a fifth value.
+    /// 'queued' | 'running' | 'awaiting' | 'done' | 'error'. `awaiting` is
+    /// its own value — the ticket-#5 lesson: a run parked on a question read
+    /// as 'running' for hours, indistinguishable from work. A parked run
+    /// also spells its open question in `awaiting`.
     pub status: String,
     pub phase: Option<String>,
     /// THE QUESTION A PARKED RUN IS WAITING ON, verbatim off the run's
     /// decision column. None unless the run is `awaiting` with no answer yet
     /// — a decided run never shows its last question as if it were still
-    /// open. `status` still says 'running'; this field is what makes a
-    /// parked run LOOK parked, and the research surface is where it gets
-    /// answered.
+    /// open. The research surface is where it gets answered: for a free-text
+    /// park, in the run's own discussion.
     pub awaiting: Option<Value>,
+    /// The run's discussion thread, created WITH the run now — the scope
+    /// step asks its clarifying question in here. None for a run an agent
+    /// with no human owner started (still readable, just not talkable-in)
+    /// and for old rows predating the column's backfill.
+    pub conversation_id: Option<String>,
     pub artifact_id: Option<String>,
-    /// NOT on this wire shape: the run's conversation_id and parent_run_id
-    /// exist as columns but the ROW projection never selects them, so the
-    /// wire never carries the keys. The conversation id is served by its own
-    /// route (`ensure_research_conversation`); the parent link is write-only.
-    /// Emitting them as nulls would hand every reader two keys no client
-    /// knows.
+    /// parent_run_id stays write-only: nothing on any surface reads the
+    /// parent link back, so emitting it would hand every reader a key no
+    /// client knows.
     pub error: Option<String>,
     pub stats: Value,
     pub created_at: String,
@@ -204,19 +217,21 @@ pub struct ResearchRun {
     pub completed_at: Option<String>,
 }
 
-/// THE four-value projection, on its own so it has exactly one spelling. Two
+/// THE five-value projection, on its own so it has exactly one spelling. Two
 /// reads need it in different shapes (a full row, and the briefing's filtered
 /// subquery) and a second copy of this CASE is a second answer to "is this
 /// run alive" — which is the whole thing this file is trying not to have.
 ///
-/// `awaiting` maps to 'running' because the status field has four values, all
-/// of them on the wire and in the client. A parked run is not idle — it is in
-/// somebody's approvals queue with the question on it — and 'running' is the
-/// honest four-value spelling of that. `cancelled` maps to 'error' the same
-/// way, with the cancel's own reason carried in `error`.
+/// `awaiting` is its own value, not a shade of 'running': the ticket-#5
+/// failure was two parked runs reading as working ones for hours, because
+/// "in somebody's court" and "working" were the same word. They are both
+/// still in-flight everywhere (polling, the duplicate guard, briefings) —
+/// they are just no longer the same SENTENCE. `cancelled` maps to 'error'
+/// with the cancel's own reason carried in `error`.
 const STATUS: &str = "case \
     when r.state is null then research_runs.status \
-    when r.state in ('running', 'awaiting') then 'running' \
+    when r.state = 'awaiting' then 'awaiting' \
+    when r.state = 'running' then 'running' \
     when r.state = 'cancelled' then 'error' \
     when r.state = 'error' then 'error' \
     when r.state = 'done' then 'done' \
@@ -225,15 +240,23 @@ const STATUS: &str = "case \
 /// The full row, in the field order ResearchRun serializes. Timestamps come
 /// back as epoch milliseconds and are spelled by `epoch_ms_to_iso` — ISO
 /// strings, millisecond precision, UTC.
+///
+/// The `awaiting` CASE tests the decision through `->>` (text), never `->`
+/// (jsonb): `answer` serializes as a JSON null, and `'{"a":null}'::jsonb ->
+/// 'a' is null` is FALSE — json null is a value, not SQL NULL — so an arrow
+/// test would mute the question on every parked run. `->>` maps both a
+/// missing key and a json null to SQL NULL, which is exactly the question
+/// "has anybody answered".
 const ROW: &str = "research_runs.id::text, research_runs.owner_user_id::text, \
     research_runs.requested_by, research_runs.agent_model, research_runs.mode, \
     research_runs.question, research_runs.title, \
     {STATUS} as status, \
     case when r.state in ('queued', 'running', 'awaiting') then nullif(r.phase, '') \
          else research_runs.phase end as phase, \
-    case when r.state = 'awaiting' and r.decision->'request' is not null \
-              and r.decision->'answer' is null \
+    case when r.state = 'awaiting' and r.decision->>'request' is not null \
+              and r.decision->>'answer' is null \
          then r.decision->'request' else null end as awaiting, \
+    research_runs.conversation_id::text, \
     research_runs.artifact_id::text, \
     coalesce(research_runs.error, r.error) as error, \
     research_runs.stats, \
@@ -257,7 +280,7 @@ fn projection_sql(where_clause: &str) -> String {
 }
 
 /// Map one row of the projection. Written against column INDEX rather than
-/// name: eighteen columns is past sqlx's tuple ceiling, and a name-keyed read
+/// name: seventeen columns is past sqlx's tuple ceiling, and a name-keyed read
 /// of a format!-built list would drift silently if the list reordered — an
 /// index-keyed one fails loudly.
 fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
@@ -265,9 +288,9 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
     // The epoch-millisecond columns are read into named locals: `get` infers
     // its index generic from the turbofish otherwise, and `get::<_, i64>`
     // binds i64 to the INDEX (usize-only) rather than the value.
-    let created_ms: i64 = row.get(13);
-    let updated_ms: i64 = row.get(14);
-    let completed_ms: Option<i64> = row.get(15);
+    let created_ms: i64 = row.get(14);
+    let updated_ms: i64 = row.get(15);
+    let completed_ms: Option<i64> = row.get(16);
     ResearchRun {
         id: row.get(0),
         owner_user_id: row.get(1),
@@ -279,9 +302,10 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
         status: row.get(7),
         phase: row.get(8),
         awaiting: row.get(9),
-        artifact_id: row.get(10),
-        error: row.get(11),
-        stats: row.get(12),
+        conversation_id: row.get(10),
+        artifact_id: row.get(11),
+        error: row.get(12),
+        stats: row.get(13),
         created_at: crate::agent_auth::epoch_ms_to_iso(created_ms),
         updated_at: crate::agent_auth::epoch_ms_to_iso(updated_ms),
         completed_at: completed_ms.map(crate::agent_auth::epoch_ms_to_iso),
@@ -507,7 +531,7 @@ pub async fn briefable_research(
               or exists(select 1 from research_members rm \
                         where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
          ) s \
-         where s.status in ('queued', 'running') \
+         where s.status in ('queued', 'running', 'awaiting') \
             or (s.status = 'error' and s.created_at > now() - interval '7 days') \
          order by s.created_at desc limit $2"
     );
@@ -692,6 +716,13 @@ pub async fn start_research(
     .execute(&state.pg)
     .await
     .map_err(|e| e.to_string())?;
+    // The discussion thread exists from the first minute: the scope step
+    // asks its clarifying question in here, and the surface opens the run
+    // straight into the conversation. None for an ownerless run — same rule
+    // as ever, just applied at start instead of on first use.
+    ensure_research_conversation(&state.pg, &id)
+        .await
+        .map_err(|e| e.to_string())?;
     // Read back through the projection rather than `returning`, so the row
     // this hands to the caller is spelled by the same join every other read
     // uses. One indexed read at the start of a run that is about to make
@@ -740,12 +771,15 @@ pub async fn start_research(
 // So a run gets a conversation of its own, exactly the shape a plan has —
 // several people, one agent, one document that grows beside the talk.
 
-/// The conversation for a run, created on first use.
+/// The conversation for a run, created WITH the run.
 ///
-/// ON DEMAND rather than at run creation, for a reason worth stating: most
-/// runs are read once and never discussed, and a conversation row per run
-/// would make the chat list a list of things nobody said anything about. The
-/// first message is what makes it exist.
+/// WITH THE RUN rather than on demand, for a reason worth stating: the scope
+/// step asks its clarifying question in this thread from the run's first
+/// billed minute, so the thread must exist before the run starts working.
+/// (The old on-demand rationale — a conversation row per run cluttering the
+/// chat list — never actually applied: the comms listing is kind-scoped, and
+/// kind='research' rows never appear in it.) Idempotent and race-safe by
+/// re-read, so the on-demand ROUTE stays as the old rows' way in.
 ///
 /// Owned by the run's owner and pinned to the agent that DID the research, so
 /// the teammate answering questions about the report is the one that wrote
@@ -818,6 +852,19 @@ pub async fn ensure_research_conversation(
     Ok(after.and_then(|(v,)| v).or(Some(id)))
 }
 
+/// The run's discussion, if it has one. Reads the column `ensure_research_
+/// conversation` owns: ownerless org runs and rows predating the eager
+/// conversation answer None, which is the run definition's signal to proceed
+/// without asking anything of a discussion that does not exist.
+pub async fn conversation_of_run(pg: &PgPool, run_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select conversation_id::text from research_runs where id = $1::uuid")
+            .bind(run_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(v,)| v))
+}
+
 /// The run a conversation belongs to, for the surfaces that start from the
 /// chat side rather than the report side.
 pub async fn research_run_for_conversation(
@@ -829,6 +876,56 @@ pub async fn research_run_for_conversation(
             .bind(conversation_id)
             .fetch_optional(pg)
             .await?;
+    Ok(row.map(|(id,)| id))
+}
+
+/// The engine state of the run a conversation belongs to — the chat plane's
+/// prompt choice. While the run is queued/running/awaiting, the discussion's
+/// agent must not speak as though a report exists; when it is done (or there
+/// is no run behind the conversation at all), it answers from the report.
+/// None means "no run": callers treat that as the report-existing side only
+/// when they know one does.
+pub async fn run_state_for_conversation(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    // ONE RUN PER RESEARCH RECORD, AND THE SAME UUID NAMES BOTH (see FROM):
+    // the subquery is a primary-key handoff, not a newest-match scan.
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "select r.state from runs r \
+         where r.kind = 'research' \
+           and r.id = (select rr.id from research_runs rr \
+                       where rr.conversation_id = $1::uuid)",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.and_then(|(state,)| state))
+}
+
+/// The run parked on its scope question in this conversation, if any — the
+/// chat plane's resume hook. A reply lands in a research conversation; this
+/// says which run that reply ANSWERS, so the message can be spent as the
+/// decision's note instead of as a persona turn. Only an unanswered `scope`
+/// park matches: a run parked on anything else, or already answered, is not
+/// waiting on this message. (`->>` on the answer, same reason as the
+/// projection's awaiting column: a JSON null is a value, not SQL NULL.)
+pub async fn awaiting_scope_answer(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select r.id::text from runs r \
+         where r.kind = 'research' and r.state = 'awaiting' \
+           and r.decision->>'answer' is null \
+           and r.decision->'request'->>'key' = 'scope' \
+           and r.id = (select rr.id from research_runs rr \
+                       where rr.conversation_id = $1::uuid) \
+         limit 1",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.map(|(id,)| id))
 }
 
