@@ -4,6 +4,8 @@
   import './router'
   import ConfirmHost from '@/components/ui/ConfirmHost.svelte'
   import ErrorFallback from '@/components/ui/ErrorFallback.svelte'
+  import { useInstanceBranding } from '@/lib/instance-branding.svelte'
+  import { tabTitle } from '@/lib/tab-title'
 
   // A query that errors used to fail completely silently — the incident
   // where a 500 from /api/boards rendered as "no boards" left no trace
@@ -17,7 +19,18 @@
     }),
     defaultOptions: { queries: { staleTime: 5_000, retry: 1 } },
   })
+
+  // The tab title lives at the shell so every route (and the sign-in page)
+  // carries it: "Talaria" alone, or "Talaria - <company>" once an admin
+  // names the instance. Until the beacon answers — or if it never does —
+  // tabTitle's fallback keeps the bare product name.
+  const branding = useInstanceBranding()
+  const title = $derived(tabTitle(branding.data?.companyName))
 </script>
+
+<svelte:head>
+  <title>{title}</title>
+</svelte:head>
 
 <QueryClientProvider client={queryClient}>
   <!-- Outermost net. Route-level errors land in the router's onError hook;

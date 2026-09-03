@@ -34,10 +34,10 @@ Source: [`api/src/routes/system/well_known_talaria_instance.rs`](../../api/src/r
 > /api/well-known/talaria-instance.
 >
 > Instance identity beacon — the target of hosting-domain verification's
-> self-fetch. Public and harmless: a random UUID that proves which deployment
+> self-fetch, and the SPA's one boot-time read of the instance's display
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `{instance}` | 200 | — |
+| GET | `public` | — | `{instance, companyName}` | 200 | — |
 

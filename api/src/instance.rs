@@ -13,6 +13,7 @@ use std::time::Duration;
 
 const ID_KEY: &str = "instance_id";
 const DOMAIN_KEY: &str = "instance_domain";
+const COMPANY_KEY: &str = "company_name";
 
 /// The stored config (InstanceDomain) — stored shape = wire shape; the GET
 /// passes the raw jsonb through, so this struct only exists for the verify
@@ -130,6 +131,40 @@ pub async fn set_instance_domain(
     .await
     .map_err(|e| format!("{e}"))?;
     Ok(Some(next))
+}
+
+/// The instance's display name — the second half of the browser tab's title
+/// ("Talaria - <company>"). `None` when unset; the tab stays just "Talaria".
+/// A bare string, not a config object: it has no lifecycle beyond set/clear.
+pub async fn get_company_name(pg: &PgPool) -> Option<String> {
+    get_setting(pg, COMPANY_KEY, serde_json::Value::Null)
+        .await
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Set (trim) or clear. `Err` is the route's 400 sentence. Whitespace-only
+/// is refused rather than silently clearing — the clear is an explicit null,
+/// so an accidental save can never unname the instance.
+pub async fn set_company_name(pg: &PgPool, name: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = name else {
+        set_setting(pg, COMPANY_KEY, &serde_json::Value::Null)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("a company name cannot be empty (send null to clear)".into());
+    }
+    set_setting(
+        pg,
+        COMPANY_KEY,
+        &serde_json::Value::String(trimmed.to_string()),
+    )
+    .await
+    .map_err(|e| format!("{e}"))?;
+    Ok(Some(trimmed.to_string()))
 }
 
 /// The verify result's wire shape: `{verified: true}` or
