@@ -77,7 +77,7 @@ Storage writes — and handles whichever mode is configured:
 
 | Mode | Where the blobs are | What the command needs |
 |---|---|---|
-| `local` | `TALARIA_UPLOADS_DIR` (default `ui/.uploads`) | nothing |
+| `local` | `TALARIA_UPLOADS_DIR` (default the api process's `cwd/.uploads` — `api/.uploads` in dev) | nothing |
 | `internal` | the bundled MinIO container | `TALARIA_S3_*` from `ui/.env` — the same values the app uses |
 | `s3` | your external bucket | endpoint/bucket/key come from the database; **the secret key must be supplied** |
 
