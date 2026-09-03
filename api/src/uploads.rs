@@ -61,7 +61,13 @@ pub async fn resolve_attachments(
         return Ok(Vec::new());
     }
     let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
-        "select id::text, filename, mime, size from uploads where id = any($1::uuid[])",
+        // size is int4 in the schema and Attachment.size is i64 — the cast is
+        // not decoration. Without it the decode of every row errors, the
+        // caller's fail-open turns that into "no attachments", and every
+        // attachment on every message platform-wide silently vanishes —
+        // exactly the stamp leg the attachments fix missed.
+        "select id::text, filename, mime, size::bigint from uploads \
+         where id = any($1::uuid[])",
     )
     .bind(ids.to_vec())
     .fetch_all(pg)

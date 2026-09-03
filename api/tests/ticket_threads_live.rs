@@ -24,6 +24,7 @@ use talaria_api::tasks::{
     TaskDeps, add_comment, ensure_task_conversation, get_task, list_comments,
 };
 use talaria_api::ticket_chat::{TicketHead, ticket_message_relevant};
+use talaria_api::uploads::resolve_attachments;
 use tower::ServiceExt; // oneshot
 
 /// Real services, the same ones the process boots with — this file is about
@@ -516,4 +517,46 @@ async fn every_ticket_thread_is_one_tasks_room() {
     .unwrap();
     assert_eq!(gaps, 0, "a ticket thread's seq has a hole");
     assert_eq!(incomplete, 0, "a ticket thread carries an incomplete row");
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn attachments_resolve_with_their_metadata() {
+    // The stamp leg: a thread message carrying files is the point of the
+    // room, and the resolver is what turns upload ids into the metadata the
+    // message row keeps. Pinned live because the failure that hid here for
+    // the whole port era was a sqlx DECODE mismatch — int4 column into an
+    // i64 slot — which only a real row with a real column type can catch.
+    let pg = pg().await;
+    let (id,): (String,) = sqlx::query_as(
+        "insert into uploads (filename, mime, size, path) \
+         values ('live-proof.bin', 'application/octet-stream', 1234, 'live-proof/nowhere') \
+         returning id::text",
+    )
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+
+    let resolved = resolve_attachments(
+        &pg,
+        &[
+            id.clone(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+        ],
+    )
+    .await
+    .unwrap();
+    // Caller order preserved, unknown ids dropped: one attachment, the right
+    // one, with every field the message row stamps.
+    assert_eq!(resolved.len(), 1, "the real upload did not resolve");
+    assert_eq!(resolved[0].id, id);
+    assert_eq!(resolved[0].filename, "live-proof.bin");
+    assert_eq!(resolved[0].mime, "application/octet-stream");
+    assert_eq!(resolved[0].size, 1234, "size did not decode");
+
+    sqlx::query("delete from uploads where id = $1::uuid")
+        .bind(&id)
+        .execute(&pg)
+        .await
+        .unwrap();
 }
