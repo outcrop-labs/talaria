@@ -2,12 +2,12 @@
 
 > **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
 > and the handler modules under `api/src/routes/**` (the TS residents still serving
-> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> `healthz` and the app dispatch excepted) — do not edit by hand.
 > Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-25 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -63,9 +63,6 @@
 | [`/api/admin/storage`](#apiadminstorage) | GET | `admin` |
 | [`/api/admin/storage`](#apiadminstorage) | POST | `admin` |
 | [`/api/admin/storage`](#apiadminstorage) | PUT | `admin` |
-| [`/api/admin/update`](#apiadminupdate) | GET | `admin` |
-| [`/api/admin/update`](#apiadminupdate) | POST | `admin` |
-| [`/api/admin/update`](#apiadminupdate) | PUT | `admin` |
 | [`/api/admin/updates`](#apiadminupdates) | GET | `admin` |
 | [`/api/admin/updates`](#apiadminupdates) | POST | `admin` |
 | [`/api/admin/updates`](#apiadminupdates) | PUT | `admin` |
@@ -586,34 +583,6 @@ Source: [`api/src/routes/admin/admin_storage.rs`](../../api/src/routes/admin/adm
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `mode` | `enum(local|internal|s3)` | Body key order: mode, the Target spread, replica — a bad mode answers before any Target field can. |
-
-## `/api/admin/update`
-
-Source: [`ui/src/routes/api/admin.update.ts`](../../ui/src/routes/api/admin.update.ts)
-
-> In-app updates (admin). GET reads the panel's world (mode, current commit,
-> last check, last run, auto-update switch). POST runs an action: `check`
-> fetches the remote and compares, `apply` starts the whole pull/build/
-> restart sequence. PUT flips the auto-update switch, which is off until
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{mode, current, autoUpdate, lastCheck, lastRun, history}` | 200 | — |
-| POST | `admin` | [body](#post-apiadminupdate-body) | `{started}` | 200, 400 | audit |
-| PUT | `admin` | [body](#put-apiadminupdate-body) | `{autoUpdate}` | 200 | audit |
-
-### POST `/api/admin/update` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `action` | `z.enum(['check', 'apply'])` |  |
-
-### PUT `/api/admin/update` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `autoUpdate` | `z.boolean()` |  |
 
 ## `/api/admin/updates`
 

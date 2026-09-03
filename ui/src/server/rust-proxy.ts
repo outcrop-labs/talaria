@@ -36,15 +36,14 @@ const PREFIXES = ['/api/'] as const
 //   point agents straight at :5274), but the proxy never routes an app
 //   server's traffic anywhere else. Bare /api/apps is NOT a resident — it is
 //   the discovery listing, and it serves from Rust like everything else.
-//   admin.update — it rebuilds ui/dist and restarts the bun process it runs
-//   IN: it is the deployer of the TS half itself, so the other runtime
-//   cannot serve it (the Rust binary's own update path is that route's
-//   redesign, not a port).
 //   healthz — the app process's own liveness answer; the Rust api carries
 //   its own at the same path for whoever asks it there.
+// The one-time resident admin.update (the git-checkout updater that rebuilt
+// ui/dist and restarted this very process) is retired with its updater: the
+// update surface is Rust's now — /api/admin/updates rolls containers — and
+// it hops like everything else.
 const STAY_TS = [
   /^\/api\/mcp\/gw\/app-/,
-  /^\/api\/admin\/update$/,
   /^\/api\/apps\//,
   /^\/api\/healthz$/,
 ] as const

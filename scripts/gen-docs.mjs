@@ -15,8 +15,8 @@
 // api/src/routes/mod.rs names every path and method (217 registrations, each
 // with a `.fallback` allow-string this script cross-checks against the parsed
 // method set), and the handler modules under api/src/routes/** carry the
-// guards, body members, status literals and json! shapes. The three routes
-// the SPA host still serves itself — healthz, admin.update, the app-server
+// guards, body members, status literals and json! shapes. The two routes
+// the SPA host still serves itself — healthz and the app-server
 // dispatch — are extracted from their TS residents exactly as before
 // (mcp.gw.$server.ts is NOT one of them: /api/mcp/gw/{server} serves from
 // Rust; only its /api/mcp/gw/app-* branch stays TS, and that branch has
@@ -50,7 +50,6 @@ const ROUTES_DIR = join(ROOT, 'api/src/routes')
 // app-MCP branch that never had its own row. Extracted with the TS extractor.
 const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
-  'ui/src/routes/api/admin.update.ts',
   'ui/src/routes/api/apps.$app.$.ts',
 ]
 const CHECK = process.argv.includes('--check')
@@ -771,8 +770,8 @@ function extractRustRoute(file, entries) {
 
 // ── TS resident extraction ──────────────────────────────────────────────────
 //
-// healthz, admin.update and the app dispatch still serve from TS; their rows
-// come from their route files exactly as the pre-cutover extractor read them.
+// healthz and the app dispatch still serve from TS; their rows come from
+// their route files exactly as the pre-cutover extractor read them.
 
 function extractRoute(file) {
   const raw = readFileSync(file, 'utf8')
@@ -1041,7 +1040,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 const GENERATED_BANNER = (extra = '') =>
   `> **Generated** by \`bun run docs:api\` from the Rust router table (\`api/src/routes/mod.rs\`)\n` +
   `> and the handler modules under \`api/src/routes/**\` (the TS residents still serving\n` +
-  `> \`healthz\`, \`admin/update\` and the app dispatch excepted) — do not edit by hand.\n` +
+  `> \`healthz\` and the app dispatch excepted) — do not edit by hand.\n` +
   `> Change the route (or its \`// doc:\` note) and regenerate; \`bun run check\` fails on drift.\n` +
   `> The **Returns** column is the first success-shaped \`json!({…})\` literal and is heuristic —\n` +
   `> \`…\` means the shape is not a literal in source.` +
