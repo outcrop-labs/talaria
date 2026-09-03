@@ -2664,6 +2664,23 @@ const MIGRATIONS: string[] = [
   `create index if not exists notifications_unread_idx
      on notifications (user_id) where read_at is null`,
 
+  // Read cursors for agent threads and plans — the piece they always lacked:
+  // channels have channel_members.last_read_seq, conversations had nothing,
+  // so an agent reply that landed unseen stayed "new" forever. One table for
+  // both kinds, keyed (conversation, person); the owner is a row here like
+  // anyone else (unlike plan membership, where the owner lives on the
+  // conversation). Monotonic by contract — writers advance with greatest(),
+  // never write raw. The column default never fires (the upsert always binds);
+  // a missing row counts as cursor -1 — conversations number from seq 0,
+  // unlike channels' 1-based counter, so "never opened" must outrank seq 0.
+  `create table if not exists conversation_reads (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     last_read_seq integer not null default 0,
+     updated_at timestamptz not null default now(),
+     primary key (conversation_id, user_id)
+   )`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

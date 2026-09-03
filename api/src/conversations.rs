@@ -227,6 +227,13 @@ pub struct ConversationListRow {
     pub role: String,
     /// For plans shared WITH you: who owns it (display label).
     pub owner_label: Option<String>,
+    /// Landed messages past the caller's read cursor — assistant replies, or
+    /// someone else's turn in a shared plan. Your own turn never counts: you
+    /// wrote it, and a sent message ringing its own author's badge is the
+    /// oldest badge bug there is. The no-cursor floor is -1 (conversations
+    /// number from seq 0 — unlike channels, whose counter starts at 1), so a
+    /// reader who has never opened the thread sees its very first message.
+    pub unread_count: i32,
 }
 
 /// The user's conversations of a given kind, newest activity first. Plans
@@ -247,6 +254,7 @@ pub async fn list_conversations(
         bool,
         String,
         Option<String>,
+        i32,
     );
     let rows: Vec<Row> = sqlx::query_as(
         "select c.id::text, c.agent_model, c.title, \
@@ -262,9 +270,17 @@ pub async fn list_conversations(
                   order by m.seq desc limit 1 \
                 ), false), \
                 case when c.user_id = $1::uuid then 'owner' else 'collaborator' end, \
-                case when c.user_id = $1::uuid then null else coalesce(o.name, o.email) end \
+                case when c.user_id = $1::uuid then null else coalesce(o.name, o.email) end, \
+                coalesce(( \
+                  select count(*)::int from messages m \
+                  where m.conversation_id = c.id \
+                    and m.seq > coalesce(cr.last_read_seq, -1) \
+                    and m.status = 'complete' \
+                    and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
+                ), 0) \
          from conversations c \
          join users o on o.id = c.user_id \
+         left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
          where c.archived = false and c.kind = $2 \
            and (c.user_id = $1::uuid or ($2 = 'plan' and exists( \
              select 1 from conversation_members cm \
@@ -278,7 +294,17 @@ pub async fn list_conversations(
     Ok(rows
         .into_iter()
         .map(
-            |(id, agent_model, title, updated_ms, working, failed, role, owner_label)| {
+            |(
+                id,
+                agent_model,
+                title,
+                updated_ms,
+                working,
+                failed,
+                role,
+                owner_label,
+                unread_count,
+            )| {
                 ConversationListRow {
                     id,
                     agent_model,
@@ -288,10 +314,51 @@ pub async fn list_conversations(
                     failed,
                     role,
                     owner_label,
+                    unread_count,
                 }
             },
         )
         .collect())
+}
+
+/// Advance a person's read cursor on a conversation (never backwards). The
+/// upsert is the whole existence story: unlike channel_members, a
+/// conversation's owner has no standing row anywhere, so the first read
+/// creates the cursor and every later one advances it.
+pub async fn mark_conversation_read(
+    pg: &PgPool,
+    conversation_id: &str,
+    user_id: &str,
+    seq: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into conversation_reads (conversation_id, user_id, last_read_seq) \
+         values ($1::uuid, $2::uuid, $3) \
+         on conflict (conversation_id, user_id) do update \
+           set last_read_seq = greatest(conversation_reads.last_read_seq, excluded.last_read_seq), \
+               updated_at = now()",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .bind(seq)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The thread's highest landed seq — the "mark to latest" arm of the read
+/// route, for callers who know WHICH thread but haven't loaded its seqs.
+/// An empty thread reads as 0, which the counting floor (-1) treats as
+/// "seen through seq 0" — nothing pending, exactly what an empty thread
+/// should read as.
+pub async fn latest_message_seq(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
+    let (latest,): (i32,) = sqlx::query_as(
+        "select coalesce(max(seq), 0) from messages where conversation_id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .fetch_one(pg)
+    .await?;
+    Ok(latest)
 }
 
 /// The detail page's narrower conversation row.

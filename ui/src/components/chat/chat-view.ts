@@ -10,6 +10,9 @@ export interface DisplayMessage {
   reasoning?: string
   tools?: ToolCall[]
   status?: 'streaming' | 'complete' | 'error'
+  /** The persisted row's seq, when the row came from the server — synthetic
+   *  streaming rows have none. The read cursor advances off this. */
+  seq?: number
   attachments?: Attachment[]
   /** Who wrote a user turn — shown in multiplayer plans to tell voices apart. */
   authorLabel?: string | null
@@ -23,6 +26,7 @@ export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   reasoning: m.reasoning,
   tools: m.tools,
   status: m.status,
+  seq: m.seq,
   attachments: m.attachments,
   authorLabel: m.authorLabel,
   guard: m.guard,

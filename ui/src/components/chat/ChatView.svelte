@@ -17,9 +17,10 @@
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { slide } from '@/lib/motion'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { queueChatMessage, streamChat } from '@/lib/chat'
   import { mergeTool } from '@/lib/sse-parse'
-  import { loadConversation } from '@/lib/conversations.svelte'
+  import { loadConversation, markConversationRead } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import { toDisplay, type DisplayMessage } from './chat-view'
 
@@ -73,6 +74,7 @@
   } = $props()
 
   let messages = $state<DisplayMessage[]>([])
+  const qc = useQueryClient()
   let composerEmpty = $state(true)
   /** Measured height of the floating composer — what the transcript reserves. */
   let composerH = $state(0)
@@ -203,6 +205,25 @@
     return () => {
       cancelled = true
     }
+  })
+
+  // Having the thread open = having read it: advance the read cursor as
+  // persisted turns land, so the rail's unread pill clears live — the same
+  // contract the channel view runs. Synthetic streaming rows carry no seq,
+  // so the cursor only moves for rows the server actually owns, and the
+  // post-turn syncFromServer brings those in the moment a reply completes.
+  let lastReadPosted: { id: string; seq: number } = { id: '', seq: 0 }
+  $effect(() => {
+    const id = convId
+    if (!id) return
+    const latest = messages[messages.length - 1]?.seq ?? 0
+    if (!latest) return
+    const prev = lastReadPosted
+    if (prev.id === id && latest <= prev.seq) return
+    lastReadPosted = { id, seq: latest }
+    void markConversationRead(id, latest)
+      .then(() => qc.invalidateQueries({ queryKey: ['conversations'] }))
+      .catch(() => {})
   })
 
   // Live-resume: poll the persisted state whenever the server owes us words we

@@ -381,6 +381,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PATCH") }),
         )
         .route(
+            "/api/conversations/{id}/read",
+            post(comms::conversations_id_read::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/dms",
             post(comms::dms::post).fallback(|| async { method_not_allowed("POST") }),
         )
