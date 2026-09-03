@@ -199,4 +199,32 @@ describe('maybeProxy', () => {
     expect(res!.headers.get('referrer-policy')).toBe('no-referrer')
     expect(res!.headers.get('server')).toBeNull()
   })
+
+  it('carries a download’s name and its sandbox belt — disposition, CSP, nosniff ride through', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    // Exactly what serve_upload answers for a non-inline file: the name in
+    // the disposition, the belt in CSP + nosniff. Stripping these at this
+    // boundary is the download half of "attachments are broken" — the file
+    // arrives nameless, and the api's sandbox stops one hop short of the
+    // browser that serves it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([1, 2, 3]), {
+            status: 200,
+            headers: {
+              'content-type': 'application/octet-stream',
+              'content-disposition': 'attachment; filename="big.bin"',
+              'content-security-policy': "default-src 'none'; sandbox",
+              'x-content-type-options': 'nosniff',
+            },
+          }),
+      ),
+    )
+    const res = await maybeProxy(req('/api/uploads/some-id'), '/api/uploads/some-id')
+    expect(res!.headers.get('content-disposition')).toBe('attachment; filename="big.bin"')
+    expect(res!.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox")
+    expect(res!.headers.get('x-content-type-options')).toBe('nosniff')
+  })
 })
