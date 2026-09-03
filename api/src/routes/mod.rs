@@ -964,7 +964,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/uploads",
-            post(files::uploads::post).fallback(|| async { method_not_allowed("POST") }),
+            // The route's own body cap: without this the extractor's hidden
+            // 2 MB default owns the stream and every larger upload dies as a
+            // Malformed 400 before read_upload_form can refuse it properly.
+            post(files::uploads::post)
+                .fallback(|| async { method_not_allowed("POST") })
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::uploads::ROUTE_BODY_LIMIT,
+                )),
         )
         .route(
             "/api/uploads/{id}",

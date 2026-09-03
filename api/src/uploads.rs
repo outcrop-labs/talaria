@@ -249,6 +249,19 @@ pub fn serve_upload(bytes: Vec<u8>, mime: &str, filename: &str, cache: &str) -> 
 /// bigger is refused before the form has a reason to finish parsing.
 const FORM_ENVELOPE_BYTES: usize = 64 * 1024;
 
+/// The ROUTE-level body cap, one envelope beyond the form read's own ceiling.
+/// axum ships a hidden default 2 MB `DefaultBodyLimit` that caps the Multipart
+/// extractor mid-stream — a bigger upload dies as `Malformed`, answering the
+/// misleading 400 `no file` before read_upload_form's accounting ever runs.
+/// Raising the route's limit to this value keeps the handler's running total
+/// (and its clean 413) the check that actually trips for every body under the
+/// real ceiling. Bodies past this one meet the extractor's abort and the
+/// route's 400 instead — a cliff only an UNSIZED (chunked) sender can reach,
+/// because every request that carries a content-length is answered by the
+/// pre-check in read_upload_form before any byte is buffered, and browsers
+/// size their FormData posts.
+pub const ROUTE_BODY_LIMIT: usize = MAX_BYTES + 2 * FORM_ENVELOPE_BYTES;
+
 /// The form read's outcome. The first `file`-named part decides — if it
 /// carries no filename it is a plain string field, never skipped over for a
 /// later one. Both failure reasons map to the same 400 (`no file`) at the
