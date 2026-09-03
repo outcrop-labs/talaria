@@ -154,6 +154,14 @@ pub struct DecisionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub options: Vec<DecisionOption>,
+    /// A FREE-TEXT park: the answer is the person's next sentence, not one of
+    /// the options. The options list still carries exactly one entry — the
+    /// engine's answer validation wants an id to check against, and
+    /// `"answered"` is that placeholder, not a real choice. Renderers say
+    /// "answer in the run's discussion" instead of drawing the button; the
+    /// chat plane's resume hook spends the reply as `DecisionAnswer.note`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub free_text: bool,
     /// In-app path to the surface that can actually decide it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub href: Option<String>,

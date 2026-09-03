@@ -150,6 +150,7 @@ async fn the_cas_lifecycle_refuses_every_wrong_writer() {
                 },
             ],
             href: None,
+            free_text: false,
         },
         answer: None,
     };
