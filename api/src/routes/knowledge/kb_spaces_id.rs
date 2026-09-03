@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
+use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     array_too_big_msg, as_object, enum_member, object_msg, optional_enum_member, parse,
@@ -16,7 +17,8 @@ use crate::body::{
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::kb::perms::{
-    EditorGrant, ITEM_SPACE, can_edit_human, can_govern, can_read, list_editors, set_editors,
+    EditorGrant, ITEM_SPACE, can_edit_agent, can_edit_human, can_govern, can_read, list_editors,
+    set_editors,
 };
 use crate::kb::{SpacePatch, delete_space, get_space, update_space};
 use crate::retrieval::{embed, qdrant};
@@ -148,16 +150,12 @@ pub async fn put(
     let Some(space) = space else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let patch = match parse_patch(obj) {
+    let mut patch = match parse_patch(obj) {
         Ok(p) => p,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
@@ -172,44 +170,88 @@ pub async fn put(
             return thrown_internal_error();
         }
     };
-    let who = who_of(&user);
-    if !can_edit_human(
-        &guarded_of(&space),
-        Some(&user.id),
-        who.as_deref(),
-        &editors,
-    ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
-    }
-    let owner = match can_govern(
-        &state.pg,
-        &guarded_of(&space),
-        &user.id,
-        &user.role,
-        who.as_deref(),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] govern check failed: {e}");
+    // Agents (over MCP) may edit a space they created, hold an editor grant
+    // on, or — elevated — any non-private one: the same predicate the doc PUT
+    // admits them by. The landing page (`body`) is the surface this branch
+    // exists for: an agent building out a space writes the intro + table of
+    // contents where a person will actually read it. Sharing stays human, so
+    // those fields are dropped rather than trusted to be absent.
+    let agent = match agent_caller(&state.pg, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let actor: String;
+    if let Some(agent) = agent {
+        let name = agent.model.clone();
+        let elevated = space.visibility != "private"
+            && match crate::users::is_elevated_assistant(
+                &state.pg,
+                &AgentSubject::Caller(agent.clone()),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("[kb] elevation read failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        let may_edit = space.created_by.as_deref() == Some(name.as_str())
+            || can_edit_agent(&name, &editors)
+            || elevated;
+        if !may_edit {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        // Sharing stays human: the patch's sharing fields are dropped rather
+        // than trusted to be absent, and an editors array is never applied on
+        // this path (set_editors runs only for a human owner below).
+        patch.visibility = None;
+        patch.edit_policy = None;
+        actor = name;
+    } else {
+        let user = match require_user(&state, &headers).await {
+            Ok(u) => u,
+            Err(gate) => return gate,
+        };
+        let who = who_of(&user);
+        if !can_edit_human(
+            &guarded_of(&space),
+            Some(&user.id),
+            who.as_deref(),
+            &editors,
+        ) {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        let owner = match can_govern(
+            &state.pg,
+            &guarded_of(&space),
+            &user.id,
+            &user.role,
+            who.as_deref(),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] govern check failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let sharing_touched =
+            patch.visibility.is_some() || patch.edit_policy.is_some() || editors_req.is_some();
+        if !owner && sharing_touched {
+            return house_error(StatusCode::FORBIDDEN, "only the owner can change sharing");
+        }
+        if owner
+            && let Some(grants) = &editors_req
+            && set_editors(&state.pg, ITEM_SPACE, &id, grants)
+                .await
+                .is_err()
+        {
             return thrown_internal_error();
         }
-    };
-    let sharing_touched =
-        patch.visibility.is_some() || patch.edit_policy.is_some() || editors_req.is_some();
-    if !owner && sharing_touched {
-        return house_error(StatusCode::FORBIDDEN, "only the owner can change sharing");
+        actor = who_of(&user).unwrap_or_else(|| "user".into());
     }
-    if owner
-        && let Some(grants) = &editors_req
-        && set_editors(&state.pg, ITEM_SPACE, &id, grants)
-            .await
-            .is_err()
-    {
-        return thrown_internal_error();
-    }
-    let actor = who_of(&user).unwrap_or_else(|| "user".into());
     let updated = match update_space(&state.pg, &id, &patch, Some(&actor)).await {
         Ok(s) => s,
         Err(e) => {

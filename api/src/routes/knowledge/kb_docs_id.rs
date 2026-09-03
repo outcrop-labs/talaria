@@ -7,7 +7,10 @@
 // plane refusing them was two planes disagreeing). Agents only edit content
 // when they authored the doc, hold an editor grant, or are an elevated
 // assistant on non-private material — and never touch sharing, officialness
-// or routing.
+// or routing. Delete is the one power held tighter than edit: an edit is
+// versioned and recoverable, a delete is not, so an agent may delete only a
+// doc it authored (its own drafts and misfiles) — anything else waits for a
+// human.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -417,25 +420,65 @@ pub async fn delete(
     let Some(doc) = doc else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
+    // Delete is unrecoverable — versions and embeddings go with the row — so
+    // an agent's admission here is NARROWER than the edit it holds on the same
+    // doc: authorship only. An editor grant or elevation buys edits, which are
+    // versioned; a doc somebody else created leaves with a human, and the
+    // agent's honest move for a misfiled doc it cannot delete is move, not
+    // duplicate.
+    let agent = match agent_caller(&state.pg, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
-    let eff = match effective_doc_perms(&state.pg, &doc).await {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[kb] perms read failed: {e}");
-            return thrown_internal_error();
+    let actor: String;
+    if let Some(agent) = agent {
+        if doc.created_by.as_deref() != Some(agent.model.as_str()) {
+            return house_error(
+                StatusCode::FORBIDDEN,
+                "agents can only delete docs they created",
+            );
         }
-    };
-    let who = who_of(&user);
-    if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        actor = agent.model;
+    } else {
+        let user = match require_user(&state, &headers).await {
+            Ok(u) => u,
+            Err(gate) => return gate,
+        };
+        let eff = match effective_doc_perms(&state.pg, &doc).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("[kb] perms read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let who = who_of(&user);
+        if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        actor = actor_of(&user);
     }
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     if delete_doc(&state.pg, &qd, &ed, &id).await.is_err() {
         return thrown_internal_error();
     }
+    // The one kb write with no undo, so it is the one that always lands in the
+    // audit log — whoever pulled the trigger.
+    let (pg, target_id, target_label) = (state.pg.clone(), id.clone(), doc.title.clone());
+    tokio::spawn(async move {
+        log_audit(
+            &pg,
+            AuditEntry {
+                actor: &actor,
+                action: "kb.doc_delete",
+                target_type: "kb-doc",
+                target_id: Some(&target_id),
+                target_label: Some(&target_label),
+                before: None,
+                after: None,
+            },
+        )
+        .await;
+    });
     Json(json!({ "ok": true })).into_response()
 }
