@@ -848,6 +848,43 @@ pub async fn set_message_guard(
     Ok(())
 }
 
+/// The ticket gate's hold stamp, written when the relevance judge decided a
+/// message is not the assigned agent's business. The message STAYS — the
+/// humans in the room read it — but the stamp is the durable record of the
+/// verdict, and the continuation chain reads it back (below) so no queued
+/// copy of the message is ever answered. Merged, never replaced: the effort
+/// stamp rides the same object.
+pub async fn hold_ticket_message(pg: &PgPool, message_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages \
+         set metadata = coalesce(metadata, '{}'::jsonb) || '{\"ticket_hold\": true}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Whether the newest user message carries the hold stamp — the chain's
+/// question, asked before it builds a turn that would answer it. A read that
+/// cannot happen answers false, the same direction the gate itself fails:
+/// toward answering.
+pub async fn last_user_message_held(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(Option<bool>,)> = sqlx::query_as(
+        "select (metadata->>'ticket_hold')::bool from messages \
+         where conversation_id = $1::uuid and role = 'user' \
+         order by seq desc limit 1",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.and_then(|(held,)| held).unwrap_or(false))
+}
+
 /// One complete assistant turn, written server-side — the outreach-DM shape,
 /// available to any plane that owes a person a line without streaming one
 /// (the research run's scope question, its scope ack, its report-ready

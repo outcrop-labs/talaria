@@ -242,7 +242,7 @@ struct TaskRow {
     archived_at_ms: Option<i64>,
 }
 
-fn json_strings(v: &serde_json::Value) -> Vec<String> {
+pub fn json_strings(v: &serde_json::Value) -> Vec<String> {
     serde_json::from_value(v.clone()).unwrap_or_default()
 }
 

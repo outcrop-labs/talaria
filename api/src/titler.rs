@@ -76,6 +76,11 @@ pub async fn maybe_retitle_conversation(state: &AppState, conversation_id: &str)
     if count > 4 {
         return;
     }
+    if kind == "ticket" {
+        // A ticket thread's name is its task's name — the task owns it, and
+        // the task's own title edit is the only rename this row ever gets.
+        return;
+    }
     let msgs: Vec<(String, String)> = sqlx::query_as(
         "select role, content from messages \
          where conversation_id = $1::uuid and content <> '' order by seq asc limit 3",

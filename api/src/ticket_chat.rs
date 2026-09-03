@@ -78,6 +78,106 @@ pub async fn ticket_head(pg: &PgPool, task_id: &str) -> Option<TicketHead> {
     })
 }
 
+/// What the chat door needs about the thread's task, in one read: where the
+/// message lands (board and task ids for the fans), the head the prompt and
+/// the gate share, and the BINDING — the first agent among the task's
+/// CURRENT assignees, which is the who the gate decides about. The
+/// conversation's own agent_model is not that answer: an unassigned task's
+/// thread is bound to the org default agent as a dormant binder, and only
+/// the task's assignees say whether an agent is actually on the work.
+#[derive(Debug, Clone)]
+pub struct TicketMeta {
+    pub task_id: String,
+    pub board_id: String,
+    /// The first agent assignee, or None when the task has none — humans and
+    /// attachments only.
+    pub agent: Option<String>,
+    pub head: TicketHead,
+}
+
+/// Resolve the task a conversation is attached to. None when the task is
+/// gone (deleted under its thread — the door treats that room as an ordinary
+/// conversation: the humans still in it are still talking) or the row cannot
+/// be read.
+pub async fn ticket_for_conversation(pg: &PgPool, conversation_id: &str) -> Option<TicketMeta> {
+    sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            serde_json::Value,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        ),
+    >(
+        "select t.id::text, t.board_id::text, t.assignees, \
+                case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') \
+                     || '-' || t.ticket_no end, \
+                t.title, t.status, t.description \
+         from tasks t join boards b on b.id = t.board_id \
+         where t.conversation_id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten()
+    .map(
+        |(task_id, board_id, assignees, ticket_ref, title, status, description)| {
+            let agent = crate::tasks::agent_assignees(&crate::tasks::json_strings(&assignees))
+                .into_iter()
+                .next();
+            TicketMeta {
+                task_id,
+                board_id,
+                agent,
+                head: TicketHead {
+                    ticket_ref,
+                    title,
+                    status,
+                    description,
+                },
+            }
+        },
+    )
+}
+
+/// The tail of the discussion BEFORE this message, as one-line turns for the
+/// judge — "user: …" / "assistant: …", oldest first. Its own read rather
+/// than the door's `prior` so the QUEUED path (which skips the full history
+/// build) still hands the judge its context: a bare "yes" is only decidable
+/// against the question it answers. String bodies only — a turn made of
+/// blocks (an image handoff) has no line to quote, which is the truth about
+/// it. `before_seq` is the incoming message's own seq, so the tail excludes
+/// the very message being judged.
+pub async fn recent_turns(pg: &PgPool, conversation_id: &str, before_seq: i32) -> Vec<String> {
+    const TAKE: i64 = 6;
+    const CLIP: usize = 400;
+    let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "select role, content from messages \
+         where conversation_id = $1::uuid and seq < $2 and role in ('user','assistant') \
+           and status = 'complete' \
+         order by seq desc limit $3",
+    )
+    .bind(conversation_id)
+    .bind(before_seq)
+    .bind(TAKE)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let mut out: Vec<String> = rows
+        .into_iter()
+        .filter_map(|(role, content)| {
+            let text = content.as_str()?.trim().to_string();
+            (!text.is_empty()).then(|| format!("{role}: {}", truncate_utf16(&text, CLIP)))
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
 // ── The prompt ───────────────────────────────────────────────────────────────
 
 /// The ticket-mode harness, prepended to every ticket-thread turn. Carries
