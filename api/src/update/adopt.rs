@@ -467,12 +467,12 @@ async fn resume(pg: &PgPool, state: &UpdateState) -> Result<AdoptStage, String> 
     // then land the run exactly as the reconcile would. Ok(None) means the
     // run already landed (green's own tick, a prior call) — cutover either
     // way, not an error.
-    if let Some(retired) = retired.filter(|r| Some(r.as_str()) != me.as_deref()) {
-        if container_running(&retired).await {
-            stop_container(&retired, roll_drain_ms())
-                .await
-                .map_err(|e| format!("the retired container did not stop: {e}"))?;
-        }
+    if let Some(retired) = retired.filter(|r| Some(r.as_str()) != me.as_deref())
+        && container_running(&retired).await
+    {
+        stop_container(&retired, roll_drain_ms())
+            .await
+            .map_err(|e| format!("the retired container did not stop: {e}"))?;
     }
     let _ = reconcile_boot(pg).await?;
     Ok(AdoptStage::Cutover { edge_port: port })

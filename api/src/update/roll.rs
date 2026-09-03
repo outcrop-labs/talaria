@@ -417,12 +417,12 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
         // the edge up (and the edge is how the world arrives here at all):
         // a green with the compose file and no edge heals it itself, so the
         // wedge lasts until the next read, not forever.
-        if !edge_healthy(5_000).await {
-            if let Err(e) = service_up(EDGE_SERVICE).await {
-                return Err(format!(
-                    "the edge is down after the cutover and would not come up: {e}"
-                ));
-            }
+        if !edge_healthy(5_000).await
+            && let Err(e) = service_up(EDGE_SERVICE).await
+        {
+            return Err(format!(
+                "the edge is down after the cutover and would not come up: {e}"
+            ));
         }
         // The edge must route to us before the run lands done: the port the
         // world dials is the port that must answer.
@@ -440,13 +440,13 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
         // repoint. Only the finish call — one that ARRIVES through the edge —
         // may stop it; marking the run done here (5 minutes after green
         // booted) would remove the container the world is still dialing.
-        if let Some(retired) = state.retired_container.as_deref() {
-            if container_running(retired).await {
-                return Ok(Some(
-                    "adoption is holding: the retired container still serves — repoint the proxy and finish it"
-                        .into(),
-                ));
-            }
+        if let Some(retired) = state.retired_container.as_deref()
+            && container_running(retired).await
+        {
+            return Ok(Some(
+                "adoption is holding: the retired container still serves — repoint the proxy and finish it"
+                    .into(),
+            ));
         }
         let at = now_iso();
         patch(pg, |mut s| {
