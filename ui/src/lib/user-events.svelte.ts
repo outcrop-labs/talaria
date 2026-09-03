@@ -80,12 +80,15 @@ export function useUserEventInvalidation(): void {
         case 'notification':
           void qc.invalidateQueries({ queryKey: ['notifications'] })
           void qc.invalidateQueries({ queryKey: ['home'] })
+          void qc.invalidateQueries({ queryKey: ['unreads'] })
           break
         case 'channel':
           void qc.invalidateQueries({ queryKey: ['channels'] })
+          void qc.invalidateQueries({ queryKey: ['unreads'] })
           break
         case 'conversation':
           void qc.invalidateQueries({ queryKey: ['conversations'] })
+          void qc.invalidateQueries({ queryKey: ['unreads'] })
           break
         case 'run':
           void qc.invalidateQueries({ queryKey: ['research-runs'] })

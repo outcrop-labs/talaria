@@ -300,6 +300,10 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
         )
         .route(
+            "/api/unreads",
+            get(activity::unreads::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/history",
             get(activity::history::get).fallback(|| async { method_not_allowed("GET") }),
         )

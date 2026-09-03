@@ -35,6 +35,7 @@
   import { useEnabledApps } from '@/lib/apps'
   import { useInboxFocus, useInboxFocusSummary } from '@/lib/inbox-focus.svelte'
   import { useDeniedViews } from '@/lib/session'
+  import { useUnreads } from '@/lib/unreads.svelte'
   import { route } from '@/router'
 
   // The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
@@ -72,9 +73,20 @@
         ? (inboxQueue.data?.counts.total ?? 0)
         : (inboxSummary.data?.count ?? 0),
   )
-  const unreadLabel = $derived(unread === null ? '!' : String(unread))
-  const unreadTitle = $derived(unread === null ? 'Could not load what is waiting for you; open the Inbox' : undefined)
-  const showUnread = $derived(unread === null || unread > 0)
+  // The other rails' badges — Comms, Plan, Research — ride /api/unreads, the
+  // same counts their pills show, live over the firehose with its own 30s
+  // floor. The SAME unread-null doctrine as /home above applies, for the same
+  // reason and on the same surface.
+  const unreadsQuery = useUnreads()
+  /** An item's badge count: undefined = carries none; null = unreadable. */
+  const badgeFor = (item: NavItem): number | null | undefined => {
+    if (item.to === '/home') return unread
+    if (!item.badge) return undefined
+    if (unreadsQuery.isError && unreadsQuery.data === undefined) return null
+    return unreadsQuery.data?.[item.badge] ?? 0
+  }
+  const badgeTitle = (badge: number | null) =>
+    badge === null ? 'Could not load what is waiting here' : undefined
   // Enabled apps get their own rail category, separate from Work: Work is
   // Talaria's own surfaces, and an app's work surface is a guest with its own
   // heading — you should be able to tell platform from app at a glance. An
@@ -194,6 +206,7 @@
       {#each sections as section, si (section.title)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
+          {@const badge = badgeFor(item)}
           <RailTooltip label={item.label}>
             <a
               href={item.to}
@@ -206,15 +219,15 @@
               )}
             >
               <NavIcon icon={item.icon} />
-              {#if item.to === '/home' && showUnread}
+              {#if badge !== undefined && (badge === null || badge > 0)}
                 <span
-                  title={unreadTitle}
+                  title={badgeTitle(badge)}
                   class={cn(
                     'absolute right-0.5 top-0 font-mono text-[10px] leading-3 tracking-[0.05em]',
-                    unread === null ? 'text-[color:var(--theme-danger)]' : 'text-muted',
+                    badge === null ? 'text-[color:var(--theme-danger)]' : 'text-muted',
                   )}
                 >
-                  {unreadLabel}
+                  {badge === null ? '!' : badge}
                 </span>
               {/if}
             </a>
@@ -293,6 +306,7 @@
                row's field resolves as its own. -->
           <ul class="space-y-1.5">
             {#each section.items as item (item.to)}
+              {@const badge = badgeFor(item)}
               <li>
                 <a
                   {@attach ditherSurface()}
@@ -320,18 +334,18 @@
                     <NavIcon icon={item.icon} />
                   </span>
                   <span class="relative flex-1 truncate">{item.label}</span>
-                  {#if item.to === '/home' && showUnread}
+                  {#if badge !== undefined && (badge === null || badge > 0)}
                     <!-- Spec §5: nav counts are muted (#8E877E) — not accent.
                          The unreadable case is the one exception: it is not a
                          count, and a muted "!" reads as decoration. -->
                     <span
-                      title={unreadTitle}
+                      title={badgeTitle(badge)}
                       class={cn(
-                        'font-mono text-[10px] leading-3 tracking-[0.05em]',
-                        unread === null ? 'text-[color:var(--theme-danger)]' : 'text-muted',
+                        'relative font-mono text-[10px] leading-3 tracking-[0.05em]',
+                        badge === null ? 'text-[color:var(--theme-danger)]' : 'text-muted',
                       )}
                     >
-                      {unreadLabel}
+                      {badge === null ? '!' : badge}
                     </span>
                   {/if}
                 </a>

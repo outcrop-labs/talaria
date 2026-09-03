@@ -15,6 +15,7 @@
   import { useSession } from '@/lib/session'
   import { useAgents } from '@/lib/agents'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
+  import { useMarkResearchRunSeen } from '@/lib/unreads.svelte'
   import ReportSkeleton from './ReportSkeleton.svelte'
   import ResearchMembers from './ResearchMembers.svelte'
 
@@ -39,6 +40,19 @@
   const artifactQuery = useArtifact(() => run?.artifactId ?? null)
   const artifact = $derived(artifactQuery.data)
   const artifactLoading = $derived(artifactQuery.isLoading)
+
+  // OPENING IS THE SEEN GESTURE for research — the same walk-in a thread's
+  // read cursor performs. The notifications that pointed here (the run's
+  // landing, its questions) clear by href, and the rail badge falls together
+  // with the bell. Gated on the run actually rendering (a failed fetch saw
+  // nothing) and fired once per run, not per refetch.
+  const markSeen = useMarkResearchRunSeen()
+  let seenRun: string | null = null
+  $effect(() => {
+    if (!run || seenRun === runId) return
+    seenRun = runId
+    void markSeen(runId)
+  })
 
   const fleetQuery = useAgents()
   const agents = $derived(fleetQuery.data?.agents ?? [])

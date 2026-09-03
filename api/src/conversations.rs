@@ -599,6 +599,34 @@ pub async fn remove_plan_member(
     Ok(())
 }
 
+/// The caller's total unread messages across conversations of one kind — a
+/// rail badge's number. The SAME predicate `list_conversations` counts per
+/// thread (keep the two in lockstep), including the plan-membership scoping
+/// and the -1 no-cursor floor.
+pub async fn conversation_unread_total(
+    pg: &PgPool,
+    user_id: &str,
+    kind: &str,
+) -> Result<i32, sqlx::Error> {
+    let (n,): (i32,) = sqlx::query_as(
+        "select count(*)::int from conversations c \
+         join messages m on m.conversation_id = c.id \
+         left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
+         where c.archived = false and c.kind = $2 \
+           and m.seq > coalesce(cr.last_read_seq, -1) \
+           and m.status = 'complete' \
+           and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
+           and (c.user_id = $1::uuid or ($2 = 'plan' and exists( \
+             select 1 from conversation_members cm \
+             where cm.conversation_id = c.id and cm.user_id = $1::uuid)))",
+    )
+    .bind(user_id)
+    .bind(kind)
+    .fetch_one(pg)
+    .await?;
+    Ok(n)
+}
+
 /// Next sequence number for a conversation.
 pub async fn next_seq(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
     let (next,): (i32,) = sqlx::query_as(

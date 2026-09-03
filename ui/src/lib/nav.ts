@@ -29,6 +29,10 @@ export interface NavItem {
    *  (their manifest `icon`) — renderers must handle both. */
   icon: LucideIcon | string
   adminOnly?: boolean
+  /** Which rail badge this item carries, if any — the /api/unreads arm its
+   *  count comes from. `/home` deliberately has none here: its badge is the
+   *  inbox-focus plane, a different query with its own doctrine. */
+  badge?: 'comms' | 'plan' | 'research'
 }
 
 // Views an admin can grant/revoke per user. Home and Settings are always
@@ -73,10 +77,10 @@ export const NAV: NavSection[] = [
       // `/home/inbox` would be precise and would leave every other Home tab
       // lighting nothing.
       { to: '/home', label: 'Inbox', icon: Inbox },
-      { to: '/comms', label: 'Comms', icon: MessageCircle },
-      { to: '/plan', label: 'Plan', icon: CalendarRange },
+      { to: '/comms', label: 'Comms', icon: MessageCircle, badge: 'comms' },
+      { to: '/plan', label: 'Plan', icon: CalendarRange, badge: 'plan' },
       { to: '/boards', label: 'Boards', icon: LayoutGrid },
-      { to: '/research', label: 'Research', icon: Telescope },
+      { to: '/research', label: 'Research', icon: Telescope, badge: 'research' },
       { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { to: '/artifacts', label: 'Files', icon: FileBox },
     ],

@@ -49,6 +49,9 @@ memory — and the citations come out invented — so an admin needs to have sea
   own brain. Chats, plans, and boards can cite it later without you doing anything.
 - Notifications: "Research ready: …" when yours finishes; "…shared research with you" when
   someone includes you.
+- Runs you haven't seen carry the **Research** count in the sidebar, live — it moves the
+  moment a run lands, wherever you are in the app. Opening a run is the seen gesture: its
+  notifications clear with it, and the badge and the bell empty together.
 - Agents can start research too — from any conversation, with the same tools — and merge
   what they find into their own reports.
 

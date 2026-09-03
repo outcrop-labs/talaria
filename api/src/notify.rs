@@ -134,6 +134,25 @@ pub async fn unread_count(pg: &PgPool, user_id: &str) -> Result<i32, sqlx::Error
     Ok(n.0)
 }
 
+/// Unread rows of ONE kind — research's rail badge. Its clearing gesture is
+/// the href mark-read the run's page fires on open, so the badge and the
+/// bell's row for the same run clear together.
+pub async fn unread_count_of_kind(
+    pg: &PgPool,
+    user_id: &str,
+    kind: &str,
+) -> Result<i32, sqlx::Error> {
+    let n: (i32,) = sqlx::query_as(
+        "select count(*)::int from notifications \
+         where user_id = $1::uuid and kind = $2 and read_at is null",
+    )
+    .bind(user_id)
+    .bind(kind)
+    .fetch_one(pg)
+    .await?;
+    Ok(n.0)
+}
+
 /// Mark specific notifications read, or all of the user's when neither
 /// selector is given — and when ids is EMPTY, which folds into the same
 /// all-rows update. `href` is the surface's selector: a page that was opened
