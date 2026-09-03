@@ -6,6 +6,15 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **The browser tab carries the instance's company name.** Admins can name
+  the workspace (Admin → org tab, beside the hosting domain); until then
+  the tab reads "Talaria", and once named it reads "Talaria - <name>" — on
+  every route and the sign-in page too, because the name rides the public
+  identity beacon alongside the instance id rather than an authed read.
+  Purely cosmetic: nothing else derives from it. The name trims on save,
+  whitespace-only is refused (clearing is an explicit null an accidental
+  save can never perform), and every set lands in the audit log.
+
 - **Notifications reach a browser that's closed.** Web Push, end to end: the
   settings' desktop-notifications toggle now also files the browser as a push
   recipient (a per-device subscription — the push service's endpoint plus
