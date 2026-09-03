@@ -105,6 +105,7 @@ pub mod task_const;
 pub mod tasks;
 pub mod teams;
 pub mod templates;
+pub mod ticket_chat;
 pub mod titler;
 pub mod tz;
 pub mod uploads;
