@@ -6,6 +6,26 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **docs/UPDATES.md — the update story in one place.** The taxonomy (who may
+  roll and why the refusals say what they say), digest pinning (a roll never
+  pulls a moving tag), the roll step by step including the two-process split
+  and the never-released lock, rollback (panel and the docker-only runbook
+  for a dead instance), the deploy key, the two-switch auto-update story, and
+  the overlap contract — the expand-contract migration rule a contributor
+  must keep, now linked from CONTRIBUTING.md's rules.
+
+- **The update panel rolls with the engine — and the git-checkout updater
+  retires.** Admin → Security → Updates now answers against
+  /api/admin/updates: running version and slot, what's available, Check /
+  Update now / Roll back (the kept old slot is the target), the auto-update
+  toggle (image installs only, off by default), and the deploy key — minted
+  once, shown once, stored as a hash. Non-image installs show the engine's
+  own refusal sentence; un-adopted installs keep deploying the way they
+  always have, and the panel says that too. The TS git updater it replaces
+  (ui/src/server/updater.ts, the admin.update resident,
+  scripts/update-restart.mjs) is deleted — the proxy resident list drops to
+  three, and the routes/api reference carries the Rust surface instead.
+
 - **The update engine rolls — and its panel and schedule arrive with it.**
   One update, start to finish, split across two processes by design: the
   live container gates (mode, adoption, nothing in flight), takes the
