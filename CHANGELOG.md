@@ -6,6 +6,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **Rooms and threads ring the rail without being opened.** A message in a
+  channel you're not looking at, a reply landing in an agent thread you walked
+  away from, a run finishing while you read email — all of it now moves the
+  interface the moment it happens, on whatever page you're on, over a single
+  event stream per tab (two used to open: one for toasts, one for the brief —
+  each a dedicated server subscriber).
+
 - **Agent threads and plans finally track what you've read.** Conversations
   grow a per-person read cursor — one table for agent chats and plans alike —
   so a reply that lands while you're away grows a count pill on the thread's
