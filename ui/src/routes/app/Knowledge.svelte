@@ -93,7 +93,18 @@
   // OWN space rather than to the first one in the list. That guess was a real
   // bug: `?doc=<id>` for a document in the second space rendered the first
   // space's overview and quietly dropped the request.
-  const permalinkDoc = useDoc(() => (!pathSpace && docId ? docId : null))
+  //
+  // THE STALE ONE-SEGMENT SHAPE resolves the same way. Every retrieved-doc
+  // href was `/knowledge/<docId>` until the writers moved to `?doc=` — and the
+  // copies already out in the world (hrefs baked into notification emails,
+  // Qdrant payloads until the next reindex regenerates them) are not ours to
+  // fix; the `?r=` net in the app shell exists for the research twin of this.
+  // A segment that names no space in the (loaded) roster but names a doc IS
+  // that shape; anything else falls through to the overview as before.
+  const staleSeg = $derived(
+    pathSpace && !spacesQuery.isLoading && !spaces.some((s) => s.id === pathSpace) ? pathSpace : null,
+  )
+  const permalinkDoc = useDoc(() => (!pathSpace && docId ? docId : staleSeg))
   // Still on Knowledge? This view outlives the click that leaves it, and the
   // effect below navigates — without this it reads the NEXT view's pathname as
   // "Knowledge with no space", canonicalises to the first space, and drags you
@@ -103,9 +114,11 @@
   // WHERE YOU WERE, so leaving and coming back through the nav rail does not
   // land you on the first space. Only while genuinely here — a leaving view
   // runs its effects once against the next view's URL, and writing there would
-  // record an empty selection over a good memory.
+  // record an empty selection over a good memory. Not while a stale segment is
+  // pending resolution either: that "space id" is a doc id, and recording it
+  // here is recording a selection that can never restore.
   $effect(() => {
-    if (onKnowledge && spaceId) writeKnowledgeSelection({ spaceId, docId })
+    if (onKnowledge && spaceId && staleSeg == null) writeKnowledgeSelection({ spaceId, docId })
   })
 
   // RESTORED ONCE, ON ARRIVAL — latched rather than keyed off a bare URL,
@@ -130,13 +143,14 @@
 
   $effect(() => {
     if (!onKnowledge) return
-    if (pathSpace) return // already canonical
+    if (pathSpace && staleSeg == null) return // already canonical
     // Let the restore above answer first; otherwise the first-space default
     // wins the race and there is nothing left for the memory to restore.
     if (!restored) return
-    const home = permalinkDoc.data?.spaceId ?? (docId ? null : spaces[0]?.id)
+    const wantDoc = docId ?? staleSeg
+    const home = permalinkDoc.data?.spaceId ?? (wantDoc ? null : spaces[0]?.id)
     if (!home) return
-    if (docId) void navigate('/knowledge/:space/:doc', { params: { space: home, doc: docId }, replace: true })
+    if (wantDoc) void navigate('/knowledge/:space/:doc', { params: { space: home, doc: wantDoc }, replace: true })
     else void navigate('/knowledge/:space', { params: { space: home }, replace: true })
   })
 
