@@ -29,17 +29,27 @@ export function useNotifications() {
   }))
 }
 
+/** Mark notifications read: by ids, by href (everything pointing at the place
+ *  just opened), or all of them when called bare. The server gives ids
+ *  priority when both arrive.
+ *
+ *  Invalidation is the whole point of this hook existing: a mark-read that
+ *  left the caches alone would clear the server's rows and leave the bell and
+ *  the brief showing yesterday's unread — the exact "never disappear" this
+ *  wiring exists to end. `['home']` rides along because the inbox brief's
+ *  notification arm reads the same rows. */
 export function useMarkNotificationsRead() {
   const qc = useQueryClient()
-  return async (ids?: string[]) => {
+  return async (what?: { ids?: string[]; href?: string }) => {
     try {
-      await putJson<{ ok: true }>('/api/notifications', ids ? { ids } : {})
+      await putJson<{ ok: true }>('/api/notifications', what ?? {})
     } catch (e) {
-      // Both call sites fire this with `void` — without a catch a failed
+      // Call sites fire this with `void` — without a catch a failed
       // mark-read is an unhandled rejection, and the badge quietly lies.
       pushToast({ title: 'Mark as read failed', body: errorMessage(e), tone: 'danger' })
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
+    await qc.invalidateQueries({ queryKey: ['home'] })
   }
 }
 

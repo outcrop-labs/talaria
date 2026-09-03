@@ -23,6 +23,7 @@ use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::{routed_model_for, usable_agent_gate};
 use crate::gateway::fleet_chat::{chat_payload, proxy_chat};
 use crate::model::efforts::efforts_for_model;
+use crate::notify::{NotifyDeps, fan_conversation_event};
 use crate::permissions::has_perm;
 use crate::persona::persona_configured_effort;
 use crate::plan_doc::{PLAN_MODE_PROMPT, plan_routing_block};
@@ -401,6 +402,15 @@ pub async fn post(
             &sender_label,
             &body.content,
             plan_title.as_deref(),
+        );
+        // And the rail: a teammate's turn in a shared plan is unread to every
+        // OTHER reader — the sender is here, looking at it, but a collaborator
+        // elsewhere sees their pill move now, not on the next poll. Chat turns
+        // skip this: the only reader is the sender, who is present by
+        // definition. (The agent's reply fans from chat_persist on complete.)
+        fan_conversation_event(
+            NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+            conv_id.clone(),
         );
     }
 

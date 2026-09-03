@@ -6,7 +6,7 @@
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_write};
-use crate::notify::{NotifyDeps, briefs_follow_message};
+use crate::notify::{NotifyDeps, briefs_follow_message, fan_channel_event};
 use crate::realtime::{ChannelEvent, publish_channel};
 use crate::users::{assistant_owner_for, is_elevated_assistant};
 use serde_json::Value;
@@ -194,6 +194,26 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
             },
         )
         .collect())
+}
+
+/// The member's total unread across every channel they're in — the Comms
+/// rail badge's number. The same predicate `list_channels` shows per channel,
+/// counted in one pass over all of them: a badge that disagreed with the sum
+/// of its own pills would be worse than no badge.
+pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sqlx::Error> {
+    let (n,): (i32,) = sqlx::query_as(
+        "select count(*)::int from channel_messages msg \
+         join channels c on c.id = msg.channel_id and c.archived_at is null \
+         join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
+         join users self on self.id = $1::uuid \
+         where msg.seq > m.last_read_seq and msg.status = 'complete' \
+           and not (msg.author_type = 'user' \
+             and msg.author = coalesce(self.email, self.name, 'user'))",
+    )
+    .bind(user_id)
+    .fetch_one(pg)
+    .await?;
+    Ok(n)
 }
 
 /// Advance the member's read cursor (never backwards).
@@ -1020,6 +1040,10 @@ pub async fn insert_channel_message(
     // to answer somebody you had just answered. This clears the sweep throttle
     // and rings the bell; it does not sweep.
     briefs_follow_message(deps.clone(), channel_id.to_string());
+    // AND THE RAIL FOLLOWS THE ROOM. The room's own SSE carries this message to
+    // whoever has it open; this rings every member's firehose so a badge on an
+    // unopened room moves the moment the message lands, not on the next poll.
+    fan_channel_event(deps.clone(), channel_id.to_string());
     Ok(message)
 }
 

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
+  import CountPill from '@/components/app/CountPill.svelte'
   import type { Conversation } from '@/lib/conversations.svelte'
 
-  /** §10 session row content: [status dot] [13px title] [mono owner] [mono time].
-   *  Shared: the Plan rail and the Comms agent-thread rows are both session
-   *  lists — one anatomy, one component. */
+  /** §10 session row content: [status dot] [13px title] [mono owner] [mono time]
+   *  [unread pill]. Shared: the Plan rail and the Comms agent-thread rows are
+   *  both session lists — one anatomy, one component. */
   let { conv, active }: { conv: Conversation; active: boolean } = $props()
 
   // Semantic first (spec §1): failure orange, working green; the active row's
@@ -34,6 +35,9 @@
     {conv.ownerLabel}
   </span>
 {/if}
+<!-- The unread pill sits before the time: what is waiting outranks when it
+     waited. Renders nothing at zero — a read thread carries no chrome. -->
+<CountPill count={conv.unreadCount} />
 <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-ink-dim">
   {relativeTime(conv.updatedAt)}
 </span>

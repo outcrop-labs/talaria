@@ -184,6 +184,12 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     let rt = RealtimeDeps::publish_only(Some(conn.clone()));
     let run = Arc::new(real_run_deps(state.pg.clone(), conn.clone(), rt.clone()));
     register_all(state, run, rt, &sb).await;
+    // The push plane rides the same boot, one line below registration: one
+    // install and every row the single notification writer files can also
+    // reach closed tabs. Here in try_arm rather than register_all on
+    // purpose — the completeness test drives register_all with a dead lazy
+    // pool, and the plane's OnceLock must hold the real one or nothing.
+    crate::push::install_push_plane(state.pg.clone(), sb.clone());
     // start_scheduler runs the missing-jobs boot check and logs the armed
     // summary itself; its return is that list again.
     let armed = scheduler::start_scheduler(conn);

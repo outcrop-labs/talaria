@@ -27,7 +27,7 @@ use crate::gateway::guard::{
 };
 use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
 use crate::model::efforts::efforts_for_model;
-use crate::notify::NotifyDeps;
+use crate::notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
 use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
 use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::index_activity;
@@ -438,6 +438,30 @@ pub async fn persist_assistant_stream(
             set_message_guard(&state.pg, &message_id, &scrubbed).await
         };
         let _ = guard.await;
+    }
+    // The rail's signal, on every completed reply: this thread's unread pill
+    // moves for everyone who can read it, wherever in the app they are. The
+    // row is landed complete above, so a client that refetches on the event
+    // sees the finished turn; the event is id-shaped, so it carries nothing
+    // the refetch doesn't re-read through the ordinary ACL. Detached — the
+    // persist path never waits on a fan-out.
+    fan_conversation_event(
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        conversation_id.clone(),
+    );
+    // And the reply that landed while its readers were away rings once: one
+    // agent-reply row per audience member whose read cursor doesn't cover it,
+    // deduped while one sits unread per thread. AFTER the guard block on
+    // purpose — the helper reads the reply as saved, so strict mode's scrub
+    // has reached the row before any copy of it files into an inbox. Same
+    // detached rule as the fan beside it.
+    {
+        let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        let conversation_id = conversation_id.clone();
+        let message_id = message_id.clone();
+        tokio::spawn(async move {
+            notify_agent_reply(&notify, &conversation_id, &message_id).await;
+        });
     }
     if let Some(meta) = usage_meta
         .as_ref()

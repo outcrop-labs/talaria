@@ -15,6 +15,8 @@ export interface Conversation {
   /** Multiplayer plans: your standing; ownerLabel set on plans shared with you. */
   role?: 'owner' | 'collaborator'
   ownerLabel?: string | null
+  /** Landed messages past your read cursor — the rail pill. */
+  unreadCount?: number
 }
 
 export interface StoredMessage {
@@ -82,6 +84,13 @@ export const unsharePlan = async (planId: string, userId: string): Promise<void>
   await delJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { userId }).catch((e: unknown) =>
     pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
   )
+}
+
+/** Advance the read cursor. An explicit seq marks up to it (ChatView's
+ *  auto-advance); an absent one marks to the thread's latest (the Comms
+ *  context menu knows the thread, not its seqs). */
+export const markConversationRead = async (id: string, seq?: number): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/conversations/${id}/read`, seq === undefined ? {} : { seq })
 }
 
 export function useConversations(kind: MaybeGetter<'chat' | 'plan'> = 'chat') {

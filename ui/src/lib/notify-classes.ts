@@ -139,12 +139,14 @@ const KIND_CLASS: Readonly<Record<string, NotifyClass>> = {
   // Addressed to you, in a thread of your own.
   dm: 'dm',
   'agent-outreach': 'dm',
+  'agent-reply': 'dm',
   // Blocked on a human.
   'agent-problem': 'agent_blocked',
   'workbench-repo-request': 'agent_blocked',
   // Outcomes.
   research: 'work_complete',
   'task-status': 'work_complete',
+  board_access: 'work_complete',
   // `judge_escalation` (server/judge.ts) and `gap_reported` (server/gaps.ts)
   // are NOT in this table on purpose: their writers name the CLASS as the kind,
   // which `notifyClassOf` accepts directly. A kind that is already the class it

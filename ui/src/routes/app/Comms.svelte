@@ -26,7 +26,7 @@
   import { pushToast } from '@/lib/toast.svelte'
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
-  import { useConversations } from '@/lib/conversations.svelte'
+  import { markConversationRead, useConversations } from '@/lib/conversations.svelte'
   import {
     commsSelectionFromPath,
     isCommsPath,
@@ -474,6 +474,22 @@
                     menu.openMenu(e, [
                       { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
                       { label: 'Copy link', onSelect: () => copyAppLink(`/comms/agent/${a.id}/${c.id}`) },
+                      // Clear the pill without opening: an absent seq tells the
+                      // server "the thread's latest", so this needs no load.
+                      ...(c.unreadCount
+                        ? [
+                            {
+                              label: 'Mark read',
+                              onSelect: () => {
+                                void markConversationRead(c.id)
+                                  .then(() => qc.invalidateQueries({ queryKey: ['conversations'] }))
+                                  .catch((e: unknown) =>
+                                    pushToast({ title: 'Mark read failed', body: errorMessage(e), tone: 'danger' }),
+                                  )
+                              },
+                            },
+                          ]
+                        : []),
                       {
                         label: 'Rename',
                         onSelect: () => {

@@ -29,6 +29,7 @@ Hiring and configuring agents is an admin (or granted-manager) job — that's th
 | Watch it work | A breathing dot on the agent means it's working on a reply; you watch it type in the feed, and **Stop (Esc)** cancels mid-stream |
 | Teach an agent something | [Agent Studio](#agent-studio) — name the work, explain it in plain words, Muse drafts the skill |
 | Hand it a credential | The key icon in an agent chat — see [Comms](./comms.md#handing-an-agent-a-credential) |
+| Walk away mid-reply | The reply still finds you: the thread grows its unread pill and "`Dex` replied" rings the bell — once per thread, further replies fold in. Watching it type counts as reading; opening clears both |
 | Walk away | Idle agent chats distill into a summary document and archive on their own |
 
 ## Agents on boards

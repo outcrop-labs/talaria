@@ -32,7 +32,7 @@ them.
 
 | Piece | What it is |
 | :--- | :--- |
-| **Conversation** | The multiplayer chat — everyone shares one agent |
+| **Conversation** | The multiplayer chat — everyone shares one agent. It keeps a read cursor per person: turns that land while you're away grow a count pill on the plan's row in the rail; opening the plan clears it. Your own turns never ring you |
 | **Living document** | The plan taking shape beside it: outline, goals, scope, decisions. A real, versioned file |
 | **Template** | The structure the document starts from — a plan template of yours, or **Automatic** (the agent's bound one) |
 | **Model tier** | Which tier runs this chat and the rewrites |

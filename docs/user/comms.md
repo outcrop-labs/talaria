@@ -32,6 +32,7 @@ Open: **Work → Comms** in the sidebar. Admins can hide Comms from individual p
 | Draft tickets from a conversation | Header clipboard icon → pick planner, board, template → **Draft tickets** → review each proposal → **Create all** |
 | Leave a channel | Channel settings → **Leave** |
 | Rename a thread | Right-click the thread in the sidebar → **Rename** |
+| Clear a thread's unread pill | Open it — or right-click → **Mark read** |
 
 While an agent replies you watch it type; **Stop (Esc)** cancels mid-stream. Sending again
 while it works queues your message — it never interrupts. What agents are, what they may and
@@ -43,6 +44,10 @@ Edit or delete your own messages (the channel owner can delete anyone's); hover 
 for the toolbar, right-click for **Copy text / Copy link**. Threads show a **N replies**
 rollup on the root message. In agent chats there are no reactions or threads — the only
 message action is copy.
+
+Threads keep a read cursor. A reply that lands while you're elsewhere grows a count pill
+on the thread (and on the agent's row in the sidebar); opening the thread clears it — your
+own turns never count. Right-click → **Mark read** clears it without opening.
 
 ## Handing an agent a credential
 
@@ -59,6 +64,11 @@ handle it can spend once within the hour.
 | An @mention in a channel or relay | "…mentioned you in #general" |
 | Ordinary channel chatter | Never — having the channel open means you've read it |
 | An agent reaching out to you first | Inbox notification: "`Dex` reached out" |
+| An agent's reply while you're away | "`Dex` replied" — one row per thread; further replies fold in until you open it. Watching the thread type counts as reading it |
+
+Badges are live: a message landing in a room you're not in moves its count the
+moment it lands — one event stream per tab carries it (and the bell, and the
+rails) no matter which page you're on.
 
 Tune the classes (in-app / email / both) in **Settings → Notifications**.
 

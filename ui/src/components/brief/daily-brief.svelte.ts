@@ -12,6 +12,7 @@
 // scrolling the timeline to the top), never on load.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
+import { onUserEvent } from '@/lib/user-events.svelte'
 import type { BriefResponse, BriefView } from '@/lib/daily-brief-types'
 
 export type { BriefResponse, BriefView }
@@ -58,7 +59,7 @@ export function useBrief() {
   }))
 }
 
-/** Subscribe to the person's own firehose and refetch when the brief moves.
+/** Refetch the brief when the person's firehose says it moved.
  *
  *  THE EVENT CARRIES NO CONTENT — see the note on `UserEvent` in the Rust
  *  realtime engine (api/src/realtime.rs) — so this deliberately does not try
@@ -69,23 +70,18 @@ export function useBrief() {
  *
  *  Filtered on `type`, because `user:<id>` is a firehose: every run transition
  *  this person owns arrives here too, and refetching the brief on each of them
- *  would turn a busy afternoon of agent work into a poll. */
+ *  would turn a busy afternoon of agent work into a poll. The subscription
+ *  itself is the tab's ONE shared firehose (user-events.svelte), not a
+ *  private stream — a dedicated Redis subscriber per surface was the cost of
+ *  the old shape. */
 export function useBriefLive(): void {
   const qc = useQueryClient()
-  $effect(() => {
-    const es = new EventSource('/api/me/events')
-    es.onmessage = (event: MessageEvent<string>) => {
-      try {
-        if ((JSON.parse(event.data) as { type?: string }).type !== 'brief') return
-      } catch {
-        // A frame we cannot parse is a frame we ignore. The slow poll above is
-        // what makes that safe rather than silent.
-        return
-      }
+  $effect(() =>
+    onUserEvent((event) => {
+      if (event.type !== 'brief') return
       void qc.invalidateQueries({ queryKey: BRIEF_KEY })
-    }
-    return () => es.close()
-  })
+    }),
+  )
 }
 
 export function useBriefActions() {

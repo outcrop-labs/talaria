@@ -13,4 +13,5 @@ pub mod channels_id_read;
 pub mod chat;
 pub mod conversations;
 pub mod conversations_id;
+pub mod conversations_id_read;
 pub mod dms;

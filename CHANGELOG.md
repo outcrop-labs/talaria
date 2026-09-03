@@ -6,6 +6,68 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **Notifications reach a browser that's closed.** Web Push, end to end: the
+  settings' desktop-notifications toggle now also files the browser as a push
+  recipient (a per-device subscription — the push service's endpoint plus
+  the key halves the payload is encrypted against), and any notification the
+  single writer files with an in-app copy fans out to every subscribed
+  browser of that person. The payload travels as RFC 8291 `aes128gcm`
+  ciphertext under RFC 8292 VAPID proof — hand-assembled on `p256` rather
+  than the OpenSSL-carrying `web-push` crate, keeping the runtime's
+  no-OpenSSL invariant, and pinned to the RFCs' own test vectors. The
+  instance's VAPID keypair is born once and its private half sealed under
+  the instance secretbox. The service worker shows the OS notification only
+  when no Talaria window is visible (the toast already covered the open
+  case) and lands you on the notification's target when clicked; dead
+  subscriptions (the service answered 404/410) prune themselves, and turning
+  the toggle off retires the subscription at both ends. Classes routed
+  **Email only** still reach mail alone.
+
+- **An agent reply that lands while you're away rings once.** Replies in
+  agent chats, plans, and research discussions now file a single
+  "`Dex` replied" notification per person whose read cursor doesn't cover
+  them — watching the thread type counts as reading it, so the notification
+  is for whoever genuinely wasn't there. One row per thread: further replies
+  fold into it until it's opened, exactly like a DM. The row points where
+  the reply lives (the thread, the plan, or — for a research discussion —
+  the run, so opening the run clears the bell and the badge together), and
+  rides the dm class: toasts, the bell, email, and the brief all pick it up
+  through the one writer every other notification uses.
+
+- **The sidebar carries live unread counts for Comms, Plan, and Research.**
+  One endpoint (`GET /api/unreads`) sums what's waiting in each part of the
+  app — rooms plus agent chats under Comms, shared-plan turns under Plan,
+  unseen research runs under Research — using the same predicates the pills
+  on each surface show, so a badge can never disagree with the pills it
+  summarizes. The counts move live over the shared event stream and
+  self-heal on a 30-second floor; a failed read renders `!`, never a silent
+  0. Opening a research run is the seen gesture: its notifications clear
+  with it, and the badge and the bell empty together.
+
+- **Rooms and threads ring the rail without being opened.** A message in a
+  channel you're not looking at, a reply landing in an agent thread you walked
+  away from, a run finishing while you read email — all of it now moves the
+  interface the moment it happens, on whatever page you're on, over a single
+  event stream per tab (two used to open: one for toasts, one for the brief —
+  each a dedicated server subscriber).
+
+- **Agent threads and plans finally track what you've read.** Conversations
+  grow a per-person read cursor — one table for agent chats and plans alike —
+  so a reply that lands while you're away grows a count pill on the thread's
+  row (agent chats in Comms, plans in the Plan rail), and opening it clears
+  the pill. Your own turns never count, a teammate's turn in a shared plan
+  does, and the cursor only ever moves forward. Right-click a thread →
+  **Mark read** clears it without opening.
+
+- **The bell: your notification inbox, finally openable — and clearable.** A
+  bell in the top strip counts what's unread (a failed read shows `!`, never
+  a silent 0) and drops the latest notifications: click a row to go there
+  and mark it read in one motion, or clear everything with **Mark all read**.
+  Until now nothing ever marked a notification read — the count could only
+  grow. Marking by href (everything pointing at the page you opened) joins
+  marking by id, and the inbox brief updates with the bell so the two can't
+  disagree.
+
 - **Agent-made things belong to the human behind the run — the responsible
   user, not the agent.** A knowledge doc or space, a document, file, or saved
   image, a research report, a workbench plan: whatever an agent creates now

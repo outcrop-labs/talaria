@@ -294,6 +294,12 @@ CREATE TABLE public.conversation_members (
     user_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.conversation_reads (
+    conversation_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    last_read_seq integer DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.conversations (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     user_id uuid NOT NULL,
@@ -703,6 +709,15 @@ CREATE TABLE public.plan_drafts (
     note text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.push_subscriptions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    endpoint text NOT NULL,
+    p256dh text NOT NULL,
+    auth text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.quality_reviews (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1158,6 +1173,8 @@ ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_pkey PRIMARY KEY (conversation_id, user_id);
+ALTER TABLE ONLY public.conversation_reads
+    ADD CONSTRAINT conversation_reads_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_brief_entries
@@ -1244,6 +1261,10 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_endpoint_key UNIQUE (endpoint);
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.quality_reviews
     ADD CONSTRAINT quality_reviews_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.rag_collection_access
@@ -1374,9 +1395,11 @@ CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, it
 CREATE INDEX messages_conv_idx ON public.messages USING btree (conversation_id, seq);
 CREATE INDEX messages_conversation_timeline_idx ON public.messages USING btree (conversation_id, created_at DESC, id DESC);
 CREATE INDEX messages_streaming_idx ON public.messages USING btree (created_at) WHERE (status = 'streaming'::text);
+CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_id) WHERE (read_at IS NULL);
 CREATE INDEX notifications_user_idx ON public.notifications USING btree (user_id, created_at DESC);
 CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (agent_model, kind, created_at DESC);
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);
+CREATE INDEX push_subscriptions_user_idx ON public.push_subscriptions USING btree (user_id);
 CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree (conversation_id);
 CREATE INDEX research_runs_created_idx ON public.research_runs USING btree (created_at DESC);
 CREATE INDEX research_runs_parent_idx ON public.research_runs USING btree (parent_run_id);
@@ -1476,6 +1499,10 @@ ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_reads
+    ADD CONSTRAINT conversation_reads_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_reads
+    ADD CONSTRAINT conversation_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversations
@@ -1556,6 +1583,8 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.quality_reviews
     ADD CONSTRAINT quality_reviews_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.rag_collection_access

@@ -2657,6 +2657,49 @@ const MIGRATIONS: string[] = [
   `create unique index if not exists board_agent_requests_one_open
      on board_agent_requests (board_id, agent_model) where status = 'open'`,
 
+  // The unread scan every badge rides: the bell's count, /api/unreads, the
+  // brief's notification arm — all of them filter on exactly these rows. The
+  // partial index keeps the scan an index scan at any inbox size; the rows
+  // already read (the vast majority, forever) never enter the picture.
+  `create index if not exists notifications_unread_idx
+     on notifications (user_id) where read_at is null`,
+
+  // Read cursors for agent threads and plans — the piece they always lacked:
+  // channels have channel_members.last_read_seq, conversations had nothing,
+  // so an agent reply that landed unseen stayed "new" forever. One table for
+  // both kinds, keyed (conversation, person); the owner is a row here like
+  // anyone else (unlike plan membership, where the owner lives on the
+  // conversation). Monotonic by contract — writers advance with greatest(),
+  // never write raw. The column default never fires (the upsert always binds);
+  // a missing row counts as cursor -1 — conversations number from seq 0,
+  // unlike channels' 1-based counter, so "never opened" must outrank seq 0.
+  `create table if not exists conversation_reads (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     last_read_seq integer not null default 0,
+     updated_at timestamptz not null default now(),
+     primary key (conversation_id, user_id)
+   )`,
+
+  // One device browser per row — the closed-tab half of notifications. The
+  // endpoint is the push service's unique handle for a subscription, so
+  // unique(endpoint) makes subscribe idempotent across devices AND people
+  // (a browser hands the same endpoint to whoever asks); p256dh/auth are the
+  // per-subscription keys RFC 8291 encrypts the payload against. last_seen_at
+  // is the liveness signal: a 2xx delivery touches it, and a dead endpoint
+  // answers 404/410 and is deleted outright.
+  `create table if not exists push_subscriptions (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     endpoint text unique not null,
+     p256dh text not null,
+     auth text not null,
+     created_at timestamptz not null default now(),
+     last_seen_at timestamptz not null default now()
+   )`,
+  `create index if not exists push_subscriptions_user_idx
+     on push_subscriptions (user_id)`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

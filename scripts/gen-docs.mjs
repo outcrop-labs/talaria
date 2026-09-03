@@ -63,7 +63,7 @@ const CHECK = process.argv.includes('--check')
 
 const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
-  activity: { segs: ['activity', 'history', 'notifications', 'alerts', 'home', 'cost'], blurb: 'What happened, what it cost, what needs you.' },
+  activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost'], blurb: 'What happened, what it cost, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
   apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },

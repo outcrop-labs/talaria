@@ -1,6 +1,7 @@
 // /api/notifications. The caller's inbox: GET is the bell's one read (list,
 // unread, prefs, digest, the instance switch, whether THIS user may flip it),
-// PUT marks read, PATCH changes routing. The mail fan-out behind the prefs
+// PUT marks read — by ids, by href, or all of them — and PATCH changes
+// routing. The mail fan-out behind the prefs
 // (the outbox, the drain) is scheduler plane, so it is not here; this file
 // ends at the rows and the switches the SPA reads and writes.
 //
@@ -11,8 +12,8 @@
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
-    as_object, boolean_member, enum_member, enum_msg, object_msg, optional_uuid_array_member,
-    parse, record_msg, utf16_len, zod_type_name,
+    as_object, boolean_member, enum_member, enum_msg, object_msg, optional_max_string_member,
+    optional_uuid_array_member, parse, record_msg, utf16_len, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::notify::{
@@ -153,12 +154,20 @@ pub async fn put(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // ids absent OR EMPTY both mean "all of mine" — the data layer folds
-    // them together.
+    // them together. `href` is the surface's selector (mark everything that
+    // points at the place I just opened); the data layer gives ids priority
+    // when both arrive, the same precedence this parse checks them in.
     let ids = match optional_uuid_array_member(obj, "ids", 200) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    if let Err(e) = mark_notifications_read(&state.pg, &user.id, ids.as_deref()).await {
+    let href = match optional_max_string_member(obj, "href", 512) {
+        Ok(v) => v,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    if let Err(e) =
+        mark_notifications_read(&state.pg, &user.id, ids.as_deref(), href.as_deref()).await
+    {
         tracing::error!("[notifications] mark-read failed: {e}");
         return thrown_internal_error();
     }

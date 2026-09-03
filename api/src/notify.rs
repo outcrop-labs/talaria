@@ -134,22 +134,55 @@ pub async fn unread_count(pg: &PgPool, user_id: &str) -> Result<i32, sqlx::Error
     Ok(n.0)
 }
 
-/// Mark specific notifications read, or all of the user's when ids is
-/// omitted — and when it is EMPTY, which folds into the same all-rows
-/// update.
+/// Unread rows of ONE kind — research's rail badge. Its clearing gesture is
+/// the href mark-read the run's page fires on open, so the badge and the
+/// bell's row for the same run clear together.
+pub async fn unread_count_of_kind(
+    pg: &PgPool,
+    user_id: &str,
+    kind: &str,
+) -> Result<i32, sqlx::Error> {
+    let n: (i32,) = sqlx::query_as(
+        "select count(*)::int from notifications \
+         where user_id = $1::uuid and kind = $2 and read_at is null",
+    )
+    .bind(user_id)
+    .bind(kind)
+    .fetch_one(pg)
+    .await?;
+    Ok(n.0)
+}
+
+/// Mark specific notifications read, or all of the user's when neither
+/// selector is given — and when ids is EMPTY, which folds into the same
+/// all-rows update. `href` is the surface's selector: a page that was opened
+/// knows its own href, not the ids of whatever rows point at it, and marking
+/// by href clears exactly those rows without touching anything else. ids win
+/// over href when both arrive; an empty href folds into all, like empty ids.
 pub async fn mark_notifications_read(
     pg: &PgPool,
     user_id: &str,
     ids: Option<&[String]>,
+    href: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    match ids {
-        Some(list) if !list.is_empty() => {
+    match (ids, href) {
+        (Some(list), _) if !list.is_empty() => {
             sqlx::query(
                 "update notifications set read_at = now() \
                  where user_id = $1::uuid and id = any($2::uuid[]) and read_at is null",
             )
             .bind(user_id)
             .bind(list)
+            .execute(pg)
+            .await?;
+        }
+        (_, Some(href)) if !href.is_empty() => {
+            sqlx::query(
+                "update notifications set read_at = now() \
+                 where user_id = $1::uuid and href = $2 and read_at is null",
+            )
+            .bind(user_id)
+            .bind(href)
             .execute(pg)
             .await?;
         }
@@ -176,11 +209,11 @@ fn kind_class(kind: &str) -> Option<&'static str> {
         // Someone pointed at you on purpose.
         "mention" | "kb-comment" | "task-assigned" | "plan-share" | "research-share" => "mention",
         // Addressed to you, in a thread of your own.
-        "dm" | "agent-outreach" => "dm",
+        "dm" | "agent-outreach" | "agent-reply" => "dm",
         // Blocked on a human.
         "agent-problem" | "workbench-repo-request" => "agent_blocked",
         // Outcomes.
-        "research" | "task-status" => "work_complete",
+        "research" | "task-status" | "board_access" => "work_complete",
         // `judge_escalation` and `gap_reported` are NOT here on purpose: their
         // writers name the CLASS as the kind, which `notify_class_of` accepts
         // directly. A kind that is already the class it belongs to has nothing
@@ -347,6 +380,22 @@ pub async fn add_notification(
             tracing::error!("[notifications] brief nudge failed: {e}");
         }
     });
+    // Closed tabs ride the same row: whenever the prefs route keeps an
+    // in-app copy (in_app or both — email-only is the one route where the
+    // person asked this platform to leave their screens alone), the push
+    // plane fans it to every subscribed browser. Detached and quiet like the
+    // nudge above: the row is the record, the delivery is best-effort on top.
+    if route != "email" {
+        crate::push::push_notification(
+            user_id,
+            crate::push::PushNote {
+                id: notification_id.clone(),
+                title: n.title.to_string(),
+                body: n.body.unwrap_or("").to_string(),
+                href: n.href.unwrap_or("").to_string(),
+            },
+        );
+    }
     if will_mail {
         // `both` deliberately passes null: that route wants the in-app copy to
         // stay unread whatever the mail does.
@@ -1497,10 +1546,217 @@ pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
     });
 }
 
+/// Who can read a conversation: its owner, plus a plan's members. Chats have
+/// no members — the owner alone. Kept beside `channel_member_ids` for the same
+/// cycle-breaking reason: the writer that fans needs it, and it is one query.
+pub async fn conversation_audience_ids(
+    pg: &sqlx::PgPool,
+    conversation_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "select user_id::text from conversations where id = $1::uuid \
+         union \
+         select user_id::text from conversation_members where conversation_id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Ring every member's firehose: a message landed in this channel. Id-shaped
+/// and detached, like the brief nudge it stands beside — a message in a room
+/// of N members is N publishes of a few dozen bytes each, and none of them
+/// may cost the post that caused them. The event reaches the AUTHOR too:
+/// their page refetches a list whose unread count already excludes their own
+/// turn, which is a no-op by design.
+pub fn fan_channel_event(deps: NotifyDeps, channel_id: String) {
+    tokio::spawn(async move {
+        match channel_member_ids(&deps.pg, &channel_id).await {
+            Ok(ids) => {
+                for id in ids {
+                    publish_user(
+                        &deps.realtime,
+                        &id,
+                        &UserEvent::Channel {
+                            channel_id: channel_id.clone(),
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("[realtime] could not fan a channel event for {channel_id}: {e}");
+            }
+        }
+    });
+}
+
+/// Ring owner and members alike: a turn landed in this conversation. The
+/// unread pill it moves belongs to whoever was NOT looking — the author's own
+/// client refetches and finds nothing new, the plan collaborator's finds their
+/// teammate's turn, the thread's owner finds the agent's reply.
+pub fn fan_conversation_event(deps: NotifyDeps, conversation_id: String) {
+    tokio::spawn(async move {
+        match conversation_audience_ids(&deps.pg, &conversation_id).await {
+            Ok(ids) => {
+                for id in ids {
+                    publish_user(
+                        &deps.realtime,
+                        &id,
+                        &UserEvent::Conversation {
+                            conversation_id: conversation_id.clone(),
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[realtime] could not fan a conversation event for {conversation_id}: {e}"
+                );
+            }
+        }
+    });
+}
+
+/// An agent reply that landed while its readers were away: file ONE
+/// agent-reply notification per audience member whose read cursor does not
+/// cover the reply's seq. The cursor is the "still looking" gate — someone
+/// watching the thread has auto-advanced past the reply and gets nothing —
+/// and the dedupe is the pile-up gate: while one row per thread sits unread,
+/// further replies fold into it (the DM shape, `notify_dm_message`). The
+/// bell, toasts, mail, and the brief all ride this single writer, so this is
+/// the whole fan-out: no surface-specific code anywhere.
+///
+/// Reads the reply AS SAVED — the caller runs this after the confab guard,
+/// so strict mode's scrub has already reached the `messages` row and the
+/// notification body can only ever carry what the transcript itself carries.
+/// An empty or not-yet-complete reply notifies nobody. Detached by the
+/// caller, like every fan on this path.
+pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, message_id: &str) {
+    // Kind decides where the row points; the model names who replied. One
+    // joined read, and only for a reply that actually landed complete.
+    let head: Option<(String, String, String, i32)> = sqlx::query_as(
+        "select c.kind, c.agent_model, m.content, m.seq \
+         from conversations c join messages m on m.conversation_id = c.id \
+         where c.id = $1::uuid and m.id = $2::uuid and m.role = 'assistant' \
+           and m.status = 'complete'",
+    )
+    .bind(conversation_id)
+    .bind(message_id)
+    .fetch_optional(&deps.pg)
+    .await
+    .ok()
+    .flatten();
+    let Some((kind, agent_model, content, reply_seq)) = head else {
+        return;
+    };
+    if content.trim().is_empty() {
+        return;
+    }
+    // Where the row points: the thread itself for a chat, the plan for a
+    // plan, and for a research discussion the RUN — opening the run is
+    // research's seen gesture (it marks this href read), so the bell row and
+    // the rail badge clear in the same click. A research conversation whose
+    // run is gone has nowhere to point and files nothing.
+    let href = match kind.as_str() {
+        "chat" => format!("/comms/agent/{agent_model}/{conversation_id}"),
+        "plan" => format!("/plan/{conversation_id}"),
+        "research" => {
+            match crate::research::research_run_for_conversation(&deps.pg, conversation_id).await {
+                Ok(Some(run_id)) => format!("/research/{run_id}"),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    // The audience WITH cursors, the -1 floor shared with the unread counts:
+    // a member with no cursor row has read nothing, and seq 0 is a real turn.
+    let audience: Vec<(String, i32)> = sqlx::query_as(
+        "select a.id::text, coalesce(cr.last_read_seq, -1) from ( \
+            select user_id as id from conversations where id = $1::uuid \
+            union \
+            select user_id from conversation_members where conversation_id = $1::uuid \
+         ) a \
+         left join conversation_reads cr on cr.conversation_id = $1::uuid and cr.user_id = a.id",
+    )
+    .bind(conversation_id)
+    .fetch_all(&deps.pg)
+    .await
+    .unwrap_or_default();
+    let label = crate::fleet::describe_agent(&agent_model).label;
+    // 200 UTF-16 units, '…' only past the bound — the DM body contract.
+    let body = if crate::body::utf16_len(&content) > 200 {
+        format!("{}…", crate::body::truncate_utf16(&content, 200))
+    } else {
+        content.clone()
+    };
+    let title = format!("{label} replied");
+    for (member, cursor) in audience {
+        if reply_seq <= cursor {
+            continue; // they have read past this reply — still looking
+        }
+        let pending: Option<i32> = sqlx::query_scalar(
+            "select 1 from notifications \
+             where user_id = $1::uuid and kind = 'agent-reply' and href = $2 \
+               and read_at is null limit 1",
+        )
+        .bind(&member)
+        .bind(&href)
+        .fetch_optional(&deps.pg)
+        .await
+        .ok()
+        .flatten();
+        if pending.is_some() {
+            continue; // one unread pointer per thread; this reply folds in
+        }
+        let _ = add_notification(
+            deps,
+            &member,
+            &NotificationInput {
+                kind: "agent-reply",
+                title: &title,
+                body: Some(&body),
+                href: Some(&href),
+            },
+        )
+        .await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn kinds_route_to_their_classes() {
+        // The pinned arms, one line per family, then the fall-through rule.
+        for (kind, class) in [
+            ("mention", "mention"),
+            ("kb-comment", "mention"),
+            ("plan-share", "mention"),
+            ("dm", "dm"),
+            ("agent-outreach", "dm"),
+            // A reply an agent filed in your thread — yours, like a DM. The
+            // arm exists ahead of its writer; routing lands first so the first
+            // row ever filed is already in the right bucket.
+            ("agent-reply", "dm"),
+            ("agent-problem", "agent_blocked"),
+            ("research", "work_complete"),
+            ("task-status", "work_complete"),
+            // An access request's outcome — the request was yours, but the
+            // notification is news, not a door. Explicit so the quiet bucket
+            // is a decision here, not the fall-through's default.
+            ("board_access", "work_complete"),
+            // Every class id is its own kind.
+            ("judge_escalation", "judge_escalation"),
+            ("gap_reported", "gap_reported"),
+        ] {
+            assert_eq!(notify_class_of(kind), class, "kind {kind}");
+        }
+        // An unknown kind lands in the quiet bucket, never the mail-defaults.
+        assert_eq!(notify_class_of("brand-new-kind"), "work_complete");
+    }
 
     #[test]
     fn resolve_fills_defaults_in_class_order() {

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { browserNotifyEnabled, setBrowserNotifyPref, shouldBrowserNotify } from './browser-notify'
+import {
+  browserNotifyEnabled,
+  ensurePushSubscription,
+  setBrowserNotifyPref,
+  shouldBrowserNotify,
+  urlB64ToUint8Array,
+} from './browser-notify'
 
 // localStorage isn't guaranteed under the node test environment; the module
 // reads it lazily inside functions, so a stub before each call is enough.
@@ -55,5 +61,21 @@ describe('browserNotifyEnabled (grant AND pref)', () => {
     vi.stubGlobal('Notification', { permission: 'denied' })
     setBrowserNotifyPref(true)
     expect(browserNotifyEnabled()).toBe(false)
+  })
+})
+
+describe('urlB64ToUint8Array (the VAPID key decode)', () => {
+  it('decodes unpadded url-safe base64 to the raw bytes', () => {
+    // /api/push/key hands the key unpadded url-safe — the two jobs are
+    // re-padding and translating the alphabet; both are pinned here.
+    expect(Array.from(urlB64ToUint8Array('AAEC'))).toEqual([0, 1, 2])
+    // '-' and '_' are legal in the wire form but not in atob's alphabet.
+    expect(Array.from(urlB64ToUint8Array('-_8'))).toEqual([251, 255])
+  })
+})
+
+describe('ensurePushSubscription (outside a browser)', () => {
+  it('answers unsupported instead of throwing where the APIs are absent', async () => {
+    expect(await ensurePushSubscription()).toBe('unsupported')
   })
 })
