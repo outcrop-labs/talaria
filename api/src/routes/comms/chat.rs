@@ -376,7 +376,7 @@ pub async fn post(
     let prior = if queued {
         Vec::new()
     } else {
-        match prior_messages(&state.pg, &sb, &conv_id).await {
+        match prior_messages(&state.pg, &sb, &conv_id, None).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("[chat] history read failed: {e}");
@@ -778,6 +778,8 @@ pub async fn post(
         plan: plan_meta.clone(),
         research_prompt,
         ticket: ticket_meta.clone(),
+        // A live turn is a first attempt — eligible for the one auto-resume.
+        resumed: false,
     };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();

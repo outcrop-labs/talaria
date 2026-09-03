@@ -18,6 +18,9 @@ export interface DisplayMessage {
   authorLabel?: string | null
   /** Confab-guard findings pinned to a reply (annotate/strict modes). */
   guard?: GuardFinding[] | null
+  /** The server auto-resumed this turn after its stream died mid-flight —
+   *  shown as a marker on the row, never as a second turn. */
+  resumed?: boolean
 }
 
 export const toDisplay = (m: StoredMessage): DisplayMessage => ({
@@ -30,4 +33,5 @@ export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   attachments: m.attachments,
   authorLabel: m.authorLabel,
   guard: m.guard,
+  resumed: m.metadata?.resumed === true,
 })

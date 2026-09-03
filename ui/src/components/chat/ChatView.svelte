@@ -286,6 +286,51 @@
     }
   })
 
+  // The auto-resume watch — the visible half of the server's retry. A turn
+  // whose STREAM died (not one the agent refused) is retried once, on the
+  // same row, after a ~15s backoff: the server resurrects the errored row to
+  // streaming and re-drives it. Without this watch the chat would show the
+  // honest error line and then sit frozen while the retry streams server-side
+  // — the exact "did it stall?" doubt this exists to kill. When the row flips
+  // back to streaming, this watch stands down and the `resuming` poller above
+  // animates the turn (AssistantTurn's resumed marker carries the story).
+  let erroredAt = $state<number | null>(null)
+  // Armed only when we WITNESS a turn die — our own reader below ending on
+  // an error, or a row this view was animating flipping streaming→error. A
+  // conversation opened straight onto an old error never polls. The
+  // conversation id rides along so switching threads can't fake a transition.
+  let prevStatusConv: string | null = ''
+  let prevLastStatus: string | undefined
+  $effect(() => {
+    const s = last?.role === 'assistant' ? last.status : undefined
+    if (convId === prevStatusConv && prevLastStatus === 'streaming' && s === 'error') {
+      erroredAt = Date.now()
+    }
+    prevStatusConv = convId
+    prevLastStatus = s
+  })
+  $effect(() => {
+    if (erroredAt === null || streaming || userStopped) return
+    // Waiting on the same dead turn, and only its FIRST death — a row already
+    // stamped `resumed` that errored again is down for a person to look at.
+    if (!(last?.role === 'assistant' && last.status === 'error' && last.resumed !== true)) return
+    const id = convId
+    if (!id) return
+    let stop = false
+    let ticks = 0
+    const iv = setInterval(async () => {
+      // ~90s: the backoff is 15s and the resurrect follows within moments;
+      // past this window nothing is coming and the error line stands.
+      if (stop || ++ticks > 110) return clearInterval(iv)
+      const res = await loadConversation(id)
+      if (!stop && res) messages = res.messages.map(toDisplay)
+    }, 800)
+    return () => {
+      stop = true
+      clearInterval(iv)
+    }
+  })
+
   // Refresh from the server's truth: queued messages, and any follow-up turn
   // the server chained (the resuming poller then animates it live).
   const syncFromServer = async () => {

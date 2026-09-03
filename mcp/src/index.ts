@@ -796,6 +796,50 @@ server.registerTool(
   async ({ docId, title, markdown }) => ok(await api('PUT', `/api/kb/docs/${encodeURIComponent(docId)}`, { title, body: markdown })),
 )
 
+server.registerTool(
+  'edit_kb_space',
+  {
+    description:
+      "Edit a knowledge space you created or hold Editor on: its name, one-line description, icon, and markdown — the landing page shown when someone opens the space itself. An intro or table of contents for a space belongs there, not in a top-level doc. You can't change sharing — a human owns that.",
+    inputSchema: {
+      spaceId: z.string().describe('Space id (from list_kb_spaces)'),
+      name: z.string().min(1).max(80).optional(),
+      description: z.string().max(400).optional().describe('One line on what belongs here'),
+      icon: z.string().max(8).optional().describe('An emoji for the space'),
+      markdown: z.string().max(500_000).optional().describe('New full landing-page markdown'),
+    },
+  },
+  async ({ spaceId, name, description, icon, markdown }) =>
+    ok(await api('PUT', `/api/kb/spaces/${encodeURIComponent(spaceId)}`, { name, description, icon, body: markdown })),
+)
+
+server.registerTool(
+  'move_kb_doc',
+  {
+    description:
+      "Move a doc you can edit within its space's sidebar tree: nest it under another doc (parentId, same space only), lift it to the space's top level (parentId null), or reorder it among its siblings (sort, default 0). Use it to re-file a misplaced doc rather than duplicating it.",
+    inputSchema: {
+      docId: z.string().describe('KB doc id'),
+      parentId: z.string().nullable().optional().describe('New parent doc id (same space); null = top level'),
+      sort: z.number().int().optional().describe('Position among siblings (default 0)'),
+    },
+  },
+  async ({ docId, parentId, sort }) =>
+    ok(await api('POST', `/api/kb/docs/${encodeURIComponent(docId)}/move`, { parentId, sort })),
+)
+
+server.registerTool(
+  'delete_kb_doc',
+  {
+    description:
+      "Permanently delete a knowledgebase doc YOU created — a draft you filed wrong, a duplicate. Docs anyone else created are a human's to delete: move_kb_doc re-files without destroying, and edit_kb_doc can empty a body you can't remove. There is no undo.",
+    inputSchema: {
+      docId: z.string().describe('KB doc id'),
+    },
+  },
+  async ({ docId }) => ok(await api('DELETE', `/api/kb/docs/${encodeURIComponent(docId)}`)),
+)
+
 // ── Calendar & Gmail (acts as your owner, or the shared org account) ────────
 // Reads are immediate; anything outbound is DRAFTED and waits for a human to
 // approve in Talaria before it sends. A personal assistant acts as its owner

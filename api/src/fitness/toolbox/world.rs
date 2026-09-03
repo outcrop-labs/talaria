@@ -146,6 +146,10 @@ pub struct SandboxKbSpace {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// The landing page shown when the space itself is opened — `edit_kb_space`
+    /// writes it. Absent in worlds recorded before the field existed.
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +167,11 @@ pub struct SandboxKbDoc {
     /// refuses, and the honest move is to say so rather than to give up
     /// silently.
     pub editable: bool,
+    /// True only of docs the agent created itself. `delete_kb_doc` refuses
+    /// everything else — deletion is unrecoverable, so an editor grant (which
+    /// buys versioned edits) deliberately does not buy it.
+    #[serde(default)]
+    pub created_by_agent: bool,
     pub versions: i64,
 }
 
@@ -527,8 +536,8 @@ pub fn base_world() -> SandboxWorld {
             kind: "doc".into(),
         }],
         kb_spaces: vec![
-            SandboxKbSpace { id: "kbs-1".into(), name: "Engineering".into(), description: Some("How we build things here".into()) },
-            SandboxKbSpace { id: "kbs-2".into(), name: "Company".into(), description: Some("Policies and process".into()) },
+            SandboxKbSpace { id: "kbs-1".into(), name: "Engineering".into(), description: Some("How we build things here".into()), body: String::new() },
+            SandboxKbSpace { id: "kbs-2".into(), name: "Company".into(), description: Some("Policies and process".into()), body: String::new() },
         ],
         kb_docs: vec![
             SandboxKbDoc {
@@ -539,6 +548,7 @@ pub fn base_world() -> SandboxWorld {
                 parent_id: None,
                 official: true,
                 editable: true,
+                created_by_agent: false,
                 versions: 1,
             },
             SandboxKbDoc {
@@ -549,6 +559,7 @@ pub fn base_world() -> SandboxWorld {
                 parent_id: None,
                 official: true,
                 editable: false,
+                created_by_agent: false,
                 versions: 1,
             },
         ],
