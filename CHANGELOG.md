@@ -233,6 +233,52 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+
+- **Long agent turns finish instead of dying as "· interrupted."** Diagnosed
+  from a fleet deploy: a knowledgebase-build turn that ran past ten minutes
+  was killed by the API's own request timeout — a total 600s ceiling on the
+  agent stream — while the agent's container was still working; the partial
+  reply was dropped, the row landed as a bare error the chat rendered as
+  "· interrupted", and nothing retried. (Compaction was never the culprit —
+  it happens inside the container and simply made the turn long.) The turn
+  now ends only on SILENCE: frames flowing — deltas, tool progress,
+  keep-alives — keep it alive however long the work takes, with a tunable
+  idle ceiling (`TALARIA_AGENT_IDLE_SECS`, default 10 min, floored at 1) and
+  a bounded wait only for the stream to open. Liveness throughout is the
+  last write, not the row's age: a new `streamed_at` stamps every flush, and
+  the stale sweep, the sidebar's working flag, and the generating pulse all
+  read it — an hour-long turn no longer reads as dead at ten minutes. A
+  stream that does die is retried once, ON THE SAME ROW, after a short
+  backoff: the row is resurrected to streaming and the turn re-driven with
+  its own failed attempt excluded from the history, and the chat visibly
+  picks it back up ("↻ stream dropped — picking the turn back up…") rather
+  than sitting on an error. The error itself is now an explanation — the
+  row's content says what happened ("the agent's stream went silent for
+  600s mid-turn", the container's own failure reason when it refuses)
+  instead of a bare interrupted mark, and it survives reloads and reaches
+  the next turn's history. A turn that dies twice stays down for a person
+  to look at; an agent's refusal (the failure frame) is never retried.
+
+- **Agents can build out a knowledge space, not just append to it.**
+  Reported live from a fleet deploy: an agent asked to put a space's intro
+  and table of contents on the space page itself had no tool that could
+  reach it — `create_kb_space` writes a landing body only at creation, and
+  nothing after can edit it — so the content landed in a lookalike
+  top-level doc, and with no move or delete the misfile couldn't be
+  corrected, only duplicated. Three tools close the gap. `edit_kb_space`
+  (name, description, icon, and the landing markdown; admission mirrors
+  doc edits — authorship, an editor grant, or an elevated assistant on
+  non-private material — and sharing fields stay human-only).
+  `move_kb_doc` (nest under a same-space parent, lift to the space's top
+  level, or reorder among siblings), under the same edit admission the
+  doc's PUT already grants. And `delete_kb_doc`, deliberately narrower
+  than the edit beside it: an edit is versioned and recoverable, a delete
+  is not, so an agent deletes only docs it created and re-files anything
+  else (`move_kb_doc` re-files without destroying). Doc deletes now land
+  in the audit log whoever pulled the trigger. All three are mirrored
+  through the fitness lockstep — catalog, sandbox backends, exercise
+  tests — so the toolkit the next agent is trained against knows them.
+
 - **API-CONVENTIONS tells the current truth.** The page still described a TS
   route tier the cutover deleted: the reference "frozen until #293" (the
   extractor landed — it is generated, and drift fails check), a TS twin of the
