@@ -62,7 +62,7 @@ the image builds from the repo; bun is the only extra prerequisite):
 
 ```bash
 bun talaria deploy up       # the one command at the top of this page
-bun talaria deploy update   # git pull --ff-only, then the same up -d --build
+bun talaria deploy update   # git pull --ff-only, api package pull, then up -d --build
 bun talaria deploy down     # stop (--volumes also deletes the data — careful)
 bun talaria deploy logs     # follow every service's logs
 bun talaria deploy creds    # the 'Sign in' block from the logs
@@ -151,8 +151,9 @@ one-shot service. `systemctl status talaria` and `journalctl -u talaria`
 are the supervision view; `talaria service status` shows both that and the
 compose view.
 
-- **Updates** stay checkout-driven: `talaria deploy update` (pull +
-  rebuild + recreate). The unit starts whatever exists; no restart needed.
+- **Updates** stay checkout-driven: `talaria deploy update` (pull, api
+  package pull, rebuild + recreate). The unit starts whatever exists; no
+  restart needed.
 - **`talaria service uninstall`** stops the stack (its ExecStop is
   `compose down`) and removes the unit — named volumes and the state dir
   are kept, the same blast radius as `deploy down`. Bring it back with
@@ -368,7 +369,9 @@ own secrets ([`ENCRYPTION.md`](./ENCRYPTION.md)).
 
 Updates are a redeploy — `docker compose ... up -d --build`,
 `bun talaria deploy update` on a checkout host (it pulls with `--ff-only`
-first and prints each command it runs), or an API call
+first, pulls the api package the image bakes in — a plain `up --build`
+resolves that package from the local cache, wrapping new UI around an old
+api — and prints each command it runs), or an API call
 through the orchestrator. Migrations run as the server boots (expect a minute
 of downtime on schema changes; the health check covers the window — a FAILED
 pass reports `migrations: !ok` on `/api/healthz` and flips the container

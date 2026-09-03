@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  apiImageRef,
   credsCommand,
   downCommand,
   ensureSharedSecrets,
@@ -30,8 +31,9 @@ import type { Leaf, ParsedArgs } from '../../cli'
 
 const NO_ARGS: ParsedArgs = { positionals: [], flags: {} }
 
-/** A tmp repo with the parts of docker/ deploy reads. The compose fixture
- *  interpolates the vars the drift tests need; CONTAINER.md parity comes
+/** A tmp repo with the parts of docker/ deploy reads: the compose fixture
+ *  interpolates the vars the drift tests need, and the root Dockerfile
+ *  carries the api-package ARG update pulls. CONTAINER.md parity comes
  *  from the REAL doc, not this fixture. */
 const makeDeployTree = (envFile?: string) => {
   const root = mkdtempSync(join(tmpdir(), 'talaria-deploy-'))
@@ -49,6 +51,7 @@ const makeDeployTree = (envFile?: string) => {
       '      TALARIA_FLEET_NETWORK: ${TALARIA_FLEET_NETWORK:-talaria}',
     ].join('\n'),
   )
+  writeFileSync(join(root, 'Dockerfile'), 'ARG TALARIA_API_IMAGE=ghcr.io/outcrop-labs/talaria-api:main\n')
   if (envFile !== undefined) writeFileSync(join(root, 'docker/.env'), envFile)
   return root
 }
@@ -232,6 +235,46 @@ describe('talaria deploy down / logs / status / update', () => {
     const msg = await attempt(() => runUpdate(ctx))
     expect(msg).toContain('git pull failed')
     expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+  })
+
+  // bbills, 2026-09-03: `up -d --build` resolves the Dockerfile's api-package
+  // FROM from the LOCAL daemon cache, so an update that skips the pull wraps
+  // today's UI around yesterday's api binary — a redeploy that silently
+  // changes nothing the api does.
+  test('update pulls the api package the Dockerfile names, between the git pull and the build', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree()
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    const pkg = ctx.calls.find((c) => c.cmd === 'docker' && c.args[0] === 'pull')!
+    expect(pkg.args).toEqual(['pull', 'ghcr.io/outcrop-labs/talaria-api:main'])
+    // order: git pull → package pull → up --build
+    const git = ctx.calls.findIndex((c) => c.cmd === 'git')
+    const up = ctx.calls.findIndex((c) => c.args.includes('up'))
+    expect(git).toBeLessThan(ctx.calls.indexOf(pkg))
+    expect(ctx.calls.indexOf(pkg)).toBeLessThan(up)
+    // printed like every other step — the copy-pasteable equivalent
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg === 'docker pull ghcr.io/outcrop-labs/talaria-api:main')).toBe(true)
+  })
+
+  test('a failed package pull dies before the build — never bake the stale digest on purpose', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree()
+    ctx.plant(['docker', ['pull', 'ghcr.io/outcrop-labs/talaria-api:main']], new Error('no route to ghcr'))
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('stale package')
+    expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
+  })
+
+  test('no api-package ARG in the Dockerfile → a skip note, straight to the documented up', async () => {
+    const ctx = fakeCtx()
+    const root = makeDeployTree()
+    writeFileSync(join(root, 'Dockerfile'), 'FROM docker.io/library/node:22-alpine\n')
+    ctx.root = root
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'pull')).toBe(false)
+    expect(ctx.calls.at(-1)!.args).toEqual(docUpArgv)
+    expect(ctx.logLines.some((l) => l.kind === 'skip' && l.msg.includes('TALARIA_API_IMAGE'))).toBe(true)
+    expect(apiImageRef(mkdtempSync(join(tmpdir(), 'talaria-empty-')))).toBeNull() // no Dockerfile at all
   })
 })
 
