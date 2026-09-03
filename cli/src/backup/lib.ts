@@ -200,6 +200,18 @@ export function manifestGet(manifest: string, key: string): string {
  *  upload store (api/src/uploads.rs). */
 export const bucketUploadsPath = (st: Storage): string => `t/${st.bucket}/${st.prefix}uploads`
 
+/** Where the api's local-disk blobs live, for the backup READ: the env pin
+ *  first (the same TALARIA_UPLOADS_DIR the api itself reads), then the dev
+ *  topology's fixed spot — the api serves from <root>/api and its
+ *  cwd-relative default lands at api/.uploads — then the TS-era legacy dir,
+ *  for installs old enough to still have blobs there. */
+export function localUploadsDir(ctx: Ctx, env: Env): string {
+  if (env.TALARIA_UPLOADS_DIR) return env.TALARIA_UPLOADS_DIR
+  const api = join(ctx.root, 'api/.uploads')
+  if (existsSync(api)) return api
+  return join(ctx.root, 'ui/.uploads')
+}
+
 /** Single-quote for the one place a shell string is unavoidable (the docker
  *  mc one-shot: alias set + the command must share one container lifetime). */
 const shq = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`

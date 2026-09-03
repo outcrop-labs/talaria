@@ -1,0 +1,187 @@
+# The app image from main — the feed the in-app updater rolls from.
+#
+# WHY THIS EXISTS. Releases publish channel images (release.yml), but main
+# itself only existed as a checkout build: Dokploy boxes rebuilt the repo on
+# every push, minutes per deploy, and nothing digest-addressable ever shipped.
+# The in-app updater (api/src/update/) needs the opposite of both: an image it
+# can pull by DIGEST — a moving tag half-pushed mid-build is exactly what a
+# rolling update must never boot. So main's app image is built here, once per
+# app-touching push, and published immutable-first:
+#
+#   sha-<sha12>   immutable, per commit. The pin the updater records in its
+#                 settings row; the only ref a roll ever pulls.
+#   main          moving, pushed AFTER the sha tag — a failure midway leaves
+#                 it pointing at yesterday's honest self (same rule as
+#   release.yml and api-package.yml).
+#
+# Channel tags (nightly/rc/X.Y.Z/latest) stay release.yml's — those are
+# versioned publications a human cut; this file is the trunk feed.
+#
+# THE API PIN. The root Dockerfile's ARG defaults to the MOVING
+# talaria-api:main, and a build that races api-package.yml's push would bake
+# this commit's UI onto an older api. So the pin is resolved before every
+# build, one of two ways:
+#   - this push touched the api → wait for THIS commit's package
+#     (sha-<sha12> on talaria-api, built by api-package's own push run — the
+#     poll is the coupling: no app image ships for a commit whose api bits
+#     haven't finished building);
+#   - it didn't → the current talaria-api:main IS this tree's api source
+#     (that tag tracks api source; an untouched api hasn't moved it), so pin
+#     the digest :main names. Inspect, never pull-by-tag, so the build and
+#     the pin cannot disagree.
+#
+# NOT GATED ON ci.yml — api-package's own argument: its tags are not required
+# checks either, and gating here would re-run the whole PR battery per push
+# for a feed whose consumers (the updater, the fleet script) each gate their
+# own rolls. A bad main image can be rolled past; a release cannot.
+#
+# amd64 only, plain docker build + push, no cache actions — release.yml's
+# taste, verbatim.
+#
+# FIRST RUN needs no bootstrap, unlike api-package's: the package it pushes
+# to already exists and is already public (release.yml created it), and the
+# merge that lands this file touches a path below, so the first run fires
+# itself. A docs-only push that lands this file still builds — cheap, and
+# `main` then names the image the tree actually is.
+name: app-image
+
+on:
+  push:
+    branches: [main]
+    # Nothing in this file is a required check, so paths are safe (the
+    # chassis.yml argument). They also keep `main` semantically right: the tag
+    # tracks what a running instance WOULD get — a push that changes no
+    # running bits (docs, tests) leaves it pointing at the bits that still
+    # are. Every path that lands in the image or the app's runtime contract:
+    paths:
+      - 'ui/**'
+      - 'mcp/**'
+      - 'api/**'
+      - 'apps/**'
+      - 'scripts/skills/**'
+      - 'scripts/chassis.template.yml'
+      - 'docker/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/app-image.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # Resolve the api digest this build pins — BEFORE building. Outputs the
+  # full by-digest ref (repo@sha256:…) the publish job's --build-arg takes.
+  api-pin:
+    name: pin the api package
+    runs-on: ubuntu-latest
+    timeout-minutes: 40 # the poll below can outwait a full api build
+    outputs:
+      pin: ${{ steps.pin.outputs.pin }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The full history: the api-changed test diffs before..after, and a
+          # shallow clone can have neither.
+          fetch-depth: 0
+
+      - name: Resolve the api digest to pin
+        id: pin
+        env:
+          API_IMAGE: ghcr.io/${{ github.repository }}-api
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD | cut -c1-12)
+
+          # Did this push touch the api source? before..after diff, the same
+          # paths api-package.yml filters on (its own file included — a push
+          # that edits the package workflow republishes sha-<sha12> for the
+          # new commit, and this build should wait for that exact one). A
+          # missing/zero before (first push, history rewrite) reads as "yes"
+          # — the safe side rebuilds.
+          api_changed=1
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            if ! git diff --name-only "$BEFORE" "$AFTER" -- \
+                 api/ api/package.Dockerfile .github/workflows/api-package.yml \
+                 .dockerignore | grep -q .; then
+              api_changed=0
+            fi
+          fi
+
+          if [ "$api_changed" = 1 ]; then
+            # Wait for THIS commit's package: api-package's own push run is
+            # building it right now (same paths matched there). The poll IS
+            # the guarantee the updater is built on — no app image for a
+            # commit whose api hasn't finished building.
+            echo "api changed — waiting for $API_IMAGE:sha-$sha (api-package is building it)"
+            i=0
+            until docker manifest inspect "$API_IMAGE:sha-$sha" >/dev/null 2>&1; do
+              i=$((i + 1))
+              if [ "$i" -gt 60 ]; then
+                echo "::error::$API_IMAGE:sha-$sha never appeared — is the api-package run for this commit green?"
+                exit 1
+              fi
+              sleep 30
+            done
+            pin="$API_IMAGE:sha-$sha"
+          else
+            # The api source didn't move, so :main names this tree's api bits.
+            # Inspect for the digest; pull-by-tag never enters the build.
+            echo "api unchanged — pinning the digest talaria-api:main names"
+            digest=$(docker buildx imagetools inspect "$API_IMAGE:main" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            case "$digest" in
+              sha256:*) ;;
+              *) echo "::error::no digest resolved from $API_IMAGE:main (got '$digest')"; exit 1 ;;
+            esac
+            pin="$API_IMAGE@$digest"
+          fi
+
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "pinning $pin"
+
+  publish:
+    name: build + push the app image
+    needs: [api-pin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      packages: write # the GHCR push
+    concurrency:
+      # Per-ref, never cancelled mid-run — a cancelled push can leave `main`
+      # half-moved (release.yml's argument; the sha tag makes re-runs
+      # idempotent).
+      group: app-image-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      # The workflow's own token — GHCR accepts GITHUB_TOKEN within the same
+      # repo/org (api-package's precedent; no secret was provisioned).
+      - name: Log in to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build + push
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          PIN: ${{ needs.api-pin.outputs.pin }}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD | cut -c1-12)
+          # Immutable first, then the moving tag (the header's order).
+          tags=("sha-$sha" main)
+          args=(--platform linux/amd64
+                --build-arg "TALARIA_API_IMAGE=$PIN"
+                --build-arg "VERSION=sha-$sha"
+                --build-arg "REVISION=$(git rev-parse HEAD)"
+                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
+          docker build "${args[@]}" .
+          for t in "${tags[@]}"; do
+            echo "pushing $IMAGE:$t"
+            docker push "$IMAGE:$t"
+          done
+          echo "pushed $IMAGE for: ${tags[*]} (api pin: $PIN)"

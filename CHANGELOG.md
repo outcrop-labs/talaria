@@ -36,6 +36,19 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   link, `git check-ignore` proves both new ignores, and Claude Code loads the
   stub and lists the four skills (`/context`, `/skills`).
 
+- **CI publishes the app image from main.** Every push to main that touches
+  running bits now builds the full app image and publishes it as
+  `ghcr.io/outcrop-labs/talaria:sha-<sha12>` (immutable, first) and `:main`
+  (pointer, second) — trunk images, beside the release channels a human
+  cuts. The api stage is digest-pinned before each build: an api-touching
+  push waits for that same commit's api package (built in parallel by
+  api-package's own run), anything else pins the digest
+  `talaria-api:main` names — a trunk image never mixes a new UI with an
+  unbuilt api. No behavior change for any running instance: the feed is the
+  groundwork the in-app rolling updater consumes; `TALARIA_INSTALL=image`
+  now ships in the image's env as the signal that updater will key on
+  (absent in checkout installs, where it stays dormant).
+
 - **The browser tab carries the instance's company name.** Admins can name
   the workspace (Admin → org tab, beside the hosting domain); until then
   the tab reads "Talaria", and once named it reads "Talaria - <name>" — on
@@ -230,6 +243,19 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   the PR number. Corrected so the doc a release follows matches the history it
   walks.
 
+- **`deploy update` pulls the api package before it builds.** The app image
+  never compiles the api — it bakes in the pre-built package named by the
+  Dockerfile's `TALARIA_API_IMAGE` — and `up -d --build` resolves that FROM
+  from the local daemon cache. So an update on a checkout host could git
+  pull, rebuild, recreate, and report success while still serving an api
+  binary from before the pull: new UI wrapped around an old api (bbills,
+  2026-09-03 — one day-old package answered for three "already fixed"
+  symptoms at once). `talaria deploy update` now `docker pull`s the package
+  the Dockerfile names, between the git pull and the build — the ref is
+  read from the ARG line itself, so the pull and the build can't disagree —
+  and a failed pull dies instead of baking the stale digest on purpose.
+  `deploy up` keeps its old leniency: that path is also the
+  reboot-a-broken-box path, and must not suddenly demand the registry.
 - **Reading a thread clears its bell rows.** Opening an agent chat, plan, or
   research discussion advanced the read cursor — the unread pill went away —
   but the notification rows pointing at the thread never learned, so the bell

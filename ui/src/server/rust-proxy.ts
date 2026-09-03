@@ -79,7 +79,13 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 // `pragma` and `referrer-policy` joined with the secrets family: reveal and
 // git-credential answer with no-store/no-cache/no-referrer triads, and an
 // allow-list that eats two of the three is a cache hint waiting to happen.
-const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy']
+// `content-disposition` rides with the uploads: serve_upload puts the file's
+// name there, and stripping it turned every download into a nameless blob —
+// the "attachments are broken" report's download half. Its sandbox belt
+// (`content-security-policy` + `x-content-type-options`) crosses for the
+// same reason: the api buckles it so a served file can't execute where it
+// lands, and the belt is worthless if it stops at this boundary.
+const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy', 'content-disposition', 'content-security-policy', 'x-content-type-options']
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
