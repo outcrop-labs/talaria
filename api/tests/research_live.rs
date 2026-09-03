@@ -9,7 +9,9 @@
 //   DATABASE_URL=postgres://… cargo test --test research_live -- --ignored
 
 use sqlx::postgres::PgPool;
-use talaria_api::conversations::{accessible_conversation, conversation_accessible};
+use talaria_api::conversations::{
+    accessible_conversation, conversation_accessible, post_agent_turn,
+};
 use talaria_api::research::{
     add_research_member, awaiting_scope_answer, ensure_research_conversation, get_research_run,
 };
@@ -122,6 +124,48 @@ async fn a_research_conversation_passes_the_chat_gates_for_owner_and_member_only
     sweep_user_rows(&pg, "gates-owner").await;
     sweep_user_rows(&pg, "gates-member").await;
     sweep_user_rows(&pg, "gates-stranger").await;
+}
+
+/// post_agent_turn is the run's mouth, and a run step that crashes between
+/// saying something and parking is RE-ENTERED by the reclaim sweep: one
+/// marker must mean one message, however many times the step runs.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_agent_turn_posts_once_per_marker() {
+    let pg = pool().await;
+    let owner = fabricate_user(&pg, "turn-owner").await;
+    let run_id = fabricate_research_run(&pg, &owner, "who repeats themselves?").await;
+    let conv = ensure_research_conversation(&pg, &run_id)
+        .await
+        .unwrap()
+        .expect("an owned run gets a conversation");
+
+    let first = post_agent_turn(&pg, &conv, "live:marker", "Report ready.")
+        .await
+        .unwrap();
+    let second = post_agent_turn(&pg, &conv, "live:marker", "Report ready.")
+        .await
+        .unwrap();
+    assert_eq!(first, second, "the re-entry returns the posted turn's id");
+
+    let (count,): (i64,) = sqlx::query_as(
+        "select count(*) from messages \
+         where conversation_id = $1::uuid and metadata->>'marker' = 'live:marker'",
+    )
+    .bind(&conv)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "one marker, one message row");
+
+    // A different marker is a different turn — the guard keys on the marker,
+    // not on the conversation.
+    let other = post_agent_turn(&pg, &conv, "live:other", "Second line.")
+        .await
+        .unwrap();
+    assert_ne!(other, first);
+
+    sweep_user_rows(&pg, "turn-owner").await;
 }
 
 /// A run parked exactly the way the scope step parks one: research record,

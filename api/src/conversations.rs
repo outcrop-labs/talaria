@@ -705,6 +705,47 @@ pub async fn set_message_guard(
     Ok(())
 }
 
+/// One complete assistant turn, written server-side — the outreach-DM shape,
+/// available to any plane that owes a person a line without streaming one
+/// (the research run's scope question, its scope ack, its report-ready
+/// notice). `marker` is the idempotency key: a run step that posts and then
+/// crashes before its park or checkpoint lands is re-entered by the reclaim
+/// sweep, and the re-entry must not say the same thing twice. Returns the
+/// message id — the existing row's when the marker already posted, the new
+/// row's when it did not.
+pub async fn post_agent_turn(
+    pg: &PgPool,
+    conversation_id: &str,
+    marker: &str,
+    body: &str,
+) -> Result<String, sqlx::Error> {
+    // Already said: hand back the same id so the caller's idea of "the turn I
+    // posted" stays stable across re-entries.
+    let said: Option<(String,)> = sqlx::query_as(
+        "select id::text from messages \
+         where conversation_id = $1::uuid and metadata->>'marker' = $2 \
+         limit 1",
+    )
+    .bind(conversation_id)
+    .bind(marker)
+    .fetch_optional(pg)
+    .await?;
+    if let Some((id,)) = said {
+        return Ok(id);
+    }
+    let seq = next_seq(pg, conversation_id).await?;
+    let id = insert_streaming_assistant(
+        pg,
+        conversation_id,
+        seq,
+        &serde_json::json!({ "marker": marker }),
+    )
+    .await?;
+    update_assistant(pg, &id, body, "", &[], "complete").await?;
+    touch_conversation(pg, conversation_id, None).await?;
+    Ok(id)
+}
+
 /// Bump the conversation's updated_at, setting a title from the first turn
 /// only while the row's own is empty.
 pub async fn touch_conversation(
