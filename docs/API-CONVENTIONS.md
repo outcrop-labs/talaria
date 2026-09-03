@@ -17,9 +17,8 @@ keeps the same division: its route files are thin, and the decisions live one di
 unit tests reach them.
 
 The full per-route reference — path, method, auth class, body fields, statuses — is
-[`api/`](./api/README.md), frozen at the TS→Rust cutover and maintained by hand until its extractor
-moves to the Rust routes (#293). Nothing here repeats it; this page is the dialect, that one is the
-dictionary.
+[`api/`](./api/README.md), generated from the Rust routes (`bun run docs:api`; drift fails
+`bun run check`). Nothing here repeats it; this page is the dialect, that one is the dictionary.
 
 ## Guards — `server/api-guard.ts`
 
@@ -78,92 +77,94 @@ reaching for `.legacy` on something that might be a bare model string.
 
 ## Agent writes that touch a ticket — import the predicate, never re-derive it
 
-Every agent patch that goes through `updateTask` inherits the HITL invariant automatically:
+Every agent patch that goes through `update_task` inherits the HITL invariant automatically:
 `agent_safe_patch` strips assignment/planning/archival, redirects terminal moves to
-the board's review column, and refuses the rest. The predicate lives once per runtime —
-`api/src/tasks.rs` for the routes, `server/tasks.ts`'s `agentSafePatch` for the TS plane (app
-servers, the MCP tool descriptions) — with the same four conditions. **A route that goes through
-`updateTask` needs nothing else.**
+the board's review column, and refuses the rest. The predicate lives **once**, in
+`api/src/tasks.rs` — the TS routes that carried a twin spelling were deleted at the cutover, the
+resident tier never writes tickets, and the MCP server's tools ride the api — so there is no second
+definition anywhere to keep in step. **A route that goes through `update_task` needs nothing else.**
 
-A route that writes something *attached* to a ticket without going through `updateTask` — a usage
+A route that writes something *attached* to a ticket without going through `update_task` — a usage
 row, a dependency edge, a gap report, a workbench plan comment or PR title — does not inherit it, and
 must ask the one exported predicate:
 
-```ts
-import { agentTicketRefusal } from '@/server/tasks'
+```rust
+use crate::tasks::{agent_ticket_refusal, AgentIntent, AgentWriteTarget};
 
-const shut = await agentTicketRefusal(task, caller, 'write')  // reason string, or null when it may
-if (shut) return json({ error: shut }, { status: 403 })
+let target = AgentWriteTarget::from(&task);   // board, status, archived_at — all it asks
+match agent_ticket_refusal(&state.pg, &target, &agent, AgentIntent::Write).await {
+    Ok(None) => { /* it may */ }
+    Ok(Some(shut)) => return Err(house_error(StatusCode::FORBIDDEN, &shut)),
+    Err(e) => {
+        tracing::error!("[route] agent authority failed: {e}");
+        return Err(thrown_internal_error());
+    }
+}
 ```
 
 It returns the **reason** rather than a boolean so the refusal reads the same wherever the write
-arrived, and it covers **four** conditions, not one: the board's **agent policy** (revoked, never
-granted, board gone), archived ticket, archived **board**, and — for `'write'` only — closed status
-(a `done` column on that board, or the off-board `failed` / `cancelled`). The agent is a **required**
-argument: `closedToAgents`, its predecessor, took only the ticket and so could not ask the policy
-half, which is how a board owner revoking a grant 403'd every write route while the heartbeat kept
-serving the same ticket forever.
+arrived — the reason *is* the 403 body — and it asks **four** stop conditions, in the order a person
+would: the board does not allow this agent (revoked, never granted, or the board is archived/gone),
+the ticket is archived, the intent is `Comment` — not a stop; the exemption — and, for `Write` only,
+the ticket is closed (a done column on that board, or the off-board `failed` / `cancelled`).
 
-The third argument is the intent. `'comment'` skips the closed-status clause and nothing else —
-commenting stays open on work an agent can no longer edit, which is deliberate — but archival stops
-it at **both** levels, because archival withdraws the work rather than closing it, and a channel
-nobody is watching is not a channel. Reads are not this question: an agent that passes
-`boardAllowsAgent` may read the ticket, because reading changes nothing.
+`AgentIntent::Comment` skips the closed-status clause and nothing else — commenting stays open on
+work an agent can no longer edit, which is deliberate — but archival stops it at **both** levels,
+because archival withdraws the work rather than closing it, and a channel nobody is watching is not a
+channel. Reads are not this question: an agent that passes `board_allows_agent` may read the ticket,
+because reading changes nothing.
 
-Pass a `boardFacts()` as the optional fourth argument when you are in a **loop** — it is a per-pass
-cache (board archival, agent policy, `statusMeta`), never an answer, so it cannot be for the wrong
-board. Creating one per request is free; not passing one in a loop is an N+1.
-
-The same predicate answers the *pull* and *session* sides too — `maybeDispatchTicket`, `assignedWork`
-and the work-session loop all ask it before handing (or continuing to hand) an agent work — so the
-queue, the live session and the write routes agree by construction rather than by three people
+The same predicate answers the *pull* side too — `assigned_work` asks it before serving an agent
+its queue — so the heartbeat and the write routes agree by construction rather than by two people
 remembering.
 
-> **Do not copy it into your route.** Four routes each hand-rolled their own copy, because parallel
-> work split file ownership and `server/tasks.ts` did not export one. All four checked only the
+> **Do not copy it into your route.** Four TS routes once hand-rolled their own copies, because
+> parallel work split file ownership and nothing exported one. All four checked only the
 > closed-status third and silently missed both archival clauses the original grew later — so an agent
 > could keep writing to a ticket a person had archived through any of them. Duplicating an invariant
-> is how the sixth laundering path in a series of six got created; a fifth copy is never the fix.
+> is how the sixth laundering path in a series of six got created; a new copy is never the fix.
 > Comments are deliberately outside this gate: commenting stays open on work an agent can no longer
 > edit.
 
-### CI fails a second definition — `scripts/check-invariants.mjs`
+### CI fails these — `scripts/check-invariants.mjs`
 
-The paragraph above was true and documented before four routes hand-rolled the predicate anyway, so
-it is no longer only a convention. `node scripts/check-invariants.mjs` runs as the first job on every
-PR (`.github/workflows/ci.yml`, no install step, seconds) and **fails the build** on:
+The conventions above were all true and documented before someone re-derived them by hand anyway, so
+they are no longer only conventions. `node scripts/check-invariants.mjs` runs as the first job on
+every PR (`.github/workflows/ci.yml`, no install step, seconds) and **fails the build** on:
 
 | pattern | what to write instead |
 | --- | --- |
-| a second `function agentTicketRefusal` / `const agentTicketRefusal` anywhere outside `server/tasks.ts` | `import { agentTicketRefusal } from '@/server/tasks'` |
-| `s.category === 'active'` outside `server/statuses.ts` — an active-column lookup re-derived from `listStatuses` | `meta.activeKey` (where a ticket goes while it is worked) or `meta.workingKeys` (is it still in play?) — both picked from the one `placeable` list, so neither can be a terminal column |
-| `doneKeys.includes(k) \|\| OFF_BOARD_STATUSES.includes(k)` outside `server/statuses.ts` | `meta.terminal(k)` — `statusMeta()` returns it as a **function** precisely so it cannot be half-copied |
-| a bare `doneKeys.includes(...)` outside the two places on the census | `meta.terminal(k)`, unless you truly mean the narrower "is this a done-**category** column", in which case say so on the census |
-| `'failed'` next to `'cancelled'` as a literal or a type union, outside the two declarations | `import { OFF_BOARD_STATUSES } from '@/lib/task-const'` |
-| `if (!r.ok) return []` / `null` / `{}`, `r.ok ? … : []`, or `.catch(() => [])` **inside a `queryFn`** | let it throw — a resolved-on-failure query reports SUCCESS carrying emptiness, and the UI renders "nothing here" for "we could not ask" |
+| a `queryFn` that resolves `[]` / `null` / `{}` when the request failed (`if (!r.ok) return []`, `r.ok ? … : []`, `.catch(() => [])`) | let it throw — a resolved-on-failure query reports SUCCESS carrying emptiness, and the UI renders "nothing here" for "we could not ask" |
+| a query result flattened to a default on the line that created it (`const { data: x = [] } = useThing()`) | `listQuery()` from `@/components/ui/query-state` (or `<QueryState>`) — rows AND the sentence that says they are missing; flattening makes `isError` unreachable from that component forever |
+| a `listQuery()` whose `notice` is taken and never rendered (or never taken) | render it — the inline variant for quiet spots; silence is the failure mode this rule exists for |
+| a portal/fixed panel carrying its own document-level outside listener | the shells: `<Popover>`, `<DropdownMenu>`, `<ContextMenu>` — they own outside-click, Escape, scroll, and stacking; the allowlist is three shells, one documented exception (`DocLinkPopover`), one input primitive (`Combobox`) |
+| `'failed'` next to `'cancelled'` spelled out as a literal or type union | `import { OFF_BOARD_STATUSES } from '@/lib/task-const'` — the census holds the list to its one TS definition |
+| `allow_all_agents` in SQL | the board agent policy is the Rust boards engine's (`api/src/boards.rs`); the one counted site is the migration DDL |
+| a hand-rolled client `fetch(`, or a `credentials: 'same-origin'` stanza outside the door | a verb from `@/lib/fetch-json` (`getJson` / `getList` / `postJson` / `postStream` …) — one HTTP door, and doors drift |
 
-Every failure names the file, the line and the fix. The last row is not an API rule but it is the
-same disease on the read side, so it lives in the same check.
+Migration SQL and a few structural checks (server values imported into browser modules, upload
+bytes served outside `serveUpload`) get their own passes in the same script. Every failure names the
+file, the line and the fix.
 
 Two mechanisms back the table. **Rules** are absolute: legal only in the file that defines the thing.
 **Censuses** are exact counts for patterns that are legitimate in a named few places — a file that
 gains an occurrence fails, *and a file that loses its last one also fails*, so the list shrinks as
 debt is paid and can never settle into a standing amnesty. If a match is genuinely wrong, argue it in
-the PR; widening the pattern to go green is how the previous six rounds happened.
+the PR; widening the pattern to go green is how the previous rounds happened.
 
 **Adding a rule is cheap and expected.** When a review finds an invariant that was re-derived by
 hand, centralize it *and* add the pattern — the structural fix alone rests entirely on the next
-reviewer noticing, which is exactly the assumption that has failed seven times.
+reviewer noticing, which is exactly the assumption that keeps failing.
 
 ### The one off-board status list
 
-`OFF_BOARD_STATUSES` (`failed`, `cancelled`) is declared in **`ui/src/lib/task-const.ts`**, the file
-both halves may import: the client cannot reach `server/`, but `server/` already imports from
-`@/lib`. `TaskStatus` derives from it, so the type union cannot drift from the list.
-
-`server/statuses.ts` still carries its own copy next to the resolvers that exclude it; CI fails if
-the two ever disagree. The fix is one line — make that file import the shared constant — and the
-cross-check then finds nothing to compare and retires itself.
+`OFF_BOARD_STATUSES` (`failed`, `cancelled`) is declared in **`ui/src/lib/task-const.ts`** — the
+client's wire vocabulary. The workflow-column engine that owns the set server-side is the Rust
+statuses engine (`api/src/statuses.rs`), which declares its own; a TS copy must import, not
+re-spell, and the `off-board-status-literal` census holds it to that one definition. (`server/statuses.ts`
+carried a second copy until the cutover deleted the file, and the cross-check that held the two
+identical retired with it.) `TaskStatus` derives from the list, so the type union cannot drift
+from it.
 
 On the client the matching question — "is this ticket finished **on this board**?" — is
 `isClosedStatus(key, statuses)` in `components/board/field-pills.ts`. It is board-aware, so it is
@@ -181,16 +182,18 @@ work that has silently disappeared from the board, with no error anywhere on scr
 
 So a surface that draws tickets *into* columns must refuse rather than guess:
 
-```ts
-const statusesQuery = useBoardStatuses(board.id)
-const statusesFailed = statusesQuery.isError && statusesQuery.data === undefined
-if (statusesFailed) return <QueryError title="Could not load this board’s columns" … />
+```svelte
+const statusesQuery = useBoardStatuses(() => board.id)
+const statusesFailed = $derived(statusesQuery.isError && statusesQuery.data === undefined)
 ```
 
-The `data === undefined` half is what makes it a refusal and not a regression: a *cached* set that
-failed to refresh is stale, not absent, and stale columns beat no board at all — that case gets the
-inline banner instead. `kanban.tsx` and `board-list.tsx` do this. `gantt.tsx` does **not** (see the
-note in `ci.yml`); it warns and draws the chart anyway.
+…then a `<QueryError>` region in the template when `statusesFailed`. The `data === undefined` half
+is what makes it a refusal and not a regression: a *cached* set that failed to refresh is stale, not
+absent, and stale columns beat no board at all — that case gets the inline banner instead.
+`Kanban.svelte` and `BoardList.svelte` do exactly this ("same test, same word, same consequence,"
+as the list's own comment puts it). `Gantt.svelte` deliberately does not replace the chart — the
+tickets loaded, so the timeline stays and the failed workflow read is an inline `<QueryError>`
+banner whose title says bar colours and overdue marks are guesses.
 
 ### Wire numerics — `numeric` and `bigint` arrive as strings
 
@@ -202,14 +205,13 @@ that has them typed `number`. Declare them `PgNumeric` (`@/lib/task-const`) and 
 This is not pedantry, and it is mostly invisible to `tsc` — implicit coercion means the arithmetic
 compiles and silently misbehaves:
 
-- `patch.estimatedHours !== cur.estimatedHours` in `updateTask` compares a number from the request
-  body against a string from the row, so re-saving an unchanged estimate logs a spurious activity
-  line every time.
+- A number off the wire (an edit form's estimate) compared against a string from the row reads as
+  different every time, so re-saving an unchanged estimate looks like a change.
 - `sum + t.estimatedHours` concatenates instead of adding — `"04.5"`.
 - A comparator returning the raw value sorts lexically: `"100"` before `"99"`.
 - `if (!seconds) return '—'` never fires for zero, because `"0"` is truthy.
 
-The permanent fix is a postgres.js `types` override in `server/db/pg.ts` (audit task 21), after which
+The permanent fix is a postgres.js `types` override in `server/db/pg.ts`, after which
 `PgNumeric` collapses back to `number` and the coercions become no-ops.
 
 ## Bodies — `parseBody`
