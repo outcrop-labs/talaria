@@ -154,12 +154,11 @@ async fn a_big_upload_round_trips_with_its_name() {
 
     // Cleanup: the row, the blob when it lives on this disk (an instance in
     // MinIO mode simply leaves one test object behind), the user.
-    let path: Option<String> =
-        sqlx::query_scalar("select path from uploads where id = $1::uuid")
-            .bind(&id)
-            .fetch_one(&state.pg)
-            .await
-            .ok();
+    let path: Option<String> = sqlx::query_scalar("select path from uploads where id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&state.pg)
+        .await
+        .ok();
     sqlx::query("delete from uploads where id = $1::uuid")
         .bind(&id)
         .execute(&state.pg)
