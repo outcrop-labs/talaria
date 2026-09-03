@@ -189,15 +189,28 @@ fn recorded_the_reversed_decision(value: &str) -> Option<String> {
 /// The widened prompt's hardest clause. Nobody in the relay takes the
 /// benchmark, and a model asked for an owner on every follow-up will assign
 /// one — which is worse than naming nobody.
+///
+/// The follow-up is found by CONTENT, not by the transcript's word for it:
+/// "benchmark" is a verb that paraphrases freely (test, measure, time), and a
+/// summary that writes "test the chunker against the worst customer file"
+/// carried everything the fixture grades — but the section marker alone
+/// ("Follow-ups: none") proves nothing and must not pass. So presence needs
+/// the verb or the object; the attribution scan takes marker-or-content lines.
 fn guessed_an_unowned_follow_up(value: &str) -> Option<String> {
-    let follow_up: String = value
-        .lines()
-        .filter(|l| l.to_lowercase().contains("benchmark"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if follow_up.is_empty() {
+    if !value.lines().any(|l| {
+        let lo = l.to_lowercase();
+        lo.contains("benchmark") || lo.contains("customer")
+    }) {
         return Some("left out the follow-up entirely".into());
     }
+    let follow_up: String = value
+        .lines()
+        .filter(|l| {
+            let lo = l.to_lowercase();
+            lo.contains("follow") || lo.contains("benchmark") || lo.contains("customer")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     // Marta and Nomad are the only names in the transcript, and neither
     // volunteered for it.
     static R: OnceLock<Regex> = OnceLock::new();
@@ -310,7 +323,12 @@ pub fn fixtures() -> Vec<ConcludeFixture> {
             sections: true,
             carries: &[
                 ("chunk", "the decision to chunk the parse"),
-                ("benchmark", "the follow-up"),
+                // THE OBJECT, NOT THE VERB: "benchmark" is the transcript's
+                // word, and a summary that restates the follow-up in its own
+                // words — "test it against the worst customer file" — was
+                // failing this token for carrying the follow-up. The customer
+                // file is the one noun every faithful spelling keeps.
+                ("customer", "the follow-up"),
             ],
             extra: None,
         },
@@ -581,8 +599,9 @@ mod tests {
             "## Decided\n- CSV only for the pilot\n\n## Produced\n- Export endpoint\n\n## Follow-ups\n- Customer note by Thursday",
             // REVERSED
             "## Decided\n- Ship unflagged to the pilot accounts only; the flag idea was dropped as more moving parts\n\n## Produced\n- The allowlist is pushed\n\n## Follow-ups\n- Review the allowlist with Support on Monday",
-            // UNOWNED bespoke
-            "## Decided\n- Chunk the parse\n\n## Follow-ups\n- Someone has to benchmark the chunker against the worst customer file",
+            // UNOWNED bespoke — worded WITHOUT the transcript's verb, because
+            // the follow-up is graded by its content, not its spelling.
+            "## Decided\n- Chunk the parse\n\n## Follow-ups\n- Someone still has to test the chunker against the worst customer file before shipping",
             // billing/BURIED
             "## Decided\n- Embed the full font rather than the subset, eating the extra 400KB per invoice\n\n## Produced\n- Change pushed, last month's invoices regenerated\n\n## Follow-ups\n- Tell Support the old PDFs are being regenerated",
         ];
@@ -638,9 +657,26 @@ mod tests {
                 .as_deref(),
             Some("attributed the unowned follow-up to Marta, who never took it on")
         );
+        // The same guess in a paraphrased bullet — no "benchmark" anywhere —
+        // is still a guess, so the attribution scan has to cover content
+        // lines, not just the transcript's spelling.
+        assert_eq!(
+            unowned
+                .check("## Decided\n- Chunk the parse\n\n## Follow-ups\n- Nomad will test it against the worst customer file")
+                .as_deref(),
+            Some("attributed the unowned follow-up to Nomad, who never took it on")
+        );
         assert_eq!(
             unowned
                 .check("## Decided\n- Chunk the parse\n\n## Produced\n- Prototype\n\n## Notes\n- Nothing else")
+                .as_deref(),
+            Some("left out the follow-up entirely")
+        );
+        // And the marker alone is not the follow-up: a summary that writes
+        // the section heading and skips its one item has left it out.
+        assert_eq!(
+            unowned
+                .check("## Decided\n- Chunk the parse\n\n## Follow-ups\n- None")
                 .as_deref(),
             Some("left out the follow-up entirely")
         );

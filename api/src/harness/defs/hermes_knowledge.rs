@@ -6,8 +6,9 @@
 // reading the fitness matrix learns whether a model can run those features.
 //
 // It tells them almost nothing about the other half of the product. A Hermes
-// persona is handed FORTY-SIX workspace tools and a human's request in plain
-// English, and what it does next is the whole job — nobody wrote a prompt for
+// persona is handed FIFTY-FIVE workspace tools (the `TALARIA_TOOLS.len()` the
+// sync test pins) and a human's request in plain English, and what it does
+// next is the whole job — nobody wrote a prompt for
 // "go find out whether we have a runbook for this". The knowledgebase was
 // the largest hole in that coverage: before this harness, 1 of its 9 tools
 // had ever been put in front of a model by the sweep. The rest were modelled
@@ -52,7 +53,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fitness::toolbox::world::SandboxWorld;
+use crate::fitness::toolbox::world::{SandboxKbDoc, SandboxWorld};
 use crate::harness::define::{
     CheckCall, CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition,
     Message, OnFailure, Output, RenderContext, RoleFloor, define_harness,
@@ -133,6 +134,25 @@ fn refused(ctx: &CheckCtx, tool: &str) -> bool {
 fn mentions(text: &str, words: &[&str]) -> bool {
     let t = text.to_lowercase();
     words.iter().any(|w| t.contains(w))
+}
+
+/// The page the model's own successful `create_kb_doc` call wrote, found in
+/// the world by the title THAT CALL passed — the sandbox stores the title
+/// verbatim, so the match is exact. Finding the page by matching our subject
+/// words against world titles graded the model's TITLING on fixtures that
+/// measure something else: a paraphrased title ("Handover notes" for a page
+/// the ask called "On-call handoffs") wrote the page and read as "never
+/// created the page" — a false gap, and one whose sentence pointed at the
+/// model's knowledgebase instead of at our check.
+fn doc_the_model_created<'a>(ctx: &CheckCtx, w: &'a SandboxWorld) -> Option<&'a SandboxKbDoc> {
+    let wrote = calls_of(ctx, "create_kb_doc")
+        .into_iter()
+        .find(|c| !c.errored)?
+        .args
+        .get("title")?
+        .as_str()?
+        .to_lowercase();
+    w.kb_docs.iter().find(|d| d.title.to_lowercase() == wrote)
 }
 
 // ── Eval fixtures ────────────────────────────────────────────────────────────
@@ -262,12 +282,10 @@ pub fn fixtures() -> Vec<HermesKnowledgeFixture> {
                 let Some(w) = world(ctx) else {
                     return no_world();
                 };
-                let doc = w.kb_docs.iter().find(|d| {
-                    let title = d.title.to_lowercase();
-                    title.contains("on-call")
-                        || title.contains("on call")
-                        || title.contains("handoff")
-                });
+                // The page is the one the call actually wrote — see
+                // `doc_the_model_created`; this fixture measures ids, not
+                // titling.
+                let doc = doc_the_model_created(ctx, &w);
                 let Some(doc) = doc else {
                     return CheckResult::Fail(
                         "the page it reported writing is not in the knowledgebase".into(),
@@ -384,10 +402,10 @@ pub fn fixtures() -> Vec<HermesKnowledgeFixture> {
                 let Some(w) = world(ctx) else {
                     return no_world();
                 };
-                let doc = w
-                    .kb_docs
-                    .iter()
-                    .find(|d| d.title.to_lowercase().contains("ledger migration"));
+                // Found by the call's own title (`doc_the_model_created`) —
+                // the grade below is about the page's BODY; titling is not
+                // what this fixture asks.
+                let doc = doc_the_model_created(ctx, &w);
                 let Some(doc) = doc else {
                     return CheckResult::Fail("never created the page".into());
                 };
@@ -529,7 +547,7 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
     // very thing this harness exists to measure.
     d.tools = Some(ToolPolicy::Own);
     // THE KNOWLEDGE TOOLS, and nothing else. Production hands a persona all
-    // forty-six; a benchmark that did the same would measure tolerance for
+    // fifty-five; a benchmark that did the same would measure tolerance for
     // irrelevant options rather than knowledge work. `search_knowledge` is in
     // here because a real agent has it and choosing between search and browse IS
     // part of the job.
@@ -868,6 +886,33 @@ mod tests {
                 "filed the page in kbs-2 when it was asked for the Engineering space (kbs-1)"
                     .into()
             )
+        );
+        // Created it under a PARAPHRASED title — "Handover notes" for the
+        // page the ask called "On-call handoffs". This fixture measures ids:
+        // the model listed the spaces, used a real one, and the page it wrote
+        // is in the world under the title it wrote. Found by the call's own
+        // title, that PASSES; found by our subject words, it used to fail as
+        // "not in the knowledgebase" — a false gap.
+        let mut paraphrased = base_world();
+        paraphrased
+            .kb_docs
+            .push(created_kb_doc("Handover notes", "Rotate weekly."));
+        assert_eq!(
+            (by("takes ids from a listing rather than inventing them").check)(
+                "Created it.",
+                &ctx(
+                    vec![
+                        call("list_kb_spaces", false, json!({})),
+                        call(
+                            "create_kb_doc",
+                            false,
+                            json!({ "spaceId": "kbs-1", "title": "Handover notes", "markdown": "Rotate weekly." })
+                        ),
+                    ],
+                    paraphrased
+                )
+            ),
+            CheckResult::Pass
         );
         // The overstatement that stops humans checking.
         let created = ctx(

@@ -515,7 +515,7 @@ fn restated(value: &str, source: &str, ratio: f64) -> CheckResult {
 
 fn omission() -> &'static Regex {
     static R: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\bomit|\bskip|exclud|\bdrop|pleasantr|chatter|small talk|not durable|nothing durable|no other")
+        Regex::new(r"\bomit|\bskip|exclud|\bdrop|left out|discard|pleasantr|chatter|small talk|not durable|nothing durable|no other")
             .unwrap()
     });
     &R
@@ -654,9 +654,14 @@ fn check_refusal(value: &str, _ctx: &CheckCtx) -> CheckResult {
         return CheckResult::Fail(t);
     }
     // A distillation that keeps "Zendesk importer" and loses "no" is how a
-    // rejected plan comes back next quarter as an agreed one.
+    // rejected plan comes back next quarter as an agreed one. Every word
+    // here is refusal semantics and nothing else — "turned down", "vetoed",
+    // "ruled out" are how a faithful distillation words the transcript's
+    // "explicitly not doing Zendesk", and missing them graded the better
+    // paraphrase as the data-loss failure.
     static REFUSED: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\bnot\b|\bno\b|declin|reject|drop|defer|skip|instead").unwrap()
+        Regex::new(r"\bnot\b|\bno\b|declin|reject|drop|defer|skip|instead|turn\w* down|veto\w*|passed? on|ruled out|shelv\w*|cancell|voted against|argued against")
+            .unwrap()
     });
     if REFUSED.is_match(&value.to_lowercase()) {
         CheckResult::Pass
@@ -1188,6 +1193,15 @@ mod tests {
             ),
             CheckResult::Pass
         );
+        // "Left out" and "discarded" are the same naming — a distillation
+        // that drops the pleasantry in those words did the work.
+        assert_eq!(
+            check(
+                "- Ledger store: Postgres over SQLite (locked).\n- Ledger migration ships Friday.\n- Nadia owns the rollback plan.\n- Sorry for the slow reply — left out of the record.\n- Talk later, discarded.",
+                &no_ctx()
+            ),
+            CheckResult::Pass
+        );
         assert!(
             str_of(&check(
                 "- Ledger store: Postgres over SQLite.\n- Ledger migration ships Friday.\n- Nadia owns the rollback plan.\n- User had a good weekend.",
@@ -1299,6 +1313,22 @@ mod tests {
             ),
             CheckResult::Pass
         );
+        // The transcript says "explicitly not doing Zendesk"; a distillation
+        // that words the refusal as turned down, vetoed, or ruled out has
+        // recorded it just as fully — missing those graded the paraphrase as
+        // the inversion failure.
+        for paraphrase in [
+            "- Zendesk importer turned down for this quarter; the effort goes to the ledger migration instead.",
+            "- The Zendesk importer was vetoed; effort stays on the ledger migration.",
+            "- Zendesk importer ruled out this quarter; the ledger migration takes the effort.",
+            "- We passed on the Zendesk importer; the ledger migration gets the quarter.",
+        ] {
+            assert_eq!(
+                check(paraphrase, &no_ctx()),
+                CheckResult::Pass,
+                "{paraphrase}"
+            );
+        }
         assert!(
             str_of(&check(
                 "- Zendesk importer scheduled and scoped; supports tickets and users.",

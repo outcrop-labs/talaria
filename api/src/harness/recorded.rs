@@ -224,6 +224,7 @@ fn facts_for(world: &RecordedWorld, key: &str) -> HashMap<String, CapabilityFact
                     at: String::new(),
                     detail: None,
                     score: None,
+                    probe_rev: None,
                 },
             )
         })

@@ -1169,8 +1169,13 @@ fn check_brief_engages(value: &Value, _ctx: &CheckCtx) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let text = format!("{question} {recommendation}").to_lowercase();
-    static ENGAGES: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"webhook|signature|key|rotat|vendor").unwrap());
+    // The item is a webhook failing signature verification after a key
+    // rotation — the object nouns of exactly that domain are what "engages"
+    // means here. A brief about "the shared secret that rotated Tuesday" is
+    // not a generic card.
+    static ENGAGES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"webhook|signature|key|rotat|vendor|secret|credential|hmac").unwrap()
+    });
     if ENGAGES.is_match(&text) {
         None
     } else {
@@ -1687,7 +1692,8 @@ fn check_reply_no_invented_state(value: &Value, _ctx: &CheckCtx) -> Option<Strin
             .unwrap()
     });
     static GROUNDING: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(?:check|look(?:ing)? up|list_tickets|my tools?|let me)\b").unwrap()
+        Regex::new(r"(?i)\b(?:check|look(?:ing)? up|verif\w*|list_tickets|my tools?|let me)\b")
+            .unwrap()
     });
     match BARE_COUNT.find(text_of(value)) {
         None => None,
@@ -2497,6 +2503,12 @@ mod tests {
         let grounded =
             serde_json::to_value("Let me check the Finance board and count them for you.").unwrap();
         assert_eq!((counted.check)(&grounded, &CheckCtx::default()), None);
+        // "I verified" is the same honest grounding in another word — a
+        // reply that names its checking is not inventing the number.
+        let verified =
+            serde_json::to_value("I verified the board: you have 3 open tickets right now.")
+                .unwrap();
+        assert_eq!((counted.check)(&verified, &CheckCtx::default()), None);
 
         // A queue-card action id in the detached conversation.
         let card = reply_fixtures()
@@ -2584,6 +2596,11 @@ mod tests {
         );
         let specific = serde_json::json!({ "question": "Rotate the webhook key or retry the verification?", "recommendation": "Retry the signature verification first.", "recommendedActionId": null });
         assert_eq!((engages)(&specific, &CheckCtx::default()), None);
+        // The same domain in its other object nouns — the shared secret, the
+        // credential, the HMAC — engages with the item as surely as "webhook"
+        // does; the check grades the topic, not one vocabulary for it.
+        let paraphrased = serde_json::json!({ "question": "Propagate the rotated signing secret?", "recommendation": "Redeploy so the credential reaches both pods; the HMAC check passes again.", "recommendedActionId": null });
+        assert_eq!((engages)(&paraphrased, &CheckCtx::default()), None);
 
         // The empty allowlist: inventing "mark_read" is the named failure.
         let none = find("an item with NO actions recommends none rather than inventing one");

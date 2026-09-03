@@ -1366,13 +1366,36 @@ fn check_gap_no_repeat(value: &[String], _ctx: &CheckCtx) -> Option<String> {
     if let Some(p) = plan_is_useful(value, Q_MANAGED, 1, 2) {
         return Some(p);
     }
+    // THE ANSWERED GROUND, named twice: once as round one's query string
+    // (re-issued verbatim), once as the research question re-asked with its
+    // filler dropped — "which managed postgres providers support logical
+    // replication" is the commonest repeat and matches neither literal, so
+    // until the containment check it re-trod the findings for free.
     static REPEAT: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?i)managed postgres logical replication support").unwrap());
-    if value.iter().any(|q| REPEAT.is_match(q.trim())) {
-        Some("reissued a query the findings already answered verbatim".to_string())
+    if value
+        .iter()
+        .any(|q| REPEAT.is_match(q.trim()) || question_again(q, Q_MANAGED))
+    {
+        Some("reissued a query the findings already answered".to_string())
     } else {
         None
     }
+}
+
+/// A query that IS the research question again, filler dropped: it carries the
+/// question's own tokens — all but a few — where a query with somewhere new
+/// to go (a provider the findings missed, an aspect they skipped) has to spend
+/// its words on the new ground instead. THE BOUNDARY, not a topic overlap: a
+/// query about Aurora or about row-size limits shares the topic with the
+/// question but cannot carry the question's own content words, so containment
+/// is what separates a repeat from a legitimate follow-up.
+fn question_again(q: &str, question: &str) -> bool {
+    let want = normalized(question);
+    let have = normalized(q);
+    let want: std::collections::HashSet<&str> = want.split_whitespace().collect();
+    let kept = have.split_whitespace().filter(|t| want.contains(t)).count();
+    want.len().saturating_sub(kept) <= 4
 }
 
 fn check_unanswerable(value: &[String], _ctx: &CheckCtx) -> Option<String> {
@@ -2921,6 +2944,39 @@ mod tests {
             ),
             vec!["PG17  failover".to_string(), "second angle".to_string()]
         );
+    }
+
+    #[test]
+    fn a_gap_round_reasking_the_question_is_a_repeat_even_with_filler_dropped() {
+        // THE COMMONEST REPEAT is the research question re-asked as a query
+        // with its filler dropped — neither literal caught it, so it re-trod
+        // the findings for free. Containment of the question's own words is
+        // the boundary, and it holds in both directions.
+        let repeat = vec![
+            "which managed postgres providers support logical replication".to_string(),
+            "rds logical replication external subscriber limits".to_string(),
+        ];
+        assert_eq!(
+            check_gap_no_repeat(&repeat, &ctx()),
+            Some("reissued a query the findings already answered".to_string())
+        );
+        // Round one's own query string, re-issued verbatim.
+        let verbatim = vec![
+            "managed postgres logical replication support".to_string(),
+            "rds logical replication external subscriber limits".to_string(),
+        ];
+        assert_eq!(
+            check_gap_no_repeat(&verbatim, &ctx()),
+            Some("reissued a query the findings already answered".to_string())
+        );
+        // NEW ground — a provider the findings never covered, an aspect they
+        // skipped. Same topic, but a query going somewhere new cannot carry
+        // the question's own content words, so containment stays quiet.
+        let fresh = vec![
+            "does aurora serverless v2 support logical replication".to_string(),
+            "rds logical replication row size limit".to_string(),
+        ];
+        assert_eq!(check_gap_no_repeat(&fresh, &ctx()), None);
     }
 
     // ── the search stage ─────────────────────────────────────────────────────

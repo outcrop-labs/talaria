@@ -36,7 +36,10 @@
 // `CheckCall`/`CheckCtx` in define.rs's fixture-floor section), while the dry
 // run states its own numbers — the turn budget and the benched tool list —
 // rather than deriving them; the rationale for both sits on the declaration
-// itself, below.
+// itself, below. THE ONE THING THEY SHARE IS THE WORLD: the dry run's board is
+// rendered from the fixture input the prompt renders from (`world_tickets`),
+// because a prompt that quotes tickets the tools do not recognize is grading
+// our contradiction, not the model.
 
 use std::sync::{Arc, OnceLock};
 
@@ -160,6 +163,65 @@ pub fn check_in_prompt(input: &OutreachCheckInInput, widened: bool) -> String {
         "[Automated periodic check-in — no human sent this message.]\n\nThis is your chance to be proactive: look at your current work and surface anything a teammate genuinely needs to know. Act through your talaria tools — `comment` on a ticket, `post_to_channel`, or `message_user` to reach someone directly. Then reply with ONE short line saying what you did and why.\n\nYour assigned tickets:\n{work_lines}\n\nYour recent outreach (do NOT repeat any of this):\n{recent_lines}\n\nRules:\n{rules}",
         rules = rules.join("\n"),
     )
+}
+
+// ── The board the tools answer from ──────────────────────────────────────────
+
+/// The prose `get_ticket` hands back. Keyed by (id, title) rather than id
+/// alone because t-77 is two different tickets in two different fixtures, each
+/// internally consistent; unknown pairs fall through to the title itself, so
+/// the board can never contradict the prompt — only say less.
+fn ticket_description(t: &OutreachTicket) -> String {
+    match (t.id.as_str(), t.title.as_str()) {
+        ("t-41", "Ledger migration") => "Move the ledger from SQLite to Postgres.".into(),
+        ("t-77", "Vendor webhook signature check") => {
+            "The vendor rejects our webhook signature; the new signing key has to go live before checks pass again.".into()
+        }
+        ("t-77", "Rotate the production Stripe key") => {
+            "The production Stripe key is due for rotation.".into()
+        }
+        ("t-78", "Backfill the audit log") => {
+            "Backfill the audit log with the rows the ledger migration skipped.".into()
+        }
+        ("t-90", "Add the export endpoint") => {
+            "Add the CSV export endpoint to the reporting API.".into()
+        }
+        _ => format!("{} — no further detail on the board.", t.title),
+    }
+}
+
+/// THE BOARD IS THE PROMPT'S OWN WORK LIST, rendered again as the sandbox's
+/// tickets — the dry run below hands this to the sweep as its world override,
+/// and the sweep evaluates it against the same fixture input the prompt
+/// renders from. One source, so the two cannot drift.
+///
+/// THIS REPLACES A REAL DEFECT: these fixtures used to run against
+/// `base_world()` unchanged, whose t-77 is a different ticket than the one
+/// two fixtures describe and whose board has no t-78 or t-90 at all. A model
+/// that looked a ticket up before reporting — the exact diligence this
+/// feature wants — was handed a contradiction or a not-found, and the sweep's
+/// outreach failures carried the tool-error signature of that contradiction
+/// rather than any judgement the fixtures were about to grade.
+fn world_tickets(input: &Value) -> Value {
+    let oi: OutreachCheckInInput = serde_json::from_value(input.clone()).unwrap_or_default();
+    let tickets: Vec<Value> = oi
+        .work
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id,
+                "boardId": "b-platform",
+                "title": t.title,
+                "description": ticket_description(t),
+                "status": t.status,
+                "priority": "high",
+                "assignees": ["engineer-engineering"],
+                "labels": [],
+                "comments": [],
+            })
+        })
+        .collect();
+    serde_json::json!({ "tickets": tickets })
 }
 
 // ── The behavioural half of the fixtures ─────────────────────────────────────
@@ -686,15 +748,16 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
         // invitation to do exactly that. Eight covers the observed tail and
         // no more.
         max_turns: Some(8),
-        // SEVEN OF FORTY-SIX, and the deviation is deliberate — the same
-        // argument work-session states. Production hands the persona its
-        // whole MCP surface; benching that would measure a model's tolerance
-        // for thirty-nine irrelevant options rather than whether it knows
-        // when to stay quiet. These seven are what the job needs plus the
-        // escape hatch whose MISUSE is a thing worth measuring.
+        // SEVEN OF FIFTY-FIVE (the catalog count `TALARIA_TOOLS.len()` pins),
+        // and the deviation is deliberate — the same argument work-session
+        // states. Production hands the persona its whole MCP surface; benching
+        // that would measure a model's tolerance for forty-eight irrelevant
+        // options rather than whether it knows when to stay quiet. These seven
+        // are what the job needs plus the escape hatch whose MISUSE is a
+        // thing worth measuring.
         //
         // IT IS STILL A DEVIATION, and it cuts one way: a model that picks
-        // correctly from seven may not from forty-six. This surface is the
+        // correctly from seven may not from fifty-five. This surface is the
         // floor of the claim, never the ceiling.
         tools: vec![
             "comment",
@@ -705,7 +768,11 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
             "list_teammates",
             "report_gap",
         ],
-        world: None,
+        // The tickets the tools answer from, rendered from the same fixture
+        // input the prompt renders from — `world_tickets` above. One source,
+        // so a model that verifies what the prompt told it is never graded on
+        // a contradiction of our making.
+        world: Some(Arc::new(world_tickets)),
         workspace: None,
         credentials: None,
     });
@@ -715,6 +782,7 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fitness::toolbox::world::SandboxWorld;
     use crate::harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
     };
@@ -978,6 +1046,48 @@ mod tests {
         )
         .unwrap();
         assert!(msg.starts_with("the answer never engages"), "{msg}");
+    }
+
+    #[test]
+    fn the_board_the_tools_answer_from_is_the_board_the_prompt_quoted() {
+        // ONE SOURCE, AND THIS IS THE PIN: for every fixture, the sandbox's
+        // tickets are the prompt's own work list — same ids, same titles, same
+        // statuses, no more and no fewer. Before `world_tickets` these
+        // fixtures ran against `base_world()` unchanged, and a model that
+        // looked up the ticket the prompt named got a different ticket back
+        // (t-77) or a not-found (t-78, t-90).
+        for fixture in fixtures() {
+            let oi: OutreachCheckInInput =
+                serde_json::from_value(fixture.input.clone()).expect("fixture input parses");
+            let world = SandboxWorld::from_value(&world_tickets(&fixture.input))
+                .expect("the rendered board deserializes");
+            assert_eq!(
+                world.tickets.len(),
+                oi.work.len(),
+                "{}: the board carries exactly the prompt's work list",
+                fixture.name
+            );
+            for t in &oi.work {
+                let board = world
+                    .tickets
+                    .iter()
+                    .find(|w| w.id == t.id)
+                    .unwrap_or_else(|| {
+                        panic!("{}: {} is missing from the board", fixture.name, t.id)
+                    });
+                assert_eq!(board.title, t.title, "{}: {}", fixture.name, t.id);
+                assert_eq!(board.status, t.status, "{}: {}", fixture.name, t.id);
+                // The board the ticket sits on exists in the base world the
+                // override merges onto, under the name the prompt quotes.
+                assert_eq!(board.board_id, "b-platform", "{}: {}", fixture.name, t.id);
+                assert!(!board.description.is_empty(), "{}: {}", fixture.name, t.id);
+            }
+        }
+        // An empty work list is an empty board — "(no assigned tickets)" in
+        // the prompt is "(no tickets)" from `list_tickets`, not a different
+        // story the tools tell.
+        let bare = world_tickets(&json!({ "work": [], "recent": [] }));
+        assert_eq!(SandboxWorld::from_value(&bare).unwrap().tickets.len(), 0);
     }
 
     #[test]

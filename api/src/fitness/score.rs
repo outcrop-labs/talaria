@@ -1702,6 +1702,7 @@ mod tests {
             at: "2026-08-01T00:00:00.000Z".to_string(),
             detail: None,
             score: Some(if value { 1.0 } else { 0.0 }),
+            probe_rev: Some(0),
         }
     }
 

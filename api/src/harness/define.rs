@@ -352,6 +352,12 @@ pub type PreFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
 /// the redaction re-check, and this module imports no database by
 /// construction. A verify that needs to ask the database whether an id exists
 /// is a check for the caller, not for the contract.
+///
+/// THE FIRST `&Value` IS THE MODEL'S PARSED REPLY, the second the harness
+/// input. The pair is positional, looks interchangeable, and is not: the
+/// json-strict probe once bound them the other way round and its check read
+/// `Value::Null` — failing every reply every model gave while the schema
+/// beside it passed — so the order is pinned here and by test.
 pub type VerifyFn =
     Arc<dyn Fn(&Value, &Value, &RenderContext) -> Result<Option<String>, String> + Send + Sync>;
 

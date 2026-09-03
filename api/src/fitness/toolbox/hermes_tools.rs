@@ -81,14 +81,6 @@ pub fn hermes_tools() -> Vec<ToolDefinition> {
     ]
 }
 
-/// JS `.length` on a string — UTF-16 code units, not bytes. The tool SAYS
-/// "bytes" but reports `.length`, and the dry-run fixtures' expected numbers
-/// are UTF-16 lengths — the number has to agree with those rather than with
-/// the word.
-fn js_len(s: &str) -> usize {
-    s.encode_utf16().count()
-}
-
 /// A fresh workspace. Nothing it touches outlives the returned value. The
 /// oracle rides along from the def's `DryRunDecl::workspace` — the fixture's
 /// own definition of "the tests are green", applied to the files as they
@@ -151,7 +143,7 @@ impl WorkbenchSandbox {
     fn handle(&mut self, tool: &str, a: &Value) -> Result<Value, ToolRefusal> {
         match tool {
             "list_files" => Ok(json!({ "files": self.files.iter()
-                .map(|f| json!({ "path": f.path, "bytes": js_len(&f.content) }))
+                .map(|f| json!({ "path": f.path, "bytes": f.content.len() }))
                 .collect::<Vec<_>>() })),
 
             "read_file" => {
@@ -210,7 +202,7 @@ impl WorkbenchSandbox {
                         content: content.to_string(),
                     }),
                 }
-                Ok(json!({ "ok": true, "path": path, "bytes": js_len(content) }))
+                Ok(json!({ "ok": true, "path": path, "bytes": content.len() }))
             }
 
             "run_tests" => {

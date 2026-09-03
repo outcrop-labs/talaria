@@ -296,6 +296,13 @@ pub const STOP_KEY: &str = "model_fitness_stop";
 pub const STATUS_KEY: &str = "model_fitness_status";
 pub const BUDGET_KEY: &str = "model_fitness_budget";
 
+/// THE CACHED HEALTH BAND. `health_summary` folds one record per kept
+/// candidate, the matrix is polled every three seconds while a sweep is in
+/// flight, and the archive changes in exactly three places — a run finishing,
+/// Clear, Forget — so the fold is stamped at those moments (`stamp_health_band`)
+/// and the matrix reads this one small row instead of re-folding on every poll.
+pub const HEALTH_KEY: &str = "model_fitness_health";
+
 /// The settings row one model's full report lives under.
 pub fn record_key(model: &str) -> String {
     format!("model_fitness_report:{model}")
@@ -1778,6 +1785,11 @@ pub fn capabilities_of(
             at,
             detail: None,
             score: None,
+            // The view's facts arrive through `get_capabilities`, which has
+            // already dropped superseded ones — anything reaching here is
+            // current, and the reconstruction has no revision of its own to
+            // claim.
+            probe_rev: None,
         };
         if let Some(d) = &view.view.detail {
             fact.detail = Some(d.clone());
@@ -2790,6 +2802,11 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         ))
         .await?;
 
+        // THE BAND, STAMPED WHILE THE RUN STILL HOLDS THE PEN. Record, index
+        // and evictions all landed in the lines above, so this is the one
+        // moment the fold reflects what the admin is about to be shown.
+        stamp_health_band(&deps).await;
+
         write_status(
             FitnessRunStatus {
                 state: FitnessRunState::Done,
@@ -3124,8 +3141,33 @@ pub struct MatrixView {
     pub runs: Vec<Value>,
     pub max: usize,
     pub full: bool,
+    /// THE CACHED BAND — the counts off the health fold, without the
+    /// per-fixture detail. A fixture every tested model got wrong is a bug of
+    /// ours wearing a model's name, and the default tab is the one an admin
+    /// actually watches; without this field that number lived one click away
+    /// on a tab nobody opens until they already suspect the harness. Read from
+    /// [`HEALTH_KEY`], never folded here (see that key).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthBand>,
     pub thresholds: Thresholds,
     pub registry: MatrixRegistry,
+}
+
+/// The counts off [`crate::fitness::health::HealthSummary`], small enough to
+/// ride the polled matrix payload: the chip, not the health view.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthBand {
+    /// Candidates the band was folded over. Two is the minimum for any
+    /// conclusion the suspicion arithmetic can reach.
+    pub models: usize,
+    /// Fixtures every model that ran them got wrong — plus every fixture that
+    /// reported it could not fairly ask, which is ours at any count. THE
+    /// NUMBER: it counts our own bugs, to be worked to zero rather than
+    /// explained.
+    pub ours: usize,
+    /// Fixtures most models got wrong — hard for everyone, not obviously ours.
+    pub shared: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3237,6 +3279,56 @@ pub struct TranscriptView {
     pub cases: Vec<crate::fitness::transcripts::Transcript>,
 }
 
+/// THE HEALTH FOLD, in one place: every record the index still keeps, read and
+/// upgraded exactly as the wire serves it. The health view calls it per open;
+/// `stamp_health_band` calls it whenever the archive changes — the same
+/// archive, so the chip and the tab can never disagree about the number.
+async fn health_summary(
+    deps: &SurfaceDeps,
+) -> Result<crate::fitness::health::HealthSummary, String> {
+    let index = read_index(deps).await?;
+    let mut records: Vec<FitnessRecord> = Vec::new();
+    for id in index.keys() {
+        if let Some(rec) = upgrade_record(
+            deps.setting::<Option<FitnessRecord>>(&record_key(id), None)
+                .await
+                .unwrap_or(None),
+        ) {
+            records.push(rec);
+        }
+    }
+    let runs: Vec<crate::fitness::health::HealthInput<'_>> = records
+        .iter()
+        .map(|rec| crate::fitness::health::HealthInput {
+            model: &rec.model,
+            cases: &rec.cases,
+        })
+        .collect();
+    Ok(crate::fitness::health::summarize(&runs))
+}
+
+/// Stamp the cached band after the archive changed. BEST EFFORT BY DESIGN:
+/// every caller has already done its durable work, so a band that could not be
+/// stamped is a chip one archive-write stale, rewritten by the next one —
+/// never a reason to fail the action that caused it.
+async fn stamp_health_band(deps: &SurfaceDeps) {
+    let Ok(summary) = health_summary(deps).await else {
+        return;
+    };
+    let band = HealthBand {
+        models: summary.models.len(),
+        ours: summary.ours,
+        shared: summary.shared,
+    };
+    // ALWAYS WRITTEN, ZEROS INCLUDED — a healed archive has to clear the chip,
+    // not leave yesterday's count standing.
+    let _ = ((deps.write_setting)(
+        HEALTH_KEY.to_string(),
+        serde_json::to_value(&band).expect("a band of counts serializes"),
+    ))
+    .await;
+}
+
 /// The GET verb's answer. `Err` is a 400 with a sentence — the route maps it;
 /// nothing here knows about codes.
 pub async fn read_fitness(
@@ -3283,25 +3375,7 @@ pub async fn read_fitness(
         // fixture from a hard one. Its own request: it reads one record per
         // tested candidate, and the matrix is polled every three seconds while
         // a run is in flight.
-        let index = read_index(deps).await?;
-        let mut records: Vec<FitnessRecord> = Vec::new();
-        for id in index.keys() {
-            if let Some(rec) = upgrade_record(
-                deps.setting::<Option<FitnessRecord>>(&record_key(id), None)
-                    .await
-                    .unwrap_or(None),
-            ) {
-                records.push(rec);
-            }
-        }
-        let runs: Vec<crate::fitness::health::HealthInput<'_>> = records
-            .iter()
-            .map(|rec| crate::fitness::health::HealthInput {
-                model: &rec.model,
-                cases: &rec.cases,
-            })
-            .collect();
-        let body = crate::fitness::health::summarize(&runs);
+        let body = health_summary(deps).await?;
         return serde_json::to_value(&body).map_err(|e| e.to_string());
     }
 
@@ -3362,18 +3436,30 @@ pub async fn read_fitness(
         return read_fitness_detail(query, deps).await;
     }
 
-    let (models, index, runs_view, shape) = tokio::join!(
+    let body = matrix_view(deps).await?;
+    serde_json::to_value(&body).map_err(|e| e.to_string())
+}
+
+/// The default view, split out of `read_fitness` for the same reason as
+/// `read_fitness_detail`: it is the one branch a store test can drive
+/// end-to-end, without the live pool the transcripts branch beside it needs.
+async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
+    let (models, index, runs_view, shape, band) = tokio::join!(
         model_rows(deps),
         // RAW for the wire field — a stored index entry's keys ride jsonb's
         // canonical order and a typed struct would re-serialize them in
         // declaration order (see `fitness_runs`).
         read_index_raw(deps),
         fitness_runs(deps),
-        tier2_shape(None, deps)
+        tier2_shape(None, deps),
+        // THE CACHED BAND, NOT THE FOLD — one small row stamped by the last
+        // archive write (see `HEALTH_KEY`). Reading records here would put one
+        // archived report behind every three-second poll.
+        deps.setting::<Option<HealthBand>>(HEALTH_KEY, None)
     );
     let shape = shape?;
     let runs_view = runs_view?;
-    let body = MatrixView {
+    Ok(MatrixView {
         slots: slot_views(),
         models: models?,
         index: index?,
@@ -3382,6 +3468,8 @@ pub async fn read_fitness(
         runs: runs_view.runs,
         max: runs_view.max,
         full: runs_view.full,
+        // A read that fails is no band, not no page.
+        health: band.unwrap_or(None),
         thresholds: thresholds(),
         registry: MatrixRegistry {
             harnesses: shape.harnesses.len(),
@@ -3394,8 +3482,7 @@ pub async fn read_fitness(
                 .map(|h| h.def.id.to_string())
                 .collect(),
         },
-    };
-    serde_json::to_value(&body).map_err(|e| e.to_string())
+    })
 }
 
 /// The detail view, split out of `read_fitness` only because it is the one
@@ -3844,6 +3931,10 @@ pub async fn clear_fitness_results(
         serde_json::to_value(&rest).map_err(|e| e.to_string())?,
     ))
     .await?;
+    // The band is folded from this archive, so it goes stale the moment the
+    // wipe lands — an admin who cleared everything BECAUSE the fixtures were
+    // broken must not keep reading yesterday's count on the way out.
+    stamp_health_band(deps).await;
     let transcripts = match model {
         None => ((deps.clear_transcripts)(None)).await.unwrap_or(0),
         Some(_) => ((deps.clear_transcripts)(targets.first().cloned()))
@@ -3911,6 +4002,11 @@ pub async fn forget_model(model: &str, deps: &SurfaceDeps) -> Result<ForgetOk, S
             serde_json::to_value(&rest).map_err(|e| e.to_string())?,
         ))
         .await?;
+        // Dropping one model can flip the band both ways — a fixture only that
+        // model failed stops being ours; a fixture only two models ran drops
+        // below the count the suspicion arithmetic needs. Restamped, not
+        // recomputed on read, for the same poll-cost reason as everywhere else.
+        stamp_health_band(deps).await;
     }
     Ok(ForgetOk {
         keys,
@@ -3982,6 +4078,7 @@ mod tests {
             at: "2026-08-01T00:00:00.000Z".into(),
             detail: None,
             score: None,
+            probe_rev: Some(0),
         }
     }
 
@@ -4000,6 +4097,7 @@ mod tests {
             at: at.into(),
             detail: detail.map(String::from),
             score,
+            probe_rev: None,
         }
     }
 
@@ -5361,7 +5459,10 @@ mod tests {
 
     fn forget_deps(forgotten: Arc<Mutex<Vec<String>>>, s: Store) -> SurfaceDeps {
         let mut d = panic_deps();
-        let catalog = vec![gm("qwen3-14b", &["spark", "local"], false)];
+        let catalog = vec![
+            gm("qwen3-14b", &["spark", "local"], false),
+            gm("spark/other", &["spark"], true),
+        ];
         d.models = Arc::new(move || {
             let c = catalog.clone();
             Box::pin(async move { Ok(c) })
@@ -5434,6 +5535,163 @@ mod tests {
             .map(|k| k.as_str())
             .collect();
         assert_eq!(keys, vec!["other-model"]);
+    }
+
+    // ── The health band ─────────────────────────────────────────────────────
+
+    /// A case that reached a verdict and got it wrong — the shape the fold
+    /// counts as tested-and-failed, on whatever harness::case name it is given.
+    fn failing(harness: &str, name: &str) -> EvalCaseScore {
+        let mut c = case(name);
+        c.harness = harness.into();
+        c.task = TaskVerdict::Fail;
+        c.task_error = Some("the checker matched nothing".into());
+        c
+    }
+
+    /// An archived model: a full record under `record_key`, an index entry
+    /// beside it — the two rows the fold reads.
+    fn archived(s: &Store, model: &str, cases: Vec<EvalCaseScore>) {
+        let rec = FitnessRecord {
+            model: model.into(),
+            at: NOW.into(),
+            tiers: vec![TierId::Evals],
+            report: report(),
+            harnesses: Vec::new(),
+            cases,
+            dropped_cases: 0,
+            probes: None,
+            adversarial: None,
+            tier_at: HashMap::new(),
+            sweep: FitnessSweepSummary {
+                state: "done".into(),
+                done: 1,
+                total: 1,
+                error: None,
+                unfixtured: Vec::new(),
+                concurrency: SweepConcurrency {
+                    requested: 1,
+                    ended: 1,
+                    low: 1,
+                    narrowed_because: None,
+                },
+            },
+        };
+        put(s, &record_key(model), serde_json::to_value(&rec).unwrap());
+        let mut idx = match get(s, INDEX_KEY) {
+            Some(v) => serde_json::from_value(v).unwrap(),
+            None => FitnessIndex::new(),
+        };
+        idx.insert(model.into(), entry(model, NOW));
+        put(s, INDEX_KEY, serde_json::to_value(&idx).unwrap());
+    }
+
+    fn band_of(s: &Store) -> HealthBand {
+        serde_json::from_value(get(s, HEALTH_KEY).expect("the band row exists")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_run_that_finishes_stamps_the_archive_health_band() {
+        // The situation the band exists for: one fixture every archived model
+        // got wrong, which is a bug of ours wearing a model's name. The run
+        // finishing is when the fold is paid for; the matrix reads the row.
+        //
+        // The seeded models are CATALOG ids on purpose: `read_index`
+        // canonicalizes through the gateway, and the band folds exactly what
+        // the health tab folds — an archived model nothing serves any more
+        // stops counting in both, never in just one of them.
+        let _sole = sole_runs().await;
+        let s = store();
+        archived(&s, "spark/m1", vec![failing("h", "trap")]);
+        archived(&s, "spark/m2", vec![failing("h", "trap")]);
+        let (_open, gate) = tokio::sync::watch::channel(true);
+        let d = run_deps(&s, &gate, NOW);
+        run_fitness(
+            StartOptions {
+                model: "spark/a".into(),
+                tiers: vec![TierId::Probes],
+                adversary_model: None,
+                only: None,
+                restart: false,
+                reprobe: false,
+                concurrency: None,
+                retry_failed: false,
+                supplement: false,
+            },
+            Arc::new(d),
+        )
+        .await;
+        let band = band_of(&s);
+        // m1, m2, and the model whose run just finished.
+        assert_eq!((band.models, band.ours, band.shared), (3, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn clearing_results_restamps_the_band_rather_than_leaving_the_old_count() {
+        // Clear is what an admin presses BECAUSE the fixtures were broken; the
+        // count that motivated it must not survive the wipe it asked for.
+        let w = clear_world(&["a/model", "b/model"]);
+        archived(&w.s, "a/model", vec![failing("h", "trap")]);
+        archived(&w.s, "b/model", vec![failing("h", "trap")]);
+        // The band a run stamped while both archives stood.
+        put(
+            &w.s,
+            HEALTH_KEY,
+            json!({ "models": 2, "ours": 1, "shared": 0 }),
+        );
+        clear_fitness_results(None, &clear_deps(&w)).await.unwrap();
+        let band = band_of(&w.s);
+        assert_eq!((band.models, band.ours, band.shared), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn forgetting_an_archived_model_restamps_the_band() {
+        // Dropping one of the two models that failed the fixture leaves it
+        // tested once — under the fold's two-model floor, which means NOT
+        // ours. The chip has to follow the archive down, not keep the count
+        // the forgotten model earned.
+        let s = store();
+        archived(&s, "qwen3-14b", vec![failing("h", "trap")]);
+        archived(&s, "spark/other", vec![failing("h", "trap")]);
+        put(
+            &s,
+            HEALTH_KEY,
+            json!({ "models": 2, "ours": 1, "shared": 0 }),
+        );
+        forget_model(
+            "qwen3-14b",
+            &forget_deps(Arc::new(Mutex::new(Vec::new())), s.clone()),
+        )
+        .await
+        .unwrap();
+        let band = band_of(&s);
+        assert_eq!((band.models, band.ours), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn the_matrix_carries_the_cached_band_without_folding_the_archive() {
+        // No records are read here at all — the row is what a poll costs, and
+        // absent means absent: a store that never stamped a band must not grow
+        // a zero one on read.
+        let s = store();
+        let mut d = view_deps(&s);
+        d.harnesses = Arc::new(|| Box::pin(async { Ok(Vec::new()) }));
+        d.mcp_servers = Arc::new(|| Box::pin(async { Ok(Vec::new()) }));
+        d.platform_supply = Arc::new(|| Box::pin(async { Ok(Vec::new()) }));
+        assert_eq!(matrix_view(&d).await.unwrap().health, None);
+        put(
+            &s,
+            HEALTH_KEY,
+            json!({ "models": 2, "ours": 1, "shared": 0 }),
+        );
+        assert_eq!(
+            matrix_view(&d).await.unwrap().health,
+            Some(HealthBand {
+                models: 2,
+                ours: 1,
+                shared: 0
+            })
+        );
     }
 
     #[tokio::test]
