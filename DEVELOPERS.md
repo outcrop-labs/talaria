@@ -134,7 +134,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 
 | Doc | What it covers |
 |---|---|
-| [`docs/api/`](./docs/api/README.md) | **frozen at the TS→Rust cutover** — the HTTP API reference, one table per route; maintained by hand until its extractor moves to the Rust routes (#293) |
+| [`docs/api/`](./docs/api/README.md) | **generated** — the HTTP API reference, one file per resource group, extracted from the Rust routes (`bun run docs:api`; drift fails `bun run check`) |
 | [`docs/sdk/`](./docs/sdk/README.md) | The complete `@talaria/sdk` docset: UI kit, client, server, MCP, harnesses |
 | [`docs/SDK.md`](./docs/SDK.md) | Redirect stub → `docs/sdk/` (old links survive) |
 | [`docs/APPS.md`](./docs/APPS.md) | Building apps: anatomy, lifecycle, marketplace, publishing |
@@ -165,6 +165,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 |---|---|
 | [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) | How the API is written |
 | [`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) | How the UI is written |
+| [`docs/AGENT-TOOLING.md`](./docs/AGENT-TOOLING.md) | Agent tooling: AGENTS.md, the skills, the stop gate — how every harness consumes them |
 | [`docs/design/mercury-spec.md`](./docs/design/mercury-spec.md) | The Mercury design system spec |
 | [`ui/README.md`](./ui/README.md) | The app: stack, auth surface, data + infra |
 | [`ui/ANIMATIONS.md`](./ui/ANIMATIONS.md) | The animation inventory |
@@ -179,6 +180,9 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`docs/WORKTREES.md`](./docs/WORKTREES.md) | Parallel-branch dev stacks |
 | [`docs/DEVBOX.md`](./docs/DEVBOX.md) | Devboxes: a containerized dev environment per task, with the agent CLIs inside |
 | [`scripts/skills/`](./scripts/skills) | The repo's agent skills: subagent-driven development (2-stage review), the talaria toolkit playbook, workbench driving |
+| [`AGENTS.md`](./AGENTS.md) | Agent instructions — the canonical file for anyone (or anything) coding here: rules, commands, environment facts, traps; `CLAUDE.md` forwards to it |
+| [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, cut-release — plain markdown, natively discovered by Claude Code and opencode |
+| [`scripts/hooks/`](./scripts/hooks) | The gate-hook library: one contract (silent pass / exit-2 block with reason) any harness, git hook, or CI can invoke |
 
 ### For people who use Talaria, not run it
 

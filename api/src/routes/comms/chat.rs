@@ -15,19 +15,20 @@ use crate::chat_persist::{
     PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream,
 };
 use crate::conversations::{
-    accessible_conversation, active_streaming_assistant, create_conversation,
+    accessible_conversation, active_streaming_assistant, create_conversation, hold_ticket_message,
     insert_streaming_assistant, insert_user_message, list_plan_members, next_seq, prior_messages,
     title_from, touch_conversation,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::fleet::{routed_model_for, usable_agent_gate};
 use crate::gateway::fleet_chat::{chat_payload, proxy_chat};
+use crate::mentions::Mentionee;
 use crate::model::efforts::efforts_for_model;
 use crate::notify::{NotifyDeps, fan_conversation_event};
 use crate::permissions::has_perm;
 use crate::persona::persona_configured_effort;
 use crate::plan_doc::{PLAN_MODE_PROMPT, plan_routing_block};
-use crate::realtime::RealtimeDeps;
+use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
 use crate::refs::{MessageRef, RefUser, resolve_refs};
 use crate::research::{
     RESEARCH_MODE_PROMPT, RESEARCH_WORKING_PROMPT, awaiting_scope_answer, list_research_members,
@@ -40,6 +41,10 @@ use crate::runs::decide::{DecideArgs, DecideResult, decide};
 use crate::runs::real_decide_deps;
 use crate::session::require_user;
 use crate::state::AppState;
+use crate::ticket_chat::{
+    TICKET_MODE_PROMPT, TicketMeta, recent_turns, ticket_context_block, ticket_for_conversation,
+    ticket_message_relevant,
+};
 use crate::uploads::{
     attachment_as_data_url, attachment_text_blocks, is_image, resolve_attachments,
 };
@@ -58,7 +63,7 @@ struct ChatBody {
     effort: Option<String>,
     attachment_ids: Option<Vec<String>>,
     refs: Option<Vec<MessageRef>>,
-    kind: Option<String>, // 'chat' | 'plan' | 'research'
+    kind: Option<String>, // 'chat' | 'plan' | 'research' | 'ticket'
     template_id: Option<String>,
     queue: bool,
 }
@@ -93,7 +98,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
             Some(out)
         }
     };
-    let kind = optional_enum_member(obj, "kind", &["chat", "plan", "research"])?;
+    let kind = optional_enum_member(obj, "kind", &["chat", "plan", "research", "ticket"])?;
     let template_id = optional_uuid_member(obj, "templateId")?;
     let queue = optional_boolean_member(obj, "queue")?.unwrap_or(false);
     Ok(ChatBody {
@@ -148,6 +153,9 @@ pub async fn post(
     // Which research prompt this conversation's agent speaks with, set while
     // resolving the conversation below — None everywhere but research.
     let mut research_prompt: Option<&'static str> = None;
+    // The ticket room a conversation is attached to, resolved the same way —
+    // None everywhere but ticket threads.
+    let mut ticket_meta: Option<TicketMeta> = None;
     if let Some(cid) = conv_id.as_deref() {
         let conv = match accessible_conversation(&state.pg, &user.id, cid).await {
             Ok(c) => c,
@@ -173,6 +181,15 @@ pub async fn post(
                 .await
                 .map(|m| m.len() > 1)
                 .unwrap_or(false);
+        } else if kind == "ticket" {
+            // THE ROOM THE THREAD IS ATTACHED TO, read once for everything
+            // below: the fans, the prompt, the gates. Always multi-voice —
+            // the room is the task's board, and the speakers are whoever is
+            // on it. A task deleted under its thread resolves to None and
+            // the turn proceeds as an ordinary one: access was checked at
+            // the door, and the humans still in the room are still talking.
+            ticket_meta = ticket_for_conversation(&state.pg, cid).await;
+            multi_voice = true;
         } else if kind == "research" {
             let run = research_run_for_conversation(&state.pg, cid)
                 .await
@@ -300,6 +317,15 @@ pub async fn post(
             .unwrap_or_else(|| "chat".into())
     };
     if conv_id.is_none() {
+        if kind == "ticket" {
+            // The ensure route is the only creator: a ticket thread needs its
+            // task, the owner ladder and the binder — that is the ensure
+            // route's job, not the sender's.
+            return house_error(
+                StatusCode::BAD_REQUEST,
+                "ticket threads are opened on the ticket",
+            );
+        }
         if kind == "plan" {
             let allowed = has_perm(&state.pg, &user.id, &user.role, "plans.create")
                 .await
@@ -350,7 +376,7 @@ pub async fn post(
     let prior = if queued {
         Vec::new()
     } else {
-        match prior_messages(&state.pg, &sb, &conv_id).await {
+        match prior_messages(&state.pg, &sb, &conv_id, None).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("[chat] history read failed: {e}");
@@ -436,6 +462,82 @@ pub async fn post(
         );
     }
 
+    // A TICKET THREAD'S MESSAGE IS THREE THINGS AT ONCE, and the agent turn
+    // is only the third. First it is a TURN IN A ROOM OF BOARD MEMBERS —
+    // fan it, move the badge, carry its @mentions; those happen for every
+    // message, whatever the gates below decide. Second, it may be NO
+    // BUSINESS OF THE ASSIGNED AGENT'S — most messages in a ticket's room
+    // are people talking to each other, and the binding and relevance gates
+    // are what keep the agent from being the roommate that answers
+    // everything: no agent assigned means humans and attachments only, and
+    // a judge (fail-open, and never the ticket agent's own model) that
+    // reads the message as not about the work means the message lands while
+    // the agent stays quiet — the hold stamp carrying the same verdict to
+    // the chain. Third, if both pass, the streaming turn below is the
+    // agent's.
+    if let Some(ticket) = &ticket_meta {
+        fan_conversation_event(
+            NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+            conv_id.clone(),
+        );
+        publish_board(
+            &RealtimeDeps::publish_only(state.redis().await.ok()),
+            &ticket.board_id,
+            &BoardEvent {
+                kind_tag: "comment",
+                task_id: Some(ticket.task_id.clone()),
+                deleted: None,
+            },
+        );
+        if !body.content.trim().is_empty() {
+            notify_ticket_mentions(
+                &state,
+                &ticket.board_id,
+                &ticket.task_id,
+                &user.id,
+                &sender_label,
+                &body.content,
+                ticket.head.ticket_ref.as_deref().unwrap_or("a ticket"),
+            );
+        }
+        if ticket.agent.is_none() {
+            // The task has no agent on it: the message is for the room. The
+            // 202 is the queued shape the thread's surface already knows.
+            return (
+                StatusCode::ACCEPTED,
+                axum::Json(QueuedAck {
+                    queued: true,
+                    conversation_id: conv_id.clone(),
+                }),
+            )
+                .into_response();
+        }
+        let recent = recent_turns(&state.pg, &conv_id, user_seq).await;
+        if !ticket_message_relevant(
+            &state,
+            &ticket.head,
+            &body.content,
+            attachments.len(),
+            &recent,
+        )
+        .await
+        {
+            // Judged not the agent's business. The message STAYS — the
+            // humans in the room read it — and the stamp is the chain's skip
+            // signal, so a queued copy of this message meets the same
+            // verdict post-stream that it met here.
+            let _ = hold_ticket_message(&state.pg, &user_msg_id).await;
+            return (
+                StatusCode::ACCEPTED,
+                axum::Json(QueuedAck {
+                    queued: true,
+                    conversation_id: conv_id.clone(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     // A REPLY IN A PARKED RESEARCH RUN IS THE ANSWER IT WAITS ON. The scope
     // step parks a vague run on a free-text question that lives in THIS
     // conversation, so the owner's next message here is not a persona turn —
@@ -516,6 +618,7 @@ pub async fn post(
                 tier: body.tier.clone(),
                 plan: plan_meta.clone(),
                 research_prompt,
+                ticket: ticket_meta.clone(),
             };
             tokio::spawn(async move {
                 continue_conversation(&state, &conv_id, &meta).await;
@@ -609,6 +712,16 @@ pub async fn post(
             "content": research_prompt.unwrap_or(RESEARCH_MODE_PROMPT),
         }));
     }
+    if let Some(ticket) = &ticket_meta {
+        // The head resolved at the door — seconds old, and older than any
+        // reply this turn could produce. The chain re-reads it fresh; see
+        // continue_inner.
+        let block = ticket_context_block(&ticket.head);
+        messages.push(json!({
+            "role": "system",
+            "content": format!("{TICKET_MODE_PROMPT}{block}"),
+        }));
+    }
     if mentions_handle(&spoken_content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
     }
@@ -664,6 +777,9 @@ pub async fn post(
         tier: body.tier.clone(),
         plan: plan_meta.clone(),
         research_prompt,
+        ticket: ticket_meta.clone(),
+        // A live turn is a first attempt — eligible for the one auto-resume.
+        resumed: false,
     };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();
@@ -758,6 +874,55 @@ fn notify_user_plan_turn(
             &sender_label,
             &content,
             plan_title.as_deref(),
+        )
+        .await;
+    });
+}
+
+/// A ticket thread turn's @mentions, notified — detached, the same shape the
+/// comments door always sent: board members are the mentionable set, the
+/// inbox row lands on the ticket. The mention text is the sender's own
+/// message — a person's words, which nothing else on this path redacts
+/// either.
+#[allow(clippy::too_many_arguments)]
+fn notify_ticket_mentions(
+    state: &AppState,
+    board_id: &str,
+    task_id: &str,
+    sender_id: &str,
+    sender_label: &str,
+    content: &str,
+    where_: &str,
+) {
+    let state = state.clone();
+    let board_id = board_id.to_string();
+    let task_id = task_id.to_string();
+    let sender_id = sender_id.to_string();
+    let sender_label = sender_label.to_string();
+    let content = content.to_string();
+    let where_ = where_.to_string();
+    tokio::spawn(async move {
+        let Ok(members) = crate::boards::list_members(&state.pg, &board_id).await else {
+            return;
+        };
+        let members: Vec<Mentionee> = members
+            .into_iter()
+            .map(|m| Mentionee {
+                user_id: m.user_id,
+                name: m.name,
+                email: m.email,
+            })
+            .collect();
+        let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        let href = format!("/boards/{board_id}/{task_id}");
+        let _ = crate::mentions::notify_mentions(
+            &notify,
+            &members,
+            &sender_id,
+            &sender_label,
+            &content,
+            &where_,
+            &href,
         )
         .await;
     });

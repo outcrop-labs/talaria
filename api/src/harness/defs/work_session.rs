@@ -18,7 +18,7 @@
 //
 // WHAT IS AND IS NOT MODELLED HERE
 //   The TURN is the model contract: one prompt in, one reply out. The SESSION
-//   — the turn cap, the reconcile nudge, `sessionState`/`agentTicketRefusal`,
+//   — the turn cap, the reconcile nudge, `session_state`/`agent_ticket_refusal`,
 //   the activity trail — is ticket-state orchestration and lives in the run
 //   kind (runs/defs/work_session.rs; the dispatch side keeps the push-side
 //   choke point). Nothing in this file knows what a ticket is, which is why
@@ -106,7 +106,7 @@ fn dispatch_fixture() -> String {
         "",
         "This is a WORK SESSION, not a single exchange — Talaria keeps this conversation going until the work is done. Work like a developer at a desk: act, read the result, steer, act again.",
         "1. get_ticket PLAT-118 for full context (comments, attachments, dependencies).",
-        "2. comment a one-line acknowledgment, and triage_ticket to status \"in_progress\" while you work.",
+        "2. comment a one-line acknowledgment in the ticket's discussion thread (the board's humans read it), and triage_ticket to status \"in_progress\" while you work.",
         "3. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.",
         "4. report_outcome when genuinely finished — a human signs off from review. If blocked, set status \"blocked\" and comment why. Either of those ends the session.",
         STATUS_LINE,

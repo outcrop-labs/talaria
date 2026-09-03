@@ -274,7 +274,7 @@ pub async fn sync_plan_doc(
     .map_err(|e| e.to_string())?;
     let label = describe_agent(agent_model).label;
     let sb = state.secretbox().await.unwrap_or_default();
-    let msgs = prior_messages(&pg, &sb, conversation_id)
+    let msgs = prior_messages(&pg, &sb, conversation_id, None)
         .await
         .map_err(|e| e.to_string())?;
     let transcript = msgs

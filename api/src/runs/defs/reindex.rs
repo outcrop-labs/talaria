@@ -415,12 +415,25 @@ async fn index_page(
         }
 
         BackfillSource::Comments => {
+            // Comments ARE thread turns now: the source reads messages
+            // through the task's conversation link, authorship the way
+            // list_comments renders it (human's name/email, else the agent
+            // label the migration and add_comment stamp). Message ids were
+            // preserved from comment ids at cutover, so brains indexed
+            // before the re-point keep pointing at rows that still exist.
             let rows = sqlx::query(
-                "select c.id::text as id, c.task_id::text as \"taskId\", \
-                       t.board_id::text as \"boardId\", c.author, c.content \
-                 from task_comments c join tasks t on t.id = c.task_id \
-                 where t.archived_at is null and c.id > $1::uuid \
-                 order by c.id asc limit 100",
+                "select m.id::text as id, t.id::text as \"taskId\", \
+                       t.board_id::text as \"boardId\", \
+                       coalesce(u.name, u.email, m.metadata->>'agent', 'agent') as author, \
+                       m.content \
+                 from messages m \
+                 join tasks t on t.conversation_id = m.conversation_id \
+                 left join users u on u.id = m.author_user_id \
+                 where t.archived_at is null \
+                   and m.role in ('user','assistant') and m.status = 'complete' \
+                   and (m.content <> '' or m.attachments <> '[]'::jsonb) \
+                   and m.id > $1::uuid \
+                 order by m.id asc limit 100",
             )
             .bind(&from)
             .fetch_all(pg)

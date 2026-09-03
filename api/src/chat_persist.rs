@@ -12,10 +12,12 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use crate::boards::list_members;
 use crate::body::utf16_len;
 use crate::conversations::{
     active_streaming_assistant, content_js_length, insert_streaming_assistant,
-    last_user_message_effort, next_seq, prior_messages, set_message_guard, touch_conversation,
+    last_user_message_effort, last_user_message_held, mark_message_resumed, message_still_errored,
+    next_seq, prior_messages, resurrect_streaming_assistant, set_message_guard, touch_conversation,
     update_assistant,
 };
 use crate::fleet::{describe_agent, routed_model_for};
@@ -26,12 +28,15 @@ use crate::gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
 use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use crate::mentions::{Mentionee, notify_mentions};
 use crate::model::efforts::efforts_for_model;
 use crate::notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
 use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
+use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
 use crate::retrieval::index::IndexDoc;
-use crate::retrieval::sources::index_activity;
+use crate::retrieval::sources::{CommentSrc, comment_doc, index_activity};
 use crate::state::AppState;
+use crate::ticket_chat::{TICKET_MODE_PROMPT, TicketMeta, ticket_context_block, ticket_head};
 use crate::titler::maybe_retitle_conversation;
 use crate::workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 
@@ -53,6 +58,11 @@ pub struct TurnMeta {
     /// the run's state at the turn — working while the run is, report-mode
     /// once it has finished. None for every other kind.
     pub research_prompt: Option<&'static str>,
+    /// Ticket threads carry their room: the head the context block renders
+    /// (re-read fresh in the chain, so a turn queued behind a reply speaks to
+    /// the ticket as it stands NOW) and the ids the completion fans need.
+    /// None for every other kind.
+    pub ticket: Option<TicketMeta>,
 }
 
 // One continuation at a time per conversation (in-process guard — the check
@@ -60,12 +70,85 @@ pub struct TurnMeta {
 static CONTINUING: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
 
+/// The silence ceiling on an agent turn's stream, `TALARIA_AGENT_IDLE_SECS`
+/// floored at a minute, read per turn so a config change needs no restart.
+/// Frames flowing means the agent is working — tool progress, deltas — and a
+/// turn may stream for however long the work takes; only this much SILENCE
+/// ends it. This replaces the total 600s request timeout that killed every
+/// turn longer than ten minutes mid-flight, API hanging up on agents that
+/// were still working (the "interrupted" knowledgebase turns). The sweep in
+/// conversations::active_streaming_assistant keys off the same liveness and
+/// waits past this ceiling for the writer's own end-state.
+fn stream_idle() -> Duration {
+    Duration::from_secs(idle_secs(std::env::var("TALARIA_AGENT_IDLE_SECS").ok()))
+}
+
+/// Pure half of `stream_idle` (tested below): unset or unparsable falls back
+/// to ten minutes, and nothing can pull the ceiling under a minute — below
+/// that the idle read would race the container's own turn-taking.
+fn idle_secs(raw: Option<String>) -> u64 {
+    raw.and_then(|v| v.parse().ok()).unwrap_or(600).max(60)
+}
+
+/// How long a dead stream waits before the auto-resume re-drives the turn.
+/// Long enough that a blipped container comes back; short enough that the
+/// person watching sees the working indicator return inside a minute.
+const RESUME_BACKOFF: Duration = Duration::from_secs(15);
+
+/// How a turn's stream ended badly, when it did. Both members are the stream
+/// DYING — as opposed to the agent refusing (the failure frame), which
+/// carries a reason and must not be retried.
+#[derive(Debug, Clone, Copy)]
+enum TurnDeath {
+    /// No frame for `stream_idle()` — the agent's gateway stopped talking.
+    Idle,
+    /// The connection reset mid-stream.
+    Reset,
+}
+
+impl TurnDeath {
+    /// The honest sentence for the row — written as the turn's content so a
+    /// resume that never comes (or a crash during the backoff) leaves an
+    /// explanation, not a bare error status the UI renders as "interrupted".
+    fn reason(&self) -> String {
+        match self {
+            TurnDeath::Idle => {
+                format!(
+                    "the agent's stream went silent for {}s mid-turn",
+                    stream_idle().as_secs()
+                )
+            }
+            TurnDeath::Reset => "the agent's stream connection died mid-turn".to_string(),
+        }
+    }
+}
+
 /// Claude-style flow: messages sent while a reply
 /// streamed queued into history — start the NEXT turn covering them. Called
 /// when a reply finishes and when a queued message lands with nothing in
 /// flight; chains until the conversation goes quiet. No-op unless the last
 /// message is the user's.
 pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
+    guarded_drive(state, conversation_id, meta, None).await;
+}
+
+/// The auto-resume drive, through the same guard: a resumed turn and a queued
+/// turn can never both drive one conversation, whichever wins the race.
+pub async fn resume_conversation(
+    state: &AppState,
+    conversation_id: &str,
+    meta: &TurnMeta,
+    row_id: &str,
+) {
+    guarded_drive(state, conversation_id, meta, Some(row_id)).await;
+}
+
+async fn guarded_drive(
+    state: &AppState,
+    conversation_id: &str,
+    meta: &TurnMeta,
+    resume: Option<&str>,
+) {
     {
         let mut set = CONTINUING.lock().unwrap();
         if set.contains(conversation_id) {
@@ -73,12 +156,21 @@ pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta
         }
         set.insert(conversation_id.to_string());
     }
-    let result = continue_inner(state, conversation_id, meta).await;
+    continue_inner(state, conversation_id, meta, resume).await;
     CONTINUING.lock().unwrap().remove(conversation_id);
-    result
 }
 
-async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
+/// `resume`, when set, re-drives a turn whose stream died mid-flight: the
+/// named row is RESURRECTED (back to streaming, cleared) instead of a fresh
+/// row being inserted, and is excluded from the history the re-drive sends —
+/// the agent re-hears the conversation as it stood when the attempt began,
+/// not its own death notice.
+async fn continue_inner(
+    state: &AppState,
+    conversation_id: &str,
+    meta: &TurnMeta,
+    resume: Option<&str>,
+) {
     if active_streaming_assistant(&state.pg, conversation_id)
         .await
         .ok()
@@ -93,7 +185,7 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
     let Ok(sb) = state.secretbox().await else {
         return;
     };
-    let prior = match prior_messages(&state.pg, &sb, conversation_id).await {
+    let prior = match prior_messages(&state.pg, &sb, conversation_id, resume).await {
         Ok(p) => p,
         Err(_) => return,
     };
@@ -101,6 +193,20 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         return;
     };
     if last.role != "user" {
+        return;
+    }
+    // A HELD TICKET MESSAGE IS NOT AN UNANSWERED ONE. The relevance judge
+    // already read it live and passed — the hold stamp is the record — so a
+    // message that queued in behind a reply must not be answered by the
+    // chain either. Without this check the gate's live verdict had a hole
+    // exactly where queueing is most common. A read that fails answers
+    // false-held, the direction every fail-open here points: toward
+    // answering.
+    if meta.ticket.is_some()
+        && last_user_message_held(&state.pg, conversation_id)
+            .await
+            .unwrap_or(false)
+    {
         return;
     }
     // Chained plan turns carry the same plan-mode harness as live ones — and
@@ -115,6 +221,21 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
     }
     if let Some(prompt) = meta.research_prompt {
         messages.push(json!({ "role": "system", "content": prompt }));
+    }
+    if let Some(ticket) = &meta.ticket {
+        // The head re-read fresh, not the one the door carried in: the agent
+        // itself may have triaged the ticket while the reply that queued this
+        // message was still streaming, and this turn should speak to the
+        // ticket as it stands now. A task that vanished mid-chain leaves the
+        // mode prompt alone — the room is still a ticket's room.
+        let block = match ticket_head(&state.pg, &ticket.task_id).await {
+            Some(head) => ticket_context_block(&head),
+            None => String::new(),
+        };
+        messages.push(json!({
+            "role": "system",
+            "content": format!("{TICKET_MODE_PROMPT}{block}"),
+        }));
     }
     if mentions_handle(&last.content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
@@ -134,13 +255,27 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
             .unwrap_or_else(|| meta.agent_model.clone()),
         None => meta.agent_model.clone(),
     };
-    let Ok(seq) = next_seq(&state.pg, conversation_id).await else {
-        return;
-    };
-    let Ok(assistant_id) =
-        insert_streaming_assistant(&state.pg, conversation_id, seq, &json!({})).await
-    else {
-        return;
+    // A resume keeps the dead turn's row (its place in the thread, its
+    // metadata stamp); a chain makes a fresh one. The active-streaming check
+    // above already ran — a resume that lost the race to a newer turn stops
+    // here silently, the error row it was going to revive left as the honest
+    // record.
+    let assistant_id = match resume {
+        Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
+            Ok(()) => row.to_string(),
+            Err(_) => return,
+        },
+        None => {
+            let Ok(seq) = next_seq(&state.pg, conversation_id).await else {
+                return;
+            };
+            let Ok(id) =
+                insert_streaming_assistant(&state.pg, conversation_id, seq, &json!({})).await
+            else {
+                return;
+            };
+            id
+        }
     };
     // THE QUEUED MESSAGE'S OWN EFFORT, not the completed turn's: the message
     // this chain exists to cover picked its level when it was sent (stamped
@@ -172,8 +307,18 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
     // user's" stays true forever: a provider answering 429 turned one queued
     // message into a turn every ~550ms, 2,000 rows in ten minutes. The error
     // row is the surfacing too — the UI renders it as the turn that failed.
+    // A RESUME that cannot even start keeps its explanation: the container
+    // that blipped is still down, and an empty row here would render as the
+    // routability hint — a diagnosis nothing in this path supports.
     if !(200..300).contains(&upstream.status) {
-        let _ = update_assistant(&state.pg, &assistant_id, "", "", &[], "error").await;
+        let content = match resume {
+            Some(_) => format!(
+                "(agent error: the resumed turn could not start (HTTP {}))",
+                upstream.status
+            ),
+            None => String::new(),
+        };
+        let _ = update_assistant(&state.pg, &assistant_id, &content, "", &[], "error").await;
         return;
     }
     let usage_meta = PersistMeta {
@@ -182,6 +327,8 @@ async fn continue_inner(state: &AppState, conversation_id: &str, meta: &TurnMeta
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
+        ticket: meta.ticket.clone(),
+        resumed: resume.is_some(),
     };
     // Detached — the chain's own tail continues it. The
     // plain-fn seam is load-bearing: this chain is continue → persist →
@@ -227,6 +374,12 @@ pub struct PersistMeta {
     pub plan: Option<PlanMeta>,
     /// Rides through to the continuation's TurnMeta — see TurnMeta.
     pub research_prompt: Option<&'static str>,
+    /// Rides through to the continuation's TurnMeta — see TurnMeta.
+    pub ticket: Option<TicketMeta>,
+    /// Whether this drive is an auto-resume of an earlier dead attempt on the
+    /// same row. The death path reads it: a resumed turn that dies again
+    /// STAYS dead — one quiet retry, then the error is a person's to look at.
+    pub resumed: bool,
 }
 
 /// Drain an assistant stream into the reply row.
@@ -306,52 +459,72 @@ pub async fn persist_assistant_stream(
         };
     }
 
-    let errored = loop {
-        let Some(chunk) = stream.next().await else {
-            break false;
-        };
-        let chunk = match chunk {
-            Ok(c) => c,
+    // THE DRAIN HAS NO TOTAL TIMEOUT. Frames flowing — deltas, tool progress,
+    // keep-alives — mean the agent is working, however long the work takes;
+    // only `stream_idle()` of SILENCE ends the read. The total 600s request
+    // timeout this replaced killed every turn longer than ten minutes
+    // mid-flight: the API hung up on a container that was still working (the
+    // "· interrupted" knowledgebase turns) and dropped its partial reply.
+    let death: Option<TurnDeath> = loop {
+        match tokio::time::timeout(stream_idle(), stream.next()).await {
+            // Silence past the ceiling: the agent's gateway stopped talking.
             Err(_) => {
+                if let Some(tx) = &forward {
+                    let _ = tx
+                        .send(Err(std::io::Error::other("upstream stream went silent")))
+                        .await;
+                }
+                break Some(TurnDeath::Idle);
+            }
+            // Clean end-of-stream.
+            Ok(None) => break None,
+            // The connection reset mid-stream.
+            Ok(Some(Err(_))) => {
                 if let Some(tx) = &forward {
                     let _ = tx
                         .send(Err(std::io::Error::other("upstream stream errored")))
                         .await;
                 }
-                break true;
+                break Some(TurnDeath::Reset);
             }
-        };
-        if let Some(tx) = &forward {
-            // The client's branch ends on hang-up; ours drains on.
-            let _ = tx.send(Ok(chunk.clone())).await;
-        }
-        for ev in parser.feed(&chunk) {
-            match ev {
-                AgentStreamEvent::Content { text } => content.push_str(&text),
-                AgentStreamEvent::Reasoning { text } => reasoning.push_str(&text),
-                AgentStreamEvent::Tool {
-                    id,
-                    name,
-                    label,
-                    status,
-                } => {
-                    tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+            Ok(Some(Ok(chunk))) => {
+                if let Some(tx) = &forward {
+                    // The client's branch ends on hang-up; ours drains on.
+                    let _ = tx.send(Ok(chunk.clone())).await;
                 }
-                AgentStreamEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                } => {
-                    usage = Some((prompt_tokens, completion_tokens));
+                for ev in parser.feed(&chunk) {
+                    match ev {
+                        AgentStreamEvent::Content { text } => content.push_str(&text),
+                        AgentStreamEvent::Reasoning { text } => reasoning.push_str(&text),
+                        AgentStreamEvent::Tool {
+                            id,
+                            name,
+                            label,
+                            status,
+                        } => {
+                            tools =
+                                merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+                        }
+                        AgentStreamEvent::Usage {
+                            prompt_tokens,
+                            completion_tokens,
+                        } => {
+                            usage = Some((prompt_tokens, completion_tokens));
+                        }
+                        AgentStreamEvent::Error { message } => {
+                            frame_error = frame_error.or(Some(message));
+                        }
+                    }
                 }
-                AgentStreamEvent::Error { message } => {
-                    frame_error = frame_error.or(Some(message));
+                // Stamped per CHUNK, not per parsed event: a keep-alive-only
+                // stretch still proves the writer is alive, and streamed_at —
+                // not created_at — is what the stale sweep and the working
+                // flags read. last_flush starts unset, so the first chunk
+                // flushes immediately, then every 400ms.
+                if last_flush.is_none_or(|t| t.elapsed() > Duration::from_millis(400)) {
+                    last_flush = Some(Instant::now());
+                    flush!("streaming");
                 }
-            }
-            // lastFlush starts unset — the first event flushes immediately,
-            // then every 400ms.
-            if last_flush.is_none_or(|t| t.elapsed() > Duration::from_millis(400)) {
-                last_flush = Some(Instant::now());
-                flush!("streaming");
             }
         }
     };
@@ -389,9 +562,19 @@ pub async fn persist_assistant_stream(
         ledger!();
         return;
     }
-    if errored {
+    // A stream that DIED (as opposed to the agent refusing above) ends the
+    // attempt as an error whose content names how it died — never a bare
+    // error status the UI renders as "interrupted" with nothing else — and
+    // then, once, quietly tries to bring the turn back. The container
+    // outliving the API's read on it is exactly the failure the resume
+    // covers; a resume that dies again stays down (`resumed` gates it).
+    if let Some(died) = death {
+        content = format!("(agent error: {})", died.reason());
         flush!("error");
         ledger!();
+        if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
+            maybe_resume(&state, &conversation_id, &message_id, &meta);
+        }
         return;
     }
     flush!("complete");
@@ -529,6 +712,85 @@ pub async fn persist_assistant_stream(
             });
         }
     }
+    // A ticket thread's completed reply is a COMMENT in every sense the rest
+    // of the platform ever had: the board hears it (the badge counts this
+    // turn the moment it lands, the same tag the comments door always sent),
+    // the activity brain gains its copy (the exact comment_doc the backfill
+    // and reindex write for human comments — agent replies were comments'
+    // one missing voice, and the source id is the message id, so re-indexes
+    // converge on the same points), and its @mentions notify like a human
+    // turn's. All three read `content` as it stands here, AFTER the guard
+    // block above — strict mode's scrub reaches the row before any copy of
+    // it files into a brain or an inbox.
+    if let Some(meta) = usage_meta
+        .as_ref()
+        .filter(|m| m.ticket.is_some() && !content.trim().is_empty())
+    {
+        let ticket = meta.ticket.as_ref().expect("filtered above");
+        publish_board(
+            &RealtimeDeps::publish_only(state.redis().await.ok()),
+            &ticket.board_id,
+            &BoardEvent {
+                kind_tag: "comment",
+                task_id: Some(ticket.task_id.clone()),
+                deleted: None,
+            },
+        );
+        {
+            let pg = state.pg.clone();
+            let doc = comment_doc(&CommentSrc {
+                id: &message_id,
+                task_id: &ticket.task_id,
+                board_id: &ticket.board_id,
+                ticket_ref: ticket.head.ticket_ref.as_deref(),
+                author: &describe_agent(&meta.agent_model).label,
+                content: &content,
+            });
+            tokio::spawn(async move {
+                let qd = crate::retrieval::qdrant::real_deps();
+                let ed = crate::retrieval::embed::real_deps();
+                let _ = index_activity(&pg, &qd, &ed, &doc).await;
+            });
+        }
+        {
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+            let pg = state.pg.clone();
+            let board_id = ticket.board_id.clone();
+            let task_id = ticket.task_id.clone();
+            let sender_label = describe_agent(&meta.agent_model).label;
+            let where_ = ticket
+                .head
+                .ticket_ref
+                .clone()
+                .unwrap_or_else(|| "a ticket".into());
+            let content = content.clone();
+            tokio::spawn(async move {
+                let Ok(members) = list_members(&pg, &board_id).await else {
+                    return;
+                };
+                let members: Vec<Mentionee> = members
+                    .into_iter()
+                    .map(|m| Mentionee {
+                        user_id: m.user_id,
+                        name: m.name,
+                        email: m.email,
+                    })
+                    .collect();
+                let href = format!("/boards/{board_id}/{task_id}");
+                let _ = notify_mentions(
+                    &notify,
+                    &members,
+                    // No user id to exclude — the sender is the agent.
+                    "",
+                    &sender_label,
+                    &content,
+                    &where_,
+                    &href,
+                )
+                .await;
+            });
+        }
+    }
     // Messages queued while this reply streamed become the next turn.
     if let Some(meta) = usage_meta {
         let state = state.clone();
@@ -542,9 +804,75 @@ pub async fn persist_assistant_stream(
                     tier: meta.tier,
                     plan: meta.plan,
                     research_prompt: meta.research_prompt,
+                    ticket: meta.ticket,
                 },
             )
             .await;
         });
+    }
+}
+
+/// One quiet attempt to bring a dead turn back, ON THE SAME ROW. After a
+/// backoff long enough for a blipped container to return, the row is re-read
+/// — still errored, never yet resumed — stamped, and re-driven; the
+/// resurrection (not a fresh insert) keeps the thread's shape, and the stamp
+/// is the retry-once gate: a turn that dies twice stays dead where a person
+/// can see it. Detached, so the dying persist returns and the client branch
+/// closes on schedule.
+fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta: &PersistMeta) {
+    let state = state.clone();
+    let conversation_id = conversation_id.to_string();
+    let message_id = message_id.to_string();
+    let turn = TurnMeta {
+        agent_model: meta.agent_model.clone(),
+        tier: meta.tier.clone(),
+        plan: meta.plan.clone(),
+        research_prompt: meta.research_prompt,
+        ticket: meta.ticket.clone(),
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(RESUME_BACKOFF).await;
+        // Still the errored row we left, and never yet resumed? Anything else
+        // — a person nudged it, some other writer landed it — leaves it be.
+        if !message_still_errored(&state.pg, &message_id)
+            .await
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let _ = mark_message_resumed(&state.pg, &message_id).await;
+        // The stamp precedes the drive on purpose: if the drive then loses to
+        // a newer turn (the active-streaming check inside), the row stays an
+        // explained error rather than re-queueing itself forever.
+        resume_conversation(&state, &conversation_id, &turn, &message_id).await;
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The silence ceiling parses like a knob: unset defaults to ten minutes,
+    /// garbage falls back to the same, and the floor holds at a minute.
+    #[test]
+    fn idle_secs_floor_and_fallbacks() {
+        assert_eq!(idle_secs(None), 600);
+        assert_eq!(idle_secs(Some("garbage".into())), 600);
+        assert_eq!(idle_secs(Some("3600".into())), 3600);
+        assert_eq!(idle_secs(Some("5".into())), 60);
+        assert_eq!(idle_secs(Some("0".into())), 60);
+    }
+
+    /// The death sentences say what actually happened — the row's content is
+    /// the reader's only explanation when no resume comes, so each must name
+    /// the STREAM dying, never imply the agent was interrupted or refused.
+    #[test]
+    fn death_reasons_name_the_stream() {
+        assert_eq!(
+            TurnDeath::Reset.reason(),
+            "the agent's stream connection died mid-turn"
+        );
+        assert!(TurnDeath::Idle.reason().contains("went silent for "));
+        assert!(TurnDeath::Idle.reason().ends_with("s mid-turn"));
     }
 }

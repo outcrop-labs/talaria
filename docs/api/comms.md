@@ -295,7 +295,7 @@ Source: [`api/src/routes/comms/chat.rs`](../../api/src/routes/comms/chat.rs)
 | `tier` | `string?(60)` |  |
 | `effort` | `string?(24)` |  |
 | `attachmentIds` | `uuid[]?(10)` |  |
-| `kind` | `enum(chat|plan|research)?` |  |
+| `kind` | `enum(chat|plan|research|ticket)?` |  |
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
 

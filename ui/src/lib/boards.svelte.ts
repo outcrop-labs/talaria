@@ -312,7 +312,12 @@ export const createTask = (
   },
 ) => postJson<{ task: Task }>(`/api/boards/${boardId}/tasks`, input)
 
-export const addComment = (taskId: string, content: string) => postJson<{ comment: TaskComment }>(`/api/tasks/${taskId}/comments`, { content })
+/** Open (or find) the ticket's discussion thread — the ensure route. Most
+ *  tickets are read and moved, never discussed, so a thread is not created
+ *  with the task: the first person to open a ticket's Discussion tab is what
+ *  makes it exist. Idempotent — the second caller gets the same room. */
+export const openTaskDiscussion = (taskId: string) =>
+  postJson<{ conversationId: string; agentModel: string }>(`/api/tasks/${taskId}/conversation`)
 export const deleteTask = (taskId: string) => delJson<{ ok: true }>(`/api/tasks/${taskId}`)
 
 export const watchTask = (taskId: string, watcher: string) => postJson<{ ok: true }>(`/api/tasks/${taskId}/watchers`, { watcher })
