@@ -256,3 +256,88 @@ async fn the_rag_sweep_reads_its_window_and_advances_its_watermark() {
     let _ = unindex_activity(&pg, &qd, &ed, "ticket", &task_id).await;
     sweep_user_rows(&pg, "sweep").await;
 }
+
+/// The board status patch — the "edit where agents start" write. Pre-fix every
+/// field edit on a column 500'd: the row id is resolved by key and read back
+/// `id::text`, then the dynamic `update board_statuses set … where id = $N`
+/// bound that string as TEXT against the uuid column — prepare-time operator
+/// error, on every patch, first edit to the last. The cast rides the final bind
+/// now; the test drives the real `update_status` (materialize, then the dynamic
+/// statement) and proves the row actually moved.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn the_status_patch_lands_through_the_dynamic_update() {
+    let pg = pool().await;
+    let user_id = fabricate_user(&pg, "status-patch").await;
+    let board_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "insert into boards (id, name, owner_id) values ($1::uuid, 'patch probe board', $2::uuid)",
+    )
+    .bind(&board_id)
+    .bind(&user_id)
+    .execute(&pg)
+    .await
+    .unwrap();
+
+    let deps = talaria_api::tasks::TaskDeps::from_route(pg.clone(), None);
+    async fn read_back(pg: &sqlx::PgPool, board_id: &str, key: &str) -> (String, bool) {
+        sqlx::query_as(
+            "select label, agent_start from board_statuses \
+             where board_id = $1::uuid and key = $2",
+        )
+        .bind(board_id)
+        .bind(key)
+        .fetch_one(pg)
+        .await
+        .unwrap()
+    }
+
+    // First touch materializes the defaults; this patch then runs the dynamic
+    // UPDATE the same request would.
+    talaria_api::statuses::update_status(
+        &deps,
+        &board_id,
+        "in_progress",
+        &talaria_api::statuses::StatusPatch {
+            label: Some("Underway".into()),
+            color: None,
+            category: None,
+            agent_start: Some(true),
+            position: None,
+        },
+        "typed-binds",
+    )
+    .await
+    .unwrap()
+    .expect("the patch is a legal write on an active column");
+    let (label, agent_start) = read_back(&pg, &board_id, "in_progress").await;
+    assert_eq!(label, "Underway");
+    assert!(agent_start, "agentStart=true must land, not just parse");
+
+    // A SECOND patch — different fields, same statement shape — so the test
+    // cannot pass on materialize's INSERT alone.
+    talaria_api::statuses::update_status(
+        &deps,
+        &board_id,
+        "in_progress",
+        &talaria_api::statuses::StatusPatch {
+            label: None,
+            color: Some("teal".into()),
+            category: None,
+            agent_start: Some(false),
+            position: None,
+        },
+        "typed-binds",
+    )
+    .await
+    .unwrap()
+    .expect("the second patch lands too");
+    let (label, agent_start) = read_back(&pg, &board_id, "in_progress").await;
+    assert_eq!(label, "Underway", "the second patch left the label alone");
+    assert!(
+        !agent_start,
+        "agentStart=false must land through the same path"
+    );
+
+    sweep_user_rows(&pg, "status-patch").await;
+}
