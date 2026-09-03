@@ -264,7 +264,7 @@ Source: [`api/src/routes/files/uploads.rs`](../../api/src/routes/files/uploads.r
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:files.upload` | — | `…` | 200, 400, 413 | — |
+| POST | `session` + `perm:files.upload` | — | `…` | 200, 400, 413, 500 | — |
 
 ## `/api/uploads/{id}`
 

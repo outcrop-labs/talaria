@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import {
-  argvOf, bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, mcRun,
+  argvOf, bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, localUploadsDir, mcRun,
   stampOf, storageFromDb, writeSums,
 } from '../backup/lib'
 import { canonicalDir } from '../paths'
@@ -124,7 +124,7 @@ export async function runBackup(ctx: Ctx, dest: string, keep: number): Promise<n
     let uploadsDir = ''
     const tarPath = join(stageAbs, 'uploads.tar.gz')
     if (st.mode === 'local') {
-      uploadsDir = env.TALARIA_UPLOADS_DIR || join(ctx.root, 'ui/.uploads')
+      uploadsDir = localUploadsDir(ctx, env)
       if (existsSync(uploadsDir)) {
         await ctx.run('tar', ['-czf', tarPath, '-C', uploadsDir, '.'])
         ctx.log.ok(`local disk — ${uploadsDir}`)
