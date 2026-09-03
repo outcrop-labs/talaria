@@ -33,10 +33,12 @@ use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 
 use super::docker::{
-    attach_fleet_alias, edge_healthy, inspect_self, pull_image, remove_container, slot_up,
-    start_container, stop_container, wait_healthy_slot,
+    attach_fleet_alias, container_running, edge_healthy, inspect_self, pull_image,
+    remove_container, service_up, slot_up, start_container, stop_container, wait_healthy_slot,
 };
-use super::layout::{Slot, default_image_ref, roll_drain_ms, slot_container, update_project};
+use super::layout::{
+    EDGE_SERVICE, Slot, default_image_ref, roll_drain_ms, slot_container, update_project,
+};
 use super::mode::{InstallMode, install_mode};
 use super::registry::is_digest;
 use super::render::{
@@ -64,12 +66,12 @@ pub fn roll_lease_key() -> String {
 /// the legitimate worst case (a 900s pull plus a 180s gate plus a drain)
 /// because a heartbeat covers the slow-but-alive case and this TTL only
 /// matters when nobody is renewing it.
-const ROLL_LOCK_TTL_MS: u64 = 20 * 60_000;
+pub(crate) const ROLL_LOCK_TTL_MS: u64 = 20 * 60_000;
 
 /// How long the incoming slot has to reach `healthy`. The compose
 /// healthcheck's own start_period is 90s of boot migrations; this is the
 /// engine's patience on top, matching the fleet's roll gate.
-const HEALTH_GATE_MS: u64 = 180_000;
+pub(crate) const HEALTH_GATE_MS: u64 = 180_000;
 
 /// How long a stopped old slot stays as rollback material before tidy
 /// removes it. A day is long enough to notice a bad roll and short enough
@@ -90,7 +92,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     epoch_ms_to_iso(now_ms())
 }
 
@@ -119,7 +121,7 @@ pub fn acting_gate(state: &UpdateState, mode: InstallMode) -> Result<(), String>
 
 /// This container's docker name (docker prefixes inspect's Name with a
 /// slash; the verbs take it without).
-async fn self_name() -> Result<String, String> {
+pub(crate) async fn self_name() -> Result<String, String> {
     let doc = inspect_self().await?;
     doc.get("Name")
         .and_then(|n| n.as_str())
@@ -176,7 +178,7 @@ pub fn digest_suffix(reference: &str) -> Option<&str> {
 /// Write the compose file (both slots, flip-rendered) and both slot env
 /// files from a spec read off the LIVE container. Called by every roll —
 /// drift between rolls cannot survive it.
-async fn write_project(
+pub(crate) async fn write_project(
     spec: &SlotSpec,
     active: Slot,
     active_digest: &str,
@@ -214,7 +216,7 @@ async fn write_project(
 /// Record a state transition on the current run (or a fresh one, when
 /// `run` is None). Errors are returned, not swallowed — a state row that
 /// silently failed to write is a run the panel cannot see.
-async fn transition<F>(pg: &PgPool, run: Option<RunRecord>, f: F) -> Result<(), String>
+pub(crate) async fn transition<F>(pg: &PgPool, run: Option<RunRecord>, f: F) -> Result<(), String>
 where
     F: FnOnce(&mut RunRecord),
 {
@@ -296,8 +298,10 @@ pub async fn roll(pg: &PgPool, conn: ConnectionManager, to: &Pin, by: RunBy) -> 
         error: None,
     };
 
-    // The spec reads the LIVE container before anything moves.
-    let spec = slot_spec_from_inspect(&inspect_self().await?)?;
+    // The spec reads the LIVE container before anything moves. The edge-port
+    // fallback is what adoption recorded: this container may itself be an
+    // adopted slot, publishing nothing.
+    let spec = slot_spec_from_inspect(&inspect_self().await?, state.edge_port.as_deref())?;
 
     // Pull, recorded, before any container exists for the new digest.
     transition(pg, Some(fresh()), |r| r.state = RunState::Pulling).await?;
@@ -409,6 +413,17 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
     let green = ours == Some(run.to.digest.as_str());
 
     if green {
+        // Adoption's inherit path can die between stopping blue and bringing
+        // the edge up (and the edge is how the world arrives here at all):
+        // a green with the compose file and no edge heals it itself, so the
+        // wedge lasts until the next read, not forever.
+        if !edge_healthy(5_000).await {
+            if let Err(e) = service_up(EDGE_SERVICE).await {
+                return Err(format!(
+                    "the edge is down after the cutover and would not come up: {e}"
+                ));
+            }
+        }
         // The edge must route to us before the run lands done: the port the
         // world dials is the port that must answer.
         if !edge_healthy(60_000).await {
@@ -419,6 +434,19 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
                 "the edge is up but /api/healthz through it did not answer ok — the run stays open"
                     .into(),
             );
+        }
+        // ADOPTION'S HOLD: a run with a retired orchestrator container that
+        // is still RUNNING is a fresh-port adoption waiting for the proxy to
+        // repoint. Only the finish call — one that ARRIVES through the edge —
+        // may stop it; marking the run done here (5 minutes after green
+        // booted) would remove the container the world is still dialing.
+        if let Some(retired) = state.retired_container.as_deref() {
+            if container_running(retired).await {
+                return Ok(Some(
+                    "adoption is holding: the retired container still serves — repoint the proxy and finish it"
+                        .into(),
+                ));
+            }
         }
         let at = now_iso();
         patch(pg, |mut s| {
@@ -431,6 +459,20 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
         })
         .await
         .map_err(|e| format!("the done record did not write: {e}"))?;
+        // The retired orchestrator container (adoption's leftover) is
+        // stopped by now — the finish stopped it, or the inherit path did.
+        // Remove it so nothing resurrects it, and forget its name.
+        if let Some(retired) = state.retired_container.clone() {
+            if let Err(e) = remove_container(&retired).await {
+                tracing::warn!("{LOG} the retired container did not remove: {e}");
+            } else {
+                let _ = patch(pg, |mut s| {
+                    s.retired_container = None;
+                    s
+                })
+                .await;
+            }
+        }
         return Ok(Some("the pending roll reconciled to done".into()));
     }
 
@@ -513,7 +555,7 @@ pub async fn rollback(pg: &PgPool, _conn: ConnectionManager) -> Result<String, S
     // Alias to old; green (this container) keeps serving until its own stop
     // below — the overlap is two healthy backends on the same DB, the same
     // overlap the roll accepts.
-    let spec = slot_spec_from_inspect(&inspect_self().await?)?;
+    let spec = slot_spec_from_inspect(&inspect_self().await?, state.edge_port.as_deref())?;
     attach_fleet_alias(&spec.fleet_network, &old_container).await?;
 
     // The record BEFORE the self-stop, crash-safe like the roll's.

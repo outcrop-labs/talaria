@@ -18,6 +18,45 @@ admin-triggered move onto the updater-owned container slots. An install that nev
 adopts keeps deploying exactly the way it always has (dokploy, your own pipeline,
 `docker compose up` on a VM); nothing about shipping this engine changes any
 running deployment. Adoption is per-instance and opt-in by design.
+[The handover itself](#adoption--the-one-time-handover) is below.
+
+## Adoption — the one-time handover
+
+Adoption moves an install from "the orchestrator deploys me" to "I deploy
+myself" (`api/src/update/adopt.rs`). It pulls the image the install should
+be (the registry's newest, or a re-pin of the running image's own digest when
+the registry is silent), renders the updater-owned project **from the live
+container's own inspect document**, brings slot A up behind the same health
+gate a roll uses, moves the `talaria` alias, and records the handover
+crash-safe — `migrated`, the pin, the edge's port, the retired container's
+name — **before any port changes hands**. Then the one decision an operator
+makes: which port the edge takes.
+
+- **A fresh port** (`edgePort` in the POST — talaria-infra's migration path,
+  and any self-hoster whose proxy can repoint): the edge binds the new port
+  immediately while the old container **keeps serving its own**. The operator
+  repoints the proxy at the edge; the second `adopt` call — which can only
+  arrive *through the edge*, which is itself the proof the proxy moved —
+  stops the old container and lands the run. **Zero interruption at the
+  origin.**
+- **Inherit the app's port** (the panel's button, no `edgePort`): the edge
+  must own the port the old container holds, so the old one releases it
+  first — a **one-time cut of a few seconds**, named in the panel's confirm
+  dialog. A dying container cannot run code after its own stop, so it arms a
+  tiny host-side helper container (the app image itself — docker-cli and
+  compose are baked in) that polls once a second and raises the edge the
+  moment the port frees. Green's boot reconcile is the crash fallback, and
+  the docker runbook below is the last resort.
+
+The handover is **resumable at every step**: `adopt` on an already-adopted
+install is the *resume* — it re-answers `edge-ready`, re-arms the helper, or
+finishes the cutover, depending on where the first attempt died. The retired
+orchestrator container is stopped by the finish and removed by the reconcile,
+so nothing resurrects it — **disarm dokploy's autoDeploy on the resource
+before adopting**, or the next push stop-first-deploys underneath the
+handover. And after adoption the orchestrator no longer owns the app:
+environment changes go through the slot env files in the update dir
+(`$TALARIA_UPDATE_DIR`), not through dokploy.
 
 ## The taxonomy — who may roll
 
@@ -45,8 +84,9 @@ bearer token, manifest HEAD, `Docker-Content-Digest` — and pulls
 one container. The human-readable version beside a digest is the image's
 `org.opencontainers.image.version` label (`sha-<sha12>` — the commit that built
 it), read by walking the OCI index. Private forks point `TALARIA_UPDATE_IMAGE`
-at their own registry and hold credentials in the update settings row, never a
-config file.
+at their own registry and hold credentials in the `TALARIA_UPDATE_REGISTRY_AUTH`
+env (`user:pass`) — an env var, never a settings row, because settings rows
+serialize to the admin panel and credentials must not.
 
 CI publishes the image only after everything it needs is fully built and pushed
 (the api package image is digest-pinned to the same commit), so "available"
@@ -117,7 +157,8 @@ docker stop talaria-app-b          # the bad one, once the old one answers
 `/api/admin/updates` opens for two callers: an admin session, or a per-instance
 **machine key** (`x-talaria-key` header) minted from the panel — shown once,
 stored as a sha256 hash, replaceable by minting again. The key may `check`,
-`apply`, and `rollback`; it can mint nothing and flip no toggles, so a leaked
+`apply`, `rollback`, and `adopt` — it is how the one-time migration script
+drives the handover; it can mint nothing and flip no toggles, so a leaked
 deploy key updates the install but cannot make itself permanent. This is the
 credential an external deploy script (talaria-infra's fleet deploy) drives.
 
@@ -133,6 +174,32 @@ records what was available, and — only when the digest actually moved and no
 run is in flight — rolls. A migrated install with no pinned digest is corrupt
 state, and the engine refuses to act on it unattended. A registry that moved is
 never, by itself, a reason anything changed on a host.
+
+## The local proof — the devbox E2E
+
+The whole engine, adoption included, proves out on one docker host with a
+local registry (the `#[ignore]`d live tests cover the registry wire protocol;
+the container half is this runbook, by hand or scripted):
+
+```sh
+docker run -d --name registry -p 5000:5000 registry:2
+# Build the app image twice, different VERSION labels, push v1 as :main
+#   docker build --build-arg TALARIA_API_IMAGE=<pin> --build-arg VERSION=sha-v1 #     -t localhost:5000/talaria:main . && docker push localhost:5000/talaria:main
+# Boot the stack from that image (docker/compose.registry.yml's override
+# shape) with TALARIA_UPDATE_IMAGE=localhost:5000/talaria:main
+```
+
+Then the assertions, in order: `POST {action:"adopt", edgePort:<fresh port>}`
+brings slot A up healthy and the edge answers the fresh port while the old
+container still serves its own; the second adopt — sent **through the edge** —
+stops the old one and the run lands done. Push v2 as `:main`, `POST check`,
+`POST apply` while a `curl` loop against the edge port asserts zero non-200
+(both slots visible in `docker ps` mid-roll). The poison test — an image whose
+healthcheck cannot pass — leaves the old container serving and the panel
+showing the failure sentence. The rollback test — a green that 500s a route —
+round-trips through `POST rollback`. And the untouched-default contract: a
+plain `docker compose -f docker/compose.yml up` (no adoption, no registry)
+boots and serves exactly as it always did.
 
 ## The overlap contract — and the rule it imposes on migrations
 

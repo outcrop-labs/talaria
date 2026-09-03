@@ -2,7 +2,8 @@
 // machine surface. GET is the panel's whole read (and green's first read
 // after a cutover: it runs the boot reconcile, so a run that landed while
 // nobody was looking finishes the moment anyone looks). POST drives the
-// verbs; PUT flips the auto-update toggle.
+// verbs (adopt included — the two-call handover); PUT flips the auto-update
+// toggle.
 //
 // TWO KEYS OPEN THIS ROUTE, on purpose:
 //   an admin session — the panel, a human.
@@ -22,10 +23,14 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use crate::audit::{AuditEntry, log_audit};
-use crate::body::{as_object, boolean_member, optional_enum_member, parse};
+use crate::body::{
+    NumKind, as_object, boolean_member, optional_enum_member, optional_number_member, parse,
+};
 use crate::error::house_error;
 use crate::session::{SessionUser, require_admin};
 use crate::state::AppState;
+use crate::update::adopt::{AdoptStage, adopt};
+use crate::update::docker::container_running;
 use crate::update::mode::{InstallMode, install_mode};
 use crate::update::registry::resolve_latest;
 use crate::update::roll::{acting_gate, reconcile_boot, roll, rollback, run_in_flight, self_slot};
@@ -119,6 +124,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     "slot": slot.map(slot_name),
                     "project": crate::update::roll::project(),
                 },
+                "adoption": adoption_stage(&row).await,
                 "autoUpdate": row.auto_update,
                 "machineKeySet": row.machine_key_hash.is_some(),
                 "available": row.last_check.as_ref().and_then(|c| c.available.clone()),
@@ -147,8 +153,24 @@ fn slot_name(slot: crate::fleet::docker::Slot) -> &'static str {
     }
 }
 
-/// POST {action}: check | apply | rollback | mint-key (adopt lands with
-/// the adoption phase).
+/// The adoption's live stage, for whoever is polling (the panel's kicked
+/// state, talaria-infra's migration script). Derived, never stored: a run
+/// holding at `cutting-over` with a retired container still RUNNING is a
+/// fresh-port adoption waiting for the proxy to repoint; one whose retired
+/// container is gone is landing. Null everywhere else (nothing adopting).
+async fn adoption_stage(row: &UpdateState) -> serde_json::Value {
+    let Some(port) = row.edge_port.as_deref() else {
+        return serde_json::Value::Null;
+    };
+    let holding = match row.retired_container.as_deref() {
+        Some(retired) => container_running(retired).await,
+        None => false,
+    };
+    let stage = if holding { "edge-ready" } else { "cutover" };
+    serde_json::json!({ "stage": stage, "edgePort": port })
+}
+
+/// POST {action}: check | apply | rollback | adopt | mint-key.
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -159,17 +181,20 @@ pub async fn post(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let action =
-        match optional_enum_member(obj, "action", &["check", "apply", "rollback", "mint-key"]) {
-            Ok(Some(a)) => a,
-            Ok(None) => {
-                return house_error(
-                    StatusCode::BAD_REQUEST,
-                    "action is required (check, apply, rollback, mint-key)",
-                );
-            }
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-        };
+    let action = match optional_enum_member(
+        obj,
+        "action",
+        &["check", "apply", "rollback", "adopt", "mint-key"],
+    ) {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return house_error(
+                StatusCode::BAD_REQUEST,
+                "action is required (check, apply, rollback, adopt, mint-key)",
+            );
+        }
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
 
     // Minting is admin-only (a key that mints keys is a permanent key);
     // everything else takes the machine key too.
@@ -185,6 +210,7 @@ pub async fn post(
         "check" => check(&state.pg, &actor).await,
         "apply" => apply(&state, &actor).await,
         "rollback" => do_rollback(&state, &actor).await,
+        "adopt" => do_adopt(&state, &actor, obj).await,
         "mint-key" => mint(&state.pg, &actor).await,
         _ => unreachable!("the enum member already gated the action"),
     }
@@ -336,6 +362,68 @@ async fn do_rollback(state: &AppState, actor: &str) -> Response {
     tokio::spawn(async move {
         if let Err(e) = rollback(&pg, conn).await {
             tracing::warn!("{LOG} rollback: {e}");
+        }
+    });
+    Json(serde_json::json!({ "started": true })).into_response()
+}
+
+/// The handover. The FIRST call is long (a pull can run 15 minutes) — it
+/// runs detached and the caller polls GET's `adoption`. A call on an
+/// already-migrated install is the RESUME: fast, synchronous, and the
+/// fresh-port protocol's finish — it must arrive through the edge.
+async fn do_adopt(
+    state: &AppState,
+    actor: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Response {
+    let edge_port = match optional_number_member(obj, "edgePort", NumKind::Int, 1.0, 65535.0) {
+        Ok(None) => None,
+        Ok(Some(p)) => Some(p.to_string()),
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let conn = match state.redis().await {
+        Ok(c) => c,
+        Err(e) => {
+            return house_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("redis unreachable for the adoption: {e}"),
+            );
+        }
+    };
+    log_audit(
+        &state.pg,
+        AuditEntry {
+            actor,
+            action: "update.adopt",
+            target_type: "settings",
+            target_id: None,
+            target_label: edge_port.as_deref(),
+            before: None,
+            after: None,
+        },
+    )
+    .await;
+    if load(&state.pg).await.migrated {
+        // Resume/finish: synchronous (a stop-with-drain plus a reconcile is
+        // the whole of it), so the caller learns the stage it landed on.
+        return match adopt(&state.pg, conn, edge_port).await {
+            Ok(AdoptStage::EdgeReady { edge_port }) => {
+                Json(serde_json::json!({ "stage": "edge-ready", "edgePort": edge_port }))
+                    .into_response()
+            }
+            Ok(AdoptStage::Cutover { edge_port }) => {
+                Json(serde_json::json!({ "stage": "cutover", "edgePort": edge_port }))
+                    .into_response()
+            }
+            Err(e) => house_error(StatusCode::CONFLICT, &e),
+        };
+    }
+    // First call: detached — and on the inherit path the choreography's own
+    // last act stops this container, exactly like a roll.
+    let pg = state.pg.clone();
+    tokio::spawn(async move {
+        if let Err(e) = adopt(&pg, conn, edge_port).await {
+            tracing::warn!("{LOG} adoption: {e}");
         }
     });
     Json(serde_json::json!({ "started": true })).into_response()

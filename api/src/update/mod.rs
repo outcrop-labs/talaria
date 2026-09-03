@@ -26,6 +26,7 @@
 // way it always has, forever. The mode gate (mode.rs) is the first check in
 // every verb: an install that isn't `image` mode gets a sentence, never a
 // container.
+pub mod adopt;
 pub mod docker;
 pub mod job;
 pub mod layout;

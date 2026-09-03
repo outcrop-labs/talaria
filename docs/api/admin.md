@@ -596,7 +596,7 @@ Source: [`api/src/routes/admin/admin_updates.rs`](../../api/src/routes/admin/adm
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{mode, sentence, migrated, running, autoUpdate, machineKeySet, available, lastCheck, lastRun, history}` | 200 | — |
+| GET | `admin` | — | `{mode, sentence, migrated, running, adoption, autoUpdate, machineKeySet, available, lastCheck, lastRun, history}` | 200 | — |
 | POST | `admin` | [body](#post-apiadminupdates-body) | `…` | 200, 400, 409, 500, 502, 503 | audit |
 | PUT | `admin` | [body](#put-apiadminupdates-body) | `{autoUpdate}` | 200, 400, 500 | audit |
 
@@ -604,7 +604,8 @@ Source: [`api/src/routes/admin/admin_updates.rs`](../../api/src/routes/admin/adm
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `enum(check|apply|rollback|mint-key)?` |  |
+| `action` | `enum(check|apply|rollback|adopt|mint-key)?` |  |
+| `edgePort` | `number?(1, 65535)` |  |
 
 ### PUT `/api/admin/updates` body
 
