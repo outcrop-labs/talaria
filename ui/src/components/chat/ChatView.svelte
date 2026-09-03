@@ -217,6 +217,9 @@
   // contract the channel view runs. Synthetic streaming rows carry no seq,
   // so the cursor only moves for rows the server actually owns, and the
   // post-turn syncFromServer brings those in the moment a reply completes.
+  // A read that covers the whole thread also clears the thread's bell rows
+  // server-side; the refetch only fires when something was actually cleared
+  // (the same invalidation set the bell's own mark-read runs).
   let lastReadPosted: { id: string; seq: number } = { id: '', seq: 0 }
   $effect(() => {
     const id = convId
@@ -227,7 +230,13 @@
     if (prev.id === id && latest <= prev.seq) return
     lastReadPosted = { id, seq: latest }
     void markConversationRead(id, latest)
-      .then(() => qc.invalidateQueries({ queryKey: ['conversations'] }))
+      .then((r) => {
+        void qc.invalidateQueries({ queryKey: ['conversations'] })
+        if (r.cleared > 0) {
+          void qc.invalidateQueries({ queryKey: ['notifications'] })
+          void qc.invalidateQueries({ queryKey: ['home'] })
+        }
+      })
       .catch(() => {})
   })
 

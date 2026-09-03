@@ -1618,6 +1618,84 @@ pub fn fan_conversation_event(deps: NotifyDeps, conversation_id: String) {
     });
 }
 
+/// Where a conversation's notifications point: the thread itself for a chat,
+/// the plan for a plan, and for a research discussion the RUN — opening the
+/// run is research's seen gesture (it marks this href read), so the bell row
+/// and the rail badge clear in the same click. A research conversation whose
+/// run is gone has nowhere to point (`None`) and files nothing. Shared by the
+/// writer that files these rows and the reader that clears them, so the two
+/// ends of the href can never drift apart.
+pub async fn conversation_notification_href(
+    pg: &PgPool,
+    kind: &str,
+    agent_model: &str,
+    conversation_id: &str,
+) -> Option<String> {
+    let run_id = if kind == "research" {
+        crate::research::research_run_for_conversation(pg, conversation_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    notification_href(kind, agent_model, conversation_id, run_id.as_deref())
+}
+
+/// The pure half of the href — everything but research's run lookup, so the
+/// formats the bell's rows and the UI's routes must agree on are pinned by a
+/// DB-free test.
+fn notification_href(
+    kind: &str,
+    agent_model: &str,
+    conversation_id: &str,
+    run_id: Option<&str>,
+) -> Option<String> {
+    match kind {
+        "chat" => Some(format!("/comms/agent/{agent_model}/{conversation_id}")),
+        "plan" => Some(format!("/plan/{conversation_id}")),
+        "research" => run_id.map(|r| format!("/research/{r}")),
+        _ => None,
+    }
+}
+
+/// Reading a thread is the end of its bell rows. The read cursor's route
+/// calls this once the advanced cursor covers the thread's latest turn:
+/// every unread notification pointing at the thread (its href, whatever
+/// kind filed it) is now seen — the row's whole job was to draw the reader
+/// here. Returns how many rows it cleared, so the caller can tell the client
+/// whether the bell owes it a refetch. A reply landing DURING the sweep
+/// files its own fresh row after — the writer's cursor gate reads the
+/// already-advanced cursor, and a reply newer than that cursor rightly
+/// rings again.
+pub async fn clear_thread_notifications(
+    pg: &PgPool,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("select kind, agent_model from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    let Some((kind, agent_model)) = row else {
+        return Ok(0); // the access gate already proved the thread exists
+    };
+    let Some(href) = conversation_notification_href(pg, &kind, &agent_model, conversation_id).await
+    else {
+        return Ok(0);
+    };
+    let res = sqlx::query(
+        "update notifications set read_at = now() \
+         where user_id = $1::uuid and href = $2 and read_at is null",
+    )
+    .bind(user_id)
+    .bind(&href)
+    .execute(pg)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// An agent reply that landed while its readers were away: file ONE
 /// agent-reply notification per audience member whose read cursor does not
 /// cover the reply's seq. The cursor is the "still looking" gate — someone
@@ -1653,21 +1731,10 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
     if content.trim().is_empty() {
         return;
     }
-    // Where the row points: the thread itself for a chat, the plan for a
-    // plan, and for a research discussion the RUN — opening the run is
-    // research's seen gesture (it marks this href read), so the bell row and
-    // the rail badge clear in the same click. A research conversation whose
-    // run is gone has nowhere to point and files nothing.
-    let href = match kind.as_str() {
-        "chat" => format!("/comms/agent/{agent_model}/{conversation_id}"),
-        "plan" => format!("/plan/{conversation_id}"),
-        "research" => {
-            match crate::research::research_run_for_conversation(&deps.pg, conversation_id).await {
-                Ok(Some(run_id)) => format!("/research/{run_id}"),
-                _ => return,
-            }
-        }
-        _ => return,
+    let Some(href) =
+        conversation_notification_href(&deps.pg, &kind, &agent_model, conversation_id).await
+    else {
+        return; // nothing for a row to point at — research whose run is gone
     };
     // The audience WITH cursors, the -1 floor shared with the unread counts:
     // a member with no cursor row has read nothing, and seq 0 is a real turn.
@@ -1727,6 +1794,28 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn thread_notification_hrefs_are_pinned() {
+        // The writer files these exact strings and the read sweep matches
+        // them exactly — the UI's routes must keep resolving all three.
+        assert_eq!(
+            notification_href("chat", "margaret-marketing", "c-1", None).as_deref(),
+            Some("/comms/agent/margaret-marketing/c-1")
+        );
+        assert_eq!(
+            notification_href("plan", "claude-x", "c-2", None).as_deref(),
+            Some("/plan/c-2")
+        );
+        assert_eq!(
+            notification_href("research", "claude-x", "c-3", Some("run-9")).as_deref(),
+            Some("/research/run-9")
+        );
+        // A research discussion with no run behind it has nothing to point
+        // at; an unknown kind is nobody's thread.
+        assert_eq!(notification_href("research", "claude-x", "c-3", None), None);
+        assert_eq!(notification_href("other", "claude-x", "c-4", None), None);
+    }
 
     #[test]
     fn kinds_route_to_their_classes() {

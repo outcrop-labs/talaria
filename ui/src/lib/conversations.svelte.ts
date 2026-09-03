@@ -88,10 +88,18 @@ export const unsharePlan = async (planId: string, userId: string): Promise<void>
 
 /** Advance the read cursor. An explicit seq marks up to it (ChatView's
  *  auto-advance); an absent one marks to the thread's latest (the Comms
- *  context menu knows the thread, not its seqs). */
-export const markConversationRead = async (id: string, seq?: number): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/conversations/${id}/read`, seq === undefined ? {} : { seq })
-}
+ *  context menu knows the thread, not its seqs). When the cursor covers the
+ *  whole thread the server also clears the bell rows pointing at it —
+ *  `cleared` says whether it did, so callers only refetch the bell when
+ *  there is something new to not show. */
+export const markConversationRead = async (
+  id: string,
+  seq?: number,
+): Promise<{ ok: true; cleared: number }> =>
+  postJson<{ ok: true; cleared: number }>(
+    `/api/conversations/${id}/read`,
+    seq === undefined ? {} : { seq },
+  )
 
 export function useConversations(kind: MaybeGetter<'chat' | 'plan'> = 'chat') {
   return createQuery(() => {
