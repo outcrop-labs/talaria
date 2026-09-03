@@ -2808,6 +2808,19 @@ const MIGRATIONS: string[] = [
     c.updated_at)
   where c.kind = 'ticket'`,
 
+  // The table's last reader is gone — comments ARE thread messages now, and
+  // every runtime path (the comments door, the chat door, the reindex and
+  // unindex walks) reads `messages` joined through tasks.conversation_id.
+  // Kept through the whole cutover so a pre-drop api binary running beside
+  // the new one (a rolling deploy) never 500s on a missing table; dropped
+  // only now that no reader exists.
+  //
+  // The backfill's one loss is here and nowhere else: a commented task whose
+  // owner ladder AND binder both failed (no resolvable human, no agent
+  // anywhere) never got its thread, and its comments die with this table —
+  // a handful of rows across the fleet, none on boards anyone works.
+  `drop table if exists task_comments`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
