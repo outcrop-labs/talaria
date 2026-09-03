@@ -54,8 +54,10 @@
     onCreated: (id: string) => void
     /** 'plan' conversations live in the Plan surface and draft tickets.
      *  'research' conversations discuss a report on the Research surface — the
-     *  same multiplayer shape, shared through the RUN's members. */
-    kind?: 'chat' | 'plan' | 'research'
+     *  same multiplayer shape, shared through the RUN's members. 'ticket'
+     *  conversations are a board ticket's discussion thread: the room is the
+     *  board, and the thread only ever exists — this view never creates one. */
+    kind?: 'chat' | 'plan' | 'research' | 'ticket'
     /** Plan surface: the template the living doc seeds from, chosen before the
      *  first turn (which creates the conversation). Ignored once it exists. */
     templateId?: string | null
@@ -496,12 +498,14 @@
       <div class="grid h-full place-items-center px-6 py-6 text-center">
         <div>
           <div class="mb-1 font-sans text-lg font-semibold text-fg">
-            {kind === 'plan' ? `Plan with ${agentLabel}` : `Talk to ${agentLabel}`}
+            {kind === 'plan' ? `Plan with ${agentLabel}` : kind === 'ticket' ? 'Discuss the ticket' : `Talk to ${agentLabel}`}
           </div>
           <div class="font-sans text-sm text-muted">
             {kind === 'plan'
               ? 'Think through the work together, then draft tickets and send them to a board.'
-              : 'Ask anything. Memory, skills, and tools intact.'}
+              : kind === 'ticket'
+                ? 'Everyone who can see this board is in the room — @mention to notify, attach files for the work.'
+                : 'Ask anything. Memory, skills, and tools intact.'}
           </div>
         </div>
       </div>
@@ -579,7 +583,7 @@
       <PendingAttachments items={attachments} onRemove={(id) => (attachments = attachments.filter((a) => a.id !== id))} />
       <ChatComposer
         bind:this={composer}
-        placeholder={`What would you like ${agentLabel} to work on?`}
+        placeholder={kind === 'ticket' ? 'Message the room — @ to mention' : `What would you like ${agentLabel} to work on?`}
         {mentionables}
         onSubmit={(md) => void send(md)}
         onFiles={(files) => {
