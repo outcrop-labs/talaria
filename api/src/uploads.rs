@@ -410,7 +410,11 @@ pub async fn save_upload(
             }
         });
     }
-    let _ = sqlx::query(
+    // The row is part of the upload, not a postscript to it: an id handed
+    // back with no row behind it 404s on every later fetch, forever. A
+    // failed insert is a failed upload — the blob may already sit in
+    // storage, but an orphaned object beats a ghost id on the wire.
+    if let Err(e) = sqlx::query(
         "insert into uploads (id, filename, mime, size, path, uploaded_by) \
          values ($1::uuid, $2, $3, $4, $5, $6::uuid)",
     )
@@ -421,7 +425,11 @@ pub async fn save_upload(
     .bind(&path)
     .bind(user_id)
     .execute(pg)
-    .await;
+    .await
+    {
+        tracing::error!("[uploads] row insert failed for {id}: {e}");
+        return Err("upload could not be recorded".into());
+    }
     Ok(Attachment {
         id,
         filename: filename.to_string(),
