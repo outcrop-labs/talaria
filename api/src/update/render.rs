@@ -81,7 +81,16 @@ pub struct SlotSpec {
 /// Read the spec out of this container's inspect document. Pure — the
 /// docker call is `inspect_self` (docker.rs), and the pure half is what
 /// the tests pin against a fixture.
-pub fn slot_spec_from_inspect(doc: &Value) -> Result<SlotSpec, String> {
+///
+/// `edge_port_fallback` is the port recorded at adoption (state.edge_port):
+/// an ADOPTED slot publishes nothing (the edge owns the port), so a roll
+/// that reads its spec off green finds no PortBinding and falls back to
+/// what adoption recorded. Blue (pre-adoption, the orchestrator's
+/// container) always carries a real binding.
+pub fn slot_spec_from_inspect(
+    doc: &Value,
+    edge_port_fallback: Option<&str>,
+) -> Result<SlotSpec, String> {
     let host = doc
         .get("HostConfig")
         .ok_or("the inspect document has no HostConfig")?;
@@ -90,6 +99,8 @@ pub fn slot_spec_from_inspect(doc: &Value) -> Result<SlotSpec, String> {
         .ok_or("the inspect document has no Config")?;
 
     // The published host port: PortBindings maps "5273/tcp" → host ports.
+    // Post-adoption the inspect has none — the edge owns the port — and the
+    // recorded one answers instead.
     let host_port = host
         .get("PortBindings")
         .and_then(|b| b.as_object())
@@ -98,7 +109,8 @@ pub fn slot_spec_from_inspect(doc: &Value) -> Result<SlotSpec, String> {
         .and_then(|b| b.get("HostPort"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or("the live container publishes no host port — nothing for the edge to own")?;
+        .or_else(|| edge_port_fallback.map(str::to_string))
+        .ok_or("the live container publishes no host port and no adoption recorded one — nothing for the edge to own")?;
 
     let lines = |v: Option<&Value>| -> Vec<String> {
         v.and_then(Value::as_array)
@@ -355,7 +367,7 @@ mod tests {
     }
 
     fn spec() -> SlotSpec {
-        slot_spec_from_inspect(&inspect_fixture()).expect("the fixture reads")
+        slot_spec_from_inspect(&inspect_fixture(), None).expect("the fixture reads")
     }
 
     #[test]
@@ -404,7 +416,21 @@ mod tests {
     fn an_inspect_without_a_published_port_refuses_to_render() {
         let mut doc = inspect_fixture();
         doc["HostConfig"]["PortBindings"] = json!({});
-        assert!(slot_spec_from_inspect(&doc).is_err());
+        assert!(slot_spec_from_inspect(&doc, None).is_err());
+    }
+
+    #[test]
+    fn an_adopted_slots_portless_inspect_falls_back_to_what_adoption_recorded() {
+        // Green publishes nothing — the edge owns the port — and the
+        // recorded port is the one the next roll's edge must keep owning.
+        let mut doc = inspect_fixture();
+        doc["HostConfig"]["PortBindings"] = json!({});
+        let spec = slot_spec_from_inspect(&doc, Some("5302")).expect("the fallback answers");
+        assert_eq!(spec.host_port, "5302");
+        // A real binding still wins over the record (blue's inspect is the
+        // source of truth while blue exists).
+        let live = slot_spec_from_inspect(&inspect_fixture(), Some("9999")).expect("reads");
+        assert_eq!(live.host_port, "5302");
     }
 
     #[test]

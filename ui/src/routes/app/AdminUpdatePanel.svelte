@@ -35,6 +35,7 @@
     sentence: string | null
     migrated: boolean
     running: { version: string | null; digest: string | null; slot: 'a' | 'b' | null; project: string }
+    adoption: { stage: 'edge-ready' | 'cutover'; edgePort: string } | null
     autoUpdate: boolean
     machineKeySet: boolean
     available: Pin | null
@@ -68,7 +69,7 @@
     return () => clearInterval(timer)
   })
 
-  let busy = $state<'check' | 'apply' | 'rollback' | 'mint' | null>(null)
+  let busy = $state<'check' | 'apply' | 'rollback' | 'adopt' | 'mint' | null>(null)
   let error = $state<string | null>(null)
   let mintedKey = $state<string | null>(null)
 
@@ -118,6 +119,55 @@
     kicked = true
     try {
       await postJson<{ started: true }>('/api/admin/updates', { action: 'rollback' })
+    } catch (e) {
+      kicked = false
+      error = errorMessage(e)
+    }
+    busy = null
+    await qc.invalidateQueries({ queryKey: ['admin-updates'] })
+  }
+
+  // The one-time handover: this install becomes its own deployer. The panel
+  // always takes the INHERIT path (no edgePort) — the fresh-port path is the
+  // migration script's, for proxies that can repoint without a cut.
+  const adopt = async () => {
+    const ok = await confirm({
+      title: 'Take over updates?',
+      message:
+        'Talaria becomes its own deployer: it pulls its image, brings itself up beside this container, and an edge takes this port the moment the old container releases it — a one-time cut of a few seconds while traffic moves. Every update after this rolls with no interruption at all.',
+      confirmLabel: 'Take over',
+    })
+    if (!ok) return
+    busy = 'adopt'
+    error = null
+    kicked = true
+    try {
+      await postJson<{ started: boolean }>('/api/admin/updates', { action: 'adopt' })
+    } catch (e) {
+      kicked = false
+      error = errorMessage(e)
+    }
+    busy = null
+    await qc.invalidateQueries({ queryKey: ['admin-updates'] })
+  }
+
+  // The fresh-port handover's second call, from the panel: heals a stuck
+  // hold (the migration script died between repointing the proxy and
+  // finishing). Arriving here at all means this page loaded through the
+  // edge — which is exactly the proof the finish waits for.
+  const finishAdoption = async () => {
+    const ok = await confirm({
+      title: 'Finish the handover?',
+      message:
+        'The old container stops and the handover lands. Traffic is already arriving through the edge — this page loaded through it.',
+      confirmLabel: 'Finish',
+    })
+    if (!ok) return
+    busy = 'adopt'
+    error = null
+    kicked = true
+    try {
+      await postJson<{ stage: string }>('/api/admin/updates', { action: 'adopt' })
     } catch (e) {
       kicked = false
       error = errorMessage(e)
@@ -192,6 +242,16 @@
           <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--theme-accent)]"></span>
           Rolling out {status.lastRun?.to.version}. Traffic moves once the new container is healthy.
         </div>
+        {#if status.adoption?.stage === 'edge-ready'}
+          <p class="text-xs text-muted">
+            The edge is up on port {status.adoption.edgePort} — traffic moves when the proxy points at it.
+          </p>
+          <div>
+            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void finishAdoption()}>
+              {busy === 'adopt' ? 'Finishing...' : 'Finish the handover'}
+            </Button>
+          </div>
+        {/if}
       {:else if kicked}
         <!-- Requests are failing against a drain in flight: the honest line
              is the cutover, not an error card. -->
@@ -212,9 +272,14 @@
           <p class="text-sm text-muted">
             This install deploys the way it always has — the in-app rolling updater takes over only after an admin adopts it.
           </p>
-          <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void check()}>
-            {busy === 'check' ? 'Checking...' : 'Check for updates'}
-          </Button>
+          <div class="flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void adopt()}>
+              {busy === 'adopt' ? 'Taking over...' : 'Take over updates'}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void check()}>
+              {busy === 'check' ? 'Checking...' : 'Check for updates'}
+            </Button>
+          </div>
         {:else if upToDate}
           <div class="flex items-center gap-2">
             <p class="text-sm text-muted">You're up to date.</p>

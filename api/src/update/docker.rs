@@ -72,10 +72,16 @@ fn compose_args(extra: &[&str]) -> Vec<String> {
 /// what a roll must never touch mid-flight. `--no-deps` because the
 /// sidecars are not this project's — they keep running where they are.
 pub async fn slot_up(slot: Slot) -> Result<(), String> {
-    let service = slot_service(slot);
-    let args = compose_args(&["up", "-d", "--no-deps", "--quiet-pull", &service]);
+    service_up(&slot_service(slot)).await
+}
+
+/// Bring one service of the update project up (compose, scoped to the
+/// service — a bare `up` would address the ACTIVE slot too). The edge is
+/// the second caller: adoption brings it up on the port it will own.
+pub async fn service_up(service: &str) -> Result<(), String> {
+    let args = compose_args(&["up", "-d", "--no-deps", "--quiet-pull", service]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    // First boot of a slot can spend its time in image extraction; the
+    // First boot of a service can spend its time in image extraction; the
     // pull itself is a separate verb with its own patience.
     docker(&refs, Duration::from_secs(300)).await.map(|_| ())
 }
@@ -96,11 +102,17 @@ pub async fn pull_image(reference: &str) -> Result<(), String> {
 /// waiting — the compose healthcheck's start_period is 90s of boot
 /// migrations the gate MUST tolerate.
 pub async fn wait_healthy_slot(slot: Slot, timeout_ms: u64) -> bool {
-    let name = slot_container(slot);
+    wait_healthy_container(&slot_container(slot), timeout_ms).await
+}
+
+/// The gate, by container name — the slots' spelling (see wait_healthy_slot)
+/// and the adoption caller's (which gates a container it did not name
+/// through a slot).
+pub async fn wait_healthy_container(name: &str, timeout_ms: u64) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     while tokio::time::Instant::now() < deadline {
         if let Ok((stdout, _)) = docker(
-            &["inspect", "-f", "{{.State.Health.Status}}", &name],
+            &["inspect", "-f", "{{.State.Health.Status}}", name],
             Duration::from_secs(10),
         )
         .await
@@ -114,6 +126,42 @@ pub async fn wait_healthy_slot(slot: Slot, timeout_ms: u64) -> bool {
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
     false
+}
+
+/// Is a container currently running? (Adoption's resume asks this about the
+/// retired orchestrator container; an absent container is simply not
+/// running.)
+pub async fn container_running(name: &str) -> bool {
+    matches!(
+        docker(
+            &["inspect", "-f", "{{.State.Running}}", name],
+            Duration::from_secs(10),
+        )
+            .await
+            .map(|(out, _)| out.trim().to_string()),
+        Ok(r) if r == "true"
+    )
+}
+
+/// The registry digest of a LOCAL image (`docker image inspect`'s
+/// RepoDigests), if the image was pulled from a registry — adoption pins
+/// the running image when the registry's tag has nothing newer to say.
+pub async fn image_repo_digest(reference: &str) -> Option<String> {
+    let (out, _) = docker(
+        &[
+            "image",
+            "inspect",
+            "-f",
+            "{{range .RepoDigests}}{{.}}{{println}}{{end}}",
+            reference,
+        ],
+        Duration::from_secs(15),
+    )
+    .await
+    .ok()?;
+    out.lines()
+        .find_map(|l| l.split_once('@').map(|(_, d)| d.trim().to_string()))
+        .filter(|d| super::registry::is_digest(d))
 }
 
 /// Stop a container with an explicit grace (`docker stop -t <secs>`): the

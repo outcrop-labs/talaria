@@ -111,6 +111,14 @@ pub struct UpdateState {
     /// x-talaria-key). The HASH, never the key — this row serializes to
     /// the panel, and the key must not ride along.
     pub machine_key_hash: Option<String>,
+    /// The host port the edge owns, recorded at adoption: the slots publish
+    /// nothing, so a later roll's self-inspect has no port to read — this
+    /// is where the renderer learns it back.
+    pub edge_port: Option<String>,
+    /// The orchestrator container adoption retired (the dokploy app). Green
+    /// removes it once the cutover lands — stopped by the finish, removed by
+    /// the reconcile, so nothing resurrects it. Absent on normal rolls.
+    pub retired_container: Option<String>,
 }
 
 /// Read the row. Absent/corrupt → the default (never migrated, never
