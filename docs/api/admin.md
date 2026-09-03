@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -66,6 +66,9 @@
 | [`/api/admin/update`](#apiadminupdate) | GET | `admin` |
 | [`/api/admin/update`](#apiadminupdate) | POST | `admin` |
 | [`/api/admin/update`](#apiadminupdate) | PUT | `admin` |
+| [`/api/admin/updates`](#apiadminupdates) | GET | `admin` |
+| [`/api/admin/updates`](#apiadminupdates) | POST | `admin` |
+| [`/api/admin/updates`](#apiadminupdates) | PUT | `admin` |
 | [`/api/admin/users`](#apiadminusers) | GET | `admin` |
 | [`/api/admin/users`](#apiadminusers) | PUT | `admin` |
 | [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | GET | `admin` |
@@ -611,6 +614,34 @@ Source: [`ui/src/routes/api/admin.update.ts`](../../ui/src/routes/api/admin.upda
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `autoUpdate` | `z.boolean()` |  |
+
+## `/api/admin/updates`
+
+Source: [`api/src/routes/admin/admin_updates.rs`](../../api/src/routes/admin/admin_updates.rs)
+
+> /api/admin/updates — the update engine's panel surface and the fleet's
+> machine surface. GET is the panel's whole read (and green's first read
+> after a cutover: it runs the boot reconcile, so a run that landed while
+> nobody was looking finishes the moment anyone looks). POST drives the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{mode, sentence, migrated, running, autoUpdate, machineKeySet, available, lastCheck, lastRun, history}` | 200 | — |
+| POST | `admin` | [body](#post-apiadminupdates-body) | `…` | 200, 400, 409, 500, 502, 503 | audit |
+| PUT | `admin` | [body](#put-apiadminupdates-body) | `{autoUpdate}` | 200, 400, 500 | audit |
+
+### POST `/api/admin/updates` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `enum(check|apply|rollback|mint-key)?` |  |
+
+### PUT `/api/admin/updates` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `autoUpdate` | `bool` |  |
 
 ## `/api/admin/users`
 

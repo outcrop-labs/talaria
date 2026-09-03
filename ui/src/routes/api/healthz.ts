@@ -54,8 +54,10 @@ async function timed(name: string, ping: () => Promise<unknown>): Promise<Check>
 }
 // doc: Liveness/readiness — SQL and Redis round-trips, plus a `migrations`
 // doc: check that appears (and fails the probe) when the boot migration pass
-// doc: died. PUBLIC BY DESIGN: no session guard, because a health check that
-// doc: needs a session tells you nothing exactly when you need it.
+// doc: died, and `version` (the image's TALARIA_VERSION, null on local
+// doc: builds) so a deploy gate can tell two instances apart. PUBLIC BY
+// doc: DESIGN: no session guard, because a health check that needs a session
+// doc: tells you nothing exactly when you need it.
 
 
 export const Route = defineApi('/api/healthz', {
@@ -99,6 +101,11 @@ export const Route = defineApi('/api/healthz', {
     return json(
       {
         status: ok ? 'ok' : 'degraded',
+        // The image's identity (baked as ENV TALARIA_VERSION at build; null
+        // on a local build, which is simply true). The freshness signal the
+        // fleet's deploy gates read — StartedAt can't tell two instances
+        // running the same image apart.
+        version: process.env.TALARIA_VERSION || null,
         uptimeSeconds: Math.round(process.uptime()),
         checks,
       },
