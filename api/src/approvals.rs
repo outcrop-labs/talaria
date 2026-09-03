@@ -624,16 +624,22 @@ pub fn run_decision_approval(
             def.label, run.phase
         ),
     };
+    // A FREE-TEXT park's lone option is a placeholder, not a choice — drawing
+    // it as "Options: Answered in chat." would send the reader hunting for a
+    // button that does not exist. The sentence says where the answer goes.
+    let detail = if request.free_text {
+        format!("{detail} Answer in the run's discussion.")
+    } else if options.is_empty() {
+        detail
+    } else {
+        format!("{detail} Options: {}.", options.join(" · "))
+    };
     Some(PendingApproval {
         kind: ApprovalKind::RunDecision,
         key: key.to_string(),
         id: run.id.clone(),
         title: format!("{} needs a decision: {}", def.label, request.question),
-        detail: if options.is_empty() {
-            detail
-        } else {
-            format!("{detail} Options: {}.", options.join(" · "))
-        },
+        detail,
         // A run that has nowhere to send a reader is not a bug worth
         // suppressing the approval over — the notification still says what the
         // question is.
@@ -1891,6 +1897,7 @@ mod tests {
                     detail: None,
                 },
             ],
+            free_text: false,
             href: Some("/boards/board-1/task-1".into()),
         }
     }

@@ -525,6 +525,7 @@ fn ask() -> DecisionRequest {
             },
         ],
         href: Some("/boards/board-1/task-1".into()),
+        free_text: false,
     }
 }
 

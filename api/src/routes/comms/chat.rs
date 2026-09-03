@@ -27,11 +27,17 @@ use crate::notify::{NotifyDeps, fan_conversation_event};
 use crate::permissions::has_perm;
 use crate::persona::persona_configured_effort;
 use crate::plan_doc::{PLAN_MODE_PROMPT, plan_routing_block};
+use crate::realtime::RealtimeDeps;
 use crate::refs::{MessageRef, RefUser, resolve_refs};
-use crate::research::{RESEARCH_MODE_PROMPT, list_research_members, research_run_for_conversation};
+use crate::research::{
+    RESEARCH_MODE_PROMPT, RESEARCH_WORKING_PROMPT, awaiting_scope_answer, list_research_members,
+    research_run_for_conversation, run_state_for_conversation,
+};
 use crate::research_origin::mark_agent_turn;
 use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::index_activity;
+use crate::runs::decide::{DecideArgs, DecideResult, decide};
+use crate::runs::real_decide_deps;
 use crate::session::require_user;
 use crate::state::AppState;
 use crate::uploads::{
@@ -139,6 +145,9 @@ pub async fn post(
     let mut plan_title: Option<String> = None;
     let mut plan_owner_id = user.id.clone();
     let mut multi_voice = false;
+    // Which research prompt this conversation's agent speaks with, set while
+    // resolving the conversation below — None everywhere but research.
+    let mut research_prompt: Option<&'static str> = None;
     if let Some(cid) = conv_id.as_deref() {
         let conv = match accessible_conversation(&state.pg, &user.id, cid).await {
             Ok(c) => c,
@@ -175,6 +184,19 @@ pub async fn post(
                     .unwrap_or_default()
                     .is_empty(),
                 None => false,
+            };
+            // THE PROMPT FOLLOWS THE RUN. While the run is working (or parked
+            // on a question), the report does not exist yet and the mode
+            // prompt's "answer from the report" would be an instruction to
+            // invent one. A lookup error picks the working variant: wrongly
+            // telling the agent a report sits beside it is the expensive
+            // direction.
+            research_prompt = match run_state_for_conversation(&state.pg, cid).await {
+                Ok(Some(s)) if s == "queued" || s == "running" || s == "awaiting" => {
+                    Some(RESEARCH_WORKING_PROMPT)
+                }
+                Ok(_) => Some(RESEARCH_MODE_PROMPT),
+                Err(_) => Some(RESEARCH_WORKING_PROMPT),
             };
         }
     }
@@ -414,6 +436,75 @@ pub async fn post(
         );
     }
 
+    // A REPLY IN A PARKED RESEARCH RUN IS THE ANSWER IT WAITS ON. The scope
+    // step parks a vague run on a free-text question that lives in THIS
+    // conversation, so the owner's next message here is not a persona turn —
+    // it is the decision's note. Spending it on decide() re-queues the run
+    // (decide enforces the audience itself: a member's message does not
+    // answer, and falls through to a normal turn). The run posts its own
+    // ack turn into this conversation moments later, which is what the
+    // surface's resuming poll picks up — so the 202 below, the queued shape
+    // ChatView already knows, is the whole response.
+    if kind == "research"
+        && !body.content.trim().is_empty()
+        && let Some(run_id) = awaiting_scope_answer(&state.pg, &conv_id)
+            .await
+            .ok()
+            .flatten()
+    {
+        let spent = match state.redis().await {
+            Ok(redis) => {
+                let deps = real_decide_deps(
+                    state.pg.clone(),
+                    redis.clone(),
+                    RealtimeDeps::publish_only(Some(redis)),
+                );
+                match decide(
+                    DecideArgs {
+                        run_id: run_id.clone(),
+                        // The free-text park's single placeholder option —
+                        // the sentence is the answer, riding the note.
+                        option_id: "answered".into(),
+                        note: Some(body.content.clone()),
+                        by: user.id.clone(),
+                        start: None,
+                    },
+                    &deps,
+                )
+                .await
+                {
+                    Ok(DecideResult::Decided { .. }) => true,
+                    Ok(DecideResult::Refused { reason, .. }) => {
+                        tracing::info!(
+                            "[chat] {conv_id}: a message did not answer run {run_id} ({reason:?})"
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        tracing::error!("[chat] {conv_id}: answering run {run_id} failed: {e}");
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("[chat] {conv_id}: decide deps unavailable: {e}");
+                false
+            }
+        };
+        if spent {
+            return (
+                StatusCode::ACCEPTED,
+                axum::Json(QueuedAck {
+                    queued: true,
+                    conversation_id: conv_id.clone(),
+                }),
+            )
+                .into_response();
+        }
+        // Not spent — the message still lands as a persona turn below, it
+        // just didn't resume anything.
+    }
+
     if queued {
         // If the stream ended between the client's view and this landing,
         // nothing would pick the message up — chain the next turn ourselves.
@@ -424,6 +515,7 @@ pub async fn post(
                 agent_model: agent_model.clone(),
                 tier: body.tier.clone(),
                 plan: plan_meta.clone(),
+                research_prompt,
             };
             tokio::spawn(async move {
                 continue_conversation(&state, &conv_id, &meta).await;
@@ -509,7 +601,13 @@ pub async fn post(
         messages.push(json!({ "role": "system", "content": format!("{PLAN_MODE_PROMPT}{block}") }));
     }
     if kind == "research" {
-        messages.push(json!({ "role": "system", "content": RESEARCH_MODE_PROMPT }));
+        messages.push(json!({
+            "role": "system",
+            // State-chosen above: working while the run works, report-mode
+            // once it has finished. A run with no state row is an old
+            // conversation about a finished report — the mode prompt.
+            "content": research_prompt.unwrap_or(RESEARCH_MODE_PROMPT),
+        }));
     }
     if mentions_handle(&spoken_content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
@@ -565,6 +663,7 @@ pub async fn post(
         prompt_chars,
         tier: body.tier.clone(),
         plan: plan_meta.clone(),
+        research_prompt,
     };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();

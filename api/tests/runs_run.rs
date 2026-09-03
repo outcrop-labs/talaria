@@ -854,6 +854,7 @@ async fn decide_parks_through_pause_and_awaits() {
                             detail: None,
                         }],
                         href: None,
+                        free_text: false,
                     },
                 })
             })
@@ -889,6 +890,7 @@ async fn a_refused_pause_is_not_an_error() {
                         detail: None,
                         options: vec![],
                         href: None,
+                        free_text: false,
                     },
                 })
             })
@@ -1190,6 +1192,7 @@ async fn the_answer_clears_in_the_same_write_as_the_checkpoint() {
             detail: None,
             options: vec![],
             href: None,
+            free_text: false,
         },
         answer: Some(DecisionAnswer {
             key: "which".into(),

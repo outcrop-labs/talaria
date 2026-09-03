@@ -71,13 +71,28 @@
       .filter((m) => m.insert),
   )
 
-  // Created on the first message rather than with the run: most runs are read
-  // once and never discussed, and a conversation per run would turn the chat
-  // list into a list of things nobody said anything about.
+  // The conversation arrives WITH the run now (created at dispatch, so the
+  // scope step can ask in it from the first minute). The manual gate below is
+  // the OLD-RUN fallback — rows predating eager conversations — and the path
+  // for a run an ownerless org-agent started, which has nobody to own a thread.
   let opening = $state(false)
   let openError = $state<string | null>(null)
   let opened = $state<string | null>(null)
   const conversationId = $derived(opened ?? run?.conversationId ?? null)
+
+  // The run's own posts — the scope questions, the ack, the report-ready turn
+  // — land in the discussion without going through ChatView's pollers, and the
+  // run query outlives this view's ~4-minute resuming cap. Every status
+  // transition nudges the chat to re-read: scope→awaiting (the questions),
+  // awaiting→running (the ack), running→done (the report-ready turn).
+  let lastStatus = $state<string | null>(null)
+  let syncSignal = $state(0)
+  $effect(() => {
+    const s = run?.status
+    if (s === undefined || s === null || s === lastStatus) return
+    lastStatus = s
+    syncSignal += 1
+  })
 
   const openThread = async () => {
     opening = true
@@ -126,11 +141,7 @@
 
 {#if !run}
   <!-- The shape of the run view to come: meta row, status panel, report panel. -->
-  <div
-    aria-hidden="true"
-    class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 p-8"
-    style:padding-bottom="calc(var(--research-composer, 0px) + 1rem)"
-  >
+  <div aria-hidden="true" class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 p-8">
     <Skeleton class="h-6 w-64" />
     <ReportSkeleton />
   </div>
@@ -146,10 +157,10 @@
       </div>
 
       {#if conversationId}
-        <!-- ChatView carries its own composer at its bottom; the research ask
-             floats over this column too, so reserve its height or the two
-             inputs overlap. -->
-        <div class="min-h-0 flex-1" style:padding-bottom="var(--research-composer, 0px)">
+        <!-- ChatView carries its own composer at its bottom, and with a run
+             open that is the ONLY input on the page — the ask lives on the
+             zero state, so nothing reserves space for it here anymore. -->
+        <div class="min-h-0 flex-1">
           <ChatView
             agentModel={run.agentModel}
             {agentLabel}
@@ -159,6 +170,7 @@
             kind="research"
             minimal
             {mentionables}
+            {syncSignal}
           />
         </div>
       {:else}
@@ -177,12 +189,7 @@
 
     <!-- ── The report ──────────────────────────────────────────────────────── -->
     <div class="min-w-0 flex-1 overflow-y-auto">
-      <!-- The report scrolls UNDER the floating ask; this is what stops its
-           last line parking behind it. -->
-      <div
-        class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 p-8"
-        style:padding-bottom="calc(var(--research-composer, 0px) + 1rem)"
-      >
+      <div class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 p-8">
         <!-- Run meta line — chrome voice: 11px mono muted (spec §2). -->
         <div class="flex items-center gap-2 font-mono text-[11px] text-muted">
           <Avatar name={run.agentModel} class="h-6 w-6 text-[10px]" />
@@ -203,7 +210,8 @@
           <!-- The run stopped to ask, and this is the ask — above the status
                panel because it IS the status, and with the options the step
                itself offered: the run can only be told something it wrote a
-               branch for. -->
+               branch for. A free-text ask carries no buttons — it is answered
+               in the discussion, where a sentence is the input. -->
           <Panel class="space-y-3">
             <div class="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-ink-dim">
               <MessageCircleQuestion size={13} aria-hidden="true" />
@@ -211,7 +219,19 @@
             </div>
             <div class="text-sm text-fg">{run.awaiting.question}</div>
             {#if run.awaiting.detail}<div class="text-xs text-muted">{run.awaiting.detail}</div>{/if}
-            {#if mayDecide}
+            {#if run.awaiting.freeText}
+              <!-- The scope question: free text, so the chat resume hook spends
+                   the owner's next message in the discussion as the answer.
+                   Buttons here would be a placeholder pretending to be an
+                   input. -->
+              {#if mayDecide}
+                <div class="text-sm text-fg">Waiting on you — reply in the discussion.</div>
+              {:else}
+                <div class="text-xs text-muted">
+                  Waiting on {run.ownerUserId ? 'the run’s owner' : 'an admin'} to reply in the discussion.
+                </div>
+              {/if}
+            {:else if mayDecide}
               <div class="flex flex-wrap gap-2">
                 {#each run.awaiting.options as opt (opt.id)}
                   <Button size="sm" onclick={() => answer(opt.id)} disabled={answering !== null}>
@@ -228,6 +248,17 @@
                 Waiting on {run.ownerUserId ? 'the run’s owner' : 'an admin'} to answer.
               </div>
             {/if}
+          </Panel>
+        {:else if run.status === 'awaiting'}
+          <!-- Awaiting with no question on the wire — a projection gap, not a
+               state to paper over: the panel above is the surface when the
+               question lands, and until then this is the honest sentence. -->
+          <Panel class="flex items-center gap-3">
+            <WaitingMark site="research/run" size={16} class="text-accent" />
+            <div class="min-w-0">
+              <div class="text-sm text-fg">Waiting on you</div>
+              <div class="text-xs text-muted">The run is parked on a question</div>
+            </div>
           </Panel>
         {:else if run.status === 'queued' || run.status === 'running'}
           <Panel class="flex items-center gap-3">

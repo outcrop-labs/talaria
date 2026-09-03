@@ -106,7 +106,7 @@ impl RegisteredHarness {
 /// An admin reading the panel top to bottom therefore reads "here is what you
 /// control" before "here is what your agents are doing with the models you
 /// already gave them".
-static DEFS: [LazyLock<HarnessDefinition>; 35] = [
+static DEFS: [LazyLock<HarnessDefinition>; 36] = [
     // ── Assigned in Admin ─────────────────────────────────────────────────────
     LazyLock::new(defs::titler::titler_harness),
     LazyLock::new(defs::summarizer::summarizer_harness),
@@ -172,7 +172,9 @@ static DEFS: [LazyLock<HarnessDefinition>; 35] = [
     // REFUSE below their floor (research-search, on 'search'; the judge is the
     // other, on json/json-strict/instruction-following) — a model with no web
     // search does not error, it answers from memory and the brief comes out
-    // confident and uncited.
+    // confident and uncited. The scoper leads the family because it leads the
+    // run: it judges the ask before anything is planned.
+    LazyLock::new(defs::research::scope_harness),
     LazyLock::new(defs::research::queries_harness),
     LazyLock::new(defs::research::search_harness),
     LazyLock::new(defs::research::synthesis_harness),
@@ -259,6 +261,7 @@ mod tests {
         "channel-plan",
         "plan-doc",
         "outreach:check-in",
+        "research-scope",
         "research-queries",
         "research-search",
         "research-synthesis",
@@ -626,6 +629,7 @@ mod tests {
                 "channel-plan",
                 "plan-doc",
                 "outreach:check-in",
+                "research-scope",
                 "research-queries",
                 "research-search",
                 "research-synthesis",

@@ -110,11 +110,12 @@ pub enum FitnessBand {
 ///
 /// ITS ABSENCE MADE TWELVE HARNESSES INVISIBLE. `work-session`, `channel-plan`,
 /// `plan-doc`, `outreach:check-in`, all three Inbox harnesses, both briefers,
-/// research-queries and research-synthesis all declare `model: { chain: [] }`
-/// because production pins the SUBJECT of the call — the agent on the ticket,
-/// in the channel, on the plan. So they bound to no slot, and the fitness
-/// matrix — whose columns ARE the slots — had no column for any of them. They
-/// were measured, scored and archived into a report with nowhere to appear.
+/// research-scope, research-queries and research-synthesis all declare
+/// `model: { chain: [] }` because production pins the SUBJECT of the call —
+/// the agent on the ticket, in the channel, on the plan. So they bound to no
+/// slot, and the fitness matrix — whose columns ARE the slots — had no column
+/// for any of them. They were measured, scored and archived into a report
+/// with nowhere to appear.
 ///
 /// That is the largest single consumer of models in the product, and the page
 /// an admin uses to choose one said nothing about it.
@@ -207,6 +208,7 @@ const FLEET_SLOTS: [FleetSlotDef; 2] = [
             "channel-plan",
             "plan-doc",
             "outreach:check-in",
+            "research-scope",
             "research-queries",
             "research-synthesis",
         ],

@@ -186,6 +186,7 @@ async fn run_topic_never_carries_the_decision_question() {
             detail: None,
         }],
         href: None,
+        free_text: false,
     });
     run_publish(deps)(event, None);
     hub.close_topic("run:run-q");

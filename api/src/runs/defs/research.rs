@@ -79,9 +79,9 @@ use crate::artifacts::{
 use crate::capability_reach::{ReachVia, Supplier, reach_for_keys};
 use crate::fleet::describe_agent;
 use crate::harness::defs::research::{
-    ResearchDepth, SearchSink, SynthSource, SynthesisInput, ToolSearchDeps, clamp_queries,
-    queries_from_lines, queries_harness, search_harness, search_transport, synthesis_harness,
-    tool_search_transport,
+    ResearchDepth, ScopeInput, ScopeVerdict, SearchSink, SynthSource, SynthesisInput,
+    ToolSearchDeps, clamp_queries, queries_from_lines, queries_harness, scope_harness,
+    search_harness, search_transport, synthesis_harness, tool_search_transport,
 };
 use crate::harness::run::{
     RunContext, RunLedger, capability_keys_for, real_deps as harness_real_deps, run_harness,
@@ -95,8 +95,8 @@ use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::{index_activity, index_personal};
 use crate::retrieval::{embed, qdrant};
 use crate::runs::define::{
-    Authority, DEFAULT_MAX_ATTEMPTS, RunDefinition, RunRow, RunStepContext, StepResult,
-    register_run,
+    Authority, DEFAULT_MAX_ATTEMPTS, DecisionOption, DecisionRequest, RunDefinition, RunRow,
+    RunStepContext, StepResult, register_run,
 };
 use crate::source_registry::{ResearchSource, SourceRegistry, SourceSeed};
 use crate::state::AppState;
@@ -352,6 +352,12 @@ pub struct ResearchInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResearchStage {
+    /// The cheap FIRST step of a brief or an expedition: judge the ask, say it
+    /// back, and — only when it is vague and the run has a discussion — park on
+    /// the person's answer. Recon never scopes, and neither does a mid-run
+    /// retry: this stage exists to spend one small call before the run commits
+    /// searches to a guess, not to re-litigate an ask that already has findings.
+    Scope,
     Plan,
     Search,
     Synthesize,
@@ -399,6 +405,18 @@ pub struct ResearchCheckpoint {
     /// OWN retries.
     #[serde(default)]
     pub retries: u64,
+    /// What the scope step said the ask IS — the read that was posted to the
+    /// discussion on the crisp path, kept so every planning round works against
+    /// the amended ask rather than the typed one. `#[serde(default)]` because
+    /// checkpoints written before the scope stage existed deserialize too.
+    #[serde(default)]
+    pub scope_read: Option<String>,
+    /// The owner's answer to a clarifying park, verbatim off the decision's
+    /// note. Set in the same write that leaves the scope stage, so a crash
+    /// between the answer and the checkpoint re-delivers the decision rather
+    /// than losing the sentence.
+    #[serde(default)]
+    pub scope_answer: Option<String>,
     /// The written report, once the persona has produced it.
     pub report: Option<Report>,
     /// THE IDEMPOTENCY HANDLE for the one effect that cannot be undone.
@@ -432,6 +450,27 @@ pub struct PlanQueriesArgs {
     pub question: String,
     pub findings_so_far: Vec<String>,
     pub max: u64,
+    /// The scope step's read of the ask plus the owner's clarifying answer,
+    /// joined — or None on a run that scoped crisp with nothing to add, and on
+    /// Recon, which never scopes.
+    pub scope_note: Option<String>,
+}
+
+pub struct ScopeArgs {
+    pub run_id: String,
+    pub agent_model: String,
+    pub question: String,
+    pub mode: ResearchDepth,
+}
+
+/// One server-written turn in the run's discussion. The marker is the
+/// idempotency key: a step that posted and died re-posts to the same marker
+/// and gets the same message back, so a crash between saying something and
+/// checkpointing it cannot double-say it.
+pub struct PostTurnArgs {
+    pub run_id: String,
+    pub marker: String,
+    pub body: String,
 }
 
 pub struct SearchArgs {
@@ -535,6 +574,11 @@ pub struct FinishRowArgs {
 
 pub type SearchPlanForFn =
     Arc<dyn Fn(ResearchDepth) -> BoxFuture<'static, Option<SearchPlan>> + Send + Sync>;
+/// The scope call. None — not Err — is "no verdict": the Null policy's answer,
+/// an infra failure, an unparseable reply. Scope never kills a run; the
+/// caller's fallback is to proceed as crisp.
+pub type ScopeAskFn =
+    Arc<dyn Fn(ScopeArgs) -> BoxFuture<'static, Option<ScopeVerdict>> + Send + Sync>;
 pub type PlanQueriesFn =
     Arc<dyn Fn(PlanQueriesArgs) -> BoxFuture<'static, Vec<String>> + Send + Sync>;
 pub type SearchFn =
@@ -570,6 +614,14 @@ pub type WriteReportFn =
     Arc<dyn Fn(WriteReportArgs) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 pub type IndexFn = Arc<dyn Fn(IndexArgs) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 pub type NotifyFn = Arc<dyn Fn(NotifyArgs) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+/// The run's discussion, if it has one. Ownerless org runs and rows that
+/// predate the eager conversation never do.
+pub type ConversationOfFn =
+    Arc<dyn Fn(String) -> BoxFuture<'static, Result<Option<String>, String>> + Send + Sync>;
+/// Say a turn into the run's discussion, idempotently on the marker. Ok on a
+/// run with no discussion — the turn is a courtesy, never a gate.
+pub type PostToConversationFn =
+    Arc<dyn Fn(PostTurnArgs) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// Every edge the run touches, each overridable, so tests drive whole runs —
 /// including a reclaim — with no database, no Redis and no model.
@@ -580,6 +632,9 @@ pub struct ResearchRunDeps {
     /// and the run refuses to start rather than pay a blind model to answer
     /// from memory.
     pub search_plan_for: SearchPlanForFn,
+    /// The persona judges the ask before anything is planned. None means
+    /// "no verdict" and the run proceeds as crisp — see ScopeAskFn.
+    pub scope_ask: ScopeAskFn,
     /// The persona plans a round. Never fails — a failed plan is one lost
     /// round, and an empty list is the persona saying the question is
     /// saturated.
@@ -617,6 +672,11 @@ pub struct ResearchRunDeps {
     pub write_report: WriteReportFn,
     pub index: IndexFn,
     pub notify: NotifyFn,
+    /// The run's discussion, for the scope step's clarifying questions and the
+    /// publish step's report-ready turn.
+    pub conversation_of: ConversationOfFn,
+    /// One idempotent agent turn in that discussion.
+    pub post_to_conversation: PostToConversationFn,
 }
 
 // ── The real model edges ─────────────────────────────────────────────────────
@@ -683,6 +743,41 @@ async fn search_stage(state: &AppState, args: SearchArgs) -> Result<SearchHit, S
     Ok(SearchHit { content, sources })
 }
 
+/// The scope call: is this ask answerable as written? None — never Err — is
+/// the "no verdict" answer every failure mode collapses to, because the
+/// cheapest step in the run must also be the most dispensable one: a scoper
+/// that cannot answer costs the run its clarifying question, and that is the
+/// behavior research had before the scoper existed. Same ledger line as the
+/// planner so the one model that scopes a run is findable next to the one
+/// that plans it.
+async fn scope_stage(state: &AppState, args: ScopeArgs) -> Option<ScopeVerdict> {
+    let input = serde_json::to_value(ScopeInput {
+        question: args.question.clone(),
+        mode: args.mode,
+    })
+    .ok()?;
+    let run = run_harness(
+        state,
+        &scope_harness(),
+        &input,
+        RunContext {
+            caller: format!("research:{}", args.run_id),
+            model: Some(args.agent_model),
+            ledger: Some(RunLedger {
+                source: Some(LedgerSource::Research),
+                ref_id: Some(args.run_id),
+                task_id: None,
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    // The Null policy means the harness itself never throws; the arms here
+    // are the transport's failures, and they get the same answer.
+    .ok()?;
+    run.value.and_then(|v| serde_json::from_value(v).ok())
+}
+
 /// This round's search queries, or an empty list when the persona says the
 /// question is saturated. Never fails.
 ///
@@ -697,6 +792,7 @@ async fn plan_stage(state: &AppState, args: PlanQueriesArgs) -> Vec<String> {
         "question": args.question,
         "max": args.max,
         "findingsSoFar": args.findings_so_far,
+        "scopeNote": args.scope_note,
     });
     let run = run_harness(
         state,
@@ -806,6 +902,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 /// the harness assembly the three model stages run over.
 pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
     let st_plan = state.clone();
+    let st_scope = state.clone();
     let st_plan_q = state.clone();
     let st_search = state.clone();
     let st_synth = state.clone();
@@ -821,12 +918,18 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
     let st_write = state.clone();
     let st_index = state.clone();
     let st_org = state.clone();
-    let st_notify = state;
+    let st_notify = state.clone();
+    let st_conv = state.clone();
+    let st_post = state;
 
     ResearchRunDeps {
         search_plan_for: Arc::new(move |mode| {
             let pg = st_plan.pg.clone();
             Box::pin(async move { plan_search(&pg, mode).await })
+        }),
+        scope_ask: Arc::new(move |args| {
+            let state = st_scope.clone();
+            Box::pin(async move { scope_stage(&state, args).await })
         }),
         plan_queries: Arc::new(move |args| {
             let state = st_plan_q.clone();
@@ -1154,6 +1257,35 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 .map_err(|e| e.to_string())
             })
         }),
+
+        conversation_of: Arc::new(move |run_id: String| {
+            let pg = st_conv.pg.clone();
+            Box::pin(async move {
+                crate::research::conversation_of_run(&pg, &run_id)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        }),
+
+        post_to_conversation: Arc::new(move |args: PostTurnArgs| {
+            let pg = st_post.pg.clone();
+            Box::pin(async move {
+                // No discussion, no turn — the report-ready announcement and
+                // the scope questions are courtesies the run extends to the
+                // people already talking about it, and an ownerless run (or a
+                // row from before conversations existed) simply skips them.
+                let Some(conversation) = crate::research::conversation_of_run(&pg, &args.run_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                else {
+                    return Ok(());
+                };
+                crate::conversations::post_agent_turn(&pg, &conversation, &args.marker, &args.body)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+        }),
     }
 }
 
@@ -1247,6 +1379,7 @@ fn title_of(cleaned: &str, question: &str) -> String {
 
 fn stage_str(stage: ResearchStage) -> &'static str {
     match stage {
+        ResearchStage::Scope => "scope",
         ResearchStage::Plan => "plan",
         ResearchStage::Search => "search",
         ResearchStage::Synthesize => "synthesize",
@@ -1290,6 +1423,111 @@ async fn advance(
     }
 
     match cp.stage {
+        // ── scope: ONE cheap call, the run's only park ─────────────────────
+        ResearchStage::Scope => {
+            // The answered park arrives through ctx.decision — the chat plane
+            // spent the owner's reply on decide(), and the driver re-delivers
+            // it until a step checkpoints past it. Keyed, because a decision
+            // from some other question must not be mistaken for the answer.
+            if let Some(answer) = ctx.decision.as_ref().filter(|a| a.key == "scope") {
+                stop_if_abandoned(ctx)?;
+                (deps.post_to_conversation)(PostTurnArgs {
+                    run_id: run_id.clone(),
+                    marker: format!("{run_id}:scope-ack"),
+                    body: "Folding that in — starting the run now.".to_string(),
+                })
+                .await?;
+                let mut next = cp.clone();
+                next.stage = ResearchStage::Plan;
+                next.scope_answer = answer.note.clone();
+                return step_next(&next, "starting the run");
+            }
+            // A checkpoint that already carries the read never re-scopes — it
+            // is the crash window between the read's checkpoint and the
+            // stage's write closing, and the run owes nobody a second opinion.
+            if cp.scope_read.is_some() {
+                let mut next = cp.clone();
+                next.stage = ResearchStage::Plan;
+                return step_next(&next, "starting the run");
+            }
+            (ctx.log)("reading the ask".to_string());
+            stop_if_abandoned(ctx)?;
+            let verdict = (deps.scope_ask)(ScopeArgs {
+                run_id: run_id.clone(),
+                agent_model: input.agent_model.clone(),
+                question: input.question.clone(),
+                mode: input.mode,
+            })
+            .await;
+            // No verdict is the pre-scoper behavior: proceed, with a plain
+            // read so the planner still gets the amended-ask treatment and
+            // the discussion still hears the agent start.
+            let (read, questions) = match verdict {
+                Some(v) => (v.read, if v.crisp { Vec::new() } else { v.questions }),
+                None => ("On it.".to_string(), Vec::new()),
+            };
+            let conversation = (deps.conversation_of)(run_id.clone()).await?;
+            if questions.is_empty() {
+                (deps.post_to_conversation)(PostTurnArgs {
+                    run_id: run_id.clone(),
+                    marker: format!("{run_id}:scope"),
+                    body: read.clone(),
+                })
+                .await?;
+                let mut next = cp.clone();
+                next.stage = ResearchStage::Plan;
+                next.scope_read = Some(read);
+                return step_next(&next, "starting the run");
+            }
+            // VAGUE, AND SOMEBODY TO ASK. The questions go to the discussion
+            // the person is already looking at, and the park is free-text:
+            // the answer is their next sentence there, not a button. THE
+            // MARKER IS THE CRASH GUARD — the step that posted these
+            // questions and died before the Decide landed re-posts to the
+            // same marker and gets the same turn back, so the person sees one
+            // set of questions however many times the step ran.
+            let numbered = questions
+                .iter()
+                .enumerate()
+                .map(|(i, q)| format!("{}. {q}", i + 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (deps.post_to_conversation)(PostTurnArgs {
+                run_id: run_id.clone(),
+                marker: format!("{run_id}:scope"),
+                body: format!(
+                    "{read}\n\n{numbered}\n\nAnswer in this discussion and the run starts."
+                ),
+            })
+            .await?;
+            match conversation {
+                Some(_) => Ok(StepResult::Decide {
+                    question: DecisionRequest {
+                        key: "scope".into(),
+                        question: format!("Before this run starts: {read}"),
+                        detail: None,
+                        options: vec![DecisionOption {
+                            id: "answered".into(),
+                            label: "Answered".into(),
+                            detail: None,
+                        }],
+                        free_text: true,
+                        href: Some(format!("/research/{run_id}")),
+                    },
+                }),
+                // Vague with nobody to ask — an ownerless run has no
+                // discussion and no owner to park on. The run proceeds on its
+                // read of the ask, which is what ownerless runs did before
+                // the scope stage existed.
+                None => {
+                    let mut next = cp.clone();
+                    next.stage = ResearchStage::Plan;
+                    next.scope_read = Some(read);
+                    step_next(&next, "starting the run")
+                }
+            }
+        }
+
         // ── plan: ONE persona call ─────────────────────────────────────────
         ResearchStage::Plan => {
             if cp.round > cp.rounds {
@@ -1314,6 +1552,16 @@ async fn advance(
                     Vec::new()
                 } else {
                     cp.findings.clone()
+                },
+                // The scope read and the owner's answer, joined: the plan is
+                // aimed at the ask as amended, and a plan that re-opens what
+                // the person already answered is the failure the scope step
+                // exists to prevent.
+                scope_note: match (&cp.scope_read, &cp.scope_answer) {
+                    (Some(r), Some(a)) => Some(format!("{r}\n\nThe person answered: {a}")),
+                    (Some(r), None) => Some(r.clone()),
+                    (None, Some(a)) => Some(format!("The person answered: {a}")),
+                    (None, None) => None,
                 },
                 max: cp.per_round,
             })
@@ -1643,6 +1891,28 @@ async fn advance(
                     "[runs/research] {run_id}: the report is saved but the notification failed: {e}"
                 );
             }
+            // THE FINISH ANNOUNCEMENT, into the discussion the run has been
+            // talking in. No model call — publish stays free — and the marker
+            // keeps a crash between the bell and the terminal write from
+            // ringing twice. A failed post never fails the run: the report is
+            // saved, indexed and notified, and the chat is the newest of those
+            // four courtesies, not the load-bearing one.
+            if let Err(e) = (deps.post_to_conversation)(PostTurnArgs {
+                run_id: run_id.clone(),
+                marker: format!("{run_id}:report-ready"),
+                body: format!(
+                    "Report ready: **{}** — {} sources ({} cited). [Open it beside this discussion](/research/{run_id}).",
+                    report.title,
+                    cp.sources.len(),
+                    report.cited
+                ),
+            })
+            .await
+            {
+                tracing::error!(
+                    "[runs/research] {run_id}: the report is saved but the discussion was not told: {e}"
+                );
+            }
             Ok(StepResult::Done {
                 result: json!({
                     "artifactId": artifact_id,
@@ -1726,6 +1996,16 @@ async fn begin(
             None => Vec::new(),
         };
         let (stage, plan_round) = first_round(input);
+        // THE SCOPE STEP HAPPENS ONLY HERE. `first_round` keeps answering
+        // Plan for briefs and expeditions because the synthesize no-sources
+        // RETRY also asks it — and a retry that re-scoped would put clarifying
+        // questions under a run that already has findings, re-asking a person
+        // who already answered. The upgrade is begin's alone.
+        let stage = if matches!(stage, ResearchStage::Plan) {
+            ResearchStage::Scope
+        } else {
+            stage
+        };
         let checkpoint = ResearchCheckpoint {
             stage,
             search_model,
@@ -1740,6 +2020,8 @@ async fn begin(
             sources: parent_sources,
             search_failed: false,
             retries: 0,
+            scope_read: None,
+            scope_answer: None,
             report: None,
             artifact_id: None,
         };
@@ -1847,7 +2129,7 @@ mod tests {
     // checkpoint write does, and how the at-least-once cost is
     // stated as a number rather than as a paragraph.
     use super::*;
-    use crate::runs::define::{RunState, StepSignal};
+    use crate::runs::define::{DecisionAnswer, RunState, StepSignal};
 
     // ── The fake world ──────────────────────────────────────────────────────
 
@@ -1859,6 +2141,14 @@ mod tests {
         /// The supplier each search call was handed — the plan's path, threaded
         /// through the checkpoint. None entries are native searches.
         suppliers: Vec<Option<Supplier>>,
+        /// How many scope calls were made. ONE per run is the contract: Recon
+        /// never scopes, and neither does a mid-run retry.
+        scoped: u32,
+        /// Agent turns posted into the discussion, (marker, body) — the scope
+        /// read, the clarifying questions, the ack, the report-ready turn.
+        posted: Vec<(String, String)>,
+        /// The scope note each planning call was handed, one per round.
+        planned_notes: Vec<Option<String>>,
         planned: u32,
         synthesized: u32,
         /// Artifacts created. More than one is the failure this file exists to
@@ -1885,6 +2175,12 @@ mod tests {
         /// findable by the next entry.
         link: Option<String>,
         row_exists: bool,
+        /// The run's discussion. None = ownerless run / old row.
+        conversation: Option<String>,
+        /// Markers already posted — what makes the post fake idempotent the
+        /// way `post_agent_turn` is, so the re-entry tests exercise the real
+        /// contract rather than the fake's.
+        posted_markers: HashSet<String>,
         /// Queries whose search should throw, by query text.
         dead_queries: HashSet<String>,
         all_searches_dead: bool,
@@ -1904,6 +2200,13 @@ mod tests {
         org_run: bool,
         /// Fired inside the search fake before it errs — the lost-lease case.
         abort_tx: Option<tokio::sync::watch::Sender<bool>>,
+        /// The scoper's verdict: crisp (with a read, no questions) or vague
+        /// (a read plus two questions).
+        scope_vague: bool,
+        /// The scoper returns nothing — the Null policy's arm.
+        scope_none: bool,
+        /// Whether the run has a discussion to post into.
+        has_conversation: bool,
     }
 
     impl Default for WorldSpec {
@@ -1915,6 +2218,9 @@ mod tests {
                 synthesize_error: None,
                 org_run: false,
                 abort_tx: None,
+                scope_vague: false,
+                scope_none: false,
+                has_conversation: true,
             }
         }
     }
@@ -1927,10 +2233,14 @@ mod tests {
             synthesize_error,
             org_run,
             abort_tx,
+            scope_vague,
+            scope_none,
+            has_conversation,
         } = spec;
         let w: Arc<std::sync::Mutex<World>> = Arc::new(std::sync::Mutex::new(World {
             row_exists: true,
             org_answer: org_run,
+            conversation: has_conversation.then(|| "conv-1".to_string()),
             ..Default::default()
         }));
 
@@ -1947,6 +2257,32 @@ mod tests {
                 };
                 Box::pin(async move { Some(plan) })
             }),
+            scope_ask: {
+                let w = w.clone();
+                Arc::new(move |_args: ScopeArgs| {
+                    let w = w.clone();
+                    Box::pin(async move {
+                        let mut g = w.lock().expect("the world is never held across an await");
+                        g.scoped += 1;
+                        if scope_none {
+                            return None;
+                        }
+                        Some(ScopeVerdict {
+                            crisp: !scope_vague,
+                            read: "I read the ask as: postgres 17 replication changes.".into(),
+                            questions: if scope_vague {
+                                vec![
+                                    "Which postgres major version matters here?".into(),
+                                    "Is failover the behavior you care about, or slot state?"
+                                        .into(),
+                                ]
+                            } else {
+                                Vec::new()
+                            },
+                        })
+                    })
+                })
+            },
             plan_queries: {
                 let w = w.clone();
                 Arc::new(move |args: PlanQueriesArgs| {
@@ -1954,6 +2290,7 @@ mod tests {
                     Box::pin(async move {
                         let mut g = w.lock().expect("the world is never held across an await");
                         g.planned += 1;
+                        g.planned_notes.push(args.scope_note);
                         if empty_plan {
                             return Vec::new();
                         }
@@ -2177,6 +2514,38 @@ mod tests {
                     })
                 })
             },
+            conversation_of: {
+                let w = w.clone();
+                Arc::new(move |_run_id: String| {
+                    let w = w.clone();
+                    Box::pin(async move {
+                        Ok(w.lock()
+                            .expect("the world is never held across an await")
+                            .conversation
+                            .clone())
+                    })
+                })
+            },
+            post_to_conversation: {
+                let w = w.clone();
+                Arc::new(move |args: PostTurnArgs| {
+                    let w = w.clone();
+                    Box::pin(async move {
+                        let mut g = w.lock().expect("the world is never held across an await");
+                        if g.conversation.is_none() {
+                            return Ok(());
+                        }
+                        // Idempotent on the marker, exactly like the real
+                        // post_agent_turn — the re-entry tests below depend on
+                        // the FAKE holding the same contract as the edge it
+                        // stands in for.
+                        if g.posted_markers.insert(args.marker.clone()) {
+                            g.posted.push((args.marker, args.body));
+                        }
+                        Ok(())
+                    })
+                })
+            },
         };
         (w, deps)
     }
@@ -2221,17 +2590,29 @@ mod tests {
         steps: u32,
         result: Option<Value>,
         error: Option<String>,
+        /// The park, when the run ended parked — the scope question as the
+        /// approvals census and the awaiting panel would read it.
+        parked: Option<DecisionRequest>,
     }
 
     /// The driver's loop, honestly: persist the checkpoint, then the next step.
-    async fn drive_run(
+    /// An `answer` is delivered the way the real driver delivers one — only
+    /// once a park has been seen, on the entry after it.
+    async fn drive_run_with(
         deps: &ResearchRunDeps,
         input: &ResearchInput,
         kill_at: Option<u32>,
+        answer: Option<DecisionAnswer>,
     ) -> DriveOutcome {
         let mut checkpoint: Value = Value::Null;
         let mut attempt: i32 = 0;
         let mut steps: u32 = 0;
+        // The answer the test wants delivered, and whether this entry carries
+        // it: the driver only sets `decision` once the row is parked awaiting
+        // — never on the way in — so the fake delivers exactly one entry
+        // after the park is seen, and never before.
+        let mut supply = answer;
+        let mut deliver: Option<DecisionAnswer> = None;
         let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|_| ());
         loop {
             assert!(
@@ -2245,7 +2626,7 @@ mod tests {
                 run: row,
                 input: serde_json::to_value(input).expect("the test input serializes"),
                 checkpoint: checkpoint.clone(),
-                decision: None,
+                decision: deliver.take(),
                 signal: StepSignal::channel().1,
                 log: log.clone(),
                 attempt,
@@ -2256,6 +2637,7 @@ mod tests {
                         steps,
                         result: None,
                         error: Some(e),
+                        parked: None,
                     };
                 }
                 Ok(StepResult::Done { result }) => {
@@ -2263,6 +2645,7 @@ mod tests {
                         steps,
                         result: Some(result),
                         error: None,
+                        parked: None,
                     };
                 }
                 Ok(StepResult::Next { checkpoint: cp, .. }) => {
@@ -2276,9 +2659,34 @@ mod tests {
                         checkpoint = cp;
                     }
                 }
-                other => panic!("research does not park or defer: {other:?}"),
+                // The park. The driver persists it and waits; the fake spends
+                // its answer on the next entry, the way a person's decide()
+                // arrives one step after the question.
+                Ok(StepResult::Decide { question }) => match supply.take() {
+                    Some(a) => {
+                        assert_eq!(a.key, question.key, "the answer must answer the park");
+                        deliver = Some(a);
+                    }
+                    None => {
+                        return DriveOutcome {
+                            steps,
+                            result: None,
+                            error: None,
+                            parked: Some(question),
+                        };
+                    }
+                },
+                other => panic!("research does not defer: {other:?}"),
             }
         }
+    }
+
+    async fn drive_run(
+        deps: &ResearchRunDeps,
+        input: &ResearchInput,
+        kill_at: Option<u32>,
+    ) -> DriveOutcome {
+        drive_run_with(deps, input, kill_at, None).await
     }
 
     fn stats_sources(g: &World) -> u64 {
@@ -2370,11 +2778,227 @@ mod tests {
         // No sources and nothing more to search — the point here is that an
         // empty plan ends the ROUND LOOP instead of spinning it. The run then
         // retries the same empty round its two times (plan → synthesize, three
-        // pairs) and ends on the no-sources sentence: 7 steps, not the 2 a
-        // straight error would take.
+        // pairs) and ends on the no-sources sentence: 8 steps — one scope plus
+        // the three pairs plus begin — not the 2 a straight error would take.
         assert_eq!(out.error.as_deref(), Some(NO_SOURCES));
         assert_eq!(w.lock().unwrap().searched.len(), 0);
-        assert_eq!(out.steps, 7);
+        assert_eq!(out.steps, 8);
+    }
+
+    // ── The scope step: the run's one conversation with its person ─────────
+
+    #[tokio::test]
+    async fn a_crisp_ask_posts_its_read_and_aims_the_plan_at_it() {
+        let (w, deps) = make_world(WorldSpec::default()); // the default verdict is crisp
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        assert!(out.parked.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.scoped, 1);
+        // Two turns in the discussion: the read, and (later) the report.
+        assert_eq!(g.posted.len(), 2);
+        assert_eq!(g.posted[0].0, "run-1:scope");
+        assert_eq!(
+            g.posted[0].1,
+            "I read the ask as: postgres 17 replication changes."
+        );
+        // The planner was handed the read as the amended ask — a crisp scope
+        // still leaves a note, or the questions would be the only path to one.
+        assert_eq!(
+            g.planned_notes[0].as_deref(),
+            Some("I read the ask as: postgres 17 replication changes.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vague_ask_parks_in_the_discussion_with_free_text() {
+        let (w, deps) = make_world(WorldSpec {
+            scope_vague: true,
+            ..Default::default()
+        });
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        // Not an error, not a result: the run is parked on its person.
+        assert!(out.error.is_none());
+        assert!(out.result.is_none());
+        let parked = out.parked.expect("a vague ask parks");
+        assert_eq!(parked.key, "scope");
+        assert!(
+            parked.free_text,
+            "the answer is the next sentence in the discussion, not a button"
+        );
+        // Exactly one option, so decide()'s validation passes — the choice is
+        // the sentence, and the href is where a person already in the app
+        // would land anyway.
+        assert_eq!(parked.options.len(), 1);
+        assert_eq!(parked.options[0].id, "answered");
+        assert_eq!(parked.href.as_deref(), Some("/research/run-1"));
+        let g = w.lock().unwrap();
+        // The questions were posted — numbered, with the instruction — and
+        // NOTHING WAS SEARCHED: the run refused to commit a guess.
+        assert_eq!(g.posted.len(), 1);
+        let (marker, body) = &g.posted[0];
+        assert_eq!(marker, "run-1:scope");
+        assert!(body.contains("1. Which postgres major version matters here?"));
+        assert!(body.contains("2. Is failover the behavior you care about, or slot state?"));
+        assert!(body.contains("Answer in this discussion and the run starts."));
+        assert_eq!(g.searched.len(), 0);
+        assert_eq!(g.planned, 0);
+        assert_eq!(g.scoped, 1);
+    }
+
+    #[tokio::test]
+    async fn the_reply_in_the_discussion_folds_into_the_plan() {
+        // Vague ask, then the owner answers in chat. The chat plane spends the
+        // reply on decide(), the driver re-delivers it here, and the plan is
+        // aimed at the answered ask — the whole reason the park exists.
+        let (w, deps) = make_world(WorldSpec {
+            scope_vague: true,
+            ..Default::default()
+        });
+        let out = drive_run_with(
+            &deps,
+            &input(ResearchDepth::Brief),
+            None,
+            Some(DecisionAnswer {
+                key: "scope".into(),
+                option_id: "answered".into(),
+                note: Some("pg 16 → 17, and we care about logical slot failover".into()),
+                answered_by: Some("user-1".into()),
+                answered_at: "2026-09-02T00:00:00.000Z".into(),
+            }),
+        )
+        .await;
+        assert!(out.error.is_none());
+        assert!(out.parked.is_none());
+        let g = w.lock().unwrap();
+        // Questions, then the ack, then the report: three turns, one each.
+        assert_eq!(g.posted.len(), 3);
+        assert_eq!(g.posted[1].0, "run-1:scope-ack");
+        assert_eq!(g.posted[1].1, "Folding that in — starting the run now.");
+        // The planner got the answer — the read was posted to the discussion
+        // but never checkpointed past the park (a Decide carries no
+        // checkpoint), and the raw question is already in the planner's
+        // prompt, so the answer is the delta the plan needs.
+        assert_eq!(
+            g.planned_notes[0].as_deref(),
+            Some("The person answered: pg 16 → 17, and we care about logical slot failover")
+        );
+        assert_eq!(g.scoped, 1, "the answer is not a second scope call");
+        assert_eq!(g.searched.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn re_entry_after_the_park_posts_one_set_of_questions() {
+        // The window the marker exists for: the step posted the questions and
+        // the park landed, and the re-entry (a reclaim, a re-dispatch) runs
+        // the scope call AGAIN — the declared at-least-once cost — while the
+        // discussion still sees one turn.
+        let (w, deps) = make_world(WorldSpec {
+            scope_vague: true,
+            ..Default::default()
+        });
+        let inp = input(ResearchDepth::Brief);
+        let first = drive_run(&deps, &inp, None).await;
+        assert!(first.parked.is_some());
+        let second = drive_run(&deps, &inp, None).await;
+        assert!(second.parked.is_some());
+        let g = w.lock().unwrap();
+        assert_eq!(g.scoped, 2);
+        assert_eq!(g.posted.len(), 1, "the marker holds the line to one turn");
+        assert_eq!(g.searched.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn recon_never_scopes() {
+        // Recon is the instant mode: the question IS the query. Even a world
+        // that would call it vague cannot spend the call.
+        let (w, deps) = make_world(WorldSpec {
+            scope_vague: true,
+            ..Default::default()
+        });
+        let out = drive_run(&deps, &input(ResearchDepth::Recon), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.scoped, 0);
+        // Its only turn is the report-ready one.
+        assert_eq!(g.posted.len(), 1);
+        assert_eq!(g.posted[0].0, "run-1:report-ready");
+    }
+
+    #[tokio::test]
+    async fn a_no_sources_retry_re_plans_but_never_re_scopes() {
+        // The retry path re-enters at Plan, not Scope: the person already
+        // told the run what they meant, and the retries plan against that.
+        let (w, deps) = make_world(WorldSpec::default());
+        w.lock().unwrap().all_searches_dead = true;
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert_eq!(out.error.as_deref(), Some(NO_SOURCES));
+        let g = w.lock().unwrap();
+        assert_eq!(g.planned, 3, "the initial plan plus two retries");
+        assert_eq!(g.scoped, 1, "the scope call is spent once per run");
+        // And every re-plan still carried the read.
+        assert!(g.planned_notes.iter().all(|n| n.is_some()));
+    }
+
+    #[tokio::test]
+    async fn a_vague_ask_with_nobody_to_ask_proceeds_on_its_read() {
+        // Ownerless run, no discussion: the questions have nowhere to go, and
+        // parking anyway would be ticket #5 again — a run that reads as
+        // working while it waits on a person who was never asked.
+        let (w, deps) = make_world(WorldSpec {
+            scope_vague: true,
+            has_conversation: false,
+            ..Default::default()
+        });
+        let inp = ResearchInput {
+            owner_user_id: None,
+            ..input(ResearchDepth::Brief)
+        };
+        let out = drive_run(&deps, &inp, None).await;
+        assert!(out.error.is_none());
+        assert!(out.parked.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.posted.len(), 0);
+        assert!(
+            g.planned_notes[0].is_some(),
+            "the read still reaches the plan"
+        );
+        assert_eq!(g.searched.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_silent_scoper_never_wedges_the_run() {
+        // The Null failure policy: no verdict at all — a 502, a repair miss —
+        // and the run starts with a plain read, exactly as it would have
+        // before the scope step existed. Scope asks; it never blocks.
+        let (w, deps) = make_world(WorldSpec {
+            scope_none: true,
+            ..Default::default()
+        });
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        assert!(out.parked.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.scoped, 1);
+        assert_eq!(
+            g.posted[0],
+            ("run-1:scope".to_string(), "On it.".to_string())
+        );
+        assert_eq!(g.planned_notes[0].as_deref(), Some("On it."));
+        assert_eq!(g.searched.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_report_ready_turn_lands_in_the_discussion() {
+        let (w, deps) = make_world(WorldSpec::default());
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        let (marker, body) = &g.posted[1];
+        assert_eq!(marker, "run-1:report-ready");
+        assert!(body.starts_with("Report ready: **"));
+        assert!(body.contains("3 sources"));
+        assert!(body.contains("[Open it beside this discussion](/research/run-1)"));
     }
 
     // ── Resume ──────────────────────────────────────────────────────────────
@@ -2382,10 +3006,10 @@ mod tests {
     #[tokio::test]
     async fn re_enters_mid_round_without_re_running_a_completed_query() {
         let (w, deps) = make_world(WorldSpec::default());
-        // Step 1 is `begin`, 2 is `plan`, 3/4/5 are the three searches. Killing
-        // the checkpoint AFTER the second search is the deploy landing
-        // mid-round.
-        let out = drive_run(&deps, &input(ResearchDepth::Brief), Some(4)).await;
+        // Step 1 is `begin`, 2 is `scope`, 3 is `plan`, 4/5/6 are the three
+        // searches. Killing the checkpoint AFTER the second search is the
+        // deploy landing mid-round.
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), Some(5)).await;
         assert!(out.error.is_none());
         let g = w.lock().unwrap();
         // Three distinct angles, and the ONE re-billed call is the query that
@@ -2403,7 +3027,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_restart_is_not_an_error_anywhere() {
-        for kill_at in 1..=8 {
+        // Steps 10 (save) and 11 (publish) are excluded on purpose: re-running
+        // save is the repeat-write case `a_repeated_save_rewrites_the_same_
+        // body_not_a_second_report` owns.
+        for kill_at in 1..=9 {
             let (w, deps) = make_world(WorldSpec::default());
             let out = drive_run(&deps, &input(ResearchDepth::Brief), Some(kill_at)).await;
             // The sentence this whole port exists to delete has no path left to

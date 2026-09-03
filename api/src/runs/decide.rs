@@ -652,6 +652,7 @@ mod tests {
                     detail: None,
                 },
             ],
+            free_text: false,
             href: Some("/boards/board-1/task-1".into()),
         }
     }
