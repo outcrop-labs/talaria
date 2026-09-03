@@ -154,8 +154,12 @@ RUN adduser -D -u 10001 talaria \
 # PORT=5273 is the fleet contract (agents dial
 # host.docker.internal:5273 / the app's network alias), COOKIE_SECURE=0 because
 # the default posture is plain http (browsers drop Secure cookies over http —
-# flip it behind TLS, see docs/CONTAINER.md), TALARIA_UPDATER=off because the
-# orchestrator (compose/Dokploy) owns deploys and the image has no git checkout.
+# flip it behind TLS, see docs/CONTAINER.md). TALARIA_UPDATER is deliberately
+# NOT baked: the old `off` default contradicted the install signal below — an
+# adopted slot would have inherited it from the image's own ENV and the engine
+# could never act. Dormancy for image installs is the adoption gate (the
+# engine acts only on instances that explicitly handed over the keys), and an
+# operator who wants a hard switch sets TALARIA_UPDATER=off themselves.
 # TALARIA_API_BIN tells server-entry.js where the api binary it spawns lives —
 # the path is fixed by the COPY above; the env keeps the entry from guessing a
 # repo-layout path that only exists on dev boxes.
@@ -175,7 +179,6 @@ ENV PORT=5273 \
     HOST=0.0.0.0 \
     NODE_ENV=production \
     COOKIE_SECURE=0 \
-    TALARIA_UPDATER=off \
     TALARIA_INSTALL=image \
     TALARIA_API_BIN=/usr/local/bin/talaria-api \
     TALARIA_JS_RUNTIME=bun \
