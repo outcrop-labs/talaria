@@ -324,6 +324,21 @@ pub struct MessageRow {
     pub author_label: Option<String>,
 }
 
+/// The human a conversation belongs to, by id alone — no access check. The
+/// attribution ladder resolves a chat turn to its user here; scoping by
+/// access would be circular (the point is to learn WHO to scope to).
+pub async fn conversation_owner(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as("select user_id::text from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.map(|(v,)| v))
+}
+
 /// A conversation + its messages in order. Access: yours — or a plan you're
 /// a member of; RESEARCH ACCESS FOLLOWS THE
 /// RUN, not a second membership list (research_runs/research_members decide),

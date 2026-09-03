@@ -89,8 +89,9 @@
     {@render field('Location', location)}
     {@render field('Contents', contents)}
     <!-- Belongs-to comes before who-can-see-it, because it's the question
-         people actually get wrong: an org agent's report has no owner and is
-         the workspace's, however it happens to be shared. -->
+         people actually get wrong: an org agent's report belongs to the human
+         the agent was answering — org-readable, but that person's to govern.
+         Only genuinely ownerless files are the workspace's. -->
     {@render field('Belongs to', access ? (!access.ownerUserId ? 'The workspace (no personal owner)' : row.owner === 'me' ? 'You' : row.owner) : null)}
     {@render field('Created by', access?.createdBy)}
     {@render field('Created', created ? relativeTime(created) : null)}

@@ -49,6 +49,60 @@ Each ships a sensible member default; the ones that are **off** by default are `
 Admins hold everything unconditionally. The Admin → People per-person chips show effective state
 and where it came from (override dot vs inherited).
 
+## Personal assistants
+
+A personal assistant is an agent bound to one human (its owner). It holds no roles, views, or
+permissions of its own; each surface instead answers *"what would the owner's reach allow, minus
+the destructive parts"*:
+
+- **Boards** — the board's agent allow-list stays authoritative and restrictive by default.
+  What inheritance buys is the grant path, not a bypass: on any board its owner can *read*, the
+  assistant adds itself (`POST /api/boards/{id}/agents/self`, one step); on boards the owner
+  cannot see it files a request the board's editors approve or decline
+  (`/api/boards/{id}/agent-requests` — also a `board_access` approval in the editors' queue).
+  It may remove only its own row; the editor policy PUT remains the only way to touch anyone
+  else's.
+- **Knowledge & artifacts** — `can_read_agent` mirrors the owner for *reads*: private docs,
+  spaces, and artifacts the owner owns open to their assistant (retrieval already served them;
+  now the file plane agrees). Edit stays grant-only (`can_edit_agent`), and sharing, brain
+  routing, and officialness stay human-only routes.
+- **Destructive actions are not inherited.** Agents never assign or sign off tickets, never
+  delete boards/tickets/members, and a personal assistant's outbound mail and invites wait for
+  an approval card. Inheritance is read + draft reach, not authority.
+- An admin's own assistant can be marked **elevated** (Admin → People) for an org-wide view, and
+  `GET /api/agent/whoami` introspects any agent's effective reach (identity, boards with *why*,
+  guardrails, pending requests).
+
+## Who owns what agents make
+
+When an agent creates something — a knowledge doc or space, a document or file, a saved image,
+a research report, a workbench plan — the item's owner is **the human responsible for the agent
+run**, not the agent:
+
+1. a **personal assistant**'s output belongs to its owner (and starts private to them, as
+   before);
+2. an **org agent working mid-chat** attributes to the human it is answering;
+3. anything else the agent makes on its own (crons, standalone calls) attributes to **the admin
+   who hired it**;
+4. an agent nobody can trace stays ownerless.
+
+Default visibility is unchanged — an org agent's output remains org-readable; ownership adds
+*control* (share it, flip it private, set policy), not secrecy. A research run keeps its
+org-ness either way: an org agent's findings stay org-visible and ambient-indexed however
+owned, while a person's own run (or their assistant's) stays private with its share grants.
+
+Two consequences worth knowing:
+
+- **Governance follows the owner.** On a human-owned item, the owner alone governs — *admins
+  included* do not get `can_govern` there (`can_govern`'s owner arm is exclusive by design).
+  The owner can always re-share or hand the item off by changing visibility.
+- **Read reach is not ownership.** The ladder stamps owners; it never widens what the *agent
+  itself* may read. An org agent's read reach stays its own (org/public + grants); only a
+  personal assistant reads through its owner's eyes.
+
+Going forward only: items made before attribution (ownerless, governed by admins + the agent's
+allow-list) stay exactly as they were.
+
 ## Enforcement in code
 
 Every API route speaks one dialect ([API-CONVENTIONS.md](./API-CONVENTIONS.md)):

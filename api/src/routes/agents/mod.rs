@@ -3,6 +3,7 @@ pub mod agent_gap;
 pub mod agent_message_user;
 pub mod agent_problem;
 pub mod agent_role_templates;
+pub mod agent_whoami;
 pub mod agents;
 pub mod agents_id_heartbeat;
 pub mod agents_register;

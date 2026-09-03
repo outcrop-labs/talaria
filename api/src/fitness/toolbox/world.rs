@@ -374,6 +374,14 @@ pub struct SandboxWorld {
     /// Problems reported to the admins (`report_problem`).
     #[serde(default)]
     pub problems_filed: Vec<String>,
+    /// Boards this agent has an OPEN access request on
+    /// (`request_board_access`). Production dedupes with a partial unique
+    /// index — one open request per (board, agent) — and the tool is
+    /// documented as answering `alreadyPending: true` on a re-file, so the
+    /// sandbox stages the same memory: board ids only, because the world is
+    /// one agent's world.
+    #[serde(default)]
+    pub board_requests_filed: Vec<String>,
 }
 
 impl SandboxWorld {
@@ -667,6 +675,7 @@ pub fn base_world() -> SandboxWorld {
         email_drafts: Vec::new(),
         event_drafts: Vec::new(),
         problems_filed: Vec::new(),
+        board_requests_filed: Vec::new(),
     }
 }
 

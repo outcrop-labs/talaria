@@ -76,11 +76,13 @@ services:
       HOME: /home/dev
       # The shared tools layer's bin FIRST, so `box enter` (interactive bash),
       # scripts and spawned processes all find installed harnesses. The rest
-      # mirrors the node base image's PATH exactly — an override REPLACES, so
+      # mirrors the devbox image's PATH exactly (the node base plus the cargo
+      # layer's /home/dev/.cargo/bin prepend) — an override REPLACES, so
       # dropping one of these directories would hide its tools; keep in sync
-      # if the base image changes. (Login shells still re-set PATH from
-      # /etc/profile — the layer's env vars carry those cases instead.)
-      PATH: /work/tools/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+      # with the Dockerfile's final ENV PATH if the image changes. (Login
+      # shells still re-set PATH from /etc/profile — the layer's env vars
+      # carry those cases instead.)
+      PATH: /work/tools/bin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # Tells `talaria dev` this container already owns its infra — it must
       # NOT try to bring up (or wait on) the primary dev stack through the
       # mounted socket.

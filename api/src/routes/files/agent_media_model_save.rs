@@ -4,7 +4,10 @@
 // straight into a folder. For science. And company meme folders. Callable by
 // humans (session; any agent they may use) AND by the agent itself over the
 // talaria MCP (agent key; its OWN container only). Same path/type guardrails
-// as viewing the image inline.
+// as viewing the image inline. Agent-saved media carries the attribution
+// ladder's user as upload owner and artifact owner — a personal assistant's
+// owner (private to them), or the human an org agent is answering (team-
+// visible, human-governed).
 
 use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::agent_media::read_agent_image;
@@ -54,7 +57,11 @@ pub async fn post(
     body: axum::body::Bytes,
 ) -> Response {
     let actor: String;
+    // Two answers again, same split as the artifacts POST: the PA-only
+    // resolve decides VISIBILITY (private-to-owner vs team-org), the
+    // attribution ladder decides whose row the upload and artifact are.
     let owner_user_id: Option<String>;
+    let responsible: Option<String>;
     let mut agent_actor = false;
     match agent_caller(&state.pg, &headers).await {
         Err(resp) => return resp,
@@ -70,16 +77,31 @@ pub async fn post(
             // A personal assistant saves media FOR ITS OWNER — owned +
             // private. Asked with the CALLER: writing into a human's account
             // needs a proven identity, not an asserted one.
-            owner_user_id =
-                match crate::users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller))
-                    .await
-                {
-                    Ok(o) => o,
-                    Err(e) => {
-                        tracing::error!("[agent-media] owner lookup failed: {e}");
-                        return thrown_internal_error();
-                    }
-                };
+            owner_user_id = match crate::users::assistant_owner_for(
+                &state.pg,
+                &AgentSubject::Caller(caller.clone()),
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::error!("[agent-media] owner lookup failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+            responsible = match crate::attribution::responsible_user_for(
+                &state.pg,
+                state.redis().await.ok(),
+                &AgentSubject::Caller(caller),
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::error!("[agent-media] responsible-user lookup failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
         }
         Ok(None) => {
             let user = match require_user(&state, &headers).await {
@@ -101,7 +123,8 @@ pub async fn post(
                 .clone()
                 .or(user.name.clone())
                 .unwrap_or("user".into());
-            owner_user_id = Some(user.id);
+            owner_user_id = Some(user.id.clone());
+            responsible = Some(user.id);
         }
     }
 
@@ -174,7 +197,7 @@ pub async fn post(
         filename,
         media.mime,
         &media.bytes,
-        owner_user_id.as_deref(),
+        responsible.as_deref(),
     )
     .await
     {
@@ -194,7 +217,7 @@ pub async fn post(
         Some("file"),
         Some(&title),
         &actor,
-        owner_user_id.as_deref(),
+        responsible.as_deref(),
         None,
     )
     .await
@@ -206,8 +229,10 @@ pub async fn post(
         }
     };
     // ORG-agent media is for the TEAM (a private no-owner artifact would be
-    // invisible to humans). A personal assistant's media belongs to its
-    // owner — private, shareable by the human.
+    // invisible to humans) — keyed on the PA-only resolve, NOT the ladder:
+    // chat-attributed org media keeps the team's read reach while carrying
+    // the chatting human as its owner. A personal assistant's media belongs
+    // to its owner — private, shareable by the human.
     let visibility = (agent_actor && owner_user_id.is_none()).then_some("org");
     let saved = match save_artifact(
         &state.pg,

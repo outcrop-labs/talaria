@@ -769,8 +769,10 @@ async fn call_tool(
                 .await;
                 // The plan also becomes a markdown ARTIFACT attached to the
                 // ticket — durable and versioned, not just scrollback. Filed
-                // under the agent's Plans cabinet; org-visible like the
-                // ticket it belongs to.
+                // under the agent's Plans cabinet; org-visible like the ticket
+                // it belongs to, and stamped to the human the agent answers
+                // (the attribution ladder) so a person governs it rather than
+                // an allow-list.
                 let spawn_deps = deps.clone();
                 let spawn_agent = agent.clone();
                 let spawn_task_id = task_id.clone();
@@ -802,12 +804,25 @@ async fn call_tool(
                         120,
                     )
                     .to_string();
+                    // Whose plan this is: the platform chose this model, so
+                    // the subject is proven by construction — the ladder
+                    // names the chatting human mid-chat, the hirer otherwise.
+                    // A failed resolve is a None owner (the ownerless
+                    // fallback), never a dropped plan.
+                    let responsible = crate::attribution::responsible_user_for(
+                        &spawn_deps.pg,
+                        spawn_deps.redis.clone(),
+                        &AgentSubject::Model(spawn_agent.model.clone()),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
                     let Ok(artifact) = create_artifact(
                         &spawn_deps.pg,
                         Some("doc"),
                         Some(&artifact_title),
                         &spawn_agent.model,
-                        None,
+                        responsible.as_deref(),
                         folder.as_deref(),
                     )
                     .await

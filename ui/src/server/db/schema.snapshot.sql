@@ -162,6 +162,17 @@ CREATE TABLE public.audit_log (
     after jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.board_agent_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    board_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    requested_by_user_id uuid,
+    reason text,
+    status text DEFAULT 'open'::text NOT NULL,
+    decided_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    decided_at timestamp with time zone
+);
 CREATE TABLE public.board_agents (
     board_id uuid NOT NULL,
     agent_model text NOT NULL
@@ -1109,6 +1120,8 @@ ALTER TABLE ONLY public.assistant_reply_grants
     ADD CONSTRAINT assistant_reply_grants_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.audit_log
     ADD CONSTRAINT audit_log_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.board_agent_requests
+    ADD CONSTRAINT board_agent_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_agents
     ADD CONSTRAINT board_agents_pkey PRIMARY KEY (board_id, agent_model);
 ALTER TABLE ONLY public.board_labels
@@ -1331,6 +1344,7 @@ CREATE UNIQUE INDEX assistant_reply_grants_standing_idx ON public.assistant_repl
 CREATE UNIQUE INDEX assistant_reply_grants_thread_idx ON public.assistant_reply_grants USING btree (user_id, channel_id) WHERE ((channel_id IS NOT NULL) AND (revoked_at IS NULL));
 CREATE INDEX audit_log_created_idx ON public.audit_log USING btree (created_at DESC);
 CREATE INDEX audit_log_target_idx ON public.audit_log USING btree (target_type, target_id);
+CREATE UNIQUE INDEX board_agent_requests_one_open ON public.board_agent_requests USING btree (board_id, agent_model) WHERE (status = 'open'::text);
 CREATE INDEX board_views_board_idx ON public.board_views USING btree (board_id, "position");
 CREATE INDEX channel_messages_idx ON public.channel_messages USING btree (channel_id, seq);
 CREATE INDEX channel_messages_streaming_idx ON public.channel_messages USING btree (created_at) WHERE (status = 'streaming'::text);
@@ -1414,6 +1428,12 @@ ALTER TABLE ONLY public.assistant_reply_grants
     ADD CONSTRAINT assistant_reply_grants_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.assistant_reply_grants
     ADD CONSTRAINT assistant_reply_grants_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_agent_requests
+    ADD CONSTRAINT board_agent_requests_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_agent_requests
+    ADD CONSTRAINT board_agent_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.board_agent_requests
+    ADD CONSTRAINT board_agent_requests_requested_by_user_id_fkey FOREIGN KEY (requested_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.board_agents
     ADD CONSTRAINT board_agents_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_labels

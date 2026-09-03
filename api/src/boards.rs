@@ -564,6 +564,48 @@ pub async fn set_board_agent_config(
     Ok(())
 }
 
+/// Self-service: a personal assistant appends ITSELF to a board's agent
+/// allow-list — one row, deliberately never `set_board_agent_config`, whose
+/// delete-all-then-insert would race a concurrent editor's save. A repeat
+/// add is a no-op (`on conflict do nothing`), matching how the config
+/// writer inserts its own rows. Executor-generic so the request-decide route
+/// can run it inside the same transaction that closes the request — the
+/// grant and the state change commit together or not at all.
+pub async fn add_board_agent_row<'e, E>(
+    executor: E,
+    board_id: &str,
+    agent_model: &str,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        "insert into board_agents (board_id, agent_model) values ($1::uuid, $2) \
+         on conflict do nothing",
+    )
+    .bind(board_id)
+    .bind(agent_model)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Self-service's mirror: the assistant removes only its own row. Removing a
+/// row that is not there is a no-op, not an error — leaving a board you
+/// already left must not 500 the tool call.
+pub async fn remove_board_agent_row(
+    pg: &PgPool,
+    board_id: &str,
+    agent_model: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from board_agents where board_id = $1::uuid and agent_model = $2")
+        .bind(board_id)
+        .bind(agent_model)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
 /// Whether an agent may be assigned on a board.
 /// Restrictive by default: a board allows an agent only if allow-all is on OR
 /// the agent is explicitly listed. An admin-elevated personal assistant

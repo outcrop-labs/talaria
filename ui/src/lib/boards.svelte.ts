@@ -107,6 +107,44 @@ export function useBoardAgents(boardId: MaybeGetter<string | null>) {
 export const setBoardAgents = (boardId: string, allowAll: boolean, models: string[]) =>
   putJson<{ ok: true }>(`/api/boards/${boardId}/agents`, { allowAll, models })
 
+export interface BoardAgentRequest {
+  id: string
+  agentModel: string
+  agentName: string | null
+  requestedBy: string | null
+  requestedByName: string | null
+  reason: string | null
+  status: string
+  createdAt: string
+}
+
+/** Open "add this agent to the board" requests, oldest first. The GET gates on
+ *  editor-or-elevated server-side, so `enabled` keeps a viewer's tab from
+ *  carrying a 403 it would only render as an error card. */
+export function useBoardAgentRequests(
+  boardId: MaybeGetter<string | null>,
+  enabled: MaybeGetter<boolean> = true,
+) {
+  return createQuery(() => {
+    const id = resolve(boardId)
+    return {
+      queryKey: ['board-agent-requests', id],
+      enabled: !!id && resolve(enabled),
+      queryFn: (): Promise<BoardAgentRequest[]> =>
+        getList<BoardAgentRequest>(`/api/boards/${id}/agent-requests`, 'requests'),
+    }
+  })
+}
+
+/** One press on a request: approve (the grant and the close land in one
+ *  transaction) or decline (close only). Callers invalidate
+ *  ['board-agent-requests', id] and ['board-agents', id]. */
+export const decideBoardAgentRequest = (
+  boardId: string,
+  agentModel: string,
+  action: 'approve' | 'reject',
+) => putJson<{ ok: true }>(`/api/boards/${boardId}/agent-requests`, { agentModel, action })
+
 export interface BoardViewConfig {
   view?: 'board' | 'list' | 'gantt'
   group?: string

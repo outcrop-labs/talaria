@@ -71,7 +71,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledg
 > /api/kb/docs/{id}. One KB doc. Read/edit gated by the doc's EFFECTIVE
 > audience — inherited from its folder unless customized. Sharing changes are
 > owner-only; routing owner-only;
-> officializing needs kb.official. Agents (by key) only edit content when
+> officializing needs kb.official. Agents (by key) read org/public, granted
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -215,9 +215,9 @@ Source: [`api/src/routes/knowledge/kb_search.rs`](../../api/src/routes/knowledge
 Source: [`api/src/routes/knowledge/kb_spaces.rs`](../../api/src/routes/knowledge/kb_spaces.rs)
 
 > /api/kb/spaces. KB spaces (any member). GET → all the caller can read
-> (agents over MCP see org/public + granted; humans see visibility-read +
-> granted). POST → create (agents find-or-create by name; humans need
-> kb.official).
+> (agents over MCP see org/public + granted + — for a personal assistant —
+> its owner's own; humans see visibility-read + granted). POST → create
+> (agents find-or-create by name; humans need kb.official).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -262,9 +262,9 @@ Source: [`api/src/routes/knowledge/kb_spaces_id.rs`](../../api/src/routes/knowle
 Source: [`api/src/routes/knowledge/kb_spaces_id_docs.rs`](../../api/src/routes/knowledge/kb_spaces_id_docs.rs)
 
 > /api/kb/spaces/{id}/docs. A space's doc tree. GET → doc metadata list
-> (agents gate on agent space-access, then per-doc audience; humans gate on
-> the folder, then inherited docs show and customized ones filter). POST →
-> new doc (agent docs are drafts owned by the assistant's principal; humans
+> (agents gate on agent space-access — org/public, a grant, or a personal
+> assistant's owner's own reach — then per-doc audience on the same terms;
+> humans gate on the folder, then inherited docs show and customized ones
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

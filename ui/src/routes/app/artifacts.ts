@@ -34,12 +34,13 @@ export const AGENTS_ROOT = 'Agents'
 
 /** WHOSE a file is, which is a different question from who can SEE it.
  *
- *  A personal file has an owner: a person's own work, or a personal
- *  assistant's output, which belongs to the human it works for. A workspace
- *  file is ownerless on purpose — an org agent's output belongs to the
- *  organization, not to whoever happened to trigger it, and it outlives any
- *  one person's account. `visibility` then decides who can READ either one;
- *  the two axes are independent and must not be collapsed. */
+ *  A personal file has an owner: a person's own work, a personal
+ *  assistant's output (it belongs to the human it works for), or an org
+ *  agent's output, which is stamped to the human the agent was answering —
+ *  that person governs it. A workspace file is ownerless: agent output from
+ *  before attribution, or from an agent nobody can trace, and it outlives
+ *  any one person's account. `visibility` then decides who can READ either
+ *  one; the two axes are independent and must not be collapsed. */
 export type Scope = 'personal' | 'workspace'
 export const scopeOf = (a: { ownerUserId: string | null }): Scope => (a.ownerUserId ? 'personal' : 'workspace')
 
@@ -51,7 +52,7 @@ export type Place = 'my' | 'shared' | 'workspace' | 'official' | 'recent' | 'sec
 export const PLACES: { id: Place; label: string; glyph: string; empty: string; hint?: string }[] = [
   { id: 'my', label: 'My Files', glyph: '◆', empty: 'Nothing here yet.', hint: 'Drop files anywhere to upload, or use New.' },
   { id: 'shared', label: 'Shared with me', glyph: '◇', empty: 'Nothing shared with you yet.' },
-  { id: 'workspace', label: 'Workspace', glyph: '⊞', empty: 'No workspace files yet.', hint: 'Files the organization owns, mostly written by agents.' },
+  { id: 'workspace', label: 'Workspace', glyph: '⊞', empty: 'No workspace files yet.', hint: 'Files with no personal owner — mostly agent output from before attribution.' },
   { id: 'official', label: 'Official', glyph: '★', empty: 'No official files yet.', hint: 'Official files are mirrored into the knowledgebase.' },
   { id: 'recent', label: 'Recent', glyph: '◷', empty: 'Nothing edited recently.' },
   // NOT A FILE, and it gets its own place rather than rows in the table for
@@ -132,7 +133,9 @@ export function isMine(a: Artifact, me: Me): boolean {
 /** Which place a file belongs to. Deliberately keyed on `ownerUserId` rather
  *  than `isMine`, so the three places partition the store exactly once: an
  *  ownerless file is the WORKSPACE's even when you were the one who triggered
- *  it, and it can never show up in two places at the same time. */
+ *  it, an owned one is MINE or SHARED even when the whole org can read it
+ *  (an org agent's chat-attributed output is the owner's to govern), and a
+ *  file can never show up in two places at the same time. */
 export function placeOf(a: Artifact, me: Me): Extract<Place, 'my' | 'shared' | 'workspace'> {
   if (!a.ownerUserId) return 'workspace'
   return isMine(a, me) ? 'my' : 'shared'

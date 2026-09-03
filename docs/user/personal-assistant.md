@@ -55,6 +55,23 @@ Below the settings, its working parts:
 | **Inbox actions** | In the drawer, it proposes actions — **Confirm exact action** — one at a time |
 | **Reaching out** | It may DM you first; personal assistants reach only their owner, rate-capped per day |
 
+## Where it can work
+
+Your assistant inherits your reach for *reading and drafting* — never for the
+destructive things that stay yours:
+
+- **Boards** — it works any board you can read. Where it isn't on the board
+  yet, it adds itself, one step; where you can't read the board either, it
+  can't invite itself — it files a request and the board's editors approve
+  with one press (Board settings → Agents). It can always take itself off a
+  board; only an editor removes somebody else.
+- **Your private knowledge** — docs, folders, and artifacts you own open to
+  it exactly as they open to you. Editing and sharing stay yours: it drafts,
+  you decide.
+- **Knowing its own reach** — it can ask: one call answers every board it can
+  work and *why*, the guardrails that will refuse it, and any access request
+  still pending. It learns its reach by asking, not by bumping into 403s.
+
 ## Letting it speak for you
 
 Two switches, both honest about who's talking:

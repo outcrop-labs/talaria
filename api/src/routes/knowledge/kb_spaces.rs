@@ -1,7 +1,7 @@
 // /api/kb/spaces. KB spaces (any member). GET → all the caller can read
-// (agents over MCP see org/public + granted; humans see visibility-read +
-// granted). POST → create (agents find-or-create by name; humans need
-// kb.official).
+// (agents over MCP see org/public + granted + — for a personal assistant —
+// its owner's own; humans see visibility-read + granted). POST → create
+// (agents find-or-create by name; humans need kb.official).
 
 use axum::Json;
 use axum::extract::State;
@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::agent_auth::agent_caller;
+use crate::agent_auth::{AgentSubject, agent_caller};
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, optional_max_string_member, parse, string_member};
 use crate::error::{house_error, thrown_internal_error};
@@ -50,10 +50,26 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 return thrown_internal_error();
             }
         };
+        // The owner arm is the inherited-read promise: a personal assistant
+        // sees the spaces its owner sees, so a private space is not hidden
+        // from the person's own assistant.
+        let owner = match crate::users::assistant_owner_for(
+            &state.pg,
+            &AgentSubject::Caller(caller.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] owner resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let spaces: Vec<_> = all
             .into_iter()
             .filter(|s| {
-                granted.contains(&s.id) || can_read_agent(&guarded_of(s), &caller.model, &[])
+                granted.contains(&s.id)
+                    || can_read_agent(&guarded_of(s), &caller.model, owner.as_deref(), &[])
             })
             .collect();
         return Json(json!({ "spaces": spaces })).into_response();
@@ -105,8 +121,10 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     // Agents (over MCP) may create spaces too — a space is just a shelf, and
-    // docs stay drafts until a human officializes them. No owner, so
-    // sharing/deletion stay human calls.
+    // docs stay drafts until a human officializes them. The space carries
+    // the agent's responsible user as its owner (a personal assistant's
+    // owner, or the human an org agent is answering) so a person — not the
+    // agent — governs the shelf; sharing and deletion stay human calls.
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -126,6 +144,19 @@ pub async fn post(
             // find-or-create: agents retry; duplicates rot the KB.
             return Json(json!({ "space": dup })).into_response();
         }
+        let responsible = match crate::attribution::responsible_user_for(
+            &state.pg,
+            state.redis().await.ok(),
+            &AgentSubject::Caller(caller),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] responsible-user resolve failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let space = match create_space(
             &state.pg,
             &NewSpace {
@@ -133,7 +164,7 @@ pub async fn post(
                 description,
                 icon,
                 created_by: model,
-                owner_user_id: None,
+                owner_user_id: responsible,
             },
         )
         .await

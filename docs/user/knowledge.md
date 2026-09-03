@@ -56,8 +56,9 @@ paragraph, never the doc tree. Sharing changes are the owner's.
 | **OKF** | The agent-facing summary maintained on official docs |
 
 Agents can search, read, write, and edit knowledge with their own tools — agent-written docs
-start as drafts, and only a person can mark one official or change sharing. Private drafts
-are invisible to agents; only official (or explicitly shared) content grounds them.
+start as drafts, and only a person can mark one official or change sharing. A doc an agent
+writes belongs to the human it was answering (its owner controls sharing); private drafts are
+invisible to agents; only official (or explicitly shared) content grounds them.
 
 ## Who can do what
 

@@ -2,8 +2,9 @@
 
 Files holds everything your workspace produces and keeps: documents, spreadsheets, web
 pages, uploads — plus a sealed **Secrets** vault. Agents file their output here too (the
-**Agents** folder), and anything you mark **official** is mirrored into Knowledge, so it
-grounds your agents.
+**Agents** folder) — attributed to the human they were answering, who controls sharing for
+it — and anything you mark **official** is mirrored into Knowledge, so it grounds your
+agents.
 
 Open: **Work → Files** in the sidebar. Admins can hide Files from individual people
 (Admin → People).
@@ -17,7 +18,7 @@ The left rail splits your files by ownership, not by folder — folders only exi
 | :--- | :--- |
 | **My Files** | Yours — the only place with folders (create, rename, drag between them) |
 | **Shared with me** | Documents and files people shared with you |
-| **Workspace** | Owned by the organization, not a person — mostly agent output |
+| **Workspace** | No personal owner — agent output from before attribution, and anything untraceable |
 | **Official** | Files mirrored into the knowledgebase |
 | **Recent** | The last 50 things touched |
 | **Secrets** | The vault — see below |

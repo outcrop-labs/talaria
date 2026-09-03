@@ -3,9 +3,11 @@
 // fleet key): they need the directory to resolve "email Priya" or "add Priya
 // to the board" into an address.
 //
-// This is also mcp/'s fleet-wide auth oracle (the resident GETs it with the
-// agent's credential to check the fleet is still talking to its org), so its
-// response shape is frozen.
+// This route once doubled as mcp/'s fleet-wide auth oracle (the resident GET
+// /api/users with the agent's credential to check the fleet was still talking
+// to its org). The oracle has its own home now — GET /api/agent/whoami, see
+// routes/agents/agent_whoami.rs — and narrowing THIS route to a people-picker
+// decision no longer takes the toolkit dark.
 
 use crate::agent_auth::agent_caller;
 use crate::error::thrown_internal_error;

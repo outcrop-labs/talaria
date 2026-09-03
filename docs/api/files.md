@@ -120,8 +120,8 @@ Source: [`api/src/routes/files/artifacts.rs`](../../api/src/routes/files/artifac
 
 > /api/artifacts. The artifact LIST
 > (what the Files browser opens on) and CREATE. Read is gated exactly like
-> the KB list beside it: org/public visible to all, private only to owner
-> and grants. Creation differs by caller: a PERSONAL assistant's output
+> the KB list beside it: org/public visible to all, private only to owner,
+> grants — and, for a personal assistant, its owner's own reach (the single-
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -144,8 +144,8 @@ Source: [`api/src/routes/files/artifacts_id.rs`](../../api/src/routes/files/arti
 
 > /api/artifacts/{id}. One artifact: read/edit gated by its audience,
 > sharing owner-only, agents (by key) only edit content when granted the
-> Editor role. The PUT is the plane's whole state machine — content edits,
-> sharing, official curation and brain routing all land here, in this
+> Editor role — a personal assistant READS its owner's artifacts the way it
+> reads their docs (can_read_agent's owner arm), and edit stays grant-only.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

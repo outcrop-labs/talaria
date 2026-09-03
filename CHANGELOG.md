@@ -4,6 +4,56 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-made things belong to the human behind the run — the responsible
+  user, not the agent.** A knowledge doc or space, a document, file, or saved
+  image, a research report, a workbench plan: whatever an agent creates now
+  carries an owner, resolved by an attribution ladder — a personal
+  assistant's owner; the human an org agent is answering mid-chat (the same
+  turn key research reports back to); otherwise the admin who hired the
+  agent; and an untraceable agent stays ownerless, as before. The owner gets
+  the ordinary human's controls — share, make private, set policy — replacing
+  the old answer where org-agent output was locked to an allow-list nobody
+  could sit inside. Default visibility is deliberately unchanged: an org
+  agent's output stays workspace-readable (ownership adds control, not
+  secrecy), a personal assistant's stays private to its owner, and an org
+  agent's research stays org-visible and ambient-indexed however owned —
+  org-ness is derived from the run's own row (`requested_by` = the model,
+  plus the agent being ownerless in `agent_defs`), never a serialized flag,
+  so runs in flight across the deploy resolve correctly. The artifact
+  listing also caught up with the single-artifact GET: a personal assistant
+  now sees its owner's private files in the Files browser it could already
+  open them from. Going forward only — existing ownerless items stay as they
+  are.
+- **Personal assistants inherit their owner's reach for read + draft — with the
+  grant friction gone and introspection in its place.** Boards were the one
+  policy-gated hole: the board listing showed an assistant its owner's boards
+  while the board interior 403'd it, and the only path onto a board was an
+  editor's hand. Now a personal assistant adds *itself* to any board its owner
+  can read (`POST /api/boards/{id}/agents/self` — one step, own row only,
+  audited), removes itself the same way, and for boards the owner cannot see
+  files a request (`/api/boards/{id}/agent-requests`) that lands in the
+  editors' approvals queue as a sixth approval kind (`board_access`) with a
+  one-press Approve/Decline card in Board settings → Agents — approve grants
+  and closes atomically, decline notifies the requester's owner. The board's
+  agent policy stays authoritative throughout; nothing here widens it.
+- **`GET /api/agent/whoami`** — the introspection call agents were missing:
+  identity (personal? whose? elevated?), every board it can work with *why*
+  (policy / owner / elevated), channels, MCP servers, the guardrails that
+  will refuse it, and its own pending access requests — plus the MCP tools
+  that act on the answer (`whoami`, `join_board`, `leave_board`,
+  `request_board_access`). The fleet verifier's auth oracle moved onto this
+  purpose-built route from its old borrow on `GET /api/users`, so narrowing
+  the people directory can no longer take the toolkit dark.
+- **A personal assistant reads its owner's private knowledge.** `can_read_agent`
+  gained an owner arm: private docs, spaces, and artifacts the owner owns open
+  to their assistant across the file plane (doc GET, doc trees, space and
+  artifact listings, Drive export) — the brain already retrieved that
+  collection for them, so two planes had stopped agreeing about "it reads your
+  private work". Edit stays grant-only; sharing, routing, and officialness
+  stay human-only.
+
 ### Changed
 
 - **Migrations ship in the image — and bad ones die before (or at) the
@@ -130,6 +180,15 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   sweep on one latent nullability fix — the inbox undo read mapped a
   nullable `outcome` column into a non-Option type, which now tolerates a
   completed-without-outcome row instead of 500ing the undo.
+- **Devboxes are no longer API-dark on arrival.** The box compose's
+  `environment: PATH:` mirrored the node base image's PATH — but a compose
+  override *replaces*, and the devbox image prepends `~/.cargo/bin`: with
+  cargo off PATH, `talaria dev`'s api sidecar skipped itself (non-fatally, by
+  design) and every fresh box served a UI whose every `/api/*` call failed.
+  The override now mirrors the devbox image's PATH — cargo restored, plus the
+  sbin directories the abbreviated form had also dropped — so the sidecar
+  raises the Rust api on in-box loopback as intended.
+
 - **`list_boards` no longer 500s for agents — the port's one never-executed
   query.** The agent listing's `select distinct` sorted on `b.updated_at`,
   but the boards port had replaced the raw timestamps with epoch-ms

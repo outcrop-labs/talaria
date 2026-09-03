@@ -26,7 +26,9 @@
 //                Written by the chat route on the way INTO a turn, read
 //                moments later when the
 //                agent's tool call comes back through here. Short TTL — it is
-//                a fact about an in-flight turn.
+//                a fact about an in-flight turn. Ownership attribution reads
+//                the same half (attribution.rs): a mid-turn creation belongs
+//                to the human on the other end of that conversation.
 //   the ORIGIN   which conversation is owed the answer to this run. Written
 //                once when the run is created, read when it finishes,
 //                possibly an hour later on an expedition.
@@ -73,7 +75,18 @@ pub async fn mark_agent_turn(state: &AppState, agent_model: &str, conversation_i
 
 /// The conversation this agent is mid-turn in, or None.
 pub async fn current_agent_turn(state: &AppState, agent_model: &str) -> Option<String> {
-    let mut conn = state.redis().await.ok()?;
+    current_agent_turn_on(state.redis().await.ok(), agent_model).await
+}
+
+/// The turn half with the connection handed in — ownership attribution
+/// (attribution::responsible_user_for) reads it from contexts that hold a
+/// ConnectionManager rather than an AppState, the workbench spawn among them.
+/// Same key, same never-throw answer: None is an ordinary reply.
+pub async fn current_agent_turn_on(
+    redis: Option<redis::aio::ConnectionManager>,
+    agent_model: &str,
+) -> Option<String> {
+    let mut conn = redis?;
     let v: Option<String> = conn.get(turn_key(agent_model)).await.ok()?;
     v
 }

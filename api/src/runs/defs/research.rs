@@ -470,6 +470,10 @@ pub struct WriteReportArgs {
     pub artifact_id: String,
     pub body: String,
     pub owner_user_id: Option<String>,
+    /// Did an ORG agent start this run (the row-derived ORG_AGENT_RUN test)?
+    /// Decides REACH, where the owner decides governance: an org-agent run
+    /// publishes org-visible however owned, a personal one goes private.
+    pub org_run: bool,
     pub agent_label: String,
     /// The run's agent (fleet model id) — granted viewer on a personal
     /// report so the agent that wrote it can read it back.
@@ -508,6 +512,10 @@ pub struct IndexArgs {
     pub question: String,
     pub mode: ResearchDepth,
     pub owner_user_id: Option<String>,
+    /// Same row-derived org-ness as WriteReportArgs carries: an org-agent
+    /// run indexes ambient (orgWide) however owned; a personal one goes to
+    /// the owner's private brain.
+    pub org_run: bool,
 }
 
 pub struct NotifyArgs {
@@ -542,6 +550,11 @@ pub type RowExistsFn =
     Arc<dyn Fn(String) -> BoxFuture<'static, Result<bool, String>> + Send + Sync>;
 pub type MemberIdsFn =
     Arc<dyn Fn(String) -> BoxFuture<'static, Result<Vec<String>, String>> + Send + Sync>;
+/// Did an ORG agent start this run? The row answers (research.rs's
+/// ORG_AGENT_RUN test) — derived at write time, never serialized on the
+/// input, so a run in flight across a deploy resolves as correctly as one
+/// started after it.
+pub type OrgRunFn = Arc<dyn Fn(String) -> BoxFuture<'static, Result<bool, String>> + Send + Sync>;
 pub type SaveSourcesFn = Arc<
     dyn Fn(String, Vec<ResearchSource>) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
 >;
@@ -586,6 +599,10 @@ pub struct ResearchRunDeps {
     /// it would be billing a person for a thing they threw away.
     pub row_exists: RowExistsFn,
     pub member_ids: MemberIdsFn,
+    /// Org-ness of the run, from the row (see OrgRunFn). The Save and Publish
+    /// steps both ask — a resume between them must re-derive, not trust a
+    /// checkpoint, because the answer rides no serialized state.
+    pub org_run: OrgRunFn,
     pub save_sources: SaveSourcesFn,
     pub finish_row: FinishRowFn,
     /// Mirror a failure onto the domain record. See `mirror_failure`.
@@ -803,6 +820,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
     let st_create = state.clone();
     let st_write = state.clone();
     let st_index = state.clone();
+    let st_org = state.clone();
     let st_notify = state;
 
     ResearchRunDeps {
@@ -901,6 +919,15 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 .await
                 .map_err(|e| e.to_string())?;
                 Ok(rows.into_iter().map(|(id,)| id).collect())
+            })
+        }),
+
+        org_run: Arc::new(move |run_id: String| {
+            let pg = st_org.pg.clone();
+            Box::pin(async move {
+                crate::research::is_org_agent_run(&pg, &run_id)
+                    .await
+                    .map_err(|e| e.to_string())
             })
         }),
 
@@ -1016,27 +1043,28 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
         write_report: Arc::new(move |args: WriteReportArgs| {
             let pg = st_write.pg.clone();
             Box::pin(async move {
-                // Ownership decides reach: an ORG run (no owner) publishes
-                // org-visible; a user's run stays PRIVATE to them, with members
-                // granted editor on the doc — sharing the run is the only way
-                // anyone else sees it.
+                // TWO facts, deliberately two different questions. The OWNER
+                // decides governance — whose row the report is, who shares or
+                // deletes it. ORG-NESS decides reach: an org-agent run
+                // publishes org-visible however owned (the ladder's human
+                // governs it instead of an allow-list), while a personal run —
+                // a person's own ask, or their assistant's — stays PRIVATE to
+                // them, with the run's members granted editor on the doc:
+                // sharing the run is the only way anyone else sees it.
+                let org_reach = args.org_run || args.owner_user_id.is_none();
                 save_artifact(
                     &pg,
                     &args.artifact_id,
                     SaveArtifactPatch {
                         body: Some(&args.body),
-                        visibility: Some(if args.owner_user_id.is_some() {
-                            "private"
-                        } else {
-                            "org"
-                        }),
+                        visibility: Some(if org_reach { "org" } else { "private" }),
                         ..Default::default()
                     },
                     &args.agent_label,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-                if args.owner_user_id.is_some() {
+                if !org_reach {
                     // A report that is saved must not fail its run because a
                     // share could not land.
                     let _ = set_editors(
@@ -1054,15 +1082,16 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
         index: Arc::new(move |args: IndexArgs| {
             let pg = st_index.pg.clone();
             Box::pin(async move {
-                // Placement follows ownership: a personal run's report goes to
-                // the owner's private brain (them + their assistant); an
-                // org-wide run's report goes to the ambient index, marked
-                // orgWide so scopes actually match it.
+                // Placement follows org-ness, not ownership: an org-agent
+                // run's report goes to the ambient index (marked orgWide so
+                // scopes actually match it) however owned; a personal run's
+                // goes to the owner's private brain (them + their assistant).
+                let org_reach = args.org_run || args.owner_user_id.is_none();
                 let mut payload = serde_json::Map::new();
                 payload.insert("runId".into(), json!(args.run_id));
                 payload.insert("question".into(), json!(args.question));
                 payload.insert("mode".into(), json!(depth_str(args.mode)));
-                if args.owner_user_id.is_none() {
+                if org_reach {
                     payload.insert("orgWide".into(), json!(true));
                 }
                 let doc = IndexDoc {
@@ -1079,14 +1108,14 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 let qd = qdrant::real_deps();
                 let ed = embed::real_deps();
                 match &args.owner_user_id {
-                    Some(owner) => {
+                    Some(owner) if !org_reach => {
                         // index_personal swallows its own failures whole-body —
                         // a report that exists but is unfindable is not a
                         // failed report.
                         index_personal(&pg, &qd, &ed, owner, &doc).await;
                         Ok(())
                     }
-                    None => index_activity(&pg, &qd, &ed, &doc).await,
+                    _ => index_activity(&pg, &qd, &ed, &doc).await,
                 }
             })
         }),
@@ -1532,7 +1561,11 @@ async fn advance(
                 return step_next(&next, "filing the report");
             };
             stop_if_abandoned(ctx)?;
-            let member_ids = if input.owner_user_id.is_some() {
+            // Org-ness from the row, not from the owner: an org-agent run
+            // publishes org-wide even though the ladder stamps the human it
+            // answers as the run's owner.
+            let org_run = (deps.org_run)(run_id.clone()).await?;
+            let member_ids = if input.owner_user_id.is_some() && !org_run {
                 (deps.member_ids)(run_id.clone()).await?
             } else {
                 Vec::new()
@@ -1541,6 +1574,7 @@ async fn advance(
                 artifact_id: artifact_id.clone(),
                 body: report.body.clone(),
                 owner_user_id: input.owner_user_id.clone(),
+                org_run,
                 agent_label: (deps.agent_label)(&input.agent_model),
                 agent_model: input.agent_model.clone(),
                 member_ids,
@@ -1579,6 +1613,10 @@ async fn advance(
             // Indexing first because it is keyed on (sourceType, sourceId) and
             // hashes its content: a repeat is a no-op. The BELL is not keyed,
             // so it goes last and nothing follows it but the terminal write.
+            // Org-ness re-derived here, not carried on the checkpoint — the
+            // answer rides no serialized state, so a run resumed across a
+            // deploy resolves it the way the start would now.
+            let org_run = (deps.org_run)(run_id.clone()).await?;
             (deps.index)(IndexArgs {
                 run_id: run_id.clone(),
                 artifact_id: artifact_id.clone(),
@@ -1587,6 +1625,7 @@ async fn advance(
                 question: input.question.clone(),
                 mode: input.mode,
                 owner_user_id: input.owner_user_id.clone(),
+                org_run,
             })
             .await?;
             if let Some(owner) = &input.owner_user_id
@@ -1827,6 +1866,14 @@ mod tests {
         created: Vec<String>,
         /// Bodies written, (artifact id, body).
         written: Vec<(String, String)>,
+        /// The org flag each report write was handed — one entry per run.
+        report_org: Vec<bool>,
+        /// How many times the member-grant list was fetched. An org run never
+        /// fetches it; a personal run does.
+        member_fetches: u32,
+        /// What the org_run edge answers — seeded from the spec, so the fake
+        /// stays one thing.
+        org_answer: bool,
         indexed: u32,
         notified: u32,
         finished: Vec<(String, Value)>,
@@ -1853,6 +1900,8 @@ mod tests {
         plan_supplier: Option<Supplier>,
         empty_plan: bool,
         synthesize_error: Option<String>,
+        /// What the row would say: an org agent started this run.
+        org_run: bool,
         /// Fired inside the search fake before it errs — the lost-lease case.
         abort_tx: Option<tokio::sync::watch::Sender<bool>>,
     }
@@ -1864,6 +1913,7 @@ mod tests {
                 plan_supplier: None,
                 empty_plan: false,
                 synthesize_error: None,
+                org_run: false,
                 abort_tx: None,
             }
         }
@@ -1875,10 +1925,12 @@ mod tests {
             plan_supplier,
             empty_plan,
             synthesize_error,
+            org_run,
             abort_tx,
         } = spec;
         let w: Arc<std::sync::Mutex<World>> = Arc::new(std::sync::Mutex::new(World {
             row_exists: true,
+            org_answer: org_run,
             ..Default::default()
         }));
 
@@ -1997,9 +2049,29 @@ mod tests {
                     })
                 })
             },
-            member_ids: Arc::new(|_run_id: String| {
-                Box::pin(async move { Ok(vec!["member-1".to_string()]) })
-            }),
+            member_ids: {
+                let w = w.clone();
+                Arc::new(move |_run_id: String| {
+                    let w = w.clone();
+                    Box::pin(async move {
+                        w.lock()
+                            .expect("the world is never held across an await")
+                            .member_fetches += 1;
+                        Ok(vec!["member-1".to_string()])
+                    })
+                })
+            },
+            org_run: {
+                let w = w.clone();
+                Arc::new(move |_run_id: String| {
+                    let w = w.clone();
+                    Box::pin(async move {
+                        Ok(w.lock()
+                            .expect("the world is never held across an await")
+                            .org_answer)
+                    })
+                })
+            },
             save_sources: {
                 let w = w.clone();
                 Arc::new(move |_run_id: String, sources: Vec<ResearchSource>| {
@@ -2074,10 +2146,9 @@ mod tests {
                 Arc::new(move |args: WriteReportArgs| {
                     let w = w.clone();
                     Box::pin(async move {
-                        w.lock()
-                            .expect("the world is never held across an await")
-                            .written
-                            .push((args.artifact_id, args.body));
+                        let mut g = w.lock().expect("the world is never held across an await");
+                        g.written.push((args.artifact_id, args.body));
+                        g.report_org.push(args.org_run);
                         Ok(())
                     })
                 })
@@ -2422,6 +2493,35 @@ mod tests {
         assert_eq!(g.notified, 1);
     }
 
+    #[tokio::test]
+    async fn an_owned_org_run_publishes_org_and_skips_the_personal_grants() {
+        // The ladder stamps the chatting human as an org-agent run's owner, so
+        // "owned" no longer implies "personal": the row's org flag rides the
+        // report write (org reach, however owned), and the personal share
+        // grants are never even fetched.
+        let (w, deps) = make_world(WorldSpec {
+            org_run: true,
+            ..Default::default()
+        });
+        // The default input IS an owned run (owner user-1) — that is the
+        // point: owned and org at once.
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.report_org, [true]);
+        assert_eq!(g.member_fetches, 0);
+    }
+
+    #[tokio::test]
+    async fn a_personal_run_fetches_its_share_grants() {
+        let (w, deps) = make_world(WorldSpec::default());
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.report_org, [false]);
+        assert_eq!(g.member_fetches, 1);
+    }
+
     // ── Nothing citable: the run answers itself ─────────────────────────────
     // This suite was rewritten when the park was removed (2026-08-28, ticket
     // #5: two runs sat 'awaiting' for hours reading as working ones). The
@@ -2638,11 +2738,13 @@ mod tests {
         assert!(crate::kb::perms::can_read_agent(
             &private,
             "gregasaurus-personal",
+            None,
             &grants
         ));
         assert!(!crate::kb::perms::can_read_agent(
             &private,
             "leo-engineering",
+            None,
             &grants
         ));
     }

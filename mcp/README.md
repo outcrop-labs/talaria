@@ -11,6 +11,7 @@ bypass them.
 
 | Tool | What it does |
 | --- | --- |
+| `whoami` | Who this agent is and what it may touch: identity (personal? whose? elevated?), boards with **why** each is visible (`policy` / `owner` / `elevated`), channels, servers, guardrails, pending access requests. The cheap read-only probe — call it before probing verbs |
 | `list_boards` | Boards this agent is allowed on (per-board agent policy) |
 | `list_tickets` | A board's tickets |
 | `get_ticket` | Full ticket: fields, comments, activity, watchers, reviews, dependencies |
@@ -31,6 +32,15 @@ where granted), **channels** (`list_channels` / `read_channel` /
 any other agent sees its own memberships; posts stay agent-attributed and
 don't trigger other agents), **Google** (per-user calendar/mail read +
 confirm-send drafts), and `search_knowledge` (RAG). Same auth model throughout.
+
+**Self-service board access** rounds out the `whoami` answer with its actions:
+`join_board` adds the agent to a board's allow-list when its owner can already
+read the board (one step, no human in the loop — read is the inherited-
+permissions promise), `leave_board` removes only its own row, and
+`request_board_access` files with the board's editors for boards the owner
+cannot see (a `board_access` approval in their queue; re-filing while open is a
+no-op). Nothing here touches assignment or sign-off — the grant is read +
+draft reach, and the destructive guardrails above are unchanged.
 
 ## Setup
 
@@ -200,13 +210,15 @@ process **verifies the presented credential against Talaria** and caches the
 verdict briefly (60s accepted / 5s refused, keyed by name + a hash of the
 credential). Unreachable Talaria ⇒ `503`, never a pass.
 
-It verifies by issuing an authenticated `GET /api/users` and reading the status
-code. **That makes `/api/users` an authentication oracle for the entire toolkit,**
-and the coupling is the fragile part of this design:
+It verifies by issuing an authenticated `GET /api/agent/whoami` and reading the
+status code. That route is the **purpose-built probe** — agent self-introspection
+whose other job is exactly this — but it is still an authentication oracle for
+the entire toolkit, and the coupling is the fragile part of this design:
 
-> Narrow `/api/users` — admin-only, session-only, renamed, moved — and every
-> agent's `initialize`/`tools/list` starts failing. The fleet toolkit goes dark
-> **fleet-wide**, and nothing in the resulting errors points at the route change.
+> Narrow `/api/agent/whoami` — admin-only, session-only, renamed, moved — and
+> every agent's `initialize`/`tools/list` starts failing. The fleet toolkit goes
+> dark **fleet-wide**, and nothing in the resulting errors points at the route
+> change.
 
 The contract that route has to keep, therefore:
 
@@ -223,21 +235,23 @@ overrides the path with no code change. A `404`/`405` from the probe is treated 
 instruction, so the failure is at least diagnosable.
 
 **Where the warning has to live.** The person who breaks this is not reading
-`mcp/src/index.ts`; they are tightening a permissions check on a people
-directory. So the coupling is stated at every file that edit passes through:
+`mcp/src/index.ts`; they are changing an agent route. So the coupling is stated
+at every file that edit passes through:
 
 | File | Carries |
 | --- | --- |
 | `mcp/src/index.ts` (`verify`) | the ⚠ coupling note and the repoint instruction |
 | `api/src/agent_auth.rs` (`agent_caller`) | the matching warning on the resolution the probe exercises |
-| `api/src/routes/account/users.rs` | the oracle note in the route's header — the one file a narrowing edit is guaranteed to open |
+| `api/src/routes/agents/agent_whoami.rs` | the oracle note in the route's header — the one file a narrowing edit is guaranteed to open |
 | the startup log | one line naming the coupling on every boot that uses the default probe, so the sentence is already in an operator's scrollback before the outage |
 
 A warning one module away does not get read; that is why the marker sits in the
 route file itself, above the handler.
 
-The durable fix is to stop borrowing a product route: a purpose-built
-`GET /api/agent/whoami` (agent-credential auth, no payload, nothing a product
-decision would ever want to narrow) pointed at with `TALARIA_MCP_VERIFY_PATH`
-removes the oracle from `/api/users` entirely. Until that exists, the three
-markers above are what keep the coupling from being invisible.
+**History, so nobody borrows a product route again.** The oracle used to live on
+`GET /api/users` — chosen because its agent branch is nothing but
+`agent_caller()` — which made the people directory load-bearing for fleet auth:
+one good product decision to narrow it would have darkened every agent's
+toolkit. The purpose-built `whoami` route (auth, negligible payload, no product
+reason to ever narrow it) removed that borrow; `/api/users` is free to be a
+people picker again.
