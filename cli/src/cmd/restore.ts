@@ -72,8 +72,10 @@ export async function runRestore(
     const st = storageFromManifest(ctx, manifest, env)
     if (st.mode === 'local') {
       // The snapshot's uploads_dir is where they lived on the SOURCE host;
-      // this host's config decides where they land.
-      const uploadsDir = env.TALARIA_UPLOADS_DIR || join(ctx.root, 'ui/.uploads')
+      // this host's config decides where they land. Restore WRITES to the
+      // api's dir (env pin, else the dev topology's api/.uploads) — never the
+      // TS-era legacy path the backup read may still fall back to.
+      const uploadsDir = env.TALARIA_UPLOADS_DIR || join(ctx.root, 'api/.uploads')
       mkdirSync(uploadsDir, { recursive: true })
       await ctx.run('tar', ['-xzf', join(snap, 'uploads.tar.gz'), '-C', uploadsDir])
       ctx.log.ok(`extracted to ${uploadsDir}`)

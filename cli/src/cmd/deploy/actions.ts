@@ -147,10 +147,47 @@ export function runDown(ctx: Ctx, volumes: boolean): Promise<number> {
   return deployCompose(ctx, op)
 }
 
+/** The api package the image build bakes in — the Dockerfile's ARG line is
+ *  the build's actual input (compose passes no build args), so reading the
+ *  ref from there means the CLI can never pull something other than what
+ *  `up -d --build` resolves. Null when the Dockerfile declares no such ARG
+ *  (or is gone): skip, don't guess. */
+export function apiImageRef(root: string): string | null {
+  try {
+    const m = readFileSync(join(root, 'Dockerfile'), 'utf8').match(/^ARG TALARIA_API_IMAGE=(\S+)/m)
+    return m?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
+/** The image never compiles the api — the Dockerfile bakes in the pre-built
+ *  package named by TALARIA_API_IMAGE, and a build resolves that FROM from
+ *  the LOCAL daemon cache. Without a pull first, a redeploy wraps today's UI
+ *  around yesterday's api binary and the update silently changes nothing
+ *  the api does (bbills, 2026-09-03: three "already fixed" symptoms, one
+ *  stale package). A failed pull dies rather than bake the stale digest on
+ *  purpose — `deploy up` keeps its old reach-the-cache leniency, because
+ *  that path is also the reboot-a-broken-box path. */
+async function pullApiPackage(ctx: Ctx): Promise<void> {
+  const ref = apiImageRef(ctx.root)
+  if (ref === null) {
+    ctx.log.skip('no TALARIA_API_IMAGE ARG in the Dockerfile — skipping the api package pull')
+    return
+  }
+  ctx.log.say(`docker pull ${ref}`)
+  if ((await ctx.run('docker', ['pull', ref])) !== 0) {
+    ctx.log.die(
+      `docker pull ${ref} failed — building now would bake the stale package the daemon already has. ` +
+        'Fix reachability (or auth), then finish with `bun talaria deploy up`',
+    )
+  }
+}
+
 /** CONTAINER.md's update flow is "a redeploy" — for a checkout-driven host
- *  that means get the new code, then the same `up -d --build` as boot. The
- *  pull is --ff-only: an update must never synthesize a merge commit on a
- *  deploy host. */
+ *  that means get the new code, pull the api package the rebuild will bake
+ *  in, then the same `up -d --build` as boot. The git pull is --ff-only: an
+ *  update must never synthesize a merge commit on a deploy host. */
 export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<number> {
   ctx.log.say('git pull --ff-only')
   if ((await ctx.run('git', ['pull', '--ff-only'], { cwd: ctx.root })) !== 0) {
@@ -158,6 +195,7 @@ export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<n
       'git pull failed — reconcile the checkout (or fetch/checkout your way), then finish with `bun talaria deploy up`',
     )
   }
+  await pullApiPackage(ctx)
   return runUp(ctx, sock)
 }
 
@@ -220,7 +258,7 @@ export const downCommand: Leaf = {
 export const updateCommand: Leaf = {
   kind: 'leaf',
   name: 'update',
-  summary: 'git pull --ff-only, then the redeploy (up -d --build)',
+  summary: 'git pull --ff-only, pull the api package, then the redeploy (up -d --build)',
   usage: 'talaria deploy update',
   run: (ctx) => runUpdate(ctx),
 }

@@ -60,6 +60,12 @@ pub async fn post(
     match save_upload(&state.pg, &sb, &filename, &mime, &bytes, Some(&user.id)).await {
         // The attachment object itself, not wrapped.
         Ok(att) => Json(att).into_response(),
-        Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
+        // Storage faults and row faults are the server's, not the request's:
+        // a blob that cannot be written or recorded is a 500, never a 400
+        // blaming a body that was fine.
+        Err(msg) => {
+            tracing::error!("[uploads] save failed: {msg}");
+            house_error(StatusCode::INTERNAL_SERVER_ERROR, "upload failed")
+        }
     }
 }
