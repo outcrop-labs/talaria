@@ -482,7 +482,7 @@ server.registerTool(
   'comment',
   {
     description:
-      `Comment on a ticket. ${COMMENT_EXEMPTION}`,
+      `Comment on a ticket — it lands in the ticket's discussion thread, the room where the assigned agent and the board's humans talk. ${COMMENT_EXEMPTION}`,
     inputSchema: {
       taskId: z.string(),
       content: z.string().min(1).max(20_000).describe('Markdown comment body'),

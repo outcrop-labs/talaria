@@ -275,7 +275,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "comment",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Comment on a ticket. Comments stay allowed on a ticket in review, which is where anything further goes once you have reported an outcome.",
+            description: "Comment on a ticket — it lands in the ticket's discussion thread, the room where the assigned agent and the board's humans talk. Comments stay allowed on a ticket in review, which is where anything further goes once you have reported an outcome.",
             parameters: json!({ "type": "object", "properties": { "taskId": str_schema("Ticket id"), "content": str_schema("Markdown comment body") }, "required": ["taskId", "content"] }),
             assistant_only: false,
             needs_google: false,
