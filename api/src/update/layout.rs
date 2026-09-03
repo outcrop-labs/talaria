@@ -92,9 +92,11 @@ pub fn edge_container_in(project: &str) -> String {
 /// The edge image — pinned, never `:latest`, for the same reason every
 /// dependency in this tree is pinned: the edge is on the request path, and
 /// an unpinned traefik upgrade is an unreviewed change to routing itself.
+/// The `-alpine` variant specifically: the healthcheck dials `/ping` with
+/// busybox `wget`, and the scratch-flavored tags ship no shell at all.
 pub fn edge_image() -> String {
     std::env::var("TALARIA_EDGE_IMAGE")
-        .unwrap_or_else(|_| "docker.io/library/traefik:v3.6.7".into())
+        .unwrap_or_else(|_| "docker.io/library/traefik:v3.6.7-alpine".into())
 }
 
 /// The app image the engine tracks — the trunk feed CI publishes from main
