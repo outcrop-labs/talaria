@@ -28,6 +28,10 @@ Talaria is MIT-licensed — issues and pull requests are the whole idea. The on-
   [`docs/api/`](./docs/api/README.md) is the one exception, for now: frozen at the
   TS→Rust cutover and maintained by hand until its extractor is ported to the Rust
   routes (#293).
+- **Migrations are roll-safe.** An update runs two app containers side by side
+  until the drain completes, so a migration shipping with code may only *add*;
+  dropping or rewriting what the old code still reads ships at least one release
+  later ([`docs/UPDATES.md`](./docs/UPDATES.md) — the overlap contract).
 
 ## Style
 

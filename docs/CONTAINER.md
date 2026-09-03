@@ -314,7 +314,7 @@ The compose file is Dokploy-shaped on purpose (it's also just a compose file
    refuse `Secure` cookies over it, so login would silently break).
 4. **Redeploys** are API calls; the app itself never updates in place (the
    built-in updater stays dormant on this path — it acts only on instances
-   that adopt it, `docs/UPDATES.md` when that lands — and the orchestrator
+   that adopt it, [`docs/UPDATES.md`](./UPDATES.md) — and the orchestrator
    owns this job).
 
 `DOCKER_GID` still applies: `docker compose exec talaria docker ps` inside the

@@ -120,16 +120,17 @@ describe('maybeProxy', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('the four residents stay on TS — and their edges are anchored', async () => {
+  it('the three residents stay on TS — and their edges are anchored', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
     // healthz — the app process's own liveness answer (Rust carries its own
     // at the same path for whoever asks it there).
     expect(await maybeProxy(req('/api/healthz'), '/api/healthz')).toBeNull()
-    // admin.update — the deployer of the TS half itself, EXACT: a deeper or
-    // extended path under the same characters is not it.
-    expect(await maybeProxy(req('/api/admin/update'), '/api/admin/update')).toBeNull()
+    // the retired admin.update hopped with its updater: the update surface
+    // is /api/admin/updates (Rust's, with the s), and every admin.update
+    // path — the exact old resident included — proxies like everything else.
+    expect(await maybeProxy(req('/api/admin/update'), '/api/admin/update')).not.toBeNull()
     expect(await maybeProxy(req('/api/admin/update/tail'), '/api/admin/update/tail')).not.toBeNull()
     expect(await maybeProxy(req('/api/admin/updates'), '/api/admin/updates')).not.toBeNull()
     // app dispatch (rule 10) — the whole subtree stays; the LISTING does not:
@@ -143,7 +144,7 @@ describe('maybeProxy', () => {
     expect(await maybeProxy(req('/api/mcp/gw/app-contacts'), '/api/mcp/gw/app-contacts')).toBeNull()
     expect(await maybeProxy(req('/api/mcp/gw/app-anything/at/all'), '/api/mcp/gw/app-anything/at/all')).toBeNull()
     expect(await maybeProxy(req('/api/mcp/gw/appendix'), '/api/mcp/gw/appendix')).not.toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(4)
+    expect(fetch).toHaveBeenCalledTimes(5)
   })
 
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {
