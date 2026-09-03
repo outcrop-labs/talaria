@@ -313,6 +313,36 @@ async fn a_notification_event_is_id_shaped_too() {
 }
 
 #[tokio::test]
+async fn the_rails_two_signals_are_id_shaped_like_the_rest() {
+    // The channel and conversation events move BADGES, and a badge client
+    // refetches through the ordinary routes — so the payload has nothing to
+    // disclose even if a future routing change points it at somebody new.
+    let hub = Hub::new();
+    let deps = hub.deps();
+    let rx = hub.subscribe("user:user-5");
+
+    publish_user(
+        &deps,
+        "user-5",
+        &UserEvent::Channel {
+            channel_id: "ch-1".into(),
+        },
+    );
+    publish_user(
+        &deps,
+        "user-5",
+        &UserEvent::Conversation {
+            conversation_id: "cv-9".into(),
+        },
+    );
+
+    hub.close_topic("user:user-5");
+    let got = payloads(rx).await;
+    assert_eq!(got[0], r#"{"type":"channel","channelId":"ch-1"}"#);
+    assert_eq!(got[1], r#"{"type":"conversation","conversationId":"cv-9"}"#);
+}
+
+#[tokio::test]
 async fn dropping_the_receiver_disconnects_its_dedicated_subscriber() {
     let hub = Hub::new();
     let rx = hub.subscribe("user:user-4");

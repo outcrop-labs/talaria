@@ -1511,6 +1511,78 @@ pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
     });
 }
 
+/// Who can read a conversation: its owner, plus a plan's members. Chats have
+/// no members — the owner alone. Kept beside `channel_member_ids` for the same
+/// cycle-breaking reason: the writer that fans needs it, and it is one query.
+pub async fn conversation_audience_ids(
+    pg: &sqlx::PgPool,
+    conversation_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "select user_id::text from conversations where id = $1::uuid \
+         union \
+         select user_id::text from conversation_members where conversation_id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Ring every member's firehose: a message landed in this channel. Id-shaped
+/// and detached, like the brief nudge it stands beside — a message in a room
+/// of N members is N publishes of a few dozen bytes each, and none of them
+/// may cost the post that caused them. The event reaches the AUTHOR too:
+/// their page refetches a list whose unread count already excludes their own
+/// turn, which is a no-op by design.
+pub fn fan_channel_event(deps: NotifyDeps, channel_id: String) {
+    tokio::spawn(async move {
+        match channel_member_ids(&deps.pg, &channel_id).await {
+            Ok(ids) => {
+                for id in ids {
+                    publish_user(
+                        &deps.realtime,
+                        &id,
+                        &UserEvent::Channel {
+                            channel_id: channel_id.clone(),
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("[realtime] could not fan a channel event for {channel_id}: {e}");
+            }
+        }
+    });
+}
+
+/// Ring owner and members alike: a turn landed in this conversation. The
+/// unread pill it moves belongs to whoever was NOT looking — the author's own
+/// client refetches and finds nothing new, the plan collaborator's finds their
+/// teammate's turn, the thread's owner finds the agent's reply.
+pub fn fan_conversation_event(deps: NotifyDeps, conversation_id: String) {
+    tokio::spawn(async move {
+        match conversation_audience_ids(&deps.pg, &conversation_id).await {
+            Ok(ids) => {
+                for id in ids {
+                    publish_user(
+                        &deps.realtime,
+                        &id,
+                        &UserEvent::Conversation {
+                            conversation_id: conversation_id.clone(),
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[realtime] could not fan a conversation event for {conversation_id}: {e}"
+                );
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

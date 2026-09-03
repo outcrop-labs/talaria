@@ -332,6 +332,20 @@ pub enum UserEvent {
         brief_id: String,
         seq: i64,
     },
+    /// A message landed in a channel the person is in. The room's own SSE
+    /// already carries it to whoever has the room OPEN; this one is for the
+    /// rail — a badge on a room nobody has opened moves the moment the
+    /// message lands, not on the next poll.
+    Channel {
+        channel_id: String,
+    },
+    /// A turn landed in a conversation the person can read — their agent
+    /// thread, or a plan they own or share. Drives the thread's unread pill
+    /// from anywhere in the app, so a reply that lands while its owner is
+    /// elsewhere rings the rail without ringing anything else.
+    Conversation {
+        conversation_id: String,
+    },
 }
 
 /// Publish a run transition to `run:<id>`.

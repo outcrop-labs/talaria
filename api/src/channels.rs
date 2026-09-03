@@ -6,7 +6,7 @@
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_write};
-use crate::notify::{NotifyDeps, briefs_follow_message};
+use crate::notify::{NotifyDeps, briefs_follow_message, fan_channel_event};
 use crate::realtime::{ChannelEvent, publish_channel};
 use crate::users::{assistant_owner_for, is_elevated_assistant};
 use serde_json::Value;
@@ -1020,6 +1020,10 @@ pub async fn insert_channel_message(
     // to answer somebody you had just answered. This clears the sweep throttle
     // and rings the bell; it does not sweep.
     briefs_follow_message(deps.clone(), channel_id.to_string());
+    // AND THE RAIL FOLLOWS THE ROOM. The room's own SSE carries this message to
+    // whoever has it open; this rings every member's firehose so a badge on an
+    // unopened room moves the moment the message lands, not on the next poll.
+    fan_channel_event(deps.clone(), channel_id.to_string());
     Ok(message)
 }
 

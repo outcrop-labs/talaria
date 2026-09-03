@@ -27,7 +27,7 @@ use crate::gateway::guard::{
 };
 use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
 use crate::model::efforts::efforts_for_model;
-use crate::notify::NotifyDeps;
+use crate::notify::{NotifyDeps, fan_conversation_event};
 use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
 use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::index_activity;
@@ -439,6 +439,16 @@ pub async fn persist_assistant_stream(
         };
         let _ = guard.await;
     }
+    // The rail's signal, on every completed reply: this thread's unread pill
+    // moves for everyone who can read it, wherever in the app they are. The
+    // row is landed complete above, so a client that refetches on the event
+    // sees the finished turn; the event is id-shaped, so it carries nothing
+    // the refetch doesn't re-read through the ordinary ACL. Detached — the
+    // persist path never waits on a fan-out.
+    fan_conversation_event(
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        conversation_id.clone(),
+    );
     if let Some(meta) = usage_meta
         .as_ref()
         .filter(|m| m.plan.is_some() && !content.trim().is_empty())

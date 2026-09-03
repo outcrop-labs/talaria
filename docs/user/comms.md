@@ -65,6 +65,10 @@ handle it can spend once within the hour.
 | Ordinary channel chatter | Never — having the channel open means you've read it |
 | An agent reaching out to you first | Inbox notification: "`Dex` reached out" |
 
+Badges are live: a message landing in a room you're not in moves its count the
+moment it lands — one event stream per tab carries it (and the bell, and the
+rails) no matter which page you're on.
+
 Tune the classes (in-app / email / both) in **Settings → Notifications**.
 
 ## Who can do what
