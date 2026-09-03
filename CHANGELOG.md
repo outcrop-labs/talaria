@@ -210,6 +210,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **RELEASING.md says how main actually merges.** The branch table claimed PRs
+  land "rebase-merged"; they land as merge commits, each merge subject carrying
+  the PR number. Corrected so the doc a release follows matches the history it
+  walks.
+
 - **Reading a thread clears its bell rows.** Opening an agent chat, plan, or
   research discussion advanced the read cursor — the unread pill went away —
   but the notification rows pointing at the thread never learned, so the bell
