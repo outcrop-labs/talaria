@@ -15,10 +15,14 @@ use crate::uploads::attachment_text_blocks;
 
 /// The access gate, reduced to the question its callers that only gate ask:
 /// does this row exist for this person? The WHERE clause is the whole rule —
-/// the OWNER, or (a PLAN, and a member), or (RESEARCH, and the run says so):
-/// a chat does not admit collaborators, research access follows the RUN
+/// the OWNER, or (a PLAN, and a member), or (RESEARCH, and the run says so),
+/// or (a TICKET THREAD, and the task's board says so — board_members and the
+/// board's team, the same audience a board read itself admits): a chat does
+/// not admit collaborators, research access follows the RUN
 /// (research_runs/research_members decide — the same leg get_conversation
-/// carries), and these distinctions are decided here and nowhere else.
+/// carries), ticket access follows the TASK (conversations.rs never decides
+/// board membership, it only reads it), and these distinctions are decided
+/// here and nowhere else.
 /// Re-deciding it at a call site would be a second answer.
 pub async fn conversation_accessible(
     pg: &PgPool,
@@ -27,7 +31,7 @@ pub async fn conversation_accessible(
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(i32,)> = sqlx::query_as(
         "select 1 from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'ticket') \
            and (c.user_id = $2::uuid \
              or (c.kind = 'plan' and exists( \
                select 1 from conversation_members cm \
@@ -36,7 +40,15 @@ pub async fn conversation_accessible(
                select 1 from research_runs r \
                  left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                 where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null)))) \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null))) \
+             or (c.kind = 'ticket' and exists( \
+               select 1 from tasks tk where tk.conversation_id = c.id \
+                 and (exists( \
+                   select 1 from board_members bm \
+                   where bm.board_id = tk.board_id and bm.user_id = $2::uuid) \
+                   or exists( \
+                     select 1 from team_members tm join boards b on b.id = tk.board_id \
+                     where tm.team_id = b.team_id and tm.user_id = $2::uuid))))) \
          limit 1",
     )
     .bind(conversation_id)
@@ -47,9 +59,11 @@ pub async fn conversation_accessible(
 }
 
 /// The same predicate with the one column the plan-draft POST needs after it
-/// passes: the conversation's own agent, which drafts. Research rows pass the
-/// gate (they must not be refused here) but carry no drafting meaning — the
-/// plan-draft route requires kind='plan' on top. None covers both "not
+/// passes: the conversation's own agent, which drafts. Research rows and
+/// ticket threads pass the gate (they must not be refused here) but carry no
+/// drafting meaning — the plan-draft route requires kind='plan' on top, and
+/// a ticket's agent_model is its BINDER, which speaks in the thread only
+/// through the chat door's gates. None covers both "not
 /// accessible" and "accessible but agentless", and the route answers
 /// 'plan not found' for both, never leaking which.
 pub async fn accessible_conversation_agent(
@@ -59,7 +73,7 @@ pub async fn accessible_conversation_agent(
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "select agent_model from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'ticket') \
            and (c.user_id = $2::uuid \
              or (c.kind = 'plan' and exists( \
                select 1 from conversation_members cm \
@@ -68,7 +82,15 @@ pub async fn accessible_conversation_agent(
                select 1 from research_runs r \
                  left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                 where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null)))) \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null))) \
+             or (c.kind = 'ticket' and exists( \
+               select 1 from tasks tk where tk.conversation_id = c.id \
+                 and (exists( \
+                   select 1 from board_members bm \
+                   where bm.board_id = tk.board_id and bm.user_id = $2::uuid) \
+                   or exists( \
+                     select 1 from team_members tm join boards b on b.id = tk.board_id \
+                     where tm.team_id = b.team_id and tm.user_id = $2::uuid))))) \
          limit 1",
     )
     .bind(conversation_id)
@@ -89,7 +111,9 @@ pub struct PriorMessage {
 
 /// Prior turns (role + content) for the gateway, oldest first. Multiplayer
 /// plans prefix user turns
-/// with the author's name so the agent can tell voices apart; 1:1 threads
+/// with the author's name so the agent can tell voices apart; ticket threads
+/// are ALWAYS multi-voice (their room is the task's board, counted as board
+/// members); 1:1 threads
 /// stay plain. Attached knowledge/artifact refs ride along on every rebuild
 /// — a queued turn or resume never loses them — while textual file uploads
 /// re-read their bytes for the RECENT TAIL only (FILE_TAIL = 12).
@@ -111,9 +135,15 @@ pub async fn prior_messages(
     let rows: Vec<Row> =
         sqlx::query_as::<_, (String, String, serde_json::Value, Option<String>, i32)>(
             "select m.role, m.content, m.attachments, coalesce(u.name, u.email), \
-                (select count(*)::int from conversation_members cm \
-                 where cm.conversation_id = m.conversation_id) \
-         from messages m left join users u on u.id = m.author_user_id \
+                case when c.kind = 'ticket' \
+                  then (select count(*)::int from tasks tk \
+                        join board_members bm on bm.board_id = tk.board_id \
+                        where tk.conversation_id = m.conversation_id) \
+                  else (select count(*)::int from conversation_members cm \
+                        where cm.conversation_id = m.conversation_id) end \
+         from messages m \
+         join conversations c on c.id = m.conversation_id \
+         left join users u on u.id = m.author_user_id \
          where m.conversation_id = $1::uuid and m.role in ('user','assistant') \
            and (m.content <> '' or m.attachments <> '[]'::jsonb) \
          order by m.seq asc",
@@ -199,7 +229,7 @@ pub async fn accessible_conversation(
                     case when user_id = $2::uuid then 'owner' else 'collaborator' end, \
                     plan_template_id::text \
              from conversations c \
-             where id = $1::uuid and kind in ('chat', 'plan', 'research') \
+             where id = $1::uuid and kind in ('chat', 'plan', 'research', 'ticket') \
                and (user_id = $2::uuid \
                  or (kind = 'plan' and exists( \
                    select 1 from conversation_members cm \
@@ -208,7 +238,15 @@ pub async fn accessible_conversation(
                    select 1 from research_runs r \
                      left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                     where r.conversation_id = c.id \
-                      and (r.owner_user_id = $2::uuid or rm.user_id is not null))))",
+                      and (r.owner_user_id = $2::uuid or rm.user_id is not null))) \
+                 or (kind = 'ticket' and exists( \
+                   select 1 from tasks tk where tk.conversation_id = c.id \
+                     and (exists( \
+                       select 1 from board_members bm \
+                       where bm.board_id = tk.board_id and bm.user_id = $2::uuid) \
+                       or exists( \
+                         select 1 from team_members tm join boards b on b.id = tk.board_id \
+                         where tm.team_id = b.team_id and tm.user_id = $2::uuid)))))",
     )
     .bind(conversation_id)
     .bind(user_id)
@@ -431,7 +469,9 @@ pub async fn conversation_owner(
 /// A conversation + its messages in order. Access: yours — or a plan you're
 /// a member of; RESEARCH ACCESS FOLLOWS THE
 /// RUN, not a second membership list (research_runs/research_members decide),
-/// so a person cannot keep the conversation after losing the report.
+/// so a person cannot keep the conversation after losing the report; TICKET
+/// ACCESS FOLLOWS THE TASK'S BOARD (board_members or the board's team), so
+/// the thread's audience is whoever the board already admits.
 pub async fn get_conversation(
     pg: &PgPool,
     user_id: &str,
@@ -442,7 +482,7 @@ pub async fn get_conversation(
                 (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
                 case when c.user_id = $2::uuid then 'owner' else 'collaborator' end \
          from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'ticket') \
            and ( \
              c.user_id = $2::uuid \
              or (c.kind = 'plan' and exists( \
@@ -453,6 +493,14 @@ pub async fn get_conversation(
                  left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                 where r.conversation_id = c.id \
                   and (r.owner_user_id = $2::uuid or rm.user_id is not null))) \
+             or (c.kind = 'ticket' and exists( \
+               select 1 from tasks tk where tk.conversation_id = c.id \
+                 and (exists( \
+                   select 1 from board_members bm \
+                   where bm.board_id = tk.board_id and bm.user_id = $2::uuid) \
+                   or exists( \
+                     select 1 from team_members tm join boards b on b.id = tk.board_id \
+                     where tm.team_id = b.team_id and tm.user_id = $2::uuid)))) \
            )",
     )
     .bind(conversation_id)

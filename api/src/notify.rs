@@ -1547,7 +1547,10 @@ pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
 }
 
 /// Who can read a conversation: its owner, plus a plan's members. Chats have
-/// no members — the owner alone. Kept beside `channel_member_ids` for the same
+/// no members — the owner alone. A ticket thread's audience is the task's
+/// board — board members and the board's team, the same people the access
+/// predicate admits; the thread's owner row is in the board list too, and
+/// union dedupes. Kept beside `channel_member_ids` for the same
 /// cycle-breaking reason: the writer that fans needs it, and it is one query.
 pub async fn conversation_audience_ids(
     pg: &sqlx::PgPool,
@@ -1556,7 +1559,16 @@ pub async fn conversation_audience_ids(
     let rows: Vec<(String,)> = sqlx::query_as(
         "select user_id::text from conversations where id = $1::uuid \
          union \
-         select user_id::text from conversation_members where conversation_id = $1::uuid",
+         select user_id::text from conversation_members where conversation_id = $1::uuid \
+         union \
+         select bm.user_id::text from board_members bm \
+           join tasks tk on tk.board_id = bm.board_id \
+          where tk.conversation_id = $1::uuid \
+         union \
+         select tm.user_id::text from team_members tm \
+           join boards b on b.team_id = tm.team_id \
+           join tasks tk on tk.board_id = b.id \
+          where tk.conversation_id = $1::uuid",
     )
     .bind(conversation_id)
     .fetch_all(pg)
@@ -1631,30 +1643,49 @@ pub async fn conversation_notification_href(
     agent_model: &str,
     conversation_id: &str,
 ) -> Option<String> {
-    let run_id = if kind == "research" {
-        crate::research::research_run_for_conversation(pg, conversation_id)
+    if kind == "research" {
+        let run_id = crate::research::research_run_for_conversation(pg, conversation_id)
             .await
             .ok()
-            .flatten()
-    } else {
-        None
-    };
-    notification_href(kind, agent_model, conversation_id, run_id.as_deref())
+            .flatten();
+        return notification_href(kind, agent_model, conversation_id, run_id.as_deref(), None);
+    }
+    if kind == "ticket" {
+        let task: Option<(String, String)> = sqlx::query_as(
+            "select board_id::text, id::text from tasks where conversation_id = $1::uuid",
+        )
+        .bind(conversation_id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten();
+        return notification_href(
+            kind,
+            agent_model,
+            conversation_id,
+            None,
+            task.as_ref().map(|(b, t)| (b.as_str(), t.as_str())),
+        );
+    }
+    notification_href(kind, agent_model, conversation_id, None, None)
 }
 
-/// The pure half of the href — everything but research's run lookup, so the
-/// formats the bell's rows and the UI's routes must agree on are pinned by a
-/// DB-free test.
+/// The pure half of the href — everything but the lookups (research's run,
+/// the ticket's board and task), so the formats the bell's rows and the UI's
+/// routes must agree on are pinned by a DB-free test.
 fn notification_href(
     kind: &str,
     agent_model: &str,
     conversation_id: &str,
     run_id: Option<&str>,
+    ticket: Option<(&str, &str)>,
 ) -> Option<String> {
     match kind {
         "chat" => Some(format!("/comms/agent/{agent_model}/{conversation_id}")),
         "plan" => Some(format!("/plan/{conversation_id}")),
         "research" => run_id.map(|r| format!("/research/{r}")),
+        // The task's own permalink — where the thread lives as a tab.
+        "ticket" => ticket.map(|(b, t)| format!("/boards/{b}/{t}")),
         _ => None,
     }
 }
@@ -1743,6 +1774,15 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
             select user_id as id from conversations where id = $1::uuid \
             union \
             select user_id from conversation_members where conversation_id = $1::uuid \
+            union \
+            select bm.user_id from board_members bm \
+              join tasks tk on tk.board_id = bm.board_id \
+             where tk.conversation_id = $1::uuid \
+            union \
+            select tm.user_id from team_members tm \
+              join boards b on b.team_id = tm.team_id \
+              join tasks tk on tk.board_id = b.id \
+             where tk.conversation_id = $1::uuid \
          ) a \
          left join conversation_reads cr on cr.conversation_id = $1::uuid and cr.user_id = a.id",
     )
@@ -1798,23 +1838,38 @@ mod tests {
     #[test]
     fn thread_notification_hrefs_are_pinned() {
         // The writer files these exact strings and the read sweep matches
-        // them exactly — the UI's routes must keep resolving all three.
+        // them exactly — the UI's routes must keep resolving all four.
         assert_eq!(
-            notification_href("chat", "margaret-marketing", "c-1", None).as_deref(),
+            notification_href("chat", "margaret-marketing", "c-1", None, None).as_deref(),
             Some("/comms/agent/margaret-marketing/c-1")
         );
         assert_eq!(
-            notification_href("plan", "claude-x", "c-2", None).as_deref(),
+            notification_href("plan", "claude-x", "c-2", None, None).as_deref(),
             Some("/plan/c-2")
         );
         assert_eq!(
-            notification_href("research", "claude-x", "c-3", Some("run-9")).as_deref(),
+            notification_href("research", "claude-x", "c-3", Some("run-9"), None).as_deref(),
             Some("/research/run-9")
         );
+        assert_eq!(
+            notification_href("ticket", "claude-x", "c-5", None, Some(("b-1", "t-2"))).as_deref(),
+            Some("/boards/b-1/t-2")
+        );
         // A research discussion with no run behind it has nothing to point
-        // at; an unknown kind is nobody's thread.
-        assert_eq!(notification_href("research", "claude-x", "c-3", None), None);
-        assert_eq!(notification_href("other", "claude-x", "c-4", None), None);
+        // at; a ticket whose task is gone (the orphan a delete leaves) has
+        // nowhere to land either; an unknown kind is nobody's thread.
+        assert_eq!(
+            notification_href("research", "claude-x", "c-3", None, None),
+            None
+        );
+        assert_eq!(
+            notification_href("ticket", "claude-x", "c-5", None, None),
+            None
+        );
+        assert_eq!(
+            notification_href("other", "claude-x", "c-4", None, None),
+            None
+        );
     }
 
     #[test]
