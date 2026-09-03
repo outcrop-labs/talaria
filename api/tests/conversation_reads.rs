@@ -10,6 +10,7 @@ use sqlx::postgres::PgPool;
 use talaria_api::conversations::{
     create_conversation, latest_message_seq, list_conversations, mark_conversation_read,
 };
+use talaria_api::notify::clear_thread_notifications;
 
 async fn pool() -> PgPool {
     let url = std::env::var("DATABASE_URL")
@@ -71,6 +72,16 @@ async fn unread(pg: &PgPool, user: &str, kind: &str, conversation: &str) -> i32 
         .find(|row| row.id == conversation)
         .map(|row| row.unread_count)
         .expect("conversation visible to its reader")
+}
+
+/// The bell test's own people — a DIFFERENT prefix than `cleanup`'s, because
+/// cargo runs the suite's tests concurrently and a shared prefix collides on
+/// users_sub_key.
+async fn cleanup_bell(pg: &PgPool) {
+    sqlx::query("delete from users where email like 'conv-bell-%@test.invalid'")
+        .execute(pg)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -162,4 +173,81 @@ async fn unreads_count_whose_turns_and_cursors_only_advance() {
     assert_eq!(row.owner_label.as_deref(), Some("Reads Mate"));
 
     cleanup(&pg).await;
+}
+
+/// A whole-thread read is the end of the bell rows pointing at the thread:
+/// the sweep clears exactly those (the href the writer filed, this reader),
+/// touches nothing else, and is idempotent. The ROUTES own the "cursor
+/// covers latest" gate; this proves what the sweep itself does once called.
+/// Its people live under a DIFFERENT fixture prefix than the test above —
+/// cargo runs the suite's tests concurrently, and a shared prefix is a
+/// unique-key collision between them.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn reading_the_thread_clears_its_bell_rows() {
+    let pg = pool().await;
+    cleanup_bell(&pg).await;
+    let owner = person(
+        &pg,
+        "conv-bell-owner",
+        "conv-bell-owner@test.invalid",
+        "Bell Owner",
+    )
+    .await;
+
+    let chat = create_conversation(&pg, &owner, "claude-test", "Bell thread", "chat", None)
+        .await
+        .unwrap();
+    land(&pg, &chat, 0, "user", "complete", Some(&owner)).await;
+    land(&pg, &chat, 1, "assistant", "complete", None).await;
+    // What notify_agent_reply would have filed for the away reader: the
+    // thread-canonical href, one row, unread.
+    let (row,): (String,) = sqlx::query_as(
+        "insert into notifications (user_id, kind, title, body, href, read_at) \
+         values ($1::uuid, 'agent-reply', 'Claude replied', 'x', $2, null) returning id::text",
+    )
+    .bind(&owner)
+    .bind(format!("/comms/agent/claude-test/{chat}"))
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    // A row for ANOTHER place — the sweep must leave it waiting.
+    sqlx::query(
+        "insert into notifications (user_id, kind, title, body, href, read_at) \
+         values ($1::uuid, 'agent-reply', 'Claude replied', 'x', '/plan/somewhere-else', null)",
+    )
+    .bind(&owner)
+    .execute(&pg)
+    .await
+    .unwrap();
+
+    let cleared = clear_thread_notifications(&pg, &owner, &chat)
+        .await
+        .unwrap();
+    assert_eq!(cleared, 1);
+    let read_at: Option<String> =
+        sqlx::query_scalar("select read_at::text from notifications where id = $1::uuid")
+            .bind(&row)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert!(read_at.is_some(), "the thread's own bell row is read");
+    let other: i64 = sqlx::query_scalar(
+        "select count(*) from notifications \
+         where user_id = $1::uuid and read_at is null",
+    )
+    .bind(&owner)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(other, 1, "the other thread's row still waits");
+
+    // Idempotent: the second read (the stream keeps advancing the cursor)
+    // finds nothing left to clear.
+    let cleared = clear_thread_notifications(&pg, &owner, &chat)
+        .await
+        .unwrap();
+    assert_eq!(cleared, 0);
+
+    cleanup_bell(&pg).await;
 }

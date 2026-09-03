@@ -338,13 +338,13 @@ Source: [`api/src/routes/comms/conversations_id_read.rs`](../../api/src/routes/c
 
 > /api/conversations/{id}/read.
 > POST { seq? } → advance the caller's read cursor (drives the thread's
-> unread pill). The same contract as /api/channels/{id}/read, gated by the
-> conversations' own access rule: the owner, or a member of the plan. An
+> unread pill), and — when the advanced cursor covers the thread's latest
+> turn — mark the bell rows pointing at the thread read (opening the thread
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apiconversationsidread-body) | `{ok}` | 200, 400, 403 | — |
+| POST | `session` | [body](#post-apiconversationsidread-body) | `{ok, cleared}` | 200, 400, 403 | — |
 
 ### POST `/api/conversations/{id}/read` body
 
