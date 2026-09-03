@@ -869,7 +869,7 @@ pub async fn update_status(
         // AssertSqlSafe: the placeholders are this function's own set list;
         // every value stays a bind.
         let sql = format!(
-            "update board_statuses set {} where id = ${}",
+            "update board_statuses set {} where id = ${}::uuid",
             frags.join(", "),
             frags.len() + 1
         );

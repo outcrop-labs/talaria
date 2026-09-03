@@ -32,6 +32,21 @@ pub struct RotationResult {
     pub root_rewrapped: bool,
 }
 
+/// The pk comparison the sweep's update addresses rows by. The pk values were
+/// READ as `"col"::text` (dynamic arity, one code path for every table), so
+/// they compare as text = text. The pk columns are NOT all text — uuid, uuid,
+/// integer across CIPHER_TARGETS — and a bare `"col" = $N` with a text bind is
+/// the port's crash class: sqlx declares the bind's wire type from the Rust
+/// value, prepare resolves `uuid = text`, and the operator does not exist.
+/// Rotation is a full-table sweep, so the column-side cast costs nothing.
+fn pk_where(pk: &[&str]) -> String {
+    pk.iter()
+        .enumerate()
+        .map(|(i, c)| format!("\"{c}\"::text = ${}", i + 2))
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
 /// Rotate the DEK and re-encrypt all secrets. `new_root_material` also moves
 /// the wrapped DEK under a new operator secret (KEK) in the same pass.
 ///
@@ -76,12 +91,7 @@ pub async fn rotate_secrets(
             let resealed = sb
                 .seal_with(&fresh, next_version, &plain)
                 .map_err(|e| e.to_string())?;
-            let where_clause = pk
-                .iter()
-                .enumerate()
-                .map(|(i, c)| format!("\"{c}\" = ${}", i + 2))
-                .collect::<Vec<_>>()
-                .join(" and ");
+            let where_clause = pk_where(pk);
             let mut q = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "update \"{table}\" set \"{column}\" = $1 where {where_clause}"
             )))
@@ -134,4 +144,21 @@ pub async fn rotate_secrets(
             root_rewrapped: new_root_material.is_some(),
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every pk column compares as ::text, whatever its real type — the sweep
+    /// reads them as ::text and binds them back as strings, so the cast is what
+    /// keeps `uuid = text` (and `integer = text`) out of prepare.
+    #[test]
+    fn pk_comparisons_stay_text_typed() {
+        assert_eq!(pk_where(&["id"]), r#""id"::text = $2"#);
+        assert_eq!(
+            pk_where(&["agent_id", "name"]),
+            r#""agent_id"::text = $2 and "name"::text = $3"#
+        );
+    }
 }
