@@ -2819,7 +2819,10 @@ const MIGRATIONS: string[] = [
   // owner ladder AND binder both failed (no resolvable human, no agent
   // anywhere) never got its thread, and its comments die with this table —
   // a handful of rows across the fleet, none on boards anyone works.
-  `drop table if exists task_comments`,
+  `-- deliberate: comments ARE thread messages now; the table's last reader
+  -- is gone, and a commented task whose backfill ladders both failed loses
+  -- its comments here (called out above) — the cutover is worth that edge.
+drop table if exists task_comments`,
 
 ]
 
