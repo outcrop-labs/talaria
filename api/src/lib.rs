@@ -107,6 +107,7 @@ pub mod teams;
 pub mod templates;
 pub mod titler;
 pub mod tz;
+pub mod update;
 pub mod uploads;
 pub mod users;
 pub mod vision;
