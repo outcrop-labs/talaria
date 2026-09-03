@@ -511,7 +511,7 @@ server.registerTool(
     // runs — so the hardcoded literal 400s exactly where handing work over
     // matters most, and no endpoint tells an agent what the column is called.
     //
-    // Ask the invariant instead of guessing: agentSafePatch redirects EVERY
+    // Ask the invariant instead of guessing: agent_safe_patch redirects EVERY
     // terminal move to that board's review key, and the off-board terminals
     // ('failed' / 'cancelled') are legal on every board by construction. So on
     // the one failure that means "this board is named differently", re-send a

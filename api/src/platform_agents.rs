@@ -122,6 +122,14 @@ pub const PLATFORM_AGENTS: &[PlatformAgent] = &[
         assignable: true,
     },
     PlatformAgent {
+        id: "ticket-relevance",
+        label: "Ticket gate",
+        job: "Reads each message on a ticket\u{2019}s discussion and decides whether it concerns the assigned agent\u{2019}s work — the agent replies only to what is its business.",
+        skills: &["cheap relevance calls", "fail-open gating"],
+        auto: "the Utility role chain (a fast, cheap model is ideal)",
+        assignable: true,
+    },
+    PlatformAgent {
         id: "briefer",
         label: "Briefer",
         job: "Writes your daily brief every morning and follows it through the day as it moves.",

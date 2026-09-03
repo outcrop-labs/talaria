@@ -22,12 +22,11 @@ Talaria is MIT-licensed — issues and pull requests are the whole idea. The on-
 - **Keep the guardrails.** Agents create and triage, but they can't self-assign or
   self-complete; the final sign-off is a human's call. Never force a `done` transition.
 - **Reuse the primitives.** Build on `ui/src/components/ui/`; don't recreate them.
-- **Docs are generated where they can drift.** The CLI reference comes from
-  `bun run check`'s generator — don't hand-edit
-  [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md); change the source and regenerate.
-  [`docs/api/`](./docs/api/README.md) is the one exception, for now: frozen at the
-  TS→Rust cutover and maintained by hand until its extractor is ported to the Rust
-  routes (#293).
+- **Docs are generated where they can drift.** The CLI reference and the HTTP API
+  reference both come out of the generator behind `bun run check` — don't hand-edit
+  [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md) or
+  [`docs/api/`](./docs/api/README.md); change the source and regenerate
+  (`bun run docs:api`).
 
 ## Style
 

@@ -1833,7 +1833,7 @@ mod tests {
         );
         assert_eq!(
             slots.iter().filter(|s| s.kind == SlotKind::Agent).count(),
-            9
+            10
         );
         // The reserved roles and the non-assignable briefer are still slots —
         // they just say they are inert.

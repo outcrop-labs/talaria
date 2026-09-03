@@ -64,6 +64,11 @@ ui/.vite/
 .omc/
 ui/.omc/
 
+# Claude Code local state — the tracked parts are the skills and the hooks
+# block in .claude/settings.json; everything personal stays out of history
+.claude/settings.local.json
+.claude/worktrees/
+
 # Rendered per install from docker/searxng/settings.template.yml (holds the
 # generated SEARXNG_SECRET).
 docker/searxng/settings.local.yml

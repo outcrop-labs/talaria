@@ -106,7 +106,7 @@ impl RegisteredHarness {
 /// An admin reading the panel top to bottom therefore reads "here is what you
 /// control" before "here is what your agents are doing with the models you
 /// already gave them".
-static DEFS: [LazyLock<HarnessDefinition>; 36] = [
+static DEFS: [LazyLock<HarnessDefinition>; 37] = [
     // ── Assigned in Admin ─────────────────────────────────────────────────────
     LazyLock::new(defs::titler::titler_harness),
     LazyLock::new(defs::summarizer::summarizer_harness),
@@ -121,6 +121,11 @@ static DEFS: [LazyLock<HarnessDefinition>; 36] = [
     LazyLock::new(defs::muse::muse_template_form_harness),
     LazyLock::new(defs::muse::muse_draft_harness),
     LazyLock::new(defs::judge::judge_harness),
+    // The ticket-thread gate: the platform's own cheap read of every human
+    // message on a ticket's discussion, deciding whether the assigned agent
+    // turns are for. Pinned like its neighbours; Auto is the Utility seat,
+    // which is the economics — cheaper than the reply it prevents.
+    LazyLock::new(defs::ticket_relevance::ticket_relevance_harness),
     // ── The model comes from the subject of the call ─────────────────────────
     // The owner's own personal assistant: the Inbox trio and the daily brief.
     LazyLock::new(defs::inbox_focus::inbox_brief_harness),
@@ -242,6 +247,7 @@ mod tests {
         "muse:template-form",
         "muse:draft",
         "judge",
+        "ticket-relevance",
         "inbox-brief",
         "inbox-command",
         "inbox-reply",

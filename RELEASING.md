@@ -18,7 +18,7 @@ Three long-lived branches:
 
 | Branch | Role | How it moves |
 |---|---|---|
-| `main` | trunk, always shippable | PRs (rebase-merged, CI-gated) |
+| `main` | trunk, always shippable | PRs (merge commits, CI-gated — the merge carries the PR number) |
 | `rc` | staging — what an RC is cut from | a human fast-forwards main into it |
 | `testing` | the nightly feed | a human fast-forwards main into it |
 

@@ -25,6 +25,7 @@ pub mod plan_doc;
 pub mod research;
 pub mod secret_handles;
 pub mod summarizer;
+pub mod ticket_relevance;
 pub mod titler;
 pub mod work_session;
 pub mod workbench;

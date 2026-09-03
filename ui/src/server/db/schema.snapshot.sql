@@ -853,14 +853,6 @@ CREATE TABLE public.task_activity (
     description text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
-CREATE TABLE public.task_comments (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    task_id uuid NOT NULL,
-    author text NOT NULL,
-    content text NOT NULL,
-    parent_id uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
 CREATE TABLE public.task_dependencies (
     task_id uuid NOT NULL,
     depends_on_id uuid NOT NULL,
@@ -914,7 +906,8 @@ CREATE TABLE public.tasks (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     parent_id uuid,
     start_date timestamp with time zone,
-    color text
+    color text,
+    conversation_id uuid
 );
 CREATE TABLE public.team_members (
     team_id uuid NOT NULL,
@@ -1301,8 +1294,6 @@ ALTER TABLE ONLY public.skill_summaries
     ADD CONSTRAINT skill_summaries_pkey PRIMARY KEY (owner, name);
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT task_comments_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
 ALTER TABLE ONLY public.task_watchers
@@ -1407,9 +1398,9 @@ CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_k
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
-CREATE INDEX task_comments_task_idx ON public.task_comments USING btree (task_id, created_at);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
+CREATE INDEX tasks_conversation_idx ON public.tasks USING btree (conversation_id);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
@@ -1619,10 +1610,6 @@ ALTER TABLE ONLY public.secret_folders
     ADD CONSTRAINT secret_folders_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT task_comments_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.task_comments(id) ON DELETE SET NULL;
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT task_comments_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_depends_on_id_fkey FOREIGN KEY (depends_on_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_dependencies
@@ -1631,6 +1618,8 @@ ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.team_members

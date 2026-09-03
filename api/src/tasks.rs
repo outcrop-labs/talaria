@@ -4,9 +4,9 @@
 // structured result, comments, activity, watchers, dependencies and a
 // quality-review approval gate.
 //
-// The TS plane keeps a twin of the authority half (`ui/src/server/tasks.ts` —
-// the spelling app servers and the MCP tool descriptions ask); the refusal
-// conditions must stay the same in both. See `agent_ticket_refusal`.
+// The authority half is defined once, here — the TS routes that carried a
+// twin spelling were deleted at the cutover, and the MCP tools ask the api.
+// See `agent_ticket_refusal`.
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_fields, guard_agent_write};
@@ -173,6 +173,10 @@ pub struct Task {
     /// reaches the wire as text.
     pub estimated_hours: Option<f64>,
     pub parent_id: Option<String>,
+    /// The task's discussion thread (kind='ticket' conversation), when one
+    /// has been opened. The UI's Discussion pane; the kanban badge counts
+    /// this conversation's messages, not a comments table.
+    pub conversation_id: Option<String>,
     pub comment_count: i32,
     pub outcome: Option<String>,
     pub resolution: Option<String>,
@@ -194,7 +198,8 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   (trunc(extract(epoch from t.start_date) * 1000))::bigint as start_date_ms, \
   t.color, t.tags, t.attachments, t.time_spent_seconds as time_spent_seconds, \
   t.estimated_hours::float8 as estimated_hours, t.parent_id::text as parent_id, \
-  (select count(*)::int from task_comments c where c.task_id = t.id) as comment_count, \
+  t.conversation_id::text as conversation_id, \
+  (select count(*)::int from messages m where m.conversation_id = t.conversation_id) as comment_count, \
   t.outcome, t.resolution, t.error_message as error_message, \
   (trunc(extract(epoch from t.created_at) * 1000))::bigint as created_at_ms, \
   (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_at_ms, \
@@ -226,6 +231,7 @@ struct TaskRow {
     time_spent_seconds: i64,
     estimated_hours: Option<f64>,
     parent_id: Option<String>,
+    conversation_id: Option<String>,
     comment_count: i32,
     outcome: Option<String>,
     resolution: Option<String>,
@@ -236,7 +242,7 @@ struct TaskRow {
     archived_at_ms: Option<i64>,
 }
 
-fn json_strings(v: &serde_json::Value) -> Vec<String> {
+pub fn json_strings(v: &serde_json::Value) -> Vec<String> {
     serde_json::from_value(v.clone()).unwrap_or_default()
 }
 
@@ -261,6 +267,7 @@ impl From<TaskRow> for Task {
             time_spent_seconds: r.time_spent_seconds,
             estimated_hours: r.estimated_hours,
             parent_id: r.parent_id,
+            conversation_id: r.conversation_id,
             comment_count: r.comment_count,
             outcome: r.outcome,
             resolution: r.resolution,
@@ -769,10 +776,10 @@ pub enum AgentIntent {
     Comment,
 }
 
-/// Why an agent may not act on this ticket, or None when it may. The TS
-/// plane carries its own spelling of this predicate (`agentTicketRefusal`
-/// in `ui/src/server/tasks.ts` — what app servers and the MCP tool
-/// descriptions ask); the stop conditions must stay the same in both.
+/// Why an agent may not act on this ticket, or None when it may. This is the
+/// one definition: the TS routes that carried a twin spelling were deleted
+/// at the cutover, and the MCP tool descriptions ask the api — so there is
+/// no second copy to keep in step.
 ///
 /// FOUR STOP CONDITIONS, in the order a person would ask them:
 /// · the BOARD does not allow this agent — revoked, never granted, or the
@@ -793,9 +800,8 @@ pub enum AgentIntent {
 /// an agent that can see the board can read the ticket, because reading
 /// changes nothing.
 ///
-/// The TS twin takes an optional per-pass `boardFacts()` cache for loops;
-/// this side reads through — the boards it resolves twice per call are the
-/// queries the cache existed to save.
+/// No per-pass facts cache to thread — it reads through; the boards it
+/// resolves twice per call are the queries a cache would exist to save.
 pub async fn agent_ticket_refusal(
     pg: &PgPool,
     task: &AgentWriteTarget,
@@ -1347,6 +1353,15 @@ pub async fn update_task(
         spawn_dispatch_id(deps, id.to_string(), only);
     }
     if patch.assignees.is_some() && assignees != cur.assignees {
+        // The thread's binder tracks assignment live: the task's first agent
+        // assignee is who speaks in the discussion, and unassigning the last
+        // agent falls back to the org default — a dormant binder, quiet by
+        // the assignee rule rather than by its column. The write above
+        // already landed, so a failed rebind logs and moves on: the thread
+        // keeps its old binder, which is stale but not wrong.
+        if let Err(e) = rebind_task_conversation_agent(pg, id).await {
+            tracing::error!("[tasks] thread rebind on reassignment failed for {id}: {e}");
+        }
         let what = if assignees.is_empty() {
             "unassigned".to_string()
         } else {
@@ -1567,6 +1582,146 @@ pub async fn delete_task(deps: &TaskDeps, id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+// ── The thread ───────────────────────────────────────────────────────────────
+// A ticket's discussion IS a conversation (kind='ticket'), linked by
+// tasks.conversation_id — the research_runs shape. The comment surface
+// below reads and writes that thread; the UI embeds ChatView on it, and
+// agents reach it through the same add_comment they always called.
+
+/// The task's head, as the thread machinery reads it — the fields the
+/// owner/binder ladders and the context block are built from.
+#[derive(sqlx::FromRow)]
+struct ThreadHead {
+    conversation_id: Option<String>,
+    board_id: String,
+    created_by: String,
+    title: String,
+    assignees: serde_json::Value,
+}
+
+async fn thread_head(pg: &PgPool, task_id: &str) -> Result<Option<ThreadHead>, sqlx::Error> {
+    sqlx::query_as(
+        "select conversation_id::text, board_id::text, created_by, title, assignees \
+         from tasks where id = $1::uuid",
+    )
+    .bind(task_id)
+    .fetch_optional(pg)
+    .await
+}
+
+/// The agent a ticket's thread is bound to: the FIRST agent assignee, else
+/// the org default agent, else any enabled agent. Shared by ensure (creation
+/// time) and rebind (assignment changes) — one ladder, one truth.
+async fn thread_binder(pg: &PgPool, head: &ThreadHead) -> Result<Option<String>, sqlx::Error> {
+    let assignees = json_strings(&head.assignees);
+    if let Some(model) = agent_assignees(&assignees).into_iter().next() {
+        return Ok(Some(model));
+    }
+    // conversations.agent_model is not null: a human-only thread still needs
+    // a binder, a DORMANT one — the assignee rule at the chat door (not this
+    // column) is what keeps it quiet until an agent is assigned.
+    let org_default: Option<(String,)> = sqlx::query_as(
+        "select model from agent_defs where enabled and owner_user_id is null \
+         order by created_at asc limit 1",
+    )
+    .fetch_optional(pg)
+    .await?;
+    if org_default.is_some() {
+        return Ok(org_default.map(|(m,)| m));
+    }
+    let any: Option<(String,)> = sqlx::query_as(
+        "select model from agent_defs where enabled order by created_at asc limit 1",
+    )
+    .fetch_optional(pg)
+    .await?;
+    Ok(any.map(|(m,)| m))
+}
+
+/// Open (or find) the task's discussion thread. The owner ladder mirrors the
+/// migration's: the creator by email, else the first human assignee, else
+/// any board member — a thread needs someone to own the row, and reading it
+/// is board-membership-shaped anyway. Idempotent and race-safe the way
+/// `ensure_research_conversation` is: conditional link, then re-read the
+/// winner, so two clients opening the same ticket at once both land on the
+/// one thread. Ok(None) = the task does not exist, or nobody could own it.
+pub async fn ensure_task_conversation(
+    pg: &PgPool,
+    task_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(head) = thread_head(pg, task_id).await? else {
+        return Ok(None);
+    };
+    if let Some(id) = head.conversation_id.clone() {
+        return Ok(Some(id));
+    }
+    let owner = match author_user_id(pg, &head.created_by).await? {
+        Some(id) => Some(id),
+        None => {
+            let assignees = json_strings(&head.assignees);
+            match human_assignee_ids(&assignees).into_iter().next() {
+                Some(id) => sqlx::query_as("select id::text from users where id = $1::uuid")
+                    .bind(&id)
+                    .fetch_optional(pg)
+                    .await?
+                    .map(|(v,)| v),
+                None => sqlx::query_as(
+                    "select user_id::text from board_members \
+                         where board_id = $1::uuid order by created_at asc limit 1",
+                )
+                .bind(&head.board_id)
+                .fetch_optional(pg)
+                .await?
+                .map(|(v,)| v),
+            }
+        }
+    };
+    let (Some(owner), Some(binder)) = (owner, thread_binder(pg, &head).await?) else {
+        return Ok(None);
+    };
+    let heading: String = head.title.chars().take(80).collect();
+    let id =
+        crate::conversations::create_conversation(pg, &owner, &binder, &heading, "ticket", None)
+            .await?;
+    sqlx::query(
+        "update tasks set conversation_id = $2::uuid \
+         where id = $1::uuid and conversation_id is null",
+    )
+    .bind(task_id)
+    .bind(&id)
+    .execute(pg)
+    .await?;
+    // Re-read rather than trusting the write: the loser of the race must
+    // return the winner's conversation, not a second one nobody reads.
+    let after: Option<(Option<String>,)> =
+        sqlx::query_as("select conversation_id::text from tasks where id = $1::uuid")
+            .bind(task_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(after.and_then(|(v,)| v).or(Some(id)))
+}
+
+/// Re-point the thread's binder at the task's CURRENT first agent assignee
+/// (falling back to the org default when the last agent is removed). Called
+/// from update_task whenever assignees change — the binding tracks
+/// assignment live instead of freezing at creation.
+pub async fn rebind_task_conversation_agent(pg: &PgPool, task_id: &str) -> Result<(), sqlx::Error> {
+    let Some(head) = thread_head(pg, task_id).await? else {
+        return Ok(());
+    };
+    let Some(conv) = head.conversation_id.clone() else {
+        return Ok(()); // no thread yet; ensure will bind at creation time
+    };
+    let Some(binder) = thread_binder(pg, &head).await? else {
+        return Ok(()); // no agent anywhere to bind — leave it as it was
+    };
+    sqlx::query("update conversations set agent_model = $2 where id = $1::uuid")
+        .bind(&conv)
+        .bind(&binder)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
 // ── Comments ─────────────────────────────────────────────────────────────────
 
 /// A ticket comment, camelCase on the wire.
@@ -1593,11 +1748,22 @@ fn comment_of(r: CommentRow) -> TaskComment {
     }
 }
 
+/// The task's discussion, synthesized into the comment wire shape the MCP
+/// `get_ticket` consumers have always read. Humans show their name/email;
+/// agent turns carry the model string in metadata.agent; parent_id is null
+/// — it always was in practice, the UI never sent one.
 pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment>, sqlx::Error> {
     let rows: Vec<CommentRow> = sqlx::query_as(
-        "select id::text, author, content, parent_id::text, \
-                (trunc(extract(epoch from created_at) * 1000))::bigint \
-         from task_comments where task_id = $1::uuid order by created_at asc",
+        "select m.id::text, \
+                coalesce(u.name, u.email, m.metadata->>'agent', 'agent'), \
+                m.content, null::text, \
+                (trunc(extract(epoch from m.created_at) * 1000))::bigint \
+         from messages m \
+         join tasks t on t.conversation_id = m.conversation_id \
+         left join users u on u.id = m.author_user_id \
+         where t.id = $1::uuid and m.role in ('user','assistant') \
+           and m.status = 'complete' \
+         order by m.seq asc",
     )
     .bind(task_id)
     .fetch_all(pg)
@@ -1619,12 +1785,39 @@ pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment
 /// /api/tasks/:id/comments` is not the only caller — the workbench posts an
 /// agent's plan comment through here too — and a guard at one caller is a
 /// guard the next caller does not have.
+///
+/// The write itself is a TURN IN THE TASK'S THREAD: a resolvable author
+/// (email or name — the same rule the migration resolves legacy rows by)
+/// lands as a user turn with their user id; anything else (an agent model
+/// string, the shape every MCP `comment` call sends) lands as an assistant
+/// turn carrying the model string in metadata.agent — the same shape the
+/// migration gave every pre-thread comment.
+/// Resolve a legacy author string to a users row. The routes write
+/// `email.or(name)` — and rows written before this code ran carry whatever
+/// casing that day's session had — so the match is email-then-name,
+/// case-blind. An agent model string matches neither and falls to None,
+/// which is exactly the discriminator add_comment needs.
+async fn author_user_id(pg: &PgPool, author: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select id::text from users \
+         where lower(email) = lower($1) or lower(name) = lower($1) limit 1",
+    )
+    .bind(author)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
 pub async fn add_comment(
     deps: &TaskDeps,
     task_id: &str,
     author: &str,
     content: &str,
-    parent_id: Option<&str>,
+    // Kept in the signature because callers parse it off the wire, but a
+    // chat thread is flat — seq is its only order. Nobody sends one today
+    // (the old composer had no reply UI and the MCP tool has no field); if
+    // a caller ever does, the turn lands flat rather than threaded.
+    _parent_id: Option<&str>,
 ) -> Result<TaskComment, sqlx::Error> {
     let pg = &deps.pg;
     let guarded = guard_agent_write(
@@ -1635,18 +1828,60 @@ pub async fn add_comment(
         None,
     )
     .await;
-    let row: CommentRow = sqlx::query_as(
-        "insert into task_comments (task_id, author, content, parent_id) \
-         values ($1::uuid, $2, $3, $4::uuid) \
-         returning id::text, author, content, parent_id::text, \
-                (trunc(extract(epoch from created_at) * 1000))::bigint",
-    )
-    .bind(task_id)
-    .bind(author)
-    .bind(&guarded.text)
-    .bind(parent_id)
-    .fetch_one(pg)
-    .await?;
+    // The thread must exist for a comment to land in; a comment on a ticket
+    // nobody can own a thread for is a refusal, not a silent drop.
+    let Some(conversation_id) = ensure_task_conversation(pg, task_id).await? else {
+        return Err(sqlx::Error::RowNotFound);
+    };
+    let author_user_id = author_user_id(pg, author).await?;
+    let (msg_id, created_ms) = match author_user_id {
+        Some(user_id) => {
+            let seq = crate::conversations::next_seq(pg, &conversation_id).await?;
+            let id = crate::conversations::insert_user_message(
+                pg,
+                &conversation_id,
+                seq,
+                &guarded.text,
+                &serde_json::json!([]),
+                Some(&user_id),
+                &serde_json::json!({}),
+            )
+            .await?;
+            let (ms,): (i64,) = sqlx::query_as(
+                "select (trunc(extract(epoch from created_at) * 1000))::bigint \
+                 from messages where id = $1::uuid",
+            )
+            .bind(&id)
+            .fetch_one(pg)
+            .await?;
+            (id, ms)
+        }
+        None => {
+            // post_agent_turn stamps its marker metadata; merge the author
+            // label on so list_comments (and the backfill's shape) can name
+            // the speaker. Fresh marker per post — every comment is new.
+            let id = crate::conversations::post_agent_turn(
+                pg,
+                &conversation_id,
+                &uuid::Uuid::new_v4().to_string(),
+                &guarded.text,
+            )
+            .await?;
+            sqlx::query("update messages set metadata = metadata || $2::jsonb where id = $1::uuid")
+                .bind(&id)
+                .bind(serde_json::json!({ "agent": author }))
+                .execute(pg)
+                .await?;
+            let (ms,): (i64,) = sqlx::query_as(
+                "select (trunc(extract(epoch from created_at) * 1000))::bigint \
+                 from messages where id = $1::uuid",
+            )
+            .bind(&id)
+            .fetch_one(pg)
+            .await?;
+            (id, ms)
+        }
+    };
     log_activity(pg, task_id, author, "comment", "commented").await?;
     // The comment event carries its own type tag — the board topic tells
     // readers a conversation moved, not a card.
@@ -1661,7 +1896,15 @@ pub async fn add_comment(
             },
         );
     }
-    Ok(comment_of(row))
+    Ok(TaskComment {
+        id: msg_id,
+        author: author.to_string(),
+        content: guarded.text,
+        // Never threaded in practice — the UI never sent a parent, and the
+        // thread supersedes the idea.
+        parent_id: None,
+        created_at: epoch_ms_to_iso(created_ms),
+    })
 }
 
 // ── Watchers ─────────────────────────────────────────────────────────────────

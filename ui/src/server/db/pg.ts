@@ -2700,6 +2700,130 @@ const MIGRATIONS: string[] = [
   `create index if not exists push_subscriptions_user_idx
      on push_subscriptions (user_id)`,
 
+  // Ticket threads — a task's discussion becomes a conversations row of new
+  // kind 'ticket', linked the way research_runs links its discussion
+  // (conversation_id, nullable: the thread is opened on demand, never at
+  // task-create). on delete set null, the research precedent — an orphaned
+  // kind='ticket' conversation matches no access predicate and no rail: dead
+  // but harmless, rather than taking the history with the task.
+  `alter table tasks
+     add column if not exists conversation_id uuid
+     references conversations(id) on delete set null`,
+  `create index if not exists tasks_conversation_idx on tasks (conversation_id)`,
+
+  // The backfill: one thread per COMMENTED task, so every legacy comment is
+  // already home when the comment table goes away. Owner ladder — creator,
+  // first human commenter, first board member — because conversations need a
+  // human owner while created_by/comment authors are email-or-NAME-or-model
+  // (the route's email.or(name) fallback wrote names for every user without
+  // an email), so a human resolves by email then name — case-insensitively,
+  // because legacy rows carry whatever casing that day's session had — and
+  // an agent string resolves to neither; binder ladder — first agent
+  // assignee, else the org
+  // default agent — the same ladders ensure_task_conversation walks at
+  // runtime, written as SQL so this runs exactly once at boot instead of per
+  // task. A task where BOTH ladders miss is skipped: its comments die with
+  // the drop, called out here so nobody hunts for them later (a board with
+  // no members and no org agent has nobody to own or answer a thread anyway).
+  `with pairs as (
+    select t.id as task_id, gen_random_uuid() as conv_id,
+      coalesce(
+        (select u.id from users u where lower(u.email) = lower(t.created_by)),
+        (select u.id from users u where lower(u.name) = lower(t.created_by)),
+        (select coalesce((select x.id from users x where lower(x.email) = lower(c.author)),
+                          (select x.id from users x where lower(x.name) = lower(c.author)))
+          from task_comments c
+          where c.task_id = t.id
+            and (exists (select 1 from users x where lower(x.email) = lower(c.author))
+              or exists (select 1 from users x where lower(x.name) = lower(c.author)))
+          order by c.created_at asc limit 1),
+        (select bm.user_id from board_members bm
+          where bm.board_id = t.board_id order by bm.created_at asc limit 1)
+      ) as owner_id,
+      coalesce(
+        (select a.model from jsonb_array_elements_text(t.assignees)
+            with ordinality a(model, ord)
+          where a.model not like 'user:%' order by a.ord limit 1),
+        (select d.model from agent_defs d
+          where d.enabled and d.owner_user_id is null
+          order by d.created_at asc limit 1)
+      ) as agent_model
+    from tasks t
+    where t.conversation_id is null
+      and exists (select 1 from task_comments c where c.task_id = t.id)
+  ),
+  ins as (
+    insert into conversations (id, user_id, agent_model, title, kind)
+    select p.conv_id, p.owner_id, p.agent_model, left(t.title, 80), 'ticket'
+    from pairs p join tasks t on t.id = p.task_id
+    where p.owner_id is not null and p.agent_model is not null
+    on conflict do nothing
+    returning id
+  ),
+  lnk as (
+    update tasks t set conversation_id = i.id
+    from ins i join pairs p on p.conv_id = i.id
+    where t.id = p.task_id and t.conversation_id is null
+  )
+  select count(*) as threads from ins`,
+
+  // Comments become messages, ids preserved — the retrieval brain's
+  // source_id values stay valid across the cutover, no reindex needed.
+  // Human authors (email or name resolves to a users row) land as user turns
+  // with author_user_id; agent strings land as assistant turns carrying
+  // metadata.agent, exactly what the runtime writers emit. seq is arrival
+  // order per thread from 0, honouring the (conversation_id, seq) unique key;
+  // on conflict do nothing makes a replayed dump a no-op rather than a
+  // double-write.
+  `with src as (
+    select c.id, c.task_id, c.author, c.content, c.created_at,
+      coalesce((select x.id from users x where lower(x.email) = lower(c.author)),
+               (select x.id from users x where lower(x.name) = lower(c.author))) as author_user_id
+    from task_comments c join tasks t on t.id = c.task_id
+    where t.conversation_id is not null
+  ),
+  ord as (
+    select id, task_id,
+      row_number() over (partition by task_id order by created_at, id) - 1 as seq
+    from src
+  )
+  insert into messages (id, conversation_id, seq, role, content, status,
+      created_at, author_user_id, metadata)
+  select s.id, t.conversation_id, o.seq,
+    case when s.author_user_id is null then 'assistant' else 'user' end,
+    s.content, 'complete', s.created_at, s.author_user_id,
+    case when s.author_user_id is null
+      then jsonb_build_object('agent', s.author) else '{}'::jsonb end
+  from src s join ord o on o.id = s.id join tasks t on t.id = s.task_id
+  on conflict (conversation_id, seq) do nothing`,
+
+  // Threads carry their inherited recency: updated_at is what sorts a
+  // conversation anywhere it appears, and a thread answering with its
+  // backfill-moment creation time would sort as brand new forever. The
+  // honest stamp is the thread's last message time — EARLIER than the row's
+  // creation, set backward on purpose; coalesce keeps a message-less thread
+  // (none from this backfill, but the statement is general) at its creation.
+  `update conversations c set updated_at = coalesce(
+    (select max(m.created_at) from messages m where m.conversation_id = c.id),
+    c.updated_at)
+  where c.kind = 'ticket'`,
+
+  // The table's last reader is gone — comments ARE thread messages now, and
+  // every runtime path (the comments door, the chat door, the reindex and
+  // unindex walks) reads `messages` joined through tasks.conversation_id.
+  // Kept through the whole cutover so a pre-drop api binary running beside
+  // the new one (a rolling deploy) never 500s on a missing table; dropped
+  // only now that no reader exists.
+  //
+  // The backfill's one loss is here and nowhere else: a commented task whose
+  // owner ladder AND binder both failed (no resolvable human, no agent
+  // anywhere) never got its thread, and its comments die with this table —
+  // a handful of rows across the fleet, none on boards anyone works.
+  `-- deliberate: comments ARE thread messages now; the table's last reader
+  -- is gone, and a commented task whose backfill ladders both failed loses
+  -- its comments here (called out above) — the cutover is worth that edge.
+drop table if exists task_comments`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
