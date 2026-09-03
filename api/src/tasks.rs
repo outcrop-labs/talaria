@@ -1354,6 +1354,15 @@ pub async fn update_task(
         spawn_dispatch_id(deps, id.to_string(), only);
     }
     if patch.assignees.is_some() && assignees != cur.assignees {
+        // The thread's binder tracks assignment live: the task's first agent
+        // assignee is who speaks in the discussion, and unassigning the last
+        // agent falls back to the org default — a dormant binder, quiet by
+        // the assignee rule rather than by its column. The write above
+        // already landed, so a failed rebind logs and moves on: the thread
+        // keeps its old binder, which is stale but not wrong.
+        if let Err(e) = rebind_task_conversation_agent(pg, id).await {
+            tracing::error!("[tasks] thread rebind on reassignment failed for {id}: {e}");
+        }
         let what = if assignees.is_empty() {
             "unassigned".to_string()
         } else {

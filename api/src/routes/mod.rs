@@ -239,6 +239,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/tasks/{id}/conversation",
+            post(tasks::tasks_id_conversation::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/tasks/{id}/dependencies",
             axum::routing::post(tasks::tasks_id_dependencies::post)
                 .delete(tasks::tasks_id_dependencies::delete)
