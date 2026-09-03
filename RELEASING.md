@@ -78,6 +78,8 @@ repo inactivity. That is the first thing to check.
 
 | Tag | Moves when | Immutable? |
 |---|---|---|
+| `main` | every app-touching push to main | no — a pointer |
+| `sha-<sha12>` | every app-touching push to main | yes |
 | `nightly` | every nightly build | no — a pointer |
 | `nightly-YYYYMMDD` | every nightly build | yes |
 | `rc` | every RC tag | no — a pointer |
@@ -90,6 +92,20 @@ Pin anything you care about to the right-hand column.
 The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
 tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
 release's app-image build is actually pinned to.
+
+## The trunk feed
+
+Beside the channels, main publishes continuously: `.github/workflows/app-image.yml`
+builds the app image for every push to main that touches running bits and
+pushes `sha-<sha12>` (immutable) first, then `main` (pointer). The api stage
+is pinned before the build — an api-touching push waits for that same
+commit's `talaria-api:sha-<sha12>` (api-package's push run builds it in
+parallel; the wait is the guarantee a trunk image never mixes a new UI with
+an unbuilt api), anything else pins the digest `talaria-api:main` names.
+Channel tags stay release.yml's: those are versions a human cut, not trunk
+tips. `workflow_dispatch` exists for re-runs, not bootstrap — the merge that
+lands the workflow touches a path it filters on, so the first run fires
+itself, and it pushes to the package release.yml already made public.
 
 ## One-time setup notes
 

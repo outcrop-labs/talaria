@@ -163,6 +163,10 @@ RUN adduser -D -u 10001 talaria \
 # mcp supervisor (api/src/mcp/service.rs) spawns mcp/dist/index.js under this
 # runtime, and its node default dies with ENOENT in a container that has no
 # node to find.
+# TALARIA_INSTALL=image is the install-mode signal: this process runs from a
+# published image, not a git checkout — the in-app updater (api/src/update/)
+# keys on exactly this to know it may roll its own container. A checkout
+# install never sets it, and the updater stays dormant there.
 # State lives under /var/lib/talaria via the existing path overrides, never in
 # default paths inside /app (those are image-owned).
 ENV PORT=5273 \
@@ -170,6 +174,7 @@ ENV PORT=5273 \
     NODE_ENV=production \
     COOKIE_SECURE=0 \
     TALARIA_UPDATER=off \
+    TALARIA_INSTALL=image \
     TALARIA_API_BIN=/usr/local/bin/talaria-api \
     TALARIA_JS_RUNTIME=bun \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \

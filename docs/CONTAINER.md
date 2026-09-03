@@ -409,6 +409,8 @@ channel this repo publishes lands on `ghcr.io/outcrop-labs/talaria`.
 
 | Image tag | What it is | How it moves |
 |---|---|---|
+| `main` | whatever main shipped last | every app-touching push to main |
+| `sha-<sha12>` | one commit on main, frozen | with that push; never rewritten |
 | `nightly` | testing branch, built daily 03:17 UTC | automatic, nightly |
 | `nightly-YYYYMMDD` | that day's nightly, frozen | automatic, daily; never rewritten |
 | `X.Y.Z-rc.N` | a release candidate | a `vX.Y.Z-rc.N` tag on `rc` |
@@ -418,6 +420,14 @@ channel this repo publishes lands on `ghcr.io/outcrop-labs/talaria`.
 
 Pin anything you care about to the dated/versioned column — the moving tags
 are pointers, rewritten by design.
+
+The `main`/`sha` pair is the trunk feed, built by its own workflow
+(`.github/workflows/app-image.yml`) on every push to main that touches
+running bits — the release channels below it are cut by humans, the trunk
+never stops. A trunk image is always a matched pair: the build resolves the
+api package digest first (that commit's `sha-<sha12>` when the push touched
+the api, the digest `talaria-api:main` names otherwise), so main's image
+never carries this commit's UI on an older api.
 
 The api binary rides inside these images but is also its own package,
 `ghcr.io/outcrop-labs/talaria-api`, carrying the same channel tags plus an
