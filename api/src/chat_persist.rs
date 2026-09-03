@@ -27,7 +27,7 @@ use crate::gateway::guard::{
 };
 use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
 use crate::model::efforts::efforts_for_model;
-use crate::notify::{NotifyDeps, fan_conversation_event};
+use crate::notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
 use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
 use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::index_activity;
@@ -449,6 +449,20 @@ pub async fn persist_assistant_stream(
         NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
         conversation_id.clone(),
     );
+    // And the reply that landed while its readers were away rings once: one
+    // agent-reply row per audience member whose read cursor doesn't cover it,
+    // deduped while one sits unread per thread. AFTER the guard block on
+    // purpose — the helper reads the reply as saved, so strict mode's scrub
+    // has reached the row before any copy of it files into an inbox. Same
+    // detached rule as the fan beside it.
+    {
+        let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        let conversation_id = conversation_id.clone();
+        let message_id = message_id.clone();
+        tokio::spawn(async move {
+            notify_agent_reply(&notify, &conversation_id, &message_id).await;
+        });
+    }
     if let Some(meta) = usage_meta
         .as_ref()
         .filter(|m| m.plan.is_some() && !content.trim().is_empty())

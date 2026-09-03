@@ -64,6 +64,7 @@ handle it can spend once within the hour.
 | An @mention in a channel or relay | "…mentioned you in #general" |
 | Ordinary channel chatter | Never — having the channel open means you've read it |
 | An agent reaching out to you first | Inbox notification: "`Dex` reached out" |
+| An agent's reply while you're away | "`Dex` replied" — one row per thread; further replies fold in until you open it. Watching the thread type counts as reading it |
 
 Badges are live: a message landing in a room you're not in moves its count the
 moment it lands — one event stream per tab carries it (and the bell, and the

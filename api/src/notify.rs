@@ -1602,6 +1602,111 @@ pub fn fan_conversation_event(deps: NotifyDeps, conversation_id: String) {
     });
 }
 
+/// An agent reply that landed while its readers were away: file ONE
+/// agent-reply notification per audience member whose read cursor does not
+/// cover the reply's seq. The cursor is the "still looking" gate — someone
+/// watching the thread has auto-advanced past the reply and gets nothing —
+/// and the dedupe is the pile-up gate: while one row per thread sits unread,
+/// further replies fold into it (the DM shape, `notify_dm_message`). The
+/// bell, toasts, mail, and the brief all ride this single writer, so this is
+/// the whole fan-out: no surface-specific code anywhere.
+///
+/// Reads the reply AS SAVED — the caller runs this after the confab guard,
+/// so strict mode's scrub has already reached the `messages` row and the
+/// notification body can only ever carry what the transcript itself carries.
+/// An empty or not-yet-complete reply notifies nobody. Detached by the
+/// caller, like every fan on this path.
+pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, message_id: &str) {
+    // Kind decides where the row points; the model names who replied. One
+    // joined read, and only for a reply that actually landed complete.
+    let head: Option<(String, String, String, i32)> = sqlx::query_as(
+        "select c.kind, c.agent_model, m.content, m.seq \
+         from conversations c join messages m on m.conversation_id = c.id \
+         where c.id = $1::uuid and m.id = $2::uuid and m.role = 'assistant' \
+           and m.status = 'complete'",
+    )
+    .bind(conversation_id)
+    .bind(message_id)
+    .fetch_optional(&deps.pg)
+    .await
+    .ok()
+    .flatten();
+    let Some((kind, agent_model, content, reply_seq)) = head else {
+        return;
+    };
+    if content.trim().is_empty() {
+        return;
+    }
+    // Where the row points: the thread itself for a chat, the plan for a
+    // plan, and for a research discussion the RUN — opening the run is
+    // research's seen gesture (it marks this href read), so the bell row and
+    // the rail badge clear in the same click. A research conversation whose
+    // run is gone has nowhere to point and files nothing.
+    let href = match kind.as_str() {
+        "chat" => format!("/comms/agent/{agent_model}/{conversation_id}"),
+        "plan" => format!("/plan/{conversation_id}"),
+        "research" => {
+            match crate::research::research_run_for_conversation(&deps.pg, conversation_id).await {
+                Ok(Some(run_id)) => format!("/research/{run_id}"),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    // The audience WITH cursors, the -1 floor shared with the unread counts:
+    // a member with no cursor row has read nothing, and seq 0 is a real turn.
+    let audience: Vec<(String, i32)> = sqlx::query_as(
+        "select a.id::text, coalesce(cr.last_read_seq, -1) from ( \
+            select user_id as id from conversations where id = $1::uuid \
+            union \
+            select user_id from conversation_members where conversation_id = $1::uuid \
+         ) a \
+         left join conversation_reads cr on cr.conversation_id = $1::uuid and cr.user_id = a.id",
+    )
+    .bind(conversation_id)
+    .fetch_all(&deps.pg)
+    .await
+    .unwrap_or_default();
+    let label = crate::fleet::describe_agent(&agent_model).label;
+    // 200 UTF-16 units, '…' only past the bound — the DM body contract.
+    let body = if crate::body::utf16_len(&content) > 200 {
+        format!("{}…", crate::body::truncate_utf16(&content, 200))
+    } else {
+        content.clone()
+    };
+    let title = format!("{label} replied");
+    for (member, cursor) in audience {
+        if reply_seq <= cursor {
+            continue; // they have read past this reply — still looking
+        }
+        let pending: Option<i32> = sqlx::query_scalar(
+            "select 1 from notifications \
+             where user_id = $1::uuid and kind = 'agent-reply' and href = $2 \
+               and read_at is null limit 1",
+        )
+        .bind(&member)
+        .bind(&href)
+        .fetch_optional(&deps.pg)
+        .await
+        .ok()
+        .flatten();
+        if pending.is_some() {
+            continue; // one unread pointer per thread; this reply folds in
+        }
+        let _ = add_notification(
+            deps,
+            &member,
+            &NotificationInput {
+                kind: "agent-reply",
+                title: &title,
+                body: Some(&body),
+                href: Some(&href),
+            },
+        )
+        .await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
