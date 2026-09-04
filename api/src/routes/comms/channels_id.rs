@@ -5,8 +5,8 @@
 
 use crate::body::{as_object, optional_string_member, present_nullable_max_string_member};
 use crate::channels::{
-    archive_channel, channel_role, delete_channel, list_channel_agents, list_channel_members,
-    update_channel,
+    archive_channel, channel_role, delete_channel, is_task_room, list_channel_agents,
+    list_channel_members, list_task_room_agents, list_task_room_members, update_channel,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::notify::NotifyDeps;
@@ -39,19 +39,49 @@ pub async fn get(
     let Some(role) = role else {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     };
-    let members = match list_channel_members(&state.pg, &id).await {
+    // A task room's roster is its board's audience and the board's agent
+    // policy — read, not provisioned — while an ordinary channel serves the
+    // rows it owns. Same wire shape either way: the room embed renders
+    // exactly what a rail channel does.
+    let task_room = match is_task_room(&state.pg, &id).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[channels] member read failed: {e}");
+            tracing::error!("[channels] task-room probe failed: {e}");
             return thrown_internal_error();
         }
     };
-    let agents = match list_channel_agents(&state.pg, &id).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent read failed: {e}");
-            return thrown_internal_error();
-        }
+    let (members, agents) = if task_room {
+        let m = match list_task_room_members(&state.pg, &id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[channels] task-room member read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let a = match list_task_room_agents(&state.pg, &id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[channels] task-room agent read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        (m, a)
+    } else {
+        let m = match list_channel_members(&state.pg, &id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[channels] member read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let a = match list_channel_agents(&state.pg, &id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[channels] agent read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        (m, a)
     };
     Json(json!({ "role": role, "members": members, "agents": agents })).into_response()
 }
