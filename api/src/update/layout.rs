@@ -21,16 +21,30 @@ pub use crate::fleet::docker::Slot;
 
 /// The update tree (rendered compose, slot env files, project state) —
 /// Talaria-owned, host-real because the rendered compose's binds must be
-/// host paths. Containers default this to /var/lib/talaria/update; dev and
-/// the E2E point it somewhere disposable.
+/// host paths. Under the STATE root, the one tree deployments bind
+/// (`${TALARIA_STATE_DIR}/update`), so the tree survives the containers
+/// that render it — the first fleet adoption wrote compose + env files
+/// into the orchestrator's own writable layer (the pre-fix image baked an
+/// absolute TALARIA_UPDATE_DIR outside every bind), invisible on the host
+/// and gone at cutover. Dev and the E2E point it somewhere disposable.
 pub fn update_dir() -> PathBuf {
     match std::env::var("TALARIA_UPDATE_DIR") {
         Ok(d) => PathBuf::from(d),
         // A set-but-empty env var is used verbatim; var() errs only on
-        // unset/invalid UTF-8, so the Err arm is exactly the unset case —
-        // the state root the image's other subtree envs (FLEET_DIR,
-        // UPLOADS_DIR, APPS_DIR) already name.
-        Err(_) => PathBuf::from("/var/lib/talaria/update"),
+        // unset/invalid UTF-8, so the Err arm is exactly the unset case.
+        Err(_) => state_root().join("update"),
+    }
+}
+
+/// The state root every deployment binds — what the base compose and the
+/// fleet's dokploy resources set (`/var/lib/talaria-<customer>`), with the
+/// image's own default for installs that never set it. The update tree is
+/// the one subtree keyed off this instead of an image-baked absolute path:
+/// it must land inside the bind, and the bind's name is per-deployment.
+fn state_root() -> PathBuf {
+    match std::env::var("TALARIA_STATE_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => PathBuf::from("/var/lib/talaria"),
     }
 }
 
@@ -92,11 +106,14 @@ pub fn edge_container_in(project: &str) -> String {
 /// The edge image — pinned, never `:latest`, for the same reason every
 /// dependency in this tree is pinned: the edge is on the request path, and
 /// an unpinned traefik upgrade is an unreviewed change to routing itself.
-/// The `-alpine` variant specifically: the healthcheck dials `/ping` with
-/// busybox `wget`, and the scratch-flavored tags ship no shell at all.
+/// The plain linux tag (the 3.6 line has no `-alpine` suffixed tags —
+/// `v3.6.7-alpine` never existed, a fact the first fleet adoption learned
+/// from the registry's not-found): Alpine-based, so busybox `wget` ships —
+/// the healthcheck dials `/ping` with it. The windowsservercore/nanoserver
+/// variants are the ones to never land on.
 pub fn edge_image() -> String {
     std::env::var("TALARIA_EDGE_IMAGE")
-        .unwrap_or_else(|_| "docker.io/library/traefik:v3.6.7-alpine".into())
+        .unwrap_or_else(|_| "docker.io/library/traefik:v3.6.25".into())
 }
 
 /// The app image the engine tracks — the trunk feed CI publishes from main

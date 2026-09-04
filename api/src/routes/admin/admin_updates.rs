@@ -31,6 +31,7 @@ use crate::session::{SessionUser, require_admin};
 use crate::state::AppState;
 use crate::update::adopt::{AdoptStage, adopt};
 use crate::update::docker::container_running;
+use crate::update::layout::{edge_container_in, update_project};
 use crate::update::mode::{InstallMode, install_mode};
 use crate::update::registry::resolve_latest;
 use crate::update::roll::{acting_gate, reconcile_boot, roll, rollback, run_in_flight, self_slot};
@@ -157,7 +158,9 @@ fn slot_name(slot: crate::fleet::docker::Slot) -> &'static str {
 /// state, talaria-infra's migration script). Derived, never stored: a run
 /// holding at `cutting-over` with a retired container still RUNNING is a
 /// fresh-port adoption waiting for the proxy to repoint; one whose retired
-/// container is gone is landing. Null everywhere else (nothing adopting).
+/// container is gone is landing. `edge-pending` when the edge container is
+/// not up (pulling, or down after a failed start — re-POST adopt retries).
+/// Null everywhere else (nothing adopting).
 async fn adoption_stage(row: &UpdateState) -> serde_json::Value {
     let Some(port) = row.edge_port.as_deref() else {
         return serde_json::Value::Null;
@@ -166,6 +169,16 @@ async fn adoption_stage(row: &UpdateState) -> serde_json::Value {
         Some(retired) => container_running(retired).await,
         None => false,
     };
+    // edge-ready is a promise about the EDGE, not just the hold: the first
+    // fleet adoption sat at edge-ready with the edge container dead (its
+    // image would not pull) and the migration script nearly repointed a
+    // tunnel at a port nothing answered. While the edge container is not
+    // up — mid-pull on a first start, or down after a failed one — the
+    // stage says edge-pending; callers poll past it, and a re-POST adopt
+    // retries the start.
+    if !container_running(&edge_container_in(&update_project())).await {
+        return serde_json::json!({ "stage": "edge-pending", "edgePort": port });
+    }
     let stage = if holding { "edge-ready" } else { "cutover" };
     serde_json::json!({ "stage": stage, "edgePort": port })
 }

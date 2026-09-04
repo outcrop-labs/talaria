@@ -35,6 +35,11 @@
 //                     row's `migrated` becomes the dormancy gate, and an
 //                     operator who wants the engine off again sets it in
 //                     the slot env file (the documented door).
+//   TALARIA_UPDATE_DIR pre-fix images baked an absolute path outside every
+//                     deployment bind; dropping it lets the fresh image's
+//                     state-root-relative default win, so the update tree
+//                     lands inside the state dir instead of the rendering
+//                     container's writable layer.
 //   HOSTNAME/PATH/HOME container-runtime injections, not configuration.
 
 use serde_json::{Value, json};
@@ -44,10 +49,11 @@ use super::layout::{Slot, edge_image, slot_env_file, slot_service};
 
 /// Env names the render drops from the live container's environment — see
 /// the header for each one's reason.
-pub const ENV_DENYLIST: [&str; 6] = [
+pub const ENV_DENYLIST: [&str; 7] = [
     "TALARIA_VERSION",
     "TALARIA_INSTALL",
     "TALARIA_UPDATER",
+    "TALARIA_UPDATE_DIR",
     "HOSTNAME",
     "PATH",
     "HOME",
