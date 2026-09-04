@@ -1637,6 +1637,37 @@ async fn thread_binder(pg: &PgPool, head: &ThreadHead) -> Result<Option<String>,
     Ok(any.map(|(m,)| m))
 }
 
+/// The human who holds a task's discussion row: the creator by email, else
+/// the first human assignee, else any board member — a discussion needs
+/// someone to own the row, and reading it is board-membership-shaped anyway.
+/// One ladder, one truth: the thread's ensure and the room's ensure both
+/// walk it, the way the migration did.
+async fn task_thread_owner(pg: &PgPool, head: &ThreadHead) -> Result<Option<String>, sqlx::Error> {
+    if let Some(id) = author_user_id(pg, &head.created_by).await? {
+        return Ok(Some(id));
+    }
+    let assignees = json_strings(&head.assignees);
+    let candidate = human_assignee_ids(&assignees).into_iter().next();
+    let row: Option<(String,)> = match candidate {
+        Some(id) => {
+            sqlx::query_as("select id::text from users where id = $1::uuid")
+                .bind(&id)
+                .fetch_optional(pg)
+                .await?
+        }
+        None => {
+            sqlx::query_as(
+                "select user_id::text from board_members \
+                     where board_id = $1::uuid order by created_at asc limit 1",
+            )
+            .bind(&head.board_id)
+            .fetch_optional(pg)
+            .await?
+        }
+    };
+    Ok(row.map(|(v,)| v))
+}
+
 /// Open (or find) the task's discussion thread. The owner ladder mirrors the
 /// migration's: the creator by email, else the first human assignee, else
 /// any board member — a thread needs someone to own the row, and reading it
@@ -1654,27 +1685,7 @@ pub async fn ensure_task_conversation(
     if let Some(id) = head.conversation_id.clone() {
         return Ok(Some(id));
     }
-    let owner = match author_user_id(pg, &head.created_by).await? {
-        Some(id) => Some(id),
-        None => {
-            let assignees = json_strings(&head.assignees);
-            match human_assignee_ids(&assignees).into_iter().next() {
-                Some(id) => sqlx::query_as("select id::text from users where id = $1::uuid")
-                    .bind(&id)
-                    .fetch_optional(pg)
-                    .await?
-                    .map(|(v,)| v),
-                None => sqlx::query_as(
-                    "select user_id::text from board_members \
-                         where board_id = $1::uuid order by created_at asc limit 1",
-                )
-                .bind(&head.board_id)
-                .fetch_optional(pg)
-                .await?
-                .map(|(v,)| v),
-            }
-        }
-    };
+    let owner = task_thread_owner(pg, &head).await?;
     let (Some(owner), Some(binder)) = (owner, thread_binder(pg, &head).await?) else {
         return Ok(None);
     };
@@ -1720,6 +1731,75 @@ pub async fn rebind_task_conversation_agent(pg: &PgPool, task_id: &str) -> Resul
         .execute(pg)
         .await?;
     Ok(())
+}
+
+// ── The room ───────────────────────────────────────────────────────────────
+// A ticket's discussion IS a channel (linked by channels.task_id) — the same
+// room the comms engine serves everywhere else: edit, reactions, threads,
+// attachments, mention-driven agent replies. The room needs no provisioning
+// beyond its own row: no channel_members (access is board membership, read
+// in channel_role), no channel_agents (the roster is the board's agent
+// policy, read in list_task_room_agents), no binder (who answers is decided
+// per message — the mention grammar, plus the assigned agent when the
+// relevance gate agrees).
+
+/// The task's room channel id, when the room exists.
+pub async fn task_room_channel_id(
+    pg: &PgPool,
+    task_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_as::<_, (String,)>("select id::text from channels where task_id = $1::uuid")
+        .bind(task_id)
+        .fetch_optional(pg)
+        .await
+        .map(|row| row.map(|(v,)| v))
+}
+
+/// Open (or find) the task's discussion room. The same shape
+/// `ensure_task_conversation` has, minus everything a channel does not need:
+/// the owner ladder is the one shared truth, and the unique index on
+/// task_id is the race brake — insert-on-conflict-nothing, then re-read the
+/// winner, so two clients opening the same ticket's Discussion both land on
+/// the one room. Ok(None) = the task does not exist, or nobody could own
+/// the row.
+pub async fn ensure_task_channel(
+    pg: &PgPool,
+    task_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(head) = thread_head(pg, task_id).await? else {
+        return Ok(None);
+    };
+    if let Some((id,)) =
+        sqlx::query_as("select id::text from channels where task_id = $1::uuid")
+            .bind(task_id)
+            .fetch_optional(pg)
+            .await?
+    {
+        return Ok(Some(id));
+    }
+    let Some(owner) = task_thread_owner(pg, &head).await? else {
+        return Ok(None);
+    };
+    // The room's name and topic are the ticket's identity, for every place
+    // a channel renders them (transcripts, notifications, the gateway
+    // history) — the ref line is what a room about WEB-31 should say it is.
+    let ticket = crate::ticket_chat::ticket_head(pg, task_id).await;
+    let name: String = head.title.chars().take(60).collect();
+    let topic = ticket.as_ref().map(|t| t.line());
+    sqlx::query(
+        "insert into channels (name, topic, created_by, task_id) \
+         values ($1, $2, $3::uuid, $4::uuid) \
+         on conflict (task_id) where task_id is not null do nothing",
+    )
+    .bind(&name)
+    .bind(&topic)
+    .bind(&owner)
+    .bind(task_id)
+    .execute(pg)
+    .await?;
+    // Re-read rather than trusting the write: the loser of the race must
+    // return the winner's room, not assume its own insert landed.
+    Ok(task_room_channel_id(pg, task_id).await?)
 }
 
 // ── Comments ─────────────────────────────────────────────────────────────────
