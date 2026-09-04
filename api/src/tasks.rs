@@ -1700,8 +1700,8 @@ pub async fn ensure_task_channel(
 /// — the channel surface a human types into, an agent posting directly, the
 /// agent's streamed reply, the MCP comment tool — and the board's edges must
 /// not depend on which: the activity line, the comment event (badge recount
-/// + live board readers), and the comment point in the activity brain. The
-/// brain leg is fire-and-forget like every other indexing site.
+/// and live readers), and the comment point in the activity brain. The brain
+/// leg is fire-and-forget like every other indexing site.
 pub async fn room_comment_fanout(
     pg: &PgPool,
     realtime: &RealtimeDeps,
