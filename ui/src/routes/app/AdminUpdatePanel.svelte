@@ -35,7 +35,7 @@
     sentence: string | null
     migrated: boolean
     running: { version: string | null; digest: string | null; slot: 'a' | 'b' | null; project: string }
-    adoption: { stage: 'edge-ready' | 'cutover'; edgePort: string } | null
+    adoption: { stage: 'edge-pending' | 'edge-ready' | 'cutover'; edgePort: string } | null
     autoUpdate: boolean
     machineKeySet: boolean
     available: Pin | null
@@ -176,6 +176,23 @@
     await qc.invalidateQueries({ queryKey: ['admin-updates'] })
   }
 
+  // The fresh-port handover's heal call when the edge never came up: the
+  // same adopt POST (on blue it replays the edge's compose and waits for
+  // health — it cannot cut over, the proxy has not repointed), which is
+  // why it needs no confirm. `kicked` stays false: this call never drains
+  // the container the page is served from.
+  const retryEdge = async () => {
+    busy = 'adopt'
+    error = null
+    try {
+      await postJson<{ stage: string }>('/api/admin/updates', { action: 'adopt' })
+    } catch (e) {
+      error = errorMessage(e)
+    }
+    busy = null
+    await qc.invalidateQueries({ queryKey: ['admin-updates'] })
+  }
+
   const setAuto = async (on: boolean) => {
     error = null
     try {
@@ -242,7 +259,17 @@
           <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--theme-accent)]"></span>
           Rolling out {status.lastRun?.to.version}. Traffic moves once the new container is healthy.
         </div>
-        {#if status.adoption?.stage === 'edge-ready'}
+        {#if status.adoption?.stage === 'edge-pending'}
+          <p class="text-xs text-muted">
+            The edge is not up on port {status.adoption.edgePort} yet — still starting, or a start
+            that failed. Retry below; if it keeps pending, inspect the edge container on the host.
+          </p>
+          <div>
+            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void retryEdge()}>
+              {busy === 'adopt' ? 'Retrying...' : 'Retry the edge'}
+            </Button>
+          </div>
+        {:else if status.adoption?.stage === 'edge-ready'}
           <p class="text-xs text-muted">
             The edge is up on port {status.adoption.edgePort} — traffic moves when the proxy points at it.
           </p>

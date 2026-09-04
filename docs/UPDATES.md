@@ -56,7 +56,8 @@ so nothing resurrects it — **disarm dokploy's autoDeploy on the resource
 before adopting**, or the next push stop-first-deploys underneath the
 handover. And after adoption the orchestrator no longer owns the app:
 environment changes go through the slot env files in the update dir
-(`$TALARIA_UPDATE_DIR`), not through dokploy.
+(`${TALARIA_STATE_DIR}/update` — `TALARIA_UPDATE_DIR` overrides it), not
+through dokploy.
 
 ## The taxonomy — who may roll
 

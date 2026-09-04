@@ -6,6 +6,33 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **The edge container's image tag never existed.** The pinned default
+  `traefik:v3.6.7-alpine` was a tag nobody ever published — the 3.6 line
+  tops at `v3.6.25` and carries no `-alpine` variants — so adoption's
+  first fleet run brought green up and then silently never started the
+  edge at all. The default is now the real `v3.6.25` (the plain tag is
+  Alpine-based and carries the busybox `wget` the edge healthcheck needs).
+
+- **The adoption's live stage tells the truth about a dead edge.** The GET
+  answered `edge-ready` whenever the state row carried a port and blue was
+  still serving — a condition the first fleet adoption actually reached
+  with the edge container down (the bad tag above): a poller sailed past
+  the hold and repointed a proxy at a port nothing answered on. The stage
+  is now derived against the containers themselves: the edge running is
+  `edge-ready`, edge_port set but the edge down is `edge-pending`, and the
+  panel shows it with a Retry button (the adopt POST on blue replays the
+  edge's compose and waits — it cannot cut over, so no confirm).
+
+- **The update dir lives under the state root, not a baked absolute path.**
+  The image baked `TALARIA_UPDATE_DIR=/var/lib/talaria/update` — outside
+  every deployment's bind (fleet VMs bind only their
+  `/var/lib/talaria-<customer>` state dir), so the updater-owned compose
+  and slot env files landed in the orchestrator's writable layer, gone on
+  its next redeploy and invisible to a host-side inspection. The default
+  is now `${TALARIA_STATE_DIR}/update`, the Dockerfile stamp is gone, and
+  the variable is denylisted in slot renders so a stale baked value cannot
+  propagate into the project it broke.
+
 - **The code probe's clock starts at the candidate, not the engine.** The
   fitness code tasks ran inside a 250ms window that also covered building
   the boa context evaluating them — on a loaded host (CI's runners proved
