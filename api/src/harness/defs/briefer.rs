@@ -1569,8 +1569,7 @@ mod tests {
             problem(&leads(
                 "Worth a read: Cursor is changing its pricing. Standup today. The migration is blocked and needs you.",
                 &no_ctx()
-            ))
-            .as_deref(),
+            )),
             Some("opened on the pricing newsletter and reached the blocked ticket afterwards")
         );
     }

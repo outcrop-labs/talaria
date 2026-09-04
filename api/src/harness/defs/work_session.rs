@@ -1269,13 +1269,12 @@ mod tests {
             "misc",
             "",
         ] {
-            assert_eq!(
+            assert!(
                 (by("files exactly one gap for work it genuinely cannot do").check)(
                     "Blocked.",
                     &sentenced(kind)
                 )
                 .is_some_and(|m| m.contains("short slug")),
-                true,
                 "\"{kind}\" should fail the slug shape"
             );
         }

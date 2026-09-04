@@ -203,10 +203,8 @@ pub async fn get_capabilities(pg: &PgPool, key: &str) -> HashMap<String, Capabil
             if !ALL_CAPABILITIES.contains(&cap.as_str()) {
                 continue;
             }
-            if let Some(fact) = read_fact(raw, now) {
-                if !fact.superseded(cap) {
-                    out.insert(cap.clone(), fact);
-                }
+            if let Some(fact) = read_fact(raw, now).filter(|fact| !fact.superseded(cap)) {
+                out.insert(cap.clone(), fact);
             }
         }
     }
