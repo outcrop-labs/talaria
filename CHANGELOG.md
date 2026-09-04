@@ -6,6 +6,29 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **The @ picker froze at editor creation — and ticket threads never
+  offered agents.** MentionSuggest captured the mentionables array at
+  mount, but every surface builds that list with `$derived` over async
+  queries: the picker showed whoever had resolved by editor creation
+  (cached users, typically) and never the agents that land with the
+  fleet — and a list still empty at mount installed no picker at all,
+  leaving the @ key dead. Candidates are read live on every keystroke
+  now, and a ticket's discussion offers the board's agents ahead of its
+  members, addressed by label — the same grammar the channels read. The
+  description editor stays humans-only: a mention there notifies a
+  person, and no agent reads a description.
+
+- **An embedded chat fills its container; the window floats over it.**
+  ChatView's root was transparent — invisible on the full-page stage,
+  where the page behind it is the same ground, but everywhere the chat is
+  embedded (a ticket's discussion tab, the plan split, a research run) it
+  sat on panel chrome, and the composer's opaque ground band floated on
+  that chrome with no ground of its own: a dark patch with seams on three
+  sides, disjointed from the surface around it. The root now paints the
+  ground, so the container becomes the chat's stage, edge to edge, and
+  the transcript column and the composer float over it — the geometry the
+  full-page stage always had.
+
 - **The edge container's image tag never existed.** The pinned default
   `traefik:v3.6.7-alpine` was a tag nobody ever published — the 3.6 line
   tops at `v3.6.25` and carries no `-alpine` variants — so adoption's

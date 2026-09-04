@@ -105,8 +105,8 @@
   // same line it was created. `listQuery` hands back the rows AND the sentence.
   const tasksList = listQuery(useBoardTasks(() => board.id), { title: 'Could not load this board’s tickets', variant: 'inline' })
   const boardTasks = $derived(tasksList.rows)
-  // @mention board members in the discussion + description — the people the server
-  // notifies (tasks comment/description paths). Tokens mirror the server's.
+  // @mention board members in the description — the people the server notifies
+  // (tasks comment/description paths). Tokens mirror the server's.
   const membersList = listQuery(useBoardMembers(() => board.id), { title: 'Could not load who’s on this board', variant: 'inline' })
   const boardMembers = $derived(membersList.rows)
   const labelsList = listQuery(useBoardLabels(() => board.id), { title: 'Could not load this board’s labels', variant: 'inline' })
@@ -118,6 +118,15 @@
       .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
       .filter((m) => m.insert),
   )
+  // The DISCUSSION thread's room is bigger than the people: the board's agents
+  // are in it, and @mentioning one by label is how you address it (the same
+  // grammar the channels read — label or model id). Agents lead the list,
+  // members follow. The description editor above keeps the humans-only list:
+  // a mention there notifies a person, and no agent reads the description.
+  const threadMentionables = $derived([
+    ...agents.map((a) => ({ insert: a.label, label: a.label, sub: a.role })),
+    ...mentionables,
+  ].filter((m) => m.insert))
   // Assignees mix humans (board members, `user:<id>`) and the board's agents.
   const assigneeOptions = $derived([
     ...boardMembers.map((m) => ({
@@ -399,7 +408,7 @@
                   conversationId={threadConversationId}
                   newChatSignal={0}
                   {syncSignal}
-                  {mentionables}
+                  mentionables={threadMentionables}
                   onCreated={() => {}}
                 />
               </div>

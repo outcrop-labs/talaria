@@ -511,10 +511,20 @@
      its text is set to a readable measure". The zero state and the scrollbar
      now reach the edges; the words still don't.
 
+     The root PAINTS the ground. On the full-page stage that is a no-op (the
+     page behind it is the same token), but everywhere the chat is EMBEDDED —
+     a ticket's discussion tab, the plan split, a research run — the pane it
+     fills sits on panel chrome (#141312 modal bodies, side-by-side splits).
+     There, transparency read as a hole: the composer's opaque ground band
+     floated on panel with no ground of its own, a dark patch with seams on
+     three sides. `bg-surface` makes the container the chat's stage, and the
+     transcript column and the composer float over it — one fill, edge to
+     edge, no patches.
+
      `--chat-composer` is the measured height of the float, reserved at the
      bottom of the scroll so the last message never parks behind it. Measured,
      not a constant: the composer grows with the draft. -->
-<div class="relative flex h-full w-full flex-col" style:--chat-composer="{composerH}px">
+<div class="relative flex h-full w-full flex-col bg-surface" style:--chat-composer="{composerH}px">
   <div
     bind:this={scrollEl}
     class="flex-1 overflow-y-auto"
