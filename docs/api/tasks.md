@@ -14,9 +14,9 @@
 | [`/api/tasks/{id}`](#apitasksid) | GET | `dual` |
 | [`/api/tasks/{id}`](#apitasksid) | PUT | `dual` |
 | [`/api/tasks/{id}`](#apitasksid) | DELETE | `session` |
+| [`/api/tasks/{id}/channel`](#apitasksidchannel) | POST | `session` |
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | GET | `dual` |
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | POST | `dual` |
-| [`/api/tasks/{id}/conversation`](#apitasksidconversation) | POST | `session` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
@@ -68,6 +68,20 @@ Source: [`api/src/routes/tasks/tasks_id.rs`](../../api/src/routes/tasks/tasks_id
 | `addTimeSpentSeconds` | `number?(0, 86400, 30)` |  |
 | `attachmentIds` | `uuid[]?(20)` | Full replacement list, same contract as chat messages: upload ids + knowledge/artifact refs. Omit both to leave attachments unchanged. |
 
+## `/api/tasks/{id}/channel`
+
+Source: [`api/src/routes/tasks/tasks_id_channel.rs`](../../api/src/routes/tasks/tasks_id_channel.rs)
+
+> /api/tasks/{id}/channel.
+>
+> OPEN THE ROOM FOR A TICKET, creating it the first time.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{channelId}` | 200, 404, 409 | — |
+
 ## `/api/tasks/{id}/comments`
 
 Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks/tasks_id_comments.rs)
@@ -89,20 +103,6 @@ Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks
 | :--- | :--- | :--- |
 | `content` | `string(1, 20000)` |  |
 | `parentId` | `uuid?` |  |
-
-## `/api/tasks/{id}/conversation`
-
-Source: [`api/src/routes/tasks/tasks_id_conversation.rs`](../../api/src/routes/tasks/tasks_id_conversation.rs)
-
-> /api/tasks/{id}/conversation.
->
-> OPEN THE THREAD FOR A TICKET, creating it the first time.
->
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{conversationId, agentModel}` | 200, 404, 409 | — |
 
 ## `/api/tasks/{id}/dependencies`
 
