@@ -2,7 +2,7 @@
 
 > **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
 > and the handler modules under `api/src/routes/**` (the TS residents still serving
-> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> `healthz` and the app dispatch excepted) — do not edit by hand.
 > Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
@@ -295,7 +295,7 @@ Source: [`api/src/routes/comms/chat.rs`](../../api/src/routes/comms/chat.rs)
 | `tier` | `string?(60)` |  |
 | `effort` | `string?(24)` |  |
 | `attachmentIds` | `uuid[]?(10)` |  |
-| `kind` | `enum(chat|plan|research)?` |  |
+| `kind` | `enum(chat|plan|research|ticket)?` |  |
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
 

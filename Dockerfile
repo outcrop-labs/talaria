@@ -154,8 +154,12 @@ RUN adduser -D -u 10001 talaria \
 # PORT=5273 is the fleet contract (agents dial
 # host.docker.internal:5273 / the app's network alias), COOKIE_SECURE=0 because
 # the default posture is plain http (browsers drop Secure cookies over http —
-# flip it behind TLS, see docs/CONTAINER.md), TALARIA_UPDATER=off because the
-# orchestrator (compose/Dokploy) owns deploys and the image has no git checkout.
+# flip it behind TLS, see docs/CONTAINER.md). TALARIA_UPDATER is deliberately
+# NOT baked: the old `off` default contradicted the install signal below — an
+# adopted slot would have inherited it from the image's own ENV and the engine
+# could never act. Dormancy for image installs is the adoption gate (the
+# engine acts only on instances that explicitly handed over the keys), and an
+# operator who wants a hard switch sets TALARIA_UPDATER=off themselves.
 # TALARIA_API_BIN tells server-entry.js where the api binary it spawns lives —
 # the path is fixed by the COPY above; the env keeps the entry from guessing a
 # repo-layout path that only exists on dev boxes.
@@ -168,18 +172,20 @@ RUN adduser -D -u 10001 talaria \
 # keys on exactly this to know it may roll its own container. A checkout
 # install never sets it, and the updater stays dormant there.
 # State lives under /var/lib/talaria via the existing path overrides, never in
-# default paths inside /app (those are image-owned).
+# default paths inside /app (those are image-owned). TALARIA_UPDATE_DIR is the
+# updater's subtree — rendered slots, env files, the project's compose — same
+# discipline as its siblings.
 ENV PORT=5273 \
     HOST=0.0.0.0 \
     NODE_ENV=production \
     COOKIE_SECURE=0 \
-    TALARIA_UPDATER=off \
     TALARIA_INSTALL=image \
     TALARIA_API_BIN=/usr/local/bin/talaria-api \
     TALARIA_JS_RUNTIME=bun \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
     TALARIA_APPS_DIR=/var/lib/talaria/apps \
+    TALARIA_UPDATE_DIR=/var/lib/talaria/update \
     # From ARG VERSION above: the LABEL carries it for `docker inspect`, this
     # carries it for the process and `docker exec`.
     TALARIA_VERSION=${VERSION}

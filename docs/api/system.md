@@ -2,7 +2,7 @@
 
 > **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
 > and the handler modules under `api/src/routes/**` (the TS residents still serving
-> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> `healthz` and the app dispatch excepted) — do not edit by hand.
 > Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
@@ -20,12 +20,14 @@ Source: [`ui/src/routes/api/healthz.ts`](../../ui/src/routes/api/healthz.ts)
 
 > Liveness/readiness — SQL and Redis round-trips, plus a `migrations`
 > check that appears (and fails the probe) when the boot migration pass
-> died. PUBLIC BY DESIGN: no session guard, because a health check that
-> needs a session tells you nothing exactly when you need it.
+> died, and `version` (the image's TALARIA_VERSION, null on local
+> builds) so a deploy gate can tell two instances apart. PUBLIC BY
+> DESIGN: no session guard, because a health check that needs a session
+> tells you nothing exactly when you need it.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `{status, uptimeSeconds, checks}` | 200 + varies | — |
+| GET | `public` | — | `{status, version, uptimeSeconds, checks}` | 200 + varies | — |
 
 ## `/api/well-known/talaria-instance`
 

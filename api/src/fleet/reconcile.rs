@@ -13,8 +13,10 @@ use crate::fleet::render::{RollOverlay, next_free_port, render_fleet};
 use crate::secretbox::SecretBox;
 
 /// How long the old container keeps serving after cutover so in-flight
-/// replies drain (TALARIA_ROLL_DRAIN_SECONDS; default 45s).
-fn roll_drain_ms() -> u64 {
+/// replies drain (TALARIA_ROLL_DRAIN_SECONDS; default 45s). The app's own
+/// rolls read the same knob — one drain policy per host — so this is
+/// crate-visible to update/layout.rs.
+pub(crate) fn roll_drain_ms() -> u64 {
     std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())

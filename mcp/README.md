@@ -17,7 +17,7 @@ bypass them.
 | `get_ticket` | Full ticket: fields, comments, activity, watchers, reviews, dependencies |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
 | `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves → `in_progress` / `blocked` / `quality_review` (see below) |
-| `comment` | Comment on a ticket — the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
+| `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
 | `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger. Live tickets only |
@@ -26,8 +26,11 @@ bypass them.
 
 Beyond the PM tools above, the toolkit also carries **artifacts**
 (create/update/list/get + `export_to_google_doc`), **knowledge base**
-(`list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `edit_kb_doc` — edit only
-where granted), **channels** (`list_channels` / `read_channel` /
+(`list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `create_kb_space` /
+`edit_kb_space` — the landing page shown when someone opens the space itself —
+`create_kb_doc` / `edit_kb_doc` / `move_kb_doc` / `delete_kb_doc` — edit only
+where granted, delete only what the agent itself created), **channels**
+(`list_channels` / `read_channel` /
 `post_to_channel` — a personal assistant sees its owner's channels and DMs,
 any other agent sees its own memberships; posts stay agent-attributed and
 don't trigger other agents), **Google** (per-user calendar/mail read +

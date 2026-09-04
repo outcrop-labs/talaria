@@ -24,6 +24,13 @@ use std::time::Duration;
 
 pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>;
 
+/// How long the turn waits for the agent gateway to OPEN the stream (the
+/// response's headers) before the retry/deadline loop takes over. Generous on
+/// purpose: the agent's first frame rides its provider's time-to-first-token,
+/// and a long context — or a mid-task compaction — can hold that for minutes.
+/// Only silence past this reads as "not serving yet".
+const HEADERS_WINDOW: Duration = Duration::from_secs(300);
+
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
 /// `AgentStreamParser`. `content_type` is what the upstream answered,
@@ -116,12 +123,23 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
             request["stream_options"] = json!({ "include_usage": true });
             let mut req = http()
                 .post(format!("{}/v1/chat/completions", entry.url))
-                .header("content-type", "application/json")
-                .timeout(Duration::from_secs(600));
+                .header("content-type", "application/json");
             if let Some(key) = entry.key.as_deref().filter(|k| !k.is_empty()) {
                 req = req.bearer_auth(key);
             }
-            if let Ok(upstream) = req.json(&request).send().await {
+            // NO TOTAL TIMEOUT ON THE TURN. A per-request .timeout() owns the
+            // body end to end, and an agent turn is one long stream: a
+            // knowledgebase buildout works for an hour, and the 600s ceiling
+            // this replaces killed it at ten minutes while the container was
+            // still demonstrably working — the API hung up on a live agent and
+            // called the turn "interrupted". Liveness is the DRAIN LOOP's
+            // idle ceiling (chat_persist's STREAM_IDLE): as long as frames
+            // arrive, the turn runs; only silence ends it. What still needs a
+            // bound here is the wait for the response's HEADERS — a container
+            // that accepted the request and never opened the stream — because
+            // connect_timeout covers TCP only.
+            let sent = tokio::time::timeout(HEADERS_WINDOW, req.json(&request).send()).await;
+            if let Ok(Ok(upstream)) = sent {
                 let status = upstream.status().as_u16();
                 // 502/503/504 = the gateway process is up but not serving yet
                 // — keep waiting. Any other answer (including a real error

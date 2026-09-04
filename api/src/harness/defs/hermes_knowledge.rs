@@ -638,6 +638,7 @@ mod tests {
             official: false,
             editable: true,
             versions: 1,
+            created_by_agent: true,
         }
     }
 

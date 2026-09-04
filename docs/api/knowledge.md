@@ -2,7 +2,7 @@
 
 > **Generated** by `bun run docs:api` from the Rust router table (`api/src/routes/mod.rs`)
 > and the handler modules under `api/src/routes/**` (the TS residents still serving
-> `healthz`, `admin/update` and the app dispatch excepted) — do not edit by hand.
+> `healthz` and the app dispatch excepted) — do not edit by hand.
 > Change the route (or its `// doc:` note) and regenerate; `bun run check` fails on drift.
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
@@ -15,20 +15,20 @@
 | [`/api/kb/comments/{id}`](#apikbcommentsid) | DELETE | `session` |
 | [`/api/kb/docs/{id}`](#apikbdocsid) | GET | `dual` |
 | [`/api/kb/docs/{id}`](#apikbdocsid) | PUT | `dual` |
-| [`/api/kb/docs/{id}`](#apikbdocsid) | DELETE | `session` |
+| [`/api/kb/docs/{id}`](#apikbdocsid) | DELETE | `dual` |
 | [`/api/kb/docs/{id}/backlinks`](#apikbdocsidbacklinks) | GET | `session` |
 | [`/api/kb/docs/{id}/comments`](#apikbdocsidcomments) | GET | `session` |
 | [`/api/kb/docs/{id}/comments`](#apikbdocsidcomments) | POST | `session` |
 | [`/api/kb/docs/{id}/live`](#apikbdocsidlive) | GET | `session` |
 | [`/api/kb/docs/{id}/live`](#apikbdocsidlive) | PUT | `session` |
-| [`/api/kb/docs/{id}/move`](#apikbdocsidmove) | POST | `session` + `perm:kb.edit` |
+| [`/api/kb/docs/{id}/move`](#apikbdocsidmove) | POST | `dual` |
 | [`/api/kb/public/{slug}`](#apikbpublicslug) | GET | `public` |
 | [`/api/kb/public/space/{slug}`](#apikbpublicspaceslug) | GET | `public` |
 | [`/api/kb/search`](#apikbsearch) | GET | `session` |
 | [`/api/kb/spaces`](#apikbspaces) | GET | `dual` |
 | [`/api/kb/spaces`](#apikbspaces) | POST | `dual` |
 | [`/api/kb/spaces/{id}`](#apikbspacesid) | GET | `session` |
-| [`/api/kb/spaces/{id}`](#apikbspacesid) | PUT | `session` |
+| [`/api/kb/spaces/{id}`](#apikbspacesid) | PUT | `dual` |
 | [`/api/kb/spaces/{id}`](#apikbspacesid) | DELETE | `session` |
 | [`/api/kb/spaces/{id}/docs`](#apikbspacesiddocs) | GET | `dual` |
 | [`/api/kb/spaces/{id}/docs`](#apikbspacesiddocs) | POST | `dual` |
@@ -78,7 +78,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledg
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{doc, editors}` | 200, 403, 404 | — |
 | PUT | `dual` | [body](#put-apikbdocsid-body) | `{doc, editors}` | 200, 400, 403, 404 | audit |
-| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
+| DELETE | `dual` | — | `{ok}` | 200, 403, 404 | audit |
 
 ### PUT `/api/kb/docs/{id}` body
 
@@ -164,7 +164,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id_move.rs`](../../api/src/routes/kno
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:kb.edit` | [body](#post-apikbdocsidmove-body) | `{doc}` | 200, 400, 403, 404 | audit |
+| POST | `dual` | [body](#post-apikbdocsidmove-body) | `{doc}` | 200, 400, 403, 404 | audit |
 
 ### POST `/api/kb/docs/{id}/move` body
 
@@ -243,7 +243,7 @@ Source: [`api/src/routes/knowledge/kb_spaces_id.rs`](../../api/src/routes/knowle
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{space, editors}` | 200, 403, 404 | — |
-| PUT | `session` | [body](#put-apikbspacesid-body) | `{space, editors}` | 200, 400, 403, 404 | — |
+| PUT | `dual` | [body](#put-apikbspacesid-body) | `{space, editors}` | 200, 400, 403, 404 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403, 404 | audit |
 
 ### PUT `/api/kb/spaces/{id}` body

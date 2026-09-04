@@ -62,8 +62,10 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
 }
 
 /// One docker CLI invocation: non-zero exit is an error carrying stderr,
-/// success returns (stdout, stderr) trimmed as written.
-async fn docker(args: &[&str], timeout: Duration) -> Result<(String, String), String> {
+/// success returns (stdout, stderr) trimmed as written. Crate-visible —
+/// the app's own update engine (api/src/update/) speaks docker through
+/// the same shape rather than a second copy of it.
+pub(crate) async fn docker(args: &[&str], timeout: Duration) -> Result<(String, String), String> {
     let out = tokio::time::timeout(timeout, async {
         tokio::process::Command::new("docker")
             .args(args)

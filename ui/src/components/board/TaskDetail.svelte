@@ -7,7 +7,6 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { inlineEditKeys } from '@/components/ui/control'
-  import RichEditor from '@/components/ui/RichEditor.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
   import CloseButton from '@/components/ui/CloseButton.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -18,16 +17,17 @@
   import Select from '@/components/ui/Select.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import LabelPicker from '@/components/board/LabelPicker.svelte'
-  import Markdown from '@/components/ui/Markdown.svelte'
+  import ChatView from '@/components/chat/ChatView.svelte'
   import { useAgents } from '@/lib/agents'
   import { formatCost, formatTokens } from '@/lib/cost.svelte'
   import { useSession } from '@/lib/session'
+  import { onUserEvent } from '@/lib/user-events.svelte'
   import {
-    addComment,
     addDependency,
     archiveTask,
     createTask,
     deleteTask,
+    openTaskDiscussion,
     removeDependency,
     reviewTask,
     unwatchTask,
@@ -105,7 +105,7 @@
   // same line it was created. `listQuery` hands back the rows AND the sentence.
   const tasksList = listQuery(useBoardTasks(() => board.id), { title: 'Could not load this board’s tickets', variant: 'inline' })
   const boardTasks = $derived(tasksList.rows)
-  // @mention board members in comments + description — the people the server
+  // @mention board members in the discussion + description — the people the server
   // notifies (tasks comment/description paths). Tokens mirror the server's.
   const membersList = listQuery(useBoardMembers(() => board.id), { title: 'Could not load who’s on this board', variant: 'inline' })
   const boardMembers = $derived(membersList.rows)
@@ -129,10 +129,21 @@
   ])
 
   let title = $state('')
-  let tab = $state<'comments' | 'activity'>('comments')
-  const tabs = ['comments', 'activity'] as const
-  let commentEditor = $state<RichEditorHandle | null>(null)
+  let tab = $state<'discussion' | 'activity'>('discussion')
+  const tabs = ['discussion', 'activity'] as const
   let descEditor = $state<RichEditorHandle | null>(null)
+  // DescriptionSection's read/edit mode is OURS now (it binds up): the muse
+  // bar below gates on "the description is being edited".
+  let descMode = $state<'read' | 'edit'>('read')
+  // The ticket's discussion thread. `threadId` is this view's own record of
+  // the room it opened (or found); `t.conversationId` is the persisted link —
+  // ChatView rides whichever is set.
+  let threadId = $state<string | null>(null)
+  let threadModel = $state<string | null>(null)
+  let openingThread = $state(false)
+  // A turn landed in this thread somewhere we couldn't see (another tab, a
+  // teammate, the agent working the ticket) — ChatView re-reads history.
+  let syncSignal = $state(0)
   // Jump to a sibling ticket (parent/sub-task links) — same overlay route.
   // (React's `search: prev => prev` kept the board filters; pass the current
   // query string through for the same effect.)
@@ -150,8 +161,51 @@
     if (task && loadedId !== task.id) {
       loadedId = task.id
       title = task.title
+      // An editable ticket with no description opens straight into Edit —
+      // this initial used to be DescriptionSection's own.
+      descMode = canEdit && !task.description ? 'edit' : 'read'
+      // A sibling jump (openTask) swaps the ticket under this modal: the old
+      // ticket's thread is not the new one's.
+      threadId = task.conversationId ?? null
+      threadModel = null
+      threadTried = false
     }
   })
+
+  // OPENING THE DISCUSSION TAB OPENS THE THREAD. A thread is not created with
+  // its ticket — most tickets are read and moved, and a conversation row per
+  // one of those would be a thread nobody ever spoke in — so the ensure route
+  // is what makes the room exist, and this is the thing that calls it. One
+  // attempt per ticket: a refused ensure (409 — nobody can own the thread)
+  // must not re-POST on every refetch while the tab sits open.
+  let threadTried = false
+  $effect(() => {
+    if (tab !== 'discussion' || !t) return
+    if (threadTried || threadId || t.conversationId) return
+    threadTried = true
+    openingThread = true
+    openTaskDiscussion(taskId)
+      .then((r) => {
+        threadId = r.conversationId
+        threadModel = r.agentModel
+        refresh()
+      })
+      .catch(() => {})
+      .finally(() => (openingThread = false))
+  })
+
+  // The firehose saw a turn land in THIS thread — from a teammate, or our own
+  // agent working the ticket in another tab. The subscription lives exactly
+  // as long as the modal (the $effect's cleanup is the unsubscribe).
+  $effect(() =>
+    onUserEvent((event) => {
+      if (event.type !== 'conversation') return
+      const thread = threadId ?? t?.conversationId
+      if (!thread || event.conversationId !== thread) return
+      syncSignal += 1
+      void qc.invalidateQueries({ queryKey: ['task', taskId] })
+    }),
+  )
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['task', taskId] })
@@ -162,6 +216,14 @@
     refresh()
   }
   const t = $derived(data?.task)
+  // What the Discussion tab speaks to: the room this view opened (or the
+  // ticket's persisted link), and the agent that answers there — the binder
+  // the ensure route resolved (for unassigned tickets, the org default,
+  // dormant until an agent is assigned), else the task's first agent
+  // assignee as the pre-ensure guess.
+  const threadConversationId = $derived(threadId ?? t?.conversationId ?? null)
+  const threadAgent = $derived(threadModel ?? (t ? (t.assignees.find((a) => !a.startsWith('user:')) ?? agents[0]?.id ?? '') : ''))
+  const threadAgentLabel = $derived(agents.find((a) => a.id === threadAgent)?.label ?? threadAgent)
 
   // Sub-tasks: one level deep. Children list + inline add on a
   // parent; a child shows its parent with a promote control.
@@ -279,6 +341,7 @@
 
           {#key `ds-${t.id}`}
             <DescriptionSection
+              bind:mode={descMode}
               bind:editor={descEditor}
               title={t.ticketRef ? `${t.ticketRef} · ${t.title}` : t.title}
               value={t.description ?? ''}
@@ -306,7 +369,10 @@
           {/if}
         </div>
 
-        <!-- Discussion — Comments / Activity tabs; comment composer pinned -->
+        <!-- Discussion — the ticket's chat thread / Activity tabs. The count is
+             the thread's message count, and the thread itself is ChatView:
+             same composer, attachments, @mentions and streaming as every other
+             conversation, because it IS every other conversation. -->
         <div class="flex min-h-0 flex-1 flex-col border-t border-line-subtle">
           <div class="flex items-center gap-1 px-5 pt-3">
             {#each tabs as tb (tb)}
@@ -317,42 +383,35 @@
                   tab === tb ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
                 )}
               >
-                {tb === 'comments' ? `Comments (${data!.comments.length})` : 'Activity'}
+                {tb === 'discussion' ? `Discussion (${t.commentCount})` : 'Activity'}
               </button>
             {/each}
           </div>
 
-          {#if tab === 'comments'}
-            <ul class="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-3" use:listStagger>
-              {#each data!.comments as c (c.id)}
-                <li in:fade={{ duration: 150 }} out:fade={QUICK} class="rounded-lg border border-line bg-card p-2">
-                  <div class="mb-0.5 flex items-center justify-between text-xs">
-                    <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{c.author}</span>
-                    <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(c.createdAt)}</span>
-                  </div>
-                  <div class="font-sans text-sm text-fg"><Markdown children={c.content} /></div>
-                </li>
-              {/each}
-              {#if data!.comments.length === 0}<li class="font-sans text-xs text-muted">No comments yet.</li>{/if}
-            </ul>
-            {#key `comment-${t.id}`}
-              <RichEditor
-                bind:this={commentEditor}
-                value=""
-                editable
-                bare
-                mentions={mentionables}
-                class="shrink-0 border-t border-line-subtle"
-                placeholder="Write a comment  (Ctrl+Enter to send)"
-                minHeight="5rem"
-                onSubmit={() => {
-                  const md = (commentEditor?.getMarkdown() ?? '').trim()
-                  if (!md) return
-                  commentEditor?.clear()
-                  void addComment(taskId, md).then(refresh)
-                }}
-              />
-            {/key}
+          {#if tab === 'discussion'}
+            {#if threadConversationId}
+              <div class="min-h-0 flex-1">
+                <ChatView
+                  kind="ticket"
+                  minimal
+                  agentModel={threadAgent}
+                  agentLabel={threadAgentLabel}
+                  conversationId={threadConversationId}
+                  newChatSignal={0}
+                  {syncSignal}
+                  {mentionables}
+                  onCreated={() => {}}
+                />
+              </div>
+            {:else if openingThread}
+              <div class="px-5 py-3"><SkeletonRows rows={3} /></div>
+            {:else}
+              <!-- The ensure route refused (409: nobody can own the thread) —
+                   say it, rather than a composer that cannot send. -->
+              <div class="grid min-h-0 flex-1 place-items-center px-5 py-3 text-center font-sans text-xs text-muted">
+                The discussion could not be opened for this ticket.
+              </div>
+            {/if}
           {:else}
             <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3" use:listStagger>
               {#each data!.activity as a (a.id)}
@@ -369,15 +428,19 @@
 
         <!-- Muse — fast natural-language edits: fields from the base
              view ("high priority, due friday"), or a selected passage
-             of the description while editing. -->
-        {#if canEdit}
-          <TicketMuseBar
-            {t}
-            editor={descEditor}
-            onPatch={async (patch: TicketMusePatch) => {
-              await save(patch as Parameters<typeof save>[0])
-            }}
-          />
+             of the description while editing. Edit mode only: the bar
+             acts on the description's editor, and the read view should
+             read. -->
+        {#if canEdit && descMode === 'edit'}
+          <div transition:slide={{ duration: 150 }}>
+            <TicketMuseBar
+              {t}
+              editor={descEditor}
+              onPatch={async (patch: TicketMusePatch) => {
+                await save(patch as Parameters<typeof save>[0])
+              }}
+            />
+          </div>
         {/if}
       </div>
 

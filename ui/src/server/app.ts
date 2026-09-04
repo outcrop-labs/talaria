@@ -47,7 +47,7 @@ async function handle(request: Request): Promise<Response> {
   const method = request.method.toUpperCase() as ApiMethod
 
   // /api/* is the Rust api's before the route table is consulted; the table
-  // below is the four residents (app dispatch, admin.update, healthz, the app
+  // below is the three residents (app dispatch, healthz, the app
   // MCP gateway) — the SPA shell, and nothing else.
   const proxied = await maybeProxy(request, pathname)
   if (proxied) return proxied

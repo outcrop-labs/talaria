@@ -37,14 +37,15 @@ Then:
 
 ### Updating an install
 
-An install updates itself: `Admin → Security → Updates` shows the running commit, checks the
-remote, and `Update now` pulls, installs, builds into `dist-next`, swaps it for `dist` (the old
-build stays one generation as a manual rollback), and restarts the server through
-`scripts/update-restart.mjs`. Manual by default; the `Update automatically` toggle opts into a
-scheduled check every few hours. Dev installs never update (vite reloads on its own), a dirty
-checkout is refused rather than pulled over, and `TALARIA_UPDATER=off` is the kill switch for
-installs supervised some other way (systemd and friends, which own their own restarts). Logs land
-in `logs/talaria.log` and `logs/updater.log` at the repo root.
+Image installs roll themselves: `Admin → Security → Updates` shows the running version, checks
+the registry, and `Update now` pulls the new image digest-pinned, brings a second container up
+beside the live one, moves traffic once it is healthy, and drains the old one — nobody is
+interrupted. The old container is kept stopped for a day as rollback material (`Roll back` on
+the same panel). Manual by default; the `Update automatically` toggle opts into the scheduled
+check every few hours. The engine is dormant on installs that never adopted it — they keep
+deploying through their orchestrator — and checkout/dev installs say so instead of offering a
+button. `TALARIA_UPDATER=off` remains the kill switch for installs supervised some other way.
+The whole story, including the docker-only rollback runbook: [`docs/UPDATES.md`](./docs/UPDATES.md).
 
 ### Back up the root key
 

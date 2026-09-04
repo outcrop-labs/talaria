@@ -95,12 +95,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
 
     // ── Live pulse: what's generating right now + the last hour ─────────
-    // Streaming rows persist throttled during a reply; a crashed stream
-    // stays 'streaming' forever, hence the 10-minute recency clamp.
+    // Liveness is the LAST WRITE, not the row's age: the persist loop stamps
+    // streamed_at on every throttled flush (well under a second apart), so a
+    // still-writing row never goes stale here however long the turn runs,
+    // while a stream whose writer died ages out in five minutes instead of
+    // impersonating an active generation for the first ten of its existence.
+    // channel_messages has no streamed_at (different writer, different table)
+    // and keeps its age clamp.
     let generating: Vec<(String, i32)> = match sqlx::query_as(
         "select c.agent_model as \"agentModel\", count(*)::int as count \
          from messages m join conversations c on c.id = m.conversation_id \
-         where m.status = 'streaming' and m.created_at > now() - interval '10 minutes' \
+         where m.status = 'streaming' and m.streamed_at > now() - interval '5 minutes' \
          group by 1 \
          union all \
          select cm.author as \"agentModel\", count(*)::int as count \

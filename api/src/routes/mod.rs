@@ -239,6 +239,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/tasks/{id}/conversation",
+            post(tasks::tasks_id_conversation::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/tasks/{id}/dependencies",
             axum::routing::post(tasks::tasks_id_dependencies::post)
                 .delete(tasks::tasks_id_dependencies::delete)
@@ -746,6 +751,13 @@ pub fn router(state: AppState) -> Router {
             get(admin::admin_judge::get)
                 .put(admin::admin_judge::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/updates",
+            get(admin::admin_updates::get)
+                .post(admin::admin_updates::post)
+                .put(admin::admin_updates::put)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
         )
         // The fitness plane — the probe/eval/adversarial battery over the
         // gateway's models, its run engine, and its archive.

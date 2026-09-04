@@ -312,9 +312,10 @@ The compose file is Dokploy-shaped on purpose (it's also just a compose file
    `COOKIE_SECURE=1`, `AUTH_PUBLIC_URL=https://your-domain`,
    `TALARIA_TRUST_PROXY=1` (plain http is the default posture — browsers
    refuse `Secure` cookies over it, so login would silently break).
-4. **Redeploys** are API calls; the app itself never updates in place
-   (`TALARIA_UPDATER=off` is baked — the updater assumes a git checkout the
-   image doesn't have, and the orchestrator owns this job now).
+4. **Redeploys** are API calls; the app itself never updates in place (the
+   built-in updater stays dormant on this path — it acts only on instances
+   that adopt it, [`docs/UPDATES.md`](./UPDATES.md) — and the orchestrator
+   owns this job).
 
 `DOCKER_GID` still applies: `docker compose exec talaria docker ps` inside the
 resource's terminal should list host containers. Multi-instance hosts see the

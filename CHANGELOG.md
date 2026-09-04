@@ -4,6 +4,16 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Fixed
+
+- **The code probe's clock starts at the candidate, not the engine.** The
+  fitness code tasks ran inside a 250ms window that also covered building
+  the boa context evaluating them — on a loaded host (CI's runners proved
+  it) a cold context build ate the whole window and a correct solution
+  failed with "the code did not run". The evaluator now signals when the
+  engine is built and the window times only the candidate's script;
+  an infinite loop still costs its 250ms exactly as before.
+
 ### Added
 
 - **The fitness suite measures what it claims, and an admin can see when it
@@ -42,6 +52,89 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   four tests cover stamp-on-run, restamp-on-clear, restamp-on-forget, and
   the matrix reading the cached row without folding the archive.
 
+- **Adoption — the one-time handover that turns the engine on.** An admin
+  (or the migration script, through the machine key) presses Take over
+  updates and the install stops being orchestrator-deployed: adoption pulls
+  the image it should be (the registry's newest, or a re-pin of the running
+  image's own digest when the registry is silent), renders the
+  updater-owned project from the live container's own inspect document,
+  brings slot A up behind the same health gate a roll uses, moves the fleet
+  alias, and records the handover crash-safe before any port changes hands.
+  Then the port decision: a fresh port (the infra path) puts green and the
+  edge up on a port nobody holds while blue keeps serving — the second
+  adopt call, which can only arrive THROUGH the edge, is the proof the
+  proxy moved, and it stops blue; zero interruption at the origin. The
+  inherit path (the panel's button) takes a one-time cut of a few seconds,
+  named in the confirm dialog: the dying container arms a host-side helper
+  (the app image itself, docker-cli baked in) that raises the edge the
+  second the port frees, with green's reconcile as the crash fallback.
+  adopt on an adopted install is the resume — every crash heals on the next
+  call. The retired container is stopped by the finish, removed by the
+  reconcile, and nothing resurrects it. Still true everywhere else: an
+  install that never adopts keeps deploying exactly as it always has.
+
+- **docs/UPDATES.md — the update story in one place.** The taxonomy (who may
+  roll and why the refusals say what they say), digest pinning (a roll never
+  pulls a moving tag), the roll step by step including the two-process split
+  and the never-released lock, rollback (panel and the docker-only runbook
+  for a dead instance), the deploy key, the two-switch auto-update story, and
+  the overlap contract — the expand-contract migration rule a contributor
+  must keep, now linked from CONTRIBUTING.md's rules.
+
+- **The update panel rolls with the engine — and the git-checkout updater
+  retires.** Admin → Security → Updates now answers against
+  /api/admin/updates: running version and slot, what's available, Check /
+  Update now / Roll back (the kept old slot is the target), the auto-update
+  toggle (image installs only, off by default), and the deploy key — minted
+  once, shown once, stored as a hash. Non-image installs show the engine's
+  own refusal sentence; un-adopted installs keep deploying the way they
+  always have, and the panel says that too. The TS git updater it replaces
+  (ui/src/server/updater.ts, the admin.update resident,
+  scripts/update-restart.mjs) is deleted — the proxy resident list drops to
+  three, and the routes/api reference carries the Rust surface instead.
+
+- **The update engine rolls — and its panel and schedule arrive with it.**
+  One update, start to finish, split across two processes by design: the
+  live container gates (mode, adoption, nothing in flight), takes the
+  fleet-wide roll lock (a redis lease held by heartbeat and never released
+  — the roller's last act stops its own container, so the TTL is what
+  bounds a dead one), pulls the digest-pinned image, renders, brings the
+  other slot up, health-gates it (the compose healthcheck IS the gate — an
+  unhealthy replacement is removed with the old container never disturbed),
+  moves the fleet alias, and only then records cutting-over and stops
+  ITSELF; the new container's boot reconcile verifies the edge actually
+  routes to it before the run lands done. Rollback restarts the kept old
+  slot by the same choreography, and a run whose roller died mid-roll is
+  closed as failed so no install spins forever. `/api/admin/updates`
+  surfaces all of it (running version + slot, available, history, the
+  auto-update toggle — default off) for an admin session or a per-instance
+  machine key minted for the deploy script and stored only as a hash.
+  The update-check job rides the scheduler table again (6h cadence; the
+  hold is retired) as the hands-off half: resolve, record, and — only
+  behind both the adoption and the toggle — roll. healthz now reports the
+  image's version so a deploy gate can tell two instances apart. Still
+  dormant everywhere: the engine acts only where an admin adopts it.
+
+- **The update engine learns to render its slots.** The updater-owned
+  compose project now has a shape: one derived from the LIVE container on
+  every roll (env verbatim minus a denylist — the new image's version and
+  install signal must win, and the updater kill switch is dropped because
+  adoption is what flips it — same-path binds, docker gid, dns, the
+  sidecar network joined as external so it stays owned by the project that
+  runs the sidecars), two flip-rendered app slots with the compose
+  healthcheck carried over byte-identical (the edge's docker provider
+  refuses starting/unhealthy containers — that check IS the roll gate) and
+  identical traefik labels so both slots merge into one health-gated
+  service, and a pinned traefik edge that owns the host port the slots no
+  longer publish. The docker verb set it drives ships beside it
+  (inspect-self, per-service slot up, digest pulls, health waits, graceful
+  stop-not-remove, alias attach). The image stops baking
+  `TALARIA_UPDATER=off` — it contradicted the install signal (an adopted
+  slot would have inherited it through the image's own env and the engine
+  could never act); dormancy is the adoption gate, and operators who want
+  the hard switch set the env themselves. Still nothing routes to any of
+  this: no behavior change for any running install.
+
 - **Agents developing Talaria get their own floor.** `AGENTS.md` is the
   canonical instruction file for anyone — human or agent, on any harness —
   coding in this repo: the distilled rules, the command map, environment
@@ -71,6 +164,18 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   drift), the hook standalone passes silent and exits 2 on a planted dead doc
   link, `git check-ignore` proves both new ignores, and Claude Code loads the
   stub and lists the four skills (`/context`, `/skills`).
+
+- **The update engine's foundation lands — dormant by design.** `api/src/update/`
+  is the groundwork for the app rolling its own container: install modes
+  (image / checkout / dev / off — only an image install can ever roll, and
+  the image's own env now carries the signal), the layout of the
+  updater-owned compose project (slot names, env files, the pinned traefik
+  edge), the persisted state row (auto-update off by default, digest pins,
+  capped run history — corrupt rows fall back to the safe default), and the
+  registry reader that resolves the moving `main` tag to a digest the way
+  the distribution spec says (anonymous bearer token, manifest HEAD,
+  index-walked version label) — proven live against ghcr. Nothing routes to
+  any of it yet: no behavior changes for any running install in this drop.
 
 - **CI publishes the app image from main.** Every push to main that touches
   running bits now builds the full app image and publishes it as
@@ -291,6 +396,51 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   that fails on the old pattern (the research repeat, the plan_doc
   paraphrase, the distiller refusal quartet, the inbox grounding and brief,
   the workbench repro, the judge inversion); full lib suite 1952 green.
+
+- **Long agent turns finish instead of dying as "· interrupted."** Diagnosed
+  from a fleet deploy: a knowledgebase-build turn that ran past ten minutes
+  was killed by the API's own request timeout — a total 600s ceiling on the
+  agent stream — while the agent's container was still working; the partial
+  reply was dropped, the row landed as a bare error the chat rendered as
+  "· interrupted", and nothing retried. (Compaction was never the culprit —
+  it happens inside the container and simply made the turn long.) The turn
+  now ends only on SILENCE: frames flowing — deltas, tool progress,
+  keep-alives — keep it alive however long the work takes, with a tunable
+  idle ceiling (`TALARIA_AGENT_IDLE_SECS`, default 10 min, floored at 1) and
+  a bounded wait only for the stream to open. Liveness throughout is the
+  last write, not the row's age: a new `streamed_at` stamps every flush, and
+  the stale sweep, the sidebar's working flag, and the generating pulse all
+  read it — an hour-long turn no longer reads as dead at ten minutes. A
+  stream that does die is retried once, ON THE SAME ROW, after a short
+  backoff: the row is resurrected to streaming and the turn re-driven with
+  its own failed attempt excluded from the history, and the chat visibly
+  picks it back up ("↻ stream dropped — picking the turn back up…") rather
+  than sitting on an error. The error itself is now an explanation — the
+  row's content says what happened ("the agent's stream went silent for
+  600s mid-turn", the container's own failure reason when it refuses)
+  instead of a bare interrupted mark, and it survives reloads and reaches
+  the next turn's history. A turn that dies twice stays down for a person
+  to look at; an agent's refusal (the failure frame) is never retried.
+
+- **Agents can build out a knowledge space, not just append to it.**
+  Reported live from a fleet deploy: an agent asked to put a space's intro
+  and table of contents on the space page itself had no tool that could
+  reach it — `create_kb_space` writes a landing body only at creation, and
+  nothing after can edit it — so the content landed in a lookalike
+  top-level doc, and with no move or delete the misfile couldn't be
+  corrected, only duplicated. Three tools close the gap. `edit_kb_space`
+  (name, description, icon, and the landing markdown; admission mirrors
+  doc edits — authorship, an editor grant, or an elevated assistant on
+  non-private material — and sharing fields stay human-only).
+  `move_kb_doc` (nest under a same-space parent, lift to the space's top
+  level, or reorder among siblings), under the same edit admission the
+  doc's PUT already grants. And `delete_kb_doc`, deliberately narrower
+  than the edit beside it: an edit is versioned and recoverable, a delete
+  is not, so an agent deletes only docs it created and re-files anything
+  else (`move_kb_doc` re-files without destroying). Doc deletes now land
+  in the audit log whoever pulled the trigger. All three are mirrored
+  through the fitness lockstep — catalog, sandbox backends, exercise
+  tests — so the toolkit the next agent is trained against knows them.
 
 - **API-CONVENTIONS tells the current truth.** The page still described a TS
   route tier the cutover deleted: the reference "frozen until #293" (the

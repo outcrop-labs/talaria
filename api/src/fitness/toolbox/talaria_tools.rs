@@ -12,7 +12,7 @@
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
-//     hermes      44 tools, over MCP, inside the agent container   THIS FILE
+//     hermes      58 tools, over MCP, inside the agent container   THIS FILE
 //     platform     handed to a model by a harness via `toolDefs`   research.rs (search)
 //
 // WHY A COPY AND NOT AN IMPORT. The real registrations live in `mcp/src/index.ts`,
@@ -275,7 +275,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "comment",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Comment on a ticket. Comments stay allowed on a ticket in review, which is where anything further goes once you have reported an outcome.",
+            description: "Comment on a ticket — it lands in the ticket's discussion thread, the room where the assigned agent and the board's humans talk. Comments stay allowed on a ticket in review, which is where anything further goes once you have reported an outcome.",
             parameters: json!({ "type": "object", "properties": { "taskId": str_schema("Ticket id"), "content": str_schema("Markdown comment body") }, "required": ["taskId", "content"] }),
             assistant_only: false,
             needs_google: false,
@@ -454,6 +454,51 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             group: ToolGroup::Knowledge,
             description: "Edit a knowledgebase doc you've been granted Editor access to: replace its title and/or markdown body. Each save is versioned. You can't change sharing or officialize — a human owns that.",
             parameters: json!({ "type": "object", "properties": { "docId": str_schema("KB doc id"), "title": str_schema("New title"), "markdown": str_schema("New full markdown body") }, "required": ["docId"] }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "edit_kb_space",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Knowledge,
+            description: "Edit a knowledge space you created or hold Editor on: its name, one-line description, icon, and markdown — the landing page shown when someone opens the space itself. An intro or table of contents for a space belongs there, not in a top-level doc. You can't change sharing — a human owns that.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "spaceId": str_schema("Space id (from list_kb_spaces)"),
+                    "name": str_schema("Space name"),
+                    "description": str_schema("One line on what belongs here"),
+                    "icon": str_schema("An emoji for the space"),
+                    "markdown": str_schema("New full landing-page markdown"),
+                },
+                "required": ["spaceId"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "move_kb_doc",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Knowledge,
+            description: "Move a doc you can edit within its space's sidebar tree: nest it under another doc (parentId, same space only), lift it to the space's top level (parentId null), or reorder it among its siblings (sort, default 0). Use it to re-file a misplaced doc rather than duplicating it.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "docId": str_schema("KB doc id"),
+                    "parentId": str_schema("New parent doc id (same space); null = top level"),
+                    "sort": num_schema("Position among siblings (default 0)"),
+                },
+                "required": ["docId"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "delete_kb_doc",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Knowledge,
+            description: "Permanently delete a knowledgebase doc YOU created — a draft you filed wrong, a duplicate. Docs anyone else created are a human's to delete: move_kb_doc re-files without destroying, and edit_kb_doc can empty a body you can't remove. There is no undo.",
+            parameters: json!({ "type": "object", "properties": { "docId": str_schema("KB doc id") }, "required": ["docId"] }),
             assistant_only: false,
             needs_google: false,
         },
@@ -1293,12 +1338,12 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_carries_fifty_five_distinct_tools() {
-        // Fifty-five of the toolkit's fifty-five registrations, and a name that
+    fn the_catalog_carries_fifty_eight_distinct_tools() {
+        // Fifty-eight of the toolkit's fifty-eight registrations, and a name that
         // appeared twice would shadow itself in `tools_named` and hand a harness
         // the wrong entry.
-        assert_eq!(TALARIA_TOOLS.len(), 55);
+        assert_eq!(TALARIA_TOOLS.len(), 58);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 55);
+        assert_eq!(names.len(), 58);
     }
 }

@@ -27,6 +27,10 @@ Talaria is MIT-licensed — issues and pull requests are the whole idea. The on-
   [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md) or
   [`docs/api/`](./docs/api/README.md); change the source and regenerate
   (`bun run docs:api`).
+- **Migrations are roll-safe.** An update runs two app containers side by side
+  until the drain completes, so a migration shipping with code may only *add*;
+  dropping or rewriting what the old code still reads ships at least one release
+  later ([`docs/UPDATES.md`](./docs/UPDATES.md) — the overlap contract).
 
 ## Style
 

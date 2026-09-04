@@ -4,10 +4,13 @@ The backend is the `api/` crate — axum, sqlx, redis-rs, hand-rolled reqwest
 clients. It owns every `/api/*` route, the SSE streams, and the scheduler. The
 SvelteKit server (bun) stays the SPA host forever: it serves the app and hands
 `/api/*` to the api on loopback, which is what keeps cookies same-origin
-(rule 7). Four residents stay TS, permanent by rule: `admin/update` (it
-rebuilds `ui/dist` and restarts the bun process it runs in), the app dispatch
+(rule 7). Three residents stay TS, permanent by rule: the app dispatch
 (`/api/apps/…` subtree — bare `/api/apps` is the api's), the app-MCP gateway
-branch (`/api/mcp/gw/app-*`), and `healthz`. The api ships as a **pre-built
+branch (`/api/mcp/gw/app-*`), and `healthz`. The one-time fourth (`admin/update`,
+the git-checkout updater that rebuilt `ui/dist` and restarted the very process
+serving it) retired with its updater: the update surface is the api's
+(`/api/admin/updates` rolls containers — see [`UPDATES.md`](./UPDATES.md)).
+The api ships as a **pre-built
 package image** (`ghcr.io/outcrop-labs/talaria-api`, musl static) compiled only
 in CI by `api/package.Dockerfile` and consumed by the prod image with
 `COPY --from` — no app-image build (GitHub runner, operator machine, or the
@@ -16,9 +19,7 @@ Dokploy checkout a customer VM builds on each push) ever compiles Rust.
 How the api got here — the TS→Rust port, batch by batch, with the parity
 battery that proved each slice — is the dated record in
 [`history/rust-port.md`](./history/rust-port.md). This page is the living law:
-the hop, the rules, the wire divergences that are contract. The one seam still
-open is `update-check`'s apply half, which waits on the two-artifact restart
-topology (the HOLD is documented at the top of `api/src/jobs.rs`). When this
+the hop, the rules, the wire divergences that are contract. When this
 page and the source disagree, the source wins.
 
 ## The hop
