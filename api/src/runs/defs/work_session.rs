@@ -1545,7 +1545,6 @@ mod tests {
             effort: None,
             assignees: vec!["hermes".into()],
             created_by: "u-1".into(),
-            conversation_id: None,
             due_date: None,
             start_date: None,
             color: None,

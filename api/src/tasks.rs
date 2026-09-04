@@ -177,10 +177,8 @@ pub struct Task {
     /// reaches the wire as text.
     pub estimated_hours: Option<f64>,
     pub parent_id: Option<String>,
-    /// The task's discussion thread (kind='ticket' conversation), when one
-    /// has been opened. The UI's Discussion pane; the kanban badge counts
-    /// this conversation's messages, not a comments table.
-    pub conversation_id: Option<String>,
+    /// The task's discussion room's message count — the kanban badge and the
+    /// Discussion tab's own count read the same number.
     pub comment_count: i32,
     pub outcome: Option<String>,
     pub resolution: Option<String>,
@@ -202,7 +200,6 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   (trunc(extract(epoch from t.start_date) * 1000))::bigint as start_date_ms, \
   t.color, t.tags, t.attachments, t.time_spent_seconds as time_spent_seconds, \
   t.estimated_hours::float8 as estimated_hours, t.parent_id::text as parent_id, \
-  t.conversation_id::text as conversation_id, \
   (select count(*)::int from channel_messages cm join channels c on c.id = cm.channel_id \
    where c.task_id = t.id) as comment_count, \
   t.outcome, t.resolution, t.error_message as error_message, \
@@ -236,7 +233,6 @@ struct TaskRow {
     time_spent_seconds: i64,
     estimated_hours: Option<f64>,
     parent_id: Option<String>,
-    conversation_id: Option<String>,
     comment_count: i32,
     outcome: Option<String>,
     resolution: Option<String>,
@@ -272,7 +268,6 @@ impl From<TaskRow> for Task {
             time_spent_seconds: r.time_spent_seconds,
             estimated_hours: r.estimated_hours,
             parent_id: r.parent_id,
-            conversation_id: r.conversation_id,
             comment_count: r.comment_count,
             outcome: r.outcome,
             resolution: r.resolution,
@@ -1358,15 +1353,6 @@ pub async fn update_task(
         spawn_dispatch_id(deps, id.to_string(), only);
     }
     if patch.assignees.is_some() && assignees != cur.assignees {
-        // The thread's binder tracks assignment live: the task's first agent
-        // assignee is who speaks in the discussion, and unassigning the last
-        // agent falls back to the org default — a dormant binder, quiet by
-        // the assignee rule rather than by its column. The write above
-        // already landed, so a failed rebind logs and moves on: the thread
-        // keeps its old binder, which is stale but not wrong.
-        if let Err(e) = rebind_task_conversation_agent(pg, id).await {
-            tracing::error!("[tasks] thread rebind on reassignment failed for {id}: {e}");
-        }
         let what = if assignees.is_empty() {
             "unassigned".to_string()
         } else {
@@ -1591,17 +1577,20 @@ pub async fn delete_task(deps: &TaskDeps, id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-// ── The thread ───────────────────────────────────────────────────────────────
-// A ticket's discussion IS a conversation (kind='ticket'), linked by
-// tasks.conversation_id — the research_runs shape. The comment surface
-// below reads and writes that thread; the UI embeds ChatView on it, and
-// agents reach it through the same add_comment they always called.
+// ── The room ───────────────────────────────────────────────────────────────
+// A ticket's discussion IS a channel (linked by channels.task_id) — the same
+// room the comms engine serves everywhere else: edit, reactions, threads,
+// attachments, mention-driven agent replies. The room needs no provisioning
+// beyond its own row: no channel_members (access is board membership, read
+// in channel_role), no channel_agents (the roster is the board's agent
+// policy, read in list_task_room_agents), no binder (who answers is decided
+// per message — the mention grammar, plus the assigned agent when the
+// relevance gate agrees).
 
-/// The task's head, as the thread machinery reads it — the fields the
-/// owner/binder ladders and the context block are built from.
+/// The task's head, as the room machinery reads it — the fields the owner
+/// ladder builds from.
 #[derive(sqlx::FromRow)]
 struct ThreadHead {
-    conversation_id: Option<String>,
     board_id: String,
     created_by: String,
     title: String,
@@ -1610,7 +1599,7 @@ struct ThreadHead {
 
 async fn thread_head(pg: &PgPool, task_id: &str) -> Result<Option<ThreadHead>, sqlx::Error> {
     sqlx::query_as(
-        "select conversation_id::text, board_id::text, created_by, title, assignees \
+        "select board_id::text, created_by, title, assignees \
          from tasks where id = $1::uuid",
     )
     .bind(task_id)
@@ -1618,39 +1607,11 @@ async fn thread_head(pg: &PgPool, task_id: &str) -> Result<Option<ThreadHead>, s
     .await
 }
 
-/// The agent a ticket's thread is bound to: the FIRST agent assignee, else
-/// the org default agent, else any enabled agent. Shared by ensure (creation
-/// time) and rebind (assignment changes) — one ladder, one truth.
-async fn thread_binder(pg: &PgPool, head: &ThreadHead) -> Result<Option<String>, sqlx::Error> {
-    let assignees = json_strings(&head.assignees);
-    if let Some(model) = agent_assignees(&assignees).into_iter().next() {
-        return Ok(Some(model));
-    }
-    // conversations.agent_model is not null: a human-only thread still needs
-    // a binder, a DORMANT one — the assignee rule at the chat door (not this
-    // column) is what keeps it quiet until an agent is assigned.
-    let org_default: Option<(String,)> = sqlx::query_as(
-        "select model from agent_defs where enabled and owner_user_id is null \
-         order by created_at asc limit 1",
-    )
-    .fetch_optional(pg)
-    .await?;
-    if org_default.is_some() {
-        return Ok(org_default.map(|(m,)| m));
-    }
-    let any: Option<(String,)> = sqlx::query_as(
-        "select model from agent_defs where enabled order by created_at asc limit 1",
-    )
-    .fetch_optional(pg)
-    .await?;
-    Ok(any.map(|(m,)| m))
-}
-
-/// The human who holds a task's discussion row: the creator by email, else
-/// the first human assignee, else any board member — a discussion needs
-/// someone to own the row, and reading it is board-membership-shaped anyway.
-/// One ladder, one truth: the thread's ensure and the room's ensure both
-/// walk it, the way the migration did.
+/// The human who holds a task's discussion room: the creator by email, else
+/// the first human assignee, else any board member — a room needs someone
+/// to own the row, and reading it is board-membership-shaped anyway.
+/// One ladder, one truth: the room's ensure walks it, the way the
+/// migration did.
 async fn task_thread_owner(pg: &PgPool, head: &ThreadHead) -> Result<Option<String>, sqlx::Error> {
     if let Some(id) = author_user_id(pg, &head.created_by).await? {
         return Ok(Some(id));
@@ -1676,81 +1637,6 @@ async fn task_thread_owner(pg: &PgPool, head: &ThreadHead) -> Result<Option<Stri
     };
     Ok(row.map(|(v,)| v))
 }
-
-/// Open (or find) the task's discussion thread. The owner ladder mirrors the
-/// migration's: the creator by email, else the first human assignee, else
-/// any board member — a thread needs someone to own the row, and reading it
-/// is board-membership-shaped anyway. Idempotent and race-safe the way
-/// `ensure_research_conversation` is: conditional link, then re-read the
-/// winner, so two clients opening the same ticket at once both land on the
-/// one thread. Ok(None) = the task does not exist, or nobody could own it.
-pub async fn ensure_task_conversation(
-    pg: &PgPool,
-    task_id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    let Some(head) = thread_head(pg, task_id).await? else {
-        return Ok(None);
-    };
-    if let Some(id) = head.conversation_id.clone() {
-        return Ok(Some(id));
-    }
-    let owner = task_thread_owner(pg, &head).await?;
-    let (Some(owner), Some(binder)) = (owner, thread_binder(pg, &head).await?) else {
-        return Ok(None);
-    };
-    let heading: String = head.title.chars().take(80).collect();
-    let id =
-        crate::conversations::create_conversation(pg, &owner, &binder, &heading, "ticket", None)
-            .await?;
-    sqlx::query(
-        "update tasks set conversation_id = $2::uuid \
-         where id = $1::uuid and conversation_id is null",
-    )
-    .bind(task_id)
-    .bind(&id)
-    .execute(pg)
-    .await?;
-    // Re-read rather than trusting the write: the loser of the race must
-    // return the winner's conversation, not a second one nobody reads.
-    let after: Option<(Option<String>,)> =
-        sqlx::query_as("select conversation_id::text from tasks where id = $1::uuid")
-            .bind(task_id)
-            .fetch_optional(pg)
-            .await?;
-    Ok(after.and_then(|(v,)| v).or(Some(id)))
-}
-
-/// Re-point the thread's binder at the task's CURRENT first agent assignee
-/// (falling back to the org default when the last agent is removed). Called
-/// from update_task whenever assignees change — the binding tracks
-/// assignment live instead of freezing at creation.
-pub async fn rebind_task_conversation_agent(pg: &PgPool, task_id: &str) -> Result<(), sqlx::Error> {
-    let Some(head) = thread_head(pg, task_id).await? else {
-        return Ok(());
-    };
-    let Some(conv) = head.conversation_id.clone() else {
-        return Ok(()); // no thread yet; ensure will bind at creation time
-    };
-    let Some(binder) = thread_binder(pg, &head).await? else {
-        return Ok(()); // no agent anywhere to bind — leave it as it was
-    };
-    sqlx::query("update conversations set agent_model = $2 where id = $1::uuid")
-        .bind(&conv)
-        .bind(&binder)
-        .execute(pg)
-        .await?;
-    Ok(())
-}
-
-// ── The room ───────────────────────────────────────────────────────────────
-// A ticket's discussion IS a channel (linked by channels.task_id) — the same
-// room the comms engine serves everywhere else: edit, reactions, threads,
-// attachments, mention-driven agent replies. The room needs no provisioning
-// beyond its own row: no channel_members (access is board membership, read
-// in channel_role), no channel_agents (the roster is the board's agent
-// policy, read in list_task_room_agents), no binder (who answers is decided
-// per message — the mention grammar, plus the assigned agent when the
-// relevance gate agrees).
 
 /// The task's room channel id, when the room exists.
 pub async fn task_room_channel_id(

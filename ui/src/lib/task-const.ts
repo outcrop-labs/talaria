@@ -106,10 +106,7 @@ export interface Task {
   estimatedHours: PgNumeric | null
   /** Sub-task parent (one level deep). */
   parentId: string | null
-  /** The ticket's discussion thread (a kind='ticket' conversation), once
-   *  someone has opened it — the Discussion tab's ensure route is what
-   *  creates it, so most read-and-moved tickets never grow one. */
-  conversationId?: string | null
+  /** The discussion room's message count (a channel linked to this task). */
   commentCount: number
   outcome: string | null
   resolution: string | null

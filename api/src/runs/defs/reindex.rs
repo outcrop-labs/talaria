@@ -415,25 +415,29 @@ async fn index_page(
         }
 
         BackfillSource::Comments => {
-            // Comments ARE thread turns now: the source reads messages
-            // through the task's conversation link, authorship the way
-            // list_comments renders it (human's name/email, else the agent
-            // label the migration and add_comment stamp). Message ids were
-            // preserved from comment ids at cutover, so brains indexed
-            // before the re-point keep pointing at rows that still exist.
+            // Comments ARE room messages now: the source reads
+            // channel_messages through the task's room link, authorship the
+            // way list_comments renders it (human's name/email, else the
+            // author string the post carried). Message ids were preserved
+            // from the conversation cutover AND the comment cutover before
+            // it, so brains indexed before either re-point keep pointing at
+            // rows that still exist.
             let rows = sqlx::query(
-                "select m.id::text as id, t.id::text as \"taskId\", \
+                "select cm.id::text as id, t.id::text as \"taskId\", \
                        t.board_id::text as \"boardId\", \
-                       coalesce(u.name, u.email, m.metadata->>'agent', 'agent') as author, \
-                       m.content \
-                 from messages m \
-                 join tasks t on t.conversation_id = m.conversation_id \
-                 left join users u on u.id = m.author_user_id \
+                       case when cm.author_type = 'user' \
+                            then coalesce(u.name, u.email, cm.author) \
+                            else cm.author end as author, \
+                       cm.content \
+                 from channel_messages cm \
+                 join channels c on c.id = cm.channel_id \
+                 join tasks t on t.id = c.task_id \
+                 left join users u on u.email = cm.author \
                  where t.archived_at is null \
-                   and m.role in ('user','assistant') and m.status = 'complete' \
-                   and (m.content <> '' or m.attachments <> '[]'::jsonb) \
-                   and m.id > $1::uuid \
-                 order by m.id asc limit 100",
+                   and cm.status = 'complete' \
+                   and (cm.content <> '' or cm.attachments <> '[]'::jsonb) \
+                   and cm.id > $1::uuid \
+                 order by cm.id asc limit 100",
             )
             .bind(&from)
             .fetch_all(pg)

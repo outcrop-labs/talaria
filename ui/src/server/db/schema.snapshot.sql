@@ -908,8 +908,7 @@ CREATE TABLE public.tasks (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     parent_id uuid,
     start_date timestamp with time zone,
-    color text,
-    conversation_id uuid
+    color text
 );
 CREATE TABLE public.team_members (
     team_id uuid NOT NULL,
@@ -1403,7 +1402,6 @@ CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
-CREATE INDEX tasks_conversation_idx ON public.tasks USING btree (conversation_id);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
@@ -1623,8 +1621,6 @@ ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.team_members
