@@ -2833,6 +2833,17 @@ drop table if exists task_comments`,
   // streaming row into the sweep one boot sooner — the honest direction.
   `alter table messages add column if not exists streamed_at timestamptz not null default now()`,
 
+  // A ticket's discussion is a channel now — the comms engine owns the room
+  // (edit, reactions, threads, mention-driven replies), and this column is
+  // the whole linkage. The room is never in anyone's rail because task rooms
+  // carry no channel_members rows: access is board membership, decided in
+  // channel_role, not rows anyone provisions. Task deleted → the room dies
+  // with it (messages ride the FK cascade, the activity purge keys on the
+  // channel id). The unique partial index is the ensure's race brake: two
+  // clients opening the same ticket's discussion both land on the one room.
+  `alter table channels add column if not exists task_id uuid references tasks(id) on delete cascade`,
+  `create unique index if not exists channels_task_idx on channels (task_id) where task_id is not null`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
