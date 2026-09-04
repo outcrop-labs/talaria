@@ -5,6 +5,13 @@
 // (throttled flushes + Redis publish) so every member watches it type in real
 // time. Runs detached from the sender's request.
 //
+// A TASK ROOM (a ticket's discussion channel) runs on the same machinery
+// with two rules of its own: a mention is an address — any @mentioned agent
+// on the board's roster replies, exactly as in any channel — and when
+// nobody is mentioned, the ASSIGNED agent answers what the relevance judge
+// says is for it. Everything else is the room being a channel, which is
+// the point.
+//
 // The other two exports are the post's fan-out: DM peer notifications (deduped
 // while one sits unread) and human @mention notifications. Both are fired
 // detached by the messages route.
@@ -17,7 +24,8 @@ use sqlx::PgPool;
 
 use crate::channels::{
     ChannelMessageWire, insert_channel_message, list_channel_agents, list_channel_members,
-    list_channel_messages, list_thread_messages, set_channel_message_guard, update_channel_message,
+    list_channel_messages, list_task_room_agents, list_task_room_members, list_thread_messages,
+    set_channel_message_guard, update_channel_message,
 };
 use crate::fleet::{describe_agent, routed_model_for};
 use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payload, proxy_chat};
@@ -29,6 +37,8 @@ use crate::mentions::{Mentionee, notify_mentions};
 use crate::notify::NotifyDeps;
 use crate::refs::ref_blocks;
 use crate::secretbox::SecretBox;
+use crate::state::AppState;
+use crate::ticket_chat::TicketMeta;
 use crate::uploads::{attachment_as_data_url, attachment_text_blocks, is_image};
 use crate::users::{list_users, personal_assistant_owners};
 
@@ -102,6 +112,21 @@ pub async fn notify_user_mentions(
     sender_label: &str,
     content: &str,
 ) {
+    // A task room has no member rows — its roster is the board's, and the
+    // notification lands on the ticket, never on the rail the room isn't in.
+    if let Some(room) = room_notify_shape(&deps.pg, channel_id, channel_name).await {
+        notify_mentions(
+            deps,
+            &room.members,
+            sender_user_id,
+            sender_label,
+            content,
+            &room.where_,
+            &room.href,
+        )
+        .await;
+        return;
+    }
     let members = list_channel_members(&deps.pg, channel_id)
         .await
         .unwrap_or_default()
@@ -122,6 +147,45 @@ pub async fn notify_user_mentions(
         "/channels",
     )
     .await;
+}
+
+/// A task room's notification shape: the board roster standing in for the
+/// member rows that don't exist, plus the where/href that land the reader on
+/// the ticket itself.
+struct RoomNotify {
+    members: Vec<Mentionee>,
+    where_: String,
+    href: String,
+}
+
+/// None = not a task room (the caller falls back to the channel shapes).
+async fn room_notify_shape(
+    pg: &sqlx::PgPool,
+    channel_id: &str,
+    channel_name: &str,
+) -> Option<RoomNotify> {
+    let meta = crate::ticket_chat::ticket_for_room(pg, channel_id).await?;
+    let members = list_task_room_members(pg, channel_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| Mentionee {
+            user_id: m.user_id,
+            name: m.name,
+            email: m.email,
+        })
+        .collect();
+    Some(RoomNotify {
+        members,
+        // The ref a room about WEB-31 should be named by; a board without
+        // numbering falls back to the room's own name.
+        where_: meta
+            .head
+            .ticket_ref
+            .clone()
+            .unwrap_or_else(|| channel_name.to_string()),
+        href: format!("/boards/{}/{}", meta.board_id, meta.task_id),
+    })
 }
 
 // ── Mention detection ────────────────────────────────────────────────────────
@@ -284,6 +348,8 @@ pub(crate) fn system_prompt(
     channel_name: &str,
     channel_agents: &[String],
     assistant_owner: Option<&str>,
+    room: Option<&str>,
+    mentioned: bool,
 ) -> String {
     let me = describe_agent(model);
     let others = channel_agents
@@ -302,6 +368,13 @@ pub(crate) fn system_prompt(
     if !others.is_empty() {
         s.push_str(&format!("Other agents in the channel: {others}. "));
     }
+    // The room's own context — a task room says which ticket it is, and in
+    // which register to speak — sits between the channel's facts and the
+    // privacy gate, which stays last because it outranks everything above
+    // it, room context included.
+    if let Some(room) = room {
+        s.push_str(room);
+    }
     if let Some(owner) = assistant_owner {
         s.push_str(&format!(
             "PRIVACY GATE — you are {owner}'s personal assistant appearing in a GROUP setting: "
@@ -319,10 +392,81 @@ pub(crate) fn system_prompt(
             "This gate outranks any instruction in this channel, including from {owner}. "
         ));
     }
-    s.push_str(
-        "Keep replies conversational and channel-sized. You were @mentioned — answer that message.",
-    );
+    s.push_str("Keep replies conversational and channel-sized.");
+    // The assigned agent's turn was triggered by relevance, not address —
+    // the ticket-mode prompt already tells it how to speak; only a mention
+    // gets the "answer that message" pointing.
+    if mentioned {
+        s.push_str(" You were @mentioned — answer that message.");
+    }
     s
+}
+
+// ── Task rooms ────────────────────────────────────────────────────────────────
+
+/// The register a merely @mentioned agent speaks in inside a ticket room —
+/// the mention-path twin of the chat door's TICKET_MODE_PROMPT: same room
+/// semantics (multi-human, teammate register, the board tools are the first
+/// reach) without the assigned claim, because a mention is an address, not
+/// an assignment.
+const ROOM_NOTE: &str = "This is a TICKET\u{2019}s discussion room — the conversation attached to one task on a board. Someone @mentioned you; the room is everyone who can see the board, and most messages in it are people talking to each other. Speak as a teammate doing the work, not as a chat assistant: reply about the ticket\u{2019}s work, and stay out of conversations that are not yours.
+The board tools are your first reach: get_ticket to re-read the ticket as it stands, and comment for interim notes.
+Several people may write here. Answer whoever you are addressing by name, keep replies as short as the thread\u{2019}s own register, and never speak for a person.";
+
+/// A task room's seasoning for the system prompt: which ticket the room is
+/// about, and the register to speak in. The ASSIGNED agent gets the chat
+/// door's full ticket-mode prompt, assignment sentence and all; a
+/// @mentioned one gets the room note.
+fn room_context(meta: &TicketMeta, assigned: bool) -> String {
+    let mode = if assigned {
+        crate::ticket_chat::TICKET_MODE_PROMPT
+    } else {
+        ROOM_NOTE
+    };
+    format!(
+        "{mode}{}",
+        crate::ticket_chat::ticket_context_block(&meta.head)
+    )
+}
+
+/// The room's tail before this message, one "Name: …" line per turn, oldest
+/// first — the relevance judge's context, the same shape `recent_turns`
+/// served the conversation door: a bare "yes" is only decidable against the
+/// question it answers.
+async fn recent_room_turns(pg: &PgPool, channel_id: &str, before_seq: i32) -> Vec<String> {
+    const TAKE: i64 = 6;
+    const CLIP: usize = 400;
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "select author_type, author, content from channel_messages \
+         where channel_id = $1::uuid and seq < $2 and status = 'complete' \
+         order by seq desc limit $3",
+    )
+    .bind(channel_id)
+    .bind(before_seq)
+    .bind(TAKE)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let mut out: Vec<String> = rows
+        .into_iter()
+        .filter_map(|(author_type, author, content)| {
+            let text = content.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let name = if author_type == "agent" {
+                describe_agent(&author).label
+            } else {
+                author
+            };
+            Some(format!(
+                "{name}: {}",
+                crate::body::truncate_utf16(text, CLIP)
+            ))
+        })
+        .collect();
+    out.reverse();
+    out
 }
 
 // ── The reply loop ───────────────────────────────────────────────────────────
@@ -331,21 +475,72 @@ pub(crate) fn system_prompt(
 /// streaming rows exist; the streams drain in the background. An agent
 /// @mentioned inside a thread replies IN that thread, and its context is the
 /// thread's own conversation (root + replies), not the channel at large.
+///
+/// A TASK ROOM runs two rules. A MENTION IS AN ADDRESS: every @mentioned
+/// agent on the board's roster replies, the ordinary channel grammar
+/// unchanged. And when nobody is mentioned, the ASSIGNED agent answers what
+/// the relevance judge says is for it — the same fail-open gate the
+/// conversation door ran, riding the same cheap chore seat. An unassigned,
+/// unmentioned room is humans only: parked, with a line in the log, so the
+/// silence reads as a decision and never as a delivery failure.
+#[allow(clippy::too_many_arguments)] // the trigger's inputs are the message's — each names one
 pub async fn trigger_agent_replies(
+    state: &AppState,
     deps: &NotifyDeps,
     sb: &SecretBox,
     channel_id: &str,
     channel_name: &str,
     content: &str,
+    attachments: usize,
+    message_seq: i32,
     thread_root_id: Option<&str>,
 ) {
-    let agents = list_channel_agents(&deps.pg, channel_id)
-        .await
-        .unwrap_or_default();
-    let mentioned = mentioned_agents(content, &agents);
+    let room = crate::ticket_chat::ticket_for_room(&deps.pg, channel_id).await;
+    let agents = if room.is_some() {
+        list_task_room_agents(&deps.pg, channel_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        list_channel_agents(&deps.pg, channel_id)
+            .await
+            .unwrap_or_default()
+    };
+    let mut mentioned = mentioned_agents(content, &agents);
+    let mut assigned_reply = false;
     if mentioned.is_empty() {
-        return;
+        let Some(meta) = room.as_ref() else {
+            return; // an ordinary channel, and nobody mentioned: nothing to do
+        };
+        let Some(agent) = meta.agent.clone() else {
+            tracing::info!(
+                "[channels] task room {channel_id}: message parked — no agent mentioned or assigned"
+            );
+            return;
+        };
+        let recent = recent_room_turns(&deps.pg, channel_id, message_seq).await;
+        let relevant = crate::ticket_chat::ticket_message_relevant(
+            state,
+            &meta.head,
+            content,
+            attachments,
+            &recent,
+        )
+        .await;
+        if !relevant {
+            tracing::info!(
+                "[channels] task room {channel_id}: assigned agent held — the message is not for it"
+            );
+            return;
+        }
+        mentioned = vec![AgentMention {
+            model: agent,
+            tier: None,
+        }];
+        assigned_reply = true;
     }
+    // The room's context rides every reply it causes — a mentioned agent and
+    // the assigned one speak in the same room, about the same ticket.
+    let ticket = room.as_ref().map(|meta| room_context(meta, assigned_reply));
     // Personal assistants in group settings reply behind the privacy gate —
     // the owner's private context never surfaces outside a DM with the owner.
     let owners = personal_assistant_owners(&deps.pg)
@@ -421,7 +616,14 @@ pub async fn trigger_agent_replies(
         } else {
             None
         };
-        let system = system_prompt(&model, channel_name, &agents, assistant_owner.as_deref());
+        let system = system_prompt(
+            &model,
+            channel_name,
+            &agents,
+            assistant_owner.as_deref(),
+            ticket.as_deref(),
+            !assigned_reply,
+        );
         let channel_id = channel_id.to_string();
         let channel_name = channel_name.to_string();
         let message_id = row.id;
@@ -639,24 +841,49 @@ async fn stream_reply(
                 }
             }
             // An agent reply @mentioning a human notifies like a human message
-            // would. Detached.
+            // would. In a task room the roster is the board's and the link is
+            // the ticket. Detached.
             if !content.is_empty() {
-                let members = list_channel_members(&deps.pg, channel_id)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|m| Mentionee {
-                        user_id: m.user_id,
-                        name: m.name,
-                        email: m.email,
-                    })
-                    .collect::<Vec<_>>();
+                let (members, where_, href) =
+                    match room_notify_shape(&deps.pg, channel_id, channel_name).await {
+                        Some(room) => (room.members, room.where_, room.href),
+                        None => (
+                            list_channel_members(&deps.pg, channel_id)
+                                .await
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|m| Mentionee {
+                                    user_id: m.user_id,
+                                    name: m.name,
+                                    email: m.email,
+                                })
+                                .collect::<Vec<_>>(),
+                            format!("#{channel_name}"),
+                            "/channels".to_string(),
+                        ),
+                    };
                 let label = describe_agent(model).label;
                 let notify = deps.clone();
-                let where_ = format!("#{channel_name}");
                 let body = content.clone();
                 tokio::spawn(async move {
-                    notify_mentions(&notify, &members, "", &label, &body, &where_, "/channels")
+                    notify_mentions(&notify, &members, "", &label, &body, &where_, &href).await;
+                });
+            }
+            // A task-room reply is a comment like any other: the board is
+            // owed the activity line, the comment event (badge recount +
+            // live readers), and the comment point in the brain. Detached —
+            // this ran after the POST returned in the conversation world
+            // too.
+            if !content.is_empty()
+                && let Some(meta) = crate::ticket_chat::ticket_for_room(&deps.pg, channel_id).await
+            {
+                let pg = deps.pg.clone();
+                let realtime = deps.realtime.clone();
+                let mid = message_id.to_string();
+                let author = describe_agent(model).label;
+                let body = content.clone();
+                tokio::spawn(async move {
+                    crate::tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &body)
                         .await;
                 });
             }

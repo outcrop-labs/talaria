@@ -2833,6 +2833,99 @@ drop table if exists task_comments`,
   // streaming row into the sweep one boot sooner — the honest direction.
   `alter table messages add column if not exists streamed_at timestamptz not null default now()`,
 
+  // A ticket's discussion is a channel now — the comms engine owns the room
+  // (edit, reactions, threads, mention-driven replies), and this column is
+  // the whole linkage. The room is never in anyone's rail because task rooms
+  // carry no channel_members rows: access is board membership, decided in
+  // channel_role, not rows anyone provisions. Task deleted → the room dies
+  // with it (messages ride the FK cascade, the activity purge keys on the
+  // channel id). The unique partial index is the ensure's race brake: two
+  // clients opening the same ticket's discussion both land on the one room.
+  `alter table channels add column if not exists task_id uuid references tasks(id) on delete cascade`,
+  `create unique index if not exists channels_task_idx on channels (task_id) where task_id is not null`,
+
+  // THE COPY: every ticket conversation becomes its task's room. Message ids
+  // are carried verbatim — the same trick the comment cutover used — so
+  // brain points indexed before this boot keep naming rows that still exist,
+  // and the next backfill sweep converges on them instead of duplicating.
+  // Only COMPLETE turns copy: streaming corpses and error stubs die with the
+  // conversation below (nothing ever indexed them). A ticket that somehow
+  // already spoke in its new room keeps THAT history — the room is the
+  // surface that shipped, its words win, and the old thread rides the
+  // delete. The owner ladder is the api's (task_thread_owner), walked in
+  // SQL: creator by email/name, first human assignee, any board member; a
+  // ticket nobody can hold a room for loses its thread with the link — the
+  // api's ensure refuses the same ticket with a 409.
+  `do $$
+  declare
+    rec record;
+    v_room uuid;
+    v_owner uuid;
+    v_topic text;
+  begin
+    for rec in
+      select t.id, t.board_id, t.conversation_id, t.created_by, t.title, t.assignees
+      from tasks t
+      where t.conversation_id is not null
+    loop
+      select u.id into v_owner from users u
+        where lower(u.email) = lower(rec.created_by) or lower(u.name) = lower(rec.created_by)
+        limit 1;
+      if v_owner is null then
+        select u.id into v_owner
+          from jsonb_array_elements_text(rec.assignees) with ordinality as a(v, ord)
+          join users u on u.id::text = replace(a.v, 'user:', '')
+          where a.v like 'user:%'
+          order by a.ord
+          limit 1;
+      end if;
+      if v_owner is null then
+        select bm.user_id into v_owner from board_members bm
+          where bm.board_id = rec.board_id
+          order by bm.created_at asc limit 1;
+      end if;
+      if v_owner is null then
+        continue;
+      end if;
+      select c.title into v_topic from conversations c where c.id = rec.conversation_id;
+      insert into channels (name, topic, created_by, task_id)
+        values (left(rec.title, 60), v_topic, v_owner, rec.id)
+        on conflict (task_id) where task_id is not null do nothing;
+      select id into v_room from channels where task_id = rec.id;
+      if v_room is not null and not exists
+          (select 1 from channel_messages where channel_id = v_room) then
+        insert into channel_messages
+          (id, channel_id, seq, author_type, author, content, status,
+           created_at, attachments, guard)
+        select m.id, v_room, m.seq,
+               case when m.role = 'user' then 'user' else 'agent' end,
+               case when m.role = 'user'
+                    then coalesce(u.email, u.name, m.metadata->>'agent', 'user')
+                    else coalesce(m.metadata->>'agent', 'agent') end,
+               m.content, 'complete', m.created_at, m.attachments, m.guard
+        from messages m
+        left join users u on u.id = m.author_user_id
+        where m.conversation_id = rec.conversation_id
+          and m.role in ('user','assistant') and m.status = 'complete'
+        on conflict do nothing;
+        update channels c set msg_seq = coalesce(
+          (select max(seq) from channel_messages where channel_id = v_room), 0)
+        where c.id = v_room;
+      end if;
+    end loop;
+  end $$`,
+
+  // The threads are rooms now. kind='ticket' conversations — linked or
+  // orphaned — go, their complete messages already copied (or, for the
+  // ownerless and orphaned edges, counted in the copy's comment above);
+  // messages ride the FK cascade.
+  `delete from conversations where kind = 'ticket'`,
+
+  `-- deliberate: the conversation link is the room's task_id now — every
+  -- reader of this column was re-pointed before this drop, and the history
+  -- it named lives on in channel_messages with its ids carried verbatim.
+alter table tasks drop column if exists conversation_id`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -287,7 +287,8 @@ CREATE TABLE public.channels (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     archived_at timestamp with time zone,
     kind text DEFAULT 'channel'::text NOT NULL,
-    dm_key text
+    dm_key text,
+    task_id uuid
 );
 CREATE TABLE public.conversation_members (
     conversation_id uuid NOT NULL,
@@ -907,8 +908,7 @@ CREATE TABLE public.tasks (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     parent_id uuid,
     start_date timestamp with time zone,
-    color text,
-    conversation_id uuid
+    color text
 );
 CREATE TABLE public.team_members (
     team_id uuid NOT NULL,
@@ -1363,6 +1363,7 @@ CREATE INDEX channel_messages_idx ON public.channel_messages USING btree (channe
 CREATE INDEX channel_messages_streaming_idx ON public.channel_messages USING btree (created_at) WHERE (status = 'streaming'::text);
 CREATE INDEX channel_messages_thread_idx ON public.channel_messages USING btree (thread_root_id) WHERE (thread_root_id IS NOT NULL);
 CREATE UNIQUE INDEX channels_dm_key_idx ON public.channels USING btree (dm_key) WHERE (dm_key IS NOT NULL);
+CREATE UNIQUE INDEX channels_task_idx ON public.channels USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE INDEX conversations_user_agent_idx ON public.conversations USING btree (user_id, agent_model, updated_at DESC);
 CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING btree (brief_id, batch);
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
@@ -1401,7 +1402,6 @@ CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
-CREATE INDEX tasks_conversation_idx ON public.tasks USING btree (conversation_id);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
@@ -1487,6 +1487,8 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.channels
+    ADD CONSTRAINT channels_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members
@@ -1619,8 +1621,6 @@ ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.team_members

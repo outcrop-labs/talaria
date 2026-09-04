@@ -32,6 +32,13 @@ pub fn is_channel_id(id: &str) -> bool {
 }
 
 /// The caller's row in `channel_members`, or null.
+/// A TASK ROOM (a channel linked to its task by `channels.task_id`) has no
+/// row to read — its members are the task's board's audience, decided here
+/// and never provisioned: the same two legs the ticket conversation door
+/// admitted (a `board_members` row, or membership of the board's team).
+/// Everyone in a task room is a 'member' — the task owns the room, so no
+/// arm derives 'owner' and the owner-gated mutations (rename, archive,
+/// member edits) refuse for it by construction.
 /// A non-uuid id is not a membership question, and handing it to Postgres is a
 /// 500 (`invalid input syntax for type uuid`) — answering null makes callers
 /// say forbidden instead, the honest answer for an id that cannot name a
@@ -51,7 +58,115 @@ pub async fn channel_role(
     .bind(user_id)
     .fetch_optional(pg)
     .await?;
-    Ok(row.map(|(role,)| role))
+    if row.is_some() {
+        return Ok(row.map(|(role,)| role));
+    }
+    // Only the row-less cases reach the task-room probe — task rooms (which
+    // never have rows) and ordinary-channel non-members (whose 403 pays one
+    // cheap indexed miss).
+    let room: Option<(String,)> = sqlx::query_as(
+        "select 'member' from channels c \
+         join tasks t on t.id = c.task_id \
+         join boards b on b.id = t.board_id \
+         where c.id = $1::uuid \
+           and (exists (select 1 from board_members bm \
+                  where bm.board_id = b.id and bm.user_id = $2::uuid) \
+             or exists (select 1 from team_members tm \
+                  where tm.team_id = b.team_id and tm.user_id = $2::uuid))",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(room.map(|(role,)| role))
+}
+
+/// Is this channel a task's room? False for a non-uuid id (see
+/// `is_channel_id`) — an id that cannot name a channel cannot name a task
+/// room either.
+pub async fn is_task_room(pg: &PgPool, channel_id: &str) -> Result<bool, sqlx::Error> {
+    if !is_channel_id(channel_id) {
+        return Ok(false);
+    }
+    let row: Option<(i32,)> =
+        sqlx::query_as("select 1 from channels where id = $1::uuid and task_id is not null")
+            .bind(channel_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.is_some())
+}
+
+/// A task room's human roster — the board's whole audience, both membership
+/// legs, one row per person (a board row wins over their team row so a board
+/// owner lists as owner). Nobody provisions these; the room reads its door.
+pub async fn list_task_room_members(
+    pg: &PgPool,
+    channel_id: &str,
+) -> Result<Vec<ChannelMember>, sqlx::Error> {
+    let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+        "select * from ( \
+            select distinct on (u.id) u.id::text, u.email, u.name, \
+              coalesce(bm.role, 'member') as role \
+            from channels c \
+            join tasks t on t.id = c.task_id \
+            join boards b on b.id = t.board_id \
+            left join board_members bm on bm.board_id = b.id \
+            left join team_members tm on tm.team_id = b.team_id \
+            join users u on u.id = coalesce(bm.user_id, tm.user_id) \
+            where c.id = $1::uuid \
+            order by u.id, (bm.role = 'owner') desc \
+         ) roster \
+         order by (role = 'owner') desc, email asc",
+    )
+    .bind(channel_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(user_id, email, name, role)| ChannelMember {
+            user_id,
+            email,
+            name,
+            role,
+        })
+        .collect())
+}
+
+/// A task room's agent roster — the board's agent policy resolved to models:
+/// the allow-list, or every enabled org agent when the board allows all.
+/// Personal assistants never ride the allow-all ladder (their group
+/// appearances are per-channel choices, not board policy); a board that
+/// lists one explicitly gets it, privacy gate and all.
+pub async fn list_task_room_agents(
+    pg: &PgPool,
+    channel_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let board: Option<(Option<bool>, String)> = sqlx::query_as(
+        "select b.allow_all_agents, b.id::text \
+         from channels c join tasks t on t.id = c.task_id join boards b on b.id = t.board_id \
+         where c.id = $1::uuid",
+    )
+    .bind(channel_id)
+    .fetch_optional(pg)
+    .await?;
+    let Some((allow_all, board_id)) = board else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<(String,)> = if allow_all.unwrap_or(false) {
+        sqlx::query_as(
+            "select model from agent_defs where enabled and owner_user_id is null order by model",
+        )
+        .fetch_all(pg)
+        .await?
+    } else {
+        sqlx::query_as(
+            "select agent_model from board_agents where board_id = $1::uuid order by agent_model",
+        )
+        .bind(&board_id)
+        .fetch_all(pg)
+        .await?
+    };
+    Ok(rows.into_iter().map(|(m,)| m).collect())
 }
 
 // ── The channel wire views ────────────────────────────────────────────────────
@@ -124,6 +239,11 @@ pub struct ChannelMember {
 /// member's read cursor vs. others' complete messages — the not-self clause
 /// compares against the caller's OWN email/name spelling, so a self-posted
 /// message never counts unread for its author.
+///
+/// TASK ROOMS NEVER LIST HERE. The member join already keeps them out (they
+/// carry no rows), but the rail says so in its own WHERE rather than by
+/// three invariants agreeing — a ticket's room lives on its ticket, and
+/// comms is not that.
 pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChannel>, sqlx::Error> {
     #[allow(clippy::type_complexity)] // the listing's own columns, one each
     type MemberRow = (
@@ -154,7 +274,7 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
          join users self on self.id = $1::uuid \
          left join channel_members p on c.kind = 'dm' and p.channel_id = c.id and p.user_id <> $1::uuid \
          left join users pu on pu.id = p.user_id \
-         where c.archived_at is null \
+         where c.archived_at is null and c.task_id is null \
          order by c.updated_at desc",
     )
     .bind(user_id)
@@ -206,7 +326,8 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
          join channels c on c.id = msg.channel_id and c.archived_at is null \
          join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
-         where msg.seq > m.last_read_seq and msg.status = 'complete' \
+         where c.task_id is null \
+           and msg.seq > m.last_read_seq and msg.status = 'complete' \
            and not (msg.author_type = 'user' \
              and msg.author = coalesce(self.email, self.name, 'user'))",
     )
@@ -563,13 +684,16 @@ pub async fn list_channels_for_agent(
 ) -> Result<Vec<AgentChannel>, sqlx::Error> {
     let model = subject_model(subject);
     // An elevated assistant sees every live channel and relay — never DMs
-    // (human↔human direct messages stay private regardless of elevation).
+    // (human↔human direct messages stay private regardless of elevation),
+    // and never task rooms (those live on their tickets, behind their own
+    // task-scoped doors).
     if is_elevated_assistant(pg, subject).await? {
         let rows: Vec<(String, String, Option<String>, String, i64, i64)> = sqlx::query_as(
             "select c.id::text, c.name, c.topic, c.kind, \
                  (trunc(extract(epoch from c.created_at) * 1000))::bigint, \
                  (trunc(extract(epoch from c.updated_at) * 1000))::bigint \
              from channels c where c.archived_at is null and c.kind <> 'dm' \
+               and c.task_id is null \
              order by c.updated_at desc",
         )
         .fetch_all(pg)
@@ -649,8 +773,14 @@ pub async fn agent_may_access_channel(
         return Ok(true);
     }
     if is_elevated_assistant(pg, subject).await? {
+        // Task rooms are board-scoped, not org-wide: elevation (org-wide
+        // reach) does not open them. An agent works a ticket through the
+        // task-scoped doors — get_ticket, comment — which carry their own
+        // access rules; the room itself is for the board's people and the
+        // board's agents.
         let row: Option<(i32,)> = sqlx::query_as(
-            "select 1 from channels where id = $1::uuid and kind <> 'dm' and archived_at is null",
+            "select 1 from channels where id = $1::uuid and kind <> 'dm' \
+               and archived_at is null and task_id is null",
         )
         .bind(channel_id)
         .fetch_optional(pg)

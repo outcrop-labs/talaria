@@ -239,9 +239,8 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
-            "/api/tasks/{id}/conversation",
-            post(tasks::tasks_id_conversation::post)
-                .fallback(|| async { method_not_allowed("POST") }),
+            "/api/tasks/{id}/channel",
+            post(tasks::tasks_id_channel::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/tasks/{id}/dependencies",

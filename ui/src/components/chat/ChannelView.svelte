@@ -29,14 +29,30 @@
   // reactions (agents react too), spawn threads (agents @mentioned in a thread
   // reply in the thread), and carry pasted/dropped files. Agents reply when
   // @mentioned; their streamed replies arrive over the channel's SSE feed.
+  // Embeddable as-is: a ticket's discussion room is this component on a
+  // task-linked channel — the detail fetch serves the board's roster and
+  // agents there, so the mention picker just works.
   let {
     channelId,
     channelName,
     fleet,
+    onLiveMessage,
+    zeroTitle,
+    zeroHint,
+    composerPlaceholder,
   }: {
     channelId: string
     channelName: string
     fleet: AgentModel[]
+    /** A tick for embedders riding this component's one SSE subscription. */
+    onLiveMessage?: () => void
+    /** The composer's placeholder — same reason as the zero state: a room's
+     *  composer should not claim to message "#<ticket title>". */
+    composerPlaceholder?: string
+    /** Override the zero state's words — an embedded room is not "a channel",
+     *  and what an empty discussion should say depends on the ticket. */
+    zeroTitle?: string
+    zeroHint?: string
   } = $props()
 
   // The whole query, not `{ data: messages = [] }`. That default turned a
@@ -81,7 +97,7 @@
       (usersList.failed && !!usersList.notice),
   )
   const sessionQuery = useSession()
-  useChannelEvents(() => channelId)
+  useChannelEvents(() => channelId, () => onLiveMessage?.())
   let error = $state<string | null>(null)
   let threadRoot = $state<string | null>(null)
   const menu = useContextMenu()
@@ -217,12 +233,13 @@
         <EmptyState
           class="h-full"
           icon="#"
-          title={`Welcome to #${channelName}`}
-          hint={channelAgents.length
-            ? `Say something. @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
-            : detailFailed
-              ? 'Say something.'
-              : 'Say something, or add people & agents.'}
+          title={zeroTitle ?? `Welcome to #${channelName}`}
+          hint={zeroHint ??
+            (channelAgents.length
+              ? `Say something. @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
+              : detailFailed
+                ? 'Say something.'
+                : 'Say something, or add people & agents.')}
         />
       {:else}
       <!-- The clearance is on the MESSAGE LIST, not on this scroll box. On the
@@ -291,7 +308,7 @@
          the composer panel. -->
     <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface">
       <div class="mx-auto w-full max-w-[var(--converse-width)]">
-        <ChannelComposer {channelName} {mentionables} onSend={send} />
+        <ChannelComposer {channelName} placeholder={composerPlaceholder} {mentionables} onSend={send} />
       </div>
     </div>
     <ContextMenu {menu} />

@@ -1,12 +1,12 @@
-// Live-DB proof of the ticket thread (cargo test -- --ignored). A ticket's
-// discussion is a kind='ticket' conversation bound to the task, and every
+// Live-DB proof of the ticket ROOM (cargo test -- --ignored). A ticket's
+// discussion is a channel linked to its task (channels.task_id), and every
 // guarantee this file pins is one a unit test cannot vouch for because it IS
-// a Postgres rule or a router gate, not Rust: the thread passes the same
-// access gates as its board (through the real router, with minted sessions),
-// the ensure route is idempotent under a genuine race (the conditional link
-// write plus the re-read winner), the relevance gate fails OPEN when its
-// judge cannot even be looked up, and the legacy comment door posts real
-// turns into the thread it finds.
+// a Postgres rule or a router gate, not Rust: the room passes the same access
+// gates as its board (through the real router, with minted sessions) and
+// never shows in the comms rail, the open route is idempotent under a genuine
+// race (the unique task_id index plus the re-read winner), the relevance gate
+// fails OPEN when its judge cannot even be looked up, and the comment door
+// posts real rows into the room it finds.
 //
 // House rule: #[ignore]d, never CI.
 //
@@ -15,14 +15,12 @@
 use axum::body::Body;
 use axum::http::Request;
 use sqlx::postgres::PgPool;
+use talaria_api::channels::channel_role;
 use talaria_api::config::Config;
-use talaria_api::conversations::conversation_accessible;
 use talaria_api::routes;
 use talaria_api::session::{SessionUser, create_session};
 use talaria_api::state::AppState;
-use talaria_api::tasks::{
-    TaskDeps, add_comment, ensure_task_conversation, get_task, list_comments,
-};
+use talaria_api::tasks::{TaskDeps, add_comment, ensure_task_channel, get_task, list_comments};
 use talaria_api::ticket_chat::{TicketHead, ticket_message_relevant};
 use talaria_api::uploads::resolve_attachments;
 use tower::ServiceExt; // oneshot
@@ -49,7 +47,7 @@ async fn pg() -> PgPool {
 }
 
 /// The whole fixture hangs off user rows and one team: deleting the users
-/// cascades board → task → thread → messages and activity, exactly the
+/// cascades board → task → room → messages and activity, exactly the
 /// direction production deletes run. The team row itself survives its
 /// creator (created_by is SET NULL), so it goes explicitly.
 ///
@@ -69,13 +67,14 @@ async fn reset(pg: &PgPool, tag: &str) {
         .unwrap();
 }
 
-/// The cast: an owner (the thread's owner ladder resolves to them by email),
+/// The cast: an owner (the room's owner ladder resolves them by email),
 /// a direct board member, a teammate through the board's TEAM, and a
-/// stranger with an account. Plus one task carrying an agent assignee, so
-/// the binder has its first rung without leaning on the org default.
+/// stranger with an account. Plus one task carrying a human and an agent
+/// assignee, so the ladder and the relevance path both have their rungs
+/// without leaning on the org default.
 struct Fixture {
     task_id: String,
-    thread_id: String,
+    room_id: String,
     owner: SessionUser,
     member: SessionUser,
     teammate: SessionUser,
@@ -141,6 +140,19 @@ async fn fixture(state: &AppState, tag: &str) -> Fixture {
     .fetch_one(pg)
     .await
     .unwrap();
+    // The owner's board_members row is not decoration: every board the app
+    // creates provisions it, and it is what access reads — boards.owner_id
+    // alone is display truth, not a membership leg (the conversation door
+    // used to smuggle the owner in through its own user_id instead; a room
+    // has no such leg, so the fixture keeps the real shape).
+    sqlx::query(
+        "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, 'owner')",
+    )
+    .bind(&board)
+    .bind(&owner.id)
+    .execute(pg)
+    .await
+    .unwrap();
     sqlx::query(
         "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, 'editor')",
     )
@@ -176,23 +188,26 @@ async fn fixture(state: &AppState, tag: &str) -> Fixture {
 
     let (task_id,): (String,) = sqlx::query_as(
         "insert into tasks (board_id, title, status, priority, created_by, assignees) \
-         values ($1::uuid, 'Prove the thread gates', 'todo', 'medium', $2, $3::jsonb) \
+         values ($1::uuid, 'Prove the room gates', 'todo', 'medium', $2, $3::jsonb) \
          returning id::text",
     )
     .bind(&board)
     .bind(owner.email.as_deref().expect("owner carries an email"))
-    .bind(serde_json::json!([&member.id, "live-test-agent"]))
+    .bind(serde_json::json!([
+        format!("user:{}", member.id),
+        "live-test-agent"
+    ]))
     .fetch_one(pg)
     .await
     .unwrap();
 
-    let thread_id = ensure_task_conversation(pg, &task_id)
+    let room_id = ensure_task_channel(pg, &task_id)
         .await
         .unwrap()
-        .expect("owner by email + agent assignee: both ladders resolve");
+        .expect("owner by email: the ladder's first rung resolves");
     Fixture {
         task_id,
-        thread_id,
+        room_id,
         owner,
         member,
         teammate,
@@ -200,13 +215,13 @@ async fn fixture(state: &AppState, tag: &str) -> Fixture {
     }
 }
 
-/// GET through the REAL router with a minted session cookie — the stack a
-/// browser rides, not the predicate it is built from.
-async fn get_conversation(state: &AppState, sid: &str, thread_id: &str) -> u16 {
+/// GET the room's messages through the REAL router with a minted session
+/// cookie — the stack a browser rides, not the predicate it is built from.
+async fn get_room_messages(state: &AppState, sid: &str, room_id: &str) -> u16 {
     let res = routes::router(state.clone())
         .oneshot(
             Request::builder()
-                .uri(format!("/api/conversations/{thread_id}"))
+                .uri(format!("/api/channels/{room_id}/messages"))
                 .header("cookie", format!("talaria_session={sid}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -216,13 +231,32 @@ async fn get_conversation(state: &AppState, sid: &str, thread_id: &str) -> u16 {
     res.status().as_u16()
 }
 
-/// POST the ensure route the Discussion tab opens, same stack.
-async fn post_ensure(state: &AppState, sid: &str, task_id: &str) -> u16 {
+/// The comms rail's list, through the same router — body included, because
+/// the assertion is about the wire the rail renders, not the query under it.
+async fn rail_body(state: &AppState, sid: &str) -> String {
+    let res = routes::router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/channels")
+                .header("cookie", format!("talaria_session={sid}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// POST the open route the Discussion tab hits, same stack.
+async fn post_open(state: &AppState, sid: &str, task_id: &str) -> u16 {
     let res = routes::router(state.clone())
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/tasks/{task_id}/conversation"))
+                .uri(format!("/api/tasks/{task_id}/channel"))
                 .header("cookie", format!("talaria_session={sid}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -234,26 +268,31 @@ async fn post_ensure(state: &AppState, sid: &str, task_id: &str) -> u16 {
 
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
-async fn the_thread_passes_the_same_gates_as_its_board() {
+async fn the_room_passes_the_same_gates_as_its_board() {
     let state = app_state().await;
     let f = fixture(&state, "gates").await;
 
-    // The predicates: owner yes, member yes, teammate through the team yes,
-    // stranger no. The same four answers the router is about to give.
+    // The predicate: owner yes, member yes, teammate through the team yes,
+    // stranger no — and nobody is the room's OWNER, because a task room
+    // derives no owner at all (the owner-gated channel mutations refuse for
+    // it by construction).
     for (who, id, expected) in [
         ("owner", &f.owner.id, true),
         ("member", &f.member.id, true),
         ("teammate", &f.teammate.id, true),
         ("stranger", &f.stranger.id, false),
     ] {
-        let ok = conversation_accessible(&state.pg, id, &f.thread_id)
-            .await
-            .unwrap();
-        assert_eq!(ok, expected, "predicate said {ok} for {who}");
+        let role = channel_role(&state.pg, id, &f.room_id).await.unwrap();
+        assert_eq!(
+            role.as_deref(),
+            expected.then_some("member"),
+            "predicate said {role:?} for {who}"
+        );
     }
 
-    // The router: 200 for the room, 404 for the stranger — a refusal that
-    // does not confirm the thread exists.
+    // The router: 200 for the room, 403 for the stranger — the channel
+    // door's grammar is forbidden, not hidden; the rail below is what keeps
+    // a room invisible.
     for (who, user) in [
         ("owner", &f.owner),
         ("member", &f.member),
@@ -261,64 +300,69 @@ async fn the_thread_passes_the_same_gates_as_its_board() {
     ] {
         let sid = create_session(&state, user).await.unwrap();
         assert_eq!(
-            get_conversation(&state, &sid, &f.thread_id).await,
+            get_room_messages(&state, &sid, &f.room_id).await,
             200,
-            "{who} could not read the thread"
+            "{who} could not read the room"
         );
     }
     let sid = create_session(&state, &f.stranger).await.unwrap();
-    assert_eq!(get_conversation(&state, &sid, &f.thread_id).await, 404);
+    assert_eq!(get_room_messages(&state, &sid, &f.room_id).await, 403);
 
-    // The ensure route is the board's door too — the stranger cannot open
+    // The open route is the board's door too — the stranger cannot open
     // (or create) what they cannot see.
     let sid = create_session(&state, &f.member).await.unwrap();
-    assert_eq!(post_ensure(&state, &sid, &f.task_id).await, 200);
+    assert_eq!(post_open(&state, &sid, &f.task_id).await, 200);
     let sid = create_session(&state, &f.stranger).await.unwrap();
-    assert_eq!(post_ensure(&state, &sid, &f.task_id).await, 404);
+    assert_eq!(post_open(&state, &sid, &f.task_id).await, 404);
+
+    // And the room never shows in the comms rail — a room lives on its
+    // ticket, not in the channel list, even for the person who owns both.
+    let sid = create_session(&state, &f.owner).await.unwrap();
+    let rail = rail_body(&state, &sid).await;
+    assert!(
+        !rail.contains(&f.room_id),
+        "the task's room leaked into the comms rail"
+    );
 
     reset(&state.pg, "gates").await;
 }
 
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
-async fn the_ensure_is_idempotent_and_race_safe() {
+async fn the_open_is_idempotent_and_race_safe() {
     let state = app_state().await;
     let f = fixture(&state, "race").await;
     let pg = &state.pg;
 
     // Twice in a row: the same room, not a second one.
-    let again = ensure_task_conversation(pg, &f.task_id).await.unwrap();
-    assert_eq!(again.as_deref(), Some(f.thread_id.as_str()));
+    let again = ensure_task_channel(pg, &f.task_id).await.unwrap();
+    assert_eq!(again.as_deref(), Some(f.room_id.as_str()));
 
-    // A genuine race: the link nulled, two ensures in flight at once. The
-    // conditional link write means exactly one conversation is created, and
-    // the re-read winner means BOTH handles agree on which.
-    sqlx::query("update tasks set conversation_id = null where id = $1::uuid")
+    // A genuine race: the room deleted, two opens in flight at once. The
+    // unique index on task_id means exactly one room is created, and the
+    // re-read winner means BOTH handles agree on which.
+    sqlx::query("delete from channels where task_id = $1::uuid")
         .bind(&f.task_id)
         .execute(pg)
         .await
         .unwrap();
     let (a, b) = tokio::join!(
-        ensure_task_conversation(pg, &f.task_id),
-        ensure_task_conversation(pg, &f.task_id),
+        ensure_task_channel(pg, &f.task_id),
+        ensure_task_channel(pg, &f.task_id),
     );
     let (a, b) = (a.unwrap(), b.unwrap());
     assert_eq!(a, b, "the race produced two answers: {a:?} vs {b:?}");
-    let (count, linked): (i64, Option<String>) = sqlx::query_as(
-        "select (select count(*) from conversations c \
-                  where c.id = $2::uuid and c.kind = 'ticket'), \
-               t.conversation_id::text \
-         from tasks t where t.id = $1::uuid",
-    )
-    .bind(&f.task_id)
-    .bind(&a)
-    .fetch_one(pg)
-    .await
-    .unwrap();
-    assert_eq!(count, 1, "the race created more than one thread");
+    let rooms: Vec<(String,)> =
+        sqlx::query_as("select id::text from channels where task_id = $1::uuid")
+            .bind(&f.task_id)
+            .fetch_all(pg)
+            .await
+            .unwrap();
+    assert_eq!(rooms.len(), 1, "the race created more than one room");
     assert_eq!(
-        linked, a,
-        "the task's link is not the winner the handles agreed on"
+        a.as_deref(),
+        Some(rooms[0].0.as_str()),
+        "the task's room is not the winner the handles agreed on"
     );
 
     reset(pg, "race").await;
@@ -398,15 +442,15 @@ async fn the_gate_folds_every_judge_failure_open() {
 
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
-async fn comments_post_as_turns_and_count_like_them() {
+async fn comments_post_as_room_rows_and_count_like_them() {
     let state = app_state().await;
     let f = fixture(&state, "comments").await;
     let pg = &state.pg;
     // Dead redis: the comment's fans degrade, the rows are what is on trial.
     let deps = TaskDeps::from_route(pg.clone(), None);
 
-    // An AGENT author (a model string, the MCP door's shape) posts an
-    // assistant turn that carries its own name.
+    // An AGENT author (a model string, the MCP door's shape) posts a room
+    // row that carries its own name.
     add_comment(
         &deps,
         &f.task_id,
@@ -416,20 +460,20 @@ async fn comments_post_as_turns_and_count_like_them() {
     )
     .await
     .unwrap();
-    let (role, agent): (String, Option<String>) = sqlx::query_as(
-        "select m.role, m.metadata->>'agent' from messages m \
-         join tasks t on t.conversation_id = m.conversation_id \
-         where t.id = $1::uuid order by m.seq desc limit 1",
+    let (author_type, author): (String, String) = sqlx::query_as(
+        "select cm.author_type, cm.author from channel_messages cm \
+         join channels c on c.id = cm.channel_id \
+         where c.task_id = $1::uuid order by cm.seq desc limit 1",
     )
     .bind(&f.task_id)
     .fetch_one(pg)
     .await
     .unwrap();
-    assert_eq!(role, "assistant");
-    assert_eq!(agent.as_deref(), Some("live-test-agent"));
+    assert_eq!(author_type, "agent");
+    assert_eq!(author, "live-test-agent");
 
-    // A HUMAN author (an email the owner ladder resolves) posts a user turn
-    // with the author's row attached.
+    // A HUMAN author (an email the owner ladder resolves) posts a user row —
+    // the channel engine's stable identity for humans is the email itself.
     add_comment(
         &deps,
         &f.task_id,
@@ -439,17 +483,17 @@ async fn comments_post_as_turns_and_count_like_them() {
     )
     .await
     .unwrap();
-    let (role, author): (String, Option<String>) = sqlx::query_as(
-        "select m.role, m.author_user_id::text from messages m \
-         join tasks t on t.conversation_id = m.conversation_id \
-         where t.id = $1::uuid order by m.seq desc limit 1",
+    let (author_type, author): (String, String) = sqlx::query_as(
+        "select cm.author_type, cm.author from channel_messages cm \
+         join channels c on c.id = cm.channel_id \
+         where c.task_id = $1::uuid order by cm.seq desc limit 1",
     )
     .bind(&f.task_id)
     .fetch_one(pg)
     .await
     .unwrap();
-    assert_eq!(role, "user");
-    assert_eq!(author.as_deref(), Some(f.owner.id.as_str()));
+    assert_eq!(author_type, "user");
+    assert_eq!(author, f.owner.email.as_deref().unwrap());
 
     // The activity log knows both comments happened, the wire count agrees
     // with the message rows, and the synthesized read names both authors.
@@ -474,55 +518,63 @@ async fn comments_post_as_turns_and_count_like_them() {
 
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
-async fn every_ticket_thread_is_one_tasks_room() {
+async fn every_ticket_room_keeps_its_shape() {
     // Post-boot invariants over whatever the database actually holds — the
-    // backfill ran at migration time, and these are the shapes it promised.
+    // copy migration ran at migration time, and these are the shapes it
+    // promised.
     let pg = pg().await;
-    let (rooms_two_tasks_point_at, bad_links): (i64, i64) = sqlx::query_as(
+    // The conversation era is over — no kind='ticket' row survived the copy
+    // — and no task room was ever provisioned a member row: access reads
+    // the board, and a provisioned row would be a second truth to drift.
+    let (stray_threads, provisioned_members): (i64, i64) = sqlx::query_as(
         "select \
-           (select count(*) from (select conversation_id from tasks \
-              where conversation_id is not null \
-              group by conversation_id having count(*) > 1) s), \
-           (select count(*) from tasks t where t.conversation_id is not null \
-              and not exists (select 1 from conversations c \
-                 where c.id = t.conversation_id and c.kind = 'ticket'))",
+           (select count(*) from conversations where kind = 'ticket'), \
+           (select count(*) from channel_members m \
+              join channels c on c.id = m.channel_id \
+             where c.task_id is not null)",
     )
     .fetch_one(&pg)
     .await
     .unwrap();
-    assert_eq!(rooms_two_tasks_point_at, 0, "two tasks share one thread");
     assert_eq!(
-        bad_links, 0,
-        "a task points at something that is not its thread"
+        stray_threads, 0,
+        "a kind='ticket' conversation survived the copy"
+    );
+    assert_eq!(
+        provisioned_members, 0,
+        "a task room carries a provisioned member row — access must stay derived"
     );
 
-    // Per-thread order: seq is contiguous from zero and every row is
-    // complete — the shape the chat door's chaining and the count's read
-    // both assume.
-    let (gaps, incomplete): (i64, i64) = sqlx::query_as(
+    // One room per task, and the seq the next post takes never collides
+    // with the rows already there — the copy carried ids and seqs verbatim,
+    // and a room whose msg_seq fell behind its rows would 500 every next
+    // post on the unique(channel_id, seq) index. (msg_seq AHEAD is legal:
+    // a deleted tail leaves the counter where it was.)
+    let (two_rooms, colliding_seq): (i64, i64) = sqlx::query_as(
         "select \
-           (select count(*) from ( \
-              select m.conversation_id from messages m \
-                join conversations c on c.id = m.conversation_id \
-               where c.kind = 'ticket' \
-               group by m.conversation_id \
-              having min(m.seq) <> 0 \
-                  or max(m.seq) <> count(*) - 1) s), \
-           (select count(*) from messages m \
-              join conversations c on c.id = m.conversation_id \
-             where c.kind = 'ticket' and m.status <> 'complete')",
+           (select count(*) from (select task_id from channels \
+              where task_id is not null \
+              group by task_id having count(*) > 1) s), \
+           (select count(*) from channels c \
+             where c.task_id is not null \
+               and c.msg_seq < coalesce( \
+                    (select max(cm.seq) from channel_messages cm \
+                      where cm.channel_id = c.id), 0))",
     )
     .fetch_one(&pg)
     .await
     .unwrap();
-    assert_eq!(gaps, 0, "a ticket thread's seq has a hole");
-    assert_eq!(incomplete, 0, "a ticket thread carries an incomplete row");
+    assert_eq!(two_rooms, 0, "two rooms claim one task");
+    assert_eq!(
+        colliding_seq, 0,
+        "a room's msg_seq trails its rows — the next post collides"
+    );
 }
 
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
 async fn attachments_resolve_with_their_metadata() {
-    // The stamp leg: a thread message carrying files is the point of the
+    // The stamp leg: a room message carrying files is the point of the
     // room, and the resolver is what turns upload ids into the metadata the
     // message row keeps. Pinned live because the failure that hid here for
     // the whole port era was a sqlx DECODE mismatch — int4 column into an

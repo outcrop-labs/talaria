@@ -144,6 +144,56 @@ pub async fn ticket_for_conversation(pg: &PgPool, conversation_id: &str) -> Opti
     )
 }
 
+/// Resolve the task a channel is the room of. None when the channel is not
+/// a task room (the ordinary case — every rail channel answers None here)
+/// or the row cannot be read. The channel-side twin of
+/// `ticket_for_conversation`: one read carrying where the room's task is,
+/// who is assigned, and the head the prompt and the gate share.
+pub async fn ticket_for_room(pg: &PgPool, channel_id: &str) -> Option<TicketMeta> {
+    sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            serde_json::Value,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        ),
+    >(
+        "select t.id::text, t.board_id::text, t.assignees, \
+                case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') \
+                     || '-' || t.ticket_no end, \
+                t.title, t.status, t.description \
+         from channels c join tasks t on t.id = c.task_id join boards b on b.id = t.board_id \
+         where c.id = $1::uuid",
+    )
+    .bind(channel_id)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten()
+    .map(
+        |(task_id, board_id, assignees, ticket_ref, title, status, description)| {
+            let agent = crate::tasks::agent_assignees(&crate::tasks::json_strings(&assignees))
+                .into_iter()
+                .next();
+            TicketMeta {
+                task_id,
+                board_id,
+                agent,
+                head: TicketHead {
+                    ticket_ref,
+                    title,
+                    status,
+                    description,
+                },
+            }
+        },
+    )
+}
+
 /// The tail of the discussion BEFORE this message, as one-line turns for the
 /// judge — "user: …" / "assistant: …", oldest first. Its own read rather
 /// than the door's `prior` so the QUEUED path (which skips the full history
