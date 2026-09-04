@@ -116,7 +116,7 @@
         Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
         BlockEscape,
         ...(slash ? [SlashCommands] : []),
-        ...(mentions?.length ? [MentionSuggest.configure({ items: mentions })] : []),
+        ...(mentions ? [MentionSuggest.configure({ items: () => mentions })] : []),
       ],
       content: value,
       // min-height goes on the contenteditable itself (not a wrapper) so clicking

@@ -90,17 +90,21 @@ function buildSuggestion(items: () => Mentionable[]): Omit<SuggestionOptions<Men
 }
 
 export interface MentionSuggestOptions {
-  items: Mentionable[]
+  /** Candidates, read LIVE on every keystroke. A plain array here froze the
+   *  mount-time list into the plugin: every surface builds its mentionables
+   *  with `$derived` over async queries, so the picker showed whoever had
+   *  resolved by editor creation — cached users, never the agents that land
+   *  with the fleet — and an empty-at-mount list meant no picker at all. */
+  items: () => Mentionable[]
 }
 
-/** Configure with `{ items }` at editor creation (RichEditor remounts by key,
- *  so a fresh candidate list arrives with the remount). */
+/** Configure with `{ items: () => list }` at editor creation. */
 export const MentionSuggest = Extension.create<MentionSuggestOptions>({
   name: 'mentionSuggest',
   addOptions() {
-    return { items: [] }
+    return { items: () => [] }
   },
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, pluginKey: new PluginKey('mentionSuggest'), ...buildSuggestion(() => this.options.items) })]
+    return [Suggestion({ editor: this.editor, pluginKey: new PluginKey('mentionSuggest'), ...buildSuggestion(this.options.items) })]
   },
 })

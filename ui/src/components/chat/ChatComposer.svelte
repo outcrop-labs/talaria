@@ -134,7 +134,11 @@
         Placeholder.configure({ placeholder }),
         Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
         SendKeymap,
-        ...(mentionables?.length ? [MentionSuggest.configure({ items: mentionables })] : []),
+        // Installed unconditionally with a LIVE read: the candidate list is
+        // `$derived` over async queries everywhere it is built, so a snapshot
+        // here froze whoever had resolved by mount (and an empty-at-mount
+        // list installed nothing — the @ key did nothing at all).
+        MentionSuggest.configure({ items: () => mentionables ?? [] }),
         EmojiSuggest,
       ],
       content: '',
