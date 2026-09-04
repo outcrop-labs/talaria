@@ -283,13 +283,28 @@ pub async fn post(
     // ambient "activity" long after the turn that leaked it. The
     // notification is the same text landing in a human's inbox, unredacted,
     // beside a message that is not.
-    index_channel_activity(
-        state.pg.clone(),
-        &id,
-        &msg.id,
-        &format!("#{nm} · {name}"),
-        &msg.content,
-    );
+    //
+    // In a task room the post is a COMMENT — the fan-out carries
+    // `msg.content` (the redacted body) into the board-scoped comment point
+    // and the board's edges, never a channelId-payload channel doc.
+    if let Some(meta) = crate::ticket_chat::ticket_for_room(&state.pg, &id).await {
+        let pg = state.pg.clone();
+        let realtime = notify.realtime.clone();
+        let mid = msg.id.clone();
+        let author = describe_agent(&name).label;
+        let content = msg.content.clone();
+        tokio::spawn(async move {
+            crate::tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &content).await;
+        });
+    } else {
+        index_channel_activity(
+            state.pg.clone(),
+            &id,
+            &msg.id,
+            &format!("#{nm} · {name}"),
+            &msg.content,
+        );
+    }
     // An agent @mentioning a human notifies exactly like a human would.
     let mention_deps = notify.clone();
     let mention_name = name.clone();
@@ -408,15 +423,45 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     let channel_name = channel_name(&state.pg, id)
         .await
         .unwrap_or_else(|| "channel".into());
-    // Index into the ambient activity brain (retrieval on demand later).
+    // A task-room message is a COMMENT, not ambient channel chatter: it
+    // indexes board-scoped with the ticket's href (a channel doc's
+    // channelId-only payload would escape the board filter and point at a
+    // rail the room never lists in), and the board is owed the comment
+    // edges — activity line, badge event. Rail channels keep the channel
+    // doc.
     if !body.content.trim().is_empty() {
-        index_channel_activity(
-            state.pg.clone(),
-            id,
-            &message.id,
-            &format!("#{channel_name} · {author}"),
-            &body.content,
-        );
+        let room = crate::ticket_chat::ticket_for_room(&state.pg, id).await;
+        match room {
+            Some(meta) => {
+                let pg = state.pg.clone();
+                let realtime = notify.realtime.clone();
+                let mid = message.id.clone();
+                let room_author = author.clone();
+                let room_content = body.content.clone();
+                tokio::spawn(async move {
+                    crate::tasks::room_comment_fanout(
+                        &pg,
+                        &realtime,
+                        &meta,
+                        &mid,
+                        &room_author,
+                        &room_content,
+                    )
+                    .await;
+                });
+            }
+            None => {
+                // Index into the ambient activity brain (retrieval on
+                // demand later).
+                index_channel_activity(
+                    state.pg.clone(),
+                    id,
+                    &message.id,
+                    &format!("#{channel_name} · {author}"),
+                    &body.content,
+                );
+            }
+        }
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let trigger_state = state.clone();

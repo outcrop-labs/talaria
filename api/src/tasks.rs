@@ -9,7 +9,7 @@
 // See `agent_ticket_refusal`.
 
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
-use crate::agent_writes::{WriteAuthor, guard_agent_fields, guard_agent_write};
+use crate::agent_writes::{WriteAuthor, guard_agent_fields};
 use crate::boards::{board_allows_agent, board_info, board_role};
 use crate::error::house_error;
 use crate::gateway::usage::task_usage;
@@ -17,6 +17,10 @@ use crate::judge::list_judge_reviews;
 use crate::labels::ensure_labels;
 use crate::notify::{NotificationInput, NotifyDeps, add_notification};
 use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
+use crate::retrieval::sources::{
+    ActivityField, CommentSrc, comment_doc, index_activity, purge_activity_by_field,
+};
+use crate::retrieval::{embed, qdrant};
 use crate::runs::run::RunDeps;
 use crate::statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use crate::work_dispatch::{DispatchTicket, dispatch_deps, maybe_dispatch_ticket};
@@ -199,7 +203,8 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   t.color, t.tags, t.attachments, t.time_spent_seconds as time_spent_seconds, \
   t.estimated_hours::float8 as estimated_hours, t.parent_id::text as parent_id, \
   t.conversation_id::text as conversation_id, \
-  (select count(*)::int from messages m where m.conversation_id = t.conversation_id) as comment_count, \
+  (select count(*)::int from channel_messages cm join channels c on c.id = cm.channel_id \
+   where c.task_id = t.id) as comment_count, \
   t.outcome, t.resolution, t.error_message as error_message, \
   (trunc(extract(epoch from t.created_at) * 1000))::bigint as created_at_ms, \
   (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_at_ms, \
@@ -1561,13 +1566,17 @@ fn spawn_dispatch_id(deps: &TaskDeps, id: String, only_agents: Option<Vec<String
 }
 
 /// Hard delete — comments, watchers, activity and dependencies ride the
-/// foreign keys.
+/// foreign keys. The room rides the task link; its comment points in the
+/// activity brain are purged here — a deleted ticket's discussion must stop
+/// being retrievable, not merely unreadable.
 pub async fn delete_task(deps: &TaskDeps, id: &str) -> Result<(), sqlx::Error> {
     let board_id = task_board_id(&deps.pg, id).await?;
     sqlx::query("delete from tasks where id = $1::uuid")
         .bind(id)
         .execute(&deps.pg)
         .await?;
+    let _ =
+        purge_activity_by_field(&deps.pg, &qdrant::real_deps(), ActivityField::TaskId, id).await;
     if let Some(board_id) = board_id {
         publish_board(
             &deps.realtime,
@@ -1769,11 +1778,10 @@ pub async fn ensure_task_channel(
     let Some(head) = thread_head(pg, task_id).await? else {
         return Ok(None);
     };
-    if let Some((id,)) =
-        sqlx::query_as("select id::text from channels where task_id = $1::uuid")
-            .bind(task_id)
-            .fetch_optional(pg)
-            .await?
+    if let Some((id,)) = sqlx::query_as("select id::text from channels where task_id = $1::uuid")
+        .bind(task_id)
+        .fetch_optional(pg)
+        .await?
     {
         return Ok(Some(id));
     }
@@ -1799,7 +1807,50 @@ pub async fn ensure_task_channel(
     .await?;
     // Re-read rather than trusting the write: the loser of the race must
     // return the winner's room, not assume its own insert landed.
-    Ok(task_room_channel_id(pg, task_id).await?)
+    task_room_channel_id(pg, task_id).await
+}
+
+/// Everything a landed room message owes the board. Four doors can land one
+/// — the channel surface a human types into, an agent posting directly, the
+/// agent's streamed reply, the MCP comment tool — and the board's edges must
+/// not depend on which: the activity line, the comment event (badge recount
+/// + live board readers), and the comment point in the activity brain. The
+/// brain leg is fire-and-forget like every other indexing site.
+pub async fn room_comment_fanout(
+    pg: &PgPool,
+    realtime: &RealtimeDeps,
+    meta: &crate::ticket_chat::TicketMeta,
+    message_id: &str,
+    author: &str,
+    content: &str,
+) {
+    let _ = log_activity(pg, &meta.task_id, author, "comment", "commented").await;
+    // The comment event carries its own type tag — the board topic tells
+    // readers the discussion moved, not the card.
+    publish_board(
+        realtime,
+        &meta.board_id,
+        &BoardEvent {
+            kind_tag: "comment",
+            task_id: Some(meta.task_id.clone()),
+            deleted: None,
+        },
+    );
+    if content.trim().is_empty() {
+        return;
+    }
+    let doc = comment_doc(&CommentSrc {
+        id: message_id,
+        task_id: &meta.task_id,
+        board_id: &meta.board_id,
+        ticket_ref: meta.head.ticket_ref.as_deref(),
+        author,
+        content,
+    });
+    let pg = pg.clone();
+    tokio::spawn(async move {
+        let _ = index_activity(&pg, &qdrant::real_deps(), &embed::real_deps(), &doc).await;
+    });
 }
 
 // ── Comments ─────────────────────────────────────────────────────────────────
@@ -1829,21 +1880,24 @@ fn comment_of(r: CommentRow) -> TaskComment {
 }
 
 /// The task's discussion, synthesized into the comment wire shape the MCP
-/// `get_ticket` consumers have always read. Humans show their name/email;
-/// agent turns carry the model string in metadata.agent; parent_id is null
-/// — it always was in practice, the UI never sent one.
+/// `get_ticket` consumers have always read. The room's rows carry their
+/// author string directly — email-or-name for a human, the model string for
+/// an agent — and the users join keeps the human display name-first, as this
+/// wire always rendered it. parent_id is null: this wire never carried
+/// threading, and the room's own read (threadRootId) is the threaded one.
 pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment>, sqlx::Error> {
     let rows: Vec<CommentRow> = sqlx::query_as(
-        "select m.id::text, \
-                coalesce(u.name, u.email, m.metadata->>'agent', 'agent'), \
-                m.content, null::text, \
-                (trunc(extract(epoch from m.created_at) * 1000))::bigint \
-         from messages m \
-         join tasks t on t.conversation_id = m.conversation_id \
-         left join users u on u.id = m.author_user_id \
-         where t.id = $1::uuid and m.role in ('user','assistant') \
-           and m.status = 'complete' \
-         order by m.seq asc",
+        "select cm.id::text, \
+                case when cm.author_type = 'user' \
+                     then coalesce(u.name, u.email, cm.author) else cm.author end, \
+                cm.content, null::text, \
+                (trunc(extract(epoch from cm.created_at) * 1000))::bigint \
+         from channel_messages cm \
+         join channels c on c.id = cm.channel_id \
+         join tasks t on t.id = c.task_id \
+         left join users u on u.email = cm.author \
+         where t.id = $1::uuid and cm.status = 'complete' \
+         order by cm.seq asc",
     )
     .bind(task_id)
     .fetch_all(pg)
@@ -1851,27 +1905,19 @@ pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment
     Ok(rows.into_iter().map(comment_of).collect())
 }
 
-/// THE comment write, and therefore the place the guard on agent-authored
-/// comments lives. `mcp comment` reaches here as a
-/// tool ARGUMENT — model output that never touched a harness and, until
-/// this call existed, never touched a guard either. `guard_agent_write`
-/// decides whether this author is an agent at all (a person's comment is
-/// not model output and is left alone), records what the gate-safe rules
-/// find against that agent, and in strict mode hands back a redacted body.
-/// See agent-writes.rs for why a credential is redacted rather than
-/// blocked.
+/// THE comment write — now a post into the task's ROOM, through the same
+/// `insert_channel_message` every channel post uses. The guard on
+/// agent-authored comments lives inside that insert, which is what makes
+/// this door safe to share: `mcp comment` reaches here as a tool ARGUMENT —
+/// model output that never touched a harness — and the workbench posts an
+/// agent's plan comment through here too. A guard at the insert is a guard
+/// every caller has. See agent-writes.rs for why a credential is redacted
+/// rather than blocked.
 ///
-/// Inside the write rather than at the route on purpose: `POST
-/// /api/tasks/:id/comments` is not the only caller — the workbench posts an
-/// agent's plan comment through here too — and a guard at one caller is a
-/// guard the next caller does not have.
-///
-/// The write itself is a TURN IN THE TASK'S THREAD: a resolvable author
-/// (email or name — the same rule the migration resolves legacy rows by)
-/// lands as a user turn with their user id; anything else (an agent model
-/// string, the shape every MCP `comment` call sends) lands as an assistant
-/// turn carrying the model string in metadata.agent — the same shape the
-/// migration gave every pre-thread comment.
+/// The author discriminator is the same rule it always was: a resolvable
+/// author (email or name — the same rule the migration resolves legacy rows
+/// by) posts as a user; anything else (an agent model string, the shape
+/// every MCP `comment` call sends) posts as an agent.
 /// Resolve a legacy author string to a users row. The routes write
 /// `email.or(name)` — and rows written before this code ran carry whatever
 /// casing that day's session had — so the match is email-then-name,
@@ -1893,97 +1939,56 @@ pub async fn add_comment(
     task_id: &str,
     author: &str,
     content: &str,
-    // Kept in the signature because callers parse it off the wire, but a
-    // chat thread is flat — seq is its only order. Nobody sends one today
-    // (the old composer had no reply UI and the MCP tool has no field); if
-    // a caller ever does, the turn lands flat rather than threaded.
+    // Kept in the signature because callers parse it off the wire, but the
+    // room IS threaded — threading belongs to the channel surface's
+    // threadRootId now. Nobody sends one today (the MCP tool has no field);
+    // if a caller ever does, the comment lands flat rather than threaded.
     _parent_id: Option<&str>,
 ) -> Result<TaskComment, sqlx::Error> {
     let pg = &deps.pg;
-    let guarded = guard_agent_write(
-        pg,
-        "ticket-comment",
-        WriteAuthor::Name(author),
-        content,
-        None,
-    )
-    .await;
-    // The thread must exist for a comment to land in; a comment on a ticket
-    // nobody can own a thread for is a refusal, not a silent drop.
-    let Some(conversation_id) = ensure_task_conversation(pg, task_id).await? else {
+    // The room must exist for a comment to land in; a comment on a ticket
+    // nobody can own a room for is a refusal, not a silent drop.
+    let Some(channel_id) = ensure_task_channel(pg, task_id).await? else {
         return Err(sqlx::Error::RowNotFound);
     };
-    let author_user_id = author_user_id(pg, author).await?;
-    let (msg_id, created_ms) = match author_user_id {
-        Some(user_id) => {
-            let seq = crate::conversations::next_seq(pg, &conversation_id).await?;
-            let id = crate::conversations::insert_user_message(
-                pg,
-                &conversation_id,
-                seq,
-                &guarded.text,
-                &serde_json::json!([]),
-                Some(&user_id),
-                &serde_json::json!({}),
-            )
-            .await?;
-            let (ms,): (i64,) = sqlx::query_as(
-                "select (trunc(extract(epoch from created_at) * 1000))::bigint \
-                 from messages where id = $1::uuid",
-            )
-            .bind(&id)
-            .fetch_one(pg)
-            .await?;
-            (id, ms)
-        }
-        None => {
-            // post_agent_turn stamps its marker metadata; merge the author
-            // label on so list_comments (and the backfill's shape) can name
-            // the speaker. Fresh marker per post — every comment is new.
-            let id = crate::conversations::post_agent_turn(
-                pg,
-                &conversation_id,
-                &uuid::Uuid::new_v4().to_string(),
-                &guarded.text,
-            )
-            .await?;
-            sqlx::query("update messages set metadata = metadata || $2::jsonb where id = $1::uuid")
-                .bind(&id)
-                .bind(serde_json::json!({ "agent": author }))
-                .execute(pg)
-                .await?;
-            let (ms,): (i64,) = sqlx::query_as(
-                "select (trunc(extract(epoch from created_at) * 1000))::bigint \
-                 from messages where id = $1::uuid",
-            )
-            .bind(&id)
-            .fetch_one(pg)
-            .await?;
-            (id, ms)
-        }
+    let author_type = if author_user_id(pg, author).await?.is_some() {
+        "user"
+    } else {
+        "agent"
     };
-    log_activity(pg, task_id, author, "comment", "commented").await?;
-    // The comment event carries its own type tag — the board topic tells
-    // readers a conversation moved, not a card.
-    if let Some(board_id) = task_board_id(pg, task_id).await? {
-        publish_board(
+    let message = crate::channels::insert_channel_message(
+        &deps.notify,
+        &channel_id,
+        author_type,
+        author,
+        content,
+        "complete",
+        &serde_json::json!([]),
+        None,
+    )
+    .await?;
+    // The board's edges — the same ones the doors a human and an agent use
+    // owe it.
+    if let Some(meta) = crate::ticket_chat::ticket_for_room(pg, &channel_id).await {
+        room_comment_fanout(
+            pg,
             &deps.realtime,
-            &board_id,
-            &BoardEvent {
-                kind_tag: "comment",
-                task_id: Some(task_id.to_string()),
-                deleted: None,
-            },
-        );
+            &meta,
+            &message.id,
+            author,
+            &message.content,
+        )
+        .await;
     }
     Ok(TaskComment {
-        id: msg_id,
+        id: message.id,
         author: author.to_string(),
-        content: guarded.text,
-        // Never threaded in practice — the UI never sent a parent, and the
-        // thread supersedes the idea.
+        // The insert's own body — an agent's post comes back REDACTED in
+        // strict mode; the row is clean and so is the wire.
+        content: message.content,
+        // Never threaded in practice — threading is the room's own read.
         parent_id: None,
-        created_at: epoch_ms_to_iso(created_ms),
+        created_at: message.created_at,
     })
 }
 

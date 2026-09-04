@@ -183,14 +183,14 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    // No inline index on this path — comments reach the activity brain only
-    // through the backfill/reindex runs, which read the PERSISTED row. That
-    // is the invariant: add_comment runs an agent's comment through the
-    // agent-writes door and returns the REDACTED body; indexing the raw body
-    // would put a credential into a brain read back into model contexts —
-    // the exact re-entry the guardrails forbid. The persisted comment is
-    // already clean; an inline index, if ever added, MUST carry
-    // `comment.content`, never the parsed body's.
+    // The comment landed through the room insert — the agent-writes door
+    // every channel post goes through — and `add_comment`'s fan-out already
+    // put it into the activity brain, carrying `comment.content`: the
+    // REDACTED body the insert returned. That is the invariant: indexing the
+    // parsed body's raw text instead would put a credential into a brain
+    // read back into model contexts — the exact re-entry the guardrails
+    // forbid. Any index fed from this route MUST carry `comment.content`,
+    // never the parsed body's.
     //
     // @mention any board member — they get an inbox notification linking to
     // the ticket. Detached; the POST returns immediately. The mention text

@@ -448,6 +448,9 @@ pub struct CommentSrc<'a> {
 pub fn comment_doc(c: &CommentSrc<'_>) -> IndexDoc {
     let mut payload = Map::new();
     payload.insert("boardId".into(), json!(c.board_id));
+    // The comment's own container: a deleted task purges its comment points
+    // by this key, the same way a deleted channel purges channelId.
+    payload.insert("taskId".into(), json!(c.task_id));
     IndexDoc {
         source_type: "comment".into(),
         source_id: c.id.into(),
@@ -487,6 +490,7 @@ pub async fn index_ticket_comment(
 pub enum ActivityField {
     ChannelId,
     BoardId,
+    TaskId,
 }
 
 impl ActivityField {
@@ -494,6 +498,7 @@ impl ActivityField {
         match self {
             ActivityField::ChannelId => "channelId",
             ActivityField::BoardId => "boardId",
+            ActivityField::TaskId => "taskId",
         }
     }
 }

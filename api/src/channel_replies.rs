@@ -24,8 +24,8 @@ use sqlx::PgPool;
 
 use crate::channels::{
     ChannelMessageWire, insert_channel_message, list_channel_agents, list_channel_members,
-    list_channel_messages, list_task_room_agents, list_thread_messages, set_channel_message_guard,
-    update_channel_message,
+    list_channel_messages, list_task_room_agents, list_task_room_members, list_thread_messages,
+    set_channel_message_guard, update_channel_message,
 };
 use crate::fleet::{describe_agent, routed_model_for};
 use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payload, proxy_chat};
@@ -112,6 +112,21 @@ pub async fn notify_user_mentions(
     sender_label: &str,
     content: &str,
 ) {
+    // A task room has no member rows — its roster is the board's, and the
+    // notification lands on the ticket, never on the rail the room isn't in.
+    if let Some(room) = room_notify_shape(&deps.pg, channel_id, channel_name).await {
+        notify_mentions(
+            deps,
+            &room.members,
+            sender_user_id,
+            sender_label,
+            content,
+            &room.where_,
+            &room.href,
+        )
+        .await;
+        return;
+    }
     let members = list_channel_members(&deps.pg, channel_id)
         .await
         .unwrap_or_default()
@@ -132,6 +147,45 @@ pub async fn notify_user_mentions(
         "/channels",
     )
     .await;
+}
+
+/// A task room's notification shape: the board roster standing in for the
+/// member rows that don't exist, plus the where/href that land the reader on
+/// the ticket itself.
+struct RoomNotify {
+    members: Vec<Mentionee>,
+    where_: String,
+    href: String,
+}
+
+/// None = not a task room (the caller falls back to the channel shapes).
+async fn room_notify_shape(
+    pg: &sqlx::PgPool,
+    channel_id: &str,
+    channel_name: &str,
+) -> Option<RoomNotify> {
+    let meta = crate::ticket_chat::ticket_for_room(pg, channel_id).await?;
+    let members = list_task_room_members(pg, channel_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| Mentionee {
+            user_id: m.user_id,
+            name: m.name,
+            email: m.email,
+        })
+        .collect();
+    Some(RoomNotify {
+        members,
+        // The ref a room about WEB-31 should be named by; a board without
+        // numbering falls back to the room's own name.
+        where_: meta
+            .head
+            .ticket_ref
+            .clone()
+            .unwrap_or_else(|| channel_name.to_string()),
+        href: format!("/boards/{}/{}", meta.board_id, meta.task_id),
+    })
 }
 
 // ── Mention detection ────────────────────────────────────────────────────────
@@ -787,24 +841,49 @@ async fn stream_reply(
                 }
             }
             // An agent reply @mentioning a human notifies like a human message
-            // would. Detached.
+            // would. In a task room the roster is the board's and the link is
+            // the ticket. Detached.
             if !content.is_empty() {
-                let members = list_channel_members(&deps.pg, channel_id)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|m| Mentionee {
-                        user_id: m.user_id,
-                        name: m.name,
-                        email: m.email,
-                    })
-                    .collect::<Vec<_>>();
+                let (members, where_, href) =
+                    match room_notify_shape(&deps.pg, channel_id, channel_name).await {
+                        Some(room) => (room.members, room.where_, room.href),
+                        None => (
+                            list_channel_members(&deps.pg, channel_id)
+                                .await
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|m| Mentionee {
+                                    user_id: m.user_id,
+                                    name: m.name,
+                                    email: m.email,
+                                })
+                                .collect::<Vec<_>>(),
+                            format!("#{channel_name}"),
+                            "/channels".to_string(),
+                        ),
+                    };
                 let label = describe_agent(model).label;
                 let notify = deps.clone();
-                let where_ = format!("#{channel_name}");
                 let body = content.clone();
                 tokio::spawn(async move {
-                    notify_mentions(&notify, &members, "", &label, &body, &where_, "/channels")
+                    notify_mentions(&notify, &members, "", &label, &body, &where_, &href).await;
+                });
+            }
+            // A task-room reply is a comment like any other: the board is
+            // owed the activity line, the comment event (badge recount +
+            // live readers), and the comment point in the brain. Detached —
+            // this ran after the POST returned in the conversation world
+            // too.
+            if !content.is_empty()
+                && let Some(meta) = crate::ticket_chat::ticket_for_room(&deps.pg, channel_id).await
+            {
+                let pg = deps.pg.clone();
+                let realtime = deps.realtime.clone();
+                let mid = message_id.to_string();
+                let author = describe_agent(model).label;
+                let body = content.clone();
+                tokio::spawn(async move {
+                    crate::tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &body)
                         .await;
                 });
             }
