@@ -316,8 +316,10 @@ export const createTask = (
  *  tickets are read and moved, never discussed, so a thread is not created
  *  with the task: the first person to open a ticket's Discussion tab is what
  *  makes it exist. Idempotent — the second caller gets the same room. */
+/** Find-or-open a ticket's discussion room — a channel linked to the task.
+ *  Idempotent: the room exists once, the ensure returns it every time. */
 export const openTaskDiscussion = (taskId: string) =>
-  postJson<{ conversationId: string; agentModel: string }>(`/api/tasks/${taskId}/conversation`)
+  postJson<{ channelId: string }>(`/api/tasks/${taskId}/channel`)
 export const deleteTask = (taskId: string) => delJson<{ ok: true }>(`/api/tasks/${taskId}`)
 
 export const watchTask = (taskId: string, watcher: string) => postJson<{ ok: true }>(`/api/tasks/${taskId}/watchers`, { watcher })

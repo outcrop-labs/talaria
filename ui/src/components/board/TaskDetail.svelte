@@ -17,11 +17,10 @@
   import Select from '@/components/ui/Select.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import LabelPicker from '@/components/board/LabelPicker.svelte'
-  import ChatView from '@/components/chat/ChatView.svelte'
+  import ChannelView from '@/components/chat/ChannelView.svelte'
   import { useAgents } from '@/lib/agents'
   import { formatCost, formatTokens } from '@/lib/cost.svelte'
   import { useSession } from '@/lib/session'
-  import { onUserEvent } from '@/lib/user-events.svelte'
   import {
     addDependency,
     archiveTask,
@@ -118,15 +117,6 @@
       .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
       .filter((m) => m.insert),
   )
-  // The DISCUSSION thread's room is bigger than the people: the board's agents
-  // are in it, and @mentioning one by label is how you address it (the same
-  // grammar the channels read — label or model id). Agents lead the list,
-  // members follow. The description editor above keeps the humans-only list:
-  // a mention there notifies a person, and no agent reads the description.
-  const threadMentionables = $derived([
-    ...agents.map((a) => ({ insert: a.label, label: a.label, sub: a.role })),
-    ...mentionables,
-  ].filter((m) => m.insert))
   // Assignees mix humans (board members, `user:<id>`) and the board's agents.
   const assigneeOptions = $derived([
     ...boardMembers.map((m) => ({
@@ -144,15 +134,11 @@
   // DescriptionSection's read/edit mode is OURS now (it binds up): the muse
   // bar below gates on "the description is being edited".
   let descMode = $state<'read' | 'edit'>('read')
-  // The ticket's discussion thread. `threadId` is this view's own record of
-  // the room it opened (or found); `t.conversationId` is the persisted link —
-  // ChatView rides whichever is set.
-  let threadId = $state<string | null>(null)
-  let threadModel = $state<string | null>(null)
-  let openingThread = $state(false)
-  // A turn landed in this thread somewhere we couldn't see (another tab, a
-  // teammate, the agent working the ticket) — ChatView re-reads history.
-  let syncSignal = $state(0)
+  // The ticket's discussion ROOM — a channel linked to the task. `roomId` is
+  // this view's own record of the room it opened (or found); the link lives
+  // server-side on the channel, and the ensure route is the door to it.
+  let roomId = $state<string | null>(null)
+  let openingRoom = $state(false)
   // Jump to a sibling ticket (parent/sub-task links) — same overlay route.
   // (React's `search: prev => prev` kept the board filters; pass the current
   // query string through for the same effect.)
@@ -174,47 +160,32 @@
       // this initial used to be DescriptionSection's own.
       descMode = canEdit && !task.description ? 'edit' : 'read'
       // A sibling jump (openTask) swaps the ticket under this modal: the old
-      // ticket's thread is not the new one's.
-      threadId = task.conversationId ?? null
-      threadModel = null
-      threadTried = false
+      // ticket's room is not the new one's.
+      roomId = null
+      roomTried = false
     }
   })
 
-  // OPENING THE DISCUSSION TAB OPENS THE THREAD. A thread is not created with
-  // its ticket — most tickets are read and moved, and a conversation row per
-  // one of those would be a thread nobody ever spoke in — so the ensure route
-  // is what makes the room exist, and this is the thing that calls it. One
-  // attempt per ticket: a refused ensure (409 — nobody can own the thread)
+  // OPENING THE DISCUSSION TAB OPENS THE ROOM. A room is not created with
+  // its ticket — most tickets are read and moved, and a channel row per one
+  // of those would be a room nobody ever spoke in — so the ensure route is
+  // what makes the room exist, and this is the thing that calls it. One
+  // attempt per ticket: a refused ensure (409 — nobody can own the room)
   // must not re-POST on every refetch while the tab sits open.
-  let threadTried = false
+  let roomTried = false
   $effect(() => {
     if (tab !== 'discussion' || !t) return
-    if (threadTried || threadId || t.conversationId) return
-    threadTried = true
-    openingThread = true
+    if (roomTried || roomId) return
+    roomTried = true
+    openingRoom = true
     openTaskDiscussion(taskId)
       .then((r) => {
-        threadId = r.conversationId
-        threadModel = r.agentModel
+        roomId = r.channelId
         refresh()
       })
       .catch(() => {})
-      .finally(() => (openingThread = false))
+      .finally(() => (openingRoom = false))
   })
-
-  // The firehose saw a turn land in THIS thread — from a teammate, or our own
-  // agent working the ticket in another tab. The subscription lives exactly
-  // as long as the modal (the $effect's cleanup is the unsubscribe).
-  $effect(() =>
-    onUserEvent((event) => {
-      if (event.type !== 'conversation') return
-      const thread = threadId ?? t?.conversationId
-      if (!thread || event.conversationId !== thread) return
-      syncSignal += 1
-      void qc.invalidateQueries({ queryKey: ['task', taskId] })
-    }),
-  )
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['task', taskId] })
@@ -225,14 +196,17 @@
     refresh()
   }
   const t = $derived(data?.task)
-  // What the Discussion tab speaks to: the room this view opened (or the
-  // ticket's persisted link), and the agent that answers there — the binder
-  // the ensure route resolved (for unassigned tickets, the org default,
-  // dormant until an agent is assigned), else the task's first agent
-  // assignee as the pre-ensure guess.
-  const threadConversationId = $derived(threadId ?? t?.conversationId ?? null)
-  const threadAgent = $derived(threadModel ?? (t ? (t.assignees.find((a) => !a.startsWith('user:')) ?? agents[0]?.id ?? '') : ''))
-  const threadAgentLabel = $derived(agents.find((a) => a.id === threadAgent)?.label ?? threadAgent)
+  // The room's empty state: what an untouched discussion should say. The
+  // assigned agent answers un-mentioned messages the relevance gate passes;
+  // everything else is an @mention away — the hint teaches exactly that.
+  const assignedAgent = $derived(t ? agents.find((a) => t.assignees.includes(a.id)) : undefined)
+  const roomZeroHint = $derived(
+    agents.length === 0
+      ? 'This board has no agents.'
+      : assignedAgent
+        ? `${assignedAgent.label} is on this ticket — it answers what's relevant. @mention any agent to address it directly.`
+        : 'No agent is assigned — @mention an agent to bring it into the room.',
+  )
 
   // Sub-tasks: one level deep. Children list + inline add on a
   // parent; a child shows its parent with a promote control.
@@ -378,10 +352,11 @@
           {/if}
         </div>
 
-        <!-- Discussion — the ticket's chat thread / Activity tabs. The count is
-             the thread's message count, and the thread itself is ChatView:
-             same composer, attachments, @mentions and streaming as every other
-             conversation, because it IS every other conversation. -->
+        <!-- Discussion — the ticket's chat room / Activity tabs. The count is
+             the room's message count, and the room itself is ChannelView:
+             same composer, edits, reactions, threads, attachments and
+             @mention-driven agent replies as every other channel, because it
+             IS every other channel. -->
         <div class="flex min-h-0 flex-1 flex-col border-t border-line-subtle">
           <div class="flex items-center gap-1 px-5 pt-3">
             {#each tabs as tb (tb)}
@@ -398,24 +373,22 @@
           </div>
 
           {#if tab === 'discussion'}
-            {#if threadConversationId}
+            {#if roomId}
               <div class="min-h-0 flex-1">
-                <ChatView
-                  kind="ticket"
-                  minimal
-                  agentModel={threadAgent}
-                  agentLabel={threadAgentLabel}
-                  conversationId={threadConversationId}
-                  newChatSignal={0}
-                  {syncSignal}
-                  mentionables={threadMentionables}
-                  onCreated={() => {}}
+                <ChannelView
+                  channelId={roomId}
+                  channelName={t.title}
+                  fleet={agents}
+                  onLiveMessage={refresh}
+                  zeroTitle="Nothing here yet"
+                  zeroHint={roomZeroHint}
+                  composerPlaceholder="Reply here — @mention an agent to bring it into the room"
                 />
               </div>
-            {:else if openingThread}
+            {:else if openingRoom}
               <div class="px-5 py-3"><SkeletonRows rows={3} /></div>
             {:else}
-              <!-- The ensure route refused (409: nobody can own the thread) —
+              <!-- The ensure route refused (409: nobody can own the room) —
                    say it, rather than a composer that cannot send. -->
               <div class="grid min-h-0 flex-1 place-items-center px-5 py-3 text-center font-sans text-xs text-muted">
                 The discussion could not be opened for this ticket.

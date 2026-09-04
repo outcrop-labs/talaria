@@ -101,8 +101,10 @@ export function useThreadMessages(channelId: MaybeGetter<string | null>, rootId:
   })
 }
 
-/** Live refresh — one SSE subscription per open channel. */
-export function useChannelEvents(id: MaybeGetter<string | null>) {
+/** Live refresh — one SSE subscription per open channel. `onMessage` rides
+ *  the same tick for embedders that own state beyond the transcript (a task
+ *  room's comment count, say) without a second subscription. */
+export function useChannelEvents(id: MaybeGetter<string | null>, onMessage?: () => void) {
   const qc = useQueryClient()
   $effect(() => {
     const cid = resolve(id)
@@ -110,6 +112,7 @@ export function useChannelEvents(id: MaybeGetter<string | null>) {
     const es = new EventSource(`/api/channels/${cid}/events`)
     es.onmessage = (e) => {
       const ev = JSON.parse(e.data as string) as { type: 'message' | 'channel' }
+      if (ev.type === 'message') onMessage?.()
       void qc.invalidateQueries({ queryKey: ev.type === 'message' ? ['channel-messages', cid] : ['channel', cid] })
       if (ev.type === 'channel') void qc.invalidateQueries({ queryKey: ['channels'] })
     }
