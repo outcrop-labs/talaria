@@ -10,6 +10,15 @@
 // the lease covers it), and the ROLL lock inside covers the manual apply
 // that lands mid-check.
 //
+// update-reconcile — the minute hand, below. reconcile_boot is the only
+// writer that finishes a cutover, and before it the callers were the 6h
+// check (whose interval lease a dead container's ghost can hold for the
+// whole interval) and the admin read (which arrives through an edge that
+// a stranded cutover has not raised — green publishes no port of its
+// own). A cutover that outlives its armed helper must not wait hours for
+// a reader: every minute, whichever replica holds the tick reconciles.
+// Idle, that is one settings-row read.
+//
 // The auto half's consent story is exactly two switches, both off until
 // a human: adoption (migrated — the engine refuses instances it never
 // adopted) and the toggle (auto_update — default false). A registry that
@@ -29,11 +38,19 @@ pub const UPDATE_CHECK_EVERY_MS: u64 = 6 * 60 * 60_000;
 pub const UPDATE_CHECK_FIRST_RUN_DELAY_MS: u64 = 5 * 60_000;
 pub const UPDATE_CHECK_MAX_RUN_MS: u64 = 20 * 60_000;
 
-/// The deps are the whole AppState (a clone of lazy edges): registration
-/// only CAPTURES — the redis connection the roll lock needs is taken at
-/// run time, never at boot, so a dead redis arms the schedule anyway and
-/// the job's error is the honest sentence.
-pub struct UpdateCheckDeps {
+/// The minute hand's cadence. One tick of slack for a lease held by a
+/// container that died mid-interval; a first delay past green's boot
+/// migrations so a crash-looping instance never reaches it.
+pub const UPDATE_RECONCILE_EVERY_MS: u64 = 60_000;
+pub const UPDATE_RECONCILE_FIRST_RUN_DELAY_MS: u64 = 30_000;
+pub const UPDATE_RECONCILE_MAX_RUN_MS: u64 = 2 * 60_000;
+
+/// The deps of both scheduled halves (the 6h check and the minute hand):
+/// the whole AppState (a clone of lazy edges). Registration only CAPTURES
+/// — the redis connection the roll lock needs is taken at run time, never
+/// at boot, so a dead redis arms the schedule anyway and the job's error
+/// is the honest sentence.
+pub struct UpdateDeps {
     pub state: AppState,
 }
 
@@ -53,7 +70,7 @@ pub fn should_auto_apply(
     auto_update && migrated && !run_in_flight && pinned.is_some_and(|p| p != available)
 }
 
-pub fn update_check_job_spec(deps: Arc<UpdateCheckDeps>) -> JobSpec {
+pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
     JobSpec {
         name: JobName::UpdateCheck,
         every_ms: UPDATE_CHECK_EVERY_MS,
@@ -171,8 +188,31 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-pub fn register_update_check_job(deps: Arc<UpdateCheckDeps>) {
+/// The minute hand: reconcile, nothing else. reconcile_boot self-gates —
+/// a settings row with no in-flight run is the whole idle cost — and its
+/// own sentences (the holds, the landings, the heal) are the job's whole
+/// output. NOT per_instance for the same reason as the check: one actor
+/// per tick is enough, and any replica can be that actor.
+pub fn update_reconcile_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
+    JobSpec {
+        name: JobName::UpdateReconcile,
+        every_ms: UPDATE_RECONCILE_EVERY_MS,
+        first_run_delay_ms: Some(UPDATE_RECONCILE_FIRST_RUN_DELAY_MS),
+        max_run_ms: Some(UPDATE_RECONCILE_MAX_RUN_MS),
+        per_instance: false,
+        run: Arc::new(move || {
+            let deps = deps.clone();
+            Box::pin(async move { reconcile_boot(&deps.state.pg).await })
+        }),
+    }
+}
+
+pub fn register_update_check_job(deps: Arc<UpdateDeps>) {
     crate::scheduler::register_job(update_check_job_spec(deps));
+}
+
+pub fn register_update_reconcile_job(deps: Arc<UpdateDeps>) {
+    crate::scheduler::register_job(update_reconcile_job_spec(deps));
 }
 
 #[cfg(test)]

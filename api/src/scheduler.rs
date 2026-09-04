@@ -100,6 +100,7 @@ pub enum JobName {
     DailyBrief,
     McpLibraryRefresh,
     UpdateCheck,
+    UpdateReconcile,
     BlurbRewrite,
 }
 
@@ -116,13 +117,15 @@ impl JobName {
             JobName::DailyBrief => "daily-brief",
             JobName::McpLibraryRefresh => "mcp-library-refresh",
             JobName::UpdateCheck => "update-check",
+            JobName::UpdateReconcile => "update-reconcile",
             JobName::BlurbRewrite => "blurb-rewrite",
         }
     }
 }
 
 /// The jobs whose absence is SILENCE, and so must fail the boot check loudly.
-/// The two optional jobs (mcp-library-refresh, update-check) are out: their
+/// The three optional jobs (mcp-library-refresh, update-check,
+/// update-reconcile) are out: their
 /// failure mode is a slower first load or a stale "last checked" next to a
 /// switch the panel shows, not work that silently never happens — and
 /// update-check is a designed no-op on every install that has not adopted

@@ -82,8 +82,20 @@ pub const KEEP_WINDOW_MS: u64 = 24 * 60 * 60_000;
 /// container is a roller that died mid-roll (a crash between two records):
 /// no reconcile will ever finish it, the auto gate would block forever,
 /// and the panel would show a spinning wheel that never lands. Generous —
-/// past every legitimate phase timeout combined.
+/// past every legitimate phase timeout combined. The one exemption is
+/// [`stale_close_due`]'s: the adoption hold.
 const STALE_RUN_MS: i64 = 60 * 60_000;
+
+/// The stale-close decision, pure so the exemption is pinnable: past
+/// STALE_RUN_MS a not-green in-flight run closes as failed — UNLESS this
+/// container is the run's own retired orchestrator. That run is OUR
+/// adoption hold: we are alive and serving it, and the age measures the
+/// operator's proxy repoint (or the armed cut), not a dead roller. The
+/// canary sat eighty minutes at exactly that hold with both doors green
+/// before this exemption existed, and the close had to be healed by hand.
+fn stale_close_due(age_ms: i64, retired_is_self: bool) -> bool {
+    age_ms > STALE_RUN_MS && !retired_is_self
+}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -396,7 +408,10 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
         return Ok(None);
     };
     if !run_in_flight(&run) {
-        return Ok(None);
+        // Cheap row-only gates first; the heal self-inspects only when the
+        // row could plausibly be a wrongly-closed cutover, so the idle
+        // read stays docker-free.
+        return heal_wrongly_closed_run(pg, &state, &run).await;
     }
 
     // Are we green? The one honest signal: our own image is the digest the
@@ -413,6 +428,24 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
     let green = ours == Some(run.to.digest.as_str());
 
     if green {
+        // ADOPTION'S HOLDS, named before any edge work:
+        let retired_running = match state.retired_container.as_deref() {
+            Some(r) => container_running(r).await,
+            None => false,
+        };
+        // Inherit shape — the retired orchestrator still RUNNING with the
+        // edge down still HOLDS the port the edge must bind; raising it now
+        // can only lose the bind race. The cut (the armed helper, blue's
+        // own stop) ends this hold, and the minute reconcile retries after
+        // it. Treating this as an error was the second half of the bbills
+        // stranding: the raise failed on the bind, reconcile errored, and
+        // nothing retried once the port actually freed.
+        if !edge_healthy(5_000).await && retired_running {
+            return Ok(Some(
+                "adoption is holding: the retired container still holds the port — the edge rises at the cut"
+                    .into(),
+            ));
+        }
         // Adoption's inherit path can die between stopping blue and bringing
         // the edge up (and the edge is how the world arrives here at all):
         // a green with the compose file and no edge heals it itself, so the
@@ -435,14 +468,12 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
                     .into(),
             );
         }
-        // ADOPTION'S HOLD: a run with a retired orchestrator container that
-        // is still RUNNING is a fresh-port adoption waiting for the proxy to
-        // repoint. Only the finish call — one that ARRIVES through the edge —
-        // may stop it; marking the run done here (5 minutes after green
-        // booted) would remove the container the world is still dialing.
-        if let Some(retired) = state.retired_container.as_deref()
-            && container_running(retired).await
-        {
+        // Fresh-port shape: a run with a retired orchestrator container that
+        // is still RUNNING is an adoption waiting for the proxy to repoint.
+        // Only the finish call — one that ARRIVES through the edge — may
+        // stop it; marking the run done here (5 minutes after green booted)
+        // would remove the container the world is still dialing.
+        if retired_running {
             return Ok(Some(
                 "adoption is holding: the retired container still serves — repoint the proxy and finish it"
                     .into(),
@@ -477,9 +508,17 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
     }
 
     // Not green. A run still in-flight past every legitimate phase timeout
-    // is a dead roller; the auto gate and the panel both need it closed.
+    // is a dead roller; the auto gate and the panel both need it closed —
+    // with the one exemption: if this container is the run's own retired
+    // orchestrator, the run is OUR adoption hold and we are the proof it
+    // is alive (see stale_close_due).
+    let me = doc
+        .get("Name")
+        .and_then(|n| n.as_str())
+        .map(|n| n.trim_start_matches('/'));
+    let retired_is_self = me.is_some_and(|m| Some(m) == state.retired_container.as_deref());
     let started = crate::agent_auth::iso_to_epoch_ms(&run.started_at).unwrap_or(0);
-    if now_ms() - started > STALE_RUN_MS {
+    if stale_close_due(now_ms() - started, retired_is_self) {
         let at = now_iso();
         patch(pg, |mut s| {
             let mut r = run.clone();
@@ -495,6 +534,72 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
         return Ok(Some("a stale in-flight run was closed as failed".into()));
     }
     Ok(None)
+}
+
+/// The wrong-close heal. The 60-minute stale-close used to fire on live
+/// adoption holds (see [`stale_close_due`] — the exemption is new), leaving
+/// runs marked failed while their containers finished the handover anyway;
+/// the canary's row had to be healed by hand. When THIS container is the
+/// digest the failed run rolled to, nothing retired is running, and the
+/// edge answers along the world's path, the truth is done — land it, the
+/// same landing the green reconcile would have made.
+async fn heal_wrongly_closed_run(
+    pg: &PgPool,
+    state: &UpdateState,
+    run: &RunRecord,
+) -> Result<Option<String>, String> {
+    if run.state != RunState::Failed || run.to.digest.is_empty() {
+        return Ok(None);
+    }
+    // The same honest signal as the green branch: our own image is the
+    // digest the run was rolling to.
+    let Ok(doc) = inspect_self().await else {
+        return Ok(None); // not in a container (a dev box reading the row)
+    };
+    let ours = doc
+        .get("Config")
+        .and_then(|c| c.get("Image"))
+        .and_then(|i| i.as_str())
+        .and_then(digest_suffix);
+    if ours != Some(run.to.digest.as_str()) {
+        return Ok(None);
+    }
+    if let Some(retired) = state.retired_container.as_deref()
+        && container_running(retired).await
+    {
+        return Ok(None);
+    }
+    if !edge_healthy(5_000).await || !verify_through_edge().await {
+        return Ok(None);
+    }
+    let at = now_iso();
+    patch(pg, |mut s| {
+        let mut r = run.clone();
+        r.state = RunState::Done;
+        r.finished_at = Some(at.clone());
+        r.error = None;
+        s.pinned = Some(r.to.clone());
+        record_run(&mut s, r);
+        s
+    })
+    .await
+    .map_err(|e| format!("the heal record did not write: {e}"))?;
+    // The retired orchestrator container, stopped by the handover's own
+    // cut, goes away so nothing resurrects it — same tail as the landing.
+    if let Some(retired) = state.retired_container.clone() {
+        if let Err(e) = remove_container(&retired).await {
+            tracing::warn!("{LOG} the retired container did not remove: {e}");
+        } else {
+            let _ = patch(pg, |mut s| {
+                s.retired_container = None;
+                s
+            })
+            .await;
+        }
+    }
+    Ok(Some(
+        "a wrongly-closed run healed to done — its cutover had landed".into(),
+    ))
 }
 
 /// GET /api/healthz through the edge container, on the internal network —
@@ -680,6 +785,19 @@ mod tests {
         assert!(!run_in_flight(&run(RunState::Done, 0)));
         assert!(!run_in_flight(&run(RunState::Failed, 0)));
         assert!(!run_in_flight(&run(RunState::RolledBack, 0)));
+    }
+
+    #[test]
+    fn the_adoption_hold_is_exempt_from_the_stale_close() {
+        // A dead roller closes on time.
+        assert!(stale_close_due(STALE_RUN_MS + 1, false));
+        // The canary's shape: OUR hold, eighty minutes deep, both doors
+        // green — the age measures the operator, not the roller.
+        assert!(!stale_close_due(80 * 60_000, true));
+        // The exemption is not a blanket: a young run never closes, and a
+        // not-ours run never exempts.
+        assert!(!stale_close_due(STALE_RUN_MS - 1, true));
+        assert!(!stale_close_due(STALE_RUN_MS - 1, false));
     }
 
     #[test]
