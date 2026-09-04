@@ -43,6 +43,42 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **The fitness suite measures what it claims, and an admin can see when it
+  is the suite that is wrong.** A sweep of the model-test results on the dev
+  and dogfood instances found a ton of gaps that were ours, not the models' —
+  checkers grading one wording of an answer they claimed to grade by
+  substance, fixtures that could not fail, and bugs wearing model names. Four
+  tranches, all landing here. **The health band is loud**: `ours` — fixtures
+  every tested model got wrong, which is a bug in the fixture wearing a
+  model's name — is stamped into one cached settings row whenever the archive
+  changes (a run finishing, Clear, Forget) and rides the matrix payload the
+  default tab already polls, so a poll stays one small row rather than a
+  re-fold; when it is above zero the matrix shows a line saying so, and the
+  line is a door to the health tab that names the fixtures. **New fixtures
+  grade behavior prose could not see**: the concluder must prefer the
+  benchmark it actually ran (concluder "benchmark"), the briefer must carry
+  the numbers forward rather than cite the text it was summarizing (briefer
+  "ledger"), a knowledge answer must surface the doc that was found
+  (hermes_knowledge title find), a spent secret handle must not be presented
+  as still spendable (secret_handles spent-position), and the long-context
+  needle is planted fresh per run so a cached answer cannot pass
+  (long-context fresh needle). **Graded behavior is stated where the model
+  reads it**: the Google harness states the calendar-conflict rule in its
+  system prompt and carries a silent-move trap for it; the muse taxonomy
+  grades refusal-vs-downgrade and is pinned by test; research plans can
+  discover prior runs. **The vision probe draws a shape**: solid colour
+  fields only sample a tint — a fourth trial (black square on white, named
+  against circle and triangle) is answered only by parsing spatial structure,
+  and the answer is in the pixels and nowhere else, so nothing in the prompt
+  lets a non-reading model fake it. **report_gap's kind is graded as the
+  contract states it**: the work-session gap fixture now fails a kind
+  written as a sentence or filed as "misc", because repeats are matched on
+  the slug and a sentence per phrasing means recurrence never accumulates.
+  Verified: 1952 lib tests green (surface 94, defs 396, probes 84, toolbox
+  78 among them), `bun run check` and svelte-check clean; the health band's
+  four tests cover stamp-on-run, restamp-on-clear, restamp-on-forget, and
+  the matrix reading the cached row without folding the archive.
+
 - **Adoption — the one-time handover that turns the engine on.** An admin
   (or the migration script, through the machine key) presses Take over
   updates and the install stops being orchestrator-deployed: adoption pulls
@@ -125,6 +161,7 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   could never act); dormancy is the adoption gate, and operators who want
   the hard switch set the env themselves. Still nothing routes to any of
   this: no behavior change for any running install.
+
 - **Agents developing Talaria get their own floor.** `AGENTS.md` is the
   canonical instruction file for anyone — human or agent, on any harness —
   coding in this repo: the distilled rules, the command map, environment
@@ -354,6 +391,38 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **Nine checker bugs that graded our gaps as model failures — and one
+  guard widened only after its own trap test vetoed two tokens.** The
+  sweep's headline fixes: the json-strict gate's verify step tested closure
+  the wrong way round (a strict failure looked verified), and unstamped
+  pre-revision records now self-heal on read rather than failing every model
+  forever; the workbench's stale-grade regex matched "NOT FINISHED" grades
+  as processed (`NF[KD]?D` on a grade that also reads "NOT DONE"), with a
+  scripted repro pinning it; the judge gate rework carried both. The
+  research gap-round checker now catches the question re-asked as a query
+  by token containment (all but ≤4 of the question's own words) — the
+  commonest repeat matched neither literal and re-trod the findings for
+  free, while a query naming new ground cannot carry those words and stays
+  legal. Six too-strict alternations widened, each anchored on words that
+  survive paraphrase and each with a trap test: a deferral recorded as
+  "postponed"/"no longer" no longer fires plan_doc's both-positions check
+  (the widening dropped `revisit` — CURRENT_DOC's own "revisited twice and
+  settled" HOLDS the decision — and `staying`, which qualifies the reversal
+  line, not the Postgres line), "notify customers by email" places the comms
+  plan, "left out"/"discarded" name an omission, a refusal worded "turned
+  down"/"vetoed"/"ruled out"/"passed on" is recorded, "I verified" grounds a
+  live-state count, and a brief about "the shared secret"/"the credential"/
+  "the HMAC check" engages with its item. Also honest now: `list_files` and
+  `write_file` report real bytes (the sandbox said "bytes" and returned
+  UTF-16 code units — identical on today's ASCII fixtures, a trap for the
+  first fixture with an em-dash), the stale FORTY-SIX tool counts read
+  FIFTY-FIVE (the number the sync test pins), and the timeout verdict names
+  which clock fired — a model idle for minutes is not a model that was
+  slow, and the inactivity clock now says so instead of letting a hung
+  upstream read as the model's timeout. Verified: each fix carries a test
+  that fails on the old pattern (the research repeat, the plan_doc
+  paraphrase, the distiller refusal quartet, the inbox grounding and brief,
+  the workbench repro, the judge inversion); full lib suite 1952 green.
 
 - **Long agent turns finish instead of dying as "· interrupted."** Diagnosed
   from a fleet deploy: a knowledgebase-build turn that ran past ten minutes

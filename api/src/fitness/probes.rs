@@ -92,7 +92,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 use url::Url;
 
-use crate::capability::{CapabilityFact, capability_key, get_capabilities, merge_capabilities};
+use crate::capability::{
+    CapabilityFact, capability_key, get_capabilities, merge_capabilities, probe_revision,
+};
 use crate::fitness::code_runner::{CODE_TASKS, run_code_task};
 use crate::fitness::live_feed::note_live;
 use crate::fitness::surface::{EvalLogLine, LogVerdict};
@@ -238,6 +240,12 @@ pub struct Attempt {
     pub contract_dropped: bool,
     /// The output contract held: parsed and schema-valid, first attempt.
     pub contract_held: bool,
+    /// WHY the contract failed, in the runner's own sentence — the verify's
+    /// message or the parse error, verbatim; None when it did not. A bare bool
+    /// cannot tell "the reply did not parse" from "the summary ran out at 180
+    /// characters" from a check that fired on the wrong value, and the last of
+    /// those is exactly what a fact detail needs to be able to say.
+    pub error: Option<String>,
 }
 
 impl Attempt {
@@ -249,6 +257,7 @@ impl Attempt {
             json_requested: false,
             contract_dropped: false,
             contract_held: false,
+            error: None,
         }
     }
 }
@@ -420,9 +429,19 @@ static JSON_STRICT: LazyLock<JsonContract> = LazyLock::new(|| {
         // rides in the verify slot. The runner runs it after the schema, a
         // failure fails the contract exactly as zod's would, and with
         // `repair: Some(0)` the sentence never reaches the model.
+        //
+        // THE FIRST `&Value` IS THE MODEL'S PARSED REPLY, the second the
+        // harness input — which on the probe path is `Value::Null`. The port's
+        // first spelling of this closure had the pair the other way round: the
+        // check read the input, found no `tags` in `Null`, and failed every
+        // reply every model ever gave, so every instance running the port
+        // measured `json-strict: 0/5` for every probed model and the judge
+        // floor refused each of those columns on the strength of a measurement
+        // that never happened. The fleet-replay test in this file pins the
+        // order; deleting the check flips its second half.
         verify: Some(Arc::new(
-            |_input: &Value, reply: &Value, _ctx: &RenderContext| {
-                let tags = reply
+            |value: &Value, _input: &Value, _ctx: &RenderContext| {
+                let tags = value
                     .get("tags")
                     .and_then(Value::as_array)
                     .map(|a| a.len())
@@ -432,7 +451,7 @@ static JSON_STRICT: LazyLock<JsonContract> = LazyLock::new(|| {
                         "tags must contain at least 2 short lowercase strings".into(),
                     ));
                 }
-                let items = reply
+                let items = value
                     .get("items")
                     .and_then(Value::as_array)
                     .map(|a| a.len())
@@ -1032,6 +1051,30 @@ pub fn needle_line(token: &str) -> String {
     format!("Line 0: IMPORTANT - the passphrase for record 4817 is {token}.")
 }
 
+/// A fresh needle for every probe run. The first spelling was one constant —
+/// and this is a public repo, so the passphrase the probe grades was in the
+/// source for any model, org index or assistant that ever read it: echoing a
+/// memorized token is not long-context. The token keeps the callsign shape
+/// the constant set (two short words, four digits) so the ask reads the same;
+/// ~10M combinations, redrawn per run. `Deps.needle_token` stays injectable
+/// so tests are not at the mercy of a random value.
+pub fn fresh_needle_token() -> String {
+    const WORDS: [&str; 32] = [
+        "GRANITE", "FOX", "CEDAR", "HARBOR", "LANTERN", "MARBLE", "NOMAD", "PEBBLE", "QUARTZ",
+        "RIVER", "SIGNAL", "THISTLE", "UMBER", "VELVET", "WICKET", "YARROW", "ANCHOR", "BRAMBLE",
+        "COPPER", "DUNELINE", "EMBERS", "FALCON", "GLACIER", "HOLLOW", "INDIGO", "JUNIPER",
+        "KESTREL", "LAGOON", "MIRROR", "NETTLE", "ORCHID", "PALISADE",
+    ];
+    let mut raw = [0u8; 4];
+    getrandom::fill(&mut raw).expect("system rng");
+    format!(
+        "{}-{}-{:04}",
+        WORDS[(raw[0] as usize) % WORDS.len()],
+        WORDS[(raw[1] as usize) % WORDS.len()],
+        (u16::from_le_bytes([raw[2], raw[3]]) % 10_000)
+    )
+}
+
 /// Smallest prompt worth calling a long-context test. Below this the probe is
 /// measuring ordinary recall and a `true` would overstate what was checked.
 pub const MIN_LONG_CONTEXT_TOKENS: i64 = 8_000;
@@ -1487,6 +1530,7 @@ pub(crate) fn ask_with_caller(
                 json_requested: seen.json_requested,
                 contract_dropped: seen.contract_dropped,
                 contract_held: result.schema_valid,
+                error: result.error,
             }
         })
     })
@@ -1861,7 +1905,7 @@ pub fn default_deps(state: &AppState, model: &str) -> ProbeDeps {
         keys,
         now: Arc::new(now_ms),
         max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
-        needle_token: "GRANITE-FOX-7731".into(),
+        needle_token: fresh_needle_token(),
         price: {
             let pg = pg.clone();
             let model = model.to_string();
@@ -2021,8 +2065,17 @@ struct VisionFixture {
 ///
 /// Three colours rather than one because a single trial cannot separate "reads
 /// images" from "guessed, and there was only one thing to guess".
+///
+/// A FOURTH TRIAL DRAWS A SHAPE, because solid fills only sample colour: a
+/// deployment that degraded every image to its average tint would pass three
+/// solid fields and never be caught. A black square on a white field, named
+/// against circle and triangle in the prompt, is answered only by parsing the
+/// image's spatial structure — the answer is in the pixels and nowhere else,
+/// so nothing in the prompt lets a non-reading model fake it. Same 1-in-3
+/// guess economics as each colour trial, so the set stays guess-proof.
 static VISION_TRIALS: LazyLock<Vec<VisionFixture>> = LazyLock::new(|| {
     let question = "What single color fills this image? Reply with one word: RED, GREEN or BLUE.";
+    let shape = "What shape is drawn in black in this image? Reply with one word: CIRCLE, SQUARE or TRIANGLE.";
     vec![
         VisionFixture {
             name: "solid red",
@@ -2041,6 +2094,12 @@ static VISION_TRIALS: LazyLock<Vec<VisionFixture>> = LazyLock::new(|| {
             messages: vec![terse(), usr(question)],
             image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAAyElEQVR42u3RQQ0AAAjEsJODEvwHRciAR5MpWFM9OiwWAAAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAC4AACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABAAD60hHcEsZKvPusAAAAASUVORK5CYII=",
             expect: "BLUE",
+        },
+        VisionFixture {
+            name: "black square on white",
+            messages: vec![terse(), usr(shape)],
+            image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAA20lEQVR42u3RAQkAAAgEse9fWksIIu4i3FJaLRYAACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAKAjADkSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACfAAQAgAAAEAAAAgBAAAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAACN1kZGrcf2Y2+yAAAAAElFTkSuQmCC",
+            expect: "SQUARE",
         },
     ]
 });
@@ -2144,7 +2203,9 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                             note: if a.contract_held {
                                 "returned a valid object".into()
                             } else {
-                                "the reply was not a valid object".into()
+                                a.error
+                                    .clone()
+                                    .unwrap_or_else(|| "the reply was not a valid object".into())
                             },
                             raw: bounded(&a.raw),
                         });
@@ -2197,7 +2258,14 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                             note: if a.contract_held {
                                 "conformed".into()
                             } else {
-                                "the object did not match the schema".into()
+                                // The runner's own sentence — parse error or
+                                // verify message — so the fact detail says
+                                // WHICH requirement failed, and a check firing
+                                // on the wrong value reads as itself from the
+                                // sheet alone.
+                                a.error
+                                    .clone()
+                                    .unwrap_or_else(|| "the object did not match the schema".into())
                             },
                             raw: bounded(&a.raw),
                         });
@@ -2868,8 +2936,13 @@ pub async fn estimate_probes(
     for p in chosen {
         // ALREADY MEASURED COSTS NOTHING EITHER, and it is the commonest reason a
         // probes tier is cheap: a model tested last month re-tested this month pays
-        // for the harnesses and nothing else.
-        let known = !reprobe && (deps.measured)(p.id).await.is_some();
+        // for the harnesses and nothing else. A fact the current probe revision
+        // no longer endorses is not "already measured" — the estimate has to
+        // price the re-measurement the run is about to do.
+        let known = !reprobe
+            && (deps.measured)(p.id)
+                .await
+                .is_some_and(|f| !f.superseded(p.id.as_str()));
         let skip = known || will_skip(p.id);
         // The one probe whose prompt is not a fixture: it is sized from the model's
         // own window, so estimating it from the fixture would understate the run by
@@ -3065,10 +3138,17 @@ pub async fn run_probes(
         // It is reported as `known` rather than omitted, because a capability
         // missing from the report reads as unmeasured, and the whole point is that
         // it is not.
+        //
+        // UNLESS THIS PROBE HAS MOVED ON since the fact was recorded: a
+        // measurement is a property of the instrument as much as the model,
+        // and a fact the current revision no longer endorses is not an answer
+        // to reuse — it is a question to ask again.
         let had = if opts.reprobe {
             None
         } else {
-            (deps.measured)(probe.id).await
+            (deps.measured)(probe.id)
+                .await
+                .filter(|f| !f.superseded(probe.id.as_str()))
         };
         if let Some(had) = had {
             let known = ProbeResult {
@@ -3165,6 +3245,11 @@ pub async fn run_probes(
             at: at.clone(),
             detail: Some(verdict.detail.clone()),
             score: Some(verdict.score),
+            // The instrument's revision travels with the measurement, so a
+            // future change to what this probe MEANS can retire every fact the
+            // old instrument wrote — `get_capabilities` stops reading them,
+            // and the next run re-measures.
+            probe_rev: Some(probe_revision(r.id.as_str())),
         };
         // One await at a time: the record edge is a read-modify-write of one
         // settings row and it serializes in process, but sequencing here also
@@ -3239,6 +3324,7 @@ mod tests {
             json_requested: true,
             contract_dropped: false,
             contract_held: true,
+            error: None,
         }
     }
 
@@ -3940,6 +4026,26 @@ mod tests {
     }
 
     #[test]
+    fn every_probe_run_gets_a_needle_nobody_could_have_read_here() {
+        // The constant spelling put the graded passphrase in a public repo —
+        // recall of a memorized token is not long-context. Fresh tokens keep
+        // the callsign shape (the ask reads the same) and no two runs share
+        // one.
+        let shape = regex::Regex::new(r"^[A-Z]+-[A-Z]+-\d{4}$").unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let token = fresh_needle_token();
+            assert!(shape.is_match(&token), "{token}");
+            assert_ne!(token, "GRANITE-FOX-7731");
+            seen.insert(token);
+        }
+        // 64 draws of ~10M combinations: collisions are the failure mode that
+        // would hand the token back to anyone collecting them, and none may
+        // occur in a sample this size.
+        assert_eq!(seen.len(), 64);
+    }
+
+    #[test]
     fn score_long_context_needs_both_depths_and_says_which_window_was_actually_tested() {
         let both = score_long_context(
             &[pass("needle at 50%"), pass("needle at 90%")],
@@ -4044,6 +4150,7 @@ mod tests {
                     at: "2026-07-01T00:00:00.000Z".into(),
                     detail: Some("measured before".into()),
                     score: Some(1.0),
+                    probe_rev: Some(probe_revision(id.as_str())),
                 })
             })
         });
@@ -4078,16 +4185,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn re_measures_a_fact_the_current_probe_no_longer_endorses_instead_of_reusing_it() {
+        // THE POISONED-SHEET HEAL. Every json-strict fact written before the
+        // revision stamp — which is every fact the inverted verify ever
+        // produced, `false @ 0/5` for models that were passing `json: 3/3` in
+        // the same run — reads as no fact at all, so the next run re-measures
+        // and the sheet heals itself instead of standing on a broken
+        // instrument's measurement until an admin forgets it by hand.
+        let (mut deps, written, asked, _route) = harness(good_reply(), None);
+        deps.measured = Arc::new(|id: ProbeId| {
+            Box::pin(async move {
+                (id == ProbeId::JsonStrict).then(|| CapabilityFact {
+                    value: false,
+                    source: "probe".into(),
+                    at: "2026-09-03T03:32:35.266Z".into(),
+                    detail: Some(
+                        "only 0% of 5 nested-schema objects conformed - the object did not match the schema"
+                            .into(),
+                    ),
+                    score: Some(0.0),
+                    // Unstamped, like every pre-revision row: revision 0.
+                    probe_rev: None,
+                })
+            })
+        });
+        let report = run_probes(
+            &test_state(),
+            "qwen3-14b",
+            opts(&[ProbeId::JsonStrict], deps),
+        )
+        .await
+        .expect("the run completes");
+        // The standing row was not an answer — the probe asked again.
+        assert!(
+            !asked
+                .lock()
+                .expect("the ask recorder is not contended")
+                .is_empty()
+        );
+        let wrote = written.lock().expect("the write recorder is not contended");
+        let w = wrote.first().expect("a fresh fact");
+        assert_eq!(w.cap, "json-strict");
+        assert!(w.fact.value);
+        assert_eq!(w.fact.probe_rev, Some(probe_revision("json-strict")));
+        assert_eq!(report.wrote, 1);
+    }
+
+    #[tokio::test]
     async fn re_measures_when_asked_to_so_a_re_pointed_model_id_can_be_re_established() {
         let (mut deps, written, asked, _route) = harness(good_reply(), None);
-        deps.measured = Arc::new(|_id: ProbeId| {
-            Box::pin(async {
+        deps.measured = Arc::new(|id: ProbeId| {
+            Box::pin(async move {
                 Some(CapabilityFact {
                     value: false,
                     source: "probe".into(),
                     at: "2026-07-01T00:00:00.000Z".into(),
                     detail: Some("old".into()),
                     score: Some(0.0),
+                    probe_rev: Some(probe_revision(id.as_str())),
                 })
             })
         });
@@ -5072,6 +5227,52 @@ mod tests {
         .await;
         assert!(a.contract_dropped);
         assert!(a.contract_held);
+    }
+
+    /// THE FLEET-REPLAY SHAPE: through the port, both deepseek models on a
+    /// dogfood instance scored `json-strict: 0/5` while passing `json: 3/3` in
+    /// the same probe run — because the array-min verify read the harness
+    /// input (`Value::Null` on the probe path) instead of the reply, nothing
+    /// any model returned could pass, and the judge floor refused their whole
+    /// column on the strength of a measurement that never happened.
+    #[tokio::test]
+    async fn json_stricts_verify_reads_the_reply_not_the_input_and_names_its_reason() {
+        let run = |reply: Value| {
+            let text = reply.to_string();
+            let base: TransportFn = Arc::new(move |_req: TransportRequest| {
+                let text = text.clone();
+                Box::pin(async move { Ok(transport_reply(&text, None, false)) })
+            });
+            let ask = runner_ask(&test_state(), "vendor/frontier-1", base);
+            ask(AskSpec {
+                id: "json-strict:nested object: a small coastal town".into(),
+                messages: prompt(),
+                schema: Some(JSON_STRICT.clone()),
+            })
+        };
+        let conforming = serde_json::json!({
+            "id": "coastal-001",
+            "tags": ["coast", "town"],
+            "items": [
+                {"label": "harbour", "weight": 2.5},
+                {"label": "fleet", "weight": 1.0}
+            ],
+            "summary": "x".repeat(220)
+        });
+        let a = run(conforming.clone()).await;
+        assert!(a.contract_held, "raw: {}", a.raw);
+        assert!(a.error.is_none());
+
+        // Schema-valid but down one tag: the verify is what fires — and its
+        // sentence, not a generic "did not match", is what the trial note and
+        // the fact detail carry. Deleting the check (rather than pointing it
+        // at the reply) flips this half, which is the point of having it.
+        let mut one_tag = conforming;
+        one_tag["tags"] = serde_json::json!(["coast"]);
+        let a = run(one_tag).await;
+        assert!(!a.contract_held, "raw: {}", a.raw);
+        let reason = a.error.as_deref().unwrap_or_default();
+        assert!(reason.contains("at least 2"), "got: {reason}");
     }
 
     #[tokio::test]

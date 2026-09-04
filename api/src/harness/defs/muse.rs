@@ -217,10 +217,17 @@ pub fn system_for(kind: MuseKind) -> String {
             "- ## section headings only (no #, no ###). 3–6 sections.\n",
             "- Under each heading: NOTHING, a single italic placeholder hint, or 2–4 empty bullet stubs (\"- \"). Never real content.\n",
             "- Whole body under 25 lines; a big process becomes section NAMES, not content.\n",
-            "THINGS THAT ARE NOT ON THAT LIST, and are therefore always a refusal: deleting or renaming the template for you, binding templates to boards, creating a SECOND template (the form holds exactly one), and writing real content into the skeleton. ",
+            // THE REFUSAL LIST IS ACTIONS THE FORM CANNOT TAKE, and nothing
+            // else — an earlier spelling also refused "renaming the template"
+            // (the name is one of the three fields, so the refusal contradicted
+            // the form's own revision contract) and "writing real content into
+            // the skeleton" (a content ask is a DOWNGRADE, the sentence below,
+            // not a refusal). Both contradictions are pinned by test.
+            "THINGS THAT ARE NOT ON THAT LIST, and are therefore always a refusal: deleting the template, binding templates to boards, and creating a SECOND template (the form holds exactly one). ",
             r#"Refuse by replying exactly {"error": "<one short sentence why>"} and nothing else — for example, "#,
             r#"{"error": "I fill one template's form; I cannot create two templates or bind boards to them."} "#,
-            "A refusal is the RIGHT answer here and costs nothing; a second template or filled-in content is silently wrong and a person has to undo it.\n",
+            "A refusal is the RIGHT answer here and costs nothing; a second template is silently wrong and a person has to undo it.\n",
+            "A request for real content is neither a refusal nor permission to fill the skeleton in: when the instruction asks for a complete document or filled-in sections, return the skeleton such a document would start from, with the name and guidance filled in normally.\n",
             "When a current record is given as JSON, return the COMPLETE revised record: change what the request asks, keep every field it does not name, and prune the body's verbosity first when revising. On success, return ALL three fields, never a subset."
         )
         .to_string(),
@@ -4235,6 +4242,35 @@ mod tests {
         let (out, issues) = parse_template(v);
         assert!(issues.is_empty());
         assert_eq!(out["name"], json!("Bug fix"));
+    }
+
+    #[test]
+    fn the_template_form_prompt_refuses_actions_and_downgrades_content_asks() {
+        // THE TAXONOMY THE FIXTURES GRADE. Refusals are actions the form
+        // cannot take; a content ask is a DOWNGRADE — the skeleton, not an
+        // error — and a rename is the `name` field, not a refusal. The prompt
+        // once refused all three, and a model that read it carefully then
+        // failed the fixtures that grade the opposite behavior: the taxonomy
+        // stated one contract while the checks graded another.
+        let p = system_for(MuseKind::TemplateForm);
+        // The refusal list is actions only.
+        assert!(p.contains(
+            "always a refusal: deleting the template, binding templates to boards, and creating a SECOND template (the form holds exactly one)."
+        ));
+        // The downgrade is stated, and stated as NOT a refusal.
+        assert!(p.contains(
+            "A request for real content is neither a refusal nor permission to fill the skeleton in"
+        ));
+        assert!(p.contains("return the skeleton such a document would start from"));
+        // And neither of the two contradictions is anywhere in the prompt.
+        assert!(
+            !p.contains("renaming"),
+            "a rename is the name field — the revision fixtures grade it applied"
+        );
+        assert!(
+            !p.contains("writing real content into the skeleton"),
+            "a content ask is a downgrade, and the downgrade is stated as its own rule"
+        );
     }
 
     // ── the form harnesses, driven through the runner ────────────────────────

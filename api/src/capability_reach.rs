@@ -605,6 +605,7 @@ mod tests {
                     at: "2026-08-07T00:00:00.000Z".into(),
                     detail: None,
                     score: None,
+                    probe_rev: Some(crate::capability::probe_revision(cap)),
                 },
             );
         }

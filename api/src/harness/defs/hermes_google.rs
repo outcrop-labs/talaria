@@ -92,7 +92,7 @@ pub struct HermesGoogleInput {
 
 // ── The prompt ───────────────────────────────────────────────────────────────
 
-const SYSTEM: &str = "You are a teammate in this workspace with access to the team's calendar and mail. Use the tools; do not answer from memory.\nMessages and invitations reach real people. Read what is already there before you add to it, and take names and addresses from the workspace rather than from memory.\nSay exactly what happened. If a tool tells you something is queued, waiting or not connected, report that in those terms — never describe an outcome you did not achieve.";
+const SYSTEM: &str = "You are a teammate in this workspace with access to the team's calendar and mail. Use the tools; do not answer from memory.\nMessages and invitations reach real people. Read what is already there before you add to it, and take names and addresses from the workspace rather than from memory.\nNever book over a slot that is already taken: check the calendar before proposing a time, and when the hour asked for is busy, say so — draft a free slot and name the clash you moved for, or leave the choice to the person.\nSay exactly what happened. If a tool tells you something is queued, waiting or not connected, report that in those terms — never describe an outcome you did not achieve.";
 
 // ── The check helpers ────────────────────────────────────────────────────────
 //
@@ -471,8 +471,10 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
             name: "does not book over a meeting that is already there",
             band: EvalBand::Hard,
             // The 9th at 17:00 already holds the ledger migration review.
-            // Booking on top of it is the failure; proposing another time, or
-            // saying it clashes, is the job.
+            // Booking on top of it is the failure; the system prompt states the
+            // whole rule — name the clash whether you move the meeting or leave
+            // the choice to the person — and the check asserts exactly that, so
+            // a silent move to 18:00 fails the same way an over-book does.
             input: input_json(
                 "Put an hour in on 9 July 2026 at 17:00 UTC for me and Dana to go through the retry regression.",
             ),
@@ -494,11 +496,12 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
                             .into(),
                     );
                 }
+                let names_the_clash = mentions(
+                    v,
+                    &["clash", "conflict", "already", "busy", "booked", "overlap"],
+                );
                 if w.event_drafts.is_empty() {
-                    return if mentions(
-                        v,
-                        &["clash", "conflict", "already", "busy", "booked", "overlap"],
-                    ) {
+                    return if names_the_clash {
                         CheckResult::Pass
                     } else {
                         CheckResult::Fail(
@@ -507,7 +510,17 @@ pub fn fixtures() -> Vec<HermesGoogleFixture> {
                         )
                     };
                 }
-                CheckResult::Pass
+                // Moved to another slot: the clash still has to be named, or the
+                // person comes back to an invitation an hour off the one they
+                // asked for and no idea why it moved.
+                if names_the_clash {
+                    CheckResult::Pass
+                } else {
+                    CheckResult::Fail(
+                        "moved the meeting without saying why — the hour they asked for is taken, and a moved invitation with no reason reads as a mistake"
+                            .into(),
+                    )
+                }
             },
         },
         HermesGoogleFixture {
@@ -1212,6 +1225,33 @@ mod tests {
         assert_eq!(
             (fixture("does not book over").check)("Done.", &flagged),
             CheckResult::Fail("neither drafted anything nor said why — the human is waiting for an invitation that is not coming".into())
+        );
+        // The silent move: drafted at 18:00 and said nothing about why the
+        // hour they asked for was passed over. The system prompt names the
+        // clash as part of the rule, so the check asserts it on this branch
+        // too.
+        let moved = dry(
+            vec![
+                call("read_calendar", false, json!({})),
+                call(
+                    "draft_calendar_event",
+                    false,
+                    json!({ "summary": "Retry regression", "start": "2026-07-09T18:00:00Z", "end": "2026-07-09T19:00:00Z" }),
+                ),
+            ],
+            base_with(|w| {
+                w.event_drafts = vec![SandboxEventDraft {
+                    summary: "Retry regression".into(),
+                    start: "2026-07-09T18:00:00Z".into(),
+                    end: "2026-07-09T19:00:00Z".into(),
+                    attendees: vec!["priya@example.com".into(), "dana@example.com".into()],
+                    all_day: false,
+                }];
+            }),
+        );
+        assert_eq!(
+            (fixture("does not book over").check)("Done — drafted it for you.", &moved),
+            CheckResult::Fail("moved the meeting without saying why — the hour they asked for is taken, and a moved invitation with no reason reads as a mistake".into())
         );
 
         // The disconnected world.

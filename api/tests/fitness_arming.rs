@@ -308,6 +308,7 @@ async fn a_reported_tool_call_becomes_a_widened_inbox_surface() {
             at: at.into(),
             detail: None,
             score: Some(1.0),
+            probe_rev: None,
         },
     )
     .await;
@@ -354,6 +355,7 @@ async fn a_declared_fact_never_widens_only_the_probe_one_does() {
                 at: at.into(),
                 detail: None,
                 score: None,
+                probe_rev: None,
             },
         )
         .await;
@@ -389,6 +391,7 @@ async fn a_declared_fact_never_widens_only_the_probe_one_does() {
                 at: at.into(),
                 detail: None,
                 score: Some(1.0),
+                probe_rev: None,
             },
         )
         .await;

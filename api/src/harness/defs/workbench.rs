@@ -263,7 +263,15 @@ test('folds accents rather than dropping them', () => {
 
 fn slug_normalize() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r#"normalize\(\s*['"]NF[KD]D['"]\s*\)"#).unwrap())
+    // `NF[KD]?D`: BOTH spellings — 'NFD' (canonical decomposition, the right
+    // form for accent folding) and 'NFKD' (compatibility). The first version
+    // read `NF[KD]D`, which matches NFKD and the non-existent NFDD and NOT
+    // 'NFD': every correct `.normalize('NFD')` fix on every model was graded
+    // as the seeded failure on every run_tests, forever — the model's write
+    // verifiably landed and the oracle kept reporting the bug it had fixed,
+    // exactly the "stale cached failure" the fleet transcripts show models
+    // diagnosing. The repro is the fleet-replay test below.
+    R.get_or_init(|| Regex::new(r#"normalize\(\s*['"]NF[KD]?D['"]\s*\)"#).unwrap())
 }
 
 fn slug_trim_kept() -> &'static Regex {
@@ -901,6 +909,7 @@ pub fn workbench_heavy_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::harness::define::{CheckCall, is_gap};
     use crate::harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, recorded_run, replies,
@@ -950,6 +959,100 @@ mod tests {
                 .collect();
             (task.oracle)(&files)
         }
+    }
+
+    // ── The live workspace path ──────────────────────────────────────────────
+
+    #[test]
+    fn a_correct_accent_fold_written_through_the_tools_goes_green_at_run_tests() {
+        // A FLEET TRANSCRIPT, REPLAYED VERBATIM. The model read src/slug.js,
+        // wrote the accent fold below — `.normalize('NFD')` plus a `\p{M}`
+        // strip, a correct fix in a different spelling than the oracle's
+        // seeded example — and `run_tests` answered the SEEDED failure back on
+        // every attempt: the same sentence, three runs, while the write had
+        // verifiably landed. The model concluded the runner was caching,
+        // rewrote the test file to agree with its own fix, and the case went
+        // down as a gap. This replays the exact sequence through the def's own
+        // workspace — the task-string oracle lookup, the boundary conversion,
+        // the sandbox dispatch — so what is pinned is the whole path the grade
+        // travels, not just the oracle fn.
+        let d = workbench_standard_harness();
+        let input = fixtures()
+            .into_iter()
+            .find(|f| f.name.starts_with("fixes the reported bug"))
+            .expect("the slug task's fixture")
+            .input;
+        let spec = d
+            .dry_run
+            .as_ref()
+            .and_then(|dr| dr.workspace.as_ref())
+            .expect("the workbench def declares a workspace")(&input);
+        let mut sandbox = crate::fitness::toolbox::hermes_tools::WorkbenchSandbox::new(spec);
+
+        // The pristine tree fails — the oracle really is wired to this task
+        // and this tree, before anything is written.
+        let seeded = sandbox.dispatch("run_tests", "{}");
+        assert!(
+            seeded.text.contains("accents are being dropped"),
+            "the seeded tree fails: {}",
+            seeded.text
+        );
+
+        // READ, THEN WRITE the fleet model's exact fix.
+        let read = sandbox.dispatch("read_file", r#"{"path":"src/slug.js"}"#);
+        assert!(!read.is_error);
+        let fixed = "export function slug(title) {\n  return title\n    .normalize('NFD')\n    .replace(/\\p{M}/gu, '')\n    .toLowerCase()\n    .replace(/[^a-z0-9]+/g, '-')\n    .replace(/^-|-$/g, '')\n}\n";
+        let write = sandbox.dispatch(
+            "write_file",
+            &serde_json::to_string(&json!({ "path": "src/slug.js", "content": fixed }))
+                .expect("args serialize"),
+        );
+        assert!(!write.is_error, "the write lands: {}", write.text);
+
+        // THE ASSERTION THE FLEET RUN VIOLATED: run_tests grades the files as
+        // they now stand, and a correct fold reads green.
+        let run = sandbox.dispatch("run_tests", "{}");
+        assert!(
+            run.text.contains(r#""passed":true"#),
+            "a correct accent fold is green: {}",
+            run.text
+        );
+        assert!(sandbox.green());
+
+        // AND REWRITING THE TEST CANNOT GREEN IT. The same transcript's model
+        // rewrote src/slug.test.js to assert its own fix's output; the oracle
+        // grades the source, never the suite's own definition of passing, so
+        // the edit moves nothing.
+        let rigged = sandbox.dispatch(
+            "write_file",
+            &serde_json::to_string(&json!({
+                "path": "src/slug.test.js",
+                "content": "test('passes', () => {})\n"
+            }))
+            .expect("args serialize"),
+        );
+        assert!(!rigged.is_error);
+        let rigged_run = sandbox.dispatch("run_tests", "{}");
+        assert!(
+            rigged_run.text.contains(r#""passed":true"#),
+            "a green source stays green regardless of the test file: {}",
+            rigged_run.text
+        );
+        let broken_again = sandbox.dispatch(
+            "write_file",
+            &serde_json::to_string(&json!({
+                "path": "src/slug.js",
+                "content": "export function slug(title) { return title }\n"
+            }))
+            .expect("args serialize"),
+        );
+        assert!(!broken_again.is_error);
+        let red = sandbox.dispatch("run_tests", "{}");
+        assert!(
+            red.text.contains(r#""passed":false"#),
+            "a broken source stays red no matter what the test file says: {}",
+            red.text
+        );
     }
 
     // ── The three bindings ───────────────────────────────────────────────────

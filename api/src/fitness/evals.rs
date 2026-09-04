@@ -1032,19 +1032,36 @@ async fn pool(
 /// The pool's worker: one fixture through the whole case-and-retry arc.
 type OnCaseWorker = Arc<dyn Fn(&'static EvalCase) -> BoxFut<()> + Send + Sync>;
 
-/// THE CLOCK ONE CASE RACES — sized per harness, not flat.
+/// THE CLOCKS ONE CASE RACES — an idle clock first, a total backstop behind it.
 ///
-/// A FLAT 60s WAS A SINGLE-CALL BUDGET APPLIED TO MULTI-CALL CASES, and it
-/// read as the model's failure. A case is not one model call: `research-search`
-/// runs up to three tool rounds, a dry run up to its own `max_turns`, and a
-/// JSON harness can add a repair turn on top. The harnesses that timed out
-/// most were exactly the ones that call the most, and every one of those
-/// timeouts was then charged against the contract rate.
+/// THE FIRST VERSION WAS A SINGLE TOTAL BUDGET, the per-turn allowance times
+/// the turns the harness may take, run from case start. A model that explored,
+/// retried after a tool error, or simply reasoned longer per call was killed
+/// mid-progress however alive it was: the fleet transcripts showed clock kills
+/// with upstream calls settling the whole time and wall_ms pegged at exactly
+/// the budget — a working model charged to our clock, and then relabelled a
+/// skip, so the matrix never even said "timeout".
 ///
-/// So the budget is per-turn, multiplied by the turns the harness may
-/// actually take. Reasoning models are slow per call and this scales with
-/// them; the bound still exists so one hung transport cannot strand a sweep.
+/// So the primary clock is IDLE: nothing settling for the idle allowance means
+/// the case is dead — a hung transport, a provider that dropped the call —
+/// whenever it started. Every settle re-arms it, so a slow model that keeps
+/// answering may take as long as its work honestly takes. The TOTAL backstop
+/// behind it is the sum of the per-call idle allowances over the turns the
+/// harness may take: a bounded loop whose calls all settle cannot outlive it,
+/// so it fires only on a genuine runaway, and a case it kills reads as our
+/// budget rather than the model's failure.
 pub const PER_TURN_TIMEOUT_MS: u64 = 60_000;
+
+/// How long a case may go with NOTHING SETTLING before it is dead. Twice the
+/// per-turn allowance, because reasoning models legitimately take the better
+/// part of a minute per call — measured averages ran 60.7s against a 60s
+/// allowance — and the idle clock must not fire on the slowst call a healthy
+/// model makes, only on a call that is never coming back.
+///
+/// The idle allowance a case actually runs with is `caseTimeoutMs × 2` (this
+/// constant at the production default), so an override scales both clocks the
+/// way a caller would expect.
+pub const IDLE_TIMEOUT_MS: u64 = PER_TURN_TIMEOUT_MS * 2;
 
 /// Turns a harness may take in one case, for the clock above. Read off the
 /// same constants the code paths use, so a raised turn budget cannot silently
@@ -1505,27 +1522,50 @@ fn settle_open(calls: &[UpstreamAttempt], started_at: i64, now: i64) -> Vec<Upst
         .collect()
 }
 
-/// THE SENTENCE A TIMEOUT SHOULD HAVE BEEN. Names what the budget was actually
-/// spent on, which is the whole question an admin has when a model they know
-/// to be fast times out.
-fn timeout_detail(case_ms: u64, calls: &[UpstreamAttempt]) -> String {
+/// Which clock gave out. Named in the sentence, because the two budgets mean
+/// opposite things: an idle kill is the deployment going quiet on us, while a
+/// total kill is a case that was still working when our turn budget ran out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FiredClock {
+    /// No upstream call settled inside the idle allowance: a request hung, or
+    /// the loop stalled between calls.
+    Idle,
+    /// The case was still working — calls settling — when the total backstop
+    /// arrived.
+    Total,
+}
+
+/// THE SENTENCE A TIMEOUT SHOULD HAVE BEEN. Names which clock fired and what
+/// the budget was actually spent on, which is the whole question an admin has
+/// when a model they know to be fast times out.
+fn timeout_detail(
+    idle_ms: u64,
+    total_ms: u64,
+    fired: FiredClock,
+    calls: &[UpstreamAttempt],
+) -> String {
     if calls.is_empty() {
         // The case never got a request out. That is not the model: it is
         // route resolution, the capability floor, key resolution or the
         // provider catalog — all of which happen before a token is spent and
         // all of which can block.
+        let budget = match fired {
+            FiredClock::Idle => format!("went {idle_ms}ms without an upstream call settling"),
+            FiredClock::Total => format!("did not finish inside {total_ms}ms"),
+        };
         return format!(
-            "the case did not finish inside {case_ms}ms and never made an upstream call at all; \
+            "the case {budget} and never made an upstream call at all; \
              the time went somewhere before the request (route resolution, the endpoint key, or \
              the provider catalog), not to the model"
         );
     }
+    let lead = match fired {
+        FiredClock::Idle => format!("no upstream call settled for {idle_ms}ms"),
+        FiredClock::Total => format!("the case was still working at the {total_ms}ms total budget"),
+    };
     let open: Vec<&UpstreamAttempt> = calls.iter().filter(|c| !c.settled).collect();
     let done: Vec<&UpstreamAttempt> = calls.iter().filter(|c| c.settled).collect();
-    let mut parts = vec![format!(
-        "the case did not finish inside {case_ms}ms after {} upstream call(s)",
-        calls.len()
-    )];
+    let mut parts = vec![format!("{lead}, after {} upstream call(s)", calls.len())];
     if !done.is_empty() {
         let listed = done
             .iter()
@@ -1566,12 +1606,14 @@ fn recording_transport(
     base: TransportFn,
     into: Arc<Mutex<CaseRun>>,
     live: Option<Arc<Mutex<InFlightCase>>>,
+    idle: Option<(Arc<std::sync::atomic::AtomicI64>, u64)>,
     now: NowFn,
 ) -> TransportFn {
     Arc::new(move |req: TransportRequest| {
         let base = base.clone();
         let into = into.clone();
         let live = live.clone();
+        let idle = idle.clone();
         let now = now.clone();
         Box::pin(async move {
             {
@@ -1629,6 +1671,15 @@ fn recording_transport(
                 if let Err(err) = &reply {
                     attempt.error = Some(err.chars().take(300).collect());
                 }
+            }
+            // EVERY SETTLE RE-ARMS THE IDLE CLOCK. The case is alive, however
+            // slow the call was, and a case whose calls keep coming back can
+            // never idle out — that is the whole difference from the total
+            // budget this replaced. Stored as an absolute deadline the select
+            // loop polls; an atomic rather than the capture's mutex, because
+            // the clock must read a settle the instant it lands.
+            if let Some((deadline, idle_ms)) = &idle {
+                deadline.store(now() + *idle_ms as i64, std::sync::atomic::Ordering::SeqCst);
             }
             if let Some(live) = &live {
                 let mut live = live.lock().expect("the live view is not contended");
@@ -1901,7 +1952,10 @@ fn sweep_harness_deps(
 enum CaseOutcome {
     Done(Result<crate::harness::run::HarnessResult, String>),
     Stopped,
-    TimedOut,
+    /// `idle` names which clock fired — the sentence and the score read it.
+    TimedOut {
+        idle: bool,
+    },
 }
 
 /// One fixture, replayed once against the candidate. None means the case was
@@ -1921,6 +1975,11 @@ async fn run_one_case(
 ) -> Option<EvalCaseScore> {
     let started_at = (deps.now)();
     let capture = Arc::new(Mutex::new(CaseRun::default()));
+    // THE IDLE CLOCK'S DEADLINE, armed below and re-armed by the recording
+    // transport on every settle. Shared with the transport as a bare atomic so
+    // the poll in the select below reads it without contending the capture.
+    let idle_deadline: Arc<std::sync::atomic::AtomicI64> =
+        Arc::new(std::sync::atomic::AtomicI64::new(0));
     // PUBLISHED FOR THE LIVE PANEL, and cleared in every exit path below — a
     // stale "running now" left behind by a stopped case is worse than none,
     // because it makes a finished sweep look like a wedged one.
@@ -2058,7 +2117,13 @@ async fn run_one_case(
     let record_findings: RecordFindingsFn = noop_record_findings();
     let harness_deps = Arc::new(sweep_harness_deps(
         base_harness_deps,
-        recording_transport(stack, capture.clone(), Some(live.clone()), deps.now.clone()),
+        recording_transport(
+            stack,
+            capture.clone(),
+            Some(live.clone()),
+            Some((idle_deadline.clone(), timeout_ms * 2)),
+            deps.now.clone(),
+        ),
         record_run,
         record_findings,
     ));
@@ -2077,17 +2142,30 @@ async fn run_one_case(
             .map_err(|e| e.0)
     };
 
-    // SIZED TO WHAT THIS CASE MAY DO, not to a flat single-call figure — see
-    // `turns_per_case`. The caller's budget is the PER-TURN allowance.
-    let case_ms = timeout_ms * turns_per_case(def, dry_run, supplier.is_some()) as u64;
-    let stop_poll = {
+    // THE CLOCKS — see `IDLE_TIMEOUT_MS` for why the primary one is idle at
+    // all. The idle deadline starts armed at case start and is re-armed by the
+    // recording transport on every settle; the poll below watches it. The
+    // total backstop is the sum of the per-call idle allowances over the turns
+    // this case may take, and exists so one runaway loop cannot strand a sweep.
+    let idle_ms = timeout_ms * 2;
+    let total_ms = idle_ms * turns_per_case(def, dry_run, supplier.is_some()) as u64;
+    idle_deadline.store(
+        started_at + idle_ms as i64,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let stop_or_idle = {
         let stopped = stopped.clone();
         let cancelled = cancelled.clone();
+        let deadline = idle_deadline.clone();
+        let now = deps.now.clone();
         async move {
             loop {
                 if stopped() {
                     cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-                    break;
+                    return false;
+                }
+                if (now)() >= deadline.load(std::sync::atomic::Ordering::SeqCst) {
+                    return true;
                 }
                 tokio::time::sleep(Duration::from_millis(STOP_POLL_MS)).await;
             }
@@ -2095,11 +2173,26 @@ async fn run_one_case(
     };
     let outcome = tokio::select! {
         reply = work => CaseOutcome::Done(reply),
-        _ = stop_poll => CaseOutcome::Stopped,
-        _ = tokio::time::sleep(Duration::from_millis(case_ms)) => {
-            capture.lock().expect("one case, one capture").timed_out = true;
-            CaseOutcome::TimedOut
+        idle_fired = stop_or_idle => {
+            if idle_fired {
+                capture.lock().expect("one case, one capture").timed_out = true;
+                CaseOutcome::TimedOut { idle: true }
+            } else {
+                CaseOutcome::Stopped
+            }
         }
+        _ = tokio::time::sleep(Duration::from_millis(total_ms)) => {
+            capture.lock().expect("one case, one capture").timed_out = true;
+            CaseOutcome::TimedOut { idle: false }
+        }
+    };
+    let fired = match &outcome {
+        CaseOutcome::TimedOut { idle } => Some(if *idle {
+            FiredClock::Idle
+        } else {
+            FiredClock::Total
+        }),
+        _ => None,
     };
     {
         let mut flights = in_flight()
@@ -2313,7 +2406,9 @@ async fn run_one_case(
         optimistic: contract_held && task == TaskVerdict::Fail,
         error: if timed_out {
             Some(timeout_detail(
-                case_ms,
+                idle_ms,
+                total_ms,
+                fired.unwrap_or(FiredClock::Idle),
                 &settle_open(&upstream, started_at, now),
             ))
         } else {
@@ -2359,8 +2454,9 @@ fn noop_record_findings() -> RecordFindingsFn {
 /// admin stopped — or a deploy interrupted — restarts where it left off rather
 /// than re-buying seventy calls. Resume is only ever within ONE candidate.
 ///
-/// BOUNDED. Every case races a wall clock and a case that loses is recorded
-/// `timed_out` and left behind. No single harness can strand the sweep.
+/// BOUNDED. Every case races an idle clock with a total backstop behind it, and
+/// a case that loses is recorded `timed_out` and left behind. No single
+/// harness can strand a sweep.
 ///
 /// LANED, NOT SEQUENTIAL. A parallel sweep's `latencyP50` includes queueing at
 /// the provider, which is why the width is RECORDED and the page labels the
@@ -3029,11 +3125,15 @@ fn unreachable_case(mut score: EvalCaseScore) -> EvalCaseScore {
 /// "your provider was busy" and reads as "this model cannot hold a contract".
 fn rate_limited_case(mut score: EvalCaseScore) -> EvalCaseScore {
     score.skipped = Some(if score.timed_out {
+        // The embedded detail names WHICH CLOCK fired — an idle kill is a
+        // request that never came back (the provider dropped it), while a
+        // total kill is a case still working when our budget ran out, which is
+        // ours to fix and not a health problem at all.
         format!(
-            "the request was issued and never answered, on {} attempts, each abandoned after the \
-             case budget. This case measured nothing about the model. The provider dropped the \
-             call; re-run it when the deployment is healthier.",
-            TIMEOUT_RETRIES + 1
+            "the request was issued and never answered, on {} attempts ({}). This case measured \
+             nothing about the model. Re-run it when the deployment is healthier.",
+            TIMEOUT_RETRIES + 1,
+            utf16_truncate(score.error.as_deref().unwrap_or(""), 240)
         )
     } else {
         format!(
@@ -3713,6 +3813,7 @@ mod tests {
                             at: "2026-08-11T00:00:00.000Z".into(),
                             detail: None,
                             score: None,
+                            probe_rev: Some(0),
                         },
                     )])
                 } else {
@@ -4237,12 +4338,12 @@ mod tests {
             World::replies(vec![Reply::Hang, obj("a")]),
         );
 
-        // `caseTimeoutMs` is the PER-TURN allowance, not the whole case: a
-        // case is not one model call (a dry run takes up to `MAX_TURNS`, a
-        // JSON harness can add a repair), and a flat budget applied to a
-        // multi-call case timed out the harnesses that call the most and
-        // charged it to the model. These fixtures are JSON with one repair
-        // turn, so 30ms per turn is 60ms a case.
+        // `caseTimeoutMs` is the PER-TURN allowance, and the idle clock runs
+        // at twice it: a case is not one model call (a dry run takes up to
+        // `MAX_TURNS`, a JSON harness can add a repair), and the clocks have
+        // to leave room for the calls the case may legitimately make. These
+        // fixtures are JSON with one repair turn, so 30ms per turn gives each
+        // attempt a 60ms idle budget and the case a 120ms total backstop.
         let sweep = sweep_with(&b, "candidate", |o| {
             o.case_timeout_ms = Some(30);
             o.pressure_backoff_ms = Some(vec![1]);
@@ -4705,6 +4806,47 @@ mod tests {
             "a lost request is recorded unmeasured: {:?}",
             c.skipped
         );
+    }
+
+    #[tokio::test]
+    async fn a_case_that_keeps_settling_is_not_killed_by_a_total_budget() {
+        let _sole = sole();
+        // THE FLEET'S KILLED-MID-PROGRESS SHAPE: wall_ms pegged at exactly the
+        // case budget on cases whose transcript shows call after call settling
+        // — a model making steady progress, executed by one cumulative sleep
+        // from case start. Slow is not silent: as long as replies keep coming
+        // back, the case is alive, and only a reply that never comes back (or
+        // the total backstop, at twice the idle budget per expected turn)
+        // ends it.
+        let b = bench(
+            vec![reg(&FINE)],
+            World {
+                // A JSON harness with one repair turn: the first reply breaks
+                // the contract, the second holds it.
+                replies: vec![Reply::Text("nope".into()), obj("a")],
+                // Every reply settles 1250ms late — 2500ms of work against a
+                // 1000ms per-turn budget. The old clock slept 1000ms × 2
+                // turns = 2000ms from case start and would have killed this
+                // mid-repair.
+                sleep_ms: 1250,
+                ..Default::default()
+            },
+        );
+
+        let sweep = sweep_with(&b, "candidate", |o| {
+            o.case_timeout_ms = Some(1000);
+        })
+        .await;
+        let c = &sweep.cases[0];
+
+        // BOTH ROUNDS RAN: the case was never cut down. It scored, with its
+        // repair on the record, and nothing was relabeled or skipped.
+        assert_eq!(b.n_calls(), 2);
+        assert!(!c.timed_out, "a settling case outlives the budget");
+        assert!(c.contract_held);
+        assert_eq!(c.repairs, 1);
+        assert!(c.skipped.is_none());
+        assert_eq!(sweep.state, EvalSweepState::Done);
     }
 
     #[tokio::test]
@@ -6126,22 +6268,44 @@ mod tests {
 
     #[test]
     fn a_timeout_with_no_calls_says_the_time_went_before_the_request() {
-        let detail = timeout_detail(60_000, &[]);
-        assert!(detail.contains("never made an upstream call at all"));
+        let idle = timeout_detail(120_000, 720_000, FiredClock::Idle, &[]);
+        assert!(idle.contains("never made an upstream call at all"));
+        assert!(idle.contains("120000ms"), "names the idle budget: {idle}");
+        let total = timeout_detail(120_000, 720_000, FiredClock::Total, &[]);
+        assert!(total.contains("never made an upstream call at all"));
+        assert!(
+            total.contains("720000ms"),
+            "names the total budget: {total}"
+        );
     }
 
     #[test]
-    fn a_timeout_with_open_calls_names_the_wait() {
-        let detail = timeout_detail(
-            60_000,
+    fn a_timeout_with_open_calls_names_the_wait_and_which_clock_fired() {
+        let idle = timeout_detail(
+            120_000,
+            720_000,
+            FiredClock::Idle,
+            &[UpstreamAttempt {
+                ms: 119_800,
+                settled: false,
+                error: None,
+            }],
+        );
+        assert!(idle.contains("1 upstream call"));
+        assert!(idle.contains("still had no reply"));
+        assert!(idle.contains("no upstream call settled for 120000ms"));
+        let total = timeout_detail(
+            120_000,
+            720_000,
+            FiredClock::Total,
             &[UpstreamAttempt {
                 ms: 59_800,
                 settled: false,
                 error: None,
             }],
         );
-        assert!(detail.contains("1 upstream call"));
-        assert!(detail.contains("still had no reply"));
+        assert!(total.contains("still working at the 720000ms total budget"));
+        assert!(total.contains("still had no reply"));
     }
 
     #[test]

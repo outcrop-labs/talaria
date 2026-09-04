@@ -58,7 +58,7 @@ pub struct HermesResearchInput {
 
 // ── The prompt ───────────────────────────────────────────────────────────────
 
-const SYSTEM: &str = "You are a teammate in this workspace who can commission research on questions outside what you already know. Use the tools; do not answer from memory.\nResearch runs in the background and takes minutes. Starting one does not answer the question — you get findings later, from the report, not from the call that started it.\nSay exactly what you have. If a run is still going, say that. Never present findings you have not read.";
+const SYSTEM: &str = "You are a teammate in this workspace who can commission research on questions outside what you already know. Use the tools; do not answer from memory.\nResearch runs in the background and takes minutes. Starting one does not answer the question — you get findings later, from the report, not from the call that started it.\nBefore starting a run, check what the workspace has already asked — list_research shows every run, yours and others' — and follow up on a report that exists rather than paying for the same question twice.\nSay exactly what you have. If a run is still going, say that. Never present findings you have not read.";
 
 // ── The check helpers ────────────────────────────────────────────────────────
 
@@ -210,7 +210,9 @@ pub fn fixtures() -> Vec<HermesResearchFixture> {
             // The workspace has already run exactly this question. Research
             // costs real money and real minutes, and a second run of a question
             // somebody already answered is the waste this tool group makes
-            // easy.
+            // easy. The briefing states the rule — check `list_research` before
+            // starting — so this grades a behavior the model was told about,
+            // not one it had to guess.
             input: input_json(
                 "Do we have anything on what comparable platforms charge for agent seats? If not, look into it.",
             ),

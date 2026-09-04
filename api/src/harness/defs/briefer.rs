@@ -471,8 +471,12 @@ fn check_lede_names_blocked_work(value: &str, _ctx: &CheckCtx) -> Option<String>
     }
     // "You have some tickets and a message" passes every shape rule and has
     // not read its input. The blocked ticket is the one item here with an
-    // agent stopped behind it.
-    if value.to_lowercase().contains("ledger") {
+    // agent stopped behind it — named by EITHER half of its title: "the
+    // migration is blocked" has named the specific thing and not its
+    // category, which is the rule; demanding the exact word "ledger" would
+    // grade the model's spelling of a name it read one line above.
+    let v = value.to_lowercase();
+    if v.contains("ledger") || v.contains("migration") {
         None
     } else {
         Some("never named \"Ledger migration\", the one item with an agent stopped on it".into())
@@ -484,7 +488,14 @@ fn check_lede_leads_with_the_stop(value: &str, _ctx: &CheckCtx) -> Option<String
         return Some(p);
     }
     let v = value.to_lowercase();
-    let ledger = match v.find("ledger") {
+    // Either half of the title names the blocked ticket (see
+    // `check_lede_names_blocked_work`); first mention is the one whose
+    // position the lede leads with.
+    let blocked = ["ledger", "migration"]
+        .iter()
+        .filter_map(|w| v.find(w))
+        .min();
+    let blocked = match blocked {
         Some(i) => i,
         // Order is the whole ask ("what to do first"), and the blocked ticket
         // is the only item here that has stopped work at all.
@@ -497,7 +508,7 @@ fn check_lede_leads_with_the_stop(value: &str, _ctx: &CheckCtx) -> Option<String
     // A lede that opens on the newsletter item and mentions the blocker last
     // has ranked by input position rather than by urgency.
     match v.find("pricing") {
-        Some(pricing) if ledger >= pricing => Some(
+        Some(pricing) if blocked >= pricing => Some(
             "opened on the pricing newsletter and reached the blocked ticket afterwards".into(),
         ),
         _ => None,
@@ -1527,6 +1538,39 @@ mod tests {
                 &no_ctx()
             ))
             .is_some_and(|m| m.contains("invented")),
+        );
+    }
+
+    #[test]
+    fn the_blocked_ticket_is_named_by_either_half_of_its_title() {
+        // "The migration is blocked" has named the specific thing, not its
+        // category — the rule both fixtures grade — and must not fail for
+        // spelling the ticket's name with its second word alone.
+        let names_it = lede("names the specific blocked work rather than its category");
+        assert_eq!(
+            problem(&names_it(
+                "The migration is blocked on the vendor sandbox and has an agent stopped on it. The webhook review is waiting on you.",
+                &no_ctx()
+            )),
+            None
+        );
+        let leads =
+            lede("leads with the thing that has stopped rather than the first line it was given");
+        assert_eq!(
+            problem(&leads(
+                "The migration is blocked and needs you first; the Cursor pricing read and standup can wait.",
+                &no_ctx()
+            )),
+            None
+        );
+        // And the order still grades through the paraphrase: pricing first,
+        // blocker last, is input order and not urgency.
+        assert_eq!(
+            problem(&leads(
+                "Worth a read: Cursor is changing its pricing. Standup today. The migration is blocked and needs you.",
+                &no_ctx()
+            )),
+            Some("opened on the pricing newsletter and reached the blocked ticket afterwards")
         );
     }
 

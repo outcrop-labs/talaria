@@ -725,6 +725,11 @@ export interface MatrixView {
   runs: FitnessStatusView[]
   max: number
   full: boolean
+  /** THE CACHED HEALTH BAND — the counts off the health fold, without the
+   *  per-fixture detail, so the default tab can say "N fixtures failed on every
+   *  model tested" without reading one archived record per candidate on every
+   *  three-second poll. Absent until the first run stamps it. */
+  health?: HealthBand
   /** The five band-threshold numbers, sent rather than restated — a cell
    *  tooltip prints "contract 91%, Ready needs 95%", and a second copy of the
    *  constants in the client is how that sentence and the scorer come to
@@ -809,6 +814,18 @@ export interface HealthSummary {
   /** Fixtures every model that ran them got wrong. THE NUMBER: it is a count of
    *  our own bugs, and it should be worked to zero rather than explained. */
   ours: number
+  shared: number
+}
+
+/** The counts off `HealthSummary`, small enough to ride the polled matrix
+ *  payload: the chip, not the health view. */
+export interface HealthBand {
+  /** Candidates the band was folded over. */
+  models: number
+  /** Fixtures every model that ran them got wrong — plausibly ours, to be
+   *  worked to zero rather than explained. */
+  ours: number
+  /** Fixtures most models got wrong — hard for everyone, not obviously ours. */
   shared: number
 }
 

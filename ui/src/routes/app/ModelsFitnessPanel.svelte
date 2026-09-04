@@ -299,6 +299,22 @@
         </div>
       </div>
 
+      {#if (data.health?.ours ?? 0) > 0}
+        <!-- THE BAND IS OURS, NOT THE MODELS'. `ours` counts fixtures every
+             tested model got wrong — a bug in the fixture wearing a model's
+             name — and until this line it lived on a tab nobody opens until
+             they already suspect the harness. Stamped by the server when the
+             archive changes (a run finishing, Clear, Forget), so a poll is one
+             small row, not a re-fold. The line is a door to the names. -->
+        <button
+          type="button"
+          onclick={() => setView('health')}
+          class="mt-2 max-w-prose text-left font-sans text-xs text-danger underline decoration-dotted decoration-line underline-offset-2 transition-colors hover:decoration-accent {focusGold}"
+        >
+          {data.health?.ours} fixture{data.health?.ours === 1 ? '' : 's'} failed on every model tested — that is ours, not the models'. The health tab names them.
+        </button>
+      {/if}
+
       {#if data.models.length === 0}
         <EmptyState icon="▤" title="No models registered yet" hint="Add a provider on the Models tab, then come back and test one." />
       {:else}

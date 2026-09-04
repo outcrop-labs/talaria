@@ -239,6 +239,7 @@ pub fn capabilities_from_catalog(m: &CatalogModel, at: &str) -> Vec<(String, Cap
                 at: at.to_string(),
                 detail: Some(detail.to_string()),
                 score: None,
+                probe_rev: None,
             },
         ));
     };

@@ -41,6 +41,24 @@ pub const ALL_CAPABILITIES: [&str; 9] = [
 
 const ALL_SOURCES: [&str; 4] = ["probe", "declared", "catalog", "learned"];
 
+/// The revision of the PROBE that measures `cap` — the instrument's version,
+/// not the model's. A probe fact is a property of an endpoint:model as
+/// measured by ONE revision of the probe: json-strict's first Rust spelling
+/// ran its array check against the harness input (`Value::Null` on the probe
+/// path) instead of the reply, so it recorded `false @ 0/5` for every model
+/// that ever answered — and those rows stood as facts, re-used instead of
+/// re-measured and refusing whole harness columns, until an admin remembered
+/// to forget them by hand. Bump a capability's revision when its probe's
+/// MEANING changes: facts stamped below the current revision stop reading as
+/// facts, the first probe run after the bump re-measures, and the sheet heals
+/// itself instead of waiting for the forget button.
+pub fn probe_revision(cap: &str) -> u32 {
+    match cap {
+        "json-strict" => 1,
+        _ => 0,
+    }
+}
+
 fn source_rank(source: &str) -> i64 {
     match source {
         "probe" => 3,
@@ -90,6 +108,11 @@ pub struct CapabilityFact {
     pub at: String,
     pub detail: Option<String>,
     pub score: Option<f64>,
+    /// The probe revision that recorded this fact, probe-sourced facts only.
+    /// Absent on every other source and on facts older than the stamp — which
+    /// reads as revision 0, so a capability whose probe has moved on drops its
+    /// pre-stamp facts along with the stale ones.
+    pub probe_rev: Option<u32>,
 }
 
 impl CapabilityFact {
@@ -112,7 +135,19 @@ impl CapabilityFact {
                     .unwrap_or(serde_json::Value::Null),
             );
         }
+        if let Some(rev) = self.probe_rev {
+            o.insert("probeRev".into(), serde_json::Value::Number(rev.into()));
+        }
         serde_json::Value::Object(o)
+    }
+
+    /// Measured by a probe this build no longer endorses. Such a row is not a
+    /// fact — not evidence for a refusal, not a Known answer to reuse — until
+    /// the current probe re-measures it. Only probe-sourced facts carry a
+    /// revision; catalog and learned facts have their own expiry, and a
+    /// human's `declared` fact is not the instrument's to supersede.
+    pub fn superseded(&self, cap: &str) -> bool {
+        self.source == "probe" && self.probe_rev.unwrap_or(0) < probe_revision(cap)
     }
 
     fn is_expired(&self, now: u64) -> bool {
@@ -141,6 +176,7 @@ pub fn read_fact(raw: &serde_json::Value, now: u64) -> Option<CapabilityFact> {
         at,
         detail: f.get("detail").and_then(|d| d.as_str()).map(String::from),
         score: f.get("score").and_then(|s| s.as_f64()),
+        probe_rev: f.get("probeRev").and_then(|r| r.as_u64()).map(|r| r as u32),
     };
     (!fact.is_expired(now)).then_some(fact)
 }
@@ -154,9 +190,10 @@ fn entry_of<'a>(
     all.get(key).and_then(|v| v.as_object())
 }
 
-/// Everything currently known about this endpoint:model, expired facts
-/// filtered out so no caller thinks about the TTL. Unrecognized capability
-/// ids are skipped (a rolling deploy's newer build may know more than we do).
+/// Everything currently known about this endpoint:model, expired and
+/// superseded facts filtered out so no caller thinks about the TTL or the
+/// probe revision. Unrecognized capability ids are skipped (a rolling deploy's
+/// newer build may know more than we do).
 pub async fn get_capabilities(pg: &PgPool, key: &str) -> HashMap<String, CapabilityFact> {
     let all = get_setting(pg, KEY, serde_json::json!({})).await;
     let now = now_ms();
@@ -166,7 +203,7 @@ pub async fn get_capabilities(pg: &PgPool, key: &str) -> HashMap<String, Capabil
             if !ALL_CAPABILITIES.contains(&cap.as_str()) {
                 continue;
             }
-            if let Some(fact) = read_fact(raw, now) {
+            if let Some(fact) = read_fact(raw, now).filter(|fact| !fact.superseded(cap)) {
                 out.insert(cap.clone(), fact);
             }
         }
@@ -263,6 +300,7 @@ mod tests {
             at: at.into(),
             detail: Some("d".into()),
             score: None,
+            probe_rev: None,
         }
     }
 
@@ -344,5 +382,43 @@ mod tests {
     #[test]
     fn ttl_constant_is_thirty_days() {
         assert_eq!(LEARNED_TTL_MS, 30 * 24 * 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn a_probe_fact_below_the_current_revision_is_not_a_fact_but_no_other_kind_is() {
+        // THE POISONED-SHEET SHAPE: a probe-sourced false with no stamp (every
+        // fact written before revisions existed) or an old one stops reading
+        // as a fact the moment its probe's revision moves past it.
+        let mut stale = fact("probe", false, "2026-09-03T03:32:35.266Z");
+        stale.probe_rev = None;
+        assert!(stale.superseded("json-strict"));
+        let mut stamped = stale.clone();
+        stamped.probe_rev = Some(probe_revision("json-strict"));
+        assert!(!stamped.superseded("json-strict"));
+        // A capability whose probe never moved keeps its unstamped facts.
+        assert!(!stale.superseded("json"));
+        // And the filter is the instrument's alone: a catalog row with no
+        // stamp (they all have none) is not superseded by anything.
+        let catalog = fact("catalog", false, "2026-09-03T03:32:35.266Z");
+        assert!(!catalog.superseded("json-strict"));
+    }
+
+    #[test]
+    fn read_fact_round_trips_the_probe_revision() {
+        let now = 1_800_000_000_000;
+        let raw = serde_json::json!({
+            "value": false, "source": "probe",
+            "at": "2020-01-01T00:00:00.000Z", "probeRev": 1
+        });
+        assert_eq!(read_fact(&raw, now).expect("a fact").probe_rev, Some(1));
+        // Absent reads as None (= revision 0), never as a parse failure —
+        // every pre-stamp row depends on that.
+        let raw = serde_json::json!({
+            "value": false, "source": "probe", "at": "2020-01-01T00:00:00.000Z"
+        });
+        assert_eq!(read_fact(&raw, now).expect("a fact").probe_rev, None);
+        let mut f = fact("probe", true, "2026-01-01T00:00:00.000Z");
+        f.probe_rev = Some(2);
+        assert!(f.to_json().to_string().contains("\"probeRev\":2"));
     }
 }
