@@ -6,6 +6,43 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **The inherit path's edge-boot helper was born blind to docker.** The
+  helper runs the app image as its own non-root user, and its `docker run`
+  carried no `--group-add` — so the 0660 root:docker socket denied its
+  every call. The first shape's `docker inspect … 2>/dev/null | grep -q
+  true` read that denial as *the old container already stopped*, the wait
+  skipped, the compose refused, and the helper exited before the port ever
+  freed: the old container stopped itself for the one-time cut, the edge
+  never rose, and nothing served the port (a client VPS took exactly this
+  outage). The helper now carries the same host group ids as the app
+  container, and its script treats an unreachable daemon as a loud failure
+  with a breadcrumb — `edge-boot.log` in the update dir — instead of a
+  confident answer it never had.
+
+- **A stranded cutover waited hours for a reader that could never come.**
+  `reconcile_boot` is the only writer that finishes a cutover, but its
+  callers were the 6h check (whose interval lease a dead container's ghost
+  holds for the whole interval) and the admin read — which arrives through
+  the very edge a stranded cutover has not raised; green publishes no port
+  of its own. And when reconcile *did* run while the old container still
+  held the port, the edge-raise lost the bind race and the whole reconcile
+  errored instead of recognizing the hold. A new `update-reconcile` job —
+  one reconcile a minute, one settings-row read when idle — now retries
+  the handover however it stranded, and the hold with the port still held
+  answers as the hold it is: the edge rises at the cut, and the next tick
+  lands the run.
+
+- **The stale-close fired on live adoption holds — and its wrong closes
+  never healed.** A run in flight past an hour closed as failed even when
+  *this container* was the run's own retired orchestrator, alive and
+  serving the hold: the canary sat eighty minutes at a green adoption
+  hold, both doors 200, and the row said failed. The exemption is the
+  retirement itself — that run is ours and we are its proof of life. And
+  for rows the close already marked failed while the containers finished
+  the handover anyway, the reconcile now heals them to `done` when it can
+  prove the landing (this container is the rolled-to digest, nothing
+  retired is running, and the edge answers) — by hand no longer.
+
 - **The @ picker froze at editor creation — and ticket threads never
   offered agents.** MentionSuggest captured the mentionables array at
   mount, but every surface builds that list with `$derived` over async
