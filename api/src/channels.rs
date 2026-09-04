@@ -239,6 +239,11 @@ pub struct ChannelMember {
 /// member's read cursor vs. others' complete messages — the not-self clause
 /// compares against the caller's OWN email/name spelling, so a self-posted
 /// message never counts unread for its author.
+///
+/// TASK ROOMS NEVER LIST HERE. The member join already keeps them out (they
+/// carry no rows), but the rail says so in its own WHERE rather than by
+/// three invariants agreeing — a ticket's room lives on its ticket, and
+/// comms is not that.
 pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChannel>, sqlx::Error> {
     #[allow(clippy::type_complexity)] // the listing's own columns, one each
     type MemberRow = (
@@ -269,7 +274,7 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
          join users self on self.id = $1::uuid \
          left join channel_members p on c.kind = 'dm' and p.channel_id = c.id and p.user_id <> $1::uuid \
          left join users pu on pu.id = p.user_id \
-         where c.archived_at is null \
+         where c.archived_at is null and c.task_id is null \
          order by c.updated_at desc",
     )
     .bind(user_id)
@@ -321,7 +326,8 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
          join channels c on c.id = msg.channel_id and c.archived_at is null \
          join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
-         where msg.seq > m.last_read_seq and msg.status = 'complete' \
+         where c.task_id is null \
+           and msg.seq > m.last_read_seq and msg.status = 'complete' \
            and not (msg.author_type = 'user' \
              and msg.author = coalesce(self.email, self.name, 'user'))",
     )

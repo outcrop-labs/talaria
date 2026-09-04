@@ -1725,12 +1725,24 @@ async fn execute_action_arms(
             }
             let deps = deps.clone();
             let sb = state.secretbox().await.ok();
+            let trigger_state = state.clone();
+            let trigger_seq = posted.seq;
             let (channel_id, channel_name, message) =
                 (item.source_id.clone(), channel_name, message);
             tokio::spawn(async move {
                 if let Some(sb) = sb {
-                    trigger_agent_replies(&deps, &sb, &channel_id, &channel_name, &message, None)
-                        .await;
+                    trigger_agent_replies(
+                        &trigger_state,
+                        &deps,
+                        &sb,
+                        &channel_id,
+                        &channel_name,
+                        &message,
+                        0,
+                        trigger_seq,
+                        None,
+                    )
+                    .await;
                 }
             });
         }

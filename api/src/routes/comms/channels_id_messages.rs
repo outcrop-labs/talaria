@@ -379,6 +379,10 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
                 .map(|c| serde_json::to_value(c).unwrap_or(Value::Null)),
         )
         .collect();
+    // The relevance gate's structural arm needs the turn's shape (an
+    // attachments-only message is a handoff) — captured before the insert
+    // takes the vec.
+    let trigger_attachments = attachments.len();
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     let message = match insert_channel_message(
         &notify,
@@ -415,18 +419,23 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
         );
     }
     let sb = state.secretbox().await.unwrap_or_default();
+    let trigger_state = state.clone();
     let trigger_deps = notify.clone();
     let trigger_content = body.content.clone();
+    let trigger_seq = message.seq;
     let trigger_root = thread_root_id.clone();
     let trigger_name = channel_name.clone();
     let trigger_id = id.to_string();
     tokio::spawn(async move {
         trigger_agent_replies(
+            &trigger_state,
             &trigger_deps,
             &sb,
             &trigger_id,
             &trigger_name,
             &trigger_content,
+            trigger_attachments,
+            trigger_seq,
             trigger_root.as_deref(),
         )
         .await;
