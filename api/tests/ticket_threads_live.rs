@@ -140,6 +140,19 @@ async fn fixture(state: &AppState, tag: &str) -> Fixture {
     .fetch_one(pg)
     .await
     .unwrap();
+    // The owner's board_members row is not decoration: every board the app
+    // creates provisions it, and it is what access reads — boards.owner_id
+    // alone is display truth, not a membership leg (the conversation door
+    // used to smuggle the owner in through its own user_id instead; a room
+    // has no such leg, so the fixture keeps the real shape).
+    sqlx::query(
+        "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, 'owner')",
+    )
+    .bind(&board)
+    .bind(&owner.id)
+    .execute(pg)
+    .await
+    .unwrap();
     sqlx::query(
         "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, 'editor')",
     )
