@@ -153,13 +153,41 @@ fn edge_boot_container_in(project: &str) -> String {
 /// The helper's whole job, one shell line: wait out blue's drain, then
 /// raise the edge on the port that just freed. Pure so the shape is
 /// pinnable by test.
+///
+/// A denied docker socket must read as DENIED, not as "not running": the
+/// first shape swallowed inspect's stderr (`2>/dev/null | grep -q true`),
+/// so a helper that could not speak to the daemon at all saw its own
+/// permission error as blue already dead, skipped the wait, failed the
+/// compose, and died — leaving the port freed and the edge never raised
+/// (the bbills stranding). Now the daemon being unreachable is a loud
+/// exit with a breadcrumb in the update dir — `--rm` erases the container,
+/// the log is what remains — and the compose's own output lands there too,
+/// success or failure.
 fn edge_boot_script(retired: &str, compose: &std::path::Path, project: &str) -> String {
     format!(
-        "i=0; while docker inspect -f '{{{{.State.Running}}}}' {retired} 2>/dev/null \
-         | grep -q true; do sleep 1; i=$((i+1)); [ $i -gt 600 ] && exit 1; done; \
-         docker compose -f {} -p {project} up -d edge",
-        compose.display()
+        "log=$(dirname {compose})/edge-boot.log; i=0; while :; do \
+         s=\"$(docker inspect -f '{{{{.State.Running}}}}' {retired} 2>&1)\" \
+         || {{ echo \"$s\" >>\"$log\"; exit 1; }}; \
+         [ \"$s\" = true ] || break; \
+         sleep 1; i=$((i+1)); [ $i -gt 600 ] && exit 1; done; \
+         docker compose -f {compose} -p {project} up -d edge >>\"$log\" 2>&1 \
+         || {{ echo compose-failed >>\"$log\"; exit 1; }}",
+        compose = compose.display()
     )
+}
+
+/// The host group ids this container carries (`HostConfig.GroupAdd`) — the
+/// docker socket's gid among them. Pure, pinnable by test.
+fn group_adds_of(doc: &Value) -> Vec<String> {
+    doc.get("HostConfig")
+        .and_then(|h| h.get("GroupAdd"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|g| g.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Arm the host-side helper: a detached container of the RUNNING app image
@@ -168,33 +196,42 @@ fn edge_boot_script(retired: &str, compose: &std::path::Path, project: &str) -> 
 /// same-path, polling blue's state every second. The inherit path's only
 /// way to raise the edge after its own container dies — nothing inside
 /// blue outlives blue.
-async fn arm_edge_boot(image: &str, retired: &str) -> Result<(), String> {
+///
+/// The sock is 0660 root:docker and the app image runs as its own non-root
+/// user — the very reason the slot compose renders `group_add`. The helper
+/// needs the same gids or it is blind: every docker call denied from the
+/// first inspect on (verified on a live host: no `--group-add`, the daemon
+/// is unreachable; with it, it answers).
+async fn arm_edge_boot(image: &str, retired: &str, group_add: &[String]) -> Result<(), String> {
     let _ = remove_container(&edge_boot_container()).await; // a stale armer blocks the name
     let script = edge_boot_script(retired, &compose_file(), &update_project());
     let dir = update_dir().display().to_string();
     let bind = format!("{dir}:{dir}");
-    docker(
-        &[
-            "run",
-            "-d",
-            "--rm",
-            "--name",
-            &edge_boot_container(),
-            "-v",
-            "/var/run/docker.sock:/var/run/docker.sock",
-            "-v",
-            &bind,
-            "--entrypoint",
-            "sh",
-            image,
-            "-c",
-            &script,
-        ],
-        std::time::Duration::from_secs(60),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|e| format!("the edge-boot helper would not arm: {e}"))
+    let mut argv: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--rm".into(),
+        "--name".into(),
+        edge_boot_container(),
+        "-v".into(),
+        "/var/run/docker.sock:/var/run/docker.sock".into(),
+        "-v".into(),
+        bind,
+        "--entrypoint".into(),
+        "sh".into(),
+    ];
+    for gid in group_add {
+        argv.push("--group-add".into());
+        argv.push(gid.clone());
+    }
+    argv.push(image.to_string());
+    argv.push("-c".into());
+    argv.push(script);
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    docker(&args, std::time::Duration::from_secs(60))
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("the edge-boot helper would not arm: {e}"))
 }
 
 /// The handover itself. The FIRST call is long (a pull can run 15 minutes)
@@ -405,7 +442,7 @@ pub async fn adopt(
         // INHERIT: arm the helper, then blue's last act. The drain carries
         // whatever in-flight work this container still holds; the helper
         // raises the edge the second the port frees.
-        arm_edge_boot(&running_ref, &blue).await?;
+        arm_edge_boot(&running_ref, &blue, &group_adds_of(&self_doc)).await?;
         tracing::info!(
             "{LOG} adoption: green healthy, edge armed, stopping {blue} — the one-time cut"
         );
@@ -447,7 +484,7 @@ async fn resume(pg: &PgPool, state: &UpdateState) -> Result<AdoptStage, String> 
         };
         if own_host_port(&doc).as_deref() == Some(port.as_str()) {
             // INHERIT, died before the stop: arm and cut now.
-            arm_edge_boot(&image, &me).await?;
+            arm_edge_boot(&image, &me, &group_adds_of(&doc)).await?;
             tracing::info!("{LOG} adoption resume: re-armed, stopping this container");
             let _ = stop_container(&me, roll_drain_ms()).await;
             return Ok(AdoptStage::Cutover { edge_port: port });
@@ -538,7 +575,7 @@ mod tests {
             "{script}"
         );
         assert!(
-            script.ends_with(
+            script.contains(
                 "docker compose -f /var/lib/talaria/update/compose.yml -p talaria-update up -d edge"
             ),
             "{script}"
@@ -547,6 +584,23 @@ mod tests {
             script.contains("[ $i -gt 600 ] && exit 1"),
             "bounded: {script}"
         );
+        // A denied daemon reads as DENIED — the wait must not mistake its
+        // own permission error for blue already dead.
+        assert!(
+            script.contains("|| { echo \"$s") && script.contains("edge-boot.log"),
+            "denial is loud and leaves a breadcrumb: {script}"
+        );
+    }
+
+    #[test]
+    fn group_adds_read_the_host_config_array() {
+        let doc: Value = serde_json::json!({
+            "HostConfig": { "GroupAdd": ["993", "1001"] }
+        });
+        assert_eq!(group_adds_of(&doc), vec!["993", "1001"]);
+        let bare: Value = serde_json::json!({ "HostConfig": {} });
+        assert!(group_adds_of(&bare).is_empty());
+        assert!(group_adds_of(&serde_json::json!({})).is_empty());
     }
 
     #[test]

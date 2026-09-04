@@ -86,12 +86,16 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     crate::model::info::register_blurb_rewrite_job(Arc::new(BlurbDeps {
         state: state.clone(),
     }));
-    // The optional pair. mcp-library-refresh is per-instance cache warming
-    // and arms on every Rust instance; update-check self-gates by install
-    // mode (a quiet no-op on checkout/dev/off) and by adoption — the
-    // engine acts only on instances that handed over the keys.
+    // The optional trio. mcp-library-refresh is per-instance cache warming
+    // and arms on every Rust instance; update-check and update-reconcile
+    // self-gate by install mode (a quiet no-op on checkout/dev/off) and by
+    // adoption — the engine acts only on instances that handed over the
+    // keys (the minute hand's reconcile is one settings-row read when idle).
     crate::mcp::library::register_mcp_library_refresh_job(crate::mcp::library::library());
-    crate::update::job::register_update_check_job(Arc::new(crate::update::job::UpdateCheckDeps {
+    crate::update::job::register_update_check_job(Arc::new(crate::update::job::UpdateDeps {
+        state: state.clone(),
+    }));
+    crate::update::job::register_update_reconcile_job(Arc::new(crate::update::job::UpdateDeps {
         state: state.clone(),
     }));
 }
@@ -265,6 +269,16 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::UpdateCheck),
             "update-check must stay optional: dormant installs legitimately run it as a no-op"
+        );
+        // The minute hand, same contract: a stranded cutover must not wait
+        // hours for a reader, so its finisher must never silently stop.
+        assert!(
+            names.contains(&JobName::UpdateReconcile),
+            "update-reconcile fell out of the job table — a stranded cutover would wait hours for a reader"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::UpdateReconcile),
+            "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
         );
     }
 

@@ -44,8 +44,12 @@ makes: which port the edge takes.
   first — a **one-time cut of a few seconds**, named in the panel's confirm
   dialog. A dying container cannot run code after its own stop, so it arms a
   tiny host-side helper container (the app image itself — docker-cli and
-  compose are baked in) that polls once a second and raises the edge the
-  moment the port frees. Green's boot reconcile is the crash fallback, and
+  compose are baked in, carrying the same host group ids as the app so it
+  can speak to the docker socket) that polls once a second and raises the
+  edge the moment the port frees; what it saw, it writes to
+  `edge-boot.log` in the update dir. The `update-reconcile` job — a once-a-
+  minute reconcile — is the crash fallback (green publishes no port of its
+  own until the edge rises, so the fallback cannot wait on a reader), and
   the docker runbook below is the last resort.
 
 The handover is **resumable at every step**: `adopt` on an already-adopted
@@ -120,11 +124,17 @@ must survive its own death:
 6. **Cutover** — the fleet network alias moves to green, the run records
    `cutting-over`, and blue **stops itself** with a drain
    (`TALARIA_ROLL_DRAIN_SECONDS`, default 45s).
-7. **Boot reconcile** — green's first moments (a scheduled read, the panel's
-   GET, or its first tick) verify the edge actually routes to it — an HTTP
-   healthz **through the edge**, not just a container status — and only then
-   mark the run `done`. A run left in flight longer than an hour that nobody
-   can finish is closed as failed: no install spins forever.
+7. **Reconcile** — green's first chances (the `update-reconcile` job's
+   once-a-minute tick, the panel's GET, or the 6h check) verify the edge
+   actually routes to it — an HTTP healthz **through the edge**, not just a
+   container status — and only then mark the run `done`; a green whose edge
+   is down raises it itself first. A run left in flight longer than an hour
+   that nobody can finish is closed as failed — except an adoption hold
+   (this container is the run's own retired orchestrator, alive and serving
+   it: the age measures the operator's proxy repoint, not a dead roller) —
+   and a run the close marked failed while its containers finished the
+   handover anyway heals to `done` on the next reconcile. No install spins
+   forever, and no landing is lost to a wrong close.
 
 The traffic edge is a pinned traefik container (`talaria-edge`) that owns the
 host port the app used to hold; both slots merge into one health-gated service
