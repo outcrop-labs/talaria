@@ -235,7 +235,14 @@ export function ditherSurface(opts: DitherSurfaceOptions = {}) {
     const prev = { position: node.style.position, isolation: node.style.isolation }
     if (getComputedStyle(node).position === 'static') node.style.position = 'relative'
     node.style.isolation = 'isolate'
-    node.insertBefore(canvas, node.firstChild)
+    // A table ROW cannot host the canvas: a <tr> admits only cells, so the
+    // browser wraps a stray child in an anonymous cell — a whole extra
+    // column that walks every real one past its header (the board list's
+    // drift). The row's first cell hosts it instead; the canvas is
+    // absolutely positioned against the row either way, so the field still
+    // spans the whole row.
+    const host = node instanceof HTMLTableRowElement ? (node.querySelector(':scope > td, :scope > th') ?? node) : node
+    host.insertBefore(canvas, host.firstChild)
 
     let tone = readTone(node)
     let radius = 0
