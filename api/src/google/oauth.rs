@@ -73,12 +73,45 @@ pub fn forwarded_origin(headers: &HeaderMap, uri: &Uri) -> String {
     resolve_origin(None, headers, uri)
 }
 
+/// The cookie-relevant sameness of two origin strings: their HOSTS. Cookies
+/// are host-scoped — scheme and port never partition the jar — so a browser
+/// already on the pinned host is already home. A strict origin compare turns
+/// any proxy misstatement (an x-forwarded-proto the app host backfilled as
+/// http, an explicit :443 on the forwarded host, a comma-joined chain) into a
+/// self-redirect the browser can only loop on: following it resends the same
+/// headers, which derive the same "wrong" origin, forever — the redirect
+/// budget dies as ERR_TOO_MANY_REDIRECTS. Parsing lowercases the hosts and
+/// drops the port; a scheme-less pin (a bare-host AUTH_PUBLIC_URL) still
+/// parses once a scheme is assumed, and only the host is read.
+fn origin_hosts_agree(a: &str, b: &str) -> bool {
+    let host = |s: &str| {
+        // A proxy chain comma-joins forwarded values; the left-most is the
+        // origin the client hit (the same convention client_ip reads
+        // x-forwarded-for by).
+        let s = s.split(',').next().unwrap_or(s).trim();
+        let candidate = if s.contains("://") {
+            s.to_string()
+        } else {
+            format!("https://{s}")
+        };
+        url::Url::parse(&candidate)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_lowercase))
+    };
+    match (host(a), host(b)) {
+        (Some(ha), Some(hb)) => ha == hb,
+        _ => false,
+    }
+}
+
 /// OAuth's one-origin rule, as a bounce: when a public origin is pinned and
-/// the request hit a DIFFERENT one, the dance must run at home — the state
-/// cookie only survives on the origin that sets it, and Google only knows the
+/// the request hit a DIFFERENT host, the dance must run at home — the state
+/// cookie only survives on the host that sets it, and Google only knows the
 /// pinned callback. Returns the URL to relocate to (the pinned origin plus
-/// this request's path and query), or None when the request is already home
-/// or no origin is pinned.
+/// this request's path and query), or None when the request is already on
+/// the pinned host or no origin is pinned. Same host under a different
+/// scheme or port counts as home (see origin_hosts_agree): a redirect cannot
+/// change what the browser's proxy says, only loop on it.
 pub fn oauth_relocation(
     pinned: Option<&str>,
     headers: &HeaderMap,
@@ -87,7 +120,7 @@ pub fn oauth_relocation(
 ) -> Option<String> {
     let home = pinned.filter(|s| !s.is_empty())?;
     let hit = forwarded_origin(headers, uri);
-    (hit != home).then(|| format!("{home}{path_and_query}"))
+    (!origin_hosts_agree(home, &hit)).then(|| format!("{home}{path_and_query}"))
 }
 
 /// application/x-www-form-urlencoded serialization (WHATWG url spec: space →
@@ -780,6 +813,129 @@ mod tests {
         assert!(
             google_auth_url(&cfg, "http://x/cb", "s")
                 .ends_with("&prompt=select_account&hd=getboxie.com")
+        );
+    }
+
+    /// A request as the handlers see one: forwarded headers plus a path-only
+    /// URI (the app host always states the host, and the proto only when the
+    /// outer proxy did).
+    fn hop(headers: &[(&'static str, &str)], path: &str) -> (HeaderMap, Uri) {
+        let mut hm = HeaderMap::new();
+        for (k, v) in headers {
+            hm.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        (hm, path.parse().unwrap())
+    }
+
+    #[test]
+    fn relocation_is_a_host_question_not_an_origin_string_compare() {
+        // The loop this function used to be: https pinned, the app host
+        // backfilled proto=http — same host, so home, and the strict compare
+        // answered "relocate" to the very URL the browser was already on.
+        let (headers, uri) = hop(
+            &[("x-forwarded-host", "talaria.example.com")],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(
+                Some("https://talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
+            None
+        );
+
+        // An explicit default port and a typed-uppercase pin are the same host.
+        let (headers, uri) = hop(
+            &[
+                ("x-forwarded-proto", "https"),
+                ("x-forwarded-host", "Talaria.Example.com:443"),
+            ],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(
+                Some("https://talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
+            None
+        );
+
+        // A bare-host pin agrees with the host it names instead of looping a
+        // relative Location.
+        let (headers, uri) = hop(
+            &[
+                ("x-forwarded-proto", "https"),
+                ("x-forwarded-host", "talaria.example.com"),
+            ],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(
+                Some("talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
+            None
+        );
+
+        // A proxy chain comma-joined the forwarded host: the left-most is the
+        // host the client hit.
+        let (headers, uri) = hop(
+            &[
+                ("x-forwarded-proto", "https"),
+                (
+                    "x-forwarded-host",
+                    "talaria.example.com, talaria.example.com",
+                ),
+            ],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(
+                Some("https://talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
+            None
+        );
+
+        // A genuinely different host — the LAN URL the pin exists to retire —
+        // still moves home in one hop, path and query intact.
+        let (headers, uri) = hop(
+            &[("x-forwarded-host", "192.168.1.10:5273")],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(
+                Some("https://talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google?code=a&state=b"
+            ),
+            Some("https://talaria.example.com/api/auth/google?code=a&state=b".into())
+        );
+
+        // No pin, no opinion — the dance runs wherever the caller hit it.
+        let (headers, uri) = hop(
+            &[("x-forwarded-host", "192.168.1.10:5273")],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(None, &headers, &uri, "/api/auth/google"),
+            None
+        );
+        assert_eq!(
+            oauth_relocation(Some(""), &headers, &uri, "/api/auth/google"),
+            None
         );
     }
 
