@@ -835,7 +835,10 @@ mod tests {
         // The loop this function used to be: https pinned, the app host
         // backfilled proto=http — same host, so home, and the strict compare
         // answered "relocate" to the very URL the browser was already on.
-        let (headers, uri) = hop(&[("x-forwarded-host", "talaria.example.com")], "/api/auth/google");
+        let (headers, uri) = hop(
+            &[("x-forwarded-host", "talaria.example.com")],
+            "/api/auth/google",
+        );
         assert_eq!(
             oauth_relocation(
                 Some("https://talaria.example.com"),
@@ -855,18 +858,31 @@ mod tests {
             "/api/auth/google",
         );
         assert_eq!(
-            oauth_relocation(Some("https://talaria.example.com"), &headers, &uri, "/api/auth/google"),
+            oauth_relocation(
+                Some("https://talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
             None
         );
 
         // A bare-host pin agrees with the host it names instead of looping a
         // relative Location.
         let (headers, uri) = hop(
-            &[("x-forwarded-proto", "https"), ("x-forwarded-host", "talaria.example.com")],
+            &[
+                ("x-forwarded-proto", "https"),
+                ("x-forwarded-host", "talaria.example.com"),
+            ],
             "/api/auth/google",
         );
         assert_eq!(
-            oauth_relocation(Some("talaria.example.com"), &headers, &uri, "/api/auth/google"),
+            oauth_relocation(
+                Some("talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
             None
         );
 
@@ -875,12 +891,20 @@ mod tests {
         let (headers, uri) = hop(
             &[
                 ("x-forwarded-proto", "https"),
-                ("x-forwarded-host", "talaria.example.com, talaria.example.com"),
+                (
+                    "x-forwarded-host",
+                    "talaria.example.com, talaria.example.com",
+                ),
             ],
             "/api/auth/google",
         );
         assert_eq!(
-            oauth_relocation(Some("https://talaria.example.com"), &headers, &uri, "/api/auth/google"),
+            oauth_relocation(
+                Some("https://talaria.example.com"),
+                &headers,
+                &uri,
+                "/api/auth/google"
+            ),
             None
         );
 
@@ -901,9 +925,18 @@ mod tests {
         );
 
         // No pin, no opinion — the dance runs wherever the caller hit it.
-        let (headers, uri) = hop(&[("x-forwarded-host", "192.168.1.10:5273")], "/api/auth/google");
-        assert_eq!(oauth_relocation(None, &headers, &uri, "/api/auth/google"), None);
-        assert_eq!(oauth_relocation(Some(""), &headers, &uri, "/api/auth/google"), None);
+        let (headers, uri) = hop(
+            &[("x-forwarded-host", "192.168.1.10:5273")],
+            "/api/auth/google",
+        );
+        assert_eq!(
+            oauth_relocation(None, &headers, &uri, "/api/auth/google"),
+            None
+        );
+        assert_eq!(
+            oauth_relocation(Some(""), &headers, &uri, "/api/auth/google"),
+            None
+        );
     }
 
     #[test]
