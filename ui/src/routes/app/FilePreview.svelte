@@ -1,6 +1,7 @@
 <script lang="ts">
   import { FileAudio, FileText, FileVideo, Paperclip } from '@lucide/svelte'
   import { onMount } from 'svelte'
+  import { getText } from '@/lib/fetch-json'
 
   // The file preview — one component, every common filetype, no browser-view
   // dumps. The PICKER below is the single source of what "common" means:
@@ -51,17 +52,14 @@
           : `${sizeBytes} B`,
   )
 
-  // Text preview state: fetch-once, hard cap, no streaming UI.
+  // Text preview state: fetched through the one HTTP door (getText — raw
+  // bodies are what it exists for), hard-capped, no streaming UI.
   let text = $state<string | null>(null)
   let textError = $state(false)
   let truncated = $state(false)
   onMount(() => {
     if (family !== 'text') return
-    void fetch(url)
-      .then(async (r) => {
-        if (!r.ok) throw new Error(String(r.status))
-        return r.text()
-      })
+    getText(url)
       .then((t) => {
         if (t.length > 512 * 1024) {
           text = t.slice(0, 512 * 1024)
