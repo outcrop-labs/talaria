@@ -12,6 +12,7 @@ pub mod integrations_google_connect;
 pub mod integrations_google_drive_browse;
 pub mod integrations_google_drive_drives;
 pub mod integrations_google_drive_import;
+pub mod integrations_google_drive_manage;
 pub mod integrations_google_gmail_messages;
 pub mod integrations_google_gmail_send;
 pub mod integrations_google_org;

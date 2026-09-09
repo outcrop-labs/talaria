@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-22 routes.
+23 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -29,6 +29,10 @@
 | [`/api/integrations/google/drive/browse`](#apiintegrationsgoogledrivebrowse) | GET | `session` |
 | [`/api/integrations/google/drive/drives`](#apiintegrationsgoogledrivedrives) | GET | `session` |
 | [`/api/integrations/google/drive/import`](#apiintegrationsgoogledriveimport) | POST | `session` |
+| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
+| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
+| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
+| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
 | [`/api/integrations/google/gmail/messages`](#apiintegrationsgooglegmailmessages) | GET | `session` |
 | [`/api/integrations/google/gmail/send`](#apiintegrationsgooglegmailsend) | POST | `session` |
 | [`/api/integrations/google/org`](#apiintegrationsgoogleorg) | GET | `admin` |
@@ -272,6 +276,39 @@ Source: [`api/src/routes/integrations/integrations_google_drive_import.rs`](../.
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `fileId` | `string(1)` | fileId: min 1, no max. |
+
+## `/api/integrations/google/drive/rename`
+
+Source: [`api/src/routes/integrations/integrations_google_drive_manage.rs`](../../api/src/routes/integrations/integrations_google_drive_manage.rs)
+
+> /api/integrations/google/drive/{rename,move,trash,create-folder}. The
+> Drive place's management verbs — all POST, all audited (a Drive write is a
+> cross-boundary mutation: Google's Drive is not ours, and the audit log is
+> where "who moved this" answers from).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{file}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{ok}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{ok}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{file}` | 200, 400 | audit |
+
+### POST `/api/integrations/google/drive/rename` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
+
+### POST `/api/integrations/google/drive/rename` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
+
+### POST `/api/integrations/google/drive/rename` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
+
+### POST `/api/integrations/google/drive/rename` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
 
 ## `/api/integrations/google/gmail/messages`
 

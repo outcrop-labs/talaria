@@ -690,6 +690,139 @@ pub async fn drive_roster(
     Ok(out)
 }
 
+// ── Drive writes (management) ────────────────────────────────────────────────
+//
+// All four are PATCH/POST-with-supportsAllDrives against Google's files
+// endpoint; all four are audited at the route layer (cross-boundary
+// mutations — Google's Drive is not ours). The q-language rules do not apply
+// here: bodies are JSON, names ride as values, parents as query params.
+
+/// Rename a Drive file or folder. The Drive-echoed entry comes back so the
+/// caller's row can update without a refetch.
+pub async fn rename_drive_file_with_token(
+    token: &str,
+    file_id: &str,
+    name: &str,
+) -> Result<DriveListEntry, GoogleError> {
+    let res = http()
+        .patch(format!("{FILES_ENDPOINT}/{file_id}?supportsAllDrives=true&fields=id,name,mimeType,modifiedTime,webViewLink"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "name": name }).to_string())
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive rename request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "drive rename failed: {status} {text}"
+        )));
+    }
+    let v: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive rename body: {e}")))?;
+    Ok(drive_entry_of(&v))
+}
+
+/// Move a Drive file between folders — PATCH with addParents/removeParents
+/// (query params, not a body; Google's move shape). `add_parent: None` means
+/// the drive root; the caller always knows both ends of the move.
+pub async fn move_drive_file_with_token(
+    token: &str,
+    file_id: &str,
+    add_parent: Option<&str>,
+    remove_parent: Option<&str>,
+) -> Result<(), GoogleError> {
+    // Query-string by hand with the OAuth helper's encoding: Google's move
+    // API takes addParents/removeParents as query params on a PATCH with an
+    // empty body — and both ids are Drive-safe base64url anyway, but encode
+    // rather than trust.
+    let mut query = String::from("supportsAllDrives=true");
+    if let Some(add) = add_parent.filter(|p| !p.is_empty()) {
+        query.push_str("&addParents=");
+        query.push_str(&encode_uri_component(add));
+    }
+    if let Some(remove) = remove_parent.filter(|p| !p.is_empty()) {
+        query.push_str("&removeParents=");
+        query.push_str(&encode_uri_component(remove));
+    }
+    let res = http()
+        .patch(format!("{FILES_ENDPOINT}/{file_id}?{query}"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive move request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "drive move failed: {status} {text}"
+        )));
+    }
+    Ok(())
+}
+
+/// Trash a Drive file or folder — reversible in Drive's own UI (which is why
+/// the menu says Trash, not Delete).
+pub async fn trash_drive_file_with_token(token: &str, file_id: &str) -> Result<(), GoogleError> {
+    let res = http()
+        .patch(format!("{FILES_ENDPOINT}/{file_id}?supportsAllDrives=true"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "trashed": true }).to_string())
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive trash request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "drive trash failed: {status} {text}"
+        )));
+    }
+    Ok(())
+}
+
+/// Create a Drive folder (POST, mimeType is the folder type). `parent: None`
+/// is the drive root — the caller resolves 'root' vs the shared drive id.
+pub async fn create_drive_folder_with_token(
+    token: &str,
+    name: &str,
+    parent: Option<&str>,
+) -> Result<DriveListEntry, GoogleError> {
+    let mut body = serde_json::json!({
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    });
+    if let Some(p) = parent {
+        body["parents"] = serde_json::json!([p]);
+    }
+    let res = http()
+        .post(format!("{FILES_ENDPOINT}?supportsAllDrives=true&fields=id,name,mimeType,modifiedTime,webViewLink"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive mkdir request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "drive mkdir failed: {status} {text}"
+        )));
+    }
+    let v: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive mkdir body: {e}")))?;
+    Ok(drive_entry_of(&v))
+}
+
 /// List/search Drive files using an already-resolved token (per-user or org).
 /// Excludes trashed + folders; a query filters by name substring. Parameter
 /// order pinned: q, pageSize, orderBy, fields, spaces, supportsAllDrives,

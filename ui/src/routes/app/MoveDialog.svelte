@@ -6,6 +6,7 @@
   import { cn } from '@/lib/cn'
   import { pushToast } from '@/lib/toast.svelte'
   import { createFolder, useFolders } from '@/lib/artifacts'
+  import { browseDrivePage, createDriveFolder } from '@/lib/google-drive'
   import { errorMessage } from '@/lib/fetch-json'
   import { ancestry, type Drag } from './artifacts'
 
@@ -19,6 +20,7 @@
     onClose,
     selection,
     startAt,
+    driveKey = null,
     onMove,
   }: {
     open: boolean
@@ -27,6 +29,9 @@
     selection: NonNullable<Drag>
     /** The folder the dialog opens standing in (usually the current one). */
     startAt: string | null
+    /** Drive mode: rows come from the browse endpoint, New folder goes to
+     *  Google. The drive's own id is the root standing-in. */
+    driveKey?: string | null
     /** Receives the chosen destination; null = the root. */
     onMove: (target: string | null) => Promise<unknown>
   } = $props()
@@ -53,6 +58,26 @@
   const children = $derived(
     folders.filter((f) => (f.parentId ?? null) === standing).sort((a, b) => a.name.localeCompare(b.name)),
   )
+
+  // Drive mode: one browse page of THIS folder's children (folders only —
+  // files are never destinations), refreshed whenever standing moves. Drive
+  // folders have no parentId map client-side, so the walk is the response's
+  // own path (crumbs) and children are per-standing fetches.
+  let driveChildren = $state<{ id: string; name: string }[]>([])
+  let drivePath = $state<{ id: string; name: string }[]>([])
+  $effect(() => {
+    if (!open || !driveKey) return
+    driveChildren = []
+    drivePath = []
+    void browseDrivePage(driveKey, standing, '', 'name').then((page) => {
+      driveChildren = page.files
+        .filter((f) => f.mimeType === 'application/vnd.google-apps.folder')
+        .map((f) => ({ id: f.id, name: f.name }))
+      drivePath = page.path
+    }).catch(() => {
+      driveChildren = []
+    })
+  })
 
   // A folder may not move into itself or any of its descendants — the set the
   // move would corrupt. Computed by walking down from every selected folder,
@@ -82,6 +107,14 @@
     const name = newName.trim()
     if (!name) return
     try {
+      if (driveKey) {
+        const f = await createDriveFolder(driveKey, name, standing)
+        creating = false
+        newName = ''
+        standing = f.id
+        driveChildren = [...driveChildren, { id: f.id, name: f.name }]
+        return
+      }
       const folder = await createFolder(name, standing)
       await foldersQuery.refetch()
       creating = false
@@ -113,9 +146,9 @@
         onclick={() => (standing = null)}
         class={cn('rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', standing ? 'text-muted hover:text-fg' : 'text-fg')}
       >
-        My Files
+        {driveKey ? 'Drive' : 'My Files'}
       </button>
-      {#each trail as f (f.id)}
+      {#each driveKey ? drivePath : trail as f (f.id)}
         <ChevronRight size={13} class="shrink-0 text-ink-dim" />
         <button
           type="button"
@@ -128,7 +161,24 @@
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-2">
-      {#if children.length === 0}
+      {#if driveKey}
+        {#each driveChildren as f (f.id)}
+          <button
+            type="button"
+            onclick={() => (standing = f.id)}
+            class={cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors dither-fill hover:bg-raised/60', standing === f.id && 'bg-card')}
+          >
+            <Folder size={15} class="shrink-0 text-accent" />
+            <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{f.name}</span>
+            <ChevronRight size={13} class="shrink-0 text-ink-dim" />
+          </button>
+        {/each}
+        {#if driveChildren.length === 0}
+          <div class="grid h-full place-items-center px-4 py-8 font-sans text-sm text-muted">
+            No folders inside. Move here, or make one below.
+          </div>
+        {/if}
+      {:else if children.length === 0}
         <div class="grid h-full place-items-center px-4 py-8 font-sans text-sm text-muted">
           No folders inside. Move here, or make one below.
         </div>

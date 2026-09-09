@@ -572,10 +572,6 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
           {/each}
         </div>
       {/if}
-      <RailRow onClick={() => navigate('/settings')}>
-        <span class="grid w-4 shrink-0 place-items-center"><Plus size={13} /></span>
-        <span class="min-w-0 flex-1 truncate">Connect a source</span>
-      </RailRow>
     </RailSection>
   </Rail>
 
@@ -699,6 +695,18 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
            refuse it, and the first one anybody forgets is the last one. -->
       <SecretsVault />
     {:else}
+      {#if place === 'drive' && rosterEntry && !rosterEntry.writable}
+        <!-- A pre-management connection: browsing works, writes don't, and the
+             banner says exactly what fixes it — one reconnect picks the new
+             scope up. Hidden menu entries, not disabled ones (a disabled verb
+             reads as broken; hidden reads as not-yours-to-do-here). -->
+        <div class="flex shrink-0 items-center justify-center gap-3 border-b border-line-subtle bg-panel px-4 py-2">
+          <span class="font-sans text-xs text-muted">This Drive is read-only under your current Google connection.</span>
+          <a href="/api/integrations/google/connect" class="rounded-md border border-line bg-surface px-2.5 py-1 font-sans text-xs text-fg transition-colors hover:bg-raised">
+            Reconnect Google to manage files
+          </a>
+        </div>
+      {/if}
       <ArtifactsBrowser
         {rows}
         loading={place === 'drive' ? driveQuery.isLoading : artifactsQuery.isLoading || foldersQuery.isLoading}
@@ -717,6 +725,10 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
         onOpenArtifact={setActiveId}
         onOpenDriveFile={(url) => url && window.open(url, '_blank', 'noopener')}
         onImport={(fileIds) => importSelection(fileIds)}
+        onDriveChange={() => {
+          driveMoreRows = []
+          void driveQuery.refetch()
+        }}
         more={place === 'drive' && driveMore}
         onLoadMore={() => loadMoreDrive()}
         importingCount={importing}
