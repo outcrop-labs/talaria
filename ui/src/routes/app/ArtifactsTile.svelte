@@ -13,6 +13,8 @@
     row,
     rowKey,
     selected,
+    /** On the clipboard in CUT mode — the row is spoken for: dimmed. */
+    cut,
     focused,
     active,
     dropTarget,
@@ -30,6 +32,7 @@
     row: Row
     rowKey: string
     selected: boolean
+    cut: boolean
     focused: boolean
     active: boolean
     dropTarget: boolean
@@ -81,6 +84,7 @@
       'focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1',
       selected ? 'bg-raised' : 'dither-fill',
       active && !selected && 'bg-card',
+      cut && 'opacity-50',
       dropTarget && 'ring-1 ring-accent/60',
     )}
   >
