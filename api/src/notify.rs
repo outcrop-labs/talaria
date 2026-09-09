@@ -1547,11 +1547,10 @@ pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
 }
 
 /// Who can read a conversation: its owner, plus a plan's members. Chats have
-/// no members — the owner alone. A ticket thread's audience is the task's
-/// board — board members and the board's team, the same people the access
-/// predicate admits; the thread's owner row is in the board list too, and
-/// union dedupes. Kept beside `channel_member_ids` for the same
-/// cycle-breaking reason: the writer that fans needs it, and it is one query.
+/// no members — the owner alone. Ticket threads are channels now — their
+/// audience is board membership, fanned through the channel shapes below.
+/// Kept beside `channel_member_ids` for the same cycle-breaking reason: the
+/// writer that fans needs it, and it is one query.
 pub async fn conversation_audience_ids(
     pg: &sqlx::PgPool,
     conversation_id: &str,
@@ -1559,16 +1558,7 @@ pub async fn conversation_audience_ids(
     let rows: Vec<(String,)> = sqlx::query_as(
         "select user_id::text from conversations where id = $1::uuid \
          union \
-         select user_id::text from conversation_members where conversation_id = $1::uuid \
-         union \
-         select bm.user_id::text from board_members bm \
-           join tasks tk on tk.board_id = bm.board_id \
-          where tk.conversation_id = $1::uuid \
-         union \
-         select tm.user_id::text from team_members tm \
-           join boards b on b.team_id = tm.team_id \
-           join tasks tk on tk.board_id = b.id \
-          where tk.conversation_id = $1::uuid",
+         select user_id::text from conversation_members where conversation_id = $1::uuid",
     )
     .bind(conversation_id)
     .fetch_all(pg)
@@ -1774,15 +1764,6 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
             select user_id as id from conversations where id = $1::uuid \
             union \
             select user_id from conversation_members where conversation_id = $1::uuid \
-            union \
-            select bm.user_id from board_members bm \
-              join tasks tk on tk.board_id = bm.board_id \
-             where tk.conversation_id = $1::uuid \
-            union \
-            select tm.user_id from team_members tm \
-              join boards b on b.team_id = tm.team_id \
-              join tasks tk on tk.board_id = b.id \
-             where tk.conversation_id = $1::uuid \
          ) a \
          left join conversation_reads cr on cr.conversation_id = $1::uuid and cr.user_id = a.id",
     )

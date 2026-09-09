@@ -78,13 +78,13 @@ pub async fn ticket_head(pg: &PgPool, task_id: &str) -> Option<TicketHead> {
     })
 }
 
-/// What the chat door needs about the thread's task, in one read: where the
+/// What the room's reply path needs about the task, in one read: where the
 /// message lands (board and task ids for the fans), the head the prompt and
 /// the gate share, and the BINDING — the first agent among the task's
-/// CURRENT assignees, which is the who the gate decides about. The
-/// conversation's own agent_model is not that answer: an unassigned task's
-/// thread is bound to the org default agent as a dormant binder, and only
-/// the task's assignees say whether an agent is actually on the work.
+/// CURRENT assignees, which is the who the gate decides about. An
+/// unassigned task's thread is bound to the org default agent as a dormant
+/// binder, and only the task's assignees say whether an agent is actually
+/// on the work.
 #[derive(Debug, Clone)]
 pub struct TicketMeta {
     pub task_id: String,
@@ -93,55 +93,6 @@ pub struct TicketMeta {
     /// attachments only.
     pub agent: Option<String>,
     pub head: TicketHead,
-}
-
-/// Resolve the task a conversation is attached to. None when the task is
-/// gone (deleted under its thread — the door treats that room as an ordinary
-/// conversation: the humans still in it are still talking) or the row cannot
-/// be read.
-pub async fn ticket_for_conversation(pg: &PgPool, conversation_id: &str) -> Option<TicketMeta> {
-    sqlx::query_as::<
-        _,
-        (
-            String,
-            String,
-            serde_json::Value,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-        ),
-    >(
-        "select t.id::text, t.board_id::text, t.assignees, \
-                case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') \
-                     || '-' || t.ticket_no end, \
-                t.title, t.status, t.description \
-         from tasks t join boards b on b.id = t.board_id \
-         where t.conversation_id = $1::uuid",
-    )
-    .bind(conversation_id)
-    .fetch_optional(pg)
-    .await
-    .ok()
-    .flatten()
-    .map(
-        |(task_id, board_id, assignees, ticket_ref, title, status, description)| {
-            let agent = crate::tasks::agent_assignees(&crate::tasks::json_strings(&assignees))
-                .into_iter()
-                .next();
-            TicketMeta {
-                task_id,
-                board_id,
-                agent,
-                head: TicketHead {
-                    ticket_ref,
-                    title,
-                    status,
-                    description,
-                },
-            }
-        },
-    )
 }
 
 /// Resolve the task a channel is the room of. None when the channel is not
