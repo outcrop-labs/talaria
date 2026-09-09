@@ -667,7 +667,7 @@
          the one shared template (header + rows), which keeps them aligned as
          the pane resizes. Track 1 is the selection column: the select-all
          checkbox — ⌘A's visible twin. -->
-    <div class={cn('grid shrink-0 items-center gap-3 border-b border-line-subtle px-2 pb-1.5', ROW_GRID)}>
+    <div class={cn('mt-1.5 grid shrink-0 items-center gap-3 border-b border-line-subtle px-2 py-2.5', ROW_GRID)}>
       <Checkbox
         bare
         title="Select all"
