@@ -9,9 +9,10 @@ export const focusRing = 'focus-visible:outline-2 focus-visible:outline-accent f
 
 export interface BaseProps {
   checked: boolean
-  /** The event rides along (shift-range selection in row cells reads
-   *  `e.shiftKey`); callers that only want the state ignore it. */
-  onChange: (checked: boolean, e: Event) => void
+  /** The event rides along for the controls that have one (shift-range
+   *  selection in row cells reads `e.shiftKey`); a toggle's click has no
+   *  change event, so the param is optional and 1-arg callers typecheck. */
+  onChange: (checked: boolean, e?: Event) => void
   label?: string | Snippet
   disabled?: boolean
   title?: string

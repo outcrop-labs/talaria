@@ -131,8 +131,10 @@
     checked={selected}
     title={`Select ${row.name}`}
     onChange={(_checked, e) => {
-      e.stopPropagation()
-      onToggle(e)
+      // A checkbox change always carries its event; the optional signature
+      // exists for Toggle's click path, not this one.
+      e?.stopPropagation()
+      if (e) onToggle(e)
     }}
     class="absolute left-[15px] top-1/2 h-3.5 w-3.5 -translate-y-1/2"
   />
