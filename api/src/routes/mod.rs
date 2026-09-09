@@ -569,8 +569,13 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
-            "/api/integrations/google/drive/files",
-            get(integrations::integrations_google_drive_files::get)
+            "/api/integrations/google/drive/drives",
+            get(integrations::integrations_google_drive_drives::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/drive/browse",
+            get(integrations::integrations_google_drive_browse::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(

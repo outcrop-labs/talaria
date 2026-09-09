@@ -9,7 +9,7 @@ use sqlx::PgPool;
 
 use crate::artifacts::Artifact;
 use crate::gateway::provider::http;
-use crate::google::connections::{TokenError, get_access_token, require_token};
+use crate::google::connections::{RequireError, TokenError, get_access_token, require_token};
 use crate::google::errors::GoogleError;
 use crate::google::oauth::encode_uri_component;
 use crate::secretbox::SecretBox;
@@ -18,6 +18,7 @@ use crate::uploads::{get_upload, save_upload};
 // supportsAllDrives lets us create into a Shared Drive (team-owned files).
 const UPLOAD_ENDPOINT: &str = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink,name,mimeType";
 const FILES_ENDPOINT: &str = "https://www.googleapis.com/drive/v3/files";
+const DRIVES_ENDPOINT: &str = "https://www.googleapis.com/drive/v3/drives";
 
 const GOOGLE_DOC: &str = "application/vnd.google-apps.document";
 const GOOGLE_SHEET: &str = "application/vnd.google-apps.spreadsheet";
@@ -298,6 +299,395 @@ pub struct DriveListEntry {
     pub icon_link: Option<String>,
     pub web_view_link: Option<String>,
     pub size_bytes: Option<i64>,
+}
+
+/// One browsed Drive folder, root → the folder you are standing in.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DrivePathSeg {
+    pub id: String,
+    pub name: String,
+}
+
+/// One page of a Drive folder: its entries (FOLDERS INCLUDED — this is the
+/// browse shape, not the search shape), the next page token when Google has
+/// more, and the walked path so a deep link can rebuild its breadcrumbs
+/// without client-side ancestry.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DrivePage {
+    pub files: Vec<DriveListEntry>,
+    pub next_page_token: Option<String>,
+    pub path: Vec<DrivePathSeg>,
+}
+
+/// Shared drives this token can see (GET /drive/v3/drives) — the roster's
+/// shared entries. Where the scope forbids listing, the answer is empty, not
+/// an error: the roster just shows fewer drives.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveInfo {
+    pub id: String,
+    pub name: String,
+}
+
+/// One Drive the rail can browse. `key` is the wire identity the client
+/// round-trips (`<connection>:<drive id>`); `writable` is computed from the
+/// connection's stored scope grant — full `auth/drive`, not `drive.readonly`
+/// or `drive.file` — so the UI never guesses what a write would cost.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveRosterEntry {
+    pub key: String,
+    pub connection: String,
+    pub kind: String, // "my" | "shared"
+    pub id: String,
+    pub name: String,
+    pub writable: bool,
+    pub email: Option<String>,
+}
+
+/// The `writable` test: the connection's scope list must contain the full
+/// drive grant. `drive.readonly` reads, `drive.file` writes app-made files
+/// only — neither manages a whole Drive, and offering the controls anyway
+/// would be a reconsent trap behind every click.
+fn scope_grants_drive(scopes: &[String]) -> bool {
+    const FULL: &str = "https://www.googleapis.com/auth/drive";
+    const METADATA: &str = "https://www.googleapis.com/auth/drive.metadata";
+    const READONLY: &str = "https://www.googleapis.com/auth/drive.readonly";
+    scopes
+        .iter()
+        .any(|s| s == FULL || s == METADATA || (!s.starts_with(READONLY) && s == "drive"))
+        && !scopes.iter().any(|s| s == READONLY)
+}
+
+/// A Drive `files.list` q-language literal — blank the two characters that
+/// would break out of the string (the search builder's rule, reused).
+fn drive_q_literal(s: &str) -> String {
+    s.replace(['\'', '\\'], " ")
+}
+
+/// Children of a Drive folder (or a drive's root), folders first when the
+/// caller asks, paginated, with the walked path to `parent`. Shared drives
+/// need `driveId` + `corpora=drive` and reject the `'root'` alias — the
+/// drive's own id IS the root there.
+pub async fn browse_drive_with_token(
+    token: &str,
+    parent: Option<&str>,
+    drive_kind: &str,
+    drive_id: Option<&str>,
+    query: Option<&str>,
+    page_size: usize,
+    page_token: Option<&str>,
+    order_by: &str,
+) -> Result<DrivePage, GoogleError> {
+    let shared = drive_kind == "shared";
+    let root = match (shared, drive_id) {
+        (true, Some(id)) => id.to_string(),
+        _ => "root".to_string(),
+    };
+    let parent_ref = parent.unwrap_or(&root);
+    let mut clauses = vec![
+        "trashed = false".to_string(),
+        format!("'{}' in parents", drive_q_literal(parent_ref)),
+    ];
+    if let Some(q) = query.map(str::trim).filter(|q| !q.is_empty()) {
+        clauses.push(format!("name contains '{}'", drive_q_literal(q)));
+    }
+    let params = {
+        let mut p = url::form_urlencoded::Serializer::new(String::new());
+        p.append_pair("q", &clauses.join(" and "))
+            .append_pair("pageSize", &page_size.clamp(1, 100).to_string())
+            .append_pair("orderBy", order_by)
+            .append_pair(
+                "fields",
+                "nextPageToken,files(id,name,mimeType,modifiedTime,iconLink,webViewLink,size)",
+            );
+        if shared {
+            if let Some(id) = drive_id {
+                p.append_pair("driveId", id).append_pair("corpora", "drive");
+            }
+        } else {
+            p.append_pair("spaces", "drive");
+        }
+        p.append_pair("supportsAllDrives", "true")
+            .append_pair("includeItemsFromAllDrives", "true");
+        if let Some(t) = page_token.filter(|t| !t.is_empty()) {
+            p.append_pair("pageToken", t);
+        }
+        p.finish()
+    };
+    let res = http()
+        .get(format!("{FILES_ENDPOINT}?{params}"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive browse request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "drive browse failed: {status} {text}"
+        )));
+    }
+    let data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drive browse body: {e}")))?;
+    let next_page_token = data
+        .get("nextPageToken")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let files = data
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|rows| rows.iter().map(drive_entry_of).collect())
+        .unwrap_or_default();
+    // The path walk only makes sense for the FIRST page of a folder — a
+    // Load-more token is the same standing, walked already.
+    let path = if page_token.map(str::is_empty).unwrap_or(true) {
+        drive_folder_path_with_token(token, parent, &root).await?
+    } else {
+        Vec::new()
+    };
+    Ok(DrivePage {
+        files,
+        next_page_token,
+        path,
+    })
+}
+
+fn drive_entry_of(f: &serde_json::Value) -> DriveListEntry {
+    DriveListEntry {
+        id: f
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        name: f
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        mime_type: f
+            .get("mimeType")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        modified_time: f
+            .get("modifiedTime")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        icon_link: f.get("iconLink").and_then(|v| v.as_str()).map(String::from),
+        web_view_link: f
+            .get("webViewLink")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        size_bytes: f
+            .get("size")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok()),
+    }
+}
+
+/// Walk name/parents upward from a folder to its drive root — the breadcrumb
+/// builder. Stops at the root id, at a parentless row, or at depth 32 (a
+/// deeper pile than any real tree; the cap keeps a forged cycle from hanging
+/// the request). None (the root itself) walks to nothing.
+async fn drive_folder_path_with_token(
+    token: &str,
+    folder_id: Option<&str>,
+    root_id: &str,
+) -> Result<Vec<DrivePathSeg>, GoogleError> {
+    let Some(mut cur) = folder_id.map(String::from) else {
+        return Ok(Vec::new());
+    };
+    let mut path = Vec::new();
+    for _ in 0..32 {
+        if cur == root_id || cur == "root" {
+            break;
+        }
+        let res = http()
+            .get(format!("{FILES_ENDPOINT}/{cur}?fields=id,name,parents"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| GoogleError::Failed(format!("drive path request: {e}")))?;
+        if !res.status().is_success() {
+            // A vanished folder is an empty path, not a failed browse — the
+            // listing said what it said.
+            break;
+        }
+        let v: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| GoogleError::Failed(format!("drive path body: {e}")))?;
+        let name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let parents = v
+            .get("parents")
+            .and_then(|p| p.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str().map(String::from))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        path.push(DrivePathSeg {
+            id: cur.clone(),
+            name,
+        });
+        let Some(next) = parents.first() else { break };
+        cur = next.clone();
+    }
+    path.reverse();
+    Ok(path)
+}
+
+/// Shared drives visible to this token (GET /drive/v3/drives). Read-only
+/// scopes list shared drives too; an empty answer means none visible.
+pub async fn list_shared_drives_with_token(token: &str) -> Result<Vec<DriveInfo>, GoogleError> {
+    let params = "pageSize=100&fields=drives(id,name)";
+    let res = http()
+        .get(format!("{DRIVES_ENDPOINT}?{params}"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drives list request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "drives list failed: {status} {text}"
+        )));
+    }
+    let data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("drives list body: {e}")))?;
+    Ok(data
+        .get("drives")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .map(|d| DriveInfo {
+                    id: d
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: d
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// THE ROSTER: every Drive this person can browse, across both connections.
+/// Personal first (its My Drive, then its shared drives by name), then the
+/// org connection's Shared Drive and its My Drive when connected. A missing
+/// connection omits its entries — only BOTH absent is NotConnected, which is
+/// the connect screen's and no one else's business.
+pub async fn drive_roster(
+    pg: &PgPool,
+    sb: &SecretBox,
+    user_id: &str,
+    now_ms: i64,
+) -> Result<Vec<DriveRosterEntry>, GoogleError> {
+    let mut out: Vec<DriveRosterEntry> = Vec::new();
+
+    // Personal: (email, scope) then token.
+    let personal: Option<(Option<String>, Vec<String>)> =
+        match sqlx::query_as::<_, (Option<String>, Vec<String>)>(
+            "select email, scope from google_connections where user_id = $1::uuid",
+        )
+        .bind(user_id)
+        .fetch_optional(pg)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => return Err(GoogleError::Failed(format!("connection read: {e}"))),
+        };
+    let mut personal_token = None;
+    let mut personal_scope: Vec<String> = Vec::new();
+    let mut personal_email = None;
+    if let Some((email, scope)) = personal {
+        personal_scope = scope;
+        personal_email = email;
+        match require_token(pg, sb, user_id, now_ms).await {
+            Ok(token) => personal_token = Some(token),
+            Err(RequireError::NotConnected) => {}
+            Err(e) => return Err(GoogleError::from(e)),
+        }
+    }
+    if let Some(token) = personal_token.as_deref() {
+        let writable = scope_grants_drive(&personal_scope);
+        out.push(DriveRosterEntry {
+            key: "personal:my".into(),
+            connection: "personal".into(),
+            kind: "my".into(),
+            id: "my".into(),
+            name: "My Drive".into(),
+            writable,
+            email: personal_email.clone(),
+        });
+        // Shared drives through the personal connection — a shared drive a
+        // person joined with their own account. A listing refusal (scope or
+        // admin policy) quietly omits them; My Drive still browses.
+        if let Ok(drives) = list_shared_drives_with_token(token).await {
+            let mut shared: Vec<DriveRosterEntry> = drives
+                .into_iter()
+                .map(|d| DriveRosterEntry {
+                    key: format!("personal:{}", d.id),
+                    connection: "personal".into(),
+                    kind: "shared".into(),
+                    id: d.id,
+                    name: d.name,
+                    writable,
+                    email: personal_email.clone(),
+                })
+                .collect();
+            shared.sort_by(|a, b| a.name.cmp(&b.name));
+            out.extend(shared);
+        }
+    }
+
+    // Org: the provisioned Shared Drive above all (that's the workspace's
+    // Drive), then the org account's own My Drive.
+    if let Ok(Some(org_token)) = crate::google::org::get_org_access_token(pg, sb, now_ms).await {
+        let writable = true; // ORG_CONNECT_SCOPES carries the full drive grant.
+        if let Ok(targets) = crate::google::org::get_org_targets(pg).await {
+            if let Some(shared_drive_id) = targets.shared_drive_id.filter(|s| !s.is_empty()) {
+                out.push(DriveRosterEntry {
+                    key: format!("org:{shared_drive_id}"),
+                    connection: "org".into(),
+                    kind: "shared".into(),
+                    id: shared_drive_id,
+                    name: "Workspace Drive".into(),
+                    writable,
+                    email: targets.send_as,
+                });
+            }
+        }
+        out.push(DriveRosterEntry {
+            key: "org:my".into(),
+            connection: "org".into(),
+            kind: "my".into(),
+            id: "my".into(),
+            name: "Org Drive".into(),
+            writable,
+            email: None,
+        });
+    }
+
+    Ok(out)
 }
 
 /// List/search Drive files using an already-resolved token (per-user or org).

@@ -11,12 +11,15 @@
 import { viewMemory } from './view-memory'
 import type { Place } from '@/routes/app/artifacts'
 
-const PLACE_IDS: readonly Place[] = ['my', 'shared', 'workspace', 'official', 'recent', 'secrets']
+const PLACE_IDS: readonly Place[] = ['my', 'shared', 'workspace', 'official', 'recent', 'secrets', 'drive']
 
 export interface ArtifactsSelection {
   place: Place
   /** null = the place's root, which is a real place to be. */
   folderId: string | null
+  /** Which DRIVE (roster key) — meaningful only in the drive place, and taken
+   *  on trust: Drive ids are Google's, never in the local folder roster. */
+  driveId: string | null
   /** null = nothing open, likewise real. */
   activeId: string | null
 }
@@ -31,6 +34,7 @@ function parse(raw: unknown): ArtifactsSelection | null {
   return {
     place: v.place as Place,
     folderId: typeof v.folderId === 'string' && v.folderId ? v.folderId : null,
+    driveId: typeof v.driveId === 'string' && v.driveId ? v.driveId : null,
     activeId: typeof v.activeId === 'string' && v.activeId ? v.activeId : null,
   }
 }
@@ -63,15 +67,19 @@ export function restorableArtifactsSelection(
   rosters: { folderIds: string[] | null; artifactIds: string[] | null },
 ): ArtifactsSelection | null {
   if (!saved) return null
-  const folderId = saved.folderId && rosters.folderIds && !rosters.folderIds.includes(saved.folderId)
-    ? null
-    : saved.folderId
+  // Drive folders are Google's ids — never validated against the local roster
+  // (validating would dump every restored Drive location to its root).
+  const folderId = saved.place === 'drive'
+    ? saved.folderId
+    : saved.folderId && rosters.folderIds && !rosters.folderIds.includes(saved.folderId)
+      ? null
+      : saved.folderId
   const activeId = saved.activeId && rosters.artifactIds && !rosters.artifactIds.includes(saved.activeId)
     ? null
     : saved.activeId
   // A file open in a folder that has since gone would render detached from the
   // browser around it; the folder is the container, so it governs.
-  return { place: saved.place, folderId, activeId: folderId === saved.folderId ? activeId : null }
+  return { place: saved.place, folderId, activeId: folderId === saved.folderId ? activeId : null, driveId: saved.driveId }
 }
 
 /** Tests only: drop the remembered selection and the load latch. */

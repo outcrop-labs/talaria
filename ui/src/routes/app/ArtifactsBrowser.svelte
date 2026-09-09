@@ -39,6 +39,11 @@
     canOrganize,
     folderId,
     onPaste,
+    onOpenDriveFile,
+    onImport,
+    more = false,
+    onLoadMore,
+    importingCount = 0,
     emptyTitle,
     emptyHint,
     onOpenFolder,
@@ -66,6 +71,15 @@
     folderId: string | null
     /** Paste the clipboard: undefined = the current folder, an id = into it. */
     onPaste: (into?: string) => Promise<unknown>
+    /** Drive rows only: a file row opens GOOGLE's own view, not our editor. */
+    onOpenDriveFile: (url: string | null) => void
+    /** Drive rows only: pull the selected Drive files into Talaria. */
+    onImport: (fileIds: string[]) => Promise<unknown>
+    /** Drive rows only: another page waits. */
+    more?: boolean
+    onLoadMore?: () => void
+    /** Drive rows only: imports in flight — the bar's label. */
+    importingCount?: number
     emptyTitle: string
     emptyHint?: string
     onOpenFolder: (id: string) => void
@@ -365,7 +379,14 @@
     }
   }
 
-  const open = (r: Row) => (r.type === 'folder' ? onOpenFolder(r.id) : onOpenArtifact(r.id))
+  const open = (r: Row) => {
+    if (r.drive) {
+      if (r.type === 'folder') onOpenFolder(r.id)
+      else onOpenDriveFile(r.drive.entry.webViewLink ?? null)
+      return
+    }
+    r.type === 'folder' ? onOpenFolder(r.id) : onOpenArtifact(r.id)
+  }
 
   const removeRow = async (r: Row) => {
     healFocusFrom(keyOf(r))
@@ -427,6 +448,16 @@
   const downloadHref = (a: Artifact | null) => (a?.storageRef ? `/api/uploads/${a.storageRef}` : null)
 
   const rowMenu = (r: Row): ContextMenuEntry[] => {
+    if (r.drive) {
+      const items: ContextMenuEntry[] = [{ label: 'Open', onSelect: () => open(r) }]
+      if (r.drive.entry.webViewLink) {
+        items.push({ label: 'Open in Google Drive', onSelect: () => window.open(r.drive!.entry.webViewLink!, '_blank', 'noopener') })
+      }
+      if (r.type === 'artifact') {
+        items.push('sep', { label: 'Import to Talaria', onSelect: () => void onImport([r.id]) })
+      }
+      return items
+    }
     const items: ContextMenuEntry[] = [{ label: 'Open', onSelect: () => open(r) }]
     // Share is the second verb for BOTH kinds: "share this folder with the
     // team" is the commonest sharing act there is, and a browser that only
@@ -463,12 +494,14 @@
   // (move) and an EXTERNAL file drag from the desktop (upload). `drag` being
   // set is what tells them apart — dataTransfer.types alone can't, because a
   // row drag also carries types.
-  const hasFiles = (e: DragEvent) => !drag && !!e.dataTransfer?.types.includes('Files')
+  const driveMode = $derived(rows.length > 0 && !!rows[0]!.drive)
+  const hasFiles = (e: DragEvent) => !drag && !driveMode && !!e.dataTransfer?.types.includes('Files')
 
   const dropOnFolder = async (e: DragEvent, folderId: string) => {
     e.preventDefault()
     e.stopPropagation()
     overFolder = null
+    if (driveMode) return
     if (drag) {
       const d = drag
       drag = null
@@ -494,6 +527,7 @@
   const dropOnBody = async (e: DragEvent) => {
     e.preventDefault()
     fileOver = false
+    if (driveMode) return
     const files = Array.from(e.dataTransfer?.files ?? [])
     if (files.length) {
       uploading = true
@@ -646,6 +680,11 @@
           {/if}
         {/each}
       </div>
+      {#if more && !loading}
+        <div class="grid place-items-center py-3">
+          <Button variant="ghost" size="xs" onclick={() => onLoadMore?.()}>Load more</Button>
+        </div>
+      {/if}
       {#if failure}
         <!-- Half the tree answered. Keep what loaded and say so — swapping a
              populated pane for an error loses more than it explains. -->
@@ -663,6 +702,11 @@
         <a href={downloadHref(selectedRows[0]!.artifact)} target="_blank" rel="noreferrer" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 transition-colors hover:text-fg hover:underline">
           Download
         </a>
+      {/if}
+      {#if driveMode}
+        <Button variant="ghost" size="xs" onclick={() => void onImport(selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id))}>
+          {importingCount ? `Importing ${importingCount}…` : 'Import'}
+        </Button>
       {/if}
       {#if canOrganize}
         <Button variant="ghost" size="xs" onclick={cut}>Cut</Button>
