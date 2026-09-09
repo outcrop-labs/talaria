@@ -1,27 +1,31 @@
 <script lang="ts">
   import { Building2, Folder, Globe } from '@lucide/svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
-  import { KIND_ICON, type Row } from './artifacts'
+  import { KIND_ICON, ROW_GRID, type Row } from './artifacts'
 
   // One line in the Files browser — a folder or a file, same geometry either
-  // way. The column widths are the grid template in ArtifactsBrowser; this row
-  // repeats it so the header and every line stay locked together as the pane
-  // resizes.
+  // way. The grid template lives in artifacts.ts (ROW_GRID) so the header and
+  // every line stay locked together as the pane resizes.
   //
-  // The whole row is ONE button, with the checkbox floated over the icon lane
-  // beside it: a click anywhere opens (the interaction we chose), and the
-  // checkbox is a real control rather than a div wearing a click handler.
+  // The whole row is ONE button, and the checkbox is a sibling in its own
+  // lane: a click anywhere on the button opens (the interaction we chose),
+  // the checkbox is a real control (Checkbox bare — the row around it is the
+  // hit context), and BOTH are permanently visible. The checkbox used to
+  // float over the kind icon and swap with it on hover — hiding the thing you
+  // were about to click was the bug that retired that.
   let {
     row,
+    rowKey,
     selected,
-    /** Something is selected somewhere, so every checkbox stays visible —
-     *  hunting for a hover target mid-multi-select is miserable. */
-    anySelected,
+    focused,
     active,
     dropTarget,
     onOpen,
     onToggle,
+    onFocusIn,
+    onPointerDown,
     onContextMenu,
     ondragstart,
     ondragend,
@@ -30,12 +34,20 @@
     ondrop,
   }: {
     row: Row
+    /** keyOf(row) — the browser's focus model addresses rows by it, and the
+     *  data attribute is what its keyboard nav queries the DOM by. */
+    rowKey: string
     selected: boolean
-    anySelected: boolean
+    focused: boolean
     active: boolean
     dropTarget: boolean
     onOpen: () => void
-    onToggle: (e: MouseEvent) => void
+    /** Shift rides the event for range selection, exactly like a body click. */
+    onToggle: (e: Event) => void
+    onFocusIn: () => void
+    /** The browser reads shiftKey here — a checkbox `change` event carries no
+     *  modifier state, but the pointerdown that caused it does. */
+    onPointerDown: (e: PointerEvent) => void
     onContextMenu: (e: MouseEvent) => void
     ondragstart: (e: DragEvent) => void
     ondragend: () => void
@@ -45,10 +57,10 @@
   } = $props()
 
   const Icon = $derived(row.kind ? KIND_ICON[row.kind] : Folder)
-  const showBox = $derived(selected || anySelected)
 </script>
 
 <div
+  data-row-key={rowKey}
   class="group relative"
   draggable="true"
   {ondragstart}
@@ -57,22 +69,37 @@
   {ondragleave}
   {ondrop}
   oncontextmenu={onContextMenu}
+  onfocusin={onFocusIn}
+  onpointerdown={onPointerDown}
   role="presentation"
 >
   <button
     type="button"
-    onclick={onOpen}
+    tabindex={focused ? 0 : -1}
+    onclick={(e) => {
+      // Modifier clicks select (the desktop grammar); a plain click opens.
+      if (e.metaKey || e.ctrlKey || e.shiftKey) { e.preventDefault(); onToggle(e) }
+      else onOpen()
+    }}
     class={cn(
-      'grid w-full grid-cols-[minmax(0,1fr)_7rem_10rem_8rem] items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors',
+      'grid w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors',
+      ROW_GRID,
+      'focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1',
       selected ? 'bg-raised' : 'dither-fill',
       active && !selected && 'bg-card',
       dropTarget && 'ring-1 ring-accent/60',
     )}
   >
+    <!-- Track 1: the checkbox lane. The Checkbox itself is absolutely
+         centered over it (a bare input cannot be a grid child of the button
+         without nesting interactive elements), so the track reserves the
+         space and keeps name/kind/owner/modified aligned with the header. -->
+    <span aria-hidden="true"></span>
+
     <span class="flex min-w-0 items-center gap-2">
-      <!-- Fixed icon lane — emoji and lucide share one slot, and the checkbox
-           takes it over on hover so neither costs a column. -->
-      <span class={cn('grid h-5 w-5 shrink-0 place-items-center transition-opacity', showBox ? 'opacity-0' : 'opacity-100 group-hover:opacity-0')}>
+      <!-- The kind icon, always visible — selection must never hide what a
+           thing IS. -->
+      <span class="grid h-5 w-5 shrink-0 place-items-center">
         {#if row.icon}
           <span class="text-[15px] leading-none">{row.icon}</span>
         {:else}
@@ -99,17 +126,16 @@
     <span class="truncate font-mono text-[11px] tracking-[0.05em] text-muted">{relativeTime(row.modified)}</span>
   </button>
 
-  <input
-    type="checkbox"
+  <Checkbox
+    bare
     checked={selected}
-    aria-label={`Select ${row.name}`}
-    onclick={(e) => {
-      e.stopPropagation()
-      onToggle(e)
+    title={`Select ${row.name}`}
+    onChange={(_checked, e) => {
+      // A checkbox change always carries its event; the optional signature
+      // exists for Toggle's click path, not this one.
+      e?.stopPropagation()
+      if (e) onToggle(e)
     }}
-    class={cn(
-      'absolute left-[11px] top-1/2 h-3.5 w-3.5 -translate-y-1/2 cursor-pointer accent-accent transition-opacity',
-      showBox ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-    )}
+    class="absolute left-[15px] top-1/2 h-3.5 w-3.5 -translate-y-1/2"
   />
 </div>

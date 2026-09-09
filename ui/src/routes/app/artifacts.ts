@@ -83,6 +83,13 @@ export type Drag = { folders: string[]; artifacts: string[] } | null
  *  `types`, never the data — which is exactly enough to know a drop is ours. */
 export const DRAG_MIME = 'application/x-talaria-files'
 
+/** The list browser's column grid — ONE template shared by the header row and
+ *  every list row so pane resizing keeps them locked together (it used to be
+ *  duplicated, and could drift). Track 1 is the selection checkbox lane
+ *  (1.75rem, BoardList's width); the checkbox is a permanent column, never a
+ *  hover trick that hides the row's kind icon. */
+export const ROW_GRID = 'grid-cols-[1.75rem_minmax(0,1fr)_7rem_10rem_8rem]'
+
 export type SortKey = 'name' | 'kind' | 'owner' | 'modified'
 export type SortDir = 'asc' | 'desc'
 
