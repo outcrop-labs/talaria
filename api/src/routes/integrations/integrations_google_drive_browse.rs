@@ -79,16 +79,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Err(e) => return google_fail_with(e, "Drive", "drive_error"),
     };
 
-    let drive_id_ref = if kind == "shared" {
-        Some(drive_id)
-    } else {
-        None
-    };
+    // None browses a personal My Drive; the shared-drive id browses it.
+    let shared_drive_id = (kind == "shared").then_some(drive_id);
     match browse_drive_with_token(
         &token,
         parent.as_deref(),
-        kind,
-        drive_id_ref,
+        shared_drive_id,
         q.as_deref(),
         page_size,
         page_token.as_deref(),

@@ -374,18 +374,15 @@ fn drive_q_literal(s: &str) -> String {
 pub async fn browse_drive_with_token(
     token: &str,
     parent: Option<&str>,
-    drive_kind: &str,
-    drive_id: Option<&str>,
+    // None = a personal My Drive (`'root'` alias); Some(id) = that shared
+    // drive (its id IS the root — Google rejects `'root'` there).
+    shared_drive_id: Option<&str>,
     query: Option<&str>,
     page_size: usize,
     page_token: Option<&str>,
     order_by: &str,
 ) -> Result<DrivePage, GoogleError> {
-    let shared = drive_kind == "shared";
-    let root = match (shared, drive_id) {
-        (true, Some(id)) => id.to_string(),
-        _ => "root".to_string(),
-    };
+    let root = shared_drive_id.unwrap_or("root").to_string();
     let parent_ref = parent.unwrap_or(&root);
     let mut clauses = vec![
         "trashed = false".to_string(),
@@ -403,10 +400,8 @@ pub async fn browse_drive_with_token(
                 "fields",
                 "nextPageToken,files(id,name,mimeType,modifiedTime,iconLink,webViewLink,size)",
             );
-        if shared {
-            if let Some(id) = drive_id {
-                p.append_pair("driveId", id).append_pair("corpora", "drive");
-            }
+        if let Some(id) = shared_drive_id {
+            p.append_pair("driveId", id).append_pair("corpora", "drive");
         } else {
             p.append_pair("spaces", "drive");
         }
@@ -661,20 +656,20 @@ pub async fn drive_roster(
 
     // Org: the provisioned Shared Drive above all (that's the workspace's
     // Drive), then the org account's own My Drive.
-    if let Ok(Some(org_token)) = crate::google::org::get_org_access_token(pg, sb, now_ms).await {
+    if let Ok(Some(_org_token)) = crate::google::org::get_org_access_token(pg, sb, now_ms).await {
         let writable = true; // ORG_CONNECT_SCOPES carries the full drive grant.
-        if let Ok(targets) = crate::google::org::get_org_targets(pg).await {
-            if let Some(shared_drive_id) = targets.shared_drive_id.filter(|s| !s.is_empty()) {
-                out.push(DriveRosterEntry {
-                    key: format!("org:{shared_drive_id}"),
-                    connection: "org".into(),
-                    kind: "shared".into(),
-                    id: shared_drive_id,
-                    name: "Workspace Drive".into(),
-                    writable,
-                    email: targets.send_as,
-                });
-            }
+        if let Ok(targets) = crate::google::org::get_org_targets(pg).await
+            && let Some(shared_drive_id) = targets.shared_drive_id.filter(|s| !s.is_empty())
+        {
+            out.push(DriveRosterEntry {
+                key: format!("org:{shared_drive_id}"),
+                connection: "org".into(),
+                kind: "shared".into(),
+                id: shared_drive_id,
+                name: "Workspace Drive".into(),
+                writable,
+                email: targets.send_as,
+            });
         }
         out.push(DriveRosterEntry {
             key: "org:my".into(),
