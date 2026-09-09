@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+22 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -26,7 +26,8 @@
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | POST | `session` |
 | [`/api/integrations/google/callback`](#apiintegrationsgooglecallback) | GET | `public` |
 | [`/api/integrations/google/connect`](#apiintegrationsgoogleconnect) | GET | `session` |
-| [`/api/integrations/google/drive/files`](#apiintegrationsgoogledrivefiles) | GET | `session` |
+| [`/api/integrations/google/drive/browse`](#apiintegrationsgoogledrivebrowse) | GET | `session` |
+| [`/api/integrations/google/drive/drives`](#apiintegrationsgoogledrivedrives) | GET | `session` |
 | [`/api/integrations/google/drive/import`](#apiintegrationsgoogledriveimport) | POST | `session` |
 | [`/api/integrations/google/gmail/messages`](#apiintegrationsgooglegmailmessages) | GET | `session` |
 | [`/api/integrations/google/gmail/send`](#apiintegrationsgooglegmailsend) | POST | `session` |
@@ -227,16 +228,33 @@ Source: [`api/src/routes/integrations/integrations_google_connect.rs`](../../api
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 302, 400 | — |
 
-## `/api/integrations/google/drive/files`
+## `/api/integrations/google/drive/browse`
 
-Source: [`api/src/routes/integrations/integrations_google_drive_files.rs`](../../api/src/routes/integrations/integrations_google_drive_files.rs)
+Source: [`api/src/routes/integrations/integrations_google_drive_browse.rs`](../../api/src/routes/integrations/integrations_google_drive_browse.rs)
 
-> GET /api/integrations/google/drive/files?q= — browse/search the user's
-> Drive.
+> /api/integrations/google/drive/browse?d=<rosterKey>&parent=&q=&pageSize=&pageToken=&sort=
+> One folder of one Drive, folders included, paginated, with the walked path
+> for breadcrumbs. `d` names the connection AND the drive
+> (`personal:my`, `personal:<sharedDriveId>`, `org:<sharedDriveId>`,
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{files}` | 200 | — |
+| GET | `session` | — | `{files, nextPageToken, path}` | 200, 400 | — |
+
+## `/api/integrations/google/drive/drives`
+
+Source: [`api/src/routes/integrations/integrations_google_drive_drives.rs`](../../api/src/routes/integrations/integrations_google_drive_drives.rs)
+
+> /api/integrations/google/drive/drives. The Drive roster: every Drive this
+> person can browse across BOTH connections — personal My Drive, shared
+> drives their own account joined, the org connection's Shared Drive and My
+> Drive. NotConnected (409) only when BOTH connections are absent; a missing
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{drives}` | 200 | — |
 
 ## `/api/integrations/google/drive/import`
 
