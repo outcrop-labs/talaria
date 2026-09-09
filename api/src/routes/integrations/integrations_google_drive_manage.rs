@@ -42,9 +42,7 @@ fn drive_of(d: &str) -> Option<(String, String)> {
 
 struct Ctx {
     token: String,
-    connection: String,
     root_parent: String,
-    is_admin: bool,
     actor: String,
 }
 
@@ -66,13 +64,10 @@ async fn gate(
         return Err(house_error(StatusCode::BAD_REQUEST, "malformed drive key"));
     };
     // Org writes are admin acts (the org connection is admin-granted).
-    let mut is_admin = false;
     if connection == "org" {
-        match require_admin(state, headers).await {
-            Ok(_admin) => is_admin = true,
-            Err(gate) => return Err(gate),
+        if let Err(gate) = require_admin(state, headers).await {
+            return Err(gate);
         }
-        let _ = &user;
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let now = std::time::SystemTime::now()
@@ -117,18 +112,13 @@ async fn gate(
     };
     Ok(Ctx {
         token,
-        connection,
         root_parent,
-        is_admin,
         actor: user.email.clone().unwrap_or_else(|| "user".into()),
     })
 }
 
-fn parse_body(body: Value) -> Result<serde_json::Map<String, Value>, Response> {
-    match as_object(&body) {
-        Ok(obj) => Ok(obj.clone()),
-        Err(msg) => Err(house_error(StatusCode::BAD_REQUEST, &msg)),
-    }
+fn parse_body(body: Value) -> Result<serde_json::Map<String, Value>, String> {
+    as_object(&body).map(|obj| obj.clone())
 }
 
 pub async fn rename(
@@ -138,7 +128,7 @@ pub async fn rename(
 ) -> Response {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
@@ -183,7 +173,7 @@ pub async fn drive_move(
 ) -> Response {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
@@ -236,7 +226,7 @@ pub async fn trash(
 ) -> Response {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
@@ -274,7 +264,7 @@ pub async fn create_folder(
 ) -> Response {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
