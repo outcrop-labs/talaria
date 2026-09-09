@@ -570,7 +570,7 @@ pub async fn duplicate_folder(
     let mut new_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for (old_id, name, old_parent, visibility, depth) in &tree {
         let title = if *depth == 0 {
-            copy_name(&mut *tx, name, src.parent_id.as_deref()).await?
+            copy_name(&mut tx, name, src.parent_id.as_deref()).await?
         } else {
             name.clone()
         };
