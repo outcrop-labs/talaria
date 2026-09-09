@@ -598,9 +598,10 @@ pub async fn drive_roster(
 ) -> Result<Vec<DriveRosterEntry>, GoogleError> {
     let mut out: Vec<DriveRosterEntry> = Vec::new();
 
-    // Personal: (email, scope) then token.
-    let personal: Option<(Option<String>, Vec<String>)> =
-        match sqlx::query_as::<_, (Option<String>, Vec<String>)>(
+    // Personal: (email, scope) then token. Scope is the SPACE-JOINED grant
+    // list on the wire (get_connection_status's rule) — split, not decode.
+    let personal: Option<(Option<String>, Option<String>)> =
+        match sqlx::query_as::<_, (Option<String>, Option<String>)>(
             "select email, scope from google_connections where user_id = $1::uuid",
         )
         .bind(user_id)
@@ -614,7 +615,11 @@ pub async fn drive_roster(
     let mut personal_scope: Vec<String> = Vec::new();
     let mut personal_email = None;
     if let Some((email, scope)) = personal {
-        personal_scope = scope;
+        personal_scope = scope
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
         personal_email = email;
         match require_token(pg, sb, user_id, now_ms).await {
             Ok(token) => personal_token = Some(token),
