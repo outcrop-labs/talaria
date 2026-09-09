@@ -27,6 +27,7 @@
   import { deleteArtifact, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
   import { KIND_LABEL } from './artifacts'
   import ArtifactHistory from './ArtifactHistory.svelte'
+  import FilePreview from './FilePreview.svelte'
   import ArtifactPageSkeleton from './ArtifactPageSkeleton.svelte'
   import ArtifactSheetView from './ArtifactSheetView.svelte'
 
@@ -303,17 +304,13 @@
         <div class="min-w-0 flex-1 overflow-y-auto p-8">
           {#if artifact.storageRef}
             <div class="mx-auto max-w-[var(--read-width)]">
-              {#if artifact.contentType?.startsWith('image/')}
-                <img src={`/api/uploads/${artifact.storageRef}`} alt={artifact.title} class="mb-4 max-h-[60vh] rounded-lg border border-line" />
-              {:else}
-                <div class="mb-4 flex items-center gap-3 rounded-lg border border-line bg-panel p-4">
-                  <Paperclip size={20} class="shrink-0 text-muted" />
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate font-sans text-sm text-fg">{artifact.title}</div>
-                    <div class="font-mono text-[11px] text-muted">{artifact.contentType ?? 'file'}</div>
-                  </div>
-                </div>
-              {/if}
+              <div class="mb-4">
+                <FilePreview
+                  url={`/api/uploads/${artifact.storageRef}`}
+                  title={artifact.title}
+                  contentType={artifact.contentType}
+                />
+              </div>
               <div class="flex gap-2">
                 <a href={`/api/uploads/${artifact.storageRef}`} target="_blank" rel="noreferrer" class={buttonClasses({ size: 'sm' })}>
                   Download

@@ -64,10 +64,10 @@ async fn gate(
         return Err(house_error(StatusCode::BAD_REQUEST, "malformed drive key"));
     };
     // Org writes are admin acts (the org connection is admin-granted).
-    if connection == "org" {
-        if let Err(gate) = require_admin(state, headers).await {
-            return Err(gate);
-        }
+    if connection == "org"
+        && let Err(gate) = require_admin(state, headers).await
+    {
+        return Err(gate);
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let now = std::time::SystemTime::now()
@@ -118,7 +118,7 @@ async fn gate(
 }
 
 fn parse_body(body: Value) -> Result<serde_json::Map<String, Value>, String> {
-    as_object(&body).map(|obj| obj.clone())
+    as_object(&body).cloned()
 }
 
 pub async fn rename(
