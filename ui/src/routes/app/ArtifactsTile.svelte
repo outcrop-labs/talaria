@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Folder } from '@lucide/svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import { cn } from '@/lib/cn'
   import { KIND_ICON, type Row } from './artifacts'
 
@@ -10,12 +11,15 @@
   // changes what a click does.
   let {
     row,
+    rowKey,
     selected,
-    anySelected,
+    focused,
     active,
     dropTarget,
     onOpen,
     onToggle,
+    onFocusIn,
+    onPointerDown,
     onContextMenu,
     ondragstart,
     ondragend,
@@ -24,12 +28,15 @@
     ondrop,
   }: {
     row: Row
+    rowKey: string
     selected: boolean
-    anySelected: boolean
+    focused: boolean
     active: boolean
     dropTarget: boolean
     onOpen: () => void
-    onToggle: (e: MouseEvent) => void
+    onToggle: (e: Event) => void
+    onFocusIn: () => void
+    onPointerDown: (e: PointerEvent) => void
     onContextMenu: (e: MouseEvent) => void
     ondragstart: (e: DragEvent) => void
     ondragend: () => void
@@ -39,7 +46,6 @@
   } = $props()
 
   const Icon = $derived(row.kind ? KIND_ICON[row.kind] : Folder)
-  const showBox = $derived(selected || anySelected)
   // An icon view is big enough to be its own thumbnail: uploaded images show
   // themselves rather than a generic paperclip.
   const thumb = $derived(
@@ -48,6 +54,7 @@
 </script>
 
 <div
+  data-row-key={rowKey}
   role="presentation"
   draggable="true"
   {ondragstart}
@@ -56,14 +63,22 @@
   {ondragleave}
   {ondrop}
   oncontextmenu={onContextMenu}
+  onfocusin={onFocusIn}
+  onpointerdown={onPointerDown}
   class="group relative"
 >
   <button
     type="button"
-    onclick={onOpen}
+    tabindex={focused ? 0 : -1}
+    onclick={(e) => {
+      // Modifier clicks select (the desktop grammar); a plain click opens.
+      if (e.metaKey || e.ctrlKey || e.shiftKey) { e.preventDefault(); onToggle(e) }
+      else onOpen()
+    }}
     title={`${row.name} · ${row.kindLabel}`}
     class={cn(
       'flex w-full flex-col items-center gap-1.5 rounded-lg px-1 py-2.5 transition-colors',
+      'focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1',
       selected ? 'bg-raised' : 'dither-fill',
       active && !selected && 'bg-card',
       dropTarget && 'ring-1 ring-accent/60',
@@ -85,17 +100,16 @@
     </span>
   </button>
 
-  <input
-    type="checkbox"
+  <!-- Corner checkbox, permanently visible — tiles have no icon lane to share,
+       and a selection control that hides until hunted for is no affordance. -->
+  <Checkbox
+    bare
     checked={selected}
-    aria-label={`Select ${row.name}`}
-    onclick={(e) => {
+    title={`Select ${row.name}`}
+    onChange={(_checked, e) => {
       e.stopPropagation()
       onToggle(e)
     }}
-    class={cn(
-      'absolute left-1.5 top-1.5 h-3.5 w-3.5 cursor-pointer accent-accent transition-opacity',
-      showBox ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-    )}
+    class="absolute left-1.5 top-1.5 h-3.5 w-3.5"
   />
 </div>

@@ -14,7 +14,7 @@
     {disabled}
     {title}
     aria-label={title}
-    onchange={(e) => onChange(e.currentTarget.checked)}
+    onchange={(e) => onChange(e.currentTarget.checked, e)}
     class={cn('accent-accent', focusRing, className)}
   />
 {:else}
@@ -23,7 +23,7 @@
       type="checkbox"
       {checked}
       {disabled}
-      onchange={(e) => onChange(e.currentTarget.checked)}
+      onchange={(e) => onChange(e.currentTarget.checked, e)}
       class={cn('accent-accent', focusRing)}
     />
     {#if typeof label === 'string'}{label}{:else if label}{@render label()}{/if}

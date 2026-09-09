@@ -494,6 +494,12 @@
         {emptyHint}
         onOpenFolder={goFolder}
         onOpenArtifact={setActiveId}
+        onAscend={() => {
+          // ← climbs one level: into the parent folder, or to the place root.
+          // The trail is the walked ancestry — its last-but-one segment is the
+          // parent; an empty trail means the browser is already at the root.
+          if (trail.length >= 1) goFolder(trail[trail.length - 2]?.id ?? null)
+        }}
         onMove={move}
         onUpload={upload}
         onRefresh={refresh}
