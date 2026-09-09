@@ -78,7 +78,13 @@
     else void navigate('/knowledge', { replace })
   }
   const setSpaceId = (id: string | null) => setLoc(id, null)
-  const setDocId = (id: string | null) => setLoc(spaceId, id)
+  // A doc click names its space, not the URL's: the tree renders under the
+  // `activeSpace ?? spaces[0]` fallback, which is live on a bare `/knowledge`
+  // URL — and `setLoc(null, id)` navigates to that same bare URL, a no-op
+  // that swallowed every doc click until some other navigation put a space in
+  // the path. The fallback can only fire when spaceId is null, so a path URL
+  // keeps its own space.
+  const setDocId = (id: string | null) => setLoc(spaceId ?? activeSpace?.id ?? null, id)
   let creatingSpace = $state(false)
   const activeSpace = $derived(spaces.find((s) => s.id === spaceId) ?? spaces[0])
   const docsQuery = useDocs(() => activeSpace?.id ?? null)
@@ -126,7 +132,23 @@
   // were in navigates to `/knowledge`), and restoring there would undo the
   // thing the user just did. Arriving IS a mount, so the latch is the honest
   // test. An explicit link or permalink outranks the memory and just spends it.
-  let restored = false
+  //
+  // `restored` is `$state`, not a plain `let`: the canonicalising effect below
+  // reads the latch, and a plain let cannot re-run it. On a first-ever landing
+  // (no saved selection) that effect's first run returned at `!restored` having
+  // tracked only `onKnowledge` and `pathSpace` — neither of which ever changes
+  // on a bare URL — so the URL stayed bare for good and every doc click died on
+  // the no-op navigation above. The saved-selection path worked only because
+  // its own `setLoc` changed `pathSpace`, which is why the bug read as
+  // "sometimes".
+  //
+  // `restoredSpace` is the restore's ANSWER, set in the same flush as the
+  // latch: the space the memory navigated to, or null when there was nothing
+  // to restore. The canonicaliser reads it to stay out of the restore's way —
+  // both wake together on the latch, and without this the first-space default
+  // would fire in the same breath and race the memory's navigation.
+  let restored = $state(false)
+  let restoredSpace: string | null = null
   $effect(() => {
     if (!onKnowledge || restored) return
     if (pathSpace || docId) {
@@ -138,7 +160,10 @@
     if (spacesQuery.isLoading) return
     restored = true
     const saved = restorableKnowledgeSelection(readKnowledgeSelection(), { spaceIds: spaces.map((s) => s.id) })
-    if (saved) setLoc(saved.spaceId, saved.docId, { replace: true })
+    if (saved) {
+      restoredSpace = saved.spaceId
+      setLoc(saved.spaceId, saved.docId, { replace: true })
+    }
   })
 
   $effect(() => {
@@ -147,6 +172,7 @@
     // Let the restore above answer first; otherwise the first-space default
     // wins the race and there is nothing left for the memory to restore.
     if (!restored) return
+    if (restoredSpace) return // the memory's navigation is in flight
     const wantDoc = docId ?? staleSeg
     const home = permalinkDoc.data?.spaceId ?? (wantDoc ? null : spaces[0]?.id)
     if (!home) return
