@@ -341,16 +341,20 @@ fn truncate(s: &str) -> &str {
 // flow asks for offline access and seals what comes back. Separate redirect
 // URIs so the flows never cross-wire; one exchange, one userinfo shape.
 
-/// Least-privilege for export/import: drive.file grants access only to files
-/// the app itself creates or the user explicitly opens with it — not the
-/// whole Drive.
+/// The workspace connection's grants. Drive is FULL management (browse,
+/// import, rename, move, trash, create) — drive.file and drive.readonly,
+/// the earlier least-privilege pair, could not manage the Drive the Files
+/// place browses.
 pub const WORKSPACE_SCOPES: &[&str] = &[
     "openid",
     "email",
-    // Create + manage files the app itself makes (export).
-    "https://www.googleapis.com/auth/drive.file",
-    // Read metadata + content of the user's Drive files (browse + import).
-    "https://www.googleapis.com/auth/drive.readonly",
+    // Full Drive management — browse, import, rename, move, trash, create
+    // (drive.file covers app-made files only, readonly reads only). Swapped
+    // in for drive.readonly when Drive management shipped; a connection
+    // granted before then needs one reconnect to pick the scope up — the
+    // roster's writable flag says false and the Drive place shows the
+    // reconnect banner until it does.
+    "https://www.googleapis.com/auth/drive",
     // View + edit calendar events (agenda + create).
     "https://www.googleapis.com/auth/calendar.events",
     // Read + ORGANIZE mail: labels, mark-read, archive (gmail.modify — it

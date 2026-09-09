@@ -15,6 +15,7 @@
   import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, updateFolder, type Artifact } from '@/lib/artifacts'
   import { errorMessage } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
+  import { moveDriveFile, renameDriveFile, trashDriveFile } from '@/lib/google-drive'
   import ArtifactsRow from './ArtifactsRow.svelte'
   import ArtifactsTile from './ArtifactsTile.svelte'
   import MoveDialog from './MoveDialog.svelte'
@@ -41,6 +42,7 @@
     onPaste,
     onOpenDriveFile,
     onImport,
+    onDriveChange,
     more = false,
     onLoadMore,
     importingCount = 0,
@@ -75,6 +77,8 @@
     onOpenDriveFile: (url: string | null) => void
     /** Drive rows only: pull the selected Drive files into Talaria. */
     onImport: (fileIds: string[]) => Promise<unknown>
+    /** Drive rows only: a write landed — refetch the listing. */
+    onDriveChange: () => void
     /** Drive rows only: another page waits. */
     more?: boolean
     onLoadMore?: () => void
@@ -186,7 +190,11 @@
     // Dragging a row that's part of the selection carries the whole selection;
     // dragging an unselected row carries just it (and takes the selection over).
     const set = selected.has(keyOf(r)) ? selectedRows : [r]
-    return { folders: set.filter((x) => x.type === 'folder').map((x) => x.id), artifacts: set.filter((x) => x.type === 'artifact').map((x) => x.id) }
+    return {
+      folders: set.filter((x) => x.type === 'folder').map((x) => x.id),
+      artifacts: set.filter((x) => x.type === 'artifact').map((x) => x.id),
+      source: r.drive ? 'drive' : 'local',
+    }
   }
 
   const toggle = (r: Row, i: number, e?: Event) => {
@@ -227,6 +235,58 @@
     clear()
   }
   const paste = (into?: string) => onPaste(into)
+
+  // ── Drive writes — the roster's writable flag gates every one ──────────
+  /** Move the drag's Drive rows into `target` (a Drive folder id or null for
+   *  the drive root). The remove end is always the folder you dragged from.
+   *  Google takes one PATCH per file — sequential, like import. */
+  const moveDriveDrag = async (d: NonNullable<Drag>, target: string | null) => {
+    const rows = [...d.folders, ...d.artifacts]
+    if (!rows.length) return
+    const key = rows.length ? (driveKeyOf() ?? null) : null
+    if (!key) return
+    const from = folderId
+    for (const id of rows) {
+      try {
+        await moveDriveFile(key, id, target, from)
+      } catch (e) {
+        pushToast({ title: 'Move failed', body: errorMessage(e), tone: 'danger' })
+        break
+      }
+    }
+    clear()
+    onDriveChange()
+  }
+
+  /** The drive key of the current listing — from the first drive row. */
+  const driveKeyOf = (): string | null => rows.find((r) => r.drive)?.drive?.driveKey ?? null
+
+  const renameDrive = async (r: Row) => {
+    if (!r.drive) return
+    const name = await prompt({ title: 'Rename in Drive', defaultValue: r.name, confirmLabel: 'Rename' })
+    if (!name?.trim() || name === r.name) return
+    try {
+      await renameDriveFile(r.drive.driveKey, r.id, name.trim())
+    } catch (e) {
+      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    onDriveChange()
+  }
+
+  const trashDrive = async (r: Row) => {
+    if (!r.drive) return
+    const n = selectedRows.length > 1 ? `${selectedRows.length} items` : `"${r.name}"`
+    if (!(await confirm({ title: 'Trash in Drive', message: `Move ${n} to Google Drive's trash? It stays recoverable in Drive.`, confirmLabel: 'Trash', danger: true }))) return
+    const rows = selected.size && selected.has(keyOf(r)) ? selectedRows : [r]
+    try {
+      for (const row of rows) await trashDriveFile(row.drive!.driveKey, row.id)
+    } catch (e) {
+      pushToast({ title: 'Trash failed', body: errorMessage(e), tone: 'danger' })
+    }
+    clear()
+    onDriveChange()
+  }
 
   const duplicate = async (r: Row) => {
     try {
@@ -453,7 +513,13 @@
       if (r.drive.entry.webViewLink) {
         items.push({ label: 'Open in Google Drive', onSelect: () => window.open(r.drive!.entry.webViewLink!, '_blank', 'noopener') })
       }
-      if (r.type === 'artifact') {
+      if (r.drive.writable) {
+        items.push('sep', { label: 'Rename', onSelect: () => void renameDrive(r) })
+        if (r.type === 'artifact') {
+          items.push({ label: 'Import to Talaria', onSelect: () => void onImport([r.id]) })
+        }
+        items.push('sep', { label: 'Trash in Drive', danger: true, onSelect: () => void trashDrive(r) })
+      } else if (r.type === 'artifact') {
         items.push('sep', { label: 'Import to Talaria', onSelect: () => void onImport([r.id]) })
       }
       return items
@@ -501,7 +567,15 @@
     e.preventDefault()
     e.stopPropagation()
     overFolder = null
-    if (driveMode) return
+    if (driveMode) {
+      if (drag?.source === 'drive') {
+        const d = drag
+        drag = null
+        if (d.folders.includes(folderId)) return
+        await moveDriveDrag(d, folderId)
+      }
+      return
+    }
     if (drag) {
       const d = drag
       drag = null
@@ -527,7 +601,14 @@
   const dropOnBody = async (e: DragEvent) => {
     e.preventDefault()
     fileOver = false
-    if (driveMode) return
+    if (driveMode) {
+      if (drag?.source === 'drive') {
+        const d = drag
+        drag = null
+        await moveDriveDrag(d, null)
+      }
+      return
+    }
     const files = Array.from(e.dataTransfer?.files ?? [])
     if (files.length) {
       uploading = true
@@ -736,17 +817,21 @@
     open={moveDialog}
     onClose={() => (moveDialog = false)}
     selection={selected.size
-      ? { folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id), artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id) }
+      ? { folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id), artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id), source: driveMode ? 'drive' : 'local' }
       : { folders: [], artifacts: [] }}
     startAt={folderId}
+    driveKey={driveMode ? (rows[0]?.drive?.driveKey ?? null) : null}
     onMove={async (target) => {
-      await onMove(
-        {
-          folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id),
-          artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id),
-        },
-        target,
-      )
+      const payload = {
+        folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id),
+        artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id),
+        source: (driveMode ? 'drive' : 'local') as 'drive' | 'local',
+      }
+      if (driveMode) {
+        await moveDriveDrag(payload, target)
+        return
+      }
+      await onMove(payload, target)
       clear()
     }}
   />

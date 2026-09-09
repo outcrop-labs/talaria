@@ -80,7 +80,13 @@ export const VISIBILITY_LABEL: Record<string, string> = {
 
 /** A drag carries the whole SELECTION, not the one row under the cursor —
  *  dragging a selected row moves everything selected with it. */
-export type Drag = { folders: string[]; artifacts: string[] } | null
+export type Drag = {
+  folders: string[]
+  artifacts: string[]
+  /** Where the rows come from — a Drive drag is Google's to move, never
+   *  saveArtifact's; targets dispatch on this or misroute the payload. */
+  source?: 'local' | 'drive'
+} | null
 
 /** The payload also rides on the dataTransfer, not just component state, so
  *  targets OUTSIDE the browser (the breadcrumb, which is the only way to move

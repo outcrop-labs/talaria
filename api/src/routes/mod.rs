@@ -579,6 +579,26 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/integrations/google/drive/rename",
+            post(integrations::integrations_google_drive_manage::rename)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/move",
+            post(integrations::integrations_google_drive_manage::drive_move)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/trash",
+            post(integrations::integrations_google_drive_manage::trash)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/create-folder",
+            post(integrations::integrations_google_drive_manage::create_folder)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/integrations/google/drive/import",
             post(integrations::integrations_google_drive_import::post)
                 .fallback(|| async { method_not_allowed("POST") }),

@@ -50,6 +50,22 @@ export const importDriveFile = (fileId: string, folderId?: string | null) =>
     [409, 413, 502],
   )
 
+export const renameDriveFile = (d: string, fileId: string, name: string) =>
+  postJsonOr<DriveEntry>('/api/integrations/google/drive/rename', { d, fileId, name }, [409, 502])
+
+export const moveDriveFile = (
+  d: string,
+  fileId: string,
+  addParent: string | null,
+  removeParent: string | null,
+) => postJsonOr<{ ok?: true }>('/api/integrations/google/drive/move', { d, fileId, addParent, removeParent }, [409, 502])
+
+export const trashDriveFile = (d: string, fileId: string) =>
+  postJsonOr<{ ok?: true }>('/api/integrations/google/drive/trash', { d, fileId }, [409, 502])
+
+export const createDriveFolder = (d: string, name: string, parent: string | null) =>
+  postJsonOr<DriveEntry>('/api/integrations/google/drive/create-folder', { d, name, parent }, [409, 502])
+
 /** One folder page — first page (no token) or a Load-more (with). */
 export function browseDrivePage(
   driveKey: string,

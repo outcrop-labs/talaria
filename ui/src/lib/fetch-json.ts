@@ -47,6 +47,14 @@ export async function readJson<T>(r: Response, statusesAsData: number[] = []): P
 // checker enforces that (search `same-origin-fetch` in check-invariants.mjs).
 const SAME_ORIGIN: RequestInit = { credentials: 'same-origin' }
 
+/** GET a raw TEXT body (file previews) — same credentials door as the JSON
+ *  verbs; throws on any non-2xx like its siblings. */
+export async function getText(url: string): Promise<string> {
+  const r = await fetch(url, { ...SAME_ORIGIN })
+  if (!r.ok) throw new HttpError(r.status, `getText failed (${r.status})`)
+  return r.text()
+}
+
 /** GET + parse. Throws on ANY non-2xx, 404 included. */
 export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   return readJson<T>(await fetch(url, { ...SAME_ORIGIN, ...init }))
