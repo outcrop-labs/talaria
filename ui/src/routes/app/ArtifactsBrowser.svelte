@@ -12,11 +12,15 @@
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { fade, listStagger } from '@/lib/motion'
-  import { deleteArtifact, deleteFolder, updateFolder, type Artifact } from '@/lib/artifacts'
+  import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, updateFolder, type Artifact } from '@/lib/artifacts'
   import { errorMessage } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import ArtifactsRow from './ArtifactsRow.svelte'
   import ArtifactsTile from './ArtifactsTile.svelte'
+  import MoveDialog from './MoveDialog.svelte'
+  import {
+    clearClipboard, clipboard, copyClipboard, cutClipboard, isCut, pruneClipboard,
+  } from './files-clipboard.svelte'
   import { DRAG_MIME, ROW_GRID, type Drag, type Row, type SortDir, type SortKey } from './artifacts'
 
   // The browser: the room you're standing in. Everything a file manager is
@@ -33,6 +37,8 @@
     onSort,
     activeId,
     canOrganize,
+    folderId,
+    onPaste,
     emptyTitle,
     emptyHint,
     onOpenFolder,
@@ -56,6 +62,10 @@
     /** Flat places (Shared, Official, Recent) are views, not locations: moving
      *  and folder-making are meaningless there, so they're off. */
     canOrganize: boolean
+    /** Where the browser stands — the MoveDialog opens here, ⌘V pastes here. */
+    folderId: string | null
+    /** Paste the clipboard: undefined = the current folder, an id = into it. */
+    onPaste: (into?: string) => Promise<unknown>
     emptyTitle: string
     emptyHint?: string
     onOpenFolder: (id: string) => void
@@ -84,6 +94,7 @@
   let overFolder = $state<string | null>(null)
   let fileOver = $state(false)
   let uploading = $state(false)
+  let moveDialog = $state(false)
 
   // ── Focus: the roving tabindex ─────────────────────────────────────────────
   // Exactly one row carries tabindex=0 (the focused one); arrows move it. A
@@ -149,6 +160,13 @@
     if (next.size !== current.size) selected = next
   })
 
+  // The clipboard is pruned exactly like the selection — a deleted item must
+  // not stay armed for the next paste.
+  $effect(() => {
+    const sig = rows.map(keyOf).join(',')
+    if (sig !== lastSig) pruneClipboard(new Set(rows.map(keyOf)))
+  })
+
   const selectedRows = $derived(rows.filter((r) => selected.has(keyOf(r))))
   const dragOf = (r: Row): NonNullable<Drag> => {
     // Dragging a row that's part of the selection carries the whole selection;
@@ -179,6 +197,32 @@
   const clear = () => {
     selected = new Set()
     anchor = null
+  }
+
+  // ── Clipboard verbs — the selection bar's, the menus', and the keys' ──────
+  // After a cut or copy the selection IS the clipboard: clearing it here
+  // hands the rows back their normal look and leaves the paste armed.
+  const cut = () => {
+    if (!selected.size) return
+    cutClipboard([...selected], folderId)
+    clear()
+  }
+  const copy = () => {
+    if (!selected.size) return
+    copyClipboard([...selected], folderId)
+    clear()
+  }
+  const paste = (into?: string) => onPaste(into)
+
+  const duplicate = async (r: Row) => {
+    try {
+      if (r.type === 'folder') await duplicateFolder(r.id)
+      else await duplicateArtifact(r.id)
+    } catch (e) {
+      pushToast({ title: 'Could not duplicate', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    await onRefresh()
   }
 
   // ── Keyboard: the desktop file-manager grammar ─────────────────────────────
@@ -259,6 +303,26 @@
     }
     // A modal owns the keyboard while it is open.
     if (document.querySelector('[role=dialog]')) return
+    // The clipboard keys. X and C only intercept with a selection — a bare
+    // ⌘C must keep copying text like everywhere else.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'x' || e.key === 'c') && selected.size && canOrganize) {
+      e.preventDefault()
+      if (e.key === 'x') cut()
+      else copy()
+      return
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'v' && clipboard() && canOrganize) {
+      e.preventDefault()
+      void paste()
+      return
+    }
+    // Escape's ladder: the most transient thing first — a clipboard outlives
+    // a selection, so the selection clears before the clipboard does.
+    if (e.key === 'Escape') {
+      if (selected.size) clear()
+      else if (clipboard()) clearClipboard()
+      return
+    }
     if (!rows.length) return
     const i = indexOfKey(focusKey)
     switch (e.key) {
@@ -377,6 +441,16 @@
       const href = downloadHref(r.artifact)
       if (href) items.push({ label: 'Download', onSelect: () => window.open(href, '_blank', 'noopener') })
     }
+    if (canOrganize) {
+      items.push('sep')
+      items.push({ label: 'Cut', onSelect: () => { clear(); cutClipboard([keyOf(r)], folderId) } })
+      items.push({ label: 'Copy', onSelect: () => { clear(); copyClipboard([keyOf(r)], folderId) } })
+      if (clipboard() && r.type === 'folder') {
+        items.push({ label: 'Paste into', disabled: !canOrganize, onSelect: () => void paste(r.id) })
+      }
+      items.push({ label: 'Duplicate', onSelect: () => void duplicate(r) })
+      items.push({ label: 'Move to…', onSelect: () => (moveDialog = true) })
+    }
     // Properties sits last among the safe actions, the way every file browser
     // puts Get Info / Properties at the foot of the menu.
     items.push({ label: 'Properties', onSelect: () => onProperties(r) })
@@ -464,6 +538,14 @@
     if (e.currentTarget === e.target) fileOver = false
   }}
   ondrop={(e) => void dropOnBody(e)}
+  oncontextmenu={(e) => {
+    // The empty-space menu mirrors the surface's own verbs — one today: paste.
+    if ((e.target as HTMLElement).closest('[data-row-key]')) return
+    e.preventDefault()
+    menu.openMenu(e, [
+      { label: 'Paste', disabled: !clipboard() || !canOrganize, onSelect: () => void paste() },
+    ])
+  }}
 >
   {#if view === 'list' && (rows.length > 0 || loading)}
     <!-- Column heads sit outside the scroller so they stay put; ROW_GRID is
@@ -516,6 +598,7 @@
             row: r,
             rowKey: k,
             selected: selected.has(k),
+            cut: isCut(k),
             focused: focusKey === k,
             active: r.type === 'artifact' && r.id === activeId,
             dropTarget: overFolder === r.id,
@@ -581,6 +664,11 @@
           Download
         </a>
       {/if}
+      {#if canOrganize}
+        <Button variant="ghost" size="xs" onclick={cut}>Cut</Button>
+        <Button variant="ghost" size="xs" onclick={copy}>Copy</Button>
+        <Button variant="ghost" size="xs" onclick={() => (moveDialog = true)}>Move</Button>
+      {/if}
       <DangerLink onClick={() => void removeSelection()}>Delete</DangerLink>
       <Button variant="ghost" size="xs" class="ml-auto" onclick={clear}>
         Clear
@@ -600,5 +688,23 @@
     </div>
   {/if}
 
+  <MoveDialog
+    open={moveDialog}
+    onClose={() => (moveDialog = false)}
+    selection={selected.size
+      ? { folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id), artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id) }
+      : { folders: [], artifacts: [] }}
+    startAt={folderId}
+    onMove={async (target) => {
+      await onMove(
+        {
+          folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id),
+          artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id),
+        },
+        target,
+      )
+      clear()
+    }}
+  />
   <ContextMenu {menu} />
 </div>

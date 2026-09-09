@@ -20,13 +20,18 @@
   import Input from '@/components/ui/Input.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
-  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { cn } from '@/lib/cn'
   import { errorMessage } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useUsers } from '@/lib/users'
-  import { createArtifact, createFolder, saveArtifact, updateFolder, uploadFile, useArtifacts, useFolders, type ArtifactKind } from '@/lib/artifacts'
+  import {
+    createArtifact, createFolder, duplicateArtifact, duplicateFolder,
+    saveArtifact, updateFolder, uploadFile, useArtifacts, useFolders, type ArtifactKind,
+  } from '@/lib/artifacts'
+  import { clearClipboard, clipboard } from './files-clipboard.svelte'
   import type { PermKind } from '@/lib/kb'
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ArtifactsBrowser from './ArtifactsBrowser.svelte'
@@ -141,6 +146,8 @@
     if (saved.place === 'my') void navigate('/artifacts', { search, replace: true })
     else void navigate('/artifacts/:place', { params: { place: saved.place }, search, replace: true })
   })
+
+  const crumbMenu = useContextMenu()
 
   let importOpen = $state(false)
   /** The row whose Properties dialog is open (null = closed). */
@@ -341,6 +348,39 @@
     await refresh()
   }
 
+  /** Paste the clipboard into a folder (default: the one you're standing in).
+   *  Cut moves; copy duplicates into the destination. Pasting a cut batch
+   *  back where it came from is a silent no-op — nothing was asked for. */
+  const paste = async (into?: string | null) => {
+    const clip = clipboard()
+    if (!clip) return
+    const target = into === undefined ? folderId : into
+    const keys = clip.keys.filter((k) => k.startsWith('artifact:')).map((k) => k.slice('artifact:'.length))
+    const folderKeys = clip.keys.filter((k) => k.startsWith('folder:')).map((k) => k.slice('folder:'.length))
+    if (clip.mode === 'cut') {
+      if (target === clip.fromFolderId) {
+        clearClipboard()
+        return
+      }
+      await move({ artifacts: keys, folders: folderKeys }, target)
+    } else {
+      try {
+        for (const id of keys) {
+          const copy = await duplicateArtifact(id)
+          if (copy.folderId !== target) await saveArtifact(copy.id, { folderId: target })
+        }
+        for (const id of folderKeys) {
+          const copy = await duplicateFolder(id)
+          if (copy.parentId !== target) await updateFolder(copy.id, { parentId: target })
+        }
+      } catch (e) {
+        pushToast({ title: 'Paste failed', body: errorMessage(e), tone: 'danger' })
+      }
+      await refresh()
+    }
+    clearClipboard()
+  }
+
   // Breadcrumb segments accept drops, which is the only way to move something
   // UP a level now that there is no tree to drag it onto. The payload rides on
   // the dataTransfer (DRAG_MIME) rather than shared state, so the browser and
@@ -416,6 +456,13 @@
               ondragover={(e) => crumbOver_(e, 'root')}
               ondragleave={() => (crumbOver = crumbOver === 'root' ? null : crumbOver)}
               ondrop={(e) => void crumbDrop(e, null)}
+              oncontextmenu={(e) => {
+                e.preventDefault()
+                crumbMenu.openMenu(e, [
+                  { label: 'Open', onSelect: () => goFolder(null) },
+                  { label: 'Paste into', disabled: !clipboard() || !canOrganize, onSelect: () => void paste(null) },
+                ])
+              }}
               class={cn('shrink-0 rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', trail.length ? 'text-muted hover:text-fg' : 'text-fg', crumbOver === 'root' && 'bg-raised ring-1 ring-accent/60')}
             >
               {currentPlace.label}
@@ -428,6 +475,13 @@
                 ondragover={(e) => crumbOver_(e, f.id)}
                 ondragleave={() => (crumbOver = crumbOver === f.id ? null : crumbOver)}
                 ondrop={(e) => void crumbDrop(e, f.id)}
+                oncontextmenu={(e) => {
+                  e.preventDefault()
+                  crumbMenu.openMenu(e, [
+                    { label: 'Open', onSelect: () => goFolder(f.id) },
+                    { label: 'Paste into', disabled: !clipboard() || !canOrganize, onSelect: () => void paste(f.id) },
+                  ])
+                }}
                 class={cn('min-w-0 truncate rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', i === trail.length - 1 ? 'text-fg' : 'text-muted hover:text-fg', crumbOver === f.id && 'bg-raised ring-1 ring-accent/60')}
               >
                 {f.id === agentsRootId ? AGENTS_ROOT : f.name}
@@ -492,6 +546,8 @@
         {canOrganize}
         {emptyTitle}
         {emptyHint}
+        {folderId}
+        onPaste={(into) => paste(into)}
         onOpenFolder={goFolder}
         onOpenArtifact={setActiveId}
         onAscend={() => {
@@ -572,4 +628,8 @@
       }}
     />
   {/if}
+
+  <!-- The breadcrumb's own menu host (Open / Paste into — the crumb is a
+       destination, the keyboard/touch twin of its drop target). -->
+  <ContextMenu menu={crumbMenu} />
 </RailSurface>

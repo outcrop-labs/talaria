@@ -956,6 +956,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
+            "/api/artifacts/{id}/duplicate",
+            post(files::artifacts_id_duplicate::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/artifacts/{id}/export/google",
             post(files::artifacts_id_export_google::post)
                 .fallback(|| async { method_not_allowed("POST") }),
@@ -965,6 +970,11 @@ pub fn router(state: AppState) -> Router {
             get(files::artifact_folders::get)
                 .post(files::artifact_folders::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/artifact-folders/{id}/duplicate",
+            post(files::artifact_folders_id_duplicate::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/artifact-folders/{id}",

@@ -439,6 +439,198 @@ pub async fn delete_folder(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+// ── Duplicate (copy/paste's engine) ─────────────────────────────────────────
+//
+// A copy is a NEW RECORD that happens to carry the source's content — not a
+// view of the same one. The rules, stated once, both functions follow:
+//   · `storage_ref` is SHARED, never re-uploaded: the blob is served by id
+//     from /api/uploads/{ref} and no artifact delete touches the blob, so two
+//     rows naming it is the system working as designed.
+//   · The copy is the CALLER's and private: `visibility = 'private'`,
+//     `official = false`, no public slug, no KB mirror, no Google linkage —
+//     the copy is not that Drive file, and publishing it is a choice the
+//     copier can make after.
+//   · `edit_policy` rides along (who may edit the copy starts as who may edit
+//     the source); folders keep visibility and edit_policy too — folders are
+//     org-wide containers, and a private copy of an org folder would be a
+//     trap (invisible to the people the tree was for).
+//   · Copies land beside their source, under a "Copy of" name.
+
+/// The first free `Copy of …` name in a folder — "(2)".."(9)", then the clock.
+/// A folder of the same name counts too: two "Copy of X" entries in one
+/// directory where one is a folder reads as a lie.
+async fn copy_name(
+    conn: &mut sqlx::PgConnection,
+    base: &str,
+    folder: Option<&str>,
+) -> Result<String, sqlx::Error> {
+    for n in 0..9u32 {
+        let candidate = match n {
+            0 => format!("Copy of {base}"),
+            k => format!("Copy of {base} ({k})"),
+        };
+        let artifact_taken: Option<(i64,)> = sqlx::query_as(
+            "select 1 from artifacts where title = $1 and folder_id is not distinct from $2::uuid limit 1",
+        )
+        .bind(&candidate)
+        .bind(folder)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let folder_taken: Option<(i64,)> = sqlx::query_as(
+            "select 1 from artifact_folders where name = $1 and parent_id is not distinct from $2::uuid limit 1",
+        )
+        .bind(&candidate)
+        .bind(folder)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if artifact_taken.is_none() && folder_taken.is_none() {
+            return Ok(candidate);
+        }
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    Ok(format!("Copy of {base} {ms}"))
+}
+
+/// One artifact copy — the shape `paste` of a single file makes. Read-level:
+/// anyone who can see it can copy it (the Drive semantic; the source is never
+/// mutated), and the copy is the caller's, private, beside the source.
+pub async fn duplicate_artifact(
+    pg: &PgPool,
+    id: &str,
+    created_by: &str,
+    owner_user_id: Option<&str>,
+) -> Result<Option<Artifact>, sqlx::Error> {
+    let Some(src) = get_artifact(pg, id).await? else {
+        return Ok(None);
+    };
+    let mut conn = pg.acquire().await?;
+    let title = copy_name(&mut conn, &src.title, src.folder_id.as_deref()).await?;
+    drop(conn);
+    // AssertSqlSafe: the interpolation is this crate's COLS column list.
+    let sql = format!(
+        "insert into artifacts \
+         (kind, title, icon, body, content_type, storage_ref, visibility, edit_policy, \
+          folder_id, owner_user_id, rag_routing, created_by, updated_by) \
+         values ($1, $2, $3, $4, $5, $6, 'private', $7, $8::uuid, $9::uuid, $10, $11, $11) \
+         returning {COLS}"
+    );
+    let row: ArtifactRow = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(&src.kind)
+        .bind(title)
+        .bind(&src.icon)
+        .bind(&src.body)
+        .bind(&src.content_type)
+        .bind(&src.storage_ref)
+        .bind(&src.edit_policy)
+        .bind(&src.folder_id)
+        .bind(owner_user_id)
+        .bind(&src.rag_routing)
+        .bind(created_by)
+        .fetch_one(pg)
+        .await?;
+    Ok(Some(Artifact::from(row)))
+}
+
+/// A tree copy, whole: new folders level by level (old→new map), then every
+/// artifact duplicated into its folder's twin. One transaction — a half-copied
+/// tree is worse than no copy. Children keep their names: they land in a
+/// brand-new folder, so nothing collides.
+pub async fn duplicate_folder(
+    pg: &PgPool,
+    id: &str,
+    created_by: &str,
+    owner_user_id: Option<&str>,
+) -> Result<Option<ArtifactFolder>, sqlx::Error> {
+    let Some(src) = get_folder(pg, id).await? else {
+        return Ok(None);
+    };
+    let mut tx = pg.begin().await?;
+
+    // Descendants, oldest first (depth order): the recursive CTE carries an
+    // `is cycle` guard — the table tolerates cycles (the UI's ancestry walk
+    // bounds itself against them), and a copy must not inherit one.
+    let tree: Vec<(String, String, Option<String>, String, i32)> = sqlx::query_as(
+        "with recursive tree (id, name, parent_id, visibility, depth, is_cycle, cycle_path) as ( \
+           select id::text, name, parent_id::text, visibility, 0, false, array[id] \
+             from artifact_folders where id = $1::uuid \
+           union all \
+           select f.id::text, f.name, f.parent_id::text, f.visibility, t.depth + 1, \
+                  f.id = any(t.cycle_path), t.cycle_path || f.id \
+             from artifact_folders f join tree t on f.parent_id::text = t.id \
+            where not t.is_cycle and t.depth < 50 \
+         ) select id, name, parent_id, visibility, depth from tree order by depth",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut new_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (old_id, name, old_parent, visibility, depth) in &tree {
+        let title = if *depth == 0 {
+            copy_name(&mut *tx, name, src.parent_id.as_deref()).await?
+        } else {
+            name.clone()
+        };
+        let parent = if *depth == 0 {
+            src.parent_id.clone()
+        } else {
+            // Depth order guarantees the parent was copied first; an unmapped
+            // parent can only be a cycle the guard let through, and skipping
+            // the orphan beats copying it to the root.
+            match old_parent.as_deref().and_then(|p| new_ids.get(p)) {
+                Some(p) => Some(p.clone()),
+                None => continue,
+            }
+        };
+        // AssertSqlSafe: the interpolation is this crate's FOLDER_COLS column list.
+        let sql = format!(
+            "insert into artifact_folders (name, parent_id, created_by, owner_user_id, visibility) \
+             values ($1, $2::uuid, $3, $4::uuid, $5) returning {FOLDER_COLS}"
+        );
+        let row: FolderRow = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(&title)
+            .bind(&parent)
+            .bind(created_by)
+            .bind(owner_user_id)
+            .bind(visibility)
+            .fetch_one(&mut *tx)
+            .await?;
+        new_ids.insert(old_id.clone(), row.id);
+    }
+
+    // Artifacts into their folders' twins. No name ladder — the folder is new.
+    for (old_id, new_id) in &new_ids {
+        // AssertSqlSafe: the interpolation is this crate's COLS column list.
+        let sql = format!(
+            "insert into artifacts \
+             (kind, title, icon, body, content_type, storage_ref, visibility, edit_policy, \
+              folder_id, owner_user_id, rag_routing, created_by, updated_by) \
+             select kind, title, icon, body, content_type, storage_ref, 'private', edit_policy, \
+                    $2::uuid, $3::uuid, rag_routing, $4, $4 \
+               from artifacts where folder_id = $1::uuid \
+             returning {COLS}"
+        );
+        let rows: Vec<ArtifactRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(old_id)
+            .bind(new_id)
+            .bind(owner_user_id)
+            .bind(created_by)
+            .fetch_all(&mut *tx)
+            .await?;
+        let _ = rows; // inserted for their side effect; no per-copy shape needed
+    }
+
+    tx.commit().await?;
+    let root = new_ids.get(id).cloned();
+    match root {
+        Some(root_id) => get_folder(pg, &root_id).await,
+        None => Ok(None),
+    }
+}
+
 /// The ownerless org-visible create shape — the one the agent cabinet path
 /// uses (the workspace's).
 async fn create_org_folder(
