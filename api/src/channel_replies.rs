@@ -144,7 +144,11 @@ pub async fn notify_user_mentions(
         sender_label,
         content,
         &format!("#{channel_name}"),
-        "/channels",
+        // THE CHANNEL, not the index: `/channels` is a redirect to the comms
+        // root, so a mention that lands there lands nowhere — the reader has
+        // to go find the channel the notification was about, which is the
+        // work the notification was supposed to save.
+        &format!("/comms/channel/{channel_id}"),
     )
     .await;
 }
