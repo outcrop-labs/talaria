@@ -142,6 +142,58 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   One fix, every table that carries the field on a row: board list rows,
   the fitness matrix's rows, and the public artifact tables.
 
+- **A cross-off no longer comes back with tomorrow's date on it.** The brief
+  is one document per day, and a check-off lived only inside the day's own
+  append-only log — so every morning's open re-listed everything still live
+  in its sources, including the rows the owner had crossed off the day
+  before, un-crossed, forever. The owner's verdict now carries: the open and
+  the sweep skip a key whose newest entry on a prior day is the owner's own
+  check or dismissal with an unchanged source fingerprint, for thirty days.
+  The item reappears the moment its source actually moves (the task fails
+  differently, the thread gets a new message, the draft is rewritten) — the
+  same rule the within-day sweep always closed lines by — and `restore`
+  still works from the prior day's page, which the read serves before the
+  day's own brief opens. Verified against the live database
+  (`api/tests/brief_verdict_carry_live.rs`, ignored like every live proof):
+  a checked-off blocked task is absent from the next day's document, a
+  stale-fingerprint verdict does not suppress, and a restore lands on the
+  prior page and is re-added by the next sweep.
+
+- **Approvals are decided on the line, not by asking around them.** A
+  pending outbound action — an email or an event the assistant drafted —
+  appeared as a p0 "Needs you" line that went nowhere: its href was a
+  placeholder `/`, and no page in the app listed pending actions at all, so
+  the only way to act was a conversation with the assistant. The line now
+  carries its own decision block, quoting the exact outbound payload (who
+  receives it, what it says, who drafted it) above Approve/Reject buttons —
+  the same contract the drafted-reply block keeps, which is why neither
+  carries a modal. The buttons ride the existing
+  `/api/integrations/google/pending/{id}` decide route; the sweep reads the
+  pending row's decided status and closes the line as APPROVED or REJECTED
+  rather than a generic DONE. Verified on the running stack: the line
+  renders with its payload, a reject closes it as REJECTED on the next
+  read.
+
+- **A mention in a plain channel lands on the channel, not the channel
+  index.** The mention notification's href was `/channels` — a page that
+  now redirects to the comms root — so the reader arrived nowhere specific
+  and went looking for the conversation themselves, which is the work the
+  notification was supposed to save. It now carries
+  `/comms/channel/{id}` like every other channel-shaped notification, and
+  the brief's accessibility check passes it for the members it is for.
+  Verified by posting a live @mention through the real route.
+
+- **Agent-problem notices reach the brief at all.** The fact-flavored
+  agent-problem notifications (the ones telling workspace admins a problem
+  exists without quoting it) carried no href, and the brief lists only
+  notifications with somewhere to go — so they showed in the bell and never
+  on the page that is supposed to be the day. They now point at
+  `/observability/alerts`: never at the filed helpdesk ticket, because the
+  fact audience is precisely the people not on that board, and board
+  visibility is membership rather than role — a ticket href would be
+  dropped for every reader the row is for.
+
+
 - **Google sign-in no longer dies as ERR_TOO_MANY_REDIRECTS.** The OAuth
   relocation (added with the pinned-origin rule) answered "relocate to the
   pin" whenever the derived origin string differed from `AUTH_PUBLIC_URL` —

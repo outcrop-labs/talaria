@@ -4,6 +4,7 @@
   import IconButton from '@/components/ui/IconButton.svelte'
   import { cn } from '@/lib/cn'
   import { navigate } from '@/router'
+  import BriefApproval from './BriefApproval.svelte'
   import BriefReply from './BriefReply.svelte'
   import type { BriefLine, CommsState } from './daily-brief.svelte'
 
@@ -31,6 +32,7 @@
     onAsk,
     comms,
     onDecideReply,
+    onDecideApproval,
     onDelegate,
     onMark,
   }: {
@@ -43,6 +45,8 @@
     onDelegate?: (channelId: string, granted: boolean) => void
     /** The owner's own verdict on this line. */
     onMark?: (sourceKey: string, action: 'check' | 'dismiss' | 'restore') => Promise<boolean>
+    /** Decide a pending outbound action this line carries (approvals only). */
+    onDecideApproval?: (id: string, decision: 'approve' | 'reject') => Promise<{ ok: boolean; error?: string }>
   } = $props()
 
   let marking = $state(false)
@@ -60,6 +64,13 @@
   const showReply = $derived(!!comms && !!onDecideReply && !!onDelegate && !line.resolved)
 
   const entry = $derived(line.current)
+  // An approval line carries its own decision block — the pending action has
+  // no page to open, so the line IS where it is decided (see BriefApproval).
+  // The event/send distinction rides the status label the source wrote.
+  const showApproval = $derived(
+    entry.sourceType === 'approval' && !!entry.sourceId && !!onDecideApproval && !line.resolved,
+  )
+  const approvalIsEvent = $derived((entry.statusLabel ?? '').includes('CREATE EVENT'))
   const external = $derived(!!entry.sourceHref && /^https?:\/\//.test(entry.sourceHref))
   const followable = $derived(!!entry.sourceHref && entry.sourceHref !== '/')
 
@@ -185,6 +196,16 @@
         peer={line.current.title.replace(/ is waiting on you$/, '')}
         onDecide={onDecideReply!}
         onDelegate={onDelegate!}
+      />
+    </div>
+  {/if}
+
+  {#if showApproval}
+    <div class="pl-6 pr-3">
+      <BriefApproval
+        evidence={entry.evidence}
+        isEvent={approvalIsEvent}
+        onDecide={(decision) => onDecideApproval!(entry.sourceId!, decision)}
       />
     </div>
   {/if}

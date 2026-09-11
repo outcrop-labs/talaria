@@ -799,6 +799,106 @@ async fn append_entries(
 
 // ── Opening ──────────────────────────────────────────────────────────────────
 
+/// How far back an owner's check-off still suppresses an unchanged source.
+/// Bounded rather than forever for two reasons: the query stays the size of a
+/// month of briefs, and a fingerprint is a heuristic over "what changed" — a
+/// window is the safety valve that lets a dismissal the fingerprint wrongly
+/// matched resurface, once, a month later, instead of hiding the item for as
+/// long as the account lives. Inside the window nothing reappears "day to
+/// day", which is the report this constant answers.
+const VERDICT_CARRY_DAYS: i32 = 30;
+
+/// The newest entry for each key across the user's PRIOR briefs, inside the
+/// carry window. The open and the sweep's add branch consult it so an item
+/// the owner crossed off on an earlier day is not re-added while its source
+/// stands still — the verdict is about the person's relationship to an
+/// unchanged source, and re-asking it every morning is the nag.
+///
+/// ORDERING IS (brief_date, seq), NOT seq alone: seq resets per brief, so a
+/// bare seq sort would compare Tuesday's 3 against Monday's 11 and hand back
+/// the wrong row. `distinct on` takes the leading sort key, so this is the
+/// latest word on each key.
+async fn prior_entries(
+    pg: &PgPool,
+    user_id: &str,
+    current_brief_id: &str,
+    keys: &[String],
+) -> Result<HashMap<String, (String, Option<String>)>, sqlx::Error> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "select distinct on (e.source_key) e.source_key, e.kind, e.fingerprint \
+         from daily_brief_entries e \
+         join daily_briefs b on b.id = e.brief_id \
+         where b.user_id = $1::uuid and b.id <> $2::uuid \
+           and b.brief_date >= current_date - $3::int \
+           and e.source_key = any($4) \
+         order by e.source_key, b.brief_date desc, e.seq desc",
+    )
+    .bind(user_id)
+    .bind(current_brief_id)
+    .bind(VERDICT_CARRY_DAYS)
+    .bind(keys)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(key, kind, fingerprint)| (key, (kind, fingerprint)))
+        .collect())
+}
+
+/// Whether a prior day's entry suppresses a live candidate for the same key:
+/// its kind is the owner's own verdict AND its fingerprint still matches.
+/// Fingerprint equality is the same rule the within-day sweep closes lines
+/// by — a moved source is new information and reopens the question, exactly
+/// as it does inside a single day.
+fn suppressed_by_prior(
+    prior: Option<&(String, Option<String>)>,
+    fingerprint: &Option<String>,
+) -> bool {
+    match prior {
+        Some((kind, fp)) => types::is_owner_verdict(kind) && fp == fingerprint,
+        None => false,
+    }
+}
+
+/// `prior_entries` with the failure logged rather than propagated: a read
+/// that cannot be made must not cost the person their document, and the safe
+/// direction is to SHOW the item — suppression hides, so only a verdict we
+/// actually read may do it.
+async fn prior_entries_lenient(
+    pg: &PgPool,
+    user_id: &str,
+    current_brief_id: &str,
+    keys: &[String],
+) -> HashMap<String, (String, Option<String>)> {
+    match prior_entries(pg, user_id, current_brief_id, keys).await {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::error!("[daily-brief] prior verdict read failed for {user_id}: {e}");
+            HashMap::new()
+        }
+    }
+}
+
+/// The word an approval line closes with, read from the pending action's own
+/// decided status: APPROVED, REJECTED — or None when the row is gone, the
+/// read failed, or nobody recorded a decision, in which case the caller's
+/// generic DONE is the honest fallback.
+async fn decided_approval_label(pg: &PgPool, source_id: Option<&str>) -> Option<&'static str> {
+    let id = source_id?;
+    let status: Option<String> =
+        sqlx::query_scalar("select status from google_pending_actions where id = $1::uuid")
+            .bind(id)
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten();
+    match status.as_deref() {
+        Some("executed") => Some("APPROVED"),
+        Some("rejected") => Some("REJECTED"),
+        _ => None,
+    }
+}
+
 pub struct OpenOutcome {
     pub opened: bool,
     pub brief_id: Option<String>,
@@ -857,6 +957,20 @@ pub async fn open_brief(
     let snap = snapshot(&deps.state, user, &zone, agent.model.as_deref(), at_ms).await;
     let mut items: Vec<NewEntry> = snap.calendar.unwrap_or_default();
     items.extend(snap.candidates);
+
+    // YESTERDAY'S CROSS-OFF DOES NOT COME BACK. A fresh page that re-lists
+    // everything the owner dismissed the day before is the same nag with a
+    // new date on it, so anything an owner verdict closed on an earlier day
+    // is left off this one while its source stands still. This runs BEFORE
+    // the lede so the counts the lede states are the counts that land.
+    let carry_keys: Vec<String> = items.iter().filter_map(|i| i.source_key.clone()).collect();
+    let prior = prior_entries_lenient(&deps.state.pg, &user.id, &brief_id, &carry_keys).await;
+    items.retain(|i| {
+        let Some(key) = i.source_key.as_deref() else {
+            return true;
+        };
+        !suppressed_by_prior(prior.get(key), &i.fingerprint)
+    });
 
     // The lede is written BEFORE the items are appended and inserted FIRST, so
     // seq 1 is always the opening read. It is also the only model call on this
@@ -1078,6 +1192,18 @@ pub async fn sweep_brief(
     live.extend(candidates);
     let live_keys: HashSet<String> = live.iter().filter_map(|c| c.source_key.clone()).collect();
 
+    // The same cross-day suppression the open applies, for keys arriving NEW
+    // to this document mid-day: an owner verdict from an earlier day still
+    // holds while the source stands still. Scoped to the miss set — keys the
+    // log already knows are decided by the fold above, not by history.
+    let carry_keys: Vec<String> = live
+        .iter()
+        .filter(|c| c.kind != "resolved")
+        .filter_map(|c| c.source_key.clone())
+        .filter(|k| !known.contains_key(k))
+        .collect();
+    let prior = prior_entries_lenient(&deps.state.pg, &user.id, &row.id, &carry_keys).await;
+
     let mut appends: Vec<NewEntry> = Vec::new();
     let mut added = 0usize;
     let mut changed = 0usize;
@@ -1095,6 +1221,9 @@ pub async fn sweep_brief(
             // nothing to close, and appending it would put "Replied to Sam" on
             // a page that never asked you to.
             if candidate.kind == "resolved" {
+                continue;
+            }
+            if suppressed_by_prior(prior.get(&key), &candidate.fingerprint) {
                 continue;
             }
             appends.push(candidate);
@@ -1158,6 +1287,17 @@ pub async fn sweep_brief(
         if failed_types.contains(&type_) || (type_ == "calendar" && calendar_was_none) {
             continue;
         }
+        // AN APPROVAL THAT LEFT THE LIVE SET WAS DECIDED — the surface's own
+        // buttons are now one way it happens — and "DONE" hides the one word
+        // that matters about an outbound send: the pending row keeps its
+        // decided status, so it is read for exactly these lines.
+        let label = if type_ == "approval" {
+            decided_approval_label(&deps.state.pg, line.current.source_id.as_deref())
+                .await
+                .unwrap_or("DONE")
+        } else {
+            "DONE"
+        };
         appends.push(NewEntry {
             kind: "resolved".into(),
             section: line.section.clone(),
@@ -1168,7 +1308,7 @@ pub async fn sweep_brief(
             fingerprint: None,
             supersedes: Some(line.current.id.clone()),
             priority: Some("ok".into()),
-            status_label: Some("DONE".into()),
+            status_label: Some(label.into()),
             badge: None,
             title: line.current.title.clone(),
             body: String::new(),
@@ -1374,19 +1514,35 @@ pub async fn load_recent_row(
     user_id: &str,
     at_ms: i64,
 ) -> Result<Option<BriefRow>, sqlx::Error> {
+    load_recent_row_except(pg, user_id, at_ms, None).await
+}
+
+/// The same read, able to skip one brief by id. The mark's key-following
+/// fallback needs "the most recent document OTHER than today's" — with
+/// today's row in place the plain read answers today's again, and the prior
+/// day a carried verdict lives on would be unreachable.
+async fn load_recent_row_except(
+    pg: &PgPool,
+    user_id: &str,
+    at_ms: i64,
+    exclude: Option<&str>,
+) -> Result<Option<BriefRow>, sqlx::Error> {
     // Cutoff computed here rather than as SQL `created_at - interval` — the
     // boundary is the same fact either way, and in code it needs no interval
     // arithmetic. It crosses the wire as text, so the bind carries the cast.
     let since = epoch_ms_to_iso(at_ms - 48 * 3_600_000);
-    // AssertSqlSafe: the interpolation is ROW_COLS, this module's column list.
+    // AssertSqlSafe: the interpolations are ROW_COLS, this module's column
+    // list, and a fixed id-literal branch.
     let sql = format!(
         "select {ROW_COLS} from daily_briefs \
          where user_id = $1::uuid and last_seq > 0 and created_at > $2::timestamptz \
+           and ($3::uuid is null or id <> $3::uuid) \
          order by brief_date desc limit 1"
     );
     let row: Option<BriefRowTuple> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(user_id)
         .bind(&since)
+        .bind(exclude)
         .fetch_optional(pg)
         .await?;
     Ok(row.map(BriefRow::from_row))
@@ -1588,8 +1744,8 @@ impl ItemMark {
 }
 
 /// Close a line by hand, or reopen one — the owner's own verdict, scoped to
-/// the caller's own brief inside this function (a key belonging to somebody
-/// else's day resolves to no line rather than to theirs).
+/// the caller's own documents inside this function (a key belonging to
+/// somebody else resolves to no line rather than to theirs).
 ///
 /// AN APPEND, NOT AN EDIT, like everything else here. Checking something off
 /// does not delete it or set a flag on it — it writes a new row that supersedes
@@ -1620,36 +1776,43 @@ pub async fn mark_brief_item(
         .map_err(|e| format!("timezone read: {e}"))?;
     let zone = reader_zone(stored.as_deref(), tz, &config);
     let date = brief_window(&config, &zone, at).date;
-    // THE DOCUMENT THE READER IS LOOKING AT, not "today's or none". The read
-    // serves the most recent readable document when today's has not opened
-    // yet (get_brief's NEVER-'pending'-OVER-A-READABLE-DOCUMENT rule) and
-    // promises that anything the owner checks off there is real work — a mark
-    // that resolved only today's row 404'd every action on that served page
-    // into a day that did not exist. Same resolution as the read: today's row
-    // when it exists, else the recent one. When today's DOES exist, only a
-    // stale tab can offer yesterday's key, and the miss below stays the
-    // deliberate stale-tab answer.
-    let row = match load_row(pg, &user.id, &date)
+    // THE DOCUMENT THE LINE IS ON, not merely the document the read serves.
+    // Today's fold answers first. A key today's log has never heard of — a
+    // checked-off yesterday that the cross-day suppression kept off today's
+    // page — falls through to the most recent readable document, where the
+    // verdict was actually written and where `restore` must be able to reach
+    // it; un-suppressing is a `change` on the prior day, and the next sweep's
+    // add branch sees a non-terminal latest entry and brings the line back.
+    // When today's row does not exist at all, that recent document IS the
+    // served page (get_brief's NEVER-'pending'-OVER-A-READABLE-DOCUMENT
+    // rule), and the mark on it is real work — the resolution the read
+    // already promises.
+    let today = load_row(pg, &user.id, &date)
         .await
-        .map_err(|e| format!("brief read: {e}"))?
-    {
-        Some(row) => row,
-        None => match load_recent_row(pg, &user.id, at)
-            .await
-            .map_err(|e| format!("recent brief read: {e}"))?
-        {
-            Some(recent) => recent,
-            None => return Ok(ItemMark::refused("no brief to mark")),
-        },
+        .map_err(|e| format!("brief read: {e}"))?;
+    let recent = load_recent_row_except(pg, &user.id, at, today.as_ref().map(|t| t.id.as_str()))
+        .await
+        .map_err(|e| format!("recent brief read: {e}"))?;
+    let documents: Vec<BriefRow> = match (today, recent) {
+        (Some(t), Some(r)) => vec![t, r],
+        (Some(t), None) => vec![t],
+        (None, Some(r)) => vec![r],
+        (None, None) => return Ok(ItemMark::refused("no brief to mark")),
     };
-
-    let entries = load_brief_entries(pg, &row.id)
-        .await
-        .map_err(|e| format!("entries read: {e}"))?;
-    let folded = fold_entries(entries, row.read_seq);
+    let mut found: Option<(BriefRow, BriefLine)> = None;
+    for row in documents {
+        let entries = load_brief_entries(pg, &row.id)
+            .await
+            .map_err(|e| format!("entries read: {e}"))?;
+        let folded = fold_entries(entries, row.read_seq);
+        if let Some(line) = folded.lines.iter().find(|l| l.key == source_key) {
+            found = Some((row, line.clone()));
+            break;
+        }
+    }
     // The apostrophe is U+2019 — the sentence is bytes the surface renders
     // verbatim, not prose to re-type.
-    let Some(line) = folded.lines.iter().find(|l| l.key == source_key) else {
+    let Some((row, line)) = found else {
         return Ok(ItemMark::refused("that line is not on today’s brief"));
     };
 
@@ -2154,5 +2317,58 @@ mod tests {
         assert!(!sweep_due(&row(Some(now - 60_000)), &config, now));
         // Exactly at the throttle still sweeps — the test is >=.
         assert!(sweep_due(&row(Some(now - 300_000)), &config, now));
+    }
+
+    // THE CROSS-DAY SUPPRESSION, as its one decision reads. Every assertion
+    // here is a way a crossed-off item wrongly comes back — or wrongly stays
+    // hidden: the verdict must carry only while the source stands still, and
+    // only when it was the owner's own hand that closed the line.
+    #[test]
+    fn an_owner_verdict_on_an_unchanged_source_suppresses_the_item() {
+        for kind in ["checked", "dismissed"] {
+            let prior = Some((kind.to_string(), Some("fp".into())));
+            assert!(
+                suppressed_by_prior(prior.as_ref(), &Some("fp".into())),
+                "{kind} on a matching fingerprint suppresses"
+            );
+        }
+    }
+
+    #[test]
+    fn a_moved_source_is_new_information_and_is_not_suppressed() {
+        let prior = Some(("dismissed".to_string(), Some("old".into())));
+        assert!(!suppressed_by_prior(prior.as_ref(), &Some("new".into())));
+        // A verdict with no fingerprint cannot be compared and suppresses
+        // nothing — showing the item is the safe direction.
+        assert!(!suppressed_by_prior(
+            Some(("checked".to_string(), None)).as_ref(),
+            &Some("fp".into())
+        ));
+    }
+
+    #[test]
+    fn a_source_side_resolution_never_carries() {
+        // The source saying "done" yesterday is not the person's verdict; if
+        // the thing is live again today it deserves a fresh look.
+        let prior = Some(("resolved".to_string(), Some("fp".into())));
+        assert!(!suppressed_by_prior(prior.as_ref(), &Some("fp".into())));
+    }
+
+    #[test]
+    fn a_line_the_owner_restored_is_not_suppressed() {
+        // Restore writes a non-terminal `change` as the latest entry; the
+        // prior-day verdict it superseded must not reach around it.
+        for kind in ["item", "change"] {
+            let prior = Some((kind.to_string(), Some("fp".into())));
+            assert!(
+                !suppressed_by_prior(prior.as_ref(), &Some("fp".into())),
+                "{kind} as the latest entry carries no verdict"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_with_no_history_is_not_suppressed() {
+        assert!(!suppressed_by_prior(None, &Some("fp".into())));
     }
 }

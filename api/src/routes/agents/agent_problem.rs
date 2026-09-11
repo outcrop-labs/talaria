@@ -327,7 +327,15 @@ pub async fn post(
                 kind: "agent-problem",
                 title: &format!("{label} reported a problem it is blocked on"),
                 body: Some(&format!("{fact_line}\n\n{fact_tail}")),
-                href: None,
+                // THE ALERTS PAGE, never the ticket, even when one was filed:
+                // the fact audience is precisely the people NOT on the board
+                // (board visibility is membership, not role), so a board href
+                // would be dropped by the brief's accessibility check for
+                // every reader this row is for. And None made the row
+                // invisible to the brief outright — it lists only
+                // notifications with somewhere to go, and a problem an admin
+                // cannot click through to is a headline, not a notice.
+                href: Some("/observability/alerts"),
             },
         )
         .await

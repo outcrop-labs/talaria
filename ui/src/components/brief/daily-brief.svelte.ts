@@ -104,6 +104,24 @@ export function useBriefActions() {
         await refresh()
       }
     },
+    /** Approve or reject a pending outbound action — an email or an event the
+     *  assistant drafted — decided straight off the line.
+     *
+     *  AWAITED AND ITS ERROR SURFACED, like decideReply and unlike the marks
+     *  below: this one makes something leave the building, and a refusal (the
+     *  action already decided, the Google connection lapsed) has to reach the
+     *  person who clicked. The pending row's decided status is what the sweep
+     *  reads to close the line as APPROVED or REJECTED. */
+    async decideApproval(id: string, decision: 'approve' | 'reject'): Promise<{ ok: true } | { ok: false; error: string }> {
+      try {
+        await postJson(`/api/integrations/google/pending/${encodeURIComponent(id)}`, { decision })
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: errorMessage(e) }
+      } finally {
+        await refresh()
+      }
+    },
     /** The owner's own verdict on a line: done, not needed, or put it back.
      *
      *  Awaited so the refetch lands before the caller clears its busy state —
